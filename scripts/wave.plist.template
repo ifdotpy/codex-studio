@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.attar.codex.wave</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/igor/.local/state/fnm_multishells/65590_1785759404784/bin/node</string>
+    <string>/absolute/path/to/tmp/codex-swarm.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/absolute/path/to/tmp</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CODEX_MODEL</key><string>gpt-5.6-luna</string>
+    <key>CODEX_WAVE</key><string>luna</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key><string>/absolute/path/to/tmp/wave.log</string>
+  <key>StandardErrorPath</key><string>/absolute/path/to/tmp/wave.err</string>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>

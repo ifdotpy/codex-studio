@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Shared claim board for concurrent threads.
+
+Not a chat. Threads post facts that change what other threads may do: who holds
+an exclusive resource, and what is currently broken on main. Decisions stay with
+the orchestrator; this only stops two threads from taking the same slot.
+
+Built after three collisions in one session: two threads rebuilding the layout
+kernel invalidated a third's SDK seal, two ran attar-build at once, and four
+launchers died when the disk filled because nobody knew who was writing.
+
+usage:
+  codex-board claim <resource> <thread> [note]   take it, fails if held
+  codex-board release <resource> <thread>        give it back
+  codex-board note <thread> <text>               post a fact for everyone
+  codex-board show                               read the board
+"""
+import json, os, sys, time
+
+TMP = os.path.dirname(os.path.abspath(__file__))
+BOARD = os.path.join(TMP, "codex-board.json")
+STALE_SECONDS = 3600
+
+
+def load():
+    try:
+        with open(BOARD) as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {"claims": {}, "notes": []}
+
+
+def save(state):
+    with open(BOARD, "w") as handle:
+        json.dump(state, handle, indent=1)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        return 2
+    action, state, now = args[0], load(), time.time()
+
+    # A claim older than an hour is a dead thread's, not a live hold. Without
+    # this the first crashed thread blocks the resource forever.
+    for name, claim in list(state["claims"].items()):
+        if now - claim["at"] > STALE_SECONDS:
+            claim["stale"] = True
+
+    if action == "claim":
+        resource, thread = args[1], args[2]
+        note = " ".join(args[3:])
+        held = state["claims"].get(resource)
+        if held and not held.get("stale") and held["thread"] != thread:
+            age = int(now - held["at"])
+            print(f"HELD {resource} by {held['thread']} for {age}s: {held.get('note','')}")
+            return 1
+        state["claims"][resource] = {"thread": thread, "at": now, "note": note}
+        save(state)
+        print(f"CLAIMED {resource} {thread}")
+    elif action == "release":
+        resource, thread = args[1], args[2]
+        held = state["claims"].get(resource)
+        if held and held["thread"] == thread:
+            del state["claims"][resource]
+            save(state)
+            print(f"RELEASED {resource} {thread}")
+        else:
+            print(f"NOT_HELD {resource} {thread}")
+    elif action == "note":
+        thread, text = args[1], " ".join(args[2:])
+        state["notes"] = (state["notes"] + [{"thread": thread, "at": now, "text": text}])[-40:]
+        save(state)
+        print("NOTED")
+    elif action == "show":
+        for resource, claim in sorted(state["claims"].items()):
+            age = int(now - claim["at"])
+            flag = " STALE" if claim.get("stale") else ""
+            print(f"CLAIM {resource:20} {claim['thread']:20} {age}s{flag} {claim.get('note','')}")
+        for entry in state["notes"][-12:]:
+            print(f"NOTE  {entry['thread']:20} {int(now-entry['at'])}s ago: {entry['text']}")
+    else:
+        print(__doc__)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

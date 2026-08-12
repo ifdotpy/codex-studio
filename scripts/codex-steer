@@ -1,0 +1,53 @@
+#!/usr/bin/env node
+// Send a follow-up turn to a thread that is already running or finished.
+// The skill documents this as steering; without it the only way to react to a
+// thread's report is to start a fresh thread and pay for its context again.
+//
+// usage: codex-steer <thread-name> "<message>"
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import { readFileSync, globSync } from "node:fs";
+
+const TMP = "/Users/igor/.claude/jobs/b02da0e1/tmp";
+const [name, ...rest] = process.argv.slice(2);
+const message = rest.join(" ");
+if (!name || !message) { console.error("usage: codex-steer <thread-name> \"<message>\""); process.exit(2); }
+
+const threads = globSync(`${TMP}/codex-swarm-status.*.json`)
+  .flatMap((f) => JSON.parse(readFileSync(f, "utf8")));
+const t = threads.find((x) => x.name === name);
+if (!t) { console.error(`no thread named ${name}`); process.exit(2); }
+
+const proc = spawn("codex", ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "ignore"] });
+let id = 1; const pending = new Map();
+const call = (m, p = {}) => { const i = id++;
+  proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i, method: m, params: p }) + "\n");
+  return new Promise((res, rej) => pending.set(i, { res, rej })); };
+createInterface({ input: proc.stdout }).on("line", (l) => { let m; try { m = JSON.parse(l); } catch { return; }
+  if (m.id !== undefined && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id);
+    m.error ? p.rej(m.error) : p.res(m.result); } });
+
+await call("initialize", { clientInfo: { name: "attar-orchestrator", version: "1" }, capabilities: { experimentalApi: true } });
+
+// A thread lives in the app-server process that created it. A fresh process
+// answers "thread not found" until the thread is resumed from its rollout.
+await call("thread/resume", {
+  threadId: t.threadId,
+  cwd: t.cwd,
+  approvalPolicy: "never",
+  sandbox: "danger-full-access",
+  runtimeWorkspaceRoots: [t.cwd],
+});
+
+const turn = await call("turn/start", {
+  threadId: t.threadId,
+  model: t.requestedModel || undefined,
+  effort: t.effort || "max",
+  approvalPolicy: "never",
+  sandboxPolicy: { type: "dangerFullAccess" },
+  cwd: t.cwd,
+  runtimeWorkspaceRoots: [t.cwd],
+  input: [{ type: "text", text: message }],
+});
+console.log(`steered ${name} turn=${turn?.turn?.id}`);
+process.exit(0);

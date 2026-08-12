@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Reclaim scratch space from finished build runs.
+
+A full product build writes about 3.3 GiB under /tmp and nothing removes it.
+Threads compound this by creating a fresh directory per attempt: one session
+left final2, final3, rebased2 and spinner-fix2 side by side. The volume hit 100
+percent twice, killed four launchers, and one build died mid-write inside the
+style pack, taking its own output with it.
+
+Safety: a directory is only removed when nothing has written to it for
+--idle-minutes AND no live process holds it open. Age alone is not enough, since
+a long build can leave an early stage untouched for an hour.
+
+usage: codex-gc [--idle-minutes N] [--apply]   default is a dry run
+"""
+import argparse, os, shutil, subprocess, sys, time
+
+PATTERNS = ("/tmp/attar-", "/tmp/codex-", "/tmp/chrompile-", "/tmp/cp-")
+
+
+def newest_mtime(path):
+    newest = 0.0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                newest = max(newest, os.stat(os.path.join(root, name)).st_mtime)
+            except OSError:
+                continue
+    return newest or os.stat(path).st_mtime
+
+
+def in_use(path):
+    # lsof is the only honest answer: a build that is merely slow still holds fds.
+    try:
+        r = subprocess.run(["lsof", "-t", "+D", path], capture_output=True, text=True, timeout=60)
+        return bool(r.stdout.strip())
+    except Exception:
+        return True  # cannot tell, so do not delete
+
+
+def size_gib(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.stat(os.path.join(root, name)).st_size
+            except OSError:
+                continue
+    return total / 1024**3
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--idle-minutes", type=int, default=45)
+    parser.add_argument("--apply", action="store_true")
+    args = parser.parse_args()
+
+    now, freed, kept = time.time(), 0.0, 0
+    for entry in sorted(os.listdir("/tmp")):
+        path = os.path.join("/tmp", entry)
+        if not os.path.isdir(path) or not any(path.startswith(p) for p in PATTERNS):
+            continue
+        try:
+            idle = (now - newest_mtime(path)) / 60
+        except OSError:
+            continue
+        gib = size_gib(path)
+        if gib < 0.05:
+            continue
+        if idle < args.idle_minutes:
+            print(f"  keep  {gib:6.1f}G  idle {idle:5.0f}m  {path}")
+            kept += 1
+            continue
+        if in_use(path):
+            print(f"  busy  {gib:6.1f}G  idle {idle:5.0f}m  {path}")
+            kept += 1
+            continue
+        print(f"{'REMOVE' if args.apply else '  dry '}  {gib:6.1f}G  idle {idle:5.0f}m  {path}")
+        if args.apply:
+            shutil.rmtree(path, ignore_errors=True)
+        freed += gib
+    verb = "freed" if args.apply else "would free"
+    print(f"CODEX_GC {verb} {freed:.1f} GiB, kept {kept}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

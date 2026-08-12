@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+// One line per model: id, default effort, supported efforts. The raw
+// model/list response is about 6 KB of JSON and never needs to be read whole.
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+const proc = spawn("codex", ["app-server", "--listen", "stdio://"], { stdio: ["pipe","pipe","ignore"] });
+let id = 1; const pending = new Map();
+const call = (m, p = {}) => { const i = id++;
+  proc.stdin.write(JSON.stringify({ jsonrpc:"2.0", id:i, method:m, params:p }) + "\n");
+  return new Promise((res, rej) => pending.set(i, { res, rej })); };
+createInterface({ input: proc.stdout }).on("line", (l) => { let m; try { m = JSON.parse(l); } catch { return; }
+  if (m.id !== undefined && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id);
+    m.error ? p.rej(m.error) : p.res(m.result); } });
+await call("initialize", { clientInfo:{ name:"probe", version:"1" }, capabilities:{ experimentalApi:true } });
+const { data } = await call("model/list", {});
+for (const m of data) {
+  console.log([m.id.padEnd(22), m.isDefault ? "*" : " ", m.supportedReasoningEfforts.map(e => e.reasoningEffort).join(",")].join(" "));
+}
+process.exit(0);

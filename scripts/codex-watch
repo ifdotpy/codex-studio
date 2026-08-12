@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Emit one line per Codex thread the moment it reaches a terminal state.
+
+Each line becomes a notification, so nobody has to poll. Exits when every
+thread is terminal, which ends the watch cleanly.
+
+Coverage rule: emit on failure as well as success. A wave that dies on a bad
+model id reports turn/completed on every thread, so silence must never be the
+only signal. A thread that stops producing events for STALL_S is also emitted,
+because a hung thread and a working one look identical from the status file.
+
+usage: codex-watch [--stall-seconds N] [--poll N]
+"""
+import argparse, datetime, glob, json, os, sys, time
+
+TMP = os.path.dirname(os.path.abspath(__file__))
+STATUS_GLOB = os.path.join(TMP, "codex-swarm-status.*.json")
+
+
+def load():
+    threads = []
+    for path in sorted(glob.glob(STATUS_GLOB)):
+        try:
+            with open(path) as handle:
+                threads.extend(json.load(handle))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return threads
+
+
+def age_seconds(stamp):
+    if not stamp:
+        return 0.0
+    when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--poll", type=int, default=20)
+    parser.add_argument("--forever", action="store_true",
+                        help="never exit; keep watching as new waves appear")
+    parser.add_argument("--stall-seconds", type=int, default=900)
+    args = parser.parse_args()
+
+    reported = set()
+    # Threads already announced in a previous watcher run. Without this a
+    # restarted persistent watcher re-announces every finished thread.
+    seen_path = os.path.join(TMP, "codex-watch-seen.json")
+    try:
+        reported |= set(json.load(open(seen_path)))
+    except (OSError, json.JSONDecodeError):
+        pass
+    wave = None
+    while True:
+        threads = load()
+        if not threads:
+            time.sleep(args.poll)
+            continue
+        # Key on threadId, never on name: a new wave rewrites this file, and a
+        # watcher keyed on names then counts the new threads against the old
+        # ones and exits reporting a wave that never finished.
+        ids = frozenset(t["threadId"] for t in threads)
+        if not args.forever:
+            if wave is None:
+                wave = ids
+            elif ids != wave:
+                print(f"CODEX WAVE REPLACED watcher stops; {len(wave - ids)} thread(s) "
+                      f"unreported from the previous wave", flush=True)
+                return 0
+        for t in threads:
+            name = t["threadId"]
+            if name in reported:
+                continue
+            status = t.get("turnStatus")
+            # A thread stopped on purpose is not a stall. Its last event stays
+            # frozen at the moment it was stopped, so a watcher that only knows
+            # "completed" and "failed" reports it as hung forever, once per
+            # wave file it appears in. Four such false alarms fired at once.
+            if status in ("superseded", "abandoned"):
+                reported.add(name)
+                continue
+            if status in ("completed", "failed"):
+                error = f" error={t['error']}" if t.get("error") else ""
+                print(f"CODEX {status.upper()} {t['name']} events={t['events']}{error} "
+                      f"branch={t['branch']}", flush=True)
+                reported.add(name)
+                json.dump(sorted(reported), open(seen_path, "w"))
+            elif age_seconds(t.get("lastEvent")) > args.stall_seconds:
+                print(f"CODEX STALLED {t['name']} no events for "
+                      f"{int(age_seconds(t.get('lastEvent')))}s branch={t['branch']}", flush=True)
+                reported.add(name)
+        if not args.forever and len(reported) >= len(threads):
+            print(f"CODEX WAVE DONE {len(threads)} threads", flush=True)
+            return 0
+        time.sleep(args.poll)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
