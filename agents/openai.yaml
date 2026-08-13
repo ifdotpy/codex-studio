@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Agents"
+  short_description: "Run independent Codex worker threads"
+  default_prompt: "Use $codex-agents to run these independent tasks in separate Codex threads."

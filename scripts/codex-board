@@ -1,89 +1,205 @@
 #!/usr/bin/env python3
-"""Shared claim board for concurrent threads.
-
-Not a chat. Threads post facts that change what other threads may do: who holds
-an exclusive resource, and what is currently broken on main. Decisions stay with
-the orchestrator; this only stops two threads from taking the same slot.
-
-Built after three collisions in one session: two threads rebuilding the layout
-kernel invalidated a third's SDK seal, two ran attar-build at once, and four
-launchers died when the disk filled because nobody knew who was writing.
+"""Store exclusive resource claims for concurrent Codex workers.
 
 usage:
-  codex-board claim <resource> <thread> [note]   take it, fails if held
-  codex-board release <resource> <thread>        give it back
-  codex-board note <thread> <text>               post a fact for everyone
-  codex-board show                               read the board
+  codex-board claim RESOURCE OWNER [NOTE]
+  codex-board renew RESOURCE OWNER
+  codex-board takeover RESOURCE NEW_OWNER EXPECTED_OWNER [NOTE]
+  codex-board release RESOURCE OWNER
+  codex-board note OWNER TEXT
+  codex-board show
 """
-import json, os, sys, time
 
-TMP = os.path.dirname(os.path.abspath(__file__))
-BOARD = os.path.join(TMP, "codex-board.json")
-STALE_SECONDS = 3600
+import fcntl
+import json
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
 
 
-def load():
+def state_dir() -> Path:
+    board = os.environ.get("CODEX_BOARD_STATE_DIR")
+    if board:
+        return Path(board).expanduser().resolve()
+    configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
+    if configured:
+        return (Path(configured).expanduser().resolve() / "board")
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")).expanduser()
+    return (base / "codex-agents" / "board").resolve()
+
+
+ROOT = state_dir()
+BOARD = ROOT / "codex-board.json"
+LOCK = ROOT / "codex-board.lock"
+
+
+def load() -> dict:
     try:
-        with open(BOARD) as handle:
-            return json.load(handle)
-    except (OSError, json.JSONDecodeError):
+        value = json.loads(BOARD.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {"claims": {}, "notes": []}
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot read {BOARD}: {error}") from error
+    if not isinstance(value, dict) or not isinstance(value.get("claims"), dict):
+        raise RuntimeError(f"invalid board file: {BOARD}")
+    value.setdefault("notes", [])
+    if not isinstance(value["notes"], list):
+        raise RuntimeError(f"invalid board file: {BOARD}")
+    for claim in value["claims"].values():
+        if (
+            not isinstance(claim, dict)
+            or not isinstance(claim.get("worker"), str)
+            or not isinstance(claim.get("at"), (int, float))
+        ):
+            raise RuntimeError(f"invalid board file: {BOARD}")
+    for note in value["notes"]:
+        if (
+            not isinstance(note, dict)
+            or not isinstance(note.get("worker"), str)
+            or not isinstance(note.get("at"), (int, float))
+            or not isinstance(note.get("text"), str)
+        ):
+            raise RuntimeError(f"invalid board file: {BOARD}")
+    return value
 
 
-def save(state):
-    with open(BOARD, "w") as handle:
-        json.dump(state, handle, indent=1)
+def save(state: dict) -> None:
+    handle, temporary = tempfile.mkstemp(prefix="codex-board.", suffix=".tmp", dir=ROOT)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as output:
+            json.dump(state, output, indent=1)
+            output.write("\n")
+        os.replace(temporary, BOARD)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
-def main():
-    args = sys.argv[1:]
+def need(args: list[str], count: int) -> bool:
+    if len(args) >= count:
+        return True
+    print(__doc__.strip(), file=sys.stderr)
+    return False
+
+
+def run(args: list[str]) -> int:
     if not args:
-        print(__doc__)
+        print(__doc__.strip())
         return 2
-    action, state, now = args[0], load(), time.time()
 
-    # A claim older than an hour is a dead thread's, not a live hold. Without
-    # this the first crashed thread blocks the resource forever.
-    for name, claim in list(state["claims"].items()):
-        if now - claim["at"] > STALE_SECONDS:
-            claim["stale"] = True
+    action = args[0]
+    now = time.time()
+    state = load()
 
     if action == "claim":
-        resource, thread = args[1], args[2]
+        if not need(args, 3):
+            return 2
+        resource, owner = args[1], args[2]
         note = " ".join(args[3:])
+        if not resource.strip() or not owner.strip():
+            print("RESOURCE and OWNER must not be empty", file=sys.stderr)
+            return 2
         held = state["claims"].get(resource)
-        if held and not held.get("stale") and held["thread"] != thread:
+        if held and held["worker"] != owner:
             age = int(now - held["at"])
-            print(f"HELD {resource} by {held['thread']} for {age}s: {held.get('note','')}")
+            print(f"HELD {resource} by {held['worker']} for {age}s: {held.get('note', '')}")
             return 1
-        state["claims"][resource] = {"thread": thread, "at": now, "note": note}
+        state["claims"][resource] = {"worker": owner, "at": now, "note": note}
         save(state)
-        print(f"CLAIMED {resource} {thread}")
-    elif action == "release":
-        resource, thread = args[1], args[2]
+        print(f"CLAIMED {resource} {owner}")
+        return 0
+
+    if action == "renew":
+        if not need(args, 3):
+            return 2
+        resource, owner = args[1], args[2]
+        if not resource.strip() or not owner.strip():
+            print("RESOURCE and OWNER must not be empty", file=sys.stderr)
+            return 2
         held = state["claims"].get(resource)
-        if held and held["thread"] == thread:
+        if held and held["worker"] == owner:
+            held["at"] = now
+            save(state)
+            print(f"RENEWED {resource} {owner}")
+            return 0
+        print(f"NOT_HELD {resource} {owner}")
+        return 1
+
+    if action == "takeover":
+        if not need(args, 4):
+            return 2
+        resource, new_owner, expected_owner = args[1], args[2], args[3]
+        note = " ".join(args[4:])
+        if not resource.strip() or not new_owner.strip() or not expected_owner.strip():
+            print("RESOURCE and OWNER must not be empty", file=sys.stderr)
+            return 2
+        held = state["claims"].get(resource)
+        if not held or held["worker"] != expected_owner:
+            actual = held["worker"] if held else "nobody"
+            print(f"TAKEOVER_REFUSED {resource} expected={expected_owner} actual={actual}")
+            return 1
+        state["claims"][resource] = {"worker": new_owner, "at": now, "note": note}
+        save(state)
+        print(f"TAKEN_OVER {resource} {new_owner}")
+        return 0
+
+    if action == "release":
+        if not need(args, 3):
+            return 2
+        resource, owner = args[1], args[2]
+        if not resource.strip() or not owner.strip():
+            print("RESOURCE and OWNER must not be empty", file=sys.stderr)
+            return 2
+        held = state["claims"].get(resource)
+        if held and held["worker"] == owner:
             del state["claims"][resource]
             save(state)
-            print(f"RELEASED {resource} {thread}")
-        else:
-            print(f"NOT_HELD {resource} {thread}")
-    elif action == "note":
-        thread, text = args[1], " ".join(args[2:])
-        state["notes"] = (state["notes"] + [{"thread": thread, "at": now, "text": text}])[-40:]
+            print(f"RELEASED {resource} {owner}")
+            return 0
+        print(f"NOT_HELD {resource} {owner}")
+        return 1
+
+    if action == "note":
+        if not need(args, 3):
+            return 2
+        owner = args[1]
+        text = " ".join(args[2:])
+        if not owner.strip() or not text.strip():
+            print("OWNER and TEXT must not be empty", file=sys.stderr)
+            return 2
+        state["notes"] = (state["notes"] + [{"worker": owner, "at": now, "text": text}])[-40:]
         save(state)
         print("NOTED")
-    elif action == "show":
+        return 0
+
+    if action == "show":
         for resource, claim in sorted(state["claims"].items()):
             age = int(now - claim["at"])
-            flag = " STALE" if claim.get("stale") else ""
-            print(f"CLAIM {resource:20} {claim['thread']:20} {age}s{flag} {claim.get('note','')}")
+            print(
+                f"CLAIM {resource:20} {claim['worker']:20} {age}s "
+                f"{claim.get('note', '')}"
+            )
         for entry in state["notes"][-12:]:
-            print(f"NOTE  {entry['thread']:20} {int(now-entry['at'])}s ago: {entry['text']}")
-    else:
-        print(__doc__)
+            print(f"NOTE  {entry['worker']:20} {int(now - entry['at'])}s ago: {entry['text']}")
+        return 0
+
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+def main() -> int:
+    ROOT.mkdir(parents=True, exist_ok=True)
+    try:
+        with LOCK.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            return run(sys.argv[1:])
+    except RuntimeError as error:
+        print(f"CODEX BOARD ERROR {error}", file=sys.stderr)
         return 2
-    return 0
 
 
 if __name__ == "__main__":

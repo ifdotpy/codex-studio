@@ -1,38 +1,53 @@
 #!/usr/bin/env python3
-"""Bounded status and final answers for the running Codex threads.
-
-The point is a hard cap on what reaches the orchestrator's context. Streams,
-rollout files and event logs are never printed raw: one line per thread, and
-the final answer only, truncated. Comparable in size to one subagent report.
+"""Print bounded status and final answers for Codex worker waves.
 
 usage:
-  codex-report                    one line per thread
-  codex-report NAME --answers     final answer of one thread only
+  codex-report [--wave WAVE]
+  codex-report [--wave WAVE] NAME --answers
+  codex-report --all-waves
 """
+
+from __future__ import annotations
 
 import argparse
 import glob
 import json
 import os
+import re
 import sys
+from pathlib import Path
 
-TMP = os.path.dirname(os.path.abspath(__file__))
-STATUS_GLOB = os.path.join(TMP, "codex-swarm-status.*.json")
+
+WAVE_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def wave_name(value: str) -> str:
+    if not WAVE_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError("use only letters, digits, dot, underscore, or hyphen")
+    return value
+
+
+def state_dir() -> Path:
+    configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")).expanduser()
+    return (base / "codex-agents").resolve()
+
+
+def codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser().resolve()
 
 
 def final_answer(thread_id: str, limit: int) -> str:
-    """Last assistant final answer from the rollout, truncated."""
-    matches = glob.glob(os.path.expanduser(f"~/.codex/sessions/*/*/*/*{thread_id}*.jsonl"))
+    pattern = str(codex_home() / "sessions" / "*" / "*" / "*" / f"*{thread_id}*.jsonl")
+    matches = glob.glob(pattern)
     if not matches:
         return "(no rollout file)"
-    # A thread emits many assistant messages. Only phase "final_answer" is a
-    # report; "commentary" is thinking-out-loud and can land after the last
-    # final answer, so taking the last assistant message of any phase returns
-    # the wrong text. Prefer the last final_answer; fall back to the last
-    # message of any phase, because a thread killed mid-run has no final answer
-    # at all and its last commentary is the only thing it left behind.
-    final, fallback = "", ""
-    with open(matches[0]) as handle:
+    rollout = max(matches, key=os.path.getmtime)
+    final = ""
+    fallback = ""
+    with open(rollout, encoding="utf-8") as handle:
         for line in handle:
             if '"role":"assistant"' not in line and '"role": "assistant"' not in line:
                 continue
@@ -41,105 +56,98 @@ def final_answer(thread_id: str, limit: int) -> str:
             except json.JSONDecodeError:
                 continue
             content = payload.get("content") or []
-            chunk = "".join(c.get("text", "") for c in content if c.get("type") in ("output_text", "text"))
+            chunk = "".join(
+                item.get("text", "")
+                for item in content
+                if item.get("type") in ("output_text", "text")
+            )
             if not chunk.strip():
                 continue
             fallback = chunk
             if payload.get("phase") == "final_answer":
                 final = chunk
-    text = final or fallback
+    text = (final or fallback).strip()
     if not text:
         return "(no final answer yet)"
-    text = text.strip()
-    return text if len(text) <= limit else text[:limit] + f"\n[truncated, {len(text)} chars total]"
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n[truncated, {len(text)} chars total]"
 
 
-def age_seconds(stamp):
-    if not stamp:
-        return 0.0
-    import datetime
-    when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    return (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds()
+def process_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def load_status_files(root: Path, wave: str | None, all_waves: bool) -> list[Path]:
+    if wave:
+        return [root / f"codex-swarm-status.{wave}.json"]
+    paths = sorted(root.glob("codex-swarm-status.*.json"), key=lambda path: path.stat().st_mtime)
+    if all_waves:
+        return paths
+    return paths[-1:]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("name", nargs="?", help="report on one thread only")
-    parser.add_argument("--all", action="store_true",
-                        help="include threads whose launcher is gone (hidden by default)")
+    parser.add_argument("name", nargs="?", help="show one worker")
+    parser.add_argument("--wave", type=wave_name, default=os.environ.get("CODEX_WAVE"))
+    parser.add_argument("--all-waves", action="store_true")
     parser.add_argument("--chars", type=int, default=3000)
-    parser.add_argument("--answers", action="store_true", help="include the final answer")
+    parser.add_argument("--answers", action="store_true")
     args = parser.parse_args()
+    if args.chars <= 0:
+        parser.error("--chars must be a positive integer")
 
-    files = sorted(glob.glob(STATUS_GLOB))
-    if not files:
-        print("no swarm status file")
+    root = state_dir()
+    paths = [path for path in load_status_files(root, args.wave, args.all_waves) if path.exists()]
+    if not paths:
+        print(f"no swarm status file in {root}")
         return 1
-    # Waves run side by side, one status file each. Read them all.
-    threads = [t for f in files for t in json.load(open(f))]
+
+    threads = []
+    for path in paths:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"cannot read {path}: {error}", file=sys.stderr)
+            return 1
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and isinstance(item.get("threadId"), str)
+            for item in value
+        ):
+            print(f"invalid status file: {path}", file=sys.stderr)
+            return 1
+        threads.extend(value)
+
     if args.name:
-        threads = [t for t in threads if t["name"] == args.name] or threads[:0]
+        threads = [thread for thread in threads if thread.get("name") == args.name]
         if not threads:
-            print(f"no thread named {args.name}")
+            print(f"no worker named {args.name}")
             return 1
 
-    # A wave whose launcher died leaves its threads reading "running" forever, and
-    # they crowd out the ones actually working. Server-side goal status is the
-    # only honest signal, and a thread that never got one is from a wave that
-    # predates goal tracking, so treat a long silence as gone.
-    if not args.all and not args.name:
-        live = []
-        for t in threads:
-            if t.get("goalStatus") in ("complete", "budgetLimited", "usageLimited"):
-                live.append(t)
-            elif t.get("turnStatus") == "running" and not t.get("goalStatus") \
-                    and age_seconds(t.get("lastEvent")) > 3600:
-                continue
-            else:
-                live.append(t)
-        # Twenty-seven finished threads bury the two that are working. Show what
-        # still needs attention: anything not terminal, plus whatever landed
-        # recently enough that its result has not been read yet.
-        # Only what still needs attention. goalStatus alone is not enough: a
-        # finished thread keeps "active" forever, since nothing closes a goal
-        # when a turn ends, so 22 rows crowded out the 4 that were working.
-        # A thread whose launcher is gone can never act again: threads live inside
-        # the app-server process that created them. Marking those by hand cost
-        # four rounds in one hour, so ask the process table instead.
-        # Liveness comes from the launcher pid file, not from pgrep: an -f
-        # pattern can match the shell that runs it, and pgrep returned empty
-        # while a launcher was in fact alive. kill(pid, 0) is exact.
-        launcher_up = False
-        try:
-            pid = int(open(TMP + "/codex-swarm-launcher.pid").read().strip())
-            os.kill(pid, 0)
-            launcher_up = True
-        except Exception:
-            launcher_up = False
-        recent = []
-        for t in live:
-            if t.get("turnStatus") != "running":
-                continue
-            # No launcher at all, or silent far longer than any real turn.
-            if not launcher_up or age_seconds(t.get("lastEvent")) > 1200:
-                t["turnStatus"] = "abandoned"
-                continue
-            recent.append(t)
-        hidden = len(threads) - len(recent)
-        threads = recent
-        if hidden:
-            print(f"({hidden} finished or dead thread(s) hidden; --all to show)")
-
-    for t in threads:
-        goal = f" goal={t['goalStatus']}" if t.get("goalStatus") else ""
-        print(f"{t['name']:20} {t['model']} {t['effort']} events={t['events']:5} "
-              f"{t['turnStatus']}{goal}"
-              f"{' err=' + str(t['error']) if t.get('error') else ''}")
+    for thread in threads:
+        wave = thread.get("wave", "unknown")
+        status = thread.get("turnStatus", "unknown")
+        pid = int(thread.get("launcherPid") or 0)
+        if status in ("running", "waiting", "starting", "capacity-retry") and not process_is_alive(pid):
+            status = "abandoned"
+        goal = f" goal={thread['goalStatus']}" if thread.get("goalStatus") else ""
+        error = f" error={thread['error']}" if thread.get("error") else ""
+        print(
+            f"{wave:14} {thread.get('name', '?'):20} {thread.get('model') or thread.get('requestedModel')} "
+            f"{thread.get('effort')} events={thread.get('events', 0):5} {status}{goal}{error}"
+        )
 
     if args.answers:
-        for t in threads:
-            print(f"\n===== {t['name']} =====")
-            print(final_answer(t["threadId"], args.chars))
+        for thread in threads:
+            print(f"\n===== {thread.get('name', '?')} =====")
+            print(final_answer(thread["threadId"], args.chars))
     return 0
 
 

@@ -1,113 +1,95 @@
-<!-- Prepended to every worker prompt by the launcher. Rules the WORKER obeys.
-     Orchestration rules live in SKILL.md; do not duplicate them here. -->
+<!-- The launcher adds this file to every worker prompt. -->
 
-## How you run
+## Worker runtime
 
-Run every long command blocking, in the FOREGROUND, in one call, with the tool timeout set to 1800000 ms.
-Poll inside that same call: `until <condition>; do sleep 60; done`. **Never end your turn waiting for a
-notification. Nothing wakes you, and the work simply stops.**
+Use these values for this worker:
 
-Commit each finished piece as you go. A thread stopped mid task keeps only what is committed. Measured:
-of three threads stopped by a budget, the one committing per module left seven finished modules; the two
-that saved their work for the end left nothing.
-
-## Sharing the machine
-
-Other threads are working in this repository at the same time. Before anything heavy, run `uptime` and
-wait in a foreground loop while load average is above 20.
-
-Exclusive resources are claimed on a board, because a message cannot reach a thread that has not started:
-
-The board is a script, not a command on your PATH. Use its absolute path; a worker reported
-`command not found` and ran without claiming anything:
-
-```
-BOARD=/Users/igor/.claude/jobs/b02da0e1/tmp/codex-board
-$BOARD claim <resource> <thread> [note]    fails if already held
-$BOARD release <resource> <thread>
-$BOARD show
+```bash
+export CODEX_AGENTS_STATE_DIR={{STATE_DIR}}
+export CODEX_BOARD_STATE_DIR={{BOARD_STATE_DIR}}
+export CODEX_BOARD={{BOARD_COMMAND}}
+export WORKER_NAME={{WORKER_NAME}}
+export CODEX_BOARD_OWNER={{BOARD_OWNER}}
 ```
 
-Claim before you take one, release when done. Claims expire after an hour.
+Work only in the assigned worktree. Do not modify another worktree or the main checkout.
 
-**Use the board, not the process list.** `pgrep -f attar-build` matches the searching shell itself and
-any coordinator shell that has the string in its command line, so it reports a build that is not running
-and hides one that is. A worker reported exactly that. Wait on the claim instead:
+{{ROLE_RULES}}
 
+Do not push.
+
+## Long commands
+
+Run each long command in the foreground or in one persistent terminal session.
+
+Wait for the terminal result. Do not end a turn only because a command still runs.
+
+Use a clear timeout for commands that can hang. Preserve the terminal output after a failure.
+
+## Shared resources
+
+Other workers can use the same machine. Check the system load before an expensive command.
+
+If the one-minute load is more than {{LOAD_LIMIT}}, wait before you start another expensive command.
+
+Only implementers write to the board. If an implementer task names an exclusive resource, claim it before use:
+
+```bash
+CODEX_BOARD_STATE_DIR={{BOARD_STATE_DIR}} {{BOARD_COMMAND}} claim "resource-name" {{BOARD_OWNER}} "reason"
 ```
-until codex-board claim product-build "$ME" "reason"; do sleep 120; done
-... work ...
-codex-board release product-build "$ME"
+
+Renew a long claim while the resource is still in use:
+
+```bash
+CODEX_BOARD_STATE_DIR={{BOARD_STATE_DIR}} {{BOARD_COMMAND}} renew "resource-name" {{BOARD_OWNER}}
 ```
 
-The shared Chromium output tree is one directory for everyone. A rebuild by any thread changes the SDK
-seal for all of them, and it does **not** return to the previous hash afterwards, so waiting for a build
-to end is not the same as waiting for the seal to be what you expect. If a gate compares against a
-sealed hash, claim `layout-kernel` for the whole span between reading that hash and using it.
+Release the resource after the command finishes:
 
-You may send a fact to another thread by writing `codex-inbox/<thread-name>.txt`; it becomes their next
-turn. Facts only, never decisions: what you hold, what you broke, what you fixed. Priorities, merges and
-decomposition belong to the orchestrator.
+```bash
+CODEX_BOARD_STATE_DIR={{BOARD_STATE_DIR}} {{BOARD_COMMAND}} release "resource-name" {{BOARD_OWNER}}
+```
 
-Reuse ONE build output directory rather than creating a fresh one per attempt, and delete it when done.
+Do not use a process-name search as the resource lock. A search can match its own command.
 
-## Before you change anything
+## Before changes
 
-Capture the baseline first: the artifact, its size, the gate output, the hashes. A change measured
-against a baseline you never took is not measured. A worker who skipped this could not report a size
-delta at all, because no before-binary existed.
+Take the required baseline before you edit files.
 
-Validate the gates you will need at the end **before** you start coding. A seal or a hash that is
-already wrong will still be wrong two hours later, and finding out then costs the whole run.
+Run the required gate before you depend on it. Report an existing failure separately.
 
-The shared Chromium checkout normally carries its whole patch series applied. That is its working state,
-not contamination, so a large uncommitted diff there is expected. Judge cleanliness of your own worktree,
-not of that tree.
+Treat numbers in the task as context. Measure each number that you report.
 
-Numbers the brief quotes at you are context, not measurement. They may come from a different build than
-the one in front of you. Re-measure anything you are going to report.
+## Completion rules
 
-## Gates that measure the machine
+Do not weaken a gate or increase a threshold to get a pass.
 
-Some gates assert wall-clock behaviour, for example a click latency limit. On a
-shared machine those measure the machine, not the change: one run failed at
-129,823 microseconds against a 100,000 limit purely because load was 24.4.
+Do not add a silent fallback. Return a named error when the requested function cannot work.
 
-Check `uptime` before such a gate and say the load in your report next to the
-number. A latency failure under load is not evidence about the code, and
-reporting it as one wastes the next person's time.
+Regenerate generated files with their source tool. Do not edit generated output by hand.
 
-## What counts as done
+{{VERIFICATION_RULES}}
 
-Never weaken a gate and never adjust a threshold to make something pass. A red gate with a named reason
-beats a green one without.
+Mark the active goal complete only when all assigned work and evidence are complete.
 
-Unresolved becomes an error with a diagnostic ID and a source position. Never a silent stub: a member
-that returns a plausible shape without doing the work is worse than a missing one, because it fails
-quietly.
+Mark the goal blocked when the same blocking condition prevents further work.
 
-Never edit the application's source to make a build pass. The platform changes, the application does not.
+## Final report
 
-Every number in your report comes from a run or a file you read. No estimates. Report before and after.
+Start with `PASS`, `FAIL`, or `BLOCKED`.
 
-Generated files are regenerated with their tool, never hand merged.
+Then give:
 
-Commit on your own branch, staging files by name, never `git commit -a`: other threads have edits in this
-tree. Do not push.
+1. The commit identifier, or `none` for a reviewer.
+2. The changed files.
+3. The test commands and results.
+4. The remaining limits.
 
-## Your final message
+Add a `FEEDBACK` section. Answer these questions:
 
-A verdict line, then a table, then evidence. No narrative.
+1. Which task statement was wrong or incomplete?
+2. Which file or tool caused avoidable work?
+3. Which stated fact did the evidence disprove?
+4. What first step can make the next run shorter?
 
-Then a section called FEEDBACK, answering four questions. Short answers, evidence where you have it, and
-a one-word "nothing" where a category is empty rather than an invented finding:
-
-1. What in this brief was wrong, missing or misleading? Name the sentence.
-2. What in the repository or tooling wasted your time? File and line where you can.
-3. What did the orchestrator assert as fact that turned out false when you checked?
-4. What would you do differently starting this task again?
-
-**There is no cost to you for saying the brief was wrong.** It has been wrong repeatedly: a paid signing
-identity that was never needed, a native addon called impossible to compile, a token budget called
-advisory that the server enforces, a baseline quoted from the wrong gate, and a declaration keyed on a
-line number that expires whenever anything above it moves.
+Write `nothing` when an answer is empty.

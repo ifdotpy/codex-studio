@@ -1,53 +1,119 @@
-#!/usr/bin/env node
-// Send a follow-up turn to a thread that is already running or finished.
-// The skill documents this as steering; without it the only way to react to a
-// thread's report is to start a fresh thread and pay for its context again.
-//
-// usage: codex-steer <thread-name> "<message>"
-import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
-import { readFileSync, globSync } from "node:fs";
+#!/usr/bin/env python3
+"""Send one mailbox message to a worker owned by an active launcher.
 
-const TMP = "/Users/igor/.claude/jobs/b02da0e1/tmp";
-const [name, ...rest] = process.argv.slice(2);
-const message = rest.join(" ");
-if (!name || !message) { console.error("usage: codex-steer <thread-name> \"<message>\""); process.exit(2); }
+usage: codex-steer [--wave WAVE] WORKER MESSAGE
+"""
 
-const threads = globSync(`${TMP}/codex-swarm-status.*.json`)
-  .flatMap((f) => JSON.parse(readFileSync(f, "utf8")));
-const t = threads.find((x) => x.name === name);
-if (!t) { console.error(`no thread named ${name}`); process.exit(2); }
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import uuid
+from pathlib import Path
 
-const proc = spawn("codex", ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "ignore"] });
-let id = 1; const pending = new Map();
-const call = (m, p = {}) => { const i = id++;
-  proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i, method: m, params: p }) + "\n");
-  return new Promise((res, rej) => pending.set(i, { res, rej })); };
-createInterface({ input: proc.stdout }).on("line", (l) => { let m; try { m = JSON.parse(l); } catch { return; }
-  if (m.id !== undefined && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id);
-    m.error ? p.rej(m.error) : p.res(m.result); } });
 
-await call("initialize", { clientInfo: { name: "attar-orchestrator", version: "1" }, capabilities: { experimentalApi: true } });
+COMPONENT_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 
-// A thread lives in the app-server process that created it. A fresh process
-// answers "thread not found" until the thread is resumed from its rollout.
-await call("thread/resume", {
-  threadId: t.threadId,
-  cwd: t.cwd,
-  approvalPolicy: "never",
-  sandbox: "danger-full-access",
-  runtimeWorkspaceRoots: [t.cwd],
-});
 
-const turn = await call("turn/start", {
-  threadId: t.threadId,
-  model: t.requestedModel || undefined,
-  effort: t.effort || "max",
-  approvalPolicy: "never",
-  sandboxPolicy: { type: "dangerFullAccess" },
-  cwd: t.cwd,
-  runtimeWorkspaceRoots: [t.cwd],
-  input: [{ type: "text", text: message }],
-});
-console.log(`steered ${name} turn=${turn?.turn?.id}`);
-process.exit(0);
+def component(value: str) -> str:
+    if not COMPONENT_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError("use only letters, digits, dot, underscore, or hyphen")
+    return value
+
+
+def state_dir() -> Path:
+    configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")).expanduser()
+    return (base / "codex-agents").resolve()
+
+
+def process_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--wave", type=component, default=os.environ.get("CODEX_WAVE"))
+    parser.add_argument("worker", type=component)
+    parser.add_argument("message", nargs="+")
+    args = parser.parse_args()
+    message = " ".join(args.message).strip()
+    if not message:
+        parser.error("MESSAGE must not be empty")
+
+    root = state_dir()
+    if args.wave:
+        paths = [root / f"codex-swarm-status.{args.wave}.json"]
+    else:
+        paths = sorted(root.glob("codex-swarm-status.*.json"))
+
+    matches = []
+    for path in paths:
+        try:
+            threads = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(threads, list):
+            continue
+        for thread in threads:
+            if not isinstance(thread, dict):
+                continue
+            if thread.get("name") == args.worker:
+                wave = thread.get("wave") or path.stem.removeprefix("codex-swarm-status.")
+                if not isinstance(wave, str) or not COMPONENT_PATTERN.fullmatch(wave):
+                    print(f"invalid wave in {path}", file=sys.stderr)
+                    return 2
+                matches.append((wave, thread))
+
+    if not matches:
+        print(f"no worker named {args.worker}", file=sys.stderr)
+        return 2
+    if len(matches) > 1:
+        waves = ", ".join(sorted(wave for wave, _thread in matches))
+        print(f"worker name is present in multiple waves: {waves}; use --wave", file=sys.stderr)
+        return 2
+
+    wave, thread = matches[0]
+    run_id = thread.get("runId")
+    if not isinstance(run_id, str) or not COMPONENT_PATTERN.fullmatch(run_id):
+        print(f"worker {args.worker} has no valid run id", file=sys.stderr)
+        return 2
+    pid = int(thread.get("launcherPid") or 0)
+    if not process_is_alive(pid):
+        print(f"launcher for wave {wave} is not active", file=sys.stderr)
+        return 1
+
+    inbox = root / f"codex-inbox.{wave}.{run_id}"
+    inbox.mkdir(parents=True, exist_ok=True)
+    destination = inbox / f"{args.worker}.json"
+    temporary = inbox / f".{args.worker}.{os.getpid()}.tmp"
+    payload = {
+        "id": str(uuid.uuid4()),
+        "text": message + "\n",
+        "attempts": 0,
+        "nextAttemptAt": 0,
+        "createdAt": time.time(),
+    }
+    temporary.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    try:
+        os.link(temporary, destination)
+    except FileExistsError:
+        print(f"a pending message already exists for {args.worker}", file=sys.stderr)
+        return 1
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    print(f"CODEX STEERED wave={wave} worker={args.worker}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

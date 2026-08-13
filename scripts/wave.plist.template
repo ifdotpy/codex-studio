@@ -2,21 +2,24 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.attar.codex.wave</string>
+  <key>Label</key><string>__LABEL__</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/igor/.local/state/fnm_multishells/65590_1785759404784/bin/node</string>
-    <string>/absolute/path/to/tmp/codex-swarm.mjs</string>
+    <string>__NODE__</string>
+    <string>__SWARM_SCRIPT__</string>
   </array>
-  <key>WorkingDirectory</key><string>/absolute/path/to/tmp</string>
+  <key>WorkingDirectory</key><string>__WORKING_DIRECTORY__</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>CODEX_AGENTS_STATE_DIR</key><string>__STATE_DIR__</string>
+    <key>CODEX_TASKS</key><string>__TASKS_FILE__</string>
     <key>CODEX_MODEL</key><string>gpt-5.6-luna</string>
-    <key>CODEX_WAVE</key><string>luna</string>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>CODEX_EFFORT</key><string>max</string>
+    <key>CODEX_WAVE</key><string>__WAVE__</string>
+    <key>PATH</key><string>__PATH__</string>
   </dict>
-  <key>StandardOutPath</key><string>/absolute/path/to/tmp/wave.log</string>
-  <key>StandardErrorPath</key><string>/absolute/path/to/tmp/wave.err</string>
+  <key>StandardOutPath</key><string>__STATE_DIR__/wave.__WAVE__.log</string>
+  <key>StandardErrorPath</key><string>__STATE_DIR__/wave.__WAVE__.err</string>
   <key>RunAtLoad</key><true/>
 </dict>
 </plist>

@@ -1,98 +1,241 @@
 #!/usr/bin/env python3
-"""Emit one line per Codex thread the moment it reaches a terminal state.
+"""Report worker completion, failure, abandonment, and stalls.
 
-Each line becomes a notification, so nobody has to poll. Exits when every
-thread is terminal, which ends the watch cleanly.
-
-Coverage rule: emit on failure as well as success. A wave that dies on a bad
-model id reports turn/completed on every thread, so silence must never be the
-only signal. A thread that stops producing events for STALL_S is also emitted,
-because a hung thread and a working one look identical from the status file.
-
-usage: codex-watch [--stall-seconds N] [--poll N]
+usage: codex-watch --wave WAVE [--stall-seconds N] [--poll N] [--forever]
 """
-import argparse, datetime, glob, json, os, sys, time
 
-TMP = os.path.dirname(os.path.abspath(__file__))
-STATUS_GLOB = os.path.join(TMP, "codex-swarm-status.*.json")
+from __future__ import annotations
 
-
-def load():
-    threads = []
-    for path in sorted(glob.glob(STATUS_GLOB)):
-        try:
-            with open(path) as handle:
-                threads.extend(json.load(handle))
-        except (OSError, json.JSONDecodeError):
-            continue
-    return threads
+import argparse
+import datetime
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
 
 
-def age_seconds(stamp):
+WAVE_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+ACTIVE = {"starting", "running", "waiting", "capacity-retry"}
+TERMINAL = {"completed", "failed", "abandoned", "superseded", "interrupted", "blocked", "paused"}
+FAILED = TERMINAL - {"completed"}
+
+
+def wave_name(value: str) -> str:
+    if not WAVE_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError("use only letters, digits, dot, underscore, or hyphen")
+    return value
+
+
+def state_dir() -> Path:
+    configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")).expanduser()
+    return (base / "codex-agents").resolve()
+
+
+def read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot read {path}: {error}") from error
+
+
+def load_ready(path: Path, wave: str) -> dict | None:
+    value = read_json(path)
+    if value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("wave") != wave
+        or not isinstance(value.get("runId"), str)
+        or not isinstance(value.get("launcherPid"), int)
+        or not isinstance(value.get("threadIds"), list)
+        or not value["threadIds"]
+        or not all(isinstance(item, str) and item for item in value["threadIds"])
+        or len(set(value["threadIds"])) != len(value["threadIds"])
+    ):
+        raise RuntimeError(f"invalid ready file: {path}")
+    return value
+
+
+def load_status(path: Path) -> list[dict] | None:
+    value = read_json(path)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(
+        isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("threadId"), str)
+        and isinstance(item.get("runId"), str)
+        and item.get("turnStatus") in ACTIVE | TERMINAL
+        for item in value
+    ):
+        raise RuntimeError(f"invalid status file: {path}")
+    return value
+
+
+def age_seconds(stamp: str | None) -> float:
     if not stamp:
         return 0.0
-    when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    try:
+        when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RuntimeError(f"invalid status timestamp: {stamp}") from error
     return (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds()
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--poll", type=int, default=20)
-    parser.add_argument("--forever", action="store_true",
-                        help="never exit; keep watching as new waves appear")
-    parser.add_argument("--stall-seconds", type=int, default=900)
-    args = parser.parse_args()
-
-    reported = set()
-    # Threads already announced in a previous watcher run. Without this a
-    # restarted persistent watcher re-announces every finished thread.
-    seen_path = os.path.join(TMP, "codex-watch-seen.json")
+def process_is_alive(pid: int) -> bool:
     try:
-        reported |= set(json.load(open(seen_path)))
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def load_seen(path: Path) -> set[str]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        pass
-    wave = None
+        return set()
+    if not isinstance(value, list):
+        return set()
+    return {item for item in value if isinstance(item, str)}
+
+
+def save_seen(path: Path, seen: set[str]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(sorted(seen)) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--wave", type=wave_name, default=os.environ.get("CODEX_WAVE"))
+    parser.add_argument("--poll", type=float, default=20)
+    parser.add_argument("--forever", action="store_true")
+    parser.add_argument("--stall-seconds", type=float, default=900)
+    parser.add_argument("--start-timeout", type=float, default=60)
+    args = parser.parse_args()
+    if not args.wave:
+        parser.error("--wave or CODEX_WAVE is required")
+    if args.poll <= 0:
+        parser.error("--poll must be a positive number")
+    if args.stall_seconds <= 0:
+        parser.error("--stall-seconds must be a positive number")
+    if args.start_timeout <= 0:
+        parser.error("--start-timeout must be a positive number")
+
+    root = state_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    ready_path = root / f"codex-swarm-ready.{args.wave}.json"
+    status_path = root / f"codex-swarm-status.{args.wave}.json"
+    seen_path = root / f"codex-watch-seen.{args.wave}.json"
+    terminal_reported = load_seen(seen_path)
+    stalled_reported: set[str] = set()
+    completed_run = None
+    pinned_ready = None
+    deadline = time.monotonic() + args.start_timeout
+
     while True:
-        threads = load()
-        if not threads:
+        try:
+            ready = load_ready(ready_path, args.wave)
+            threads = load_status(status_path)
+        except RuntimeError as error:
+            print(f"CODEX WATCH ERROR {error}", file=sys.stderr)
+            return 2
+
+        if ready is None or threads is None or ready["runId"] == completed_run:
+            if time.monotonic() >= deadline:
+                print(f"CODEX WATCH ERROR wave {args.wave} did not become ready", file=sys.stderr)
+                return 2
             time.sleep(args.poll)
             continue
-        # Key on threadId, never on name: a new wave rewrites this file, and a
-        # watcher keyed on names then counts the new threads against the old
-        # ones and exits reporting a wave that never finished.
-        ids = frozenset(t["threadId"] for t in threads)
-        if not args.forever:
-            if wave is None:
-                wave = ids
-            elif ids != wave:
-                print(f"CODEX WAVE REPLACED watcher stops; {len(wave - ids)} thread(s) "
-                      f"unreported from the previous wave", flush=True)
-                return 0
-        for t in threads:
-            name = t["threadId"]
-            if name in reported:
+
+        if pinned_ready is None:
+            pinned_ready = ready
+        elif ready["runId"] != pinned_ready["runId"]:
+            print(
+                f"CODEX WAVE REPLACED run={pinned_ready['runId']} by run={ready['runId']}",
+                file=sys.stderr,
+            )
+            return 1
+
+        run_id = pinned_ready["runId"]
+        expected_ids = set(pinned_ready["threadIds"])
+        current = {
+            thread["threadId"]: thread
+            for thread in threads
+            if thread["runId"] == run_id
+        }
+        if set(current) != expected_ids:
+            print(
+                f"CODEX WATCH ERROR ready/status mismatch for wave {args.wave}",
+                file=sys.stderr,
+            )
+            return 2
+
+        effective: dict[str, str] = {}
+        launcher_alive = process_is_alive(pinned_ready["launcherPid"])
+        stalled = False
+        for thread_id in pinned_ready["threadIds"]:
+            thread = current[thread_id]
+            status = thread["turnStatus"]
+            if status in ACTIVE and not launcher_alive:
+                status = "abandoned"
+            effective[thread_id] = status
+
+            if status in TERMINAL:
+                if thread_id not in terminal_reported:
+                    error = f" error={thread['error']}" if thread.get("error") else ""
+                    print(
+                        f"CODEX {status.upper()} {thread['name']} events={thread.get('events', 0)}"
+                        f"{error} branch={thread.get('branch', '?')}",
+                        flush=True,
+                    )
+                    terminal_reported.add(thread_id)
+                    save_seen(seen_path, terminal_reported)
                 continue
-            status = t.get("turnStatus")
-            # A thread stopped on purpose is not a stall. Its last event stays
-            # frozen at the moment it was stopped, so a watcher that only knows
-            # "completed" and "failed" reports it as hung forever, once per
-            # wave file it appears in. Four such false alarms fired at once.
-            if status in ("superseded", "abandoned"):
-                reported.add(name)
-                continue
-            if status in ("completed", "failed"):
-                error = f" error={t['error']}" if t.get("error") else ""
-                print(f"CODEX {status.upper()} {t['name']} events={t['events']}{error} "
-                      f"branch={t['branch']}", flush=True)
-                reported.add(name)
-                json.dump(sorted(reported), open(seen_path, "w"))
-            elif age_seconds(t.get("lastEvent")) > args.stall_seconds:
-                print(f"CODEX STALLED {t['name']} no events for "
-                      f"{int(age_seconds(t.get('lastEvent')))}s branch={t['branch']}", flush=True)
-                reported.add(name)
-        if not args.forever and len(reported) >= len(threads):
-            print(f"CODEX WAVE DONE {len(threads)} threads", flush=True)
-            return 0
+
+            try:
+                age = age_seconds(
+                    thread.get("lastEvent")
+                    or thread.get("lastTurnStartedAt")
+                    or thread.get("startedAt")
+                )
+            except RuntimeError as error:
+                print(f"CODEX WATCH ERROR {error}", file=sys.stderr)
+                return 2
+            if age > args.stall_seconds and thread_id not in stalled_reported:
+                print(
+                    f"CODEX STALLED {thread['name']} no events for {int(age)}s "
+                    f"branch={thread.get('branch', '?')}",
+                    flush=True,
+                )
+                stalled_reported.add(thread_id)
+                stalled = True
+
+        if stalled and not args.forever:
+            print(f"CODEX WAVE STALLED run={run_id}", file=sys.stderr)
+            return 1
+
+        if all(status in TERMINAL for status in effective.values()):
+            failed = sum(status in FAILED for status in effective.values())
+            print(
+                f"CODEX WAVE DONE {len(effective)} workers failures={failed}",
+                flush=True,
+            )
+            if not args.forever:
+                return 1 if failed else 0
+            completed_run = run_id
+            pinned_ready = None
+            deadline = time.monotonic() + args.start_timeout
+            stalled_reported.clear()
+
         time.sleep(args.poll)
 
 
