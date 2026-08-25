@@ -109,7 +109,7 @@ Implementers claim; reviewers only read. Claims never expire — `takeover` only
 
 - Reviewer gets the spec and the diff, never the implementer's reasoning trace. Blocking findings need file:line. `INSUFFICIENT_CONTEXT` is a valid result.
 - Per branch: read the diff, read the test evidence, run the affected gate if it changes the merge decision, merge only a coherent change. A worker's success claim is not merge evidence.
-- Finish: every worker terminal, every accepted change committed with evidence, wave-owned worktrees and runtime files removed, final report printed, then `codex-daemon stop --wave <name>` (stop marks active workers interrupted).
+- Finish: every worker terminal, every accepted change committed with evidence, wave-owned worktrees and runtime files removed, the wave's board claims released (a dead holder's claim blocks every later wave), final report printed, then `codex-daemon stop --wave <name>` (stop marks active workers interrupted).
 
 ## Commands
 
