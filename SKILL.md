@@ -23,6 +23,8 @@ Do not split sequential reasoning across workers. Do not assign one file to two 
 
 The orchestrator owns task boundaries, steering, review decisions, and merges. Workers do not decide these items by consensus.
 
+Run the launcher from the top-level orchestrator. A nested subagent cannot hold a wave: it cannot wait, steer, or survive its own turn ending.
+
 ## Use portable paths
 
 The scripts use this state directory:
@@ -96,7 +98,19 @@ An implementer prompt must require a commit for each finished part.
 
 A reviewer uses a separate read-only worktree. A reviewer must not edit files or create commits.
 
-Use one deliverable per worker. A large open request usually consumes its budget without a coherent commit.
+Use one deliverable per worker. A large open request usually consumes its budget without a coherent commit. Point at an existing file or test as the pattern to imitate; an open-ended implementation in an unfamiliar codebase burns the budget without a coherent result.
+
+## Write the brief
+
+The first paragraph of every prompt states the wait rule: nothing wakes the worker; every wait is an active loop in bounded slices (400 seconds or less), one tool call per slice; long runs are detached with the PID stored in a file. A worker that waits passively hangs forever.
+
+Give every shared path as an absolute path: the board command, shared state, reference binaries. A worker cannot find harness-owned paths by searching.
+
+Name the live peer processes and the worktrees the worker must not touch. A worker cannot know that another worker is building next door.
+
+State the outcome, not the mechanism. Numbers in a brief are context, not measurements; a colleague's diagnosis is a hypothesis, and the brief must say so.
+
+End every prompt with a required FEEDBACK section: wrong or incomplete task statement; tools that caused avoidable work; facts in the brief the worker disproved; what would make the next run shorter. The orchestrator files each complaint in the project's incident register and fixes the cause. A repeated complaint about a recorded item is an orchestrator defect.
 
 ## Create the task file
 
@@ -133,7 +147,7 @@ scripts/codex-swarm.mjs
 
 `CODEX_BUDGET` is optional. When set, it is a hard token limit for each worker.
 
-The launcher inherits the Codex approval and sandbox settings by default.
+The launcher inherits the Codex approval and sandbox settings by default. Verify the effective approval and sandbox policy before the wave starts: a worker that cannot approve a needed command stalls on its first privileged step.
 
 Set these optional values only when the wave needs an explicit policy:
 
@@ -164,6 +178,10 @@ It also returns nonzero for a failed, blocked, interrupted, abandoned, paused, o
 
 The report command prints bounded output. Do not send raw event logs or rollout files into the orchestrator context.
 
+When a harness cannot run `codex-watch` and you hand-roll a sentinel over the status file, copy the terminal values from one real terminal record first. The launcher writes `goalStatus` values such as `complete`, `budgetLimited`, and `blocked` — not `completed`. A sentinel that enumerates success spellings from memory sleeps through every success. The safe condition is: terminal when `goalStatus` is present and not `active`, or `turnStatus` is `failed` or `interrupted`.
+
+Arm the replacement watcher before you stop the old one. A gap between watchers is a missed event.
+
 ## Steer a worker
 
 Use the mailbox that belongs to the active launcher.
@@ -181,6 +199,8 @@ The launcher deletes the message only after the Remote Procedure Call (RPC) succ
 Each message has one stable identifier. Failed delivery uses backoff. The launcher preserves the last failed copy in the dead-letter directory.
 
 Do not start a second app-server process to steer an active thread. The second process does not own that thread.
+
+A steer makes the wave live again. A watcher report older than your last steer is stale: the steered worker may be mid-turn on your instruction. Re-read the status file immediately before any launcher stop, and never stop a launcher on a report that predates your last steer.
 
 ## Coordinate shared resources
 
