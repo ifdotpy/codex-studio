@@ -362,7 +362,11 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   });
 }
 
-proc = spawn(CODEX_BIN, ["app-server", "--listen", "stdio://"], {
+const appServerArgs = ["app-server", "--listen", "stdio://"];
+if (process.env.CODEX_SERVICE_TIER) {
+  appServerArgs.push("-c", `service_tier="${process.env.CODEX_SERVICE_TIER}"`);
+}
+proc = spawn(CODEX_BIN, appServerArgs, {
   stdio: ["pipe", "pipe", "pipe"],
 });
 
@@ -463,10 +467,17 @@ function turnPolicy(state) {
 async function startTurn(state, text, messageId = randomUUID()) {
   state.currentInput = text;
   state.currentMessageId = messageId;
+  let serviceTier = process.env.CODEX_SERVICE_TIER || null;
+  try {
+    const tierFile = join(STATE, `service-tier.${WAVE}`);
+    const v = readFileSync(tierFile, "utf8").trim();
+    if (v) serviceTier = v;
+  } catch {}
   const result = await call("turn/start", {
     threadId: state.threadId,
     model: state.requestedModel,
     effort: state.effort,
+    ...(serviceTier ? { serviceTier } : {}),
     ...turnPolicy(state),
     cwd: state.cwd,
     runtimeWorkspaceRoots: [state.cwd],

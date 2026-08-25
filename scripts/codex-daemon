@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""codex-daemon — portable lifecycle for a wave launcher.
+
+Starts codex-swarm.mjs detached from the calling terminal and harness, so the
+launcher survives the caller's exit on any POSIX system. No launchd, no
+systemd, no harness feature is required; those remain optional alternatives.
+
+  codex-daemon start --wave NAME     start the launcher for one wave, detached
+  codex-daemon stop --wave NAME      stop it via codex-stop (verified stop)
+  codex-daemon status [--wave NAME]  is the launcher alive, and since when
+
+The launcher inherits the caller's environment (CODEX_MODEL, CODEX_EFFORT,
+CODEX_BUDGET, CODEX_SERVICE_TIER, ...). State lives in the usual state
+directory: $CODEX_AGENTS_STATE_DIR, else $XDG_STATE_HOME/codex-agents, else
+~/.local/state/codex-agents. The launcher's stdout and stderr go to
+codex-daemon.<wave>.log there.
+
+start refuses when a live launcher already owns the wave, and exits nonzero
+when the launcher dies within the first seconds (for example: the task file
+codex-tasks.<wave>.json is absent — the launcher refuses to guess and stops).
+"""
+
+import argparse
+import glob
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
+
+
+def state_dir() -> str:
+    if os.environ.get("CODEX_AGENTS_STATE_DIR"):
+        return os.path.expanduser(os.environ["CODEX_AGENTS_STATE_DIR"])
+    xdg = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(xdg, "codex-agents")
+
+
+def pid_file(state: str, wave: str) -> str:
+    return os.path.join(state, f"codex-swarm-launcher.{wave}.pid")
+
+
+def read_pid(path: str):
+    try:
+        with open(path) as handle:
+            return int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def alive(pid) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def cmd_start(args):
+    state = state_dir()
+    os.makedirs(state, exist_ok=True)
+    pid = read_pid(pid_file(state, args.wave))
+    if alive(pid):
+        sys.exit(f"codex-daemon: launcher {pid} already owns wave {args.wave}; "
+                 "stop it first or pick another wave name")
+    tasks = os.path.join(state, f"codex-tasks.{args.wave}.json")
+    if not os.path.exists(tasks) and not os.environ.get("CODEX_TASKS"):
+        sys.exit(f"codex-daemon: no task file at {tasks} and CODEX_TASKS is not "
+                 "set; write the task file first — there is no default fallback")
+    node = shutil.which("node")
+    if not node:
+        sys.exit("codex-daemon: node is not on PATH")
+    launcher = os.path.join(SCRIPT_DIR, "codex-swarm.mjs")
+    log_path = os.path.join(state, f"codex-daemon.{args.wave}.log")
+    env = dict(os.environ)
+    env["CODEX_WAVE"] = args.wave
+    env["CODEX_AGENTS_STATE_DIR"] = state
+    with open(log_path, "ab") as log:
+        log.write(f"\n=== codex-daemon start wave={args.wave} ===\n".encode())
+        log.flush()
+        proc = subprocess.Popen(
+            [node, launcher],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            env=env,
+            cwd=state,
+            start_new_session=True,
+        )
+    # A launcher that dies immediately has a named cause in the log (missing
+    # task file, invalid worktree, bad model). Surface it here, not later.
+    time.sleep(3)
+    if proc.poll() is not None:
+        with open(log_path) as handle:
+            tail = handle.readlines()[-15:]
+        sys.stderr.write("codex-daemon: launcher exited immediately:\n")
+        sys.stderr.writelines(tail)
+        sys.exit(1)
+    print(f"launcher {proc.pid} up for wave {args.wave}; log: {log_path}")
+    return 0
+
+
+def cmd_stop(args):
+    stop = os.path.join(SCRIPT_DIR, "codex-stop")
+    result = subprocess.run([stop, "--wave", args.wave])
+    return result.returncode
+
+
+def cmd_status(args):
+    state = state_dir()
+    pattern = f"codex-swarm-launcher.{args.wave}.pid" if args.wave else "codex-swarm-launcher.*.pid"
+    paths = sorted(glob.glob(os.path.join(state, pattern)))
+    if not paths:
+        print(f"no launcher pid files in {state}")
+        return 1
+    exit_code = 0
+    for path in paths:
+        wave = os.path.basename(path).split(".")[1]
+        pid = read_pid(path)
+        if alive(pid):
+            started = time.strftime("%H:%M:%S", time.localtime(os.path.getmtime(path)))
+            print(f"{wave}: launcher {pid} up since {started}")
+        else:
+            print(f"{wave}: down (stale pid file {path})")
+            exit_code = 1
+    return exit_code
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="codex-daemon",
+                                     description="portable wave launcher lifecycle")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("start", help="start a detached launcher for one wave")
+    p.add_argument("--wave", required=True)
+    p.set_defaults(func=cmd_start)
+
+    p = sub.add_parser("stop", help="verified stop via codex-stop")
+    p.add_argument("--wave", required=True)
+    p.set_defaults(func=cmd_stop)
+
+    p = sub.add_parser("status", help="launcher liveness per wave")
+    p.add_argument("--wave")
+    p.set_defaults(func=cmd_status)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

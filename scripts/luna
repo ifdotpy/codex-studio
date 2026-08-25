@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""luna — explore the Codex worker threads of a wave.
+
+Everything here reads state that already exists on disk: the per-wave status
+files the launcher writes, the event log it appends to, the claim board, the
+launcher pid file and Codex's own rollout files. Nothing polls the API, so
+running any of this costs nothing and cannot disturb a thread.
+
+  luna                      dashboard: live threads, launcher, board, machine
+  luna ls [--all]           one line per thread, every wave
+  luna show NAME            one thread in full, with its final answer
+  luna tail NAME [-n 20]    what that thread has been doing lately
+  luna say NAME "text"      queue a follow-up turn for a live thread
+  luna board                who holds the exclusive slots
+  luna waves                threads grouped by wave
+  luna watch [-i 20]        dashboard, refreshed until interrupted
+
+Launcher lifecycle lives in codex-daemon (start | stop | status), not here:
+luna only reads state and never changes it.
+
+Set LUNA_HOME to point at another wave directory. Without it, the directory
+holding this script is used when it has status files, then the newest state
+directory among the known locations (XDG state dir, legacy harness job dirs).
+"""
+
+import argparse
+import datetime
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+# ---------------------------------------------------------------- locating
+
+def wave_home() -> str:
+    """Where a wave keeps its state.
+
+    Order: what the launcher itself was told, then an explicit override, then
+    the directory holding this script, then the newest state directory under
+    the harness job directories.
+    """
+    for key in ("CODEX_AGENTS_STATE_DIR", "LUNA_HOME"):
+        if os.environ.get(key):
+            return os.path.expanduser(os.environ[key])
+    here = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
+    if glob.glob(os.path.join(here, "codex-swarm-status.*.json")):
+        return here
+    xdg = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    candidates = glob.glob(os.path.join(xdg, "codex-agents", "codex-swarm-status.*.json"))
+    # Legacy layouts from earlier harness runs; absent directories match nothing.
+    candidates += glob.glob(os.path.expanduser("~/.claude/jobs/*/tmp/codex-swarm-status.*.json"))
+    candidates += glob.glob(os.path.expanduser("~/.codex-agents/*/codex-swarm-status.*.json"))
+    if not candidates:
+        return here
+    return os.path.dirname(max(candidates, key=os.path.getmtime))
+
+
+HOME = wave_home()
+STATUS_GLOB = os.path.join(HOME, "codex-swarm-status.*.json")
+BOARD = os.path.join(HOME, "codex-board.json")
+
+
+def newest(pattern):
+    """The freshest file matching a glob, or None.
+
+    Names carry the wave and sometimes the run id, so a fixed filename only
+    works for one layout. Match the shape and take the newest.
+    """
+    found = glob.glob(os.path.join(HOME, pattern))
+    return max(found, key=os.path.getmtime) if found else None
+
+# ---------------------------------------------------------------- painting
+
+COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def paint(text, code):
+    return f"\033[{code}m{text}\033[0m" if COLOR else text
+
+
+DIM, BOLD = "2", "1"
+STATUS_COLOR = {
+    "running": "32",         # green: alive and taking turns
+    "capacity-retry": "33",  # yellow: the server refused a turn, it will retry
+    "completed": "36",
+    "failed": "31",
+    "abandoned": "31",
+    "superseded": "2",
+}
+
+
+def status_label(status):
+    return paint(f"{status:<14}", STATUS_COLOR.get(status, "0"))
+
+
+def age(stamp):
+    if not stamp:
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds()
+
+
+def human_age(seconds):
+    if seconds is None:
+        return "-"
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h"
+
+
+def number(value):
+    return f"{value:,}" if isinstance(value, int) else str(value)
+
+# ---------------------------------------------------------------- reading
+
+def launcher_pid():
+    """The launcher's own pid, or None. kill(pid, 0) is the exact test.
+
+    Do not switch this to `pgrep -f codex-swarm.mjs`: that pattern also matches
+    the shell that runs it, so the check reports a launcher that is not there.
+    """
+    path = newest("codex-swarm-launcher*.pid")
+    if not path:
+        return None
+    try:
+        pid = int(open(path).read().strip())
+        os.kill(pid, 0)
+        return pid
+    except Exception:
+        return None
+
+
+def load_threads():
+    threads = []
+    for path in sorted(glob.glob(STATUS_GLOB)):
+        wave = os.path.basename(path).split(".")[1]
+        try:
+            rows = json.load(open(path))
+        except (json.JSONDecodeError, OSError):
+            continue
+        for row in rows:
+            row["wave"] = wave
+            threads.append(row)
+    return threads
+
+
+def current_wave():
+    """The wave the live launcher is driving: its status file is the newest.
+
+    Only that wave can still act. A thread from an earlier wave belongs to a
+    dead process even while a launcher is up, so judging it by the running
+    launcher reports a thread that has been frozen for days as merely slow.
+    """
+    files = glob.glob(STATUS_GLOB)
+    if not files:
+        return None
+    return os.path.basename(max(files, key=os.path.getmtime)).split(".")[1]
+
+
+def resolve_status(thread, launcher_up, wave=None):
+    """What the thread is really doing, not what the file last recorded.
+
+    A thread lives inside the app-server process that started it. When that
+    process dies every thread it hosted is frozen at whatever the file said,
+    which is usually "running", forever. Reporting that as live is how a dead
+    wave keeps looking busy.
+    """
+    status = thread.get("turnStatus")
+    if status != "running":
+        return status
+    if not launcher_up or (wave is not None and thread.get("wave") != wave):
+        return "abandoned"
+    idle = age(thread.get("lastEvent"))
+    if idle is not None and idle > 1800:
+        return "stalled"
+    return "running"
+
+
+def find(threads, name):
+    exact = [t for t in threads if t.get("name") == name]
+    if exact:
+        return exact[-1]
+    partial = [t for t in threads if name in (t.get("name") or "")]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        names = ", ".join(sorted({t["name"] for t in partial}))
+        sys.exit(f"luna: '{name}' matches several threads: {names}")
+    sys.exit(f"luna: no thread named '{name}'")
+
+
+def final_answer(thread_id, limit=3000):
+    """The thread's last report, from Codex's own rollout file.
+
+    Only phase "final_answer" is a report. A thread emits commentary while it
+    thinks, and that commentary can land after the last real answer, so taking
+    the last assistant message of any phase returns the wrong text. Fall back to
+    commentary only when there is no final answer at all, which is the case for
+    a thread that was killed mid-run.
+    """
+    matches = glob.glob(os.path.expanduser(f"~/.codex/sessions/*/*/*/*{thread_id}*.jsonl"))
+    if not matches:
+        return "(no rollout file)"
+    final, fallback = "", ""
+    with open(matches[0]) as handle:
+        for line in handle:
+            if '"role":"assistant"' not in line and '"role": "assistant"' not in line:
+                continue
+            try:
+                payload = json.loads(line).get("payload", {})
+            except json.JSONDecodeError:
+                continue
+            chunk = "".join(c.get("text", "") for c in payload.get("content") or []
+                            if c.get("type") in ("output_text", "text"))
+            if not chunk.strip():
+                continue
+            fallback = chunk
+            if payload.get("phase") == "final_answer":
+                final = chunk
+    text = (final or fallback).strip()
+    if not text:
+        return "(no final answer yet)"
+    return text if len(text) <= limit else text[:limit] + f"\n[truncated, {len(text):,} chars total]"
+
+
+def recent_events(name, count):
+    path = newest("codex-swarm-events*.jsonl")
+    if not path:
+        return []
+    rows = []
+    with open(path) as handle:
+        for line in handle:
+            if f'"{name}"' not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("name") == name:
+                rows.append(row)
+    return rows[-count:]
+
+
+def branch_head(thread):
+    cwd, branch = thread.get("cwd"), thread.get("branch")
+    if not cwd or not os.path.isdir(cwd):
+        return None
+    try:
+        out = subprocess.run(["git", "-C", cwd, "log", "-1", "--format=%h %cr %s"],
+                             capture_output=True, text=True, timeout=10)
+        head = out.stdout.strip()
+        ahead = subprocess.run(["git", "-C", cwd, "rev-list", "--count", f"main..{branch}"],
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+        dirty = subprocess.run(["git", "-C", cwd, "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=15).stdout.strip()
+        return {"head": head, "ahead": ahead or "?", "dirty": len(dirty.splitlines())}
+    except Exception:
+        return None
+
+
+def machine():
+    load = os.getloadavg()[0]
+    usage = shutil.disk_usage(os.path.expanduser("~"))
+    return load, usage.free / 1024 ** 3
+
+
+def board_claims():
+    try:
+        return json.load(open(BOARD)).get("claims", {})
+    except Exception:
+        return {}
+
+# ---------------------------------------------------------------- commands
+
+def cmd_ls(args):
+    launcher_up = launcher_pid() is not None
+    wave = current_wave()
+    threads = load_threads()
+    rows = []
+    for thread in threads:
+        status = resolve_status(thread, launcher_up, wave)
+        if not args.all and status in ("completed", "failed", "abandoned", "superseded"):
+            continue
+        rows.append((thread, status))
+    if not rows:
+        print(paint("no live threads", DIM), "— luna ls --all to see finished ones")
+        return 0
+    for thread, status in rows:
+        print(f"{thread.get('name',''):<20} {status_label(status)} "
+              f"{paint(thread.get('wave',''), DIM):<12} "
+              f"events={thread.get('events', 0):<7,} "
+              f"idle={human_age(age(thread.get('lastEvent'))):<5} "
+              f"tokens={number(thread.get('tokensUsed', 0)):>12}  "
+              f"{paint(thread.get('branch',''), DIM)}")
+    hidden = len(threads) - len(rows)
+    if hidden and not args.all:
+        print(paint(f"({hidden} finished or dead, --all to show)", DIM))
+    return 0
+
+
+def cmd_show(args):
+    launcher_up = launcher_pid() is not None
+    thread = find(load_threads(), args.name)
+    status = resolve_status(thread, launcher_up, current_wave())
+    print(paint(thread.get("name", ""), BOLD), status_label(status).strip())
+    print(f"  wave     {thread.get('wave')}")
+    print(f"  model    {thread.get('model') or thread.get('requestedModel')} effort={thread.get('effort')}")
+    print(f"  goal     {thread.get('goalStatus')}   tokens={number(thread.get('tokensUsed', 0))}")
+    print(f"  events   {thread.get('events', 0):,}   idle={human_age(age(thread.get('lastEvent')))}")
+    print(f"  thread   {thread.get('threadId')}")
+    print(f"  branch   {thread.get('branch')}")
+    print(f"  cwd      {thread.get('cwd')}")
+    if thread.get("error"):
+        print(f"  error    {paint(thread['error'], '31')}")
+    if thread.get("capacityRetries"):
+        print(f"  retries  {thread['capacityRetries']} after capacity refusals")
+    git = branch_head(thread)
+    if git:
+        dirty = f", {git['dirty']} uncommitted" if git["dirty"] else ", clean"
+        print(f"  head     {git['head']}")
+        print(f"  ahead    +{git['ahead']} vs main{dirty}")
+    if thread.get("tail"):
+        print(paint("\n  last words", DIM))
+        print("  " + thread["tail"].strip().replace("\n", "\n  "))
+    if not args.quiet:
+        print(paint("\n  final answer", DIM))
+        answer = final_answer(thread.get("threadId"), args.chars)
+        print("  " + answer.replace("\n", "\n  "))
+    return 0
+
+
+def cmd_tail(args):
+    thread = find(load_threads(), args.name)
+    rows = recent_events(thread["name"], args.number)
+    if not rows:
+        print("(no events recorded for this thread)")
+        return 0
+    for row in rows:
+        stamp = (row.get("at") or "")[11:19]
+        detail = ""
+        if row.get("capacityRetry"):
+            detail = paint(f" capacity retry {row['capacityRetry']}, waiting {row.get('waitMs',0)//1000}s", "33")
+        print(f"  {paint(stamp, DIM)}  {row.get('method','')}{detail}")
+    return 0
+
+
+def cmd_say(args):
+    launcher_up = launcher_pid() is not None
+    thread = find(load_threads(), args.name)
+    if not launcher_up:
+        sys.exit("luna: no launcher is running, so nothing would deliver this message")
+    if resolve_status(thread, launcher_up, current_wave()) in ("abandoned", "superseded"):
+        sys.exit(f"luna: {thread['name']} is not live")
+    inboxes = sorted(glob.glob(os.path.join(HOME, "codex-inbox*")), key=os.path.getmtime)
+    inbox = inboxes[-1] if inboxes else os.path.join(HOME, "codex-inbox")
+    os.makedirs(inbox, exist_ok=True)
+    path = os.path.join(inbox, f"{thread['name']}.txt")
+    message = " ".join(args.message)
+    if not message.strip():
+        sys.exit("luna: empty message")
+    with open(path, "w") as handle:
+        handle.write(message.rstrip() + "\n")
+    print(f"queued for {thread['name']}: the launcher turns this into a follow-up turn")
+    return 0
+
+
+def cmd_board(args):
+    claims = board_claims()
+    if not claims:
+        print("no slot is claimed")
+        return 0
+    now = time.time()
+    launcher_up = launcher_pid() is not None
+    wave = current_wave()
+    live = {t["name"] for t in load_threads()
+            if resolve_status(t, launcher_up, wave) in ("running", "capacity-retry")}
+    for slot, claim in sorted(claims.items()):
+        held = human_age(now - claim.get("at", now))
+        holder = claim.get("thread", "?")
+        # Nothing releases a claim when a thread dies, so a stale claim blocks
+        # every later thread that waits politely for the slot.
+        stale = "" if holder in live else paint("  STALE, holder is not live", "31")
+        print(f"  {slot:<18} {holder:<20} held {held:<5} {paint(claim.get('reason',''), DIM)}{stale}")
+    return 0
+
+
+def cmd_waves(args):
+    launcher_up = launcher_pid() is not None
+    waves = {}
+    for thread in load_threads():
+        waves.setdefault(thread["wave"], []).append(thread)
+    # Newest wave first: the one you are working with should not be buried
+    # under thirty finished ones.
+    def freshness(item):
+        ages = [age(t.get("lastEvent")) for t in item[1] if age(t.get("lastEvent")) is not None]
+        return min(ages) if ages else 1e12
+
+    for wave, threads in sorted(waves.items(), key=freshness):
+        states = [resolve_status(t, launcher_up, current_wave()) for t in threads]
+        live = sum(1 for s in states if s in ("running", "capacity-retry"))
+        mark = paint("live", "32") if live else paint("done", DIM)
+        print(f"  {wave:<12} {mark}  {len(threads)} thread(s): "
+              + ", ".join(f"{t['name']}={s}" for t, s in zip(threads, states)))
+    return 0
+
+
+def cmd_dashboard(args):
+    pid = launcher_pid()
+    load, free = machine()
+    if pid:
+        parent = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                                capture_output=True, text=True).stdout.strip()
+        owned = "daemon" if parent == "1" else f"ppid {parent}"
+        state = paint(f"launcher {pid} up ({owned})", "32")
+    else:
+        state = paint("launcher down — no thread can take another turn", "31")
+    print(f"{state}   load {load:.1f}   disk {free:.0f}G free   {HOME}")
+    print()
+    cmd_ls(argparse.Namespace(all=False))
+    claims = board_claims()
+    if claims:
+        print()
+        cmd_board(args)
+    return 0
+
+
+def cmd_watch(args):
+    try:
+        while True:
+            os.system("clear")
+            print(paint(datetime.datetime.now().strftime("%H:%M:%S"), DIM))
+            cmd_dashboard(args)
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="luna", description="explore Codex worker threads")
+    sub = parser.add_subparsers(dest="command")
+
+    p = sub.add_parser("ls", help="one line per thread")
+    p.add_argument("--all", action="store_true", help="include finished and dead threads")
+    p.set_defaults(func=cmd_ls)
+
+    p = sub.add_parser("show", help="one thread in full")
+    p.add_argument("name")
+    p.add_argument("--chars", type=int, default=3000, help="cap on the final answer")
+    p.add_argument("-q", "--quiet", action="store_true", help="skip the final answer")
+    p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("tail", help="recent events of one thread")
+    p.add_argument("name")
+    p.add_argument("-n", "--number", type=int, default=20)
+    p.set_defaults(func=cmd_tail)
+
+    p = sub.add_parser("say", help="queue a follow-up turn")
+    p.add_argument("name")
+    p.add_argument("message", nargs="+")
+    p.set_defaults(func=cmd_say)
+
+    p = sub.add_parser("board", help="who holds the exclusive slots")
+    p.set_defaults(func=cmd_board)
+
+    p = sub.add_parser("waves", help="threads grouped by wave")
+    p.set_defaults(func=cmd_waves)
+
+    p = sub.add_parser("watch", help="dashboard, refreshed")
+    p.add_argument("-i", "--interval", type=int, default=20)
+    p.set_defaults(func=cmd_watch)
+
+    args = parser.parse_args()
+    if not args.command:
+        return cmd_dashboard(argparse.Namespace(all=False))
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

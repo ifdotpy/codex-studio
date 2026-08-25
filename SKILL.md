@@ -227,18 +227,19 @@ Read `turn.error` from every `turn/completed` notification. A completed notifica
 
 The app-server process owns its active threads. If the launcher stops, mailbox steering stops.
 
-Use the persistent-process function of the current harness or operating system. Keep standard input and output connected to the launcher.
-
-On macOS, use `scripts/wave.plist.template` as a launchd template.
-
-Replace every placeholder. Create `__STATE_DIR__` before you load the job:
+Start the launcher with the portable daemon. It works the same on macOS and Linux and does not depend on any harness:
 
 ```bash
-mkdir -p __STATE_DIR__
-plutil -lint /absolute/path/to/wave.plist
+export CODEX_WAVE=parser  # informational; start sets it from --wave
+scripts/codex-daemon start --wave parser
+scripts/codex-daemon status --wave parser
 ```
 
-Set an explicit `PATH` for a service process. Graphical services usually have a minimal environment.
+`codex-daemon start` detaches the launcher from the calling terminal and harness, writes its output to `codex-daemon.<wave>.log` in the state directory, and fails loudly when the launcher dies in the first seconds. It refuses to start without `codex-tasks.<wave>.json`; there is no fallback task file.
+
+The launcher inherits the caller's environment. Export `CODEX_MODEL`, `CODEX_EFFORT`, and the optional values before `start`.
+
+An OS service manager (launchd, systemd) is an optional alternative for launchers that must survive a reboot. `scripts/wave.plist.template` is a launchd example. A service process needs an explicit `PATH`; graphical services usually have a minimal environment.
 
 Check the launcher PID file instead of `pgrep -f`. A process search can match its own shell command.
 
@@ -246,14 +247,14 @@ Print the final report. Then stop a completed launcher:
 
 ```bash
 scripts/codex-report --wave parser
-scripts/codex-stop --wave parser
+scripts/codex-daemon stop --wave parser
 ```
 
-For launchd, unload the job before you delete its plist file:
+## One era of scripts per wave
 
-```bash
-launchctl bootout "gui/$(id -u)" /absolute/path/to/wave.plist
-```
+Run the launcher, the watcher, the report, and the steer commands of one wave from the same skill checkout. Never mix an old copy of one script with a new copy of another: file names and status formats move together, and a mixed pair fails in silence or refuses valid state.
+
+Do not copy scripts into a project or a job directory. The canonical scripts live in this skill; only state lives in the state directory.
 
 ## Review and merge worker output
 
@@ -296,5 +297,29 @@ Stop the launcher after the final report. The stop command marks any active work
 | `codex-steer` | Send a mailbox message to one worker |
 | `codex-board` | Claim shared resources with a file lock |
 | `codex-stop` | Stop one verified wave launcher |
+| `codex-daemon` | Start, stop, or check a detached wave launcher (portable, no service manager) |
+| `luna` | Explore threads: dashboard, one thread in full, events, mailbox |
 
 Run each command from `scripts/`, or add that directory to `PATH` for the current shell.
+
+### luna
+
+`luna` reads only files that already exist: the status files, the event log, the claim board, the launcher PID file and Codex's own rollout files. It makes no API call, so it cannot disturb a worker.
+
+```
+luna                  dashboard: launcher, live threads, claims, load, disk
+luna ls --all         every thread of every wave
+luna show NAME        one thread in full, with its final answer
+luna tail NAME        recent events, including capacity retries
+luna say NAME "text"  queue a follow-up turn through the mailbox
+luna board            slot holders, and which claims are stale
+luna waves            threads grouped by wave, newest first
+luna watch            the dashboard, refreshed
+```
+
+It reports two things a status file cannot state by itself:
+
+- **Liveness belongs to a wave, not to a launcher.** Only the newest wave can act. A thread of an earlier wave belongs to a process that ended, so `luna` reports it as `abandoned` while a launcher is up. Without this rule, a thread frozen for days reads as slow.
+- **A claim outlives its holder.** Nothing releases the board when a worker dies. `luna board` marks a claim as `STALE` when its holder is not live. Such a claim blocks every worker that waits for the slot.
+
+`luna` finds the state directory from `CODEX_AGENTS_STATE_DIR`, then `LUNA_HOME`, then its own directory, then the newest state directory it can find.
