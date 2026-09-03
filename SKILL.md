@@ -39,7 +39,7 @@ Every prompt contains:
 2. Owned files or module.
 3. A gate that proves completion, and a baseline command to run first.
 4. Role: `implementer` (commit each finished part) or `reviewer` (read-only worktree, no edits, no commits).
-5. First paragraph, the wait rule: nothing wakes the worker; every wait is an active loop in slices of 400 s or less, one tool call per slice; long runs detached with the PID in a file.
+5. First paragraph, the wait rule: nothing wakes the worker; every wait is an active loop in slices of 400 s or less, one tool call per slice; long runs detached with the PID in a file. Polling is for the worker's own local waits only; an external condition (a seal window, a peer's merge) ends the turn with `BLOCKED` plus the machine-checkable resume condition, and the orchestrator monitors it and resumes the worker with a steer.
 6. Absolute paths for every shared resource (board, state, reference binaries) — workers cannot find harness paths by searching.
 7. Live peers and untouchable worktrees, named.
 8. Outcome, not mechanism. Numbers in a brief are context; a colleague's diagnosis is a hypothesis.
