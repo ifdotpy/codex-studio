@@ -11,6 +11,8 @@ import re
 import sys
 import time
 import uuid
+# Keep import caches out of the installed skill checkout.
+sys.dont_write_bytecode = True
 from codex_state import state_dir, process_is_alive
 
 

@@ -28,6 +28,8 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+# Keep import caches out of the installed skill checkout.
+sys.dont_write_bytecode = True
 from codex_state import ACTIVE, state_dir, board_dir, read_threads, effective_status, process_is_alive, final_answer
 
 # ---------------------------------------------------------------- locating
