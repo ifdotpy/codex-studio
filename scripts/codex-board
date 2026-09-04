@@ -2,12 +2,16 @@
 """Store exclusive resource claims for concurrent Codex workers.
 
 usage:
-  codex-board claim RESOURCE OWNER [NOTE]
+  codex-board claim RESOURCE OWNER [NOTE] [--wait] [--timeout SECONDS]
   codex-board renew RESOURCE OWNER
   codex-board takeover RESOURCE NEW_OWNER EXPECTED_OWNER [NOTE]
   codex-board release RESOURCE OWNER
   codex-board note OWNER TEXT
   codex-board show
+
+claim --wait queues the caller for RESOURCE when it is held by someone else
+and blocks until it is granted in queue order, --timeout ends the wait early.
+Poll interval: $CODEX_BOARD_POLL_MS (default 500).
 """
 
 import fcntl
@@ -16,6 +20,7 @@ import os
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -30,6 +35,17 @@ def state_dir() -> Path:
     return (base / "codex-agents" / "board").resolve()
 
 
+def poll_seconds() -> float:
+    raw = os.environ.get("CODEX_BOARD_POLL_MS", "500")
+    try:
+        value = float(raw)
+    except ValueError:
+        raise RuntimeError(f"CODEX_BOARD_POLL_MS must be a positive number: {raw}")
+    if value <= 0:
+        raise RuntimeError(f"CODEX_BOARD_POLL_MS must be a positive number: {raw}")
+    return value / 1000.0
+
+
 ROOT = state_dir()
 BOARD = ROOT / "codex-board.json"
 LOCK = ROOT / "codex-board.lock"
@@ -39,13 +55,16 @@ def load() -> dict:
     try:
         value = json.loads(BOARD.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {"claims": {}, "notes": []}
+        return {"claims": {}, "notes": [], "queue": {}}
     except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError(f"cannot read {BOARD}: {error}") from error
     if not isinstance(value, dict) or not isinstance(value.get("claims"), dict):
         raise RuntimeError(f"invalid board file: {BOARD}")
     value.setdefault("notes", [])
     if not isinstance(value["notes"], list):
+        raise RuntimeError(f"invalid board file: {BOARD}")
+    value.setdefault("queue", {})
+    if not isinstance(value["queue"], dict):
         raise RuntimeError(f"invalid board file: {BOARD}")
     for claim in value["claims"].values():
         if (
@@ -62,6 +81,17 @@ def load() -> dict:
             or not isinstance(note.get("text"), str)
         ):
             raise RuntimeError(f"invalid board file: {BOARD}")
+    for waiters in value["queue"].values():
+        if not isinstance(waiters, list):
+            raise RuntimeError(f"invalid board file: {BOARD}")
+        for waiter in waiters:
+            if (
+                not isinstance(waiter, dict)
+                or not isinstance(waiter.get("worker"), str)
+                or not isinstance(waiter.get("pid"), int)
+                or not isinstance(waiter.get("at"), (int, float))
+            ):
+                raise RuntimeError(f"invalid board file: {BOARD}")
     return value
 
 
@@ -79,6 +109,65 @@ def save(state: dict) -> None:
             pass
 
 
+@contextmanager
+def locked():
+    """One short critical section. Never held across a sleep.
+
+    A wait loop takes this lock once per poll, not once for the whole wait:
+    holding it across a sleep would block the holder's own `release` and
+    deadlock the resource it is waiting on.
+    """
+    with LOCK.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def pid_alive(pid: int) -> bool:
+    """Same primitive as luna's launcher_pid(): kill(pid, 0) is the exact test."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def prune_queue(state: dict, resource: str) -> list:
+    """Drop dead waiters for RESOURCE and return the surviving queue in order.
+
+    Called by every operation that touches a resource's queue, so a waiter
+    whose process died is removed by the next claim/renew/takeover/release/
+    show instead of blocking everyone behind it forever.
+    """
+    waiters = state["queue"].get(resource, [])
+    alive = [w for w in waiters if pid_alive(w["pid"])]
+    if alive:
+        state["queue"][resource] = alive
+    else:
+        state["queue"].pop(resource, None)
+    return state["queue"].get(resource, [])
+
+
+def enqueue(state: dict, resource: str, owner: str, pid: int, now: float) -> None:
+    waiters = state["queue"].setdefault(resource, [])
+    if not any(w["worker"] == owner and w["pid"] == pid for w in waiters):
+        waiters.append({"worker": owner, "pid": pid, "at": now})
+
+
+def dequeue(state: dict, resource: str, owner: str, pid: int) -> None:
+    waiters = [
+        w for w in state["queue"].get(resource, [])
+        if not (w["worker"] == owner and w["pid"] == pid)
+    ]
+    if waiters:
+        state["queue"][resource] = waiters
+    else:
+        state["queue"].pop(resource, None)
+
+
 def need(args: list[str], count: int) -> bool:
     if len(args) >= count:
         return True
@@ -86,59 +175,163 @@ def need(args: list[str], count: int) -> bool:
     return False
 
 
-def run(args: list[str]) -> int:
-    if not args:
-        print(__doc__.strip())
+def extract_wait_flags(args: list[str]) -> tuple[list[str], bool, float | None]:
+    """Pull --wait and --timeout SECONDS out of a claim argument list.
+
+    They can appear anywhere after RESOURCE OWNER, including inside what
+    would otherwise become the note. Returns the remaining positional
+    arguments plus the parsed flags.
+    """
+    remaining: list[str] = []
+    wait = False
+    timeout: float | None = None
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--wait":
+            wait = True
+            index += 1
+            continue
+        if token == "--timeout":
+            if index + 1 >= len(args):
+                raise RuntimeError("--timeout needs SECONDS")
+            raw = args[index + 1]
+            try:
+                timeout = float(raw)
+            except ValueError:
+                raise RuntimeError(f"--timeout value must be a number: {raw}")
+            index += 2
+            continue
+        remaining.append(token)
+        index += 1
+    return remaining, wait, timeout
+
+
+def try_claim(state: dict, resource: str, owner: str, note: str, now: float) -> bool:
+    held = state["claims"].get(resource)
+    if held and held["worker"] != owner:
+        return False
+    state["claims"][resource] = {"worker": owner, "at": now, "note": note}
+    return True
+
+
+def cmd_claim(args: list[str]) -> int:
+    if not need(args, 2):
         return 2
+    try:
+        positional, wait, timeout = extract_wait_flags(args)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    if len(positional) < 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    resource, owner = positional[0], positional[1]
+    note = " ".join(positional[2:])
+    if not resource.strip() or not owner.strip():
+        print("RESOURCE and OWNER must not be empty", file=sys.stderr)
+        return 2
+    if timeout is not None and timeout < 0:
+        print("--timeout must not be negative", file=sys.stderr)
+        return 2
+    interval = poll_seconds() if wait else None
 
-    action = args[0]
-    now = time.time()
-    state = load()
-
-    if action == "claim":
-        if not need(args, 3):
-            return 2
-        resource, owner = args[1], args[2]
-        note = " ".join(args[3:])
-        if not resource.strip() or not owner.strip():
-            print("RESOURCE and OWNER must not be empty", file=sys.stderr)
-            return 2
-        held = state["claims"].get(resource)
-        if held and held["worker"] != owner:
+    pid = os.getpid()
+    with locked():
+        state = load()
+        now = time.time()
+        prune_queue(state, resource)
+        if try_claim(state, resource, owner, note, now):
+            save(state)
+            print(f"CLAIMED {resource} {owner}")
+            return 0
+        held = state["claims"][resource]
+        if not wait:
+            save(state)
             age = int(now - held["at"])
             print(f"HELD {resource} by {held['worker']} for {age}s: {held.get('note', '')}")
             return 1
-        state["claims"][resource] = {"worker": owner, "at": now, "note": note}
+        enqueue(state, resource, owner, pid, now)
         save(state)
-        print(f"CLAIMED {resource} {owner}")
-        return 0
 
-    if action == "renew":
-        if not need(args, 3):
-            return 2
-        resource, owner = args[1], args[2]
-        if not resource.strip() or not owner.strip():
-            print("RESOURCE and OWNER must not be empty", file=sys.stderr)
-            return 2
+    deadline = None if timeout is None else time.time() + timeout
+    while True:
+        with locked():
+            state = load()
+            now = time.time()
+            waiters = prune_queue(state, resource)
+            held = state["claims"].get(resource)
+            at_head = bool(waiters) and waiters[0]["worker"] == owner and waiters[0]["pid"] == pid
+            if held is None and at_head:
+                dequeue(state, resource, owner, pid)
+                state["claims"][resource] = {"worker": owner, "at": now, "note": note}
+                save(state)
+                print(f"CLAIMED {resource} {owner}")
+                return 0
+            timed_out = deadline is not None and now >= deadline
+            if timed_out:
+                position = next(
+                    (i for i, w in enumerate(waiters, start=1)
+                     if w["worker"] == owner and w["pid"] == pid),
+                    None,
+                )
+                dequeue(state, resource, owner, pid)
+                save(state)
+                if held:
+                    holder_desc = f"{held['worker']} for {int(now - held['at'])}s"
+                elif waiters and not at_head:
+                    holder_desc = f"queued ahead of you: {waiters[0]['worker']}"
+                else:
+                    holder_desc = "nobody"
+                print(
+                    f"TIMEOUT {resource} {owner}: held by {holder_desc}, "
+                    f"queue position {position or '?'} of {len(waiters)}"
+                )
+                return 3
+            save(state)
+        remaining = None if deadline is None else max(0.0, deadline - time.time())
+        sleep_for = interval if remaining is None else min(interval, remaining)
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+
+def cmd_renew(args: list[str]) -> int:
+    if not need(args, 2):
+        return 2
+    resource, owner = args[0], args[1]
+    if not resource.strip() or not owner.strip():
+        print("RESOURCE and OWNER must not be empty", file=sys.stderr)
+        return 2
+    with locked():
+        state = load()
+        now = time.time()
+        prune_queue(state, resource)
         held = state["claims"].get(resource)
         if held and held["worker"] == owner:
             held["at"] = now
             save(state)
             print(f"RENEWED {resource} {owner}")
             return 0
+        save(state)
         print(f"NOT_HELD {resource} {owner}")
         return 1
 
-    if action == "takeover":
-        if not need(args, 4):
-            return 2
-        resource, new_owner, expected_owner = args[1], args[2], args[3]
-        note = " ".join(args[4:])
-        if not resource.strip() or not new_owner.strip() or not expected_owner.strip():
-            print("RESOURCE and OWNER must not be empty", file=sys.stderr)
-            return 2
+
+def cmd_takeover(args: list[str]) -> int:
+    if not need(args, 3):
+        return 2
+    resource, new_owner, expected_owner = args[0], args[1], args[2]
+    note = " ".join(args[3:])
+    if not resource.strip() or not new_owner.strip() or not expected_owner.strip():
+        print("RESOURCE and OWNER must not be empty", file=sys.stderr)
+        return 2
+    with locked():
+        state = load()
+        now = time.time()
+        prune_queue(state, resource)
         held = state["claims"].get(resource)
         if not held or held["worker"] != expected_owner:
+            save(state)
             actual = held["worker"] if held else "nobody"
             print(f"TAKEOVER_REFUSED {resource} expected={expected_owner} actual={actual}")
             return 1
@@ -147,56 +340,97 @@ def run(args: list[str]) -> int:
         print(f"TAKEN_OVER {resource} {new_owner}")
         return 0
 
-    if action == "release":
-        if not need(args, 3):
-            return 2
-        resource, owner = args[1], args[2]
-        if not resource.strip() or not owner.strip():
-            print("RESOURCE and OWNER must not be empty", file=sys.stderr)
-            return 2
+
+def cmd_release(args: list[str]) -> int:
+    if not need(args, 2):
+        return 2
+    resource, owner = args[0], args[1]
+    if not resource.strip() or not owner.strip():
+        print("RESOURCE and OWNER must not be empty", file=sys.stderr)
+        return 2
+    with locked():
+        state = load()
+        prune_queue(state, resource)
         held = state["claims"].get(resource)
         if held and held["worker"] == owner:
             del state["claims"][resource]
             save(state)
             print(f"RELEASED {resource} {owner}")
             return 0
+        save(state)
         print(f"NOT_HELD {resource} {owner}")
         return 1
 
-    if action == "note":
-        if not need(args, 3):
-            return 2
-        owner = args[1]
-        text = " ".join(args[2:])
-        if not owner.strip() or not text.strip():
-            print("OWNER and TEXT must not be empty", file=sys.stderr)
-            return 2
+
+def cmd_note(args: list[str]) -> int:
+    if not need(args, 2):
+        return 2
+    owner = args[0]
+    text = " ".join(args[1:])
+    if not owner.strip() or not text.strip():
+        print("OWNER and TEXT must not be empty", file=sys.stderr)
+        return 2
+    with locked():
+        state = load()
+        now = time.time()
         state["notes"] = (state["notes"] + [{"worker": owner, "at": now, "text": text}])[-40:]
         save(state)
         print("NOTED")
         return 0
 
-    if action == "show":
+
+def cmd_show(args: list[str]) -> int:
+    with locked():
+        state = load()
+        now = time.time()
+        changed_resources = list(state["queue"].keys())
+        for resource in changed_resources:
+            prune_queue(state, resource)
+        save(state)
         for resource, claim in sorted(state["claims"].items()):
             age = int(now - claim["at"])
             print(
                 f"CLAIM {resource:20} {claim['worker']:20} {age}s "
                 f"{claim.get('note', '')}"
             )
+        for resource in sorted(state["queue"].keys()):
+            for position, waiter in enumerate(state["queue"][resource], start=1):
+                waited = int(now - waiter["at"])
+                print(
+                    f"QUEUE {resource:20} {position} {waiter['worker']:20} "
+                    f"pid={waiter['pid']} waiting {waited}s"
+                )
         for entry in state["notes"][-12:]:
             print(f"NOTE  {entry['worker']:20} {int(now - entry['at'])}s ago: {entry['text']}")
         return 0
 
-    print(__doc__.strip(), file=sys.stderr)
-    return 2
+
+ACTIONS = {
+    "claim": cmd_claim,
+    "renew": cmd_renew,
+    "takeover": cmd_takeover,
+    "release": cmd_release,
+    "note": cmd_note,
+    "show": cmd_show,
+}
+
+
+def run(argv: list[str]) -> int:
+    if not argv:
+        print(__doc__.strip())
+        return 2
+    action, rest = argv[0], argv[1:]
+    handler = ACTIONS.get(action)
+    if handler is None:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    return handler(rest)
 
 
 def main() -> int:
     ROOT.mkdir(parents=True, exist_ok=True)
     try:
-        with LOCK.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            return run(sys.argv[1:])
+        return run(sys.argv[1:])
     except RuntimeError as error:
         print(f"CODEX BOARD ERROR {error}", file=sys.stderr)
         return 2
