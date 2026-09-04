@@ -495,6 +495,111 @@ function testBoard() {
   runScript("codex-board", ["release", "shared-build", ownerB]);
 }
 
+function spawnBoard(args) {
+  const child = spawn(join(SCRIPTS, "codex-board"), args, {
+    env: environment({ CODEX_BOARD_POLL_MS: "50" }),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.capturedStdout = "";
+  child.capturedStderr = "";
+  child.stdout.on("data", (data) => { child.capturedStdout += data; });
+  child.stderr.on("data", (data) => { child.capturedStderr += data; });
+  return child;
+}
+
+async function waitQueued(resource, position, worker) {
+  const pattern = new RegExp(`QUEUE ${resource}\\s+${position}\\s+${worker}`);
+  await waitFor(() => {
+    const show = runScript("codex-board", ["show"]);
+    return pattern.test(show.stdout) ? show : null;
+  });
+}
+
+async function testBoardWaitQueueOrder() {
+  const resource = "wait-build";
+  const ownerA = "wave:run:worker-a";
+  const ownerB = "wave:run:worker-b";
+  const ownerC = "wave:run:worker-c";
+
+  runScript("codex-board", ["claim", resource, ownerA]);
+
+  const waiterB = spawnBoard(["claim", resource, ownerB, "--wait"]);
+  await waitQueued(resource, 1, ownerB);
+
+  const waiterC = spawnBoard(["claim", resource, ownerC, "--wait"]);
+  await waitQueued(resource, 2, ownerC);
+
+  try {
+    runScript("codex-board", ["release", resource, ownerA]);
+    await waitFor(() => waiterB.exitCode !== null);
+    assert.equal(waiterB.exitCode, 0, waiterB.capturedStderr);
+    assert.match(waiterB.capturedStdout, new RegExp(`CLAIMED ${resource} ${ownerB}`));
+
+    // C stays queued behind B: not granted early, process still running.
+    await delay(200);
+    assert.equal(waiterC.exitCode, null);
+    const mid = runScript("codex-board", ["show"]);
+    assert.match(mid.stdout, new RegExp(`CLAIM ${resource}\\s+${ownerB}`));
+    assert.match(mid.stdout, new RegExp(`QUEUE ${resource}\\s+1\\s+${ownerC}`));
+
+    runScript("codex-board", ["release", resource, ownerB]);
+    await waitFor(() => waiterC.exitCode !== null);
+    assert.equal(waiterC.exitCode, 0, waiterC.capturedStderr);
+    assert.match(waiterC.capturedStdout, new RegExp(`CLAIMED ${resource} ${ownerC}`));
+
+    runScript("codex-board", ["release", resource, ownerC]);
+    const after = runScript("codex-board", ["show"]);
+    assert.doesNotMatch(after.stdout, new RegExp(`(CLAIM|QUEUE) ${resource}`));
+  } finally {
+    for (const child of [waiterB, waiterC]) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    }
+  }
+}
+
+async function testBoardWaitTimeout() {
+  const resource = "wait-timeout";
+  const ownerD = "wave:run:worker-d";
+  const ownerE = "wave:run:worker-e";
+
+  runScript("codex-board", ["claim", resource, ownerD]);
+  const timedOut = runScript(
+    "codex-board",
+    ["claim", resource, ownerE, "--wait", "--timeout", "0.3"],
+    { status: 3, env: { CODEX_BOARD_POLL_MS: "50" }, timeout: 5000 },
+  );
+  assert.match(
+    timedOut.stdout,
+    new RegExp(`TIMEOUT ${resource} ${ownerE}: held by ${ownerD} for \\d+s, queue position 1 of 1`),
+  );
+  const afterTimeout = runScript("codex-board", ["show"]);
+  assert.doesNotMatch(afterTimeout.stdout, /worker-e/);
+  assert.match(afterTimeout.stdout, new RegExp(`CLAIM ${resource}\\s+${ownerD}`));
+  runScript("codex-board", ["release", resource, ownerD]);
+}
+
+async function testBoardWaitDeadWaiter() {
+  const resource = "wait-dead";
+  const ownerA = "wave:run:worker-a";
+  const ownerB = "wave:run:worker-b";
+
+  runScript("codex-board", ["claim", resource, ownerA]);
+  const deadWaiter = spawnBoard(["claim", resource, ownerB, "--wait"]);
+  await waitQueued(resource, 1, ownerB);
+
+  deadWaiter.kill("SIGKILL");
+  await waitFor(() => deadWaiter.exitCode !== null || deadWaiter.signalCode !== null);
+  // Give the OS a moment to actually reap the pid before the next operation
+  // checks liveness with kill(pid, 0).
+  await delay(100);
+
+  // The next operation on the resource prunes the dead waiter; nothing
+  // claims on its behalf, so the resource is simply free afterward.
+  runScript("codex-board", ["release", resource, ownerA]);
+  const after = runScript("codex-board", ["show"]);
+  assert.doesNotMatch(after.stdout, new RegExp(`(CLAIM|QUEUE) ${resource}`));
+}
+
 async function testWatchBehavior() {
   const runId = "watch-success-run";
   writeJson(join(STATE, "codex-swarm-status.watch-success.json"), [{
@@ -603,6 +708,9 @@ async function testWatchBehavior() {
 
 try {
   testBoard();
+  await testBoardWaitQueueOrder();
+  await testBoardWaitTimeout();
+  await testBoardWaitDeadWaiter();
   await testWatchBehavior();
   await testLauncher();
   passed = true;

@@ -93,11 +93,14 @@ scripts/codex-steer --wave parser parser-fix "Limit the change to the parser mod
 
 ```bash
 "$CODEX_BOARD" claim|renew|release product-build "$CODEX_BOARD_OWNER" ["reason"]
+"$CODEX_BOARD" claim product-build "$CODEX_BOARD_OWNER" --wait [--timeout SECONDS]
 "$CODEX_BOARD" show
 "$CODEX_BOARD" takeover product-build "$CODEX_BOARD_OWNER" "old-wave:run-id:worker" "reason"
 ```
 
 Implementers claim; reviewers only read. Claims never expire — `takeover` only after verifying the holder is gone. The board stores facts and claims, not design decisions. Set `CODEX_AGENTS_STATE_DIR` when running it outside a worker.
+
+`claim --wait` queues the caller when the resource is held, instead of failing with `HELD`, and blocks in the same process until it is granted in FIFO order. `--timeout SECONDS` gives up after the wait, exit code 3, printing the current holder and the caller's queue position; without `--timeout` it waits indefinitely. `show` lists `QUEUE resource position owner pid waiting Ns` after the claims. A queued process that dies is dropped by the next claim/renew/takeover/release/show on that resource (liveness check: `kill(pid, 0)`, same as `luna`'s launcher check). Do not add a manual `release` for a dead waiter, it was never holding the claim. Poll interval: `CODEX_BOARD_POLL_MS` (default 500).
 
 ## Capacity and completion
 
