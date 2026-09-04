@@ -25,7 +25,7 @@ mkdirSync(STATE);
 let passed = false;
 
 function environment(extra = {}) {
-  return { ...process.env, CODEX_AGENTS_STATE_DIR: STATE, ...extra };
+  return { ...process.env, CODEX_BOARD_STATE_DIR: "", CODEX_AGENTS_STATE_DIR: STATE, ...extra };
 }
 
 function run(command, args, options = {}) {
@@ -144,25 +144,28 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     const turnCount = (turnCounts.get(request.params.threadId) || 0) + 1;
     turnCounts.set(request.params.threadId, turnCount);
     const turnId = "turn-" + request.params.threadId + "-" + turnCount;
-    send({ jsonrpc: "2.0", id: request.id, result: { turn: { id: turnId } } });
     if (request.params.threadId === "thread-1") {
-      setTimeout(() => send({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: {
-          threadId: request.params.threadId,
-          turn: { id: turnId, status: "completed", error: null }
-        }
-      }), 20);
-      setTimeout(() => send({
-        jsonrpc: "2.0",
-        method: "thread/goal/updated",
-        params: {
-          threadId: request.params.threadId,
-          goal: { status: "complete", tokensUsed: 80 }
-        }
-      }), 40);
+      // Force response and terminal notifications into one stdout chunk.
+      process.stdout.write([
+        { jsonrpc: "2.0", id: request.id, result: { turn: { id: turnId } } },
+        { method: "turn/completed", params: { threadId: request.params.threadId,
+          turn: { id: turnId, status: "completed", error: null } } },
+        { method: "thread/goal/updated", params: { threadId: request.params.threadId,
+          goal: { status: "complete", tokensUsed: 80 } } },
+      ].map(JSON.stringify).join("\n") + "\n");
+      return;
     }
+    if (request.params.threadId === "thread-4") {
+      process.stdout.write([
+        { jsonrpc: "2.0", id: request.id, result: { turn: { id: turnId } } },
+        { method: "turn/completed", params: { threadId: request.params.threadId,
+          turn: { id: turnId, status: "completed", error: null } } },
+        { method: "turn/started", params: { threadId: request.params.threadId,
+          turn: { id: "turn-thread-4-2", status: "inProgress", error: null } } },
+      ].map(JSON.stringify).join("\n") + "\n");
+      return;
+    }
+    send({ jsonrpc: "2.0", id: request.id, result: { turn: { id: turnId } } });
     if (request.params.threadId === "thread-2") {
       setTimeout(() => send({
         jsonrpc: "2.0",
@@ -188,24 +191,6 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         params: {
           threadId: request.params.threadId,
           turn: { id: turnId, status: "interrupted", error: null }
-        }
-      }), 40);
-    }
-    if (request.params.threadId === "thread-4") {
-      setTimeout(() => send({
-        jsonrpc: "2.0",
-        method: "turn/completed",
-        params: {
-          threadId: request.params.threadId,
-          turn: { id: turnId, status: "completed", error: null }
-        }
-      }), 20);
-      setTimeout(() => send({
-        jsonrpc: "2.0",
-        method: "turn/started",
-        params: {
-          threadId: request.params.threadId,
-          turn: { id: "turn-thread-4-2", status: "inProgress", error: null }
         }
       }), 40);
     }
@@ -389,7 +374,7 @@ async function testLauncher() {
     assert.doesNotMatch(turnStarts[2].params.input[0].text, /Run the affected tests/);
     assert.match(turnStarts[2].params.input[0].text, /Run only read-only checks/);
 
-    runScript("codex-steer", ["--wave", "smoke", "worker-active", "Inspect", "one", "path."]);
+    runScript("luna", ["say", "--wave", "smoke", "worker-active", "Inspect", "one", "path."]);
     await waitFor(() => readRpc(rpcLog).some(
       (call) => call.method === "turn/steer" && call.params.threadId === "thread-4",
     ));

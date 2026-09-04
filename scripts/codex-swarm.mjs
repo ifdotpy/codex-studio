@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
+import { expandHome, outsideClaude, codexHome } from "./codex-paths.mjs";
 import {
   appendFileSync,
   closeSync,
@@ -38,12 +39,6 @@ const IMPLEMENTER_SANDBOX = process.env.CODEX_SANDBOX || null;
 const ROLES = new Set(["implementer", "reviewer"]);
 const APPROVAL_POLICIES = new Set(["untrusted", "on-request", "never"]);
 const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
-
-function expandHome(value) {
-  if (value === "~") return homedir();
-  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-  return value;
-}
 
 if (!/^[A-Za-z0-9._-]+$/.test(WAVE)) {
   throw new Error("CODEX_WAVE must contain only letters, digits, dot, underscore, or hyphen");
@@ -85,10 +80,12 @@ const stateBase = process.env.CODEX_AGENTS_STATE_DIR
     "codex-agents",
   );
 const statePath = resolve(stateBase);
+outsideClaude(statePath);
+const CODEX_PROFILE = codexHome();
 mkdirSync(statePath, { recursive: true });
 const STATE = realpathSync(statePath);
 
-const TASKS_PATH = resolve(
+const TASKS_PATH = outsideClaude(
   process.env.CODEX_TASKS
     ? expandHome(process.env.CODEX_TASKS)
     : join(STATE, `codex-tasks.${WAVE}.json`),
@@ -100,7 +97,8 @@ const STDERR = join(STATE, `codex-swarm-stderr.${WAVE}.${RUN_ID}.log`);
 const LAUNCHER_PID_FILE = join(STATE, `codex-swarm-launcher.${WAVE}.pid`);
 const INBOX = join(STATE, `codex-inbox.${WAVE}.${RUN_ID}`);
 const DEAD_LETTER = join(STATE, `codex-dead-letter.${WAVE}.${RUN_ID}`);
-const BOARD_STATE = join(STATE, "board");
+const BOARD_STATE = outsideClaude(process.env.CODEX_BOARD_STATE_DIR
+  ? expandHome(process.env.CODEX_BOARD_STATE_DIR) : join(STATE, "board"));
 const WORKTREE_LOCK_DIR = join(STATE, "worktree-locks");
 const BOARD_COMMAND = resolve(join(SCRIPT_DIR, "codex-board"));
 
@@ -367,6 +365,7 @@ if (process.env.CODEX_SERVICE_TIER) {
   appServerArgs.push("-c", `service_tier="${process.env.CODEX_SERVICE_TIER}"`);
 }
 proc = spawn(CODEX_BIN, appServerArgs, {
+  env: { ...process.env, CODEX_HOME: CODEX_PROFILE },
   stdio: ["pipe", "pipe", "pipe"],
 });
 
@@ -467,27 +466,39 @@ function turnPolicy(state) {
 async function startTurn(state, text, messageId = randomUUID()) {
   state.currentInput = text;
   state.currentMessageId = messageId;
+  const priorStatus = state.turnStatus;
+  state.turnStatus = "starting";
+  state.turnId = null;
+  state.lastTurnStartedAt = new Date().toISOString();
+  state.error = null;
   let serviceTier = process.env.CODEX_SERVICE_TIER || null;
   try {
     const tierFile = join(STATE, `service-tier.${WAVE}`);
     const v = readFileSync(tierFile, "utf8").trim();
     if (v) serviceTier = v;
   } catch {}
-  const result = await call("turn/start", {
-    threadId: state.threadId,
-    model: state.requestedModel,
-    effort: state.effort,
-    ...(serviceTier ? { serviceTier } : {}),
-    ...turnPolicy(state),
-    cwd: state.cwd,
-    runtimeWorkspaceRoots: [state.cwd],
-    clientUserMessageId: messageId,
-    input: [{ type: "text", text }],
-  });
-  state.turnId = result?.turn?.id ?? state.turnId;
-  state.turnStatus = "running";
-  state.lastTurnStartedAt = new Date().toISOString();
-  state.error = null;
+  let result;
+  try {
+    result = await call("turn/start", {
+      threadId: state.threadId,
+      model: state.requestedModel,
+      effort: state.effort,
+      ...(serviceTier ? { serviceTier } : {}),
+      ...turnPolicy(state),
+      cwd: state.cwd,
+      runtimeWorkspaceRoots: [state.cwd],
+      clientUserMessageId: messageId,
+      input: [{ type: "text", text }],
+    });
+  } catch (error) {
+    if (state.turnStatus === "starting") state.turnStatus = priorStatus;
+    throw error;
+  }
+  // Notifications can arrive in the same chunk as the RPC response, before
+  // this continuation resumes. Do not overwrite their terminal state or a
+  // newer automatically started turn.
+  state.turnId ??= result?.turn?.id ?? null;
+  if (state.turnStatus === "starting") state.turnStatus = "running";
   flush();
 }
 

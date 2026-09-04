@@ -14,6 +14,8 @@ and blocks until it is granted in queue order, --timeout ends the wait early.
 Poll interval: $CODEX_BOARD_POLL_MS (default 500).
 """
 
+from __future__ import annotations
+
 import fcntl
 import json
 import os
@@ -22,17 +24,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-
-
-def state_dir() -> Path:
-    board = os.environ.get("CODEX_BOARD_STATE_DIR")
-    if board:
-        return Path(board).expanduser().resolve()
-    configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
-    if configured:
-        return (Path(configured).expanduser().resolve() / "board")
-    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")).expanduser()
-    return (base / "codex-agents" / "board").resolve()
+from codex_state import board_dir, process_is_alive
 
 
 def poll_seconds() -> float:
@@ -46,7 +38,10 @@ def poll_seconds() -> float:
     return value / 1000.0
 
 
-ROOT = state_dir()
+try:
+    ROOT = board_dir()
+except RuntimeError as error:
+    sys.exit(f"codex-board: {error}")
 BOARD = ROOT / "codex-board.json"
 LOCK = ROOT / "codex-board.lock"
 
@@ -122,17 +117,7 @@ def locked():
         yield
 
 
-def pid_alive(pid: int) -> bool:
-    """Same primitive as luna's launcher_pid(): kill(pid, 0) is the exact test."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+pid_alive = process_is_alive
 
 
 def prune_queue(state: dict, resource: str) -> list:

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """luna — explore the Codex worker threads of a wave.
 
-Everything here reads state that already exists on disk: the per-wave status
-files the launcher writes, the event log it appends to, the claim board, the
-launcher pid file and Codex's own rollout files. Nothing polls the API, so
-running any of this costs nothing and cannot disturb a thread.
+Read wave state from the canonical Codex state directory. Only `say` writes a
+mailbox message; all other commands are read-only.
 
   luna                      dashboard: live threads, launcher, board, machine
   luna ls [--all]           one line per thread, every wave
@@ -15,62 +13,31 @@ running any of this costs nothing and cannot disturb a thread.
   luna waves                threads grouped by wave
   luna watch [-i 20]        dashboard, refreshed until interrupted
 
-Launcher lifecycle lives in codex-daemon (start | stop | status), not here:
-luna only reads state and never changes it.
-
-Set LUNA_HOME to point at another wave directory. Without it, the directory
-holding this script is used when it has status files, then the newest state
-directory among the known locations (XDG state dir, legacy harness job dirs).
+Launcher lifecycle lives in codex-daemon (start | stop | status).
+CODEX_AGENTS_STATE_DIR selects state; LUNA_HOME remains an explicit legacy alias.
+There is no automatic search in another agent application's directories.
 """
 
 import argparse
 import datetime
-import glob
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+from collections import deque
+from pathlib import Path
+from codex_state import ACTIVE, state_dir, board_dir, read_threads, effective_status, process_is_alive, final_answer
 
 # ---------------------------------------------------------------- locating
 
-def wave_home() -> str:
-    """Where a wave keeps its state.
+try:
+    HOME = str(state_dir("LUNA_HOME"))
+    BOARD = str(board_dir(Path(HOME)) / "codex-board.json")
+except RuntimeError as error:
+    sys.exit(f"luna: {error}")
 
-    Order: what the launcher itself was told, then an explicit override, then
-    the directory holding this script, then the newest state directory under
-    the harness job directories.
-    """
-    for key in ("CODEX_AGENTS_STATE_DIR", "LUNA_HOME"):
-        if os.environ.get(key):
-            return os.path.expanduser(os.environ[key])
-    here = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
-    if glob.glob(os.path.join(here, "codex-swarm-status.*.json")):
-        return here
-    xdg = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    candidates = glob.glob(os.path.join(xdg, "codex-agents", "codex-swarm-status.*.json"))
-    # Legacy layouts from earlier harness runs; absent directories match nothing.
-    candidates += glob.glob(os.path.expanduser("~/.claude/jobs/*/tmp/codex-swarm-status.*.json"))
-    candidates += glob.glob(os.path.expanduser("~/.codex-agents/*/codex-swarm-status.*.json"))
-    if not candidates:
-        return here
-    return os.path.dirname(max(candidates, key=os.path.getmtime))
-
-
-HOME = wave_home()
-STATUS_GLOB = os.path.join(HOME, "codex-swarm-status.*.json")
-BOARD = os.path.join(HOME, "codex-board.json")
-
-
-def newest(pattern):
-    """The freshest file matching a glob, or None.
-
-    Names carry the wave and sometimes the run id, so a fixed filename only
-    works for one layout. Match the shape and take the newest.
-    """
-    found = glob.glob(os.path.join(HOME, pattern))
-    return max(found, key=os.path.getmtime) if found else None
 
 # ---------------------------------------------------------------- painting
 
@@ -122,121 +89,43 @@ def number(value):
 
 # ---------------------------------------------------------------- reading
 
-def launcher_pid():
-    """The launcher's own pid, or None. kill(pid, 0) is the exact test.
-
-    Do not switch this to `pgrep -f codex-swarm.mjs`: that pattern also matches
-    the shell that runs it, so the check reports a launcher that is not there.
-    """
-    path = newest("codex-swarm-launcher*.pid")
-    if not path:
-        return None
-    try:
-        pid = int(open(path).read().strip())
-        os.kill(pid, 0)
-        return pid
-    except Exception:
-        return None
+def live_launchers():
+    return sorted({row["launcherPid"] for row in load_threads()
+                   if process_is_alive(row.get("launcherPid"))})
 
 
 def load_threads():
-    threads = []
-    for path in sorted(glob.glob(STATUS_GLOB)):
-        wave = os.path.basename(path).split(".")[1]
-        try:
-            rows = json.load(open(path))
-        except (json.JSONDecodeError, OSError):
-            continue
-        for row in rows:
-            row["wave"] = wave
-            threads.append(row)
-    return threads
+    return read_threads(Path(HOME))
 
 
-def current_wave():
-    """The wave the live launcher is driving: its status file is the newest.
-
-    Only that wave can still act. A thread from an earlier wave belongs to a
-    dead process even while a launcher is up, so judging it by the running
-    launcher reports a thread that has been frozen for days as merely slow.
-    """
-    files = glob.glob(STATUS_GLOB)
-    if not files:
-        return None
-    return os.path.basename(max(files, key=os.path.getmtime)).split(".")[1]
-
-
-def resolve_status(thread, launcher_up, wave=None):
-    """What the thread is really doing, not what the file last recorded.
-
-    A thread lives inside the app-server process that started it. When that
-    process dies every thread it hosted is frozen at whatever the file said,
-    which is usually "running", forever. Reporting that as live is how a dead
-    wave keeps looking busy.
-    """
-    status = thread.get("turnStatus")
-    if status != "running":
-        return status
-    if not launcher_up or (wave is not None and thread.get("wave") != wave):
-        return "abandoned"
+def resolve_status(thread):
+    status = effective_status(thread)
     idle = age(thread.get("lastEvent"))
-    if idle is not None and idle > 1800:
+    if status == "running" and idle is not None and idle > 1800:
         return "stalled"
-    return "running"
+    return status
 
 
-def find(threads, name):
-    exact = [t for t in threads if t.get("name") == name]
-    if exact:
-        return exact[-1]
-    partial = [t for t in threads if name in (t.get("name") or "")]
-    if len(partial) == 1:
-        return partial[0]
-    if len(partial) > 1:
-        names = ", ".join(sorted({t["name"] for t in partial}))
-        sys.exit(f"luna: '{name}' matches several threads: {names}")
+def find(threads, name, wave=None):
+    if wave:
+        threads = [row for row in threads if row["wave"] == wave]
+    exact = [row for row in threads if row.get("name") == name]
+    matches = exact or [row for row in threads if name in row.get("name", "")]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        choices = ", ".join(f"{row['wave']}/{row['name']}" for row in matches)
+        sys.exit(f"luna: ambiguous worker '{name}': {choices}; use --wave")
     sys.exit(f"luna: no thread named '{name}'")
 
 
-def final_answer(thread_id, limit=3000):
-    """The thread's last report, from Codex's own rollout file.
-
-    Only phase "final_answer" is a report. A thread emits commentary while it
-    thinks, and that commentary can land after the last real answer, so taking
-    the last assistant message of any phase returns the wrong text. Fall back to
-    commentary only when there is no final answer at all, which is the case for
-    a thread that was killed mid-run.
-    """
-    matches = glob.glob(os.path.expanduser(f"~/.codex/sessions/*/*/*/*{thread_id}*.jsonl"))
-    if not matches:
-        return "(no rollout file)"
-    final, fallback = "", ""
-    with open(matches[0]) as handle:
-        for line in handle:
-            if '"role":"assistant"' not in line and '"role": "assistant"' not in line:
-                continue
-            try:
-                payload = json.loads(line).get("payload", {})
-            except json.JSONDecodeError:
-                continue
-            chunk = "".join(c.get("text", "") for c in payload.get("content") or []
-                            if c.get("type") in ("output_text", "text"))
-            if not chunk.strip():
-                continue
-            fallback = chunk
-            if payload.get("phase") == "final_answer":
-                final = chunk
-    text = (final or fallback).strip()
-    if not text:
-        return "(no final answer yet)"
-    return text if len(text) <= limit else text[:limit] + f"\n[truncated, {len(text):,} chars total]"
-
-
-def recent_events(name, count):
-    path = newest("codex-swarm-events*.jsonl")
-    if not path:
+def recent_events(thread, count):
+    name = thread["name"]
+    run_id = thread.get("runId")
+    path = os.path.join(HOME, f"codex-swarm-events.{thread['wave']}.{run_id}.jsonl")
+    if not run_id or not os.path.isfile(path):
         return []
-    rows = []
+    rows = deque(maxlen=count)
     with open(path) as handle:
         for line in handle:
             if f'"{name}"' not in line:
@@ -247,7 +136,7 @@ def recent_events(name, count):
                 continue
             if row.get("name") == name:
                 rows.append(row)
-    return rows[-count:]
+    return list(rows)
 
 
 def branch_head(thread):
@@ -275,20 +164,28 @@ def machine():
 
 def board_claims():
     try:
-        return json.load(open(BOARD)).get("claims", {})
-    except Exception:
+        with open(BOARD, encoding="utf-8") as handle:
+            value = json.load(handle)
+        if not isinstance(value, dict) or not isinstance(value.get("claims"), dict):
+            raise RuntimeError(f"invalid board file: {BOARD}")
+        claims = value["claims"]
+        if not all(isinstance(claim, dict) and isinstance(claim.get("worker"), str)
+                   for claim in claims.values()):
+            raise RuntimeError(f"invalid board claims: {BOARD}")
+        return claims
+    except FileNotFoundError:
         return {}
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot read {BOARD}: {error}") from error
 
 # ---------------------------------------------------------------- commands
 
 def cmd_ls(args):
-    launcher_up = launcher_pid() is not None
-    wave = current_wave()
     threads = load_threads()
     rows = []
     for thread in threads:
-        status = resolve_status(thread, launcher_up, wave)
-        if not args.all and status in ("completed", "failed", "abandoned", "superseded"):
+        status = resolve_status(thread)
+        if not args.all and status in ("completed", "failed", "abandoned", "superseded", "interrupted", "blocked", "paused"):
             continue
         rows.append((thread, status))
     if not rows:
@@ -308,9 +205,8 @@ def cmd_ls(args):
 
 
 def cmd_show(args):
-    launcher_up = launcher_pid() is not None
-    thread = find(load_threads(), args.name)
-    status = resolve_status(thread, launcher_up, current_wave())
+    thread = find(load_threads(), args.name, args.wave)
+    status = resolve_status(thread)
     print(paint(thread.get("name", ""), BOLD), status_label(status).strip())
     print(f"  wave     {thread.get('wave')}")
     print(f"  model    {thread.get('model') or thread.get('requestedModel')} effort={thread.get('effort')}")
@@ -339,8 +235,8 @@ def cmd_show(args):
 
 
 def cmd_tail(args):
-    thread = find(load_threads(), args.name)
-    rows = recent_events(thread["name"], args.number)
+    thread = find(load_threads(), args.name, args.wave)
+    rows = recent_events(thread, args.number)
     if not rows:
         print("(no events recorded for this thread)")
         return 0
@@ -354,23 +250,13 @@ def cmd_tail(args):
 
 
 def cmd_say(args):
-    launcher_up = launcher_pid() is not None
-    thread = find(load_threads(), args.name)
-    if not launcher_up:
-        sys.exit("luna: no launcher is running, so nothing would deliver this message")
-    if resolve_status(thread, launcher_up, current_wave()) in ("abandoned", "superseded"):
-        sys.exit(f"luna: {thread['name']} is not live")
-    inboxes = sorted(glob.glob(os.path.join(HOME, "codex-inbox*")), key=os.path.getmtime)
-    inbox = inboxes[-1] if inboxes else os.path.join(HOME, "codex-inbox")
-    os.makedirs(inbox, exist_ok=True)
-    path = os.path.join(inbox, f"{thread['name']}.txt")
-    message = " ".join(args.message)
-    if not message.strip():
-        sys.exit("luna: empty message")
-    with open(path, "w") as handle:
-        handle.write(message.rstrip() + "\n")
-    print(f"queued for {thread['name']}: the launcher turns this into a follow-up turn")
-    return 0
+    thread = find(load_threads(), args.name, args.wave)
+    script = Path(__file__).resolve().with_name("codex-steer")
+    env = {**os.environ, "CODEX_AGENTS_STATE_DIR": HOME}
+    return subprocess.run(
+        [sys.executable, str(script), "--wave", thread["wave"], "--", thread["name"], *args.message],
+        env=env,
+    ).returncode
 
 
 def cmd_board(args):
@@ -379,22 +265,19 @@ def cmd_board(args):
         print("no slot is claimed")
         return 0
     now = time.time()
-    launcher_up = launcher_pid() is not None
-    wave = current_wave()
-    live = {t["name"] for t in load_threads()
-            if resolve_status(t, launcher_up, wave) in ("running", "capacity-retry")}
+    workers = {t.get("boardOwner"): t for t in load_threads() if t.get("boardOwner")}
     for slot, claim in sorted(claims.items()):
         held = human_age(now - claim.get("at", now))
-        holder = claim.get("thread", "?")
+        holder = claim.get("worker", "?")
+        worker = workers.get(holder)
         # Nothing releases a claim when a thread dies, so a stale claim blocks
         # every later thread that waits politely for the slot.
-        stale = "" if holder in live else paint("  STALE, holder is not live", "31")
-        print(f"  {slot:<18} {holder:<20} held {held:<5} {paint(claim.get('reason',''), DIM)}{stale}")
+        stale = paint("  STALE, launcher is not live", "31") if worker and not process_is_alive(worker.get("launcherPid")) else ""
+        print(f"  {slot:<18} {holder:<20} held {held:<5} {paint(claim.get('note',''), DIM)}{stale}")
     return 0
 
 
 def cmd_waves(args):
-    launcher_up = launcher_pid() is not None
     waves = {}
     for thread in load_threads():
         waves.setdefault(thread["wave"], []).append(thread)
@@ -405,8 +288,8 @@ def cmd_waves(args):
         return min(ages) if ages else 1e12
 
     for wave, threads in sorted(waves.items(), key=freshness):
-        states = [resolve_status(t, launcher_up, current_wave()) for t in threads]
-        live = sum(1 for s in states if s in ("running", "capacity-retry"))
+        states = [resolve_status(t) for t in threads]
+        live = sum(1 for s in states if s in ACTIVE or s == "stalled")
         mark = paint("live", "32") if live else paint("done", DIM)
         print(f"  {wave:<12} {mark}  {len(threads)} thread(s): "
               + ", ".join(f"{t['name']}={s}" for t, s in zip(threads, states)))
@@ -414,15 +297,9 @@ def cmd_waves(args):
 
 
 def cmd_dashboard(args):
-    pid = launcher_pid()
+    pids = live_launchers()
     load, free = machine()
-    if pid:
-        parent = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
-                                capture_output=True, text=True).stdout.strip()
-        owned = "daemon" if parent == "1" else f"ppid {parent}"
-        state = paint(f"launcher {pid} up ({owned})", "32")
-    else:
-        state = paint("launcher down — no thread can take another turn", "31")
+    state = paint(f"live launchers: {', '.join(map(str, pids))}", "32") if pids else paint("no live launchers", "31")
     print(f"{state}   load {load:.1f}   disk {free:.0f}G free   {HOME}")
     print()
     cmd_ls(argparse.Namespace(all=False))
@@ -453,17 +330,20 @@ def main():
     p.set_defaults(func=cmd_ls)
 
     p = sub.add_parser("show", help="one thread in full")
+    p.add_argument("--wave", help="select an exact wave when worker names repeat")
     p.add_argument("name")
     p.add_argument("--chars", type=int, default=3000, help="cap on the final answer")
     p.add_argument("-q", "--quiet", action="store_true", help="skip the final answer")
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("tail", help="recent events of one thread")
+    p.add_argument("--wave", help="select an exact wave when worker names repeat")
     p.add_argument("name")
     p.add_argument("-n", "--number", type=int, default=20)
     p.set_defaults(func=cmd_tail)
 
     p = sub.add_parser("say", help="queue a follow-up turn")
+    p.add_argument("--wave", help="select an exact wave when worker names repeat")
     p.add_argument("name")
     p.add_argument("message", nargs="+")
     p.set_defaults(func=cmd_say)
@@ -479,10 +359,16 @@ def main():
     p.set_defaults(func=cmd_watch)
 
     args = parser.parse_args()
+    for field in ("number", "chars", "interval"):
+        if hasattr(args, field) and getattr(args, field) <= 0:
+            parser.error(f"{field} must be positive")
     if not args.command:
         return cmd_dashboard(argparse.Namespace(all=False))
     return args.func(args)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except RuntimeError as error:
+        sys.exit(f"luna: {error}")

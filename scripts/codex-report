@@ -10,12 +10,12 @@ usage:
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import os
 import re
 import sys
 from pathlib import Path
+from codex_state import state_dir, process_is_alive, final_answer
 
 
 WAVE_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
@@ -25,61 +25,6 @@ def wave_name(value: str) -> str:
     if not WAVE_PATTERN.fullmatch(value):
         raise argparse.ArgumentTypeError("use only letters, digits, dot, underscore, or hyphen")
     return value
-
-
-def state_dir() -> Path:
-    configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")).expanduser()
-    return (base / "codex-agents").resolve()
-
-
-def codex_home() -> Path:
-    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser().resolve()
-
-
-def final_answer(thread_id: str, limit: int) -> str:
-    pattern = str(codex_home() / "sessions" / "*" / "*" / "*" / f"*{thread_id}*.jsonl")
-    matches = glob.glob(pattern)
-    if not matches:
-        return "(no rollout file)"
-    rollout = max(matches, key=os.path.getmtime)
-    final = ""
-    fallback = ""
-    with open(rollout, encoding="utf-8") as handle:
-        for line in handle:
-            if '"role":"assistant"' not in line and '"role": "assistant"' not in line:
-                continue
-            try:
-                payload = json.loads(line).get("payload", {})
-            except json.JSONDecodeError:
-                continue
-            content = payload.get("content") or []
-            chunk = "".join(
-                item.get("text", "")
-                for item in content
-                if item.get("type") in ("output_text", "text")
-            )
-            if not chunk.strip():
-                continue
-            fallback = chunk
-            if payload.get("phase") == "final_answer":
-                final = chunk
-    text = (final or fallback).strip()
-    if not text:
-        return "(no final answer yet)"
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n[truncated, {len(text)} chars total]"
-
-
-def process_is_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ValueError):
-        return False
 
 
 def load_status_files(root: Path, wave: str | None, all_waves: bool) -> list[Path]:
@@ -152,4 +97,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except RuntimeError as error:
+        sys.exit(f"codex-report: {error}")

@@ -2,6 +2,9 @@
 // Print one bounded line for each model and its supported effort values.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { codexHome } from "./codex-paths.mjs";
+
+const CODEX_PROFILE = codexHome();
 
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const RPC_TIMEOUT_MS = Number(process.env.CODEX_RPC_TIMEOUT_MS || 30_000);
@@ -10,6 +13,7 @@ if (!Number.isFinite(RPC_TIMEOUT_MS) || RPC_TIMEOUT_MS <= 0) {
 }
 
 const proc = spawn(CODEX_BIN, ["app-server", "--listen", "stdio://"], {
+  env: { ...process.env, CODEX_HOME: CODEX_PROFILE },
   stdio: ["pipe", "pipe", "inherit"],
 });
 let nextId = 1;

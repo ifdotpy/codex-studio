@@ -11,7 +11,7 @@ import re
 import sys
 import time
 import uuid
-from pathlib import Path
+from codex_state import state_dir, process_is_alive
 
 
 COMPONENT_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
@@ -21,22 +21,6 @@ def component(value: str) -> str:
     if not COMPONENT_PATTERN.fullmatch(value):
         raise argparse.ArgumentTypeError("use only letters, digits, dot, underscore, or hyphen")
     return value
-
-
-def state_dir() -> Path:
-    configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")).expanduser()
-    return (base / "codex-agents").resolve()
-
-
-def process_is_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ValueError):
-        return False
 
 
 def main() -> int:
@@ -116,4 +100,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except RuntimeError as error:
+        sys.exit(f"codex-steer: {error}")

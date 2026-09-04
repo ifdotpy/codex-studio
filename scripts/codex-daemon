@@ -23,19 +23,15 @@ codex-tasks.<wave>.json is absent — the launcher refuses to guess and stops).
 import argparse
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
+from codex_state import state_dir, board_dir, codex_home, outside_claude, process_is_alive
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
-
-
-def state_dir() -> str:
-    if os.environ.get("CODEX_AGENTS_STATE_DIR"):
-        return os.path.expanduser(os.environ["CODEX_AGENTS_STATE_DIR"])
-    xdg = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    return os.path.join(xdg, "codex-agents")
 
 
 def pid_file(state: str, wave: str) -> str:
@@ -50,20 +46,16 @@ def read_pid(path: str):
         return None
 
 
-def alive(pid) -> bool:
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+alive = process_is_alive
 
 
 def cmd_start(args):
-    state = state_dir()
+    state = str(state_dir())
+    board = str(board_dir())
+    profile = str(codex_home())
+    configured_tasks = os.environ.get("CODEX_TASKS")
+    if configured_tasks:
+        configured_tasks = str(outside_claude(Path(configured_tasks)))
     os.makedirs(state, exist_ok=True)
     pid = read_pid(pid_file(state, args.wave))
     if alive(pid):
@@ -81,6 +73,10 @@ def cmd_start(args):
     env = dict(os.environ)
     env["CODEX_WAVE"] = args.wave
     env["CODEX_AGENTS_STATE_DIR"] = state
+    env["CODEX_BOARD_STATE_DIR"] = board
+    env["CODEX_HOME"] = profile
+    if configured_tasks:
+        env["CODEX_TASKS"] = configured_tasks
     with open(log_path, "ab") as log:
         log.write(f"\n=== codex-daemon start wave={args.wave} ===\n".encode())
         log.flush()
@@ -121,7 +117,7 @@ def cmd_status(args):
         return 1
     exit_code = 0
     for path in paths:
-        wave = os.path.basename(path).split(".")[1]
+        wave = os.path.basename(path).removeprefix("codex-swarm-launcher.").removesuffix(".pid")
         pid = read_pid(path)
         if alive(pid):
             started = time.strftime("%H:%M:%S", time.localtime(os.path.getmtime(path)))
@@ -150,7 +146,12 @@ def main():
     p.set_defaults(func=cmd_status)
 
     args = parser.parse_args()
-    return args.func(args)
+    if args.wave and not re.fullmatch(r"[A-Za-z0-9._-]+", args.wave):
+        parser.error("wave must contain only letters, digits, dot, underscore, or hyphen")
+    try:
+        return args.func(args)
+    except RuntimeError as error:
+        sys.exit(f"codex-daemon: {error}")
 
 
 if __name__ == "__main__":

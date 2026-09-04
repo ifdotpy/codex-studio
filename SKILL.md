@@ -13,6 +13,7 @@ This skill does not itself require extra workers for every task.
 For app-server mode, use the bundled scripts. Do not copy their logic into a project.
 The protocol uses JSON Lines on stdio, without Content-Length framing.
 Keep runtime state outside the skill checkout.
+The scripts require Node.js and Python 3.9 or later on macOS or Linux.
 
 ## Mode
 
@@ -31,8 +32,11 @@ The remaining sections describe app-server mode unless they explicitly mention n
 
 ## Paths and protocol
 
-- State dir: `$CODEX_AGENTS_STATE_DIR`, else `$XDG_STATE_HOME/codex-agents`, else `~/.local/state/codex-agents`. Scripts create it. Board lives in its `board/` subdirectory.
+- State dir: `$CODEX_AGENTS_STATE_DIR`, else `$XDG_STATE_HOME/codex-agents`, else `~/.local/state/codex-agents`. Scripts create it.
+- Board dir: `$CODEX_BOARD_STATE_DIR`, else the state directory's `board/` subdirectory. Use the same directory for every client of a shared resource.
 - `CODEX_HOME` selects the Codex login (default `~/.codex`). Canonical install: `~/.agents/skills/codex-agents`.
+- Codex state, board, and profile directories must resolve outside `.claude`. Scripts reject these paths and do not discover legacy Claude job directories.
+- Move historical state only with explicit authorization. Preserve claims and messages. Never create a second board for an occupied resource during migration.
 - Schemas move; before depending on a protocol field: `codex --version; codex app-server generate-json-schema --experimental --out /tmp/codex-schema` (drop `--experimental` if it fails; read `v2`). Goal methods need `capabilities.experimentalApi: true` at `initialize`.
 
 ## Model
@@ -146,6 +150,29 @@ Implementers claim; reviewers only read. Claims never expire — `takeover` only
 | `codex-steer` | Mailbox message to one worker |
 | `codex-board` | File-locked resource claims |
 | `codex-stop` | Verified launcher stop |
-| `luna` | Read-only explorer: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `board`, `waves`, `watch` |
+| `luna` | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `board`, `waves`, `watch` |
 
-`luna` only reads existing files and cannot disturb a worker. It adds two judgments raw status lacks: threads of a wave whose launcher ended are `abandoned` (liveness belongs to the wave), and `luna board` marks claims whose holder is not live as `STALE` (claims outlive holders and block the slot).
+`luna say` writes through `codex-steer`; other commands only read existing state.
+For `show`, `tail`, and `say`, use `--wave NAME` when worker names repeat.
+Ambiguous names fail instead of selecting the newest wave.
+Each worker uses its own launcher PID and run log.
+An unfinished worker whose launcher ended is `abandoned`.
+The board marks a known owner's claim `STALE` when its launcher is gone.
+Unknown owners remain claimed; missing local history is not evidence that a resource is free.
+`LUNA_HOME` remains an explicit legacy alias for the state directory, below `CODEX_AGENTS_STATE_DIR` in precedence.
+
+## Script verification
+
+Run from the skill directory:
+
+```bash
+node tests/portable-smoke.mjs
+node tests/state-contract-smoke.mjs
+python3 -B tests/daemon-contract.py
+node tests/sandbox-smoke.mjs
+```
+
+The first three checks use fixtures and mocks; they do not call a model.
+The sandbox check needs a local Codex binary and tests real sandboxed commands, without model inference.
+Run these checks after changes to state schemas, paths, lifecycle, or message delivery.
+Mock protocol tests do not prove compatibility with every app-server version.
