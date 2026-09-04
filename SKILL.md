@@ -1,11 +1,18 @@
 ---
 name: codex-agents
-description: Orchestrate one or more Codex worker threads through codex app-server JSON-RPC. Use for Codex delegation, parallel worktrees, Luna worker waves, goal budgets, monitoring, steering, reviewer workers, or durable multi-agent runs from any agent harness.
+description: Coordinate authorized Codex delegation with native agent tools or durable app-server workers. Use for parallel agent work, reviewer workers, separate Codex processes, worker waves, goal budgets, monitoring, and steering.
 ---
 
 # Codex worker orchestration
 
-Run Codex workers from any harness over `codex app-server` (JSON Lines on stdio, no Content-Length framing). Use the bundled scripts; do not copy their logic into a project. Keep one skill checkout; state lives outside it.
+Use the host's native agent tools for bounded work within the current session.
+Use `codex app-server` for a separate process, durable workers, or a host without native delegation.
+Delegate only when the user or applicable instructions authorize delegation.
+This skill does not itself require extra workers for every task.
+
+For app-server mode, use the bundled scripts. Do not copy their logic into a project.
+The protocol uses JSON Lines on stdio, without Content-Length framing.
+Keep runtime state outside the skill checkout.
 
 ## Mode
 
@@ -17,7 +24,10 @@ Run Codex workers from any harness over `codex app-server` (JSON Lines on stdio,
 
 - Do not split sequential reasoning across workers; do not assign one file to two workers.
 - The orchestrator owns boundaries, steering, review, merges.
-- Only the top-level orchestrator holds a wave. A nested subagent cannot wait, steer, or outlive its turn.
+- The top-level orchestrator owns app-server waves and their lifecycle.
+- Native agents follow the host's actual delegation and completion capabilities.
+
+The remaining sections describe app-server mode unless they explicitly mention native agents.
 
 ## Paths and protocol
 
@@ -27,23 +37,29 @@ Run Codex workers from any harness over `codex app-server` (JSON Lines on stdio,
 
 ## Model
 
-`scripts/codex-models` lists ids and efforts. Wave default: `CODEX_MODEL=gpt-5.6-luna`, `CODEX_EFFORT=max`. Do not infer the model from a local config file.
+Honor an explicit model request. Native agents inherit the parent model unless the task requires an authorized override.
+`scripts/codex-models` lists available app-server models and efforts.
+The app-server wave default is `CODEX_MODEL=gpt-5.6-luna`, `CODEX_EFFORT=max`.
+Check availability instead of guessing from a local config file.
 
 ## Worktrees and briefs
 
-One worktree and branch per worker, absolute paths. Never the main checkout, never another worker's worktree. The launcher validates paths and claims worktrees across active waves.
+The app-server launcher requires a separate worktree and branch per worker, with absolute paths.
+It validates paths and claims worktrees across active waves.
+Native read-only reviewers can inspect an existing checkout without a new worktree.
+Native implementers need isolation only where their edits or outputs can collide.
 
-Every prompt contains:
+Give each worker a bounded outcome, owned files, relevant context, and a completion check.
+State the role: implementers can edit their scope, while reviewers remain read-only.
+State commit, merge, and publication authority explicitly. A review task grants no write authority.
+Supply shared-resource paths and peer exclusions when the worker needs them.
+Treat a colleague's diagnosis as a hypothesis to check, not an implementation command.
+Ask for concrete evidence and remaining limitations, not a mandatory report template.
 
-1. One deliverable, with an existing file or test as the pattern to imitate. Open-ended implementation burns the budget.
-2. Owned files or module.
-3. A gate that proves completion, and a baseline command to run first.
-4. Role: `implementer` (commit each finished part) or `reviewer` (read-only worktree, no edits, no commits).
-5. First paragraph, the wait rule: nothing wakes the worker; every wait is an active loop in slices of 400 s or less, one tool call per slice; long runs detached with the PID in a file. Polling is for the worker's own local waits only; an external condition (a seal window, a peer's merge) ends the turn with `BLOCKED` plus the machine-checkable resume condition, and the orchestrator monitors it and resumes the worker with a steer.
-6. Absolute paths for every shared resource (board, state, reference binaries) — workers cannot find harness paths by searching.
-7. Live peers and untouchable worktrees, named.
-8. Outcome, not mechanism. Numbers in a brief are context; a colleague's diagnosis is a hypothesis.
-9. Closing FEEDBACK section: wrong/incomplete task statement; tools causing avoidable work; brief facts disproved; what shortens the next run. File each complaint in the project's incident register; a repeated complaint is an orchestrator defect.
+Use the host's real completion notifications or a bounded watcher for long work.
+Keep the orchestrator available for user updates. Do not assume that every host needs manual polling.
+If progress depends on an external condition, record the resume condition and give monitoring to an available owner.
+Do not report an unchanged monitored condition as a new failure.
 
 ## Task file and launch
 
@@ -112,7 +128,11 @@ Implementers claim; reviewers only read. Claims never expire — `takeover` only
 
 - Reviewer gets the spec and the diff, never the implementer's reasoning trace. Blocking findings need file:line. `INSUFFICIENT_CONTEXT` is a valid result.
 - Per branch: read the diff, read the test evidence, run the affected gate if it changes the merge decision, merge only a coherent change. A worker's success claim is not merge evidence.
-- Finish: every worker terminal, every accepted change committed with evidence, wave-owned worktrees and runtime files removed, the wave's board claims released (a dead holder's claim blocks every later wave), final report printed, then `codex-daemon stop --wave <name>` (stop marks active workers interrupted).
+- Before merging, personally inspect the diff and evidence when the user requests personal review.
+- Finish after every worker is terminal and every accepted change has a commit and evidence.
+- Release only the wave's own resource claims. Preserve worktrees until their work is integrated or handed off.
+- Keep useful logs and evidence. Remove only disposable, verified wave-owned scratch files.
+- Recheck status before `codex-daemon stop --wave <name>`: stopping interrupts active workers.
 
 ## Commands
 
