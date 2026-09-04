@@ -28,6 +28,8 @@ def component(value: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--wave", type=component, default=os.environ.get("CODEX_WAVE"))
+    parser.add_argument("--expected-run", type=component)
+    parser.add_argument("--expected-thread", type=component)
     parser.add_argument("worker", type=component)
     parser.add_argument("message", nargs="+")
     args = parser.parse_args()
@@ -69,6 +71,10 @@ def main() -> int:
 
     wave, thread = matches[0]
     run_id = thread.get("runId")
+    if ((args.expected_run and args.expected_run != run_id)
+            or (args.expected_thread and args.expected_thread != thread.get("threadId"))):
+        print("worker identity changed; refresh before sending", file=sys.stderr)
+        return 2
     if not isinstance(run_id, str) or not COMPONENT_PATTERN.fullmatch(run_id):
         print(f"worker {args.worker} has no valid run id", file=sys.stderr)
         return 2

@@ -99,7 +99,40 @@ scripts/codex-report --wave parser [worker --answers]
 - Hand-rolled sentinel (when `codex-watch` is unavailable): copy terminal values from one real record first. `goalStatus` terminal values are `complete`, `budgetLimited`, `blocked` — not `completed`. Safe condition: goal present and not `active`, or turn `failed`/`interrupted`.
 - Arm the replacement watcher before stopping the old one; a gap is a missed event.
 
-## Steer
+## Local canvas and group chat
+
+Run `scripts/codex-canvas` and open `http://127.0.0.1:4620`.
+Use `--port PORT` to select another port. No package install is necessary.
+The server uses Python's standard library and listens only on the local machine.
+Keep its terminal session alive while the canvas is in use.
+
+The canvas reads app-server waves from the same state directory as `luna`.
+Native agents in a host conversation are not part of this feed.
+Drag cards to move agents. Use Shift + click to select members for a group.
+The panel shows recent messages, tool calls, results, run identities, and resource claims.
+The transcript view has explicit size limits. It does not expose internal reasoning records.
+
+Group chats persist in `canvas.sqlite3` inside the state directory.
+Canvas positions stay in browser storage on this device.
+A user message to a group uses `codex-steer` for each member.
+Members stay tied to their exact run and thread. Replacement agents do not inherit old messages.
+`queued` proves mailbox receipt, not agent acceptance or completion.
+Failed deliveries remain visible. The canvas does not resend them automatically.
+
+Agents can read and post shared replies with:
+
+```bash
+scripts/codex-chat list
+scripts/codex-chat read GROUP_ID
+scripts/codex-chat post GROUP_ID "Result or question" --owner "$CODEX_BOARD_OWNER"
+```
+
+Only a current group member can post as an agent.
+The owner identifies a local worker, not an authenticated remote user.
+Peer posts do not start new turns. Read the shared chat before coordination decisions.
+The canvas does not create agents or replace the wave launcher's lifecycle commands.
+
+## Steer a worker
 
 ```bash
 scripts/codex-steer --wave parser parser-fix "Limit the change to the parser module."
@@ -151,6 +184,8 @@ Implementers claim; reviewers only read. Claims never expire — `takeover` only
 | `codex-board` | File-locked resource claims |
 | `codex-stop` | Verified launcher stop |
 | `luna` | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `board`, `waves`, `watch` |
+| `codex-canvas` | Local web canvas, live transcripts, group chat, and resource board |
+| `codex-chat` | List group chats, read messages, or post a member reply |
 
 `luna say` writes through `codex-steer`; other commands only read existing state.
 For `show`, `tail`, and `say`, use `--wave NAME` when worker names repeat.
@@ -170,9 +205,15 @@ node tests/portable-smoke.mjs
 node tests/state-contract-smoke.mjs
 python3 -B tests/daemon-contract.py
 node tests/sandbox-smoke.mjs
+python3 -B tests/canvas-contract.py
 ```
 
 The first three checks use fixtures and mocks; they do not call a model.
 The sandbox check needs a local Codex binary and tests real sandboxed commands, without model inference.
 Run these checks after changes to state schemas, paths, lifecycle, or message delivery.
 Mock protocol tests do not prove compatibility with every app-server version.
+
+For canvas client changes, run `npm --prefix . ci` and `npm --prefix . test` from `web/`.
+These development dependencies are not necessary to use the canvas.
+The client check uses a synthetic Document Object Model (DOM) and a local fixture server.
+It does not prove browser appearance.

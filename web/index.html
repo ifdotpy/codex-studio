@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="A local canvas for Codex agent work, live transcripts and shared group chats."
+    />
+    <title>Codex Canvas</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <aside class="rail">
+      <a class="brand" href="/" aria-label="Codex Canvas">c<span>·</span></a>
+      <button
+        class="rail-button active"
+        id="canvas-view"
+        title="Canvas"
+        aria-label="Canvas"
+      >
+        ▦
+      </button>
+      <button
+        class="rail-button"
+        id="chats"
+        title="All group chats"
+        aria-label="All group chats"
+      >
+        ☷
+      </button>
+      <button
+        class="rail-button"
+        id="resources"
+        title="Shared resources"
+        aria-label="Shared resources"
+      >
+        ▤
+      </button>
+      <button
+        class="rail-button"
+        id="help"
+        title="Controls"
+        aria-label="Controls"
+      >
+        ?
+      </button>
+      <div class="rail-bottom">
+        <span class="connection-dot"></span><span>LOCAL</span>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div class="heading">
+          <div class="eyebrow">CODEX AGENTS <span>/</span> WORKSPACE</div>
+          <h1>Swarm canvas<span class="beta">LOCAL</span></h1>
+        </div>
+        <div id="health" class="health">Connecting…</div>
+        <button class="primary" id="new-group">
+          + Create group <kbd>G</kbd>
+        </button>
+      </header>
+      <section class="toolbar" aria-label="Canvas controls">
+        <label class="search"
+          ><span>⌕</span
+          ><input
+            id="search"
+            type="search"
+            placeholder="Find an agent, branch or wave…"
+            aria-label="Search agents"
+          /><kbd>/</kbd></label
+        >
+        <div class="filters" role="group" aria-label="Filter agents">
+          <button data-filter="all" class="selected">
+            All <span id="all-count">0</span></button
+          ><button data-filter="active">
+            Active <span id="active-count">0</span></button
+          ><button data-filter="attention">
+            Needs attention <span id="attention-count">0</span>
+          </button>
+        </div>
+        <div class="toolbar-end">
+          <button id="arrange" title="Arrange visible agents">Arrange</button
+          ><button id="fit" title="Fit visible agents (F)">
+            Fit to view <kbd>F</kbd>
+          </button>
+        </div>
+      </section>
+      <div id="error" class="error-banner" role="alert" hidden></div>
+      <section
+        id="viewport"
+        tabindex="0"
+        aria-label="Agent canvas. Drag cards to move. Drag empty space to pan. Use the wheel to zoom."
+      >
+        <div id="world">
+          <div id="groups"></div>
+          <div id="cards"></div>
+        </div>
+        <div id="empty" hidden>
+          <div class="empty-symbol">✳</div>
+          <h2>No agents here yet</h2>
+          <p>
+            Start a wave with codex-agents. Its agents appear here
+            automatically.
+          </p>
+          <button id="clear-filter" hidden>Clear filters</button>
+        </div>
+        <div class="canvas-caption">
+          <span class="live-dot"></span>
+          <span id="caption">READING LOCAL WAVE STATE</span>
+        </div>
+        <div id="selection-bar" hidden>
+          <span id="selection-count"></span
+          ><button id="group-selected">Create shared chat</button
+          ><button id="clear-selection" aria-label="Clear selection">×</button>
+        </div>
+        <div class="canvas-controls">
+          <button id="zoom-out" aria-label="Zoom out">−</button
+          ><span id="zoom">100%</span
+          ><button id="zoom-in" aria-label="Zoom in">+</button><i></i
+          ><button id="reset-view" aria-label="Fit all agents">⌖</button>
+        </div>
+        <canvas
+          id="minimap"
+          width="190"
+          height="110"
+          aria-label="Canvas overview"
+        ></canvas>
+      </section>
+      <footer>
+        <div>
+          <span class="live-dot"></span
+          ><span id="connection">Connecting to local state</span>
+        </div>
+        <div>
+          Drag to move <span>·</span> Shift + click to select
+          <span>·</span> Scroll to zoom
+        </div>
+        <div id="total-tokens"></div>
+      </footer>
+    </main>
+    <aside id="inspector" hidden aria-label="Agent details">
+      <div class="inspector-top">
+        <div>
+          <div class="eyebrow" id="detail-label">AGENT</div>
+          <h2 id="detail-title"></h2>
+        </div>
+        <button
+          id="close-detail"
+          class="icon-button"
+          aria-label="Close details"
+        >
+          ×
+        </button>
+      </div>
+      <div id="detail-meta"></div>
+      <nav id="detail-tabs">
+        <button data-tab="activity" class="selected">Activity</button
+        ><button data-tab="chat">Chat</button
+        ><button data-tab="details">Details</button>
+      </nav>
+      <div class="stream-controls" id="stream-controls">
+        <label><input type="checkbox" id="follow" checked /> Follow live</label
+        ><label><input type="checkbox" id="show-tools" checked /> Tools</label
+        ><button id="copy" title="Copy visible transcript">Copy</button>
+      </div>
+      <div id="detail-body"></div>
+      <form id="composer">
+        <div id="composer-label">Message this agent</div>
+        <textarea
+          id="message"
+          placeholder="Send an instruction…"
+          rows="3"
+          maxlength="12000"
+          required
+        ></textarea>
+        <div class="composer-bottom">
+          <span id="send-note">Uses the existing agent mailbox</span
+          ><button type="submit" class="primary">Send ↗</button>
+        </div>
+      </form>
+    </aside>
+    <dialog id="group-dialog">
+      <form id="group-form">
+        <div class="eyebrow">SHARED WORKSPACE</div>
+        <h2>Create a group</h2>
+        <p>
+          Selected agents share a chat. A message from you goes to each member.
+        </p>
+        <label
+          >Group name<input
+            id="group-name"
+            maxlength="100"
+            placeholder="For example: Runtime team"
+            required
+        /></label>
+        <div id="group-members"></div>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-group">Cancel</button
+          ><button type="submit" class="primary">Create group</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="help-dialog">
+      <div class="eyebrow">CANVAS CONTROLS</div>
+      <h2>See the work. Keep the context.</h2>
+      <dl>
+        <dt>Move an agent</dt>
+        <dd>Drag its card. Arrow keys move a focused card.</dd>
+        <dt>Read the work</dt>
+        <dd>Click a card to open its live transcript.</dd>
+        <dt>Create a team</dt>
+        <dd>Shift + click two or more agents. Press G.</dd>
+        <dt>Navigate</dt>
+        <dd>Drag empty space to pan. Scroll to zoom. Press F to fit.</dd>
+        <dt>Shared chat</dt>
+        <dd>
+          Your group message goes to each member. Agents post replies with
+          codex-chat.
+        </dd>
+        <dt>Delivery</dt>
+        <dd>
+          Queued means a message is in the mailbox. It does not prove the agent
+          has read it.
+        </dd>
+        <dt>Data source</dt>
+        <dd>
+          Only app-server waves from codex-agents. Native agents in this
+          conversation are not part of this feed.
+        </dd>
+      </dl>
+      <button id="close-help" class="primary">Got it</button>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

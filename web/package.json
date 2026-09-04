@@ -1,0 +1,14 @@
+{
+  "name": "codex-canvas-checks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node ../tests/canvas-ui.mjs",
+    "format": "prettier --write index.html style.css app.js ../tests/canvas-ui.mjs",
+    "format:check": "prettier --check index.html style.css app.js ../tests/canvas-ui.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0",
+    "prettier": "3.6.2"
+  }
+}

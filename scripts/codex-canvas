@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Serve the local Codex agent canvas."""
+import sys
+sys.dont_write_bytecode = True
+from codex_canvas import main
+
+if __name__ == "__main__":
+    main()

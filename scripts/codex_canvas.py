@@ -1,0 +1,345 @@
+"""Local canvas API. Existing status, rollout and mailbox formats stay unchanged."""
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+import hashlib
+import json
+import os
+import re
+import secrets
+import shlex
+import sqlite3
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+from codex_state import state_dir, board_dir, codex_home, read_threads, effective_status, process_is_alive
+
+SCRIPTS = Path(__file__).resolve().parent
+WEB = SCRIPTS.parent / "web"
+COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
+READ_LIMIT = 2 * 1024 * 1024
+
+
+def identity(*parts):
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
+
+
+def tail_json(path, limit=READ_LIMIT):
+    try:
+        with path.open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            start = max(0, size - limit)
+            handle.seek(start)
+            if start:
+                handle.readline()
+            data = handle.read(limit)
+    except FileNotFoundError:
+        return [], False
+    rows = []
+    for line in data.splitlines():
+        try:
+            row = json.loads(line)
+            if isinstance(row, dict):
+                rows.append(row)
+        except (ValueError, UnicodeDecodeError):
+            continue
+    return rows, bool(start)
+
+
+class Canvas:
+    def __init__(self, root=None):
+        self.root = root or state_dir()
+        self.lock = threading.RLock()
+        self.cache = {}
+        self.rollouts = {}
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.db = self.root / "canvas.sqlite3"
+        with self.connect() as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS groups (
+                  id TEXT PRIMARY KEY, name TEXT NOT NULL, members TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS messages (
+                  id TEXT PRIMARY KEY, room TEXT NOT NULL, author TEXT NOT NULL,
+                  text TEXT NOT NULL, at REAL NOT NULL, deliveries TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS messages_room ON messages(room, at);
+            """)
+        os.chmod(self.db, 0o600)
+
+    @contextmanager
+    def connect(self):
+        db = sqlite3.connect(self.db, timeout=10)
+        db.row_factory = sqlite3.Row
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def threads(self):
+        rows = read_threads(self.root)
+        for row in rows:
+            row["id"] = identity(row["wave"], row.get("runId"), row["threadId"], row["name"])
+            row["status"] = effective_status(row)
+            row["launcherAlive"] = process_is_alive(row.get("launcherPid"))
+            row["canSend"] = row["launcherAlive"] and all(
+                isinstance(row.get(k), str) and COMPONENT.fullmatch(row[k])
+                for k in ("wave", "runId", "name"))
+        return rows
+
+    def groups(self, threads):
+        groups = {}
+        for row in threads:
+            key = "wave-" + identity(row["wave"], row.get("runId"))
+            group = groups.setdefault(key, {"id": key, "name": row["wave"], "members": [], "automatic": True})
+            group["members"].append(row["id"])
+        with self.connect() as db:
+            for row in db.execute("SELECT * FROM groups"):
+                groups[row["id"]] = {**dict(row), "members": json.loads(row["members"]), "automatic": False}
+        return list(groups.values())
+
+    def snapshot(self):
+        threads = self.threads()
+        board = {"claims": {}, "notes": [], "queue": {}}
+        board_error = None
+        try:
+            path = board_dir(self.root) / "codex-board.json"
+            if path.exists():
+                board = json.loads(path.read_text())
+                if (not isinstance(board, dict) or not isinstance(board.get("claims"), dict)
+                        or not all(isinstance(c, dict) for c in board["claims"].values())
+                        or not isinstance(board.get("notes", []), list)
+                        or not isinstance(board.get("queue", {}), dict)):
+                    raise ValueError("Invalid board data")
+        except (ValueError, OSError) as error:
+            board = {"claims": {}, "notes": [], "queue": {}}
+            board_error = str(error)
+        owners = {t.get("boardOwner"): t for t in threads}
+        for claim in board["claims"].values():
+            owner = owners.get(claim.get("worker"))
+            claim["stale"] = bool(owner and not owner["launcherAlive"])
+        return {"threads": threads, "groups": self.groups(threads), "board": board,
+                "boardError": board_error, "at": time.time(), "stateDir": str(self.root)}
+
+    def thread(self, key):
+        matches = [t for t in self.threads() if t["id"] == key]
+        if len(matches) != 1:
+            raise ValueError("The agent is no longer in the current run. Refresh the canvas.")
+        return matches[0]
+
+    def transcript(self, key):
+        thread = self.thread(key)
+        tid = thread["threadId"]
+        if not COMPONENT.fullmatch(tid):
+            raise ValueError("Invalid thread identity")
+        now = time.monotonic()
+        found, checked = self.rollouts.get(tid, (None, 0))
+        if found is None and (tid not in self.rollouts or now - checked > 5):
+            paths = list(codex_home().glob(f"sessions/*/*/*/*{tid}*.jsonl"))
+            found = max(paths, key=lambda p: p.stat().st_mtime) if paths else None
+            self.rollouts[tid] = (found, now)
+        if found is None:
+            return {"items": [], "truncated": False, "unavailable": "No local transcript for this thread.", "tail": thread.get("tail", "")}
+        stat = found.stat()
+        signature = (str(found), stat.st_size, stat.st_mtime_ns)
+        if key in self.cache and self.cache[key][0] == signature:
+            return self.cache[key][1]
+        rows, truncated = tail_json(found)
+        items = []
+        for row in rows:
+            p = row.get("payload", {})
+            if row.get("type") != "response_item" or not isinstance(p, dict):
+                continue
+            kind = p.get("type")
+            text, role, title = "", "", ""
+            if kind == "message" and p.get("role") in ("assistant", "user"):
+                role = p["role"]
+                text = "\n".join(c.get("text", "") for c in p.get("content", []) if isinstance(c, dict) and c.get("type") in ("text", "input_text", "output_text"))
+                title = "Final answer" if p.get("phase") == "final_answer" else role.title()
+            elif kind in ("function_call", "custom_tool_call"):
+                role, title = "tool", p.get("name", "Tool")
+                text = p.get("arguments", p.get("input", ""))
+            elif kind in ("function_call_output", "custom_tool_call_output"):
+                role, title, text = "output", "Tool result", p.get("output", "")
+            if not isinstance(text, str):
+                text = json.dumps(text, ensure_ascii=False)
+            if text.strip():
+                items.append({"id": identity(row.get("timestamp"), p.get("id"), p.get("call_id"), role, text),
+                              "role": role, "title": title, "text": text[:20000],
+                              "truncated": len(text) > 20000, "at": row.get("timestamp")})
+        result = {"items": items[-120:], "truncated": truncated or len(items) > 120, "unavailable": None}
+        self.cache[key] = (signature, result)
+        return result
+
+    def create_group(self, name, members, key):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+            raise ValueError("Use a group name with 1 to 100 characters.")
+        if not isinstance(members, list) or not 2 <= len(members) <= 100 or not all(isinstance(m, str) for m in members):
+            raise ValueError("Select 2 to 100 agents.")
+        members = sorted(set(members))
+        if len(members) < 2 or not set(members) <= {t["id"] for t in self.threads()}:
+            raise ValueError("The selected agents are no longer available.")
+        if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9-]{36}", key):
+            raise ValueError("Invalid request identity")
+        with self.lock, self.connect() as db:
+            existing = db.execute("SELECT * FROM groups WHERE id=?", (key,)).fetchone()
+            if existing:
+                if existing["name"] != name.strip() or json.loads(existing["members"]) != members:
+                    raise ValueError("The request identity already has different content.")
+            else:
+                db.execute("INSERT INTO groups VALUES (?,?,?)", (key, name.strip(), json.dumps(members)))
+        return {"id": key}
+
+    def messages(self, room):
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM messages WHERE room=? ORDER BY at DESC LIMIT 200", (room,)).fetchall()
+        return [{**dict(r), "deliveries": json.loads(r["deliveries"])} for r in reversed(rows)]
+
+    def post(self, room, text, key, author="user", notify=True):
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
+            raise ValueError("Use a message with 1 to 12000 characters.")
+        if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9-]{36}", key):
+            raise ValueError("Invalid request identity")
+        with self.lock, self.connect() as db:
+            previous = db.execute("SELECT * FROM messages WHERE id=?", (key,)).fetchone()
+            if previous:
+                if (previous["room"], previous["author"], previous["text"]) != (room, author, text.strip()):
+                    raise ValueError("The request identity already has different content.")
+                return {**dict(previous), "deliveries": json.loads(previous["deliveries"])}
+            threads = self.threads()
+            group = next((g for g in self.groups(threads) if g["id"] == room), None)
+            if group:
+                members = group["members"]
+            elif any(t["id"] == room for t in threads):
+                members = [room]
+            else:
+                raise ValueError("This chat is no longer available.")
+            if author != "user" and author not in members:
+                raise ValueError("The author is not a member of this group.")
+            deliveries = {m: "pending" for m in members if notify and m != author}
+            row = {"id": key, "room": room, "author": author, "text": text.strip(), "at": time.time(), "deliveries": deliveries}
+            db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (key, room, author, row["text"], row["at"], json.dumps(deliveries)))
+            db.commit()
+            # Persist before mailbox writes. A repeated HTTP request cannot resend work.
+            # A process death during dispatch leaves a visible 'pending' result for review.
+            message = row["text"]
+            if group:
+                command = f"CODEX_AGENTS_STATE_DIR={shlex.quote(str(self.root))} {shlex.quote(str(SCRIPTS / 'codex-chat'))}"
+                message = (f"Group chat: {group['name']}\nUser message: {message}\n\n"
+                           f"Read the shared chat: {command} read {shlex.quote(room)}\n"
+                           f"Post a reply: {command} post {shlex.quote(room)} 'your reply'\n"
+                           "Use your CODEX_BOARD_OWNER for authorship. Read peer replies before coordination decisions. "
+                           "Posts are shared, but do not automatically start peer turns.")
+            for member in deliveries:
+                try:
+                    target = self.thread(member)
+                    if not target["canSend"]:
+                        raise ValueError("The launcher is offline.")
+                    # Reuse the installed mailbox writer, never a second app-server.
+                    result = subprocess.run([str(SCRIPTS / "codex-steer"), "--wave", target["wave"],
+                                             "--expected-run", target["runId"], "--expected-thread", target["threadId"],
+                                             target["name"], "--", message],
+                                            env={**os.environ, "CODEX_AGENTS_STATE_DIR": str(self.root)},
+                                            capture_output=True, text=True, timeout=10)
+                    deliveries[member] = "queued" if result.returncode == 0 else "failed: " + (result.stderr or result.stdout).strip()[:400]
+                except subprocess.TimeoutExpired:
+                    deliveries[member] = "unknown: mailbox command timed out. Inspect the mailbox before resending."
+                except (ValueError, OSError) as error:
+                    deliveries[member] = "failed: " + str(error)
+                db.execute("UPDATE messages SET deliveries=? WHERE id=?", (json.dumps(deliveries), key))
+                db.commit()
+            return row
+
+
+def make_server(canvas, port=0):
+    token = secrets.token_urlsafe(32)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def send(self, value, status=200, content_type="application/json"):
+            data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def trusted(self, write=False):
+            host = self.headers.get("Host")
+            allowed = {f"{name}:{self.server.server_port}" for name in ("127.0.0.1", "localhost")}
+            if host not in allowed:
+                return False
+            origin = f"http://{host}"
+            if self.headers.get("Origin") not in (None, origin):
+                return False
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return False
+            return not write or secrets.compare_digest(self.headers.get("X-Canvas-Token", ""), token)
+
+        def do_GET(self):
+            if not self.trusted():
+                return self.send({"error": "Local origin required"}, 403)
+            path = urlparse(self.path)
+            try:
+                if path.path == "/api/state":
+                    return self.send({**canvas.snapshot(), "token": token})
+                if path.path == "/api/transcript":
+                    return self.send(canvas.transcript(parse_qs(path.query).get("id", [""])[0]))
+                if path.path == "/api/messages":
+                    return self.send(canvas.messages(parse_qs(path.query).get("room", [""])[0]))
+                files = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
+                if path.path in files:
+                    name, mime = files[path.path]
+                    return self.send((WEB / name).read_bytes(), content_type=mime)
+                return self.send({"error": "Not found"}, 404)
+            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+                return self.send({"error": str(error)}, 400)
+
+        def do_POST(self):
+            if not self.trusted(write=True):
+                return self.send({"error": "Local origin and session token required"}, 403)
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 65536:
+                    return self.send({"error": "Invalid request size"}, 413)
+                if self.headers.get_content_type() != "application/json":
+                    return self.send({"error": "JSON required"}, 415)
+                self.connection.settimeout(10)
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError("JSON object required")
+                if self.path == "/api/groups":
+                    return self.send(canvas.create_group(body.get("name"), body.get("members"), body.get("id")))
+                if self.path == "/api/messages":
+                    return self.send(canvas.post(body.get("room"), body.get("text"), body.get("id")))
+                return self.send({"error": "Not found"}, 404)
+            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+                return self.send({"error": str(error)}, 400)
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server.daemon_threads = True
+    return server
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
+    parser.add_argument("--port", type=int, default=4620)
+    args = parser.parse_args()
+    try:
+        server = make_server(Canvas(), args.port)
+        print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    except (RuntimeError, OSError) as error:
+        parser.exit(1, f"codex-canvas: {error}\n")
