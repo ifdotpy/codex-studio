@@ -207,14 +207,6 @@ def extract_wait_flags(args: list[str]) -> tuple[list[str], bool, float | None]:
     return remaining, wait, timeout
 
 
-def try_claim(state: dict, resource: str, owner: str, note: str, now: float) -> bool:
-    held = state["claims"].get(resource)
-    if held and held["worker"] != owner:
-        return False
-    state["claims"][resource] = {"worker": owner, "at": now, "note": note}
-    return True
-
-
 def cmd_claim(args: list[str]) -> int:
     if not need(args, 2):
         return 2
@@ -240,17 +232,37 @@ def cmd_claim(args: list[str]) -> int:
     with locked():
         state = load()
         now = time.time()
-        prune_queue(state, resource)
-        if try_claim(state, resource, owner, note, now):
+        waiters = prune_queue(state, resource)
+        held = state["claims"].get(resource)
+
+        if held and held["worker"] == owner:
+            # Renewing your own hold is not a queue-jump: you already have it.
+            state["claims"][resource] = {"worker": owner, "at": now, "note": note}
             save(state)
             print(f"CLAIMED {resource} {owner}")
             return 0
-        held = state["claims"][resource]
+
+        # A plain `claim` on a free resource must not win over a live queue:
+        # that is the exact starvation --wait exists to fix, just moved to
+        # the instant of release. Only the queue head (by owner name; a
+        # plain claim never registers a pid) may take a free resource here.
+        queue_blocks = bool(waiters) and waiters[0]["worker"] != owner
+
+        if held is None and not queue_blocks:
+            state["claims"][resource] = {"worker": owner, "at": now, "note": note}
+            save(state)
+            print(f"CLAIMED {resource} {owner}")
+            return 0
+
         if not wait:
             save(state)
-            age = int(now - held["at"])
-            print(f"HELD {resource} by {held['worker']} for {age}s: {held.get('note', '')}")
+            if held is not None:
+                age = int(now - held["at"])
+                print(f"HELD {resource} by {held['worker']} for {age}s: {held.get('note', '')}")
+            else:
+                print(f"QUEUED {resource} {len(waiters)} waiting, head={waiters[0]['worker']}")
             return 1
+
         enqueue(state, resource, owner, pid, now)
         save(state)
 

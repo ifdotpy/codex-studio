@@ -495,9 +495,9 @@ function testBoard() {
   runScript("codex-board", ["release", "shared-build", ownerB]);
 }
 
-function spawnBoard(args) {
+function spawnBoard(args, pollMs = "50") {
   const child = spawn(join(SCRIPTS, "codex-board"), args, {
-    env: environment({ CODEX_BOARD_POLL_MS: "50" }),
+    env: environment({ CODEX_BOARD_POLL_MS: pollMs }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.capturedStdout = "";
@@ -598,6 +598,47 @@ async function testBoardWaitDeadWaiter() {
   runScript("codex-board", ["release", resource, ownerA]);
   const after = runScript("codex-board", ["show"]);
   assert.doesNotMatch(after.stdout, new RegExp(`(CLAIM|QUEUE) ${resource}`));
+}
+
+async function testBoardPlainClaimDoesNotJumpQueue() {
+  // A plain `claim` (no --wait) is what every existing poll loop runs. It
+  // must not win a resource out from under a live --wait queue the instant
+  // the holder releases: that is the same starvation --wait exists to
+  // fix, just moved to the moment of release.
+  const resource = "wait-priority";
+  const ownerA = "wave:run:worker-a";
+  const ownerB = "wave:run:worker-b";
+  const ownerC = "wave:run:worker-c";
+
+  runScript("codex-board", ["claim", resource, ownerA]);
+  // Give B a long poll interval: it registers in the queue immediately
+  // (below), then does not check again for a while, leaving a wide,
+  // deterministic window to prove a plain claim from C is blocked while
+  // the resource is free but B is still queued ahead of it.
+  const waiterB = spawnBoard(["claim", resource, ownerB, "--wait"], "1500");
+  await waitQueued(resource, 1, ownerB);
+
+  runScript("codex-board", ["release", resource, ownerA]);
+
+  const blocked = runScript("codex-board", ["claim", resource, ownerC], { status: 1 });
+  assert.match(
+    blocked.stdout,
+    new RegExp(`QUEUED ${resource} 1 waiting, head=${ownerB}`),
+  );
+  // C never joined the queue and never took the resource.
+  const midShow = runScript("codex-board", ["show"]);
+  assert.doesNotMatch(midShow.stdout, new RegExp(`CLAIM ${resource}`));
+  assert.match(midShow.stdout, new RegExp(`QUEUE ${resource}\\s+1\\s+${ownerB}`));
+
+  try {
+    await waitFor(() => waiterB.exitCode !== null, 5000);
+    assert.equal(waiterB.exitCode, 0, waiterB.capturedStderr);
+    assert.match(waiterB.capturedStdout, new RegExp(`CLAIMED ${resource} ${ownerB}`));
+  } finally {
+    if (waiterB.exitCode === null && waiterB.signalCode === null) waiterB.kill("SIGTERM");
+  }
+
+  runScript("codex-board", ["release", resource, ownerB]);
 }
 
 async function testWatchBehavior() {
@@ -711,6 +752,7 @@ try {
   await testBoardWaitQueueOrder();
   await testBoardWaitTimeout();
   await testBoardWaitDeadWaiter();
+  await testBoardPlainClaimDoesNotJumpQueue();
   await testWatchBehavior();
   await testLauncher();
   passed = true;
