@@ -72,24 +72,18 @@ Regenerate generated files with their source tool. Do not edit generated output 
 
 Mark the active goal complete only when all assigned work and evidence are complete.
 
-Mark the goal blocked when the same blocking condition prevents further work.
+Follow the host's rules for goal status. A transient wait is not a blocker.
+If an external prerequisite prevents progress, state the exact resume condition.
+Continue independent work within the assigned task.
 
 ## Final report
 
-Start with `PASS`, `FAIL`, or `BLOCKED`.
-
-Then give:
+State the outcome without claiming more than the evidence supports. Include:
 
 1. The commit identifier, or `none` for a reviewer.
 2. The changed files.
 3. The test commands and results.
 4. The remaining limits.
 
-Add a `FEEDBACK` section. Answer these questions:
-
-1. Which task statement was wrong or incomplete?
-2. Which file or tool caused avoidable work?
-3. Which stated fact did the evidence disprove?
-4. What first step can make the next run shorter?
-
-Write `nothing` when an answer is empty.
+Report a process problem when it adds an actionable lesson.
+An empty FEEDBACK section is not required.
