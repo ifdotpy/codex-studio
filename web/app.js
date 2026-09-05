@@ -47,6 +47,10 @@ const state = {
   request: null,
   query: "",
   workerQuery: "",
+  chatHistory: [],
+  chatBefore: null,
+  chatLoading: false,
+  historyExpanded: false,
 };
 let pollTimer, detailTimer, toastTimer;
 const current = () => state.threads.find((a) => a.id === state.opened);
@@ -54,6 +58,8 @@ const lead = () => state.threads.find((a) => a.id === state.lead);
 const leads = () =>
   state.threads.filter((a) => a.source === "managed" && a.isLead === true);
 const members = () => state.threads.filter((a) => a.rootId === state.lead);
+const agentRoom = () =>
+  state.runtime?.rooms?.find((r) => r.id === state.opened);
 const isGroup = () => state.chats.find((a) => a.id === state.opened);
 function toast(text) {
   $("#toast").textContent = text;
@@ -93,7 +99,10 @@ function openConversation(id) {
   if (a?.isLead) state.lead = a.id;
   else if (a?.rootId && leads().some((l) => l.id === a.rootId))
     state.lead = a.rootId;
-  else state.lead = null;
+  else state.lead = agentRoom()?.rootId || null;
+  state.chatHistory = [];
+  state.historyExpanded = false;
+  state.chatBefore = null;
   state.messageKey = "";
   state.autoFollow = true;
   $("#message").value = state.drafts.get(id) || "";
@@ -106,6 +115,11 @@ function openConversation(id) {
 }
 async function newChat() {
   if (state.creating) return;
+  if (current()?.isLead && current().empty && !state.pendingLead) {
+    setView("chat");
+    $("#message").focus();
+    return;
+  }
   state.creating = true;
   $("#new-chat").disabled = true;
   state.pendingLead ||= {
@@ -163,6 +177,11 @@ async function refresh() {
     }
     $("#error").hidden = true;
     if (!state.opened && leads().length) openConversation(leads().at(-1).id);
+    if (state.opened && !current() && !isGroup() && !agentRoom()) {
+      state.opened = null;
+      state.lead = null;
+      openConversation(leads().at(-1)?.id || null);
+    }
     render();
   } catch (error) {
     $("#error").hidden = false;
@@ -174,7 +193,8 @@ async function refresh() {
 function render() {
   const a = current(),
     root = lead(),
-    group = isGroup();
+    group = isGroup(),
+    room = agentRoom();
   updateHTML(
     $("#chat-list"),
     leads()
@@ -188,20 +208,36 @@ function render() {
       .join("") || '<p class="notice">Your conversations appear here.</p>',
   );
   $("#conversation-title").textContent =
-    a?.name || group?.name || "New conversation";
-  $("#conversation-title").title = a?.name || group?.name || "";
+    a?.name || group?.name || room?.name || "New conversation";
+  $("#conversation-title").title = a?.name || group?.name || room?.name || "";
   $("#conversation-status").textContent = status(a);
-  $("#back-lead").hidden = !root || root.id === a?.id;
-  $("#model").hidden = !!a && !a.isLead;
+  $("#back-lead").hidden =
+    state.view === "canvas" || !root || root.id === a?.id;
+  $("#model").hidden =
+    state.view === "canvas" || !!room || !!group || (!!a && !a.isLead);
   if (a?.isLead) $("#model").value = a.model;
   $("#model").disabled = !!a && (busy.has(a.status) || a.inFlight);
-  $("#conversation-menu").hidden = !a || a.source !== "managed";
-  $("#view-toggle").disabled = !a;
+  $("#conversation-menu").hidden =
+    state.view === "canvas" || !a || a.source !== "managed";
+  $("#view-toggle").disabled = !state.threads.length;
   $("#stop").hidden = !a || a.source !== "managed" || !busy.has(a.status);
   $("#project").textContent =
     a?.cwd?.split("/").filter(Boolean).at(-1) || "Project";
   $("#project").title = a?.cwd || "Project directory";
   $("#project").disabled = !a?.cwd;
+  $("#composer").hidden = !!room;
+  $(".composer-hint").hidden = !!room;
+  $("#conversation-status").textContent = room
+    ? room.kind === "private"
+      ? "Private between agents · Visible to you"
+      : "Broadcast"
+    : status(a);
+  if (state.view === "canvas") {
+    $("#conversation-title").textContent = "All agents";
+    $("#conversation-status").textContent =
+      `${leads().length} leads · ${state.threads.length} agents`;
+  }
+  renderAgentChats();
   const canSend = a?.canSend || !!group || !state.opened;
   $("#message").disabled = !canSend;
   $("#message").placeholder = canSend
@@ -221,7 +257,8 @@ function renderTeam() {
     monitors = (state.runtime?.monitors || []).filter((m) =>
       team.some((a) => a.id === m.agent),
     );
-  $("#team").hidden = !workers.length && !monitors.length;
+  $("#team").hidden =
+    state.view === "canvas" || (!workers.length && !monitors.length);
   $("#team-toggle").hidden = $("#team").hidden;
   $("#team-count").textContent =
     `${workers.filter((a) => busy.has(a.status)).length} active / ${workers.length}`;
@@ -301,7 +338,7 @@ function showMessages(items, notice = "") {
         batch.push(items[++i]);
       html += `<details class="tool-group" data-key="${esc(item.id)}"><summary>${batch.length} action${batch.length === 1 ? "" : "s"}</summary>${batch.map((t) => `<details data-key="${esc(t.id)}"><summary>${esc(t.title || "Tool")}</summary><pre class="tool-output">${esc(t.text)}</pre></details>`).join("")}</details>`;
     } else {
-      html += `<article class="message ${item.role === "user" ? "user" : "assistant"}" data-message="${esc(item.id)}">${item.role === "user" && item.pending ? '<span class="message-label">Queued</span>' : ""}<div class="prose">${item.role === "user" ? esc(item.text) : safeMarkdown(item.text)}</div>${item.truncated ? '<p class="notice">This message is clipped.</p>' : ""}<button class="copy-message" data-copy="${esc(item.id)}" aria-label="Copy message">Copy</button></article>`;
+      html += `<article class="message ${item.role === "user" ? "user" : "assistant"}" data-message="${esc(item.id)}">${item.senderName ? `<span class="message-label">${esc(item.senderName)} · ${esc(new Date(item.created * 1000).toLocaleString())}</span>` : ""}${item.role === "user" && item.pending ? '<span class="message-label">Queued</span>' : ""}<div class="prose">${item.role === "user" ? esc(item.text) : safeMarkdown(item.text)}</div>${item.truncated ? '<p class="notice">This message is clipped.</p>' : ""}<button class="copy-message" data-copy="${esc(item.id)}" aria-label="Copy message">Copy</button></article>`;
     }
   }
   if (!html)
@@ -319,7 +356,16 @@ async function loadMessages() {
   const id = state.opened;
   if (!id) return;
   try {
-    if (isGroup()) {
+    if (agentRoom()) {
+      const data = await api(`/api/agent-chat?room=${encodeURIComponent(id)}`);
+      if (state.opened !== id) return;
+      const combined = new Map(
+        [...state.chatHistory, ...data.messages].map((m) => [m.id, m]),
+      );
+      state.chatHistory = [...combined.values()].sort((a, b) => a.seq - b.seq);
+      if (!state.historyExpanded) state.chatBefore = data.nextBefore;
+      showAgentMessages();
+    } else if (isGroup()) {
       const messages = await api(
         `/api/messages?room=${encodeURIComponent(id)}`,
       );
@@ -507,16 +553,66 @@ async function submitAnswer(event) {
     toast(error.message);
   }
 }
+function renderAgentChats() {
+  const rooms = state.runtime?.rooms || [];
+  updateHTML(
+    $("#agent-chat-list"),
+    rooms
+      .map(
+        (r) =>
+          `<button class="chat-row ${r.id === state.opened ? "selected" : ""}" data-room="${esc(r.id)}">${esc(r.name)}<small>${r.kind === "private" ? "Private" : "Broadcast"}</small></button>`,
+      )
+      .join("") || '<p class="notice">Agent messages appear here.</p>',
+  );
+}
+function showAgentMessages() {
+  showMessages(
+    state.chatHistory.map((m) => ({ ...m, role: "assistant" })),
+    state.chatBefore
+      ? "Recent messages. Select Earlier messages to read more."
+      : "",
+  );
+  if (state.chatBefore) {
+    const button = document.createElement("button");
+    button.id = "earlier-messages";
+    button.textContent = "Earlier messages";
+    if (!$("#earlier-messages")) $("#messages").prepend(button);
+  }
+}
+async function earlierMessages() {
+  if (state.chatLoading || !state.chatBefore) return;
+  state.chatLoading = true;
+  const id = state.opened;
+  try {
+    const data = await api(
+      `/api/agent-chat?room=${encodeURIComponent(id)}&before=${state.chatBefore}`,
+    );
+    if (state.opened !== id) return;
+    state.chatHistory = [
+      ...new Map(
+        [...data.messages, ...state.chatHistory].map((m) => [m.id, m]),
+      ).values(),
+    ].sort((a, b) => a.seq - b.seq);
+    state.chatBefore = data.nextBefore;
+    state.historyExpanded = true;
+    state.autoFollow = false;
+    showAgentMessages();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.chatLoading = false;
+  }
+}
 function setView(view) {
   state.view = view;
   $("#canvas").hidden = view !== "canvas";
   $("#conversation").hidden = view === "canvas";
   $("#view-toggle").textContent = view === "canvas" ? "Chat" : "Canvas";
   $("#view-toggle").setAttribute("aria-pressed", String(view === "canvas"));
-  if (view === "canvas") renderCanvas();
+  render();
 }
 function canvasAgents() {
-  return lead() ? members() : state.threads;
+  return state.threads;
 }
 function renderCanvas() {
   if (state.drag) return;
@@ -629,6 +725,10 @@ async function folders(path) {
     toast(e.message);
   }
 }
+$("#agent-chat-list").onclick = (e) => {
+  const b = e.target.closest("[data-room]");
+  if (b) openConversation(b.dataset.room);
+};
 $("#new-chat").onclick = newChat;
 $("#composer").onsubmit = sendMessage;
 $("#message").oninput = resizeInput;
@@ -696,6 +796,7 @@ $("#jump-latest").onclick = () => {
   $("#jump-latest").hidden = true;
 };
 $("#messages").onclick = async (e) => {
+  if (e.target.closest("#earlier-messages")) return earlierMessages();
   const b = e.target.closest("[data-copy]");
   if (b)
     try {
@@ -712,6 +813,14 @@ $("#conversation-menu").onclick = async (e) => {
   if (!b) return;
   $("#conversation-menu").open = false;
   const action = b.dataset.action;
+  if (action === "delete") {
+    const a = current();
+    openPicker(
+      "Delete conversation?",
+      `<p class="notice">Delete ${esc(a.name)} and its workers from the interface. This stops their work. Files and stored transcripts remain on disk.</p><button class="danger" data-delete-chat="${esc(a.id)}">Delete conversation</button>`,
+    );
+    return;
+  }
   if (action === "monitor") {
     $("#message").value = "/monitor ";
     $("#message").focus();
@@ -861,7 +970,27 @@ $("#picker-body").onclick = async (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   try {
-    if (b.dataset.openSession) {
+    if (b.dataset.deleteChat) {
+      b.disabled = true;
+      const result = await api("/api/conversation/delete", {
+        id: b.dataset.deleteChat,
+      });
+      for (const id of result.deleted) {
+        state.drafts.delete(id);
+        state.sends.delete(id);
+        delete state.positions[id];
+      }
+      state.pendingLead = null;
+      $("#picker").close();
+      if (result.deleted.includes(state.opened)) {
+        $("#message").value = "";
+        state.opened = null;
+        state.lead = null;
+      }
+      saveLayout();
+      await refresh();
+      if (!state.opened) openConversation(null);
+    } else if (b.dataset.openSession) {
       $("#picker").close();
       openConversation(b.dataset.openSession);
     } else if (b.dataset.directory) await folders(b.dataset.directory);

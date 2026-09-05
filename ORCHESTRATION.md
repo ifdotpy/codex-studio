@@ -2,6 +2,7 @@
 
 Start `scripts/codex-canvas` and open <http://127.0.0.1:4620>.
 Select **New chat**. The server creates an empty lead conversation immediately.
+If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
 Creation itself does not call the model. A repeated creation request returns the same chat.
 Leads carry an explicit `isLead` marker in SQLite. Only Astra and Sol can be leads.
@@ -14,13 +15,15 @@ The conversation shows Markdown, tool results, queued messages and agent questio
 Enter sends a message. Shift + Enter inserts a new line.
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.
-Select **Canvas** for the selected team's graph. Drag nodes to move them, drag the background to pan, and scroll to zoom.
+Select **Canvas** for all orchestrators, workers and registered sessions. Drag nodes to move them, drag the background to pan, and scroll to zoom.
 The canvas has one control, **Fit**. Parent links come from the runtime.
 The browser keeps existing canvas positions and message drafts when views change.
 Manual graph selection modes, chat wiring, the minimap, and duplicate zoom controls were removed.
 Existing shared chats and sessions remain accessible from **Other sessions**; their command-line tools remain available.
 
-The conversation menu provides context compaction, review, command monitoring, and team stop.
+The conversation menu provides context compaction, review, command monitoring, team stop, and conversation deletion.
+Deletion stops the selected agent and its descendants and removes them from the interface.
+Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
 `/monitor <command>` submits a command directly. Results appear below the worker list.
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
 Team capacity and token budgets remain available through `codex-control configure`.
@@ -38,10 +41,13 @@ The lead receives these additional tools:
 
 | Tool | Behavior |
 |---|---|
+| `orchestration_peers` | Discover all managed agents and the caller's chat rooms. |
+| `orchestration_message` | Send to an agent id, `parent`, `lead`, `broadcast` (team), or `all` (all teams). |
+| `orchestration_chat_read` | Read a participant chat, with a cursor for older messages. |
 | `orchestration_title` | Set the conversation title from the task. Only a lead can call this tool. |
 | `orchestration_interrupt` | Stop a descendant and its descendants. A follow-up can resume them. |
 | `orchestration_spawn` | Create up to 64 workers in one request. Each worker has a task, role, optional model and effort. |
-| `orchestration_send` | Queue a follow-up for a descendant. An explicit follow-up can resume a stopped descendant. |
+| `orchestration_send` | Queue a follow-up for a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery. |
 | `orchestration_status` | Read team status and command watches for a decision. |
 | `orchestration_monitor` | Start a command watch. Deliver one result when the command exits. |
 | `orchestration_cancel_monitor` | Cancel a command watch. |
@@ -52,6 +58,28 @@ Events that arrive during a turn wait for that turn to finish. Up to 32 events
 are combined in one input. Repeated completion notifications share an event id.
 A worker with pending children or command watches stays in the waiting state.
 Its parent receives a result after that work settles. A reported result still needs review.
+
+## Agent chat
+
+Select **Agent chats** in the sidebar to read private conversations and broadcasts.
+Each message shows its author and timestamp. **Earlier messages** loads stored history.
+The user can observe every room. Other agents can read private rooms only when they are participants.
+This is a chat-tool rule, not filesystem isolation between processes on the same machine.
+
+Agents discover one another with `orchestration_peers`. `orchestration_message`
+creates a private room for two agents or publishes a broadcast. Team broadcasts
+include the lead and its descendants. The `all` target includes other teams.
+Agents created later can read earlier broadcasts but do not receive their old wake events.
+
+The message and each recipient event commit in one SQLite transaction. Repeating
+one tool call does not duplicate delivery. Messages wait behind an active turn and
+wake a finished recipient. Stopped agents and unused blank leads receive stored
+history only. Peer messages never resume a stopped agent. Agent messages carry
+agent provenance; they do not add user authority. Instructions prohibit acknowledgement loops.
+
+Codex persists dynamic tools when it creates a thread. Existing threads can use
+`orchestration_status` for peers and recent chat history, and `orchestration_send`
+for parent, lead, peer, or broadcast messages. New threads have all three dedicated chat tools.
 
 Native subagent tools are disabled only in these managed threads with `agents.enabled=false`,
 `features.multi_agent_v2=false`, and `features.multi_agent=false`. The last flag alone does not

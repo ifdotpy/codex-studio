@@ -140,6 +140,8 @@ class Canvas:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
                     for item in db.execute("SELECT record FROM runtime_agents"):
                         a = json.loads(item[0])
+                        if a.get("deletedAt"):
+                            continue
                         rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
                                      "launcherAlive": False, "wave": "Managed team"})
         by_thread = {t['threadId']: t for t in rows if t.get('threadId')}
@@ -457,6 +459,10 @@ def make_server(canvas, port=0):
                     folders = sorted((p for p in directory.iterdir() if p.is_dir() and not p.name.startswith('.')), key=lambda p: p.name.lower())
                     return self.send({"path": str(directory), "parent": str(directory.parent) if directory != directory.parent else None,
                         "directories": [{"name": p.name, "path": str(p)} for p in folders[:500]]})
+                if path.path == "/api/agent-chat" and canvas.runtime:
+                    query = parse_qs(path.query)
+                    before = int(query["before"][0]) if query.get("before") else None
+                    return self.send(canvas.runtime.chat_read(query.get("room", [""])[0], before=before))
                 if path.path == "/api/models" and canvas.runtime:
                     return self.send(canvas.runtime.catalog())
                 if path.path == "/api/import" and canvas.runtime:
@@ -489,6 +495,8 @@ def make_server(canvas, port=0):
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
                 if canvas.runtime:
+                    if self.path == "/api/conversation/delete":
+                        return self.send(canvas.runtime.delete_conversation(body.get("id")))
                     if self.path == "/api/leads":
                         return self.send(canvas.runtime.new_lead(body))
                     if self.path == "/api/conversation":

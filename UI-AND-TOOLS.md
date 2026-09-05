@@ -2,7 +2,7 @@
 
 Owner requirements, 2026-09-05: create a chat with one click, generate its title
 from the task, distinguish leads in the database, and allow only Astra or Sol
-as a lead. The canvas is a secondary view for a team of dozens of agents.
+as a lead. The canvas is a secondary view for all teams and their agents.
 
 ## Interface decisions
 
@@ -26,6 +26,11 @@ Applied decisions:
 
 These are design choices, not a claim that this client has every feature of the reference products.
 
+The subsequent owner request adds a global canvas, reuse of an empty current chat,
+conversation deletion, and agent communication. Private and broadcast rooms appear
+in the sidebar. The user can inspect them. The runtime controls membership and delivery.
+See [the orchestration contract](ORCHESTRATION.md#agent-chat) for the chat rules.
+
 ## Tool evidence
 
 `tests/tool-parity.py` starts the installed Codex 0.153.4 against a local Responses
@@ -34,7 +39,7 @@ inside code mode. This check makes no model inference call.
 
 The comparison retains every non-collaboration tool in that fixture. Six native
 collaboration tools are replaced by the managed dispatcher. It adds spawn, follow-up,
-status, interrupt, monitor, monitor cancellation, and conversation title tools.
+status, interrupt, monitor, monitor cancellation, conversation title, peer discovery, agent message, and chat history tools.
 
 The check found that `features.multi_agent=false` alone leaves Astra's model-selected
 v2 agents available. Managed threads now also set `features.multi_agent_v2=false`
@@ -67,9 +72,9 @@ The permanent tests reproduce the relevant checks without relying on that direct
 
 ## Verification
 
-- `tests/runtime-contract.py`: 24 runtime cases, including blank creation, model admission, role migration, async answers, 40-worker scheduling, monitor completion, cancellation, and parent wakes.
+- `tests/runtime-contract.py`: 30 runtime cases, including blank creation, model admission, role migration, async answers, 40-worker scheduling, monitor completion, cancellation, and parent wakes.
 - `tests/canvas-contract.py`: 17 data and HTTP cases retained for legacy sessions, shared chats, and safe request handling.
-- `tests/product-ui.mjs`: actual HTTP and SQLite fixture; lead filtering, 40 workers, Markdown safety, drafts, scoped canvas, one-click creation, retry identity, model guard, async answer, monitor, and stop.
+- `tests/product-ui.mjs`: actual HTTP and SQLite fixture; lead filtering, 40 workers, Markdown safety, drafts, global canvas, private chat history, deletion, empty-chat reuse, one-click creation, retry identity, model guard, async answer, monitor, and stop.
 - Headless Chrome: rendered at 1440 × 960 and 390 × 844; no horizontal page overflow.
 - Live Codex: one Astra lead, two reviewers, one command monitor. No claim of a live 40-model load test.
 

@@ -22,6 +22,10 @@
           aria-label="Search chats"
       /></label>
       <nav id="chat-list" aria-label="Lead conversations"></nav>
+      <details id="agent-chats" open>
+        <summary>Agent chats</summary>
+        <nav id="agent-chat-list" aria-label="Agent chats"></nav>
+      </details>
       <div class="sidebar-bottom">
         <button id="import-chat">Import from Codex</button
         ><button id="other-sessions">Other sessions</button>
@@ -53,7 +57,10 @@
             <button data-action="monitor">Monitor a command</button
             ><button data-action="compact">Compact context</button
             ><button data-action="review">Review changes</button
-            ><button data-action="stop-team" class="danger">Stop team</button>
+            ><button data-action="stop-team" class="danger">Stop team</button
+            ><button data-action="delete" class="danger">
+              Delete conversation
+            </button>
           </div>
         </details>
       </header>

@@ -121,7 +121,7 @@ Do not infer a creator from a shared wave, directory, model, or resource claim.
 
 The default view is a lead conversation. Select **New chat** to create it without a form.
 Only managed records with `isLead=true` appear in the chat list. Leads use Astra or Sol.
-Select **Canvas** for the selected team. Click a node to read its transcript.
+Select **Canvas** for all teams and registered sessions. Click a node to read its transcript.
 Drag a node to move it. Drag the background to pan. Scroll to zoom. **Fit** shows the team.
 Canvas positions stay in browser storage on this device.
 Use **Other sessions** for legacy agents and shared chats. Use the chat commands below to change membership.
@@ -238,7 +238,7 @@ Implementers claim; reviewers only read. Claims never expire — `takeover` only
 | `codex-board` | File-locked resource claims |
 | `codex-stop` | Verified launcher stop |
 | `luna` | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `board`, `waves`, `watch` |
-| `codex-canvas` | Lead conversations, team canvas, transcripts, approvals, and command monitors |
+| `codex-canvas` | Lead conversations, global canvas, agent chats, approvals, and command monitors |
 | `codex-chat` | Create chat nodes, connect members, read messages, or post replies |
 | `codex-graph` | Register native agents and actual creator relationships |
 

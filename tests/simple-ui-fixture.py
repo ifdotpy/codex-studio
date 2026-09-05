@@ -31,6 +31,14 @@ with c.runtime.lock, c.runtime.db() as db:
     c.runtime.item(db, lead['id'], lead['id'] + ':reply', 'assistant', 'I assigned 40 workers to the review. Seven workers are active and 15 have finished.\n\nWorker 07 found a failed check. I will collect the remaining results before I prepare the release report.\n\n**Evidence:** all reports remain available. [unsafe](javascript:alert(1)) <img src=\"https://invalid.example/track\" onerror=\"alert(1)\">', 'Lead')
     c.runtime.item(db, lead['id'], lead['id'] + ':tool', 'tool', 'Hidden tool fixture', 'Tool')
     c.runtime.put(db, 'requests', {'id': 'async-question', 'method': 'agent/asyncQuestion', 'agent': lead['id'], 'epoch': 0, 'status': 'pending', 'params': {'questions': [{'id': '0', 'question': 'Which scope?', 'options': [{'label': 'One file'}, {'label': 'All files'}]}]}})
+with c.runtime.lock, c.runtime.db() as db:
+    chat_sender = c.runtime.agent(child['id'], db)
+    chat_sender['autoWake'] = True
+    c.runtime.put(db, 'agents', chat_sender)
+for i in range(105):
+    c.runtime.chat_message(child['id'], 'parent', f'Earlier finding {i}', f'fixture-earlier-{i}')
+c.runtime.chat_message(child['id'], 'parent', 'A private update before the final answer.', 'fixture-private')
+c.runtime.chat_message(child['id'], 'broadcast', 'Release checks are ready for review.', 'fixture-broadcast')
 other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt': 'Separate task'}, defer=True)
 c.runtime.create({'name': 'Standalone reviewer', 'cwd': str(c.root), 'prompt': 'Review', 'role': 'reviewer', 'model': 'gpt-5.6-luna'}, defer=True)
 c.runtime.connect().gate.set()

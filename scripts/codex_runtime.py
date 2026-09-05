@@ -33,6 +33,16 @@ THREAD_CONFIG = {"features.multi_agent": False, "features.multi_agent_v2": False
 LEAD_MODELS = ("gpt-6-astra", "gpt-5.6-sol")
 TEXT = {"type": "string"}
 TOOLS = [
+    tool("orchestration_peers", "List all managed agents and your readable chat rooms. "
+         "Use agent ids to contact peers, including other teams. Do not poll.", {}),
+    tool("orchestration_message", "Send a message without ending your turn. "
+         "target is an agent id, parent, lead, broadcast (your team), or all (all teams). "
+         "Private chats are visible to their participants and the user. Messages wake idle "
+         "recipients but never resume stopped agents. Do not send acknowledgement loops.",
+         {"target": TEXT, "text": TEXT}, ["target", "text"]),
+    tool("orchestration_chat_read", "Read messages in a chat you belong to. "
+         "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
+         {"room_id": TEXT, "before": {"type": "integer", "minimum": 1}}, ["room_id"]),
     tool("orchestration_title", "Set a short conversation title from the user's task. "
          "Call once at the start of a new lead conversation, in the user's language.",
          {"title": {"type": "string", "minLength": 1, "maxLength": 80}}, ["title"]),
@@ -74,6 +84,14 @@ does not prove the entire task is complete. Read each worker result and status.
 Give workers bounded files, an acceptance check and explicit commit authority.
 Implementer worktrees start from committed HEAD, not your uncommitted changes.
 Use orchestration_send for follow-ups and orchestration_interrupt to stop a descendant.
+Use orchestration_peers to discover agents, then orchestration_message to talk to them.
+Use target parent or lead to report progress before your final answer. Use an agent id
+for a private chat, broadcast for your team, or all for all teams. The user can read
+these chats. Private means other agents cannot read it through the chat tools.
+Messages wake recipients automatically. Send only useful questions, findings or answers.
+Do not reply merely to acknowledge receipt. Do not create broadcast reply loops.
+If this existing thread lacks the new chat tools, orchestration_status includes the
+peer directory and recent chats; orchestration_send accepts peer ids and these targets.
 Model names can be omitted to inherit yours.
 Do not merge work without review. Do not make recurring checks when an event is pending.
 """
@@ -215,6 +233,13 @@ class Runtime:
                 CREATE TABLE IF NOT EXISTS runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_completed_turns (id TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS runtime_lead_requests (id TEXT PRIMARY KEY, agent TEXT NOT NULL, signature TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_rooms (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_chat_messages (
+                  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
+                  room TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL,
+                  created REAL NOT NULL, deliveries TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
             db.execute("UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status='dispatching'")
             for a in self.records(db, "agents"):
@@ -329,6 +354,8 @@ class Runtime:
             existing = db.execute("SELECT record FROM runtime_agents WHERE id=?", (key,)).fetchone()
             if existing:
                 a = json.loads(existing[0])
+                if a.get("deletedAt"):
+                    raise ValueError("This conversation was deleted")
                 if a["name"] != name.strip() or a["prompt"] != prompt.strip():
                     raise ValueError("This request id has different content")
                 return a
@@ -338,11 +365,13 @@ class Runtime:
             model = data.get("model") or (p["model"] if p else LEAD_MODELS[0])
             if is_lead and model not in LEAD_MODELS:
                 raise ValueError("A lead must use Astra or Sol")
+            if p and (p.get("deletedAt") or root.get("deletedAt")):
+                raise ValueError("This conversation was deleted")
             if p and (not p["autoWake"] or not root["autoWake"]):
                 raise ValueError("This team is stopped")
             if p and parent_epoch is not None and p["epoch"] != parent_epoch:
                 raise ValueError("The parent turn was stopped")
-            if root and sum(a["rootId"] == root["id"] for a in self.records(db, "agents")) >= root["maxAgents"]:
+            if root and sum(a["rootId"] == root["id"] and not a.get("deletedAt") for a in self.records(db, "agents")) >= root["maxAgents"]:
                 raise ValueError("Team agent limit reached")
             cwd = str(Path(p["cwd"] if p else data.get("cwd", "")).expanduser().resolve())
             if not Path(cwd).is_dir() or (not p and not data.get("cwd")):
@@ -377,10 +406,22 @@ class Runtime:
         signature = json.dumps({k: data.get(k) for k in ("model", "previous")}, sort_keys=True)
         with self.lock:
             with self.db() as db:
+                if data.get("model") and data["model"] not in LEAD_MODELS:
+                    raise ValueError("A lead must use Astra or Sol")
+                alias = db.execute("SELECT agent, signature FROM runtime_lead_requests WHERE id=?", (key,)).fetchone()
+                if alias:
+                    if alias["signature"] != signature:
+                        raise ValueError("This creation id has different settings")
+                    existing = self.agent(alias["agent"], db)
+                    if existing.get("deletedAt"):
+                        raise ValueError("This conversation was deleted")
+                    return existing
                 if key:
                     row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (key,)).fetchone()
                     if row:
                         existing = json.loads(row[0])
+                        if existing.get("deletedAt"):
+                            raise ValueError("This conversation was deleted")
                         if not existing.get("isLead") or not existing.get("quickCreate"):
                             raise ValueError("This creation id belongs to another agent")
                         if existing.get("quickCreateRequest") != signature:
@@ -389,14 +430,49 @@ class Runtime:
                 previous = self.agent(data["previous"], db) if data.get("previous") else None
                 if previous and not previous.get("isLead"):
                     raise ValueError("Select a lead conversation")
+                if previous and previous.get("deletedAt"):
+                    raise ValueError("This conversation was deleted")
+                if previous and self.empty_lead(db, previous):
+                    if key:
+                        db.execute("INSERT INTO runtime_lead_requests VALUES (?,?,?)", (key, previous["id"], signature))
+                    return previous
                 cwd = previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd())
             return self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
                                 "_creationSignature": signature,
                                 "model": data.get("model") or (previous["model"] if previous else LEAD_MODELS[0])}, draft=True)
 
+    @staticmethod
+    def empty_lead(db, a):
+        return bool(a.get("isLead") and not a.get("deletedAt") and a["status"] == "idle"
+                    and not a.get("threadId") and not a.get("prompt")
+                    and not db.execute("SELECT 1 FROM runtime_events WHERE agent=?", (a["id"],)).fetchone()
+                    and not db.execute("SELECT 1 FROM runtime_items WHERE agent=?", (a["id"],)).fetchone()
+                    and not db.execute("SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.parentId')=?", (a["id"],)).fetchone()
+                    and not db.execute("SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.agent')=?", (a["id"],)).fetchone())
+
+    def delete_conversation(self, key):
+        # Keep tombstones so late callbacks cannot recreate deleted work.
+        with self.lock, self.db() as db:
+            a = self.agent(key, db)
+            agents = self.records(db, "agents")
+            ids = {key}
+            while True:
+                expanded = ids | {a["id"] for a in agents if a.get("parentId") in ids}
+                if expanded == ids:
+                    break
+                ids = expanded
+            for a in agents:
+                if a["id"] in ids:
+                    a.update(deletedAt=a.get("deletedAt") or time.time(), autoWake=False)
+                    self.put(db, "agents", a)
+        self.stop(key, True, "Conversation deleted")
+        return {"deleted": sorted(ids)}
+
     def conversation_settings(self, key, data):
         with self.lock, self.db() as db:
             a = self.agent(key, db)
+            if a.get("deletedAt"):
+                raise ValueError("This conversation was deleted")
             if not a.get("isLead"):
                 raise ValueError("Only a lead has conversation settings")
             if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
@@ -421,6 +497,8 @@ class Runtime:
             raise ValueError("Message must have 1 to 32000 characters")
         with self.lock, self.db() as db:
             a = self.agent(key, db)
+            if a.get("deletedAt"):
+                raise ValueError("This conversation was deleted")
             if manual or resume:
                 a.update(autoWake=True, error=None)
                 root = self.agent(a["rootId"], db)
@@ -743,22 +821,30 @@ class Runtime:
                             child = self.create(spec, a["id"], parent_epoch=a["epoch"])
                             children.append({k: child[k] for k in ("id", "name", "status", "model")})
                     value = {"agents": children, "delivery": "Results wake you automatically. Finish your turn while waiting."}
-                elif name == "orchestration_status":
-                    value = self.team(a["rootId"])
+                elif name in {"orchestration_status", "orchestration_peers"}:
+                    value = {**self.team(a["rootId"]), **self.peers(a["id"])}
+                    if name == "orchestration_status":
+                        value["recentChats"] = [self.chat_read(r["id"], a["id"], limit=10)
+                                                for r in value["rooms"][:10]]
+                elif name == "orchestration_message":
+                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"])
+                elif name == "orchestration_chat_read":
+                    value = self.chat_read(args["room_id"], a["id"], args.get("before"))
                 elif name == "orchestration_send":
-                    target = self.agent(args["agent_id"])
-                    ancestors = set()
-                    cursor = target
-                    while cursor.get("parentId"):
-                        ancestors.add(cursor["parentId"])
-                        cursor = self.agent(cursor["parentId"])
-                    if a["id"] not in ancestors:
-                        raise ValueError("Follow-ups can target only your descendants")
+                    target_id = args["agent_id"]
                     with self.lock:
                         sender = self.agent(a["id"])
                         if not sender["autoWake"] or sender["epoch"] != a["epoch"]:
                             raise ValueError("Sender was stopped")
-                        value = self.send(target["id"], args["text"], key, manual=False, resume=True)
+                        # Old threads retain their tool schema. Support peer chat through send.
+                        target = None if target_id in {"parent", "lead", "broadcast", "all"} else self.agent(target_id)
+                        cursor = target
+                        while cursor and cursor.get("parentId") and cursor["parentId"] != a["id"]:
+                            cursor = self.agent(cursor["parentId"])
+                        if cursor and cursor.get("parentId") == a["id"]:
+                            value = self.send(target["id"], args["text"], key, manual=False, resume=True)
+                        else:
+                            value = self.chat_message(a["id"], target_id, args["text"], key, a["epoch"])
                 elif name == "orchestration_monitor":
                     value = self.monitor(a["id"], args, key, approved=a.get("approvalPolicy") == "never", epoch=a["epoch"])
                 elif name == "orchestration_cancel_monitor":
@@ -774,6 +860,92 @@ class Runtime:
             self.connect().write({"id": message["id"], "result": result})
         except Exception:
             pass
+
+    def chat_rooms(self, db, viewer=None):
+        agents = {a["id"]: a for a in self.records(db, "agents") if not a.get("deletedAt")}
+        rooms = []
+        for room in self.records(db, "rooms"):
+            members = ([a["id"] for a in agents.values() if room.get("rootId") in {"all", a["rootId"]}]
+                       if room["kind"] == "broadcast" else room["members"])
+            if any(m not in agents for m in members) or not members or (viewer and viewer not in members):
+                continue
+            room["members"] = members
+            room["name"] = ("All agents" if room.get("rootId") == "all" else
+                            agents[room["rootId"]]["name"] + " · Broadcast" if room["kind"] == "broadcast" else
+                            " ↔ ".join(agents[m]["name"] for m in members))
+            rooms.append(room)
+        return sorted(rooms, key=lambda r: r["updated"], reverse=True)
+
+    def peers(self, viewer):
+        with self.lock, self.db() as db:
+            a = self.agent(viewer, db)
+            if a.get("deletedAt"):
+                raise ValueError("This conversation was deleted")
+            return {"self": viewer, "lead": a["rootId"], "parent": a["parentId"],
+                    "peers": [{k: p.get(k) for k in ("id", "name", "role", "rootId", "parentId", "status")}
+                              for p in self.records(db, "agents") if not p.get("deletedAt")],
+                    "rooms": self.chat_rooms(db, viewer)}
+
+    def chat_read(self, room_id, viewer=None, before=None, limit=100):
+        if before is not None and (not isinstance(before, int) or before < 1):
+            raise ValueError("Invalid message cursor")
+        with self.lock, self.db() as db:
+            room = next((r for r in self.chat_rooms(db, viewer) if r["id"] == room_id), None)
+            if not room:
+                raise ValueError("Chat is unavailable or you are not a participant")
+            rows = db.execute("SELECT * FROM runtime_chat_messages WHERE room=? AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT ?",
+                              (room_id, before, before, limit + 1)).fetchall()
+            messages = [{**dict(r), "deliveries": json.loads(r["deliveries"])} for r in reversed(rows[:limit])]
+            names = {a["id"]: a["name"] for a in self.records(db, "agents")}
+            for m in messages:
+                m["senderName"] = names.get(m["sender"], m["sender"])
+            return {"room": room, "messages": messages,
+                    "nextBefore": messages[0]["seq"] if len(rows) > limit else None}
+
+    def chat_message(self, sender_id, target, text, key, epoch=None):
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
+            raise ValueError("Message must have 1 to 12000 characters")
+        text = text.strip()
+        with self.lock, self.db() as db:
+            sender = self.agent(sender_id, db)
+            if sender.get("deletedAt") or not sender["autoWake"] or (epoch is not None and sender["epoch"] != epoch):
+                raise ValueError("Sender was stopped")
+            target = {"parent": sender["parentId"], "lead": sender["rootId"]}.get(target, target)
+            if target in {"broadcast", "all"}:
+                root = sender["rootId"] if target == "broadcast" else "all"
+                room = {"id": "broadcast:" + root, "kind": "broadcast", "rootId": root}
+                recipients = [a for a in self.records(db, "agents")
+                              if root in {"all", a["rootId"]} and not a.get("deletedAt")]
+            else:
+                recipient = self.agent(target, db)
+                if recipient.get("deletedAt"):
+                    raise ValueError("Recipient conversation was deleted")
+                if recipient["id"] == sender_id:
+                    raise ValueError("Select another agent")
+                ids = sorted([sender_id, recipient["id"]])
+                room = {"id": "private:" + ":".join(ids), "kind": "private", "members": ids}
+                recipients = [recipient]
+            previous = db.execute("SELECT * FROM runtime_chat_messages WHERE id=?", (key,)).fetchone()
+            if previous:
+                if (previous["room"], previous["sender"], previous["text"]) != (room["id"], sender_id, text):
+                    raise ValueError("This message id has different content")
+                return {"id": key, "room": room["id"], "deliveries": json.loads(previous["deliveries"])}
+            room["updated"] = time.time()
+            self.put(db, "rooms", room)
+            deliveries = {}
+            for recipient in recipients:
+                if recipient["id"] == sender_id:
+                    continue
+                if not recipient["autoWake"] or self.empty_lead(db, recipient):
+                    deliveries[recipient["id"]] = "stored_only"
+                    continue
+                event = json.dumps({"room": room["id"], "message_id": key, "sender": sender_id,
+                                    "sender_name": sender["name"], "text": text}, ensure_ascii=False)
+                self.enqueue(db, recipient, "agent_message", event, "chat:" + key + ":" + recipient["id"])
+                deliveries[recipient["id"]] = "queued"
+            db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
+                       (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
+            return {"id": key, "room": room["id"], "deliveries": deliveries}
 
     def monitor(self, agent_id, data, key=None, approved=False, epoch=None):
         command = data.get("command")
@@ -997,15 +1169,17 @@ class Runtime:
 
     def snapshot(self):
         with self.lock, self.db() as db:
-            agents = self.records(db, "agents")
+            agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
             for a in agents:
+                a["empty"] = self.empty_lead(db, a)
                 for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy"):
                     a.pop(private, None)
                 a.update(kind="agent", source="managed", canSend=True, launcherAlive=not self.closed,
                          wave="Team: " + next((r["name"] for r in agents if r["id"] == a["rootId"]), "Team"))
             events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
-            return {"agents": agents, "monitors": self.records(db, "monitors"),
-                    "requests": [r for r in self.records(db, "requests") if r["status"] == "pending"],
+            return {"agents": agents, "monitors": [m for m in self.records(db, "monitors") if m["agent"] in {a["id"] for a in agents}],
+                    "requests": [r for r in self.records(db, "requests") if r["status"] == "pending" and r.get("agent") in {a["id"] for a in agents}],
+                    "rooms": self.chat_rooms(db),
                     "events": events, "connected": self.server is not None and not self.closed and not self.offline}
 
     def team(self, root):

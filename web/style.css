@@ -912,3 +912,27 @@ dialog::backdrop {
     text-overflow: ellipsis;
   }
 }
+
+#agent-chats {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  max-height: 35vh;
+  overflow: auto;
+  flex-shrink: 0;
+}
+#agent-chats > summary {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+#agent-chat-list .chat-row {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.message-label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 8px;
+}

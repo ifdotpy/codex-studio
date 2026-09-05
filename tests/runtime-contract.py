@@ -117,6 +117,130 @@ class RuntimeContract(unittest.TestCase):
     def complete(self, a):
         self.runtime.server.complete(a['threadId'], a['turnId'])
 
+    def test_empty_current_chat_reuses_identity_even_after_restart(self):
+        import uuid
+        first = self.runtime.new_lead({})
+        request = {'id': str(uuid.uuid4()), 'previous': first['id']}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda _: self.runtime.new_lead(request), range(8)))
+        self.assertEqual({a['id'] for a in results}, {first['id']})
+        self.assertEqual(len(self.runtime.snapshot()['agents']), 1)
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertEqual(self.runtime.new_lead(request)['id'], first['id'])
+        self.runtime.send(first['id'], 'Start this task')
+        second = self.runtime.new_lead({'previous': first['id']})
+        self.assertNotEqual(second['id'], first['id'])
+        self.assertEqual(self.runtime.new_lead(request)['id'], first['id'])
+
+    def test_chat_delivers_to_finished_parent_and_peer_and_enforces_privacy(self):
+        lead = self.lead()
+        children = [self.runtime.create({'name': str(i), 'prompt': 'Review', 'role': 'reviewer'}, lead['id'], defer=True) for i in range(3)]
+        self.complete(lead)
+        with self.runtime.lock:
+            with self.runtime.db() as db:
+                for child in children[:2]:
+                    child.update(status='completed', autoWake=True)
+                    self.runtime.put(db, 'agents', child)
+            first, peer, outsider = children
+            directory = self.runtime.peers(first['id'])
+            self.assertEqual(len(directory['peers']), 4)
+            parent = self.runtime.chat_message(first['id'], 'parent', 'Found the cause', 'msg-parent', 0)
+            private = self.runtime.chat_message(first['id'], peer['id'], 'Check this symbol', 'msg-private', 0)
+            self.assertEqual(parent['deliveries'], {lead['id']: 'queued'})
+            self.assertEqual(private['deliveries'], {peer['id']: 'queued'})
+            self.assertEqual(self.runtime.agent(lead['id'])['status'], 'queued')
+            self.assertEqual(self.runtime.agent(peer['id'])['status'], 'queued')
+            self.assertEqual(self.runtime.chat_read(private['room'], peer['id'])['messages'][0]['sender'], first['id'])
+            with self.assertRaisesRegex(ValueError, 'not a participant'):
+                self.runtime.chat_read(private['room'], outsider['id'])
+            self.assertEqual(len(self.runtime.chat_read(private['room'])['messages']), 1, 'user can inspect private chat')
+            self.assertEqual(self.runtime.chat_message(first['id'], peer['id'], 'Check this symbol', 'msg-private', 0), private)
+            with self.assertRaisesRegex(ValueError, 'different content'):
+                self.runtime.chat_message(first['id'], peer['id'], 'Changed', 'msg-private', 0)
+            with self.runtime.db() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE kind='agent_message'").fetchone()[0], 2)
+        eventually(lambda: self.runtime.agent(peer['id'])['status'] == 'running')
+        eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+        inputs = [p['input'][0]['text'] for method, p in self.runtime.server.calls if method == 'turn/start']
+        self.assertTrue(any('Found the cause' in t and 'agent_message' in t for t in inputs))
+        self.assertTrue(any('Check this symbol' in t for t in inputs))
+
+    def test_broadcast_scopes_stop_boundary_pagination_and_restart(self):
+        lead = self.lead()
+        peer = self.runtime.create({'name': 'Peer', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'], defer=True)
+        other = self.lead(name='Other lead')
+        blank = self.runtime.new_lead({})
+        with self.runtime.lock:
+            team = self.runtime.chat_message(lead['id'], 'broadcast', 'Team update', 'broadcast-team')
+            self.assertEqual(team['deliveries'], {peer['id']: 'stored_only'})
+            all_teams = self.runtime.chat_message(lead['id'], 'all', 'Shared finding', 'broadcast-all')
+            self.assertEqual(all_teams['deliveries'][other['id']], 'queued')
+            self.assertEqual(all_teams['deliveries'][blank['id']], 'stored_only')
+            self.assertEqual(self.runtime.agent(peer['id'])['status'], 'paused')
+            with self.assertRaisesRegex(ValueError, 'not a participant'):
+                self.runtime.chat_read(team['room'], other['id'])
+            for i in range(105):
+                self.runtime.chat_message(lead['id'], peer['id'], f'Finding {i}', f'page-{i}')
+            room = self.runtime.peers(peer['id'])['rooms'][0]
+            newest = self.runtime.chat_read(room['id'], peer['id'])
+            older = self.runtime.chat_read(room['id'], peer['id'], newest['nextBefore'])
+            self.assertEqual(len(newest['messages']), 100)
+            self.assertEqual(len(older['messages']), 5)
+            self.assertIsNone(older['nextBefore'])
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertEqual(len(self.runtime.chat_read(room['id'], peer['id'])['messages']), 100)
+
+    def test_chat_tools_are_exposed_and_dispatch_from_a_worker(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Peer', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        child = self.runtime.agent(child['id'])
+        for i, (name, args) in enumerate([
+            ('orchestration_message', {'target': 'lead', 'text': 'Progress before final'}),
+            ('orchestration_peers', {}),
+            ('orchestration_send', {'agent_id': 'parent', 'text': 'Old schema works'}),
+        ]):
+            self.runtime.dynamic({'id': 700+i, 'params': {'threadId': child['threadId'], 'callId': str(i), 'tool': name, 'arguments': args}})
+            reply = next(r for r in self.runtime.server.responses if r['id'] == 700+i)
+            self.assertTrue(reply['result']['success'], reply)
+        room = self.runtime.peers(child['id'])['rooms'][0]
+        self.runtime.dynamic({'id': 704, 'params': {'threadId': child['threadId'], 'callId': 'read',
+            'tool': 'orchestration_chat_read', 'arguments': {'room_id': room['id']}}})
+        self.assertTrue(next(r for r in self.runtime.server.responses if r['id'] == 704)['result']['success'])
+        params = next(p for method, p in self.runtime.server.calls if method == 'thread/start')
+        self.assertTrue({'orchestration_message', 'orchestration_peers', 'orchestration_chat_read'} <= {t['name'] for t in params['dynamicTools']})
+
+    def test_deleted_worker_does_not_consume_team_capacity(self):
+        lead = self.lead(maxAgents=2)
+        child = self.runtime.create({'name': 'Old worker', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'], defer=True)
+        self.runtime.delete_conversation(child['id'])
+        replacement = self.runtime.create({'name': 'New worker', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'], defer=True)
+        self.assertNotEqual(child['id'], replacement['id'])
+        self.assertEqual(len(self.runtime.team(lead['id'])['agents']), 2)
+
+    def test_delete_stops_tree_and_rejects_retry_or_late_wakeup(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Peer', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        child = self.runtime.agent(child['id'])
+        message = self.runtime.chat_message(child['id'], 'parent', 'Progress', 'delete-message')
+        deleted = self.runtime.delete_conversation(lead['id'])
+        self.assertEqual(set(deleted['deleted']), {lead['id'], child['id']})
+        self.assertEqual(self.runtime.snapshot()['agents'], [])
+        self.assertEqual(self.runtime.snapshot()['rooms'], [])
+        self.runtime.server.complete(child['threadId'], child['turnId'], 'Late result')
+        self.assertFalse(self.runtime.agent(lead['id'])['autoWake'])
+        with self.assertRaisesRegex(ValueError, 'deleted'):
+            self.runtime.send(lead['id'], 'Replay')
+        self.assertEqual(self.runtime.delete_conversation(lead['id'])['deleted'], deleted['deleted'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_chat_messages').fetchone()[0], 1)
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertEqual(self.runtime.snapshot()['agents'], [])
+
     def test_blank_lead_is_persistent_and_has_no_model_call(self):
         import uuid
         key = str(uuid.uuid4())

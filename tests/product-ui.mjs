@@ -137,7 +137,11 @@ try {
   );
   $("#view-toggle").click();
   assert.equal($("#canvas").hidden, false);
-  assert.equal($("#nodes").children.length, 41, "canvas scopes to this team");
+  assert.equal(
+    $("#nodes").children.length,
+    43,
+    "canvas includes every team and standalone agent",
+  );
   const node = [...$("#nodes").children].find(
     (n) => n.dataset.node === lead.id,
   );
@@ -178,6 +182,48 @@ try {
   assert.equal(created.length, 1, "idempotent create");
   assert.equal(created[0].status, "idle");
   assert.equal(created[0].threadId, null, "no model turn until first message");
+  $("#message").value = "Keep my draft";
+  $("#new-chat").click();
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(
+    $("#message").value,
+    "Keep my draft",
+    "reuse empty chat preserves draft",
+  );
+  const reused = await (await fetch(origin + "/api/state")).json();
+  assert.equal(
+    reused.runtime.agents.filter((a) => a.quickCreate).length,
+    1,
+    "new chat reuses empty current chat",
+  );
+  const privateRoom = snapshot.runtime.rooms.find((r) => r.kind === "private");
+  [...$("#agent-chat-list").querySelectorAll("[data-room]")]
+    .find((b) => b.dataset.room === privateRoom.id)
+    .click();
+  await wait(
+    () => $("#messages").textContent.includes("A private update"),
+    "visible private chat",
+  );
+  assert.ok(
+    $("#messages .message-label").textContent.includes("Worker 39"),
+    "sender name visible",
+  );
+  assert.equal($("#composer").hidden, true, "user observes agent chat");
+  assert.ok($("#earlier-messages"), "history has a previous page");
+  $("#earlier-messages").click();
+  await wait(
+    () => $("#messages").querySelectorAll("[data-message]").length === 106,
+    "earlier messages load",
+  );
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.equal(
+    $("#earlier-messages"),
+    null,
+    "refresh preserves exhausted history cursor",
+  );
+  [...$("#chat-list").querySelectorAll("[data-chat]")]
+    .find((b) => b.dataset.chat === created[0].id)
+    .click();
   const forbidden = await fetch(origin + "/api/conversation", {
     method: "POST",
     headers: {
@@ -229,8 +275,18 @@ try {
     "stop team",
   );
   assert.equal($("#requests").querySelectorAll(".request").length, 0);
+  $('#conversation-menu [data-action="delete"]').click();
+  assert.equal($("#picker").open, true);
+  $("#picker-body [data-delete-chat]").click();
+  await wait(() => !$("#picker").open, "delete completes");
+  const remaining = await (await fetch(origin + "/api/state")).json();
+  assert.equal(
+    remaining.runtime.agents.some((a) => a.id === created[0].id),
+    false,
+  );
+  assert.equal($("#chat-list").querySelectorAll("[data-chat]").length, 2);
   console.log(
-    "product UI: PASS (lead filter, 40 workers, Markdown safety, drafts, scoped canvas, instant create, model guard, retry, monitor, stop)",
+    "product UI: PASS (lead filter, 40 workers, Markdown safety, drafts, global canvas, instant create, model guard, retry, monitor, stop)",
   );
 } finally {
   if (dom) {
