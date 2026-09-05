@@ -35,6 +35,17 @@ import Conversation from "./components/Conversation";
 import Canvas from "./components/Canvas";
 import ComplaintBook from "./components/ComplaintBook";
 export default function App() {
+  const [livePhase, setLivePhase] = useState<{
+    id: string | null;
+    label: string;
+  } | null>(null);
+  const onPhase = useCallback(
+    (id: string | null, label: string) =>
+      setLivePhase((old) =>
+        old?.id === id && old.label === label ? old : { id, label },
+      ),
+    [],
+  );
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const { data, error, refresh } = useSnapshot(),
     [opened, setOpened] = useState<string | null>(null),
@@ -520,7 +531,9 @@ export default function App() {
                 : view === "complaints"
                   ? "Lead review required"
                   : agent
-                    ? statusLabel(agent.status)
+                    ? livePhase?.id === agent.id
+                      ? livePhase.label
+                      : statusLabel(agent.status, agent.activity?.phase)
                     : room?.kind === "private"
                       ? "Private between agents · Visible to you"
                       : "Broadcast"}
@@ -634,6 +647,7 @@ export default function App() {
             project={project}
             limits={limits}
             reloadLimits={reloadLimits}
+            onPhase={onPhase}
           />
         )}
         {view === "canvas" && (

@@ -61,3 +61,27 @@ their original display when source metadata is absent.
 The browser checks use 40 workers and more than 60 rooms. They cover widths from
 320 to 1920 pixels, long drafts, table overflow, focus return, and menu placement.
 Screenshots use an isolated database. They do not represent live model results.
+
+## Live conversation
+
+Managed conversations use `/api/transcript/stream`, a server-sent event stream.
+The server sends a snapshot on connection and changed records after that.
+It waits on a condition while idle and sends a heartbeat every 15 seconds.
+Fast notifications are coalesced with an 80 ms delay between frames.
+These UI updates do not call the model.
+
+The client reconnects with a fresh snapshot. It uses the transcript GET endpoint
+as a fallback during connection loss. Agent rooms and the team list retain their
+existing refresh intervals.
+
+Assistant text appears in complete paragraphs. Open fenced code blocks wait for
+the closing fence. Item completion, turn completion, interruption, and stop reveal
+the remaining text. Earlier paragraph elements stay mounted as new text arrives.
+
+`AgentPhase.tsx` shows the phase from runtime events. It does not display private
+reasoning. `Activity.tsx` shows commands, inputs, outputs, exit codes, and durations.
+Raw events remain available in a separate disclosure. Long payloads wrap and
+scroll inside their cards.
+
+`tests/live-chat-ui.mjs` injects app-server notifications into an isolated runtime.
+It tests the real HTTP stream and React interface without model inference.

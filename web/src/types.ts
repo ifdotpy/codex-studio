@@ -68,8 +68,17 @@ export interface Message extends Json {
   created?: number;
 }
 export const busy = new Set(["running", "starting", "approval"]);
-export const statusLabel = (status: string) =>
-  ({
+export const statusLabel = (status: string, phase?: string) =>
+  (status === "running" &&
+    phase &&
+    (
+      {
+        thinking: "Thinking",
+        writing: "Writing",
+        tool: "Using tools",
+      } as Record<string, string>
+    )[phase]) ||
+  {
     idle: "Ready",
     running: "Working",
     starting: "Starting",
@@ -80,7 +89,8 @@ export const statusLabel = (status: string) =>
     paused: "Stopped",
     approval: "Needs an answer",
     interrupted: "Interrupted",
-  })[status] || status;
+  }[status] ||
+  status;
 export const complaintLabel = (status: string) =>
   ({
     open: "Awaiting response",

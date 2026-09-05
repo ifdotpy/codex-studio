@@ -444,6 +444,42 @@ def make_server(canvas, port=0):
                 return False
             return not write or secrets.compare_digest(self.headers.get("X-Canvas-Token", ""), token)
 
+        def stream_transcript(self, key):
+            runtime = canvas.runtime
+            runtime.transcript(key)  # Validate before sending streaming headers.
+            self.connection.settimeout(20)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            revision, previous = -1, {}
+            try:
+                while not runtime.closed:
+                    current, data = runtime.wait_transcript(key, revision)
+                    if current is None:
+                        break
+                    if data is None:
+                        self.wfile.write(b": heartbeat\n\n")
+                    else:
+                        records = {item["id"]: item for item in data.pop("items")}
+                        payload = {**data, "replace": revision == -1, "order": list(records),
+                                   "items": [item for key, item in records.items() if previous.get(key) != item]}
+                        self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
+                        revision, previous = current, records
+                    self.wfile.flush()
+                    time.sleep(.08)  # Coalesce fast deltas without polling an idle model.
+            except OSError:
+                pass
+            except (ValueError, RuntimeError, sqlite3.Error) as error:
+                try:
+                    self.wfile.write(("event: unavailable\ndata: " + json.dumps({"error": str(error)}) + "\n\n").encode())
+                    self.wfile.flush()
+                except OSError:
+                    pass
+            self.close_connection = True
+
         def do_GET(self):
             if not self.trusted():
                 return self.send({"error": "Local origin required"}, 403)
@@ -471,6 +507,8 @@ def make_server(canvas, port=0):
                     return self.send(canvas.runtime.catalog())
                 if path.path == "/api/import" and canvas.runtime:
                     return self.send(canvas.runtime.import_list(parse_qs(path.query).get("cursor", [None])[0]))
+                if path.path == "/api/transcript/stream" and canvas.runtime:
+                    return self.stream_transcript(parse_qs(path.query).get("id", [""])[0])
                 if path.path == "/api/transcript":
                     return self.send(canvas.transcript(parse_qs(path.query).get("id", [""])[0]))
                 if path.path == "/api/messages":

@@ -216,6 +216,8 @@ class Runtime:
         self.root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "canvas.sqlite3"
         self.lock = threading.RLock()
+        self.ui_condition = threading.Condition(self.lock)
+        self.ui_revisions = {}
         self.start_lock = threading.Lock()
         self.prepare_locks = {}
         self.offline = False
@@ -298,10 +300,24 @@ class Runtime:
     def records(db, table):
         return [json.loads(r[0]) for r in db.execute(f"SELECT record FROM runtime_{table}")]
 
-    @staticmethod
-    def put(db, table, record):
+    def put(self, db, table, record):
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (record["id"], json.dumps(record)))
+        if table == "agents":
+            self.touch_ui(record["id"])
+
+    def touch_ui(self, key):
+        with self.ui_condition:
+            self.ui_revisions[key] = self.ui_revisions.get(key, 0) + 1
+            self.ui_condition.notify_all()
+
+    def wait_transcript(self, key, revision, timeout=15):
+        with self.ui_condition:
+            self.ui_condition.wait_for(lambda: self.closed or self.ui_revisions.get(key, 0) != revision, timeout)
+            if self.closed:
+                return None, None
+            current = self.ui_revisions.get(key, 0)
+            return current, self.transcript(key) if current != revision else None
 
     def agent(self, key, db=None):
         if db is None:
@@ -339,10 +355,11 @@ class Runtime:
                     r["status"] = "expired"
                     self.put(db, "requests", r)
 
-    def item(self, db, agent, key, role, text, title=None, inputs=None):
+    def item(self, db, agent, key, role, text, title=None, inputs=None, **metadata):
         key = agent + ":" + key
         record = {"id": key, "role": role, "title": title or role.title(),
                   "text": text[:20000], "truncated": len(text) > 20000, "at": time.time()}
+        record.update(metadata)
         if inputs is not None:
             record["inputs"] = []
             remaining = 20000
@@ -352,6 +369,7 @@ class Runtime:
                 remaining -= len(excerpt)
         db.execute("INSERT INTO runtime_items VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (key, agent, json.dumps(record), time.time()))
+        self.touch_ui(agent)
 
     def enqueue(self, db, a, kind, text, key=None):
         key = key or uid()
@@ -701,6 +719,8 @@ class Runtime:
             a = next((a for a in self.records(db, "agents") if a.get("threadId") == tid and tid), None)
             if not a:
                 return
+            if method.startswith("item/") and p.get("turnId") and p["turnId"] != a.get("turnId"):
+                return
             a["events"] += 1
             a["lastEvent"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             if method == "turn/started":
@@ -708,6 +728,8 @@ class Runtime:
                     return
                 a["turnId"] = p["turn"]["id"]
                 a["lastAnswer"] = ""
+                a["activity"] = {"phase": "thinking", "at": time.time()}
+                a["activeTools"] = []
                 if a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     a["status"] = "running"
                 else:
@@ -715,13 +737,29 @@ class Runtime:
             elif method == "item/agentMessage/delta":
                 key = a["id"] + ":" + p.get("itemId", "message")
                 row = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
-                old = json.loads(row[0])["text"] if row else ""
-                text = (old + p.get("delta", ""))[-20000:]
-                self.item(db, a["id"], p.get("itemId", "message"), "assistant", text)
+                previous = json.loads(row[0]) if row else {}
+                text = previous.get("text", "") + p.get("delta", "")
+                self.item(db, a["id"], p.get("itemId", "message"), "assistant", text,
+                          streaming=True, turnId=p.get("turnId") or a.get("turnId"))
+                a["activity"] = {"phase": "writing", "at": time.time()}
                 a["tail"] = text[-300:]
             elif method in {"item/started", "item/completed"}:
                 item = p.get("item", {})
                 kind = item.get("type")
+                started = method == "item/started"
+                if kind == "reasoning":
+                    a["activity"] = {"phase": "thinking", "at": time.time()}
+                elif kind == "agentMessage":
+                    a["activity"] = {"phase": "writing" if started else "thinking", "at": time.time()}
+                    if started:
+                        self.item(db, a["id"], item["id"], "assistant", item.get("text", ""),
+                                  streaming=True, turnId=p.get("turnId") or a.get("turnId"))
+                elif kind != "userMessage":
+                    active = [t for t in a.get("activeTools", []) if t["id"] != item.get("id")]
+                    if started:
+                        active.append({"id": item.get("id"), "type": kind, "name": item.get("tool") or kind})
+                    a["activeTools"] = active
+                    a["activity"] = {"phase": "tool" if active else "thinking", "tools": active, "at": time.time()}
                 if kind == "contextCompaction" and method == "item/completed":
                     inserted = db.execute("INSERT OR IGNORE INTO runtime_compactions VALUES (?,?)", (a["id"] + ":" + item["id"], a["id"])).rowcount
                     if inserted:
@@ -729,7 +767,7 @@ class Runtime:
                         a["contextUsage"] = None
                 if kind == "agentMessage" and method == "item/completed":
                     text = item.get("text", "")
-                    self.item(db, a["id"], item["id"], "assistant", text)
+                    self.item(db, a["id"], item["id"], "assistant", text, streaming=False, turnId=p.get("turnId") or a.get("turnId"))
                     if item.get("questions"):
                         request_id = a["id"] + ":question:" + item["id"]
                         if not db.execute("SELECT 1 FROM runtime_requests WHERE id=?", (request_id,)).fetchone():
@@ -741,7 +779,20 @@ class Runtime:
                     a["tail"] = text[-300:]
                     a["lastAnswer"] = text[-16000:]
                 elif kind not in {"reasoning", "userMessage", "agentMessage"}:
-                    self.item(db, a["id"], item.get("id", uid()), "output", json.dumps(item, ensure_ascii=False), kind)
+                    self.item(db, a["id"], item.get("id", uid()), "output", json.dumps(item, ensure_ascii=False), kind,
+                              toolStatus="running" if started else "failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed",
+                              turnId=p.get("turnId") or a.get("turnId"))
+            elif method == "item/commandExecution/outputDelta":
+                row = db.execute("SELECT record FROM runtime_items WHERE id=?", (a["id"] + ":" + p["itemId"],)).fetchone()
+                if row:
+                    record = json.loads(row[0])
+                    try:
+                        item = json.loads(record["text"])
+                    except ValueError:
+                        item = {"type": "commandExecution", "id": p["itemId"]}
+                    item["aggregatedOutput"] = (item.get("aggregatedOutput", "") + p.get("delta", ""))[-12000:]
+                    self.item(db, a["id"], p["itemId"], "output", json.dumps(item, ensure_ascii=False), "commandExecution",
+                              toolStatus="running", turnId=p.get("turnId") or a.get("turnId"))
             elif method in {"turn/plan/updated", "turn/diff/updated"}:
                 self.item(db, a["id"], method, "output", json.dumps(p, ensure_ascii=False),
                           "Plan" if method == "turn/plan/updated" else "Changes")
@@ -759,6 +810,8 @@ class Runtime:
                     return
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
                 a["turnId"] = None
+                a["activity"] = None
+                a["activeTools"] = []
                 a["inFlight"] = False
                 a["error"] = turn.get("error")
                 a["status"] = ("completed" if turn.get("status") == "completed" else
@@ -781,6 +834,8 @@ class Runtime:
                 if pending and a["autoWake"]:
                     a["status"] = "queued"
                 self.changed.set()
+            if a.get("activeTools") and (a.get("activity") or {}).get("phase") == "thinking":
+                a["activity"] = {"phase": "tool", "tools": a["activeTools"], "at": time.time()}
             self.put(db, "agents", a)
             root = self.agent(a["rootId"], db)
             if root.get("tokenBudget") and root["autoWake"]:
@@ -1420,7 +1475,17 @@ class Runtime:
                 if not any(item["id"] == key + ":" + event["id"] for item in items):
                     items.append({"id": key + ":" + event["id"], "role": "user", "title": "You",
                                   "text": event["text"], "pending": True, "at": event["created"]})
-            return {"items": items, "truncated": len(rows) > 120, "unavailable": None}
+            a = self.agent(key, db)
+            if a.get("deletedAt"):
+                raise ValueError("This conversation was deleted")
+            live = a["status"] in {"running", "starting", "approval"} and a.get("autoWake")
+            for item in items:
+                if item.get("streaming") and (not live or item.get("turnId") != a.get("turnId")):
+                    item["streaming"] = False
+                if item.get("toolStatus") == "running" and (not live or item.get("turnId") != a.get("turnId")):
+                    item["toolStatus"] = "interrupted"
+            return {"items": items, "truncated": len(rows) > 120, "unavailable": None,
+                    "agent": {k: a.get(k) for k in ("id", "status", "activity", "inFlight", "contextUsage", "compactions", "compactionsObservedOnly")}}
 
     def catalog(self):
         return self.connect().call("model/list", {"limit": 100})
@@ -1509,7 +1574,11 @@ class Runtime:
         return a
 
     def close(self):
+        if self.closed:
+            return
         self.closed = True
+        with self.ui_condition:
+            self.ui_condition.notify_all()
         self.changed.set()
         self.scheduler.join(2)
         if self.server:

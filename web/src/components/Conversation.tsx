@@ -8,29 +8,21 @@ import {
   Terminal,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import DOMPurify from "dompurify";
-import { marked } from "marked";
 import { api, errorText } from "../api";
 import { useMessages } from "../hooks";
-import type { Agent, Json, Message, Room, Snapshot } from "../types";
+import {
+  statusLabel,
+  type Agent,
+  type Json,
+  type Message,
+  type Room,
+  type Snapshot,
+} from "../types";
 import Usage from "./Usage";
 import Requests from "./Requests";
 import Activity from "./Activity";
-const markdown = (text: string) =>
-  DOMPurify.sanitize(marked.parse(text, { async: false }) as string, {
-    FORBID_TAGS: [
-      "img",
-      "form",
-      "input",
-      "button",
-      "iframe",
-      "style",
-      "script",
-      "video",
-      "audio",
-    ],
-    FORBID_ATTR: ["style"],
-  });
+import StreamingText from "./StreamingText";
+import AgentPhase from "./AgentPhase";
 export default function Conversation(p: {
   id: string | null;
   agent?: Agent;
@@ -46,12 +38,29 @@ export default function Conversation(p: {
   project: () => void;
   limits: Json | null;
   reloadLimits: () => void;
+  onPhase: (id: string | null, label: string) => void;
 }) {
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
-  const { items, notice, before, older } = useMessages(p.id, kind),
+  const { items, notice, before, older, liveAgent, connection } = useMessages(
+      p.id,
+      kind,
+      p.agent?.source === "managed",
+    ),
     [follow, setFollow] = useState(true),
     scroll = useRef<HTMLDivElement>(null),
     input = useRef<HTMLTextAreaElement>(null);
+  const agent =
+    p.agent && liveAgent?.id === p.id
+      ? ({ ...p.agent, ...liveAgent } as Agent)
+      : p.agent;
+  useEffect(() => {
+    p.onPhase(
+      p.id,
+      connection === "reconnecting"
+        ? "Reconnecting"
+        : statusLabel(agent?.status || "idle", agent?.activity?.phase),
+    );
+  }, [p.id, agent?.status, agent?.activity?.phase, connection, p.onPhase]);
   useEffect(() => setFollow(true), [p.id]);
   useEffect(() => {
     if (follow && scroll.current)
@@ -66,13 +75,13 @@ export default function Conversation(p: {
     }
   };
   const team = p.data.threads.filter(
-    (a) => a.rootId === (p.agent?.rootId || p.room?.rootId),
+    (a) => a.rootId === (agent?.rootId || p.room?.rootId),
   );
   const requests = p.data.runtime.requests.filter(
     (r) => !r.agent || r.agent === p.id || team.some((a) => a.id === r.agent),
   );
   const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
-  const canSend = !!p.agent?.canSend || !!p.legacy || !p.id;
+  const canSend = !!agent?.canSend || !!p.legacy || !p.id;
   const groups: (Message | Message[])[] = [];
   for (const item of items) {
     if (["output", "tool"].includes(item.role)) {
@@ -86,11 +95,11 @@ export default function Conversation(p: {
       id="conversation"
       className={p.room ? "agent-conversation" : "ai-conversation"}
     >
-      {p.agent?.error && (
+      {agent?.error && (
         <p className="agent-error" role="alert">
-          {typeof p.agent.error === "string"
-            ? p.agent.error
-            : JSON.stringify(p.agent.error)}
+          {typeof agent.error === "string"
+            ? agent.error
+            : JSON.stringify(agent.error)}
         </p>
       )}
       <div
@@ -113,21 +122,23 @@ export default function Conversation(p: {
             Earlier messages
           </Button>
         )}
-        {!items.length && !notice && (
-          <div className="empty-chat">
-            {!p.room && (
-              <span className="empty-mark">
-                <Terminal size={28} />
-              </span>
-            )}
-            <h2>{p.room ? "No messages yet" : "What should we work on?"}</h2>
-            <p>
-              {p.room
-                ? "Agent messages will appear here."
-                : "Give your lead a task. It can delegate work and report the results here."}
-            </p>
-          </div>
-        )}
+        {!items.length &&
+          !notice &&
+          !["running", "starting"].includes(agent?.status || "") && (
+            <div className="empty-chat">
+              {!p.room && (
+                <span className="empty-mark">
+                  <Terminal size={28} />
+                </span>
+              )}
+              <h2>{p.room ? "No messages yet" : "What should we work on?"}</h2>
+              <p>
+                {p.room
+                  ? "Agent messages will appear here."
+                  : "Give your lead a task. It can delegate work and report the results here."}
+              </p>
+            </div>
+          )}
         {groups.map((m) =>
           Array.isArray(m) ? (
             <Activity key={m[0].id} items={m} />
@@ -144,15 +155,12 @@ export default function Conversation(p: {
               {m.role === "user" ? (
                 <div className="prose plain">{m.text}</div>
               ) : (
-                <div
-                  className="prose"
-                  dangerouslySetInnerHTML={{ __html: markdown(m.text) }}
-                />
+                <StreamingText text={m.text} streaming={!!m.streaming} />
               )}
               {m.truncated && (
                 <p className="notice">This message is clipped.</p>
               )}
-              <div className="message-bottom">
+              <div className="message-bottom" hidden={!!m.streaming}>
                 {p.room && m.created && (
                   <time>
                     {new Date(m.created * 1000).toLocaleTimeString([], {
@@ -173,6 +181,7 @@ export default function Conversation(p: {
             </article>
           ),
         )}
+        {!p.room && <AgentPhase agent={agent} connection={connection} />}
       </div>
       {!follow && (
         <div className="jump-slot">
@@ -246,15 +255,13 @@ export default function Conversation(p: {
                 size="compact-sm"
                 leftSection={<Folder size={15} />}
                 onClick={p.project}
-                disabled={!p.agent?.cwd}
+                disabled={!agent?.cwd}
               >
-                {p.agent?.cwd?.split("/").filter(Boolean).at(-1) || "Project"}
+                {agent?.cwd?.split("/").filter(Boolean).at(-1) || "Project"}
               </Button>
               <span id="send-state">{p.sending ? "Sending…" : ""}</span>
-              {p.agent &&
-                ["running", "starting", "approval"].includes(
-                  p.agent.status,
-                ) && (
+              {agent &&
+                ["running", "starting", "approval"].includes(agent.status) && (
                   <ActionIcon
                     type="button"
                     id="stop"
@@ -282,8 +289,8 @@ export default function Conversation(p: {
               </ActionIcon>
             </div>
           </form>
-          {p.agent?.source === "managed" && (
-            <Usage agent={p.agent} limits={p.limits} reload={p.reloadLimits} />
+          {agent?.source === "managed" && (
+            <Usage agent={agent} limits={p.limits} reload={p.reloadLimits} />
           )}
           <p className="composer-hint">
             Enter to send · Shift + Enter for a new line

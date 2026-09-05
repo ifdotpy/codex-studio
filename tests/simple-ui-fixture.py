@@ -65,6 +65,13 @@ other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt':
 c.runtime.create({'name': 'Standalone reviewer', 'cwd': str(c.root), 'prompt': 'Review', 'role': 'reviewer', 'model': 'gpt-5.6-luna'}, defer=True)
 c.runtime.connect().gate.set()
 server = make_server(c, port=int(sys.argv[2]) if len(sys.argv) > 2 else 0)
+# Test-only notification input drives the real runtime and HTTP stream.
+import json
+import threading
+def fixture_events():
+    for line in sys.stdin:
+        c.runtime.notification(json.loads(line))
+threading.Thread(target=fixture_events, daemon=True).start()
 print(server.server_port, flush=True)
 try:
     server.serve_forever()

@@ -414,6 +414,48 @@ class RuntimeContract(unittest.TestCase):
         self.assertTrue(self.runtime.agent(a['id'])['isLead'])
         self.assertFalse(self.runtime.agent(b['id'])['isLead'])
 
+    def test_live_phases_streaming_stop_and_old_turn_events(self):
+        a = self.lead()
+        def event(method, **params):
+            self.runtime.notification({'method': method, 'params': {'threadId': a['threadId'], 'turnId': a['turnId'], **params}})
+        event('item/started', item={'id': 'reason', 'type': 'reasoning'})
+        self.assertEqual(self.runtime.agent(a['id'])['activity']['phase'], 'thinking')
+        event('item/started', item={'id': 'text', 'type': 'agentMessage', 'text': ''})
+        event('item/agentMessage/delta', itemId='text', delta='First paragraph.\n\nUnfinished')
+        transcript = self.runtime.transcript(a['id'])
+        self.assertEqual(transcript['agent']['activity']['phase'], 'writing')
+        self.assertTrue(transcript['items'][-1]['streaming'])
+        event('item/started', item={'id': 'cmd', 'type': 'commandExecution', 'command': 'test', 'status': 'inProgress'})
+        event('item/commandExecution/outputDelta', itemId='cmd', delta='Live output\n')
+        transcript = self.runtime.transcript(a['id'])
+        self.assertEqual(transcript['agent']['activity']['phase'], 'tool')
+        self.assertIn('Live output', transcript['items'][-1]['text'])
+        self.assertEqual(transcript['items'][-1]['toolStatus'], 'running')
+        event('item/completed', item={'id':'cmd', 'type':'commandExecution', 'command':'test', 'status':'completed', 'exitCode':7})
+        self.assertEqual(self.runtime.transcript(a['id'])['items'][-1]['toolStatus'], 'failed')
+        self.runtime.stop(a['id'])
+        self.assertFalse(next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'].endswith(':text'))['streaming'])
+        self.runtime.send(a['id'], 'Resume')
+        eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')
+        current = self.runtime.agent(a['id'])['activity'].copy()
+        event('item/agentMessage/delta', itemId='old-text', delta='Late old turn')
+        self.assertEqual(self.runtime.agent(a['id'])['activity'], current)
+        self.assertFalse(any(i['id'].endswith(':old-text') for i in self.runtime.transcript(a['id'])['items']))
+
+    def test_transcript_wait_wakes_on_committed_change_and_closes(self):
+        a = self.lead()
+        revision, initial = self.runtime.wait_transcript(a['id'], -1)
+        self.assertEqual(initial['agent']['id'], a['id'])
+        self.assertEqual(self.runtime.wait_transcript(a['id'], revision, .01), (revision, None))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.runtime.wait_transcript, a['id'], revision, 2)
+            self.runtime.send(a['id'], 'Visible queued text')
+            next_revision, update = future.result(2)
+        self.assertGreater(next_revision, revision)
+        self.assertTrue(any(i['text'] == 'Visible queued text' for i in update['items']))
+        self.runtime.close()
+        self.assertEqual(self.runtime.wait_transcript(a['id'], next_revision), (None, None))
+
     def test_turn_transcript_preserves_user_and_event_sources(self):
         a = self.lead()
         user_text = '[Orchestration event: agent_message]\nThis is literal user text.'
