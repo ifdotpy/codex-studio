@@ -12,9 +12,10 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { api, errorText } from "../api";
 import { useMessages } from "../hooks";
-import type { Agent, Json, Room, Snapshot } from "../types";
+import type { Agent, Json, Message, Room, Snapshot } from "../types";
 import Usage from "./Usage";
 import Requests from "./Requests";
+import Activity from "./Activity";
 const markdown = (text: string) =>
   DOMPurify.sanitize(marked.parse(text, { async: false }) as string, {
     FORBID_TAGS: [
@@ -72,6 +73,14 @@ export default function Conversation(p: {
   );
   const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
   const canSend = !!p.agent?.canSend || !!p.legacy || !p.id;
+  const groups: (Message | Message[])[] = [];
+  for (const item of items) {
+    if (["output", "tool"].includes(item.role)) {
+      const last = groups.at(-1);
+      if (Array.isArray(last)) last.push(item);
+      else groups.push([item]);
+    } else groups.push(item);
+  }
   return (
     <section
       id="conversation"
@@ -119,12 +128,9 @@ export default function Conversation(p: {
             </p>
           </div>
         )}
-        {items.map((m) =>
-          ["output", "tool"].includes(m.role) ? (
-            <details className="tool-group" key={m.id}>
-              <summary>{m.title || "Tool activity"}</summary>
-              <pre>{m.text}</pre>
-            </details>
+        {groups.map((m) =>
+          Array.isArray(m) ? (
+            <Activity key={m[0].id} items={m} />
           ) : (
             <article
               key={m.id}

@@ -542,6 +542,27 @@ p {
   color: var(--muted);
   font-size: 12px;
 }
+.tool-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+}
+.tool-group > summary::after {
+  content: "›";
+  margin-left: 2px;
+}
+.tool-group[open] > summary::after {
+  transform: rotate(90deg);
+}
+.activity-list {
+  border-left: 1px solid #ffffff14;
+  margin: 10px 0;
+  padding-left: 16px;
+}
+.activity-list > details {
+  margin: 8px 0;
+}
 .tool-group summary {
   cursor: pointer;
   padding: 6px 0;

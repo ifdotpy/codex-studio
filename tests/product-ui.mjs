@@ -86,6 +86,13 @@ try {
     0,
   );
   assert.ok(await page.locator("#messages .prose strong").count());
+  const activity = page.locator(".tool-group").first();
+  await activity.locator(":scope > summary").click();
+  assert.ok(
+    await activity.locator("pre").count(),
+    "group keeps the tool output",
+  );
+  await activity.locator(":scope > summary").click();
   await page.locator("#requests [data-answer]").click();
   const answerDialog = page.getByRole("dialog", { name: "Reply to the agent" });
   await visibleInViewport(answerDialog);
