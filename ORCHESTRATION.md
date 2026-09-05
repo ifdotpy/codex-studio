@@ -1,6 +1,6 @@
 # Managed Codex teams
 
-Start `scripts/codex-canvas` and open <http://127.0.0.1:4620>.
+Build the [React interface](web/README.md), then start `scripts/codex-canvas` and open <http://127.0.0.1:4620>.
 Select **New chat**. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
@@ -21,7 +21,10 @@ The browser keeps existing canvas positions and message drafts when views change
 Manual graph selection modes, chat wiring, the minimap, and duplicate zoom controls were removed.
 Existing shared chats and sessions remain accessible from **Other sessions**; their command-line tools remain available.
 
-The conversation menu provides context compaction, review, command monitoring, team stop, and conversation deletion.
+The conversation menu provides context compaction, review, command monitoring, and team stop.
+Use the sidebar row menu to rename or delete a lead or agent chat.
+Renaming stays in SQLite and takes priority over an automatic lead title.
+Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
 `/monitor <command>` submits a command directly. Results appear below the worker list.
@@ -41,6 +44,7 @@ The lead receives these additional tools:
 
 | Tool | Behavior |
 |---|---|
+| `orchestration_complaint` | Submit a complaint, read the team book, or record the responsible lead's response. |
 | `orchestration_peers` | Discover all managed agents and the caller's chat rooms. |
 | `orchestration_message` | Send to an agent id, `parent`, `lead`, `broadcast` (team), or `all` (all teams). |
 | `orchestration_chat_read` | Read a participant chat, with a cursor for older messages. |
@@ -61,7 +65,7 @@ Its parent receives a result after that work settles. A reported result still ne
 
 ## Agent chat
 
-Select **Agent chats** in the sidebar to read private conversations and broadcasts.
+Select the **Agents** tab in the sidebar to read private conversations and broadcasts.
 Each message shows its author and timestamp. **Earlier messages** loads stored history.
 The user can observe every room. Other agents can read private rooms only when they are participants.
 This is a chat-tool rule, not filesystem isolation between processes on the same machine.
@@ -98,6 +102,51 @@ The inherited `never` approval policy does not add an approval step. Other polic
 require approval for a model-created Monitor command in the conversation.
 A command submitted directly through the user interface is an explicit user action.
 The same sandbox still applies. This runtime does not bypass sandbox restrictions.
+
+## Complaint book
+
+Use the complaint book instead of a feedback section. Agents call
+`orchestration_complaint` with `action=submit`, a concrete problem, impact, and evidence.
+The server records the author and responsible team lead. The user can also submit
+and inspect complaints through **Complaint book** in the sidebar.
+
+A new complaint queues a lead turn, including after a final answer. Stop remains
+a boundary: a stopped lead keeps the complaint but waits for an explicit resume.
+The lead must call `action=read`, then `action=respond` with the complaint id,
+a concrete response, and `in_progress`, `resolved`, or `declined`.
+Only the responsible lead can respond. User or worker reads do not satisfy the lead's read requirement.
+Responses and status changes remain in an append-only response list. The reporter receives an event.
+The status records the lead's claim; it does not independently prove a repair.
+
+Each lead turn receives the ids that still require a response. A final answer with
+unanswered complaints queues a review turn. Three consecutive turns that ignore
+presented complaints stop automatic lead continuation with a visible error.
+A recorded next step counts as a response; an `in_progress` complaint remains visible
+under **All complaints**. Reads alone cannot close a complaint. Duplicate tool calls
+cannot create duplicate complaints or responses. Complaints survive server restarts
+and deletion of their original conversation.
+
+Existing Codex threads retain their initial tool schemas. They can use
+`orchestration_send` with `agent_id=complaint` and the same action object encoded
+as JSON in `text`. New threads receive the dedicated complaint tool.
+
+## Context and account usage
+
+Below the composer, the client shows the most recent `last.totalTokens` and
+`modelContextWindow` from `thread/tokenUsage/updated`. The percentage is their
+ratio, not cumulative team token usage. It remains unavailable until Codex supplies
+a usable window size. It is the last reported value, not a token-by-token estimate.
+
+Completed `contextCompaction` items increment a durable count once per item id.
+The previous context reading clears until the next token update. Threads created
+before this counter existed show only observed compactions; the client does not
+invent a full historical count.
+
+**Limits** reads `account/rateLimits/read` without model inference and receives
+`account/rateLimits/updated` events. It shows reported usage windows, reset times,
+credits, and individual limits when available. Reads share a 30-second cache.
+Missing or failed account data is explicit. These are account limits, not a separate
+allowance for each agent.
 
 ## Capacity and work ownership
 
@@ -177,20 +226,23 @@ scripts/codex-control configure LEAD_ID --concurrency 12 --token-budget 2000000
 ## Verification
 
 ```bash
+cd web
+npm ci
+npm test
+npm run format:check
+cd ..
 python3 tests/runtime-contract.py
 python3 tests/canvas-contract.py
 node tests/portable-smoke.mjs
-cd web
-npm --prefix . ci
-npm --prefix . test
-npm --prefix . run format:check
 ```
 
 `runtime-contract.py` exercises a 40-worker team, bounded concurrency, parent wakeup,
 Monitor exit delivery without model polling, stop races, duplicate events, budgets,
 worktree isolation and restart behavior against a protocol fixture.
-The DOM test covers lead creation, a lost creation response, command monitoring and
-team stop through the HTTP interface. It is not a browser-render test.
+The browser test checks the production React bundle in headless Chrome with an isolated
+HTTP server and SQLite database. It covers complaints, agent chats, sidebar actions,
+context, limits, a lost creation response, and command monitoring. The model protocol
+is a fixture; this test does not call a live model.
 
 The optional live check uses the configured account and model:
 

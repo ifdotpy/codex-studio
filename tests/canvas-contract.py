@@ -264,7 +264,7 @@ class CanvasContract(unittest.TestCase):
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/../../scripts/codex_canvas.py")[0], 404)
-            self.assertEqual(request("/app.js")[0], 200)
+            self.assertEqual(request("/")[0], 200)
             self.assertEqual(request("/api/chats", [], headers)[0], 400)
         finally:
             server.shutdown()

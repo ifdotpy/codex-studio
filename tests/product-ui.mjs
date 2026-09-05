@@ -1,300 +1,271 @@
 #!/usr/bin/env node
-// Real HTTP and SQLite, deterministic Codex protocol fixture, no model inference.
+// Browser checks against the production React build, real HTTP and isolated SQLite.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
 const skill = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(skill, "web/package.json"));
-const { JSDOM } = require("jsdom");
-const root = await mkdtemp(join(tmpdir(), "codex-product-ui-"));
+const { chromium } = require("playwright-core");
+const root = await mkdtemp(join(tmpdir(), "codex-react-ui-"));
 const proc = spawn(
   "python3",
   ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
-let errors = "",
-  dom;
-proc.stderr.on("data", (d) => (errors += d));
-const wait = async (fn, label) => {
-  const end = Date.now() + 10000;
-  while (Date.now() < end) {
-    if (fn()) return;
-    await new Promise((r) => setTimeout(r, 20));
+let log = "",
+  browser;
+proc.stderr.on("data", (d) => (log += d));
+const poll = async (fn, label) => {
+  for (let i = 0; i < 100; i++) {
+    if (await fn()) return;
+    await new Promise((r) => setTimeout(r, 100));
   }
-  throw Error(label + " " + errors);
+  throw Error(label + " " + log);
 };
 try {
   const port = await new Promise((resolve, reject) => {
     proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
-    proc.once("exit", () => reject(Error(errors)));
+    proc.once("exit", () => reject(Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
-  dom = new JSDOM(await readFile(join(skill, "web/index.html"), "utf8"), {
-    url: origin,
-    runScripts: "outside-only",
-    pretendToBeVisual: true,
+  browser = await chromium.launch({
+    executablePath:
+      process.env.CHROME_BIN ||
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    headless: true,
+    args: ["--disable-extensions", "--no-first-run"],
   });
-  const w = dom.window,
-    $ = (s) => w.document.querySelector(s);
-  w.ResizeObserver = class {
-    observe() {}
-  };
-  w.HTMLElement.prototype.setPointerCapture = () => {};
-  w.HTMLDialogElement.prototype.showModal = function () {
-    this.open = true;
-  };
-  w.HTMLDialogElement.prototype.close = function () {
-    this.open = false;
-  };
-  w.crypto.randomUUID = randomUUID;
-  let loseCreate = true,
-    loseSend = false;
-  w.fetch = async (url, options) => {
-    const response = await fetch(new URL(url, origin), options);
-    if (url === "/api/leads" && loseCreate) {
-      loseCreate = false;
-      throw Error("Lost creation reply");
-    }
-    if (url === "/api/messages" && options?.method === "POST" && loseSend) {
-      loseSend = false;
-      throw Error("Lost message reply");
-    }
-    return response;
-  };
-  const initial = await (await fetch(origin + "/api/state")).json();
-  const lead = initial.runtime.agents.find((a) => a.name === "Release lead");
-  const layout = {
-    positions: { [lead.id]: { x: 517, y: 319 } },
-    view: { x: 31, y: 48, z: 0.9 },
-  };
-  const layoutKey = "codex-canvas-graph:" + initial.stateDir;
-  w.localStorage.setItem(layoutKey, JSON.stringify(layout));
-  Object.defineProperty($("#canvas"), "clientWidth", { value: 1200 });
-  Object.defineProperty($("#canvas"), "clientHeight", { value: 800 });
-  for (const file of ["vendor/marked.js", "vendor/purify.js", "app.js"])
-    w.eval(await readFile(join(skill, "web", file), "utf8"));
-  await wait(
-    () => $("#chat-list").querySelectorAll("[data-chat]").length === 2,
-    "only two leads",
-  );
+  const page = await browser.newPage({
+    viewport: { width: 1440, height: 960 },
+  });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto(origin);
+  await page.locator("[data-chat]").first().waitFor();
+  assert.equal(await page.locator("[data-chat]").count(), 2);
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.getByText("I assigned 40 workers", { exact: false }).waitFor();
+  assert.equal(await page.locator("[data-worker]").count(), 40);
+  assert.equal(await page.locator("#model option").count(), 2);
   assert.equal(
-    $("#chat-list").textContent.includes("Standalone reviewer"),
-    false,
-    "root worker is not a lead",
-  );
-  const release = [...$("#chat-list").querySelectorAll("button")].find((b) =>
-    b.textContent.includes("Release lead"),
-  );
-  release.click();
-  await wait(
-    () => $("#messages").textContent.includes("I assigned 40"),
-    "conversation",
-  );
-  assert.equal($("#workers").querySelectorAll("[data-worker]").length, 40);
-  assert.equal($("#model").options.length, 2, "only Astra and Sol");
-  assert.equal($("#messages").querySelector("script"), null, "safe transcript");
-  assert.ok($("#messages .prose strong"), "markdown is rendered");
-  assert.equal(
-    $('#messages [href^="javascript:"]'),
-    null,
-    "unsafe markdown link removed",
-  );
-  assert.equal($("#messages img"), null, "remote images cannot make requests");
-  assert.ok($("#messages .tool-group"), "tools stay in the conversation");
-  assert.equal($("#messages .tool-group").open, false, "tools are folded");
-  assert.equal($("#requests").querySelectorAll(".request").length, 1);
-  $("#requests [data-answer]").click();
-  $("#answer-fields select").value = "One file";
-  $("#answer-form").dispatchEvent(
-    new w.Event("submit", { bubbles: true, cancelable: true }),
-  );
-  await wait(() => !$("#answer-dialog").open, "async answer submitted");
-  await wait(
-    () => $("#requests").querySelectorAll(".request").length === 0,
-    "async question resolved",
-  );
-  $("#message").value = "Lead draft";
-  $("#worker-search").value = "Worker 07";
-  $("#worker-search").dispatchEvent(new w.Event("input"));
-  assert.equal($("#workers").querySelectorAll("[data-worker]").length, 1);
-  $("#workers [data-worker]").click();
-  await wait(
-    () => $("#conversation-title").textContent === "Worker 07",
-    "open worker",
-  );
-  $("#message").value = "Worker draft";
-  $("#back-lead").click();
-  assert.equal($("#message").value, "Lead draft");
-  assert.deepEqual(
-    JSON.parse(w.localStorage.getItem(layoutKey)),
-    layout,
-    "chat preserves stored canvas",
-  );
-  $("#view-toggle").click();
-  assert.equal($("#canvas").hidden, false);
-  assert.equal(
-    $("#nodes").children.length,
-    43,
-    "canvas includes every team and standalone agent",
-  );
-  const node = [...$("#nodes").children].find(
-    (n) => n.dataset.node === lead.id,
-  );
-  assert.equal(node.style.left, "517px");
-  assert.equal(node.style.top, "319px");
-  assert.equal(
-    $("#canvas").querySelectorAll(":scope > button").length,
-    1,
-    "one canvas control",
-  );
-  assert.equal(
-    $("#edges").querySelectorAll("path").length,
-    40,
-    "parent edges come from state",
-  );
-  $("#view-toggle").click();
-  assert.equal($("#message").value, "Lead draft");
-  $("#workers [data-worker]").click();
-  assert.equal($("#message").value, "Worker draft");
-  $("#back-lead").click();
-  $("#new-chat").click();
-  await wait(
-    () => $("#toast").textContent === "Lost creation reply",
-    "create failure visible",
-  );
-  assert.equal(
-    w.document.querySelectorAll("#agent-form").length,
+    await page
+      .locator('#messages img,#messages script,#messages [href^="javascript:"]')
+      .count(),
     0,
-    "no creation form",
   );
-  $("#new-chat").click();
-  await wait(
-    () => $("#conversation-title").textContent === "New chat",
-    "one-click retry",
+  assert.ok(await page.locator("#messages .prose strong").count());
+  await page.locator("#requests [data-answer]").click();
+  await page.locator("#answer-fields select").selectOption("One file");
+  await page
+    .locator("#answer-form")
+    .getByRole("button", { name: "Send answer" })
+    .click();
+  await poll(
+    async () => (await page.locator("#answer-form").count()) === 0,
+    "answer submitted",
   );
+  assert.match(
+    await page.locator("#usage-footer").textContent(),
+    /Context 40%/,
+  );
+  assert.match(
+    await page.locator("#usage-footer").textContent(),
+    /2 compactions/,
+  );
+  await page.locator("#message").fill("Lead draft");
+  await page.locator("#worker-search").fill("Worker 07");
+  await page.locator("[data-worker]").click();
+  await page.locator("#message").fill("Worker draft");
+  await page.locator("#back-lead").click();
+  assert.equal(await page.locator("#message").inputValue(), "Lead draft");
+  await page.locator("#view-toggle").click();
+  assert.equal(await page.locator("[data-node]").count(), 43);
+  assert.equal(await page.locator("#edges path").count(), 40);
+  assert.equal(
+    await page.locator("#conversation-title").textContent(),
+    "All agents",
+  );
+  await page.locator("#fit").click();
+  await page.screenshot({ path: join(root, "canvas.png") });
+  await page.locator("#view-toggle").click();
+  assert.equal(await page.locator("#message").inputValue(), "Lead draft");
+  await page.getByRole("tab", { name: /Agents/ }).click();
+  assert.equal(
+    await page.locator("[data-room]").count(),
+    60,
+    "bounded initial room list",
+  );
+  await page.locator("#chat-search").fill("Release lead");
   const snapshot = await (await fetch(origin + "/api/state")).json();
-  const created = snapshot.runtime.agents.filter((a) => a.quickCreate);
-  assert.equal(created.length, 1, "idempotent create");
-  assert.equal(created[0].status, "idle");
-  assert.equal(created[0].threadId, null, "no model turn until first message");
-  $("#message").value = "Keep my draft";
-  $("#new-chat").click();
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal(
-    $("#message").value,
-    "Keep my draft",
-    "reuse empty chat preserves draft",
+  const privateRoom = snapshot.runtime.rooms.find(
+    (r) =>
+      r.kind === "private" &&
+      r.name.includes("Worker 39") &&
+      r.name.includes("Release lead"),
   );
-  const reused = await (await fetch(origin + "/api/state")).json();
-  assert.equal(
-    reused.runtime.agents.filter((a) => a.quickCreate).length,
-    1,
-    "new chat reuses empty current chat",
+  await page.locator(`[data-room="${privateRoom.id}"]`).click();
+  await page
+    .getByText("A private update before the final answer.", { exact: true })
+    .waitFor();
+  assert.equal(await page.locator("#composer").count(), 0);
+  assert.ok(await page.locator(".message.bubble").count());
+  await page.locator("#earlier-messages").click();
+  await poll(
+    async () => (await page.locator("[data-message]").count()) === 106,
+    "earlier history",
   );
-  const privateRoom = snapshot.runtime.rooms.find((r) => r.kind === "private");
-  [...$("#agent-chat-list").querySelectorAll("[data-room]")]
-    .find((b) => b.dataset.room === privateRoom.id)
+  await page.waitForTimeout(1100);
+  assert.equal(await page.locator("#earlier-messages").count(), 0);
+  await page.screenshot({ path: join(root, "agent-chat.png") });
+  // Rename in the actual sidebar row, then verify persistence through HTTP.
+  const row = page
+    .locator(".sidebar-row")
+    .filter({ has: page.locator(`[data-room="${privateRoom.id}"]`) });
+  await row.locator("summary").click();
+  await row.getByRole("button", { name: "Rename", exact: true }).click();
+  await row.getByRole("textbox", { name: "Chat name" }).fill("Release notes");
+  await row.getByRole("textbox", { name: "Chat name" }).press("Enter");
+  await poll(
+    async () =>
+      (await (await fetch(origin + "/api/state")).json()).runtime.rooms.some(
+        (r) => r.name === "Release notes",
+      ),
+    "room rename",
+  );
+  await page.locator("#open-complaints").click();
+  await page.locator("#new-complaint").click();
+  await page
+    .locator("#complaint-text")
+    .fill("Fixture complaint: the test log is missing.");
+  await page.locator("#submit-complaint").click();
+  await page
+    .getByText("Fixture complaint: the test log is missing.", { exact: true })
+    .waitFor();
+  await page
+    .locator("[data-complaint]")
+    .filter({ hasText: "Fixture complaint" })
     .click();
-  await wait(
-    () => $("#messages").textContent.includes("A private update"),
-    "visible private chat",
-  );
-  assert.ok(
-    $("#messages .message-label").textContent.includes("Worker 39"),
-    "sender name visible",
-  );
-  assert.equal($("#composer").hidden, true, "user observes agent chat");
-  assert.ok($("#earlier-messages"), "history has a previous page");
-  $("#earlier-messages").click();
-  await wait(
-    () => $("#messages").querySelectorAll("[data-message]").length === 106,
-    "earlier messages load",
-  );
-  await new Promise((r) => setTimeout(r, 1200));
-  assert.equal(
-    $("#earlier-messages"),
-    null,
-    "refresh preserves exhausted history cursor",
-  );
-  [...$("#chat-list").querySelectorAll("[data-chat]")]
-    .find((b) => b.dataset.chat === created[0].id)
+  await page
+    .getByText("The lead has not read this complaint.", { exact: true })
+    .waitFor();
+  await page.screenshot({ path: join(root, "complaint.png") });
+  await page
+    .getByRole("dialog", { name: "Complaint", exact: true })
+    .getByRole("button", { name: "Close", exact: true })
     .click();
-  const forbidden = await fetch(origin + "/api/conversation", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Canvas-Token": snapshot.token,
-    },
-    body: JSON.stringify({ id: created[0].id, model: "gpt-5.6-luna" }),
+  await page.getByRole("tab", { name: "Leads", exact: true }).click();
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  // Creation reply lost after the database commit.
+  let lose = true;
+  await page.route("**/api/leads", async (route) => {
+    const response = await route.fetch();
+    if (lose) {
+      lose = false;
+      await route.abort("failed");
+    } else await route.fulfill({ response });
   });
-  assert.equal(forbidden.status, 400);
-  $("#model").value = "gpt-5.6-sol";
-  $("#model").dispatchEvent(new w.Event("change"));
-  await wait(() => $("#model").value === "gpt-5.6-sol", "Sol selection");
-  $("#message").value = "First user task";
-  loseSend = true;
-  $("#composer").dispatchEvent(
-    new w.Event("submit", { bubbles: true, cancelable: true }),
+  await page.locator("#new-chat").click();
+  await page.locator("#toast").waitFor();
+  await page.locator("#new-chat").click();
+  await poll(
+    async () =>
+      (await page.locator("#conversation-title").textContent()) === "New chat",
+    "creation retry",
   );
-  await wait(
-    () => $("#toast").textContent === "Lost message reply",
+  await page.locator("#message").fill("Keep this draft");
+  await page.locator("#new-chat").click();
+  assert.equal(await page.locator("#message").inputValue(), "Keep this draft");
+  const afterCreate = await (await fetch(origin + "/api/state")).json();
+  assert.equal(
+    afterCreate.runtime.agents.filter((a) => a.quickCreate).length,
+    1,
+  );
+  const newLead = afterCreate.runtime.agents.find((a) => a.quickCreate);
+  await page.locator("#model").selectOption("gpt-5.6-sol");
+  let loseMessage = true;
+  await page.route("**/api/messages", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    if (loseMessage) {
+      loseMessage = false;
+      await route.abort("failed");
+    } else await route.fulfill({ response });
+  });
+  await page.locator("#message").fill("First task");
+  await page.locator("#send").click();
+  await poll(
+    async () => (await page.locator("#toast").count()) > 0,
     "lost send visible",
   );
-  [...$("#chat-list").querySelectorAll("button")]
-    .find((b) => b.textContent.includes("Release lead"))
-    .click();
-  [...$("#chat-list").querySelectorAll("button")]
-    .find((b) => b.textContent.includes("New chat"))
-    .click();
-  assert.equal($("#message").value, "First user task");
-  $("#composer").dispatchEvent(
-    new w.Event("submit", { bubbles: true, cancelable: true }),
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.locator(`[data-chat="${newLead.id}"]`).click();
+  assert.equal(await page.locator("#message").inputValue(), "First task");
+  await page.locator("#send").click();
+  await poll(
+    async () => (await page.locator("#message").inputValue()) === "",
+    "message retry",
   );
-  await wait(() => !$("#message").value && !$("#send").disabled, "retry sent");
-  const messages = await (
-    await fetch(origin + "/api/messages?room=" + created[0].id)
-  ).json();
-  assert.equal(messages.length, 1, "no duplicate after switching");
-  $("#message").value = "/monitor fixture-command";
-  $("#composer").dispatchEvent(
-    new w.Event("submit", { bubbles: true, cancelable: true }),
-  );
-  await wait(
-    () => $("#monitors").textContent.includes("Exit: 7"),
-    "monitor exit",
-  );
-  assert.match($("#monitors").textContent, /early output/);
-  $('#conversation-menu [data-action="stop-team"]').click();
-  await wait(
-    () => $("#conversation-status").textContent === "Stopped",
-    "stop team",
-  );
-  assert.equal($("#requests").querySelectorAll(".request").length, 0);
-  $('#conversation-menu [data-action="delete"]').click();
-  assert.equal($("#picker").open, true);
-  $("#picker-body [data-delete-chat]").click();
-  await wait(() => !$("#picker").open, "delete completes");
-  const remaining = await (await fetch(origin + "/api/state")).json();
   assert.equal(
-    remaining.runtime.agents.some((a) => a.id === created[0].id),
-    false,
+    (await (await fetch(origin + "/api/messages?room=" + newLead.id)).json())
+      .length,
+    1,
+    "no duplicate user message",
   );
-  assert.equal($("#chat-list").querySelectorAll("[data-chat]").length, 2);
+  await page.locator("#message").fill("/monitor fixture-command");
+  await page.locator("#send").click();
+  await poll(
+    async () =>
+      (await page.locator("#monitors").textContent()).includes("Exit: 7"),
+    "monitor",
+  );
+  await page.locator("#usage-footer").waitFor();
+  await page.locator(".limits summary").click();
+  await page.getByText("5h: 42% used", { exact: false }).waitFor();
+  await page.locator(".limits summary").click();
+  await page.getByText("First task", { exact: true }).waitFor();
+  await page.waitForTimeout(5200);
+  await page.screenshot({ path: join(root, "lead-chat.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
+  await page.screenshot({ path: join(root, "mobile.png") });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  const leadRow = page
+    .locator(".sidebar-row")
+    .filter({ has: page.locator(`[data-chat="${newLead.id}"]`) });
+  await leadRow.locator("summary").click();
+  await leadRow.getByRole("button", { name: "Rename", exact: true }).click();
+  await leadRow
+    .getByRole("textbox", { name: "Chat name" })
+    .fill("Renamed lead");
+  await leadRow.getByRole("textbox", { name: "Chat name" }).press("Enter");
+  await poll(
+    async () =>
+      (await page.locator("#conversation-title").textContent()) ===
+      "Renamed lead",
+    "lead rename",
+  );
+  await leadRow.locator("summary").click();
+  await leadRow.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.locator("[data-delete-chat]").click();
+  await poll(
+    async () =>
+      !(await (await fetch(origin + "/api/state")).json()).runtime.agents.some(
+        (a) => a.id === newLead.id,
+      ),
+    "lead deletion",
+  );
+  assert.deepEqual(errors, [], "no React errors");
   console.log(
-    "product UI: PASS (lead filter, 40 workers, Markdown safety, drafts, global canvas, instant create, model guard, retry, monitor, stop)",
+    "React product UI: PASS (production build, sidebar rename/delete, agent chat, history, complaint book, model, monitor, limits, desktop/mobile)",
   );
+  console.log("Browser evidence:", root);
 } finally {
-  if (dom) {
-    dom.window.dispatchEvent(new dom.window.Event("pagehide"));
-    await new Promise((r) => setTimeout(r, 100));
-    dom.window.close();
-  }
+  await browser?.close();
   proc.kill("SIGTERM");
   if (proc.exitCode === null) await new Promise((r) => proc.once("exit", r));
-  await rm(root, { recursive: true, force: true });
+  // Preserve screenshots and the isolated database for inspection.
 }

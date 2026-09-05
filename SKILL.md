@@ -110,6 +110,7 @@ scripts/codex-report --wave parser [worker --answers]
 
 ## Canvas, chat nodes, and creator connections
 
+Build the interface with `npm ci && npm run build` in `web/`.
 Run `scripts/codex-canvas` and open `http://127.0.0.1:4620`.
 Use `--port PORT` to select another port. The server uses Python's standard library and listens only on the local machine.
 Keep its terminal session alive while the canvas is in use.
@@ -269,6 +270,6 @@ Run these checks after changes to state schemas, paths, lifecycle, or message de
 Mock protocol tests do not prove compatibility with every app-server version.
 
 For canvas client changes, run `npm --prefix . ci` and `npm --prefix . test` from `web/`.
-These development dependencies are not necessary to use the canvas.
+Build the React client before starting the canvas server. The built client does not require a Node.js server.
 The client check uses a synthetic Document Object Model (DOM) and a local fixture server.
 It does not prove browser appearance.

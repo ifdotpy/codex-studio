@@ -85,5 +85,5 @@ State the outcome without claiming more than the evidence supports. Include:
 3. The test commands and results.
 4. The remaining limits.
 
-Report a process problem when it adds an actionable lesson.
-An empty FEEDBACK section is not required.
+Record concrete process problems in the complaint book with `orchestration_complaint` when that tool is available.
+Do not add a feedback section. If the host has no complaint book, report the problem to the orchestrator.

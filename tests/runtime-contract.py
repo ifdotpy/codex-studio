@@ -69,6 +69,8 @@ class FakeServer:
             self.notify({'method': 'turn/completed', 'params': {'threadId': params['threadId'],
                 'turn': {'id': params['turnId'], 'status': 'interrupted'}}})
             return {}
+        if method == 'account/rateLimits/read':
+            return {'rateLimits': {'limitId': 'codex', 'primary': {'usedPercent': 42, 'windowDurationMins': 300, 'resetsAt': 2000000000}}}
         if method == 'model/list':
             return {'data': [{'model': 'test-model'}]}
         raise AssertionError(method)
@@ -240,6 +242,97 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.snapshot()['agents'], [])
+
+    def test_complaint_requires_lead_read_and_response_then_notifies_reporter(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Reporter', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        child = self.runtime.agent(child['id'])
+        c = self.runtime.complaint(child['id'], {'action': 'submit', 'text': 'The build log is missing. Cannot verify the result.'}, 'complaint-1', 0)
+        self.assertEqual(self.runtime.complaint(child['id'], {'action': 'submit', 'text': c['text']}, 'complaint-1', 0)['id'], c['id'])
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.runtime.complaint(child['id'], {'action': 'submit', 'text': 'Changed'}, 'complaint-1', 0)
+        self.runtime.complaint(child['id'], {'action': 'read'}, 'worker-read', 0)
+        self.assertIsNone(self.runtime.complaint_detail(c['id'])['readAt'], 'worker and UI reads are not lead reads')
+        response = {'action': 'respond', 'complaint_id': c['id'], 'text': 'I attached the log and checked the failed test.', 'status': 'resolved'}
+        with self.assertRaisesRegex(ValueError, 'Read this complaint'):
+            self.runtime.complaint(lead['id'], response, 'response', 0)
+        with self.assertRaisesRegex(ValueError, 'responsible lead'):
+            self.runtime.complaint(child['id'], response, 'forged', 0)
+        self.runtime.complaint(lead['id'], {'action': 'read'}, 'lead-read', 0)
+        self.assertIsNotNone(self.runtime.complaint_detail(c['id'])['readAt'])
+        first = self.runtime.complaint(lead['id'], response, 'response', 0)
+        self.assertEqual(self.runtime.complaint(lead['id'], response, 'response', 0), first)
+        self.assertEqual(len(first['responses']), 1)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE agent=? AND kind='complaint_response'", (child['id'],)).fetchone()[0], 1)
+        self.assertFalse(self.runtime.snapshot()['complaints'][0]['needsResponse'])
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertEqual(self.runtime.complaint_detail(c['id'])['status'], 'resolved')
+
+    def test_complaint_wakes_finished_lead_and_blocks_false_completion(self):
+        lead = self.lead()
+        self.complete(lead)
+        c = self.runtime.complaint(lead['id'], {'action': 'submit', 'text': 'Do not ignore this broken check.'}, 'user-complaint', user=True)
+        for index in range(3):
+            eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+            self.complete(self.runtime.agent(lead['id']))
+        stopped = self.runtime.agent(lead['id'])
+        self.assertFalse(stopped['autoWake'])
+        self.assertEqual(stopped['status'], 'failed')
+        self.assertIn('Three turns', stopped['error'])
+        self.assertTrue(self.runtime.snapshot()['complaints'][0]['needsResponse'])
+        self.runtime.send(lead['id'], 'Read the complaint and act')
+        eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+        a = self.runtime.agent(lead['id'])
+        self.runtime.complaint(a['id'], {'action': 'read'}, 'read-after-resume', a['epoch'])
+        self.runtime.complaint(a['id'], {'action':'respond','complaint_id':c['id'],'text':'I will recover the missing log before the next review.','status':'in_progress'}, 'act', a['epoch'])
+        self.complete(a)
+        self.assertEqual(self.runtime.agent(a['id'])['status'], 'completed')
+
+    def test_complaint_honors_stop_and_old_thread_tool_route(self):
+        a = self.lead()
+        self.runtime.dynamic({'id':900,'params':{'threadId':a['threadId'],'callId':'old-complaint','tool':'orchestration_send',
+            'arguments':{'agent_id':'complaint','text':json.dumps({'action':'submit','text':'A concrete old-thread problem'})}}})
+        self.assertTrue(next(r for r in self.runtime.server.responses if r['id']==900)['result']['success'])
+        self.runtime.stop(a['id'])
+        self.runtime.complaint(a['id'], {'action':'submit','text':'User complaint while stopped'}, 'stopped-complaint', user=True)
+        self.assertFalse(self.runtime.agent(a['id'])['autoWake'])
+        self.assertEqual(len(self.runtime.snapshot()['complaints']), 2)
+
+    def test_context_metrics_compaction_duplicates_and_limits(self):
+        a = self.lead()
+        self.runtime.notification({'method':'thread/tokenUsage/updated','params':{'threadId':a['threadId'],
+            'tokenUsage':{'total':{'totalTokens':1000000},'last':{'totalTokens':80000},'modelContextWindow':200000}}})
+        measured = self.runtime.agent(a['id'])
+        self.assertEqual(measured['contextUsage']['tokens'], 80000)
+        self.assertEqual(measured['contextUsage']['window'], 200000)
+        message = {'method':'item/completed','params':{'threadId':a['threadId'],'item':{'id':'compact-1','type':'contextCompaction'}}}
+        self.runtime.notification(message)
+        self.runtime.notification(message)
+        self.assertEqual(self.runtime.agent(a['id'])['compactions'], 1)
+        self.assertIsNone(self.runtime.agent(a['id'])['contextUsage'])
+        self.runtime.notification({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':42,'windowDurationMins':300}}}})
+        self.assertEqual(self.runtime.snapshot()['rateLimits']['data']['rateLimits']['primary']['usedPercent'], 42)
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertEqual(self.runtime.agent(a['id'])['compactions'], 1)
+
+    def test_sidebar_rename_and_room_hide_preserve_agent_history(self):
+        a = self.lead()
+        b = self.lead(name='Another lead')
+        room = self.runtime.chat_message(a['id'], b['id'], 'First message', 'rename-first')['room']
+        self.runtime.rename(a['id'], 'Manual title')
+        self.runtime.dynamic({'id':901,'params':{'threadId':a['threadId'],'callId':'late-title','tool':'orchestration_title','arguments':{'title':'LLM title'}}})
+        self.assertEqual(self.runtime.agent(a['id'])['name'], 'Manual title')
+        self.runtime.rename(room, 'Review chat')
+        self.runtime.hide_room(room)
+        self.assertEqual(self.runtime.snapshot()['rooms'], [])
+        self.assertEqual(len(self.runtime.chat_read(room,a['id'])['messages']), 1)
+        self.runtime.chat_message(a['id'], b['id'], 'New message', 'rename-next')
+        self.assertEqual(self.runtime.snapshot()['rooms'][0]['name'], 'Review chat')
+        self.assertEqual(self.runtime.snapshot()['rooms'][0]['lastMessage']['text'], 'New message')
 
     def test_blank_lead_is_persistent_and_has_no_model_call(self):
         import uuid

@@ -72,7 +72,7 @@ The permanent tests reproduce the relevant checks without relying on that direct
 
 ## Verification
 
-- `tests/runtime-contract.py`: 30 runtime cases, including blank creation, model admission, role migration, async answers, 40-worker scheduling, monitor completion, cancellation, and parent wakes.
+- `tests/runtime-contract.py`: 35 runtime cases, including blank creation, model admission, role migration, async answers, 40-worker scheduling, monitor completion, cancellation, and parent wakes.
 - `tests/canvas-contract.py`: 17 data and HTTP cases retained for legacy sessions, shared chats, and safe request handling.
 - `tests/product-ui.mjs`: actual HTTP and SQLite fixture; lead filtering, 40 workers, Markdown safety, drafts, global canvas, private chat history, deletion, empty-chat reuse, one-click creation, retry identity, model guard, async answer, monitor, and stop.
 - Headless Chrome: rendered at 1440 × 960 and 390 × 844; no horizontal page overflow.
@@ -81,6 +81,12 @@ The permanent tests reproduce the relevant checks without relying on that direct
 The older UI tests for manual marquee selection, graph ports, and creation forms
 were replaced because those controls were removed. Backend data tests remain.
 
-Run `npm --prefix . ci` from `web/`. Run `npm --prefix . run vendor` after a pinned
-Markdown dependency update. The committed vendor files let the Python server run
-without Node.js or a frontend build on the user's machine.
+The interface now uses React, TypeScript, and Vite. The production server serves
+`web/dist`. The former global DOM script and copied vendor scripts were removed.
+See [web setup](web/README.md) for build and development commands.
+
+The subsequent owner requests add a Telegram-style agent chat list, inline sidebar
+names and deletion, a complaint book, context usage, compaction counts, and account limits.
+The browser test uses the compiled React bundle, 40 workers, and more than 60 agent rooms.
+It checks desktop and mobile layouts. Complaint enforcement and source identities remain
+in the [orchestration contract](ORCHESTRATION.md).

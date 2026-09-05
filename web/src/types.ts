@@ -1,0 +1,90 @@
+// The app-server publishes extensible JSON objects for tool and approval payloads.
+export type Json = Record<string, any>;
+export interface Agent extends Json {
+  id: string;
+  name: string;
+  isLead?: boolean;
+  rootId?: string;
+  parentId?: string;
+  source: string;
+  status: string;
+  cwd?: string;
+  model: string;
+  canSend?: boolean;
+  threadId?: string;
+  empty?: boolean;
+  tail?: string;
+  created: number;
+  inFlight?: boolean;
+  compactions?: number;
+  contextUsage?: { tokens: number | null; window: number | null; at: number };
+}
+export interface Room {
+  id: string;
+  name: string;
+  kind: "private" | "broadcast";
+  rootId?: string;
+  members: string[];
+  updated: number;
+  lastMessage?: { seq: number; text: string; sender: string; created: number };
+}
+export interface Complaint extends Json {
+  id: string;
+  leadId: string;
+  author: string;
+  authorName: string;
+  leadName: string;
+  title: string;
+  status: string;
+  needsResponse: boolean;
+  created: number;
+  readAt: number | null;
+  leadStopped: boolean;
+  leadDeleted: boolean;
+}
+export interface Snapshot {
+  token: string;
+  stateDir: string;
+  threads: Agent[];
+  chats: Json[];
+  runtime: {
+    agents: Agent[];
+    rooms: Room[];
+    complaints: Complaint[];
+    monitors: Json[];
+    requests: Json[];
+    rateLimits?: Json;
+  };
+}
+export interface Message extends Json {
+  id: string;
+  role: string;
+  text: string;
+  title?: string;
+  pending?: boolean;
+  senderName?: string;
+  sender?: string;
+  seq?: number;
+  created?: number;
+}
+export const busy = new Set(["running", "starting", "approval"]);
+export const statusLabel = (status: string) =>
+  ({
+    idle: "Ready",
+    running: "Working",
+    starting: "Starting",
+    queued: "Queued",
+    waiting: "Waiting for results",
+    completed: "Complete",
+    failed: "Failed",
+    paused: "Stopped",
+    approval: "Needs an answer",
+    interrupted: "Interrupted",
+  })[status] || status;
+export const complaintLabel = (status: string) =>
+  ({
+    open: "Awaiting response",
+    in_progress: "In progress",
+    resolved: "Resolved",
+    declined: "Declined",
+  })[status] || status;

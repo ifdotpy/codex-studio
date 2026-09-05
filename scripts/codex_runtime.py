@@ -33,6 +33,14 @@ THREAD_CONFIG = {"features.multi_agent": False, "features.multi_agent_v2": False
 LEAD_MODELS = ("gpt-6-astra", "gpt-5.6-sol")
 TEXT = {"type": "string"}
 TOOLS = [
+    tool("orchestration_complaint", "Use the complaint book instead of a feedback section. "
+         "submit records a concrete problem and wakes your lead. read returns your team's book "
+         "and records that the responsible lead read it. respond requires a prior read and "
+         "a concrete decision: in_progress, resolved, or declined. Only the responsible lead "
+         "can respond. Every unanswered complaint must receive a recorded response before you finish.",
+         {"action": {"type": "string", "enum": ["submit", "read", "respond"]},
+          "complaint_id": TEXT, "text": TEXT,
+          "status": {"type": "string", "enum": ["in_progress", "resolved", "declined"]}}, ["action"]),
     tool("orchestration_peers", "List all managed agents and your readable chat rooms. "
          "Use agent ids to contact peers, including other teams. Do not poll.", {}),
     tool("orchestration_message", "Send a message without ending your turn. "
@@ -92,6 +100,13 @@ Messages wake recipients automatically. Send only useful questions, findings or 
 Do not reply merely to acknowledge receipt. Do not create broadcast reply loops.
 If this existing thread lacks the new chat tools, orchestration_status includes the
 peer directory and recent chats; orchestration_send accepts peer ids and these targets.
+Use orchestration_complaint instead of a feedback section for concrete problems with
+instructions, tools, resources, coordination, or process. Include evidence and impact.
+The responsible lead must read the book and respond with an action, a reasoned refusal,
+or a next step. A read alone is not a response. Do not claim a fix without evidence.
+Before finishing any lead turn, read and respond to all complaints awaiting your response.
+If this older thread lacks orchestration_complaint, use orchestration_send with
+agent_id="complaint" and text containing JSON for the same action and fields.
 Model names can be omitted to inherit yours.
 Do not merge work without review. Do not make recurring checks when an event is pending.
 """
@@ -209,6 +224,8 @@ class Runtime:
         self.server = None
         self.factory = server_factory
         self.loaded = set()
+        self.limits_lock = threading.Lock()
+        self.rate_limits = {"data": None, "at": None, "error": None}
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=16)
         self.lease = (self.root / "runtime.lock").open("a+")
         try:
@@ -232,8 +249,10 @@ class Runtime:
                 CREATE TABLE IF NOT EXISTS runtime_monitors (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_compactions (id TEXT PRIMARY KEY, agent TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_completed_turns (id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS runtime_lead_requests (id TEXT PRIMARY KEY, agent TEXT NOT NULL, signature TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_complaints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_rooms (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_chat_messages (
                   seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
@@ -249,6 +268,8 @@ class Runtime:
                 if a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
+                a.setdefault("compactions", 0)
+                a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
                 self.put(db, "agents", a)
             for m in self.records(db, "monitors"):
@@ -392,7 +413,7 @@ class Runtime:
                  "tokenBudget": root["tokenBudget"] if root else budget,
                  "status": "idle" if draft else "paused" if defer else "queued", "autoWake": draft or not defer, "epoch": 0, "turnId": None,
                  "inFlight": False, "turnEpoch": 0,
-                 "tokensUsed": 0, "events": 0, "created": time.time(), "error": None,
+                 "tokensUsed": 0, "compactions": 0, "compactionsObservedOnly": False, "contextUsage": None, "events": 0, "created": time.time(), "error": None,
                  "tail": "", "worktree": bool(p and role == "implementer"), "worktreeReady": False}
             if draft:
                 a.update(quickCreate=True, quickCreateRequest=data.get("_creationSignature"))
@@ -500,7 +521,7 @@ class Runtime:
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")
             if manual or resume:
-                a.update(autoWake=True, error=None)
+                a.update(autoWake=True, error=None, complaintMisses=0)
                 root = self.agent(a["rootId"], db)
                 if root["tokenBudget"] and sum(t["tokensUsed"] for t in self.records(db, "agents") if t["rootId"] == root["id"]) >= root["tokenBudget"]:
                     raise ValueError("Team token budget reached. Increase the budget before resuming.")
@@ -602,6 +623,13 @@ class Runtime:
                     db.execute("UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='pending'", (r["id"],))
             text = "\n\n".join(r["text"] if r["kind"] == "user" else f"[Orchestration event: {r['kind']}]\n{r['text']}" for r in rows)
             with self.lock, self.db() as db:
+                latest = self.agent(a["id"], db)
+                required = self.unanswered_complaints(db, a["id"])
+                latest["complaintsPresented"] = [c["id"] for c in required]
+                self.put(db, "agents", latest)
+                if required:
+                    text += "\n\n[Required complaint review] Read the complaint book and record a response " \
+                            "for each unanswered complaint before finishing. Pending ids: " + ", ".join(c["id"] for c in required)
                 self.item(db, a["id"], rows[0]["id"], "user", text)
             params = {"threadId": a["threadId"], "clientUserMessageId": rows[0]["id"],
                       "input": [{"type": "text", "text": text}]}
@@ -650,6 +678,14 @@ class Runtime:
 
     def notification(self, message):
         method, p = message.get("method"), message.get("params", {})
+        if method == "account/rateLimits/updated":
+            with self.lock:
+                bucket = p.get("rateLimits", {})
+                data = self.rate_limits.get("data") or {}
+                buckets = dict(data.get("rateLimitsByLimitId") or {})
+                buckets[bucket.get("limitId") or "codex"] = bucket
+                self.rate_limits = {"data": {"rateLimits": bucket, "rateLimitsByLimitId": buckets}, "at": time.time(), "error": None}
+            return
         if method == "command/exec/outputDelta":
             self.output(p)
             return
@@ -679,6 +715,11 @@ class Runtime:
             elif method in {"item/started", "item/completed"}:
                 item = p.get("item", {})
                 kind = item.get("type")
+                if kind == "contextCompaction" and method == "item/completed":
+                    inserted = db.execute("INSERT OR IGNORE INTO runtime_compactions VALUES (?,?)", (a["id"] + ":" + item["id"], a["id"])).rowcount
+                    if inserted:
+                        a["compactions"] = a.get("compactions", 0) + 1
+                        a["contextUsage"] = None
                 if kind == "agentMessage" and method == "item/completed":
                     text = item.get("text", "")
                     self.item(db, a["id"], item["id"], "assistant", text)
@@ -698,7 +739,10 @@ class Runtime:
                 self.item(db, a["id"], method, "output", json.dumps(p, ensure_ascii=False),
                           "Plan" if method == "turn/plan/updated" else "Changes")
             elif method == "thread/tokenUsage/updated":
-                a["tokensUsed"] = p.get("tokenUsage", {}).get("total", {}).get("totalTokens", a["tokensUsed"])
+                usage = p.get("tokenUsage", {})
+                a["tokensUsed"] = usage.get("total", {}).get("totalTokens", a["tokensUsed"])
+                used, window = usage.get("last", {}).get("totalTokens"), usage.get("modelContextWindow")
+                a["contextUsage"] = {"tokens": used, "window": window, "at": time.time()}
             elif method == "turn/completed":
                 turn = p.get("turn", {})
                 if a["turnId"] and a["turnId"] != turn.get("id"):
@@ -724,6 +768,8 @@ class Runtime:
                 if a["status"] != "waiting" and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     self.parent_event(db, a, turn.get("id", "unknown"),
                                       json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
+                if turn.get("status") == "completed" and a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
+                    self.enforce_complaints(db, a, completion)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
                 if pending and a["autoWake"]:
                     a["status"] = "queued"
@@ -776,13 +822,15 @@ class Runtime:
                 if isinstance(args, str):
                     args = json.loads(args)
                 name = p.get("tool")
-                if name == "orchestration_title":
+                if name == "orchestration_complaint":
+                    value = self.complaint(a["id"], args, key, a["epoch"])
+                elif name == "orchestration_title":
                     title = args.get("title")
                     if not a.get("isLead") or not isinstance(title, str) or not 1 <= len(title.strip()) <= 80:
                         raise ValueError("Only a lead can set a title of 1 to 80 characters")
                     with self.lock, self.db() as db:
                         latest = self.agent(a["id"], db)
-                        latest.update(name=title.strip(), needsTitle=False)
+                        latest.update(name=latest["name"] if latest.get("manualName") else title.strip(), needsTitle=False)
                         self.put(db, "agents", latest)
                         value = {"title": latest["name"]}
                 elif name == "orchestration_interrupt":
@@ -830,6 +878,8 @@ class Runtime:
                     value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"])
                 elif name == "orchestration_chat_read":
                     value = self.chat_read(args["room_id"], a["id"], args.get("before"))
+                elif name == "orchestration_send" and args.get("agent_id") == "complaint":
+                    value = self.complaint(a["id"], json.loads(args["text"]), key, a["epoch"])
                 elif name == "orchestration_send":
                     target_id = args["agent_id"]
                     with self.lock:
@@ -861,6 +911,163 @@ class Runtime:
         except Exception:
             pass
 
+    @staticmethod
+    def unanswered_complaints(db, lead_id):
+        return [c for c in Runtime.records(db, "complaints") if c["leadId"] == lead_id and not c["responses"]]
+
+    def enforce_complaints(self, db, a, completion):
+        required = self.unanswered_complaints(db, a["id"])
+        if not a.get("isLead") or not required:
+            a["complaintMisses"] = 0
+            return
+        presented = set(a.get("complaintsPresented", []))
+        misses = a.get("complaintMisses", 0) + 1 if any(c["id"] in presented for c in required) else 0
+        a["complaintMisses"] = misses
+        if misses >= 3:
+            a.update(status="failed", autoWake=False,
+                     error="Complaint review required. Three turns ended without a recorded response. Send a new instruction to resume.")
+            self.item(db, a["id"], "complaint-review-blocked:" + completion, "output", a["error"], "Unanswered complaints")
+            db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
+            return
+        # One pending reminder is enough. Completion retries share their event identity.
+        pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND kind='complaint' AND status='pending' AND epoch=?",
+                             (a["id"], a["epoch"])).fetchone()
+        if not pending:
+            self.enqueue(db, a, "complaint", "Read the complaint book and record a concrete response for: " +
+                         ", ".join(c["id"] for c in required), "complaint-review:" + completion)
+        a["status"] = "queued"
+
+    def rename(self, key, name):
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+            raise ValueError("A name must have 1 to 80 characters")
+        with self.lock, self.db() as db:
+            row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (key,)).fetchone()
+            if row:
+                room = json.loads(row[0])
+                room["customName"] = name.strip()
+                self.put(db, "rooms", room)
+            else:
+                a = self.agent(key, db)
+                if a.get("deletedAt"):
+                    raise ValueError("This conversation was deleted")
+                a.update(name=name.strip(), manualName=True, needsTitle=False)
+                self.put(db, "agents", a)
+            return {"id": key, "name": name.strip()}
+
+    def hide_room(self, key):
+        with self.lock, self.db() as db:
+            row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (key,)).fetchone()
+            if not row:
+                raise ValueError("Unknown agent chat")
+            room = json.loads(row[0])
+            room["userHidden"] = True
+            self.put(db, "rooms", room)
+            return {"deleted": [key]}
+
+    def limits(self):
+        with self.limits_lock:
+            if self.rate_limits["at"] and time.time() - self.rate_limits["at"] < 30:
+                return self.rate_limits
+            try:
+                data = self.connect().call("account/rateLimits/read", {}, timeout=10)
+                with self.lock:
+                    self.rate_limits = {"data": data, "at": time.time(), "error": None}
+            except Exception as error:
+                with self.lock:
+                    self.rate_limits = {**self.rate_limits, "error": str(error)}
+            return self.rate_limits
+
+    def complaint_summaries(self, db):
+        agents = {a["id"]: a for a in self.records(db, "agents")}
+        result = []
+        for c in self.records(db, "complaints"):
+            result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
+                           "title": c["text"][:140], "needsResponse": not c["responses"],
+                           "authorName": agents.get(c["author"], {}).get("name", "You" if c["author"] == "user" else c["author"]),
+                           "leadName": agents.get(c["leadId"], {}).get("name", c["leadId"]),
+                           "leadStopped": not agents.get(c["leadId"], {}).get("autoWake", False),
+                           "leadDeleted": bool(agents.get(c["leadId"], {}).get("deletedAt"))})
+        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
+
+    def complaint_detail(self, key):
+        with self.lock, self.db() as db:
+            row = db.execute("SELECT record FROM runtime_complaints WHERE id=?", (key,)).fetchone()
+            if not row:
+                raise ValueError("Unknown complaint")
+            return json.loads(row[0])
+
+    def complaint(self, actor_id, data, key, epoch=None, user=False):
+        if not isinstance(data, dict):
+            raise ValueError("Complaint arguments must be an object")
+        action = data.get("action")
+        with self.lock, self.db() as db:
+            actor = self.agent(actor_id, db)
+            if actor.get("deletedAt") or (not user and (not actor["autoWake"] or (epoch is not None and actor["epoch"] != epoch))):
+                raise ValueError("Agent is stopped or deleted")
+            lead = self.agent(actor["rootId"], db)
+            if not lead.get("isLead") or lead.get("deletedAt"):
+                raise ValueError("A complaint needs an existing lead")
+            if action == "submit":
+                text = data.get("text")
+                if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
+                    raise ValueError("Describe the complaint in 1 to 12000 characters")
+                author = "user" if user else actor_id
+                cid = str(uuid.uuid5(uuid.NAMESPACE_URL, "complaint:" + key))
+                row = db.execute("SELECT record FROM runtime_complaints WHERE id=?", (cid,)).fetchone()
+                if row:
+                    previous = json.loads(row[0])
+                    if (previous["text"], previous["author"], previous["leadId"]) != (text.strip(), author, lead["id"]):
+                        raise ValueError("This complaint id has different content")
+                    return previous
+                c = {"id": cid, "leadId": lead["id"], "author": author, "text": text.strip(),
+                     "status": "open", "created": time.time(), "updated": time.time(), "readAt": None, "responses": []}
+                self.put(db, "complaints", c)
+                self.enqueue(db, lead, "complaint", json.dumps({"complaint_id": cid, "author": author,
+                    "text": c["text"], "required": "Read the book and record a response before finishing."}, ensure_ascii=False), "complaint:" + cid)
+                return c
+            if user:
+                raise ValueError("Only the responsible lead can record a read or response")
+            if action == "read":
+                complaints = [c for c in self.records(db, "complaints") if c["leadId"] == lead["id"]
+                              and (not data.get("complaint_id") or c["id"] == data["complaint_id"])]
+                complaints.sort(key=lambda c: (bool(c["responses"]), -c["created"]))
+                if data.get("complaint_id") and not complaints:
+                    raise ValueError("Unknown complaint in this team")
+                for c in complaints[:50]:
+                    if actor_id == lead["id"] and not c["readAt"]:
+                        c["readAt"] = time.time()
+                        self.put(db, "complaints", c)
+                return {"complaints": complaints[:50], "remaining": max(0, len(complaints) - 50),
+                        "instruction": "Respond to unanswered entries, then read again for the next pending entries."}
+            if action == "respond":
+                if actor_id != lead["id"]:
+                    raise ValueError("Only the responsible lead can respond")
+                row = db.execute("SELECT record FROM runtime_complaints WHERE id=?", (data.get("complaint_id"),)).fetchone()
+                c = json.loads(row[0]) if row else None
+                if not c or c["leadId"] != actor_id:
+                    raise ValueError("Unknown complaint for this lead")
+                if not c["readAt"]:
+                    raise ValueError("Read this complaint before responding")
+                text, status = data.get("text"), data.get("status")
+                if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or status not in {"in_progress", "resolved", "declined"}:
+                    raise ValueError("Record an action or reason and select in_progress, resolved, or declined")
+                existing = next((r for r in c["responses"] if r["id"] == key), None)
+                if existing:
+                    if (existing["text"], existing["status"]) != (text.strip(), status):
+                        raise ValueError("This response id has different content")
+                    return c
+                response = {"id": key, "author": actor_id, "text": text.strip(), "status": status, "at": time.time()}
+                c["responses"].append(response)
+                c.update(status=status, updated=response["at"])
+                self.put(db, "complaints", c)
+                if c["author"] != "user" and c["author"] != actor_id:
+                    reporter = self.agent(c["author"], db)
+                    if not reporter.get("deletedAt"):
+                        self.enqueue(db, reporter, "complaint_response", json.dumps({"complaint_id": c["id"],
+                            "lead": actor_id, "response": response}, ensure_ascii=False), "complaint-response:" + key)
+                return c
+            raise ValueError("Choose submit, read, or respond")
+
     def chat_rooms(self, db, viewer=None):
         agents = {a["id"]: a for a in self.records(db, "agents") if not a.get("deletedAt")}
         rooms = []
@@ -873,6 +1080,9 @@ class Runtime:
             room["name"] = ("All agents" if room.get("rootId") == "all" else
                             agents[room["rootId"]]["name"] + " · Broadcast" if room["kind"] == "broadcast" else
                             " ↔ ".join(agents[m]["name"] for m in members))
+            room["name"] = room.get("customName") or room["name"]
+            last = db.execute("SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=? ORDER BY seq DESC LIMIT 1", (room["id"],)).fetchone()
+            room["lastMessage"] = {**dict(last), "text": last["text"][:180]} if last else None
             rooms.append(room)
         return sorted(rooms, key=lambda r: r["updated"], reverse=True)
 
@@ -930,7 +1140,10 @@ class Runtime:
                 if (previous["room"], previous["sender"], previous["text"]) != (room["id"], sender_id, text):
                     raise ValueError("This message id has different content")
                 return {"id": key, "room": room["id"], "deliveries": json.loads(previous["deliveries"])}
-            room["updated"] = time.time()
+            old_room = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room["id"],)).fetchone()
+            if old_room:
+                room = {**json.loads(old_room[0]), **room}
+            room.update(updated=time.time(), userHidden=False)
             self.put(db, "rooms", room)
             deliveries = {}
             for recipient in recipients:
@@ -1179,7 +1392,9 @@ class Runtime:
             events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
             return {"agents": agents, "monitors": [m for m in self.records(db, "monitors") if m["agent"] in {a["id"] for a in agents}],
                     "requests": [r for r in self.records(db, "requests") if r["status"] == "pending" and r.get("agent") in {a["id"] for a in agents}],
-                    "rooms": self.chat_rooms(db),
+                    "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
+                    "complaints": self.complaint_summaries(db),
+                    "rateLimits": self.rate_limits.copy(),
                     "events": events, "connected": self.server is not None and not self.closed and not self.offline}
 
     def team(self, root):

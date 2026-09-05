@@ -1,19 +1,29 @@
 {
-  "name": "codex-canvas-checks",
+  "name": "codex-agents-web",
   "private": true,
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "node ../tests/product-ui.mjs",
-    "format": "prettier --write index.html style.css app.js ../tests/product-ui.mjs sync-vendor.mjs",
-    "format:check": "prettier --check index.html style.css app.js ../tests/product-ui.mjs sync-vendor.mjs",
-    "vendor": "node sync-vendor.mjs"
-  },
-  "devDependencies": {
-    "jsdom": "26.1.0",
-    "prettier": "3.6.2"
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "npm run build && node ../tests/product-ui.mjs",
+    "format": "prettier --write src index.html vite.config.ts tsconfig.json ../tests/product-ui.mjs",
+    "format:check": "prettier --check src index.html vite.config.ts tsconfig.json ../tests/product-ui.mjs"
   },
   "dependencies": {
     "dompurify": "3.4.14",
-    "marked": "18.0.11"
+    "marked": "18.0.11",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "playwright-core": "1.63.0",
+    "prettier": "3.6.2",
+    "typescript": "^5.9.0",
+    "vite": "8.2.2"
   }
 }

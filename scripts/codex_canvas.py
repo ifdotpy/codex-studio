@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from codex_state import state_dir, board_dir, codex_home, read_threads, effective_status, process_is_alive
 
 SCRIPTS = Path(__file__).resolve().parent
-WEB = SCRIPTS.parent / "web"
+WEB = SCRIPTS.parent / "web" / "dist"
 COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
 AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
@@ -459,6 +459,10 @@ def make_server(canvas, port=0):
                     folders = sorted((p for p in directory.iterdir() if p.is_dir() and not p.name.startswith('.')), key=lambda p: p.name.lower())
                     return self.send({"path": str(directory), "parent": str(directory.parent) if directory != directory.parent else None,
                         "directories": [{"name": p.name, "path": str(p)} for p in folders[:500]]})
+                if path.path == "/api/limits" and canvas.runtime:
+                    return self.send(canvas.runtime.limits())
+                if path.path == "/api/complaint" and canvas.runtime:
+                    return self.send(canvas.runtime.complaint_detail(parse_qs(path.query).get("id", [""])[0]))
                 if path.path == "/api/agent-chat" and canvas.runtime:
                     query = parse_qs(path.query)
                     before = int(query["before"][0]) if query.get("before") else None
@@ -471,12 +475,13 @@ def make_server(canvas, port=0):
                     return self.send(canvas.transcript(parse_qs(path.query).get("id", [""])[0]))
                 if path.path == "/api/messages":
                     return self.send(canvas.messages(parse_qs(path.query).get("room", [""])[0]))
-                files = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
-                files.update({"/vendor/marked.js": ("vendor/marked.js", "text/javascript; charset=utf-8"),
-                              "/vendor/purify.js": ("vendor/purify.js", "text/javascript; charset=utf-8")})
-                if path.path in files:
-                    name, mime = files[path.path]
-                    return self.send((WEB / name).read_bytes(), content_type=mime)
+                relative = "index.html" if path.path == "/" else path.path.lstrip("/")
+                asset = (WEB / relative).resolve()
+                if asset.is_relative_to(WEB.resolve()) and asset.is_file() and (relative == "index.html" or relative.startswith("assets/")):
+                    mime = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}.get(asset.suffix, "application/octet-stream")
+                    return self.send(asset.read_bytes(), content_type=mime)
+                if path.path == "/":
+                    return self.send({"error": "Build the interface: cd web && npm ci && npm run build"}, 503)
                 return self.send({"error": "Not found"}, 404)
             except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
                 return self.send({"error": str(error)}, 400)
@@ -495,6 +500,15 @@ def make_server(canvas, port=0):
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
                 if canvas.runtime:
+                    if self.path == "/api/rename":
+                        return self.send(canvas.runtime.rename(body.get("id"), body.get("name")))
+                    if self.path == "/api/room/delete":
+                        return self.send(canvas.runtime.hide_room(body.get("id")))
+                    if self.path == "/api/complaints":
+                        key = body.get("id")
+                        if not isinstance(key, str) or not 1 <= len(key) <= 200:
+                            raise ValueError("A complaint request id is required")
+                        return self.send(canvas.runtime.complaint(body.get("lead"), {"action": "submit", "text": body.get("text")}, "user:" + key, user=True))
                     if self.path == "/api/conversation/delete":
                         return self.send(canvas.runtime.delete_conversation(body.get("id")))
                     if self.path == "/api/leads":

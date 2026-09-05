@@ -39,6 +39,20 @@ for i in range(105):
     c.runtime.chat_message(child['id'], 'parent', f'Earlier finding {i}', f'fixture-earlier-{i}')
 c.runtime.chat_message(child['id'], 'parent', 'A private update before the final answer.', 'fixture-private')
 c.runtime.chat_message(child['id'], 'broadcast', 'Release checks are ready for review.', 'fixture-broadcast')
+# Enough actual rooms to exercise the bounded sidebar at production-like sizes.
+roster = c.runtime.team(lead['id'])['agents']
+for sender in [r for r in roster if r['name'] in {'Worker 38', 'Worker 39'}]:
+    with c.runtime.lock, c.runtime.db() as db:
+        a = c.runtime.agent(sender['id'], db)
+        a['autoWake'] = True
+        c.runtime.put(db, 'agents', a)
+    for recipient in roster:
+        if recipient['id'] not in {sender['id'], lead['id']}:
+            c.runtime.chat_message(sender['id'], recipient['id'], 'Review coordination', 'room-fixture:' + sender['id'] + recipient['id'])
+with c.runtime.lock, c.runtime.db() as db:
+    a = c.runtime.agent(lead['id'], db)
+    a.update(compactions=2, contextUsage={'tokens':80000,'window':200000,'at':__import__('time').time()})
+    c.runtime.put(db, 'agents', a)
 other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt': 'Separate task'}, defer=True)
 c.runtime.create({'name': 'Standalone reviewer', 'cwd': str(c.root), 'prompt': 'Review', 'role': 'reviewer', 'model': 'gpt-5.6-luna'}, defer=True)
 c.runtime.connect().gate.set()
