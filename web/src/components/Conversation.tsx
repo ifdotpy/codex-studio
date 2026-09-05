@@ -27,6 +27,7 @@ import {
 } from "../types";
 import Usage from "./Usage";
 import Requests from "./Requests";
+import UserTasks from "./UserTasks";
 import Activity from "./Activity";
 import StreamingText from "./StreamingText";
 import AgentPhase from "./AgentPhase";
@@ -406,6 +407,17 @@ export default function Conversation(p: {
             Latest
           </Button>
         </div>
+      )}
+      {agent?.source === "managed" && !p.room && (
+        <UserTasks
+          key={agent.rootId || agent.id}
+          data={p.data}
+          agent={agent}
+          compact
+          refresh={p.refresh}
+          notify={p.notify}
+          onSelect={p.onSelect}
+        />
       )}
       <Requests
         requests={requests}

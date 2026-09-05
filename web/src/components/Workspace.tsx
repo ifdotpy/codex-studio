@@ -33,6 +33,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import type { Agent, Json, Snapshot } from "../types";
 import Requests from "./Requests";
+import UserTasks from "./UserTasks";
 import ComplaintBook from "./ComplaintBook";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
 import "./Workspace.css";
@@ -59,6 +60,7 @@ type Context = Props & {
 };
 const sections = [
   ["work", "Work", ListTodo],
+  ["user-tasks", "Your tasks", CheckCheck],
   ["changes", "Changes", FileDiff],
   ["inbox", "Inbox", Inbox],
   ["search", "Search", Search],
@@ -71,6 +73,8 @@ const sections = [
 ] as const;
 const descriptions: Record<string, string> = {
   work: "Assign work, track dependencies, and accept results.",
+  "user-tasks":
+    "Tasks agents need you to complete. Each result goes back to its agent for review.",
   changes: "Inspect the current files and send precise comments.",
   inbox: "Questions, approvals, and problems across all teams.",
   search: "Find messages, work, plans, and agent conversations.",
@@ -348,41 +352,56 @@ export function Workspace(props: Props) {
               <RefreshCw size={16} />
             </Button>
           </header>
-          <div className="workspace-scope">
-            <NativeSelect
-              label="Agent"
-              value={agentId}
-              onChange={(e) => setAgentId(e.target.value)}
-            >
-              <option value="">Select an agent</option>
-              {props.data.threads
-                .filter((a) => a.source === "managed")
-                .map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.isLead ? "Lead · " : ""}
-                    {a.name}
-                  </option>
-                ))}
-            </NativeSelect>
-            {selected && (
-              <Button
-                variant="subtle"
-                size="xs"
-                onClick={() => {
-                  props.onSelect(selected.id);
-                  props.onClose();
-                }}
+          {section !== "user-tasks" && (
+            <div className="workspace-scope">
+              <NativeSelect
+                label="Agent"
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
               >
-                Open chat <ChevronRight size={14} />
-              </Button>
-            )}
-            {pending > 0 && <Loader size={16} />}
-          </div>
+                <option value="">Select an agent</option>
+                {props.data.threads
+                  .filter((a) => a.source === "managed")
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.isLead ? "Lead · " : ""}
+                      {a.name}
+                    </option>
+                  ))}
+              </NativeSelect>
+              {selected && (
+                <Button
+                  variant="subtle"
+                  size="xs"
+                  onClick={() => {
+                    props.onSelect(selected.id);
+                    props.onClose();
+                  }}
+                >
+                  Open chat <ChevronRight size={14} />
+                </Button>
+              )}
+              {pending > 0 && <Loader size={16} />}
+            </div>
+          )}
           {needAgent && !selected ? (
             <Empty>Select an agent to view its {title?.toLowerCase()}.</Empty>
           ) : (
             <div key={`${section}:${selected?.id || "all"}`}>
               {section === "work" && <Work {...context} />}
+              {section === "user-tasks" && (
+                <UserTasks
+                  data={props.data}
+                  focusId={focusId}
+                  refresh={props.refresh}
+                  notify={props.notify}
+                  onSelect={(id) => {
+                    props.onSelect(id);
+                    props.onClose();
+                  }}
+                />
+              )}
+
               {section === "changes" && <Changes {...context} />}
               {section === "inbox" && <Attention {...context} />}
               {section === "search" && <Find {...context} />}
@@ -1104,6 +1123,8 @@ function Attention(c: Context) {
                 onClick={() => {
                   if (item.kind === "work")
                     c.navigate("work", item.agent, item.id);
+                  else if (item.kind === "user_task")
+                    c.navigate("user-tasks", item.agent, item.id);
                   else if (item.kind === "rule")
                     c.navigate("rules", item.agent, item.id);
                   else if (item.agent) {

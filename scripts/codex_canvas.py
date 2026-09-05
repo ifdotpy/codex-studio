@@ -529,6 +529,8 @@ def make_server(canvas, port=0):
                         )
                     if path.path == "/api/capabilities":
                         return self.send(runtime.capabilities(agent))
+                    if path.path == "/api/user-tasks":
+                        return self.send(runtime.user_tasks(agent))
                     if path.path == "/api/profiles":
                         return self.send(runtime.profiles())
                     if path.path == "/api/rules":
@@ -629,6 +631,8 @@ def make_server(canvas, port=0):
                         )
                     if self.path == "/api/checkpoint/restore":
                         return self.send(runtime.restore_checkpoint(agent, body))
+                    if self.path == "/api/user-tasks/complete":
+                        return self.send(runtime.complete_user_task(body))
                     if self.path == "/api/profiles":
                         return self.send(runtime.profiles(body))
                     if self.path == "/api/rules":

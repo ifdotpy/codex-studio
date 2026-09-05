@@ -2,6 +2,7 @@ import { Button, Loader, Modal } from "@mantine/core";
 import { Download } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, errorText } from "../api";
+import { isolatedDocument } from "./RichPreview";
 
 export interface PreviewTarget {
   agent?: string;
@@ -97,10 +98,7 @@ export default function FilePreview({
               className="workspace-preview-frame"
               sandbox=""
               referrerPolicy="no-referrer"
-              srcDoc={
-                "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:;\">" +
-                file.text
-              }
+              srcDoc={isolatedDocument(file.text)}
             />
           ) : file.mime === "application/pdf" ? (
             <iframe

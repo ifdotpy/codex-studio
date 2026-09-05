@@ -92,6 +92,8 @@ export default function App() {
     workers = team.filter((a) => !a.isLead);
   const attentionCount =
     (data?.runtime.requests.length || 0) +
+    (data?.runtime.userTasks?.filter((task) => task.status === "open").length ||
+      0) +
     (data?.runtime.complaints.filter((c) => c.needsResponse).length || 0) +
     (data?.runtime.work?.filter((w: Json) => w.status === "review").length ||
       0) +

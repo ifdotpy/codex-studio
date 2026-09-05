@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "npm run build && node ../tests/product-ui.mjs && node ../tests/live-chat-ui.mjs && node ../tests/background-ui.mjs && node ../tests/chat-controls-ui.mjs && node ../tests/background-controls-ui.mjs && node ../tests/workspace-ui.mjs",
+    "test": "npm run build && node ../tests/product-ui.mjs && node ../tests/live-chat-ui.mjs && node ../tests/background-ui.mjs && node ../tests/chat-controls-ui.mjs && node ../tests/background-controls-ui.mjs && node ../tests/workspace-ui.mjs && node ../tests/rich-preview-ui.mjs && node ../tests/user-tasks-ui.mjs",
     "format": "prettier --write src index.html vite.config.ts tsconfig.json ../tests/*ui.mjs",
     "format:check": "prettier --check src index.html vite.config.ts tsconfig.json ../tests/*ui.mjs"
   },
@@ -17,6 +17,7 @@
     "dompurify": "3.4.14",
     "lucide-react": "1.41.0",
     "marked": "18.0.11",
+    "mermaid": "11.17.2",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

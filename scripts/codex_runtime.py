@@ -21,6 +21,7 @@ import uuid
 from codex_work import WorkMixin, work_tools
 from codex_workspace import WorkspaceMixin
 from codex_rules import RulesMixin, rule_tools
+from codex_user_tasks import UserTasksMixin, user_task_tools
 
 def uid():
     return str(uuid.uuid4())
@@ -84,7 +85,7 @@ TOOLS = [
          {"monitor_id": TEXT}, ["monitor_id"]),
 ]
 
-TOOLS += work_tools(tool, TEXT) + rule_tools(tool, TEXT)
+TOOLS += work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -134,7 +135,13 @@ Worker profiles can be listed with orchestration_status and passed as profile_id
 Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_task, orchestration_result, orchestration_search,
-orchestration_watch, orchestration_resource, orchestration_monitor_input.
+orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task.
+Use orchestration_user_task for things the user must do. Supply clear completion criteria.
+A user check wakes the requesting agent and awaits its review. Accept the result or return
+it with a concrete reason and next action. Do not treat the user check as your acceptance.
+Use fenced mermaid blocks for diagrams and fenced html blocks for HTML/CSS previews.
+HTML previews are static and isolated; scripts and remote resources do not run.
+The user can inspect the source of each preview.
 Model names can be omitted to inherit yours.
 Do not merge work without review. Do not make recurring checks when an event is pending.
 """
@@ -238,7 +245,7 @@ class AppServer:
         self.log.close()
 
 
-class Runtime(WorkMixin, WorkspaceMixin, RulesMixin):
+class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -320,6 +327,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin):
                     r["status"] = "expired"
                     self.put(db, "requests", r)
             self.setup_work(db)
+            self.setup_user_tasks(db)
             self.setup_workspace(db)
             self.setup_rules(db)
         os.chmod(self.db_path, 0o600)
@@ -952,6 +960,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin):
                     text += "\n\n[Shared plan]\n" + json.loads(plan[0])["text"]
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
+                text += self.user_task_review_context(db, a["id"])
                 required = self.unanswered_complaints(db, a["id"])
                 latest["complaintsPresented"] = [c["id"] for c in required]
                 self.put(db, "agents", latest)
@@ -1310,10 +1319,14 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin):
                     args = payload.get("arguments", {})
                     if name not in {
                         t["name"]
-                        for t in work_tools(tool, TEXT) + rule_tools(tool, TEXT)
+                        for t in work_tools(tool, TEXT)
+                        + rule_tools(tool, TEXT)
+                        + user_task_tools(tool, TEXT)
                     }:
                         raise ValueError("Unknown workspace tool")
-                if name in {"orchestration_task", "orchestration_result"}:
+                if name == "orchestration_user_task":
+                    value = self.user_task_action(a["id"], args, key, epoch=a["epoch"])
+                elif name in {"orchestration_task", "orchestration_result"}:
                     if name == "orchestration_result" and args.get("action") == "read":
                         value = self.work_action(
                             a["id"], {"action": "list"}, actor=a["id"]
@@ -1395,7 +1408,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin):
                         **self.peers(a["id"]),
                         **self.profiles(),
                         "workspaceTools": work_tools(tool, TEXT)
-                        + rule_tools(tool, TEXT),
+                        + rule_tools(tool, TEXT)
+                        + user_task_tools(tool, TEXT),
                     }
                     if name == "orchestration_status":
                         value["recentChats"] = [self.chat_read(r["id"], a["id"], limit=10)
@@ -2035,6 +2049,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin):
                     }
                     for r in task_rows
                 ],
+                "userTasks": self.user_tasks(db=db)["items"],
                 "tasksHistoryLimit": 100,
                 "monitors": [
                     m
@@ -2049,8 +2064,16 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin):
                 ],
                 "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
                 "complaints": self.complaint_summaries(db),
-                "work": [w for w in self.records(db,"work") if w["rootId"] in {a["id"] for a in agents}],
-                "rules": [r for r in self.records(db,"rules") if r["agent"] in {a["id"] for a in agents}],
+                "work": [
+                    w
+                    for w in self.records(db, "work")
+                    if w["rootId"] in {a["id"] for a in agents}
+                ],
+                "rules": [
+                    r
+                    for r in self.records(db, "rules")
+                    if r["agent"] in {a["id"] for a in agents}
+                ],
                 "rateLimits": self.rate_limits.copy(),
                 "events": events,
                 "connected": self.server is not None

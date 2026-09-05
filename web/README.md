@@ -139,6 +139,7 @@ Backend regression commands run from the repository root:
 ```bash
 python3 -B codex-agents/tests/runtime-contract.py
 python3 -B codex-agents/tests/canvas-contract.py
+python3 -B codex-agents/tests/user-tasks-contract.py
 python3 -B codex-agents/tests/workspace-contract.py
 python3 -B codex-agents/tests/workspace-races.py
 python3 -B codex-agents/tests/workspace-protocol.py
@@ -151,3 +152,20 @@ turn check supplies a local Responses fixture and blocks external traffic.
 The background panel includes all active processes and the latest 100 completed
 monitors and tool records. Older monitor records and logs remain on disk. Expected
 negative script checks remain in rule history; they do not fill the attention inbox.
+
+## User tasks and previews
+
+Agents create user tasks with `orchestration_user_task`. The compact list appears
+above the composer. **Work > Your tasks** shows tasks across all teams, with
+search, owner and status filters, and history.
+
+Check a task to send its result to the requesting agent. An optional note can
+include a result or link. The task enters review. The agent can accept it or
+return it with a reason. Only its requesting agent or team lead can change it.
+Repeated requests do not send duplicate events. An explicit Stop prevents an
+automatic wake; the pending review returns when the agent resumes.
+
+Completed `mermaid` fences render diagrams. `html` fences and raw HTML blocks
+render isolated static HTML, CSS, and SVG. Each preview keeps its source, copy,
+and download controls. Scripts, external resources, and navigation are disabled.
+An invalid diagram shows its error. Mermaid loads only when a diagram is present.
