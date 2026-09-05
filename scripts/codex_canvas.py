@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import shlex
 import sqlite3
 import subprocess
@@ -53,6 +54,18 @@ def tail_json(path, limit=READ_LIMIT):
 
 
 class Canvas:
+    @property
+    def runtime(self):
+        return self._runtime
+
+    @runtime.setter
+    def runtime(self, runtime):
+        self._runtime = runtime
+        if runtime is not None:
+            # Both components write the same database. Acquire one lock before
+            # opening a transaction, including chat-to-runtime message delivery.
+            self.lock = runtime.lock
+
     def __init__(self, root=None, read_only=False):
         self.root = root or state_dir()
         self.read_only = read_only
@@ -60,6 +73,7 @@ class Canvas:
         self.cache = {}
         self.rollouts = {}
         self.db = self.root / "canvas.sqlite3"
+        self.runtime = None
         if read_only:
             if not self.db.exists():
                 raise ValueError('No canvas state exists. Create a chat or start the canvas first.')
@@ -119,7 +133,16 @@ class Canvas:
                 for k in ("wave", "runId", "name"))
             row["kind"] = "agent"
             row["source"] = "app-server"
-        by_thread = {t['threadId']: t for t in rows}
+        if self.runtime:
+            rows.extend(self.runtime.snapshot()["agents"])
+        else:
+            with self.connect() as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
+                    for item in db.execute("SELECT record FROM runtime_agents"):
+                        a = json.loads(item[0])
+                        rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
+                                     "launcherAlive": False, "wave": "Managed team"})
+        by_thread = {t['threadId']: t for t in rows if t.get('threadId')}
         with self.connect() as db:
             registered = [json.loads(r['record']) for r in db.execute("SELECT record FROM graph_agents")]
         for record in registered:
@@ -251,6 +274,8 @@ class Canvas:
 
     def transcript(self, key):
         thread = self.thread(key)
+        if thread.get("source") == "managed" and self.runtime:
+            return self.runtime.transcript(key)
         tid = thread.get("threadId")
         if not tid:
             return {'items': [], 'truncated': False, 'unavailable': 'No local thread is attached to this agent.'}
@@ -364,6 +389,12 @@ class Canvas:
                     target = self.thread(member)
                     if not target["canSend"]:
                         raise ValueError("No live mailbox for this agent. The message remains in the shared chat.")
+                    if target.get("source") == "managed":
+                        self.runtime.send(member, message, key + ":" + member)
+                        deliveries[member] = "queued"
+                        db.execute("UPDATE messages SET deliveries=? WHERE id=?", (json.dumps(deliveries), key))
+                        db.commit()
+                        continue
                     # Reuse the installed mailbox writer, never a second app-server.
                     result = subprocess.run([str(SCRIPTS / "codex-steer"), "--wave", target["wave"],
                                              "--expected-run", target["runId"], "--expected-thread", target["threadId"],
@@ -417,7 +448,12 @@ def make_server(canvas, port=0):
             path = urlparse(self.path)
             try:
                 if path.path == "/api/state":
-                    return self.send({**canvas.snapshot(), "token": token})
+                    return self.send({**canvas.snapshot(), "token": token,
+                                      "runtime": canvas.runtime.snapshot() if canvas.runtime else None})
+                if path.path == "/api/models" and canvas.runtime:
+                    return self.send(canvas.runtime.catalog())
+                if path.path == "/api/import" and canvas.runtime:
+                    return self.send(canvas.runtime.import_list(parse_qs(path.query).get("cursor", [None])[0]))
                 if path.path == "/api/transcript":
                     return self.send(canvas.transcript(parse_qs(path.query).get("id", [""])[0]))
                 if path.path == "/api/messages":
@@ -443,6 +479,23 @@ def make_server(canvas, port=0):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
+                if canvas.runtime:
+                    if self.path == "/api/agents":
+                        return self.send(canvas.runtime.create(body))
+                    if self.path == "/api/configure":
+                        return self.send(canvas.runtime.configure(body.get("id"), body))
+                    if self.path == "/api/action":
+                        return self.send(canvas.runtime.native_action(body.get("id"), body.get("action")))
+                    if self.path == "/api/import":
+                        return self.send(canvas.runtime.import_thread(body))
+                    if self.path == "/api/stop":
+                        return self.send(canvas.runtime.stop(body.get("id"), body.get("descendants", True)))
+                    if self.path == "/api/monitor":
+                        return self.send(canvas.runtime.monitor(body.get("agent"), body, body.get("id"), approved=True))
+                    if self.path == "/api/monitor/cancel":
+                        return self.send(canvas.runtime.cancel_monitor(body.get("id")))
+                    if self.path == "/api/answer":
+                        return self.send(canvas.runtime.answer(body.get("id"), body))
                 if self.path == "/api/chats":
                     return self.send(canvas.create_chat(body.get("name"), body.get("members", []), body.get("id")))
                 if self.path == "/api/connections":
@@ -462,11 +515,23 @@ def main():
     parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
     parser.add_argument("--port", type=int, default=4620)
     args = parser.parse_args()
+    def terminate(_signal, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, terminate)
+    runtime = None
     try:
-        server = make_server(Canvas(), args.port)
+        from codex_runtime import Runtime
+        canvas = Canvas()
+        # Bind first so a port collision cannot disturb an existing runtime.
+        server = make_server(canvas, args.port)
+        runtime = Runtime(canvas.root)
+        canvas.runtime = runtime
         print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
     except (RuntimeError, OSError) as error:
         parser.exit(1, f"codex-canvas: {error}\n")
+    finally:
+        if runtime:
+            runtime.close()

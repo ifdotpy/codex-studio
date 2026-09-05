@@ -1087,3 +1087,59 @@ dialog dd {
 .connection-legend .spawn-sample {
   border-top: 2px dashed #8cad8490;
 }
+
+#agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 20px;
+}
+#agent-actions[hidden] {
+  display: none;
+}
+dialog {
+  max-height: 90vh;
+  overflow-y: auto;
+}
+dialog select,
+dialog textarea,
+dialog input {
+  width: 100%;
+  box-sizing: border-box;
+}
+dialog label {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+dialog select,
+dialog textarea {
+  background: var(--bg);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px;
+  font: inherit;
+}
+.form-row {
+  display: flex;
+  gap: 14px;
+}
+.form-row > label {
+  flex: 1;
+  min-width: 0;
+}
+.request-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 12px;
+}
+.resource > small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+#agent-dialog {
+  width: 540px;
+}

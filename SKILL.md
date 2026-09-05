@@ -15,6 +15,15 @@ The protocol uses JSON Lines on stdio, without Content-Length framing.
 Keep runtime state outside the skill checkout.
 The scripts require Node.js and Python 3.9 or later on macOS or Linux.
 
+## Managed teams
+
+For a lead that must resume after worker or command completion, use the managed
+canvas runtime. Run `scripts/codex-canvas`, open the local page, and create a lead.
+The lead uses `orchestration_spawn` and `orchestration_monitor`. The server owns
+queues, concurrency limits, command waits and automatic parent continuation.
+Use `scripts/codex-control` for terminal access to the same runtime.
+See [Managed Codex teams](ORCHESTRATION.md) for limits, permissions and recovery.
+
 ## Mode
 
 | Mode | Use |
@@ -174,7 +183,7 @@ Peer posts do not start new turns. Read the shared chat before coordination deci
 
 The transcript panel shows recent messages, tool calls, and results with explicit size limits.
 It does not expose internal reasoning records.
-The canvas does not create agents or replace the launcher's lifecycle commands.
+The canvas creates managed leads and their workers. Legacy waves still use the launcher lifecycle commands.
 
 ## Steer a worker
 

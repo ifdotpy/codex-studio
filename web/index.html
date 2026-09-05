@@ -39,6 +39,14 @@
       </button>
       <button
         class="rail-button"
+        id="operations"
+        title="Team operations"
+        aria-label="Team operations"
+      >
+        ⚙
+      </button>
+      <button
+        class="rail-button"
         id="help"
         title="Controls"
         aria-label="Controls"
@@ -56,6 +64,7 @@
           <h1>Swarm canvas<span class="beta">LOCAL</span></h1>
         </div>
         <div id="health" class="health">Connecting…</div>
+        <button class="primary" id="new-agent">+ New lead</button>
         <button class="primary" id="new-chat">
           + Create chat <kbd>G</kbd>
         </button>
@@ -110,8 +119,7 @@
           <div class="empty-symbol">✳</div>
           <h2>No agents here yet</h2>
           <p>
-            Start a wave with codex-agents. Its agents appear here
-            automatically.
+            Create a lead agent. Give it a task and ask it to delegate work.
           </p>
           <button id="clear-filter" hidden>Clear filters</button>
         </div>
@@ -169,6 +177,13 @@
         </button>
       </div>
       <div id="detail-meta"></div>
+      <div id="agent-actions" hidden>
+        <button id="watch-command">Monitor command</button>
+        <button id="compact-agent">Compact context</button>
+        <button id="review-agent">Review changes</button>
+        <button id="stop-agent">Stop agent</button>
+        <button id="stop-team">Stop team</button>
+      </div>
       <nav id="detail-tabs">
         <button data-tab="activity" class="selected">Activity</button
         ><button data-tab="chat">Chat</button
@@ -253,6 +268,165 @@
         </dd>
       </dl>
       <button id="close-help" class="primary">Got it</button>
+    </dialog>
+    <dialog id="agent-dialog">
+      <form id="agent-form">
+        <div class="eyebrow">ONE LEAD, MANY WORKERS</div>
+        <h2>Create a lead</h2>
+        <label
+          >Name<input id="agent-name" value="Lead" maxlength="100" required
+        /></label>
+        <label
+          >Project directory<input
+            id="agent-cwd"
+            placeholder="/Users/igor/Projects/project"
+            required
+        /></label>
+        <label
+          >Model<select id="agent-model">
+            <option value="">Codex default</option>
+          </select></label
+        >
+        <label
+          >Reasoning effort<select id="agent-effort">
+            <option value="">Codex default</option>
+            <option>low</option>
+            <option>medium</option>
+            <option>high</option>
+            <option>xhigh</option>
+            <option>max</option>
+            <option>ultra</option>
+          </select></label
+        >
+        <div class="form-row">
+          <label
+            >Concurrent agents<input
+              id="agent-concurrency"
+              type="number"
+              min="1"
+              max="64"
+              value="8"
+              required
+          /></label>
+          <label
+            >Team size limit<input
+              id="agent-limit"
+              type="number"
+              min="1"
+              max="256"
+              value="64"
+              required
+          /></label>
+        </div>
+        <label
+          >Team token budget (optional)<input
+            id="agent-budget"
+            type="number"
+            min="1"
+            placeholder="No additional limit"
+        /></label>
+        <label
+          >Task<textarea
+            id="agent-task"
+            rows="5"
+            maxlength="7000"
+            placeholder="Describe the outcome. The lead can delegate and will receive results automatically."
+            required
+          ></textarea>
+        </label>
+        <details>
+          <summary>Import a previous Codex conversation</summary>
+          <p>
+            Copies visible messages from the last 20 turns into a new managed
+            lead. The original conversation stays separate.
+          </p>
+          <button type="button" id="load-imports">Load conversations</button>
+          <select id="import-thread">
+            <option value="">Start fresh</option>
+          </select>
+          <button type="button" id="more-imports" hidden>Load more</button>
+        </details>
+        <p id="agent-form-error" class="notice" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-agent">Cancel</button
+          ><button type="submit" class="primary">Start lead</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="monitor-dialog">
+      <form id="monitor-form">
+        <h2>Monitor a command</h2>
+        <p>
+          The server waits without model calls. The agent receives the exit code
+          and output when the command ends.
+        </p>
+        <label
+          >Command<textarea
+            id="monitor-command"
+            rows="4"
+            maxlength="12000"
+            required
+          ></textarea>
+        </label>
+        <label
+          >Timeout in minutes<input
+            id="monitor-timeout"
+            type="number"
+            min="1"
+            max="1440"
+            value="60"
+            required
+        /></label>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-monitor-dialog">Cancel</button
+          ><button type="submit" class="primary">Run command</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="answer-dialog">
+      <form id="answer-form">
+        <h2>Agent needs an answer</h2>
+        <div id="answer-fields"></div>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-answer">Close</button
+          ><button type="submit" class="primary">Send answers</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="team-dialog">
+      <form id="team-form">
+        <h2>Team limits</h2>
+        <label
+          >Concurrent agents<input
+            id="team-concurrency"
+            type="number"
+            min="1"
+            max="64"
+            required
+        /></label>
+        <label
+          >Team size limit<input
+            id="team-limit"
+            type="number"
+            min="1"
+            max="256"
+            required
+        /></label>
+        <label
+          >Token budget (blank means no additional limit)<input
+            id="team-budget"
+            type="number"
+            min="1"
+        /></label>
+        <p>
+          A lower concurrency limit applies to new turns. A new message resumes
+          a stopped lead.
+        </p>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-team">Cancel</button
+          ><button type="submit" class="primary">Save limits</button>
+        </div>
+      </form>
     </dialog>
     <div id="toast" role="status" hidden></div>
     <script type="module" src="/app.js"></script>

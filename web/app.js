@@ -14,8 +14,15 @@ const number = (n) =>
     maximumFractionDigits: 1,
   }).format(n || 0);
 const fullNumber = (n) => new Intl.NumberFormat("en").format(n || 0);
-const active = new Set(["starting", "running", "waiting", "capacity-retry"]);
+const active = new Set([
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+  "capacity-retry",
+]);
 const attention = new Set([
+  "approval",
   "blocked",
   "failed",
   "abandoned",
@@ -43,6 +50,8 @@ const label = (t) =>
     starting: "Starting",
     failed: "Failed",
     paused: "Paused",
+    queued: "Queued",
+    approval: "Needs an answer",
     interrupted: "Interrupted",
   })[t.status] || t.status;
 const age = (value) => {
@@ -86,6 +95,7 @@ const state = {
   pendingGroup: null,
   sending: false,
   creatingGroup: false,
+  runtime: null,
 };
 let toastTimer, refreshTimer, detailTimer, saveTimer;
 
@@ -443,6 +453,7 @@ async function refresh() {
       board: result.board,
       boardError: result.boardError,
       token: result.token,
+      runtime: result.runtime,
     });
     state.selected = new Set(
       [...state.selected].filter((id) => nodes().some((t) => t.id === id)),
@@ -453,6 +464,7 @@ async function refresh() {
     render();
     if (state.opened?.kind === "resources") renderResources();
     if (state.opened?.kind === "chats") renderChats();
+    if (state.opened?.kind === "operations") renderOperations();
   } catch (error) {
     $("#error").hidden = false;
     $("#error").textContent =
@@ -469,6 +481,7 @@ function closeDetail() {
   $("#inspector").hidden = true;
   clearTimeout(detailTimer);
   state.detailKey = "";
+  $("#agent-actions").hidden = true;
   render();
 }
 function openDetail(kind, id) {
@@ -488,10 +501,11 @@ function setTab(tab) {
 }
 function meta() {
   const o = state.opened;
-  if (!o || ["resources", "chats"].includes(o.kind)) return;
+  if (!o || ["resources", "chats", "operations"].includes(o.kind)) return;
   const t = state.threads.find((t) => t.id === o.id),
     g = state.chats.find((g) => g.id === o.id),
     isGroup = o.kind === "chat";
+  $("#agent-actions").hidden = !t || t.source !== "managed" || isGroup;
   $("#detail-label").textContent = isGroup
     ? "SHARED CHAT"
     : "AGENT / " + (t?.role || "worker").toUpperCase();
@@ -547,7 +561,8 @@ function setBody(html, key) {
 async function loadDetail() {
   clearTimeout(detailTimer);
   const opened = state.opened;
-  if (!opened || ["resources", "chats"].includes(opened.kind)) return;
+  if (!opened || ["resources", "chats", "operations"].includes(opened.kind))
+    return;
   const tab = state.tab;
   meta();
   try {
@@ -1155,3 +1170,357 @@ $("#chats").onclick = () => {
   $("#inspector").hidden = false;
   renderChats();
 };
+
+let pendingLead = null,
+  importCursor = null,
+  pendingMonitor = null,
+  answerRequest = null;
+$("#new-agent").onclick = async () => {
+  $("#agent-dialog").showModal();
+  try {
+    const result = await api("/api/models");
+    const selected = $("#agent-model").value;
+    $("#agent-model").innerHTML =
+      '<option value="">Codex default</option>' +
+      (result.data || [])
+        .map(
+          (m) =>
+            `<option value="${escape(m.model)}">${escape(m.displayName || m.model)}</option>`,
+        )
+        .join("");
+    $("#agent-model").value = selected;
+  } catch (error) {
+    toast(error.message);
+  }
+};
+$("#cancel-agent").onclick = () => $("#agent-dialog").close();
+async function loadImports(cursor) {
+  try {
+    const result = await api(
+      "/api/import" + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""),
+    );
+    if (!cursor)
+      $("#import-thread").innerHTML = '<option value="">Start fresh</option>';
+    $("#import-thread").insertAdjacentHTML(
+      "beforeend",
+      (result.data || [])
+        .map(
+          (t) =>
+            `<option value="${escape(t.id)}">${escape(t.name || t.preview || t.id).slice(0, 140)}</option>`,
+        )
+        .join(""),
+    );
+    importCursor = result.nextCursor;
+    $("#more-imports").hidden = !importCursor;
+  } catch (error) {
+    toast(error.message);
+  }
+}
+$("#load-imports").onclick = () => loadImports(null);
+$("#more-imports").onclick = () => loadImports(importCursor);
+$("#agent-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = event.submitter || $("#agent-form button[type=submit]");
+  button.disabled = true;
+  const body = {
+    name: $("#agent-name").value.trim(),
+    cwd: $("#agent-cwd").value.trim(),
+    model: $("#agent-model").value || null,
+    effort: $("#agent-effort").value || null,
+    prompt: $("#agent-task").value.trim(),
+    concurrency: Number($("#agent-concurrency").value),
+    maxAgents: Number($("#agent-limit").value),
+    tokenBudget: Number($("#agent-budget").value) || null,
+    threadId: $("#import-thread").value || null,
+  };
+  const signature = JSON.stringify(body);
+  if (!pendingLead || pendingLead.signature !== signature)
+    pendingLead = { signature, id: crypto.randomUUID() };
+  try {
+    const agent = await api(body.threadId ? "/api/import" : "/api/agents", {
+      ...body,
+      id: pendingLead.id,
+    });
+    pendingLead = null;
+    $("#agent-form-error").hidden = true;
+    $("#agent-dialog").close();
+    await refresh();
+    openDetail("agent", agent.id);
+  } catch (error) {
+    $("#agent-form-error").hidden = false;
+    $("#agent-form-error").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+};
+async function stopManaged(team) {
+  const agent = state.threads.find((a) => a.id === state.opened?.id);
+  if (!agent) return;
+  try {
+    await api("/api/stop", {
+      id: team ? agent.rootId : agent.id,
+      descendants: team,
+    });
+    toast(
+      team
+        ? "Team stopped. Automatic continuation is disabled."
+        : "Agent stopped.",
+    );
+    await refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+$("#stop-agent").onclick = () => stopManaged(false);
+$("#stop-team").onclick = () => stopManaged(true);
+$("#watch-command").onclick = () => {
+  pendingMonitor = { agent: state.opened?.id, id: crypto.randomUUID() };
+  $("#monitor-dialog").showModal();
+};
+$("#cancel-monitor-dialog").onclick = () => $("#monitor-dialog").close();
+$("#monitor-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = $("#monitor-form button[type=submit]");
+  button.disabled = true;
+  try {
+    await api("/api/monitor", {
+      ...pendingMonitor,
+      command: $("#monitor-command").value,
+      timeout_ms: Number($("#monitor-timeout").value) * 60000,
+    });
+    $("#monitor-dialog").close();
+    $("#operations").click();
+    await refresh();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+};
+$("#operations").onclick = () => {
+  state.opened = { kind: "operations" };
+  state.detailKey = "";
+  clearTimeout(detailTimer);
+  $("#inspector").hidden = false;
+  renderOperations();
+};
+function renderOperations() {
+  $("#detail-label").textContent = "ORCHESTRATION";
+  $("#detail-title").textContent = "Team operations";
+  $("#detail-meta").textContent = "Commands, requests and event delivery";
+  $("#detail-tabs").hidden = true;
+  $("#stream-controls").hidden = true;
+  $("#composer").hidden = true;
+  $("#agent-actions").hidden = true;
+  const runtime = state.runtime;
+  if (!runtime) {
+    setBody(
+      '<p class="notice">Start the updated canvas server to manage agents.</p>',
+      "no-runtime",
+    );
+    return;
+  }
+  const name = (id) => state.threads.find((a) => a.id === id)?.name || id;
+  const requests = runtime.requests || [],
+    monitors = runtime.monitors || [];
+  const roots = state.threads.filter(
+    (a) => a.source === "managed" && !a.parentId,
+  );
+  let html = roots
+    .map((a) => {
+      const team = state.threads.filter((t) => t.rootId === a.id);
+      const working = team.filter((t) =>
+        ["running", "starting", "approval"].includes(t.status),
+      ).length;
+      return `<div class="resource"><h3>${escape(a.name)}</h3><p>${escape(label(a))}${a.error ? ": " + escape(typeof a.error === "string" ? a.error : JSON.stringify(a.error)) : ""}</p><p>${team.length} agents · ${working} active / ${a.concurrency} · ${fullNumber(team.reduce((n, t) => n + t.tokensUsed, 0))} tokens${a.tokenBudget ? ` / ${fullNumber(a.tokenBudget)}` : ""}</p><button data-open-agent="${a.id}">Open lead</button><button data-team-settings="${a.id}">Settings</button><button data-stop-root="${a.id}">Stop team</button></div>`;
+    })
+    .join("");
+  html +=
+    "<h3>Requests</h3>" +
+    (requests.length
+      ? requests
+          .map((r) => {
+            const question =
+              r.method === "item/tool/requestUserInput" ||
+              (r.method === "mcpServer/elicitation/request" &&
+                r.params.mode === "form");
+            const approval =
+              [
+                "monitor/approve",
+                "item/commandExecution/requestApproval",
+                "item/fileChange/requestApproval",
+                "item/permissions/requestApproval",
+              ].includes(r.method) ||
+              (r.method === "mcpServer/elicitation/request" &&
+                r.params.mode === "url");
+            return `<div class="resource"><h3>${escape(name(r.agent))}</h3>${requestDescription(r)}${question ? `<button data-answer="${r.id}">Answer</button>` : approval ? `<button data-approve="${r.id}" data-decision="accept">Approve</button><button data-approve="${r.id}" data-decision="decline">Decline</button>` : '<p class="notice">This request is not supported here. Stop the agent and use a supported Codex client.</p>'}</div>`;
+          })
+          .join("")
+      : '<p class="notice">No pending requests.</p>');
+  html +=
+    "<h3>Monitor</h3>" +
+    (monitors.length
+      ? monitors
+          .slice(-100)
+          .reverse()
+          .map(
+            (m) =>
+              `<div class="resource"><h3>${escape(name(m.agent))} · ${escape(m.status)}</h3><pre class="request-text">${escape(m.command)}</pre><p>Exit: ${m.exitCode ?? "pending"} · ${fullNumber(m.bytes)} bytes</p><pre class="request-text">${escape(m.error || m.tail || "No output yet")}</pre><small>${escape(m.log)}</small>${["running", "starting", "approval"].includes(m.status) ? `<button data-cancel-watch="${m.id}">Cancel command</button>` : ""}</div>`,
+          )
+          .join("")
+      : '<p class="notice">No command watches.</p>');
+  html +=
+    "<h3>Recent events</h3>" +
+    (runtime.events || [])
+      .slice(0, 60)
+      .map(
+        (e) =>
+          `<div class="delivery">${escape(name(e.agent))}: ${escape(e.kind)} · ${escape(e.status)}${e.error ? `<p>${escape(e.error)}</p>` : ""}</div>`,
+      )
+      .join("");
+  setBody(html, html);
+}
+$("#detail-body").addEventListener("click", async (event) => {
+  const b = event.target.closest("button");
+  if (!b) return;
+  try {
+    if (b.dataset.openAgent) return openDetail("agent", b.dataset.openAgent);
+    if (b.dataset.stopRoot)
+      await api("/api/stop", { id: b.dataset.stopRoot, descendants: true });
+    else if (b.dataset.cancelWatch)
+      await api("/api/monitor/cancel", { id: b.dataset.cancelWatch });
+    else if (b.dataset.approve)
+      await api("/api/answer", {
+        id: b.dataset.approve,
+        decision: b.dataset.decision,
+      });
+    else if (b.dataset.answer) {
+      answerRequest = state.runtime.requests.find(
+        (r) => r.id === b.dataset.answer,
+      );
+      if (answerRequest.method === "mcpServer/elicitation/request") {
+        const schema = answerRequest.params.requestedSchema || {};
+        $("#answer-fields").innerHTML = Object.entries(schema.properties || {})
+          .map(([key, field]) => {
+            const required = (schema.required || []).includes(key)
+              ? "required"
+              : "";
+            const attrs = `data-field="${escape(key)}" data-type="${escape(field.type || "string")}" ${required}`;
+            const control = field.enum
+              ? `<select ${attrs}>${field.enum.map((v) => `<option value="${escape(v)}">${escape(v)}</option>`).join("")}</select>`
+              : field.type === "boolean"
+                ? `<select ${attrs}><option value="true">Yes</option><option value="false">No</option></select>`
+                : `<input ${attrs} type="${["number", "integer"].includes(field.type) ? "number" : "text"}" />`;
+            return `<label>${escape(field.title || key)}<small>${escape(field.description || "")}</small>${control}</label>`;
+          })
+          .join("");
+      } else
+        $("#answer-fields").innerHTML = (answerRequest.params.questions || [])
+          .map(
+            (q) =>
+              `<label>${escape(q.question)}${(q.options || []).length ? `<small>${q.options.map((o) => escape(o.label) + ": " + escape(o.description)).join("<br>")}</small>` : ""}<textarea data-question="${escape(q.id)}" required></textarea></label>`,
+          )
+          .join("");
+      $("#answer-dialog").showModal();
+      return;
+    } else return;
+    await refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+$("#cancel-answer").onclick = () => $("#answer-dialog").close();
+$("#answer-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const answers = Object.fromEntries(
+    $$("#answer-fields [data-question]").map((el) => [
+      el.dataset.question,
+      { answers: [el.value] },
+    ]),
+  );
+  try {
+    const content = Object.fromEntries(
+      $$("#answer-fields [data-field]")
+        .filter((el) => el.value !== "" || el.required)
+        .map((el) => [
+          el.dataset.field,
+          el.dataset.type === "boolean"
+            ? el.value === "true"
+            : ["number", "integer"].includes(el.dataset.type)
+              ? Number(el.value)
+              : el.value,
+        ]),
+    );
+    await api(
+      "/api/answer",
+      answerRequest.method === "mcpServer/elicitation/request"
+        ? { id: answerRequest.id, decision: "accept", content }
+        : { id: answerRequest.id, answers },
+    );
+    $("#answer-dialog").close();
+    await refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+};
+
+let configuredTeam = null;
+$("#detail-body").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-team-settings]");
+  if (!button) return;
+  configuredTeam = state.threads.find(
+    (a) => a.id === button.dataset.teamSettings,
+  );
+  $("#team-concurrency").value = configuredTeam.concurrency;
+  $("#team-limit").value = configuredTeam.maxAgents;
+  $("#team-budget").value = configuredTeam.tokenBudget || "";
+  $("#team-dialog").showModal();
+});
+$("#cancel-team").onclick = () => $("#team-dialog").close();
+$("#team-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/configure", {
+      id: configuredTeam.id,
+      concurrency: Number($("#team-concurrency").value),
+      maxAgents: Number($("#team-limit").value),
+      tokenBudget: Number($("#team-budget").value) || null,
+    });
+    $("#team-dialog").close();
+    await refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+};
+
+for (const action of ["compact", "review"]) {
+  $(`#${action}-agent`).onclick = async () => {
+    try {
+      await api("/api/action", { id: state.opened.id, action });
+      toast(
+        action === "compact"
+          ? "Codex started context compaction."
+          : "Codex started the review.",
+      );
+      await refresh();
+    } catch (error) {
+      toast(error.message);
+    }
+  };
+}
+
+function requestDescription(request) {
+  const p = request.params,
+    preview = request.preview || {};
+  const command = p.command || preview.command;
+  const changes = p.permissions || preview.changes;
+  let html = `<p>${escape(p.reason || p.message || "Agent requests approval")}</p>`;
+  if (command)
+    html += `<pre class="request-text">${escape(Array.isArray(command) ? command.join(" ") : command)}</pre>`;
+  if (p.cwd) html += `<small>${escape(p.cwd)}</small>`;
+  if (changes)
+    html += `<details><summary>Requested access or changes</summary><pre class="request-text">${escape(JSON.stringify(changes, null, 2).slice(0, 16000))}</pre></details>`;
+  if (p.url && /^https?:\/\//i.test(p.url))
+    html += `<p><a href="${escape(p.url)}" target="_blank" rel="noreferrer">Open request</a></p>`;
+  return html;
+}

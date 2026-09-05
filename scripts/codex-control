@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Control the same managed agents as the canvas, without another app-server."""
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('--url', default=os.environ.get('CODEX_CANVAS_URL', 'http://127.0.0.1:4620'))
+s = p.add_subparsers(dest='command', required=True)
+s.add_parser('list')
+s.add_parser('models')
+c = s.add_parser('create')
+c.add_argument('task')
+c.add_argument('--cwd', default=os.getcwd())
+c.add_argument('--name', default='Lead')
+c.add_argument('--model')
+c.add_argument('--effort')
+c.add_argument('--concurrency', type=int, default=8)
+c.add_argument('--max-agents', type=int, default=64)
+c.add_argument('--token-budget', type=int)
+c = s.add_parser('send')
+c.add_argument('agent')
+c.add_argument('text')
+c = s.add_parser('stop')
+c.add_argument('agent')
+c.add_argument('--only', action='store_true')
+c = s.add_parser('monitor')
+c.add_argument('agent')
+c.add_argument('shell_command')
+c.add_argument('--timeout-minutes', type=int, default=60)
+c = s.add_parser('configure')
+c.add_argument('agent')
+c.add_argument('--concurrency', type=int)
+c.add_argument('--max-agents', type=int)
+c.add_argument('--token-budget', type=int)
+c = s.add_parser('transcript')
+c.add_argument('agent')
+a = p.parse_args()
+
+def request(path, data=None, token=''):
+    req = urllib.request.Request(a.url.rstrip('/') + path,
+        data=json.dumps(data).encode() if data is not None else None,
+        headers={'Content-Type': 'application/json', 'X-Canvas-Token': token})
+    with urllib.request.urlopen(req, timeout=90) as response:
+        return json.load(response)
+
+try:
+    import uuid
+    from urllib.parse import quote
+    state = request('/api/state')
+    token = state['token']
+    if a.command == 'list':
+        result = [{'id': t['id'], 'name': t['name'], 'parent': t.get('parentId'), 'status': t['status'],
+                   'model': t.get('model'), 'tokens': t.get('tokensUsed')} for t in state['threads']]
+    elif a.command == 'models':
+        result = request('/api/models')
+    elif a.command == 'create':
+        result = request('/api/agents', dict(id=str(uuid.uuid4()), name=a.name, cwd=a.cwd, prompt=a.task,
+            model=a.model, effort=a.effort, concurrency=a.concurrency, maxAgents=a.max_agents, tokenBudget=a.token_budget), token)
+    elif a.command == 'send':
+        result = request('/api/messages', dict(id=str(uuid.uuid4()), room=a.agent, text=a.text), token)
+    elif a.command == 'stop':
+        result = request('/api/stop', dict(id=a.agent, descendants=not a.only), token)
+    elif a.command == 'monitor':
+        result = request('/api/monitor', dict(id=str(uuid.uuid4()), agent=a.agent, command=a.shell_command,
+                                             timeout_ms=a.timeout_minutes * 60000), token)
+    elif a.command == 'configure':
+        data = {'id': a.agent}
+        for source, target in [('concurrency', 'concurrency'), ('max_agents', 'maxAgents'), ('token_budget', 'tokenBudget')]:
+            value = getattr(a, source)
+            if value is not None: data[target] = value
+        result = request('/api/configure', data, token)
+    else:
+        result = request('/api/transcript?id=' + quote(a.agent))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+except (OSError, ValueError) as error:
+    if isinstance(error, urllib.error.HTTPError):
+        try: error = json.load(error).get('error', str(error))
+        except ValueError: pass
+    p.exit(1, f'codex-control: {error}\n')
