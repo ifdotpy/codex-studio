@@ -100,6 +100,7 @@ try {
   Object.defineProperty($("#viewport"), "clientWidth", { value: 1400 });
   Object.defineProperty($("#viewport"), "clientHeight", { value: 800 });
   w.eval(await readFile(join(skill, "web/app.js"), "utf8"));
+  $("#advanced-view").click();
   await wait(
     () => document.querySelectorAll(".agent-card").length === 3,
     "agents appear",

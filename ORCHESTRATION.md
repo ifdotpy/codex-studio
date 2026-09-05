@@ -1,7 +1,14 @@
 # Managed Codex teams
 
 Start `scripts/codex-canvas` and open <http://127.0.0.1:4620>.
-Select **New lead**, choose a project and model, and describe the outcome.
+Select **New lead**, choose a project, and describe the outcome.
+Model selection and team limits are under **Model and team limits**.
+The default view shows the conversation and the selected lead’s workers.
+Select a worker to read its conversation. Select the lead to return.
+Use **Options** for tools, sent messages, command monitors and agent controls.
+**Commands and requests** opens approvals, command results and team limits.
+Select **Canvas** for the graph, shared chats and resource view.
+Select **Chat** to return. The switch preserves canvas positions and message drafts.
 One lead can delegate a batch of work to dozens of agents.
 The browser can close while the canvas server continues the work.
 

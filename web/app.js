@@ -91,11 +91,15 @@ const state = {
   storageKey: null,
   drag: null,
   detailKey: "",
-  pendingSend: null,
+  pendingSends: new Map(),
   pendingGroup: null,
   sending: false,
   creatingGroup: false,
   runtime: null,
+  simple: true,
+  lead: null,
+  workerQuery: "",
+  drafts: new Map(),
 };
 let toastTimer, refreshTimer, detailTimer, saveTimer;
 
@@ -242,6 +246,7 @@ function fit() {
   save();
 }
 function transform() {
+  if (state.simple) return;
   const v = state.view;
   $("#world").style.transform = `translate(${v.x}px,${v.y}px) scale(${v.z})`;
   $("#zoom").textContent = `${Math.round(v.z * 100)}%`;
@@ -347,7 +352,8 @@ function card(t) {
     <div class="card-tail">${escape(chat ? t.tail || "No messages yet" : t.error || t.tail || "No message yet")}</div>`;
 }
 function render() {
-  if (state.drag) return;
+  renderTeam();
+  if (state.simple || state.drag) return;
   arrange();
   const shown = visible(),
     ids = new Set(shown.map((t) => t.id));
@@ -455,6 +461,7 @@ async function refresh() {
       token: result.token,
       runtime: result.runtime,
     });
+    syncWorkspace();
     state.selected = new Set(
       [...state.selected].filter((id) => nodes().some((t) => t.id === id)),
     );
@@ -468,7 +475,7 @@ async function refresh() {
   } catch (error) {
     $("#error").hidden = false;
     $("#error").textContent =
-      `Connection interrupted: ${error.message}. The canvas shows the last received state.`;
+      `Connection interrupted: ${error.message}. The workspace shows the last received state.`;
     $("#connection").textContent = "Disconnected";
     $(".connection-dot").style.background = "var(--red)";
   } finally {
@@ -477,6 +484,7 @@ async function refresh() {
 }
 
 function closeDetail() {
+  rememberDraft();
   state.opened = null;
   $("#inspector").hidden = true;
   clearTimeout(detailTimer);
@@ -485,12 +493,15 @@ function closeDetail() {
   render();
 }
 function openDetail(kind, id) {
+  rememberDraft();
+  const agent = state.threads.find((t) => t.id === id);
+  if (agent) state.lead = teamRoot(agent).id;
   state.opened = { kind, id };
   state.tab = kind === "chat" ? "chat" : "activity";
   state.detailKey = "";
-  state.pendingSend = null;
-  $("#message").value = "";
+  $("#message").value = state.drafts.get(id) || "";
   $("#inspector").hidden = false;
+  $("#conversation-options").open = !state.simple;
   render();
   loadDetail();
 }
@@ -505,6 +516,7 @@ function meta() {
   const t = state.threads.find((t) => t.id === o.id),
     g = state.chats.find((g) => g.id === o.id),
     isGroup = o.kind === "chat";
+  $("#conversation-options").hidden = false;
   $("#agent-actions").hidden = !t || t.source !== "managed" || isGroup;
   $("#detail-label").textContent = isGroup
     ? "SHARED CHAT"
@@ -529,11 +541,13 @@ function meta() {
   $("#composer button").disabled = !canSend || state.sending;
   $("#message").disabled = !canSend || state.sending;
   $("#message").placeholder = canSend
-    ? "Send an instruction…"
+    ? `Message ${isGroup ? g?.name || "the chat" : t?.name || "the agent"}…`
     : "No live mailbox for this agent";
   $("#send-note").textContent = isGroup
     ? "Each member gets your message. Offline members show a failure."
-    : "Queued means mailbox receipt, not agent completion.";
+    : t?.source === "managed"
+      ? "⌘ / Ctrl + Enter to send. A message resumes a stopped agent."
+      : "Queued means mailbox receipt, not agent completion.";
 }
 function entry(item) {
   const text =
@@ -634,7 +648,7 @@ async function loadDetail() {
       const html =
         (g
           ? '<p class="notice">Your messages go to connected agents. Agents can read and post here with codex-chat. Peer posts do not start turns automatically.</p>'
-          : '<p class="notice">Instructions sent from this canvas. Read agent replies in Activity.</p>') +
+          : '<p class="notice">Instructions sent from this canvas. Read agent replies in Conversation.</p>') +
         messages
           .map((m) => {
             const name =
@@ -674,6 +688,8 @@ async function loadDetail() {
   }
 }
 function renderResources() {
+  $("#conversation-options").hidden = true;
+  $("#agent-actions").hidden = true;
   if (state.opened?.kind !== "resources") return;
   $("#detail-label").textContent = "SHARED MACHINE";
   $("#detail-title").textContent = "Resources";
@@ -1004,8 +1020,12 @@ $("#reset-view").onclick = fit;
 $("#zoom-in").onclick = () => zoom(1.15);
 $("#zoom-out").onclick = () => zoom(1 / 1.15);
 $("#close-detail").onclick = closeDetail;
-$("#canvas-view").onclick = closeDetail;
+$("#canvas-view").onclick = () => {
+  setView(false);
+  closeDetail();
+};
 $("#resources").onclick = () => {
+  rememberDraft();
   state.opened = { kind: "resources" };
   state.detailKey = "";
   clearTimeout(detailTimer);
@@ -1087,23 +1107,26 @@ $("#composer").onsubmit = async (e) => {
   if (!text || !room || state.sending) return;
   state.sending = true;
   meta();
-  const current = state.pendingSend;
+  const current = state.pendingSends.get(room);
   if (!current || current.room !== room || current.text !== text)
-    state.pendingSend = { id: crypto.randomUUID(), room, text };
+    state.pendingSends.set(room, { id: crypto.randomUUID(), room, text });
   try {
-    const result = await api("/api/messages", state.pendingSend);
-    state.pendingSend = null;
+    const result = await api("/api/messages", state.pendingSends.get(room));
+    state.pendingSends.delete(room);
+    if (state.drafts.get(room)?.trim() === text) state.drafts.delete(room);
     const unresolved = Object.values(result.deliveries).filter(
       (v) => v !== "queued",
     ).length;
     toast(
       unresolved
-        ? `Saved. ${unresolved} deliveries are not confirmed. Read Chat for details.`
+        ? `Saved. ${unresolved} deliveries are not confirmed. Open Options, then Sent messages for details.`
         : "Message saved and queued.",
     );
     if (state.opened?.id === room) {
       if ($("#message").value.trim() === text) $("#message").value = "";
-      setTab("chat");
+      setTab(
+        state.simple && state.opened.kind === "agent" ? "activity" : "chat",
+      );
     }
   } catch (error) {
     toast(error.message);
@@ -1119,7 +1142,15 @@ $("#message").addEventListener("keydown", (e) => {
   }
 });
 document.addEventListener("keydown", (e) => {
-  if (e.target.closest("input,textarea,dialog")) return;
+  if (e.target.closest("input,textarea,select,dialog")) return;
+  if (state.simple) {
+    if (e.key === "/") {
+      e.preventDefault();
+      $("#worker-search").focus();
+    }
+    if (e.key === "Escape" && state.lead) openDetail("agent", state.lead);
+    return;
+  }
   if (e.key === "/") {
     e.preventDefault();
     $("#search").focus();
@@ -1144,9 +1175,10 @@ document.addEventListener("keydown", (e) => {
   }
 });
 new ResizeObserver(() => transform()).observe($("#viewport"));
-refresh();
 
 function renderChats() {
+  $("#conversation-options").hidden = true;
+  $("#agent-actions").hidden = true;
   if (state.opened?.kind !== "chats") return;
   $("#detail-label").textContent = "TEAM CONVERSATIONS";
   $("#detail-title").textContent = "Chats";
@@ -1164,6 +1196,7 @@ function renderChats() {
   setBody(html || '<p class="notice">No group chats yet.</p>', html);
 }
 $("#chats").onclick = () => {
+  rememberDraft();
   state.opened = { kind: "chats" };
   state.detailKey = "";
   clearTimeout(detailTimer);
@@ -1298,6 +1331,7 @@ $("#monitor-form").onsubmit = async (event) => {
   }
 };
 $("#operations").onclick = () => {
+  rememberDraft();
   state.opened = { kind: "operations" };
   state.detailKey = "";
   clearTimeout(detailTimer);
@@ -1305,6 +1339,7 @@ $("#operations").onclick = () => {
   renderOperations();
 };
 function renderOperations() {
+  $("#conversation-options").hidden = true;
   $("#detail-label").textContent = "ORCHESTRATION";
   $("#detail-title").textContent = "Team operations";
   $("#detail-meta").textContent = "Commands, requests and event delivery";
@@ -1524,3 +1559,102 @@ function requestDescription(request) {
     html += `<p><a href="${escape(p.url)}" target="_blank" rel="noreferrer">Open request</a></p>`;
   return html;
 }
+
+function rememberDraft() {
+  if (state.opened?.id) state.drafts.set(state.opened.id, $("#message").value);
+}
+function teamRoot(agent) {
+  const seen = new Set();
+  while (agent.parentId && !seen.has(agent.id)) {
+    seen.add(agent.id);
+    const parent = state.threads.find((t) => t.id === agent.parentId);
+    if (!parent) break;
+    agent = parent;
+  }
+  return agent;
+}
+function teamAgents() {
+  return state.threads.filter((a) => teamRoot(a).id === state.lead);
+}
+function syncWorkspace() {
+  if (!state.threads.some((a) => a.id === state.lead)) {
+    const roots = state.threads.filter((a) => teamRoot(a).id === a.id);
+    state.lead =
+      (roots.find((a) => a.source === "managed") || roots[0])?.id || null;
+    if (state.simple && state.lead && !state.opened)
+      openDetail("agent", state.lead);
+  }
+}
+function renderTeam() {
+  const roots = state.threads.filter((a) => teamRoot(a).id === a.id);
+  const options = roots
+    .map((a) => `<option value="${escape(a.id)}">${escape(a.name)}</option>`)
+    .join("");
+  if ($("#team-select").innerHTML !== options)
+    $("#team-select").innerHTML = options;
+  $("#team-select").value = state.lead || "";
+  $("#team-select").disabled = !roots.length;
+  const lead = state.threads.find((a) => a.id === state.lead);
+  $("#open-lead").disabled = !lead;
+  $("#open-lead").innerHTML = lead
+    ? `<strong>${escape(lead.name)}</strong><small>${escape(label(lead))}</small>`
+    : "No lead yet";
+  $("#open-lead").classList.toggle("selected", state.opened?.id === state.lead);
+  const workers = teamAgents().filter((a) => a.id !== state.lead);
+  $("#worker-count").textContent = workers.length;
+  const rank = (a) =>
+    attention.has(a.status) ? 0 : active.has(a.status) ? 1 : 2;
+  const shown = workers
+    .filter((a) =>
+      [a.name, a.status, a.role].some((v) =>
+        String(v || "")
+          .toLowerCase()
+          .includes(state.workerQuery),
+      ),
+    )
+    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  const html =
+    shown
+      .map(
+        (a) =>
+          `<button class="worker-row${state.opened?.id === a.id ? " selected" : ""}" data-worker="${escape(a.id)}" data-tone="${tone(a)}" aria-pressed="${state.opened?.id === a.id}"><span class="worker-dot"></span><span><strong>${escape(a.name)}</strong><small>${escape(label(a))}</small></span></button>`,
+      )
+      .join("") ||
+    `<p class="notice">${workers.length ? "No matching workers." : "Workers appear here when the lead delegates."}</p>`;
+  if ($("#worker-list").innerHTML !== html) $("#worker-list").innerHTML = html;
+  const requests = state.runtime?.requests || [];
+  $("#team-alert").hidden = !requests.length;
+  $("#team-alert").textContent =
+    `${requests.length} request${requests.length === 1 ? "" : "s"} need an answer`;
+  $("#welcome").hidden = !$("#inspector").hidden;
+}
+function setView(simple) {
+  state.simple = simple;
+  document.body.classList.toggle("simple-view", simple);
+  $("#simple-view").setAttribute("aria-pressed", String(simple));
+  $("#advanced-view").setAttribute("aria-pressed", String(!simple));
+  $("#conversation-options").open = !simple;
+  if (simple && !state.opened && state.lead) openDetail("agent", state.lead);
+  render();
+  if (!simple) requestAnimationFrame(transform);
+}
+$("#simple-view").onclick = () => setView(true);
+$("#advanced-view").onclick = () => setView(false);
+$("#team-select").onchange = (event) => openDetail("agent", event.target.value);
+$("#open-lead").onclick = () => {
+  if (state.lead) openDetail("agent", state.lead);
+};
+$("#worker-search").oninput = (event) => {
+  state.workerQuery = event.target.value.toLowerCase().trim();
+  renderTeam();
+};
+$("#worker-list").onclick = (event) => {
+  const row = event.target.closest("[data-worker]");
+  if (row) openDetail("agent", row.dataset.worker);
+};
+$("#simple-operations").onclick = $("#team-alert").onclick = () => {
+  $("#operations").click();
+  renderTeam();
+};
+$("#welcome-start").onclick = () => $("#new-agent").click();
+refresh();

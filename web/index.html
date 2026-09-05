@@ -10,7 +10,7 @@
     <title>Codex Canvas</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
-  <body>
+  <body class="simple-view">
     <aside class="rail">
       <a class="brand" href="/" aria-label="Codex Canvas">c<span>·</span></a>
       <button
@@ -61,9 +61,13 @@
       <header>
         <div class="heading">
           <div class="eyebrow">CODEX AGENTS <span>/</span> WORKSPACE</div>
-          <h1>Swarm canvas<span class="beta">LOCAL</span></h1>
+          <h1>Codex agents</h1>
         </div>
         <div id="health" class="health">Connecting…</div>
+        <div class="view-switch" role="group" aria-label="Workspace view">
+          <button id="simple-view" aria-pressed="true">Chat</button
+          ><button id="advanced-view" aria-pressed="false">Canvas</button>
+        </div>
         <button class="primary" id="new-agent">+ New lead</button>
         <button class="primary" id="new-chat">
           + Create chat <kbd>G</kbd>
@@ -162,6 +166,32 @@
         <div id="total-tokens"></div>
       </footer>
     </main>
+    <aside id="team-sidebar" aria-label="Team">
+      <label for="team-select">Lead agent</label>
+      <select id="team-select" aria-label="Select lead"></select>
+      <button id="open-lead" class="team-lead">Open lead</button>
+      <div class="workers-heading">
+        <h2>Workers</h2>
+        <span id="worker-count">0</span>
+      </div>
+      <input
+        id="worker-search"
+        type="search"
+        placeholder="Find a worker…"
+        aria-label="Find a worker"
+      />
+      <div id="worker-list"></div>
+      <button id="team-alert" hidden></button>
+      <button id="simple-operations">Commands and requests</button>
+    </aside>
+    <section id="welcome">
+      <h2>One task. One lead.</h2>
+      <p>
+        Describe the outcome. Your lead can delegate work and collect the
+        results.
+      </p>
+      <button class="primary" id="welcome-start">+ New lead</button>
+    </section>
     <aside id="inspector" hidden aria-label="Agent details">
       <div class="inspector-top">
         <div>
@@ -177,23 +207,27 @@
         </button>
       </div>
       <div id="detail-meta"></div>
-      <div id="agent-actions" hidden>
-        <button id="watch-command">Monitor command</button>
-        <button id="compact-agent">Compact context</button>
-        <button id="review-agent">Review changes</button>
-        <button id="stop-agent">Stop agent</button>
-        <button id="stop-team">Stop team</button>
-      </div>
-      <nav id="detail-tabs">
-        <button data-tab="activity" class="selected">Activity</button
-        ><button data-tab="chat">Chat</button
-        ><button data-tab="details">Details</button>
-      </nav>
-      <div class="stream-controls" id="stream-controls">
-        <label><input type="checkbox" id="follow" checked /> Follow live</label
-        ><label><input type="checkbox" id="show-tools" checked /> Tools</label
-        ><button id="copy" title="Copy visible transcript">Copy</button>
-      </div>
+      <details id="conversation-options">
+        <summary>Options</summary>
+        <div id="agent-actions" hidden>
+          <button id="watch-command">Monitor command</button>
+          <button id="compact-agent">Compact context</button>
+          <button id="review-agent">Review changes</button>
+          <button id="stop-agent">Stop agent</button>
+          <button id="stop-team">Stop team</button>
+        </div>
+        <nav id="detail-tabs">
+          <button data-tab="activity" class="selected">Conversation</button
+          ><button data-tab="chat">Sent messages</button
+          ><button data-tab="details">Details</button>
+        </nav>
+        <div class="stream-controls" id="stream-controls">
+          <label
+            ><input type="checkbox" id="follow" checked /> Follow live</label
+          ><label><input type="checkbox" id="show-tools" /> Tools</label
+          ><button id="copy" title="Copy visible transcript">Copy</button>
+        </div>
+      </details>
       <div id="detail-body"></div>
       <form id="composer">
         <div id="composer-label">Message this agent</div>
@@ -283,49 +317,6 @@
             required
         /></label>
         <label
-          >Model<select id="agent-model">
-            <option value="">Codex default</option>
-          </select></label
-        >
-        <label
-          >Reasoning effort<select id="agent-effort">
-            <option value="">Codex default</option>
-            <option>low</option>
-            <option>medium</option>
-            <option>high</option>
-            <option>xhigh</option>
-            <option>max</option>
-            <option>ultra</option>
-          </select></label
-        >
-        <div class="form-row">
-          <label
-            >Concurrent agents<input
-              id="agent-concurrency"
-              type="number"
-              min="1"
-              max="64"
-              value="8"
-              required
-          /></label>
-          <label
-            >Team size limit<input
-              id="agent-limit"
-              type="number"
-              min="1"
-              max="256"
-              value="64"
-              required
-          /></label>
-        </div>
-        <label
-          >Team token budget (optional)<input
-            id="agent-budget"
-            type="number"
-            min="1"
-            placeholder="No additional limit"
-        /></label>
-        <label
           >Task<textarea
             id="agent-task"
             rows="5"
@@ -334,6 +325,52 @@
             required
           ></textarea>
         </label>
+        <details>
+          <summary>Model and team limits</summary>
+          <label
+            >Model<select id="agent-model">
+              <option value="">Codex default</option>
+            </select></label
+          >
+          <label
+            >Reasoning effort<select id="agent-effort">
+              <option value="">Codex default</option>
+              <option>low</option>
+              <option>medium</option>
+              <option>high</option>
+              <option>xhigh</option>
+              <option>max</option>
+              <option>ultra</option>
+            </select></label
+          >
+          <div class="form-row">
+            <label
+              >Concurrent agents<input
+                id="agent-concurrency"
+                type="number"
+                min="1"
+                max="64"
+                value="8"
+                required
+            /></label>
+            <label
+              >Team size limit<input
+                id="agent-limit"
+                type="number"
+                min="1"
+                max="256"
+                value="64"
+                required
+            /></label>
+          </div>
+          <label
+            >Team token budget (optional)<input
+              id="agent-budget"
+              type="number"
+              min="1"
+              placeholder="No additional limit"
+          /></label>
+        </details>
         <details>
           <summary>Import a previous Codex conversation</summary>
           <p>

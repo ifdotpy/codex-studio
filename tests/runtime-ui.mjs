@@ -100,11 +100,7 @@ try {
     () => $("#detail-title").textContent === "Managed lead",
     "lead inspector",
   );
-  assert.equal(
-    w.document.querySelectorAll(".agent-card").length,
-    1,
-    "no duplicate agent",
-  );
+  assert.equal($("#team-select").options.length, 1, "no duplicate agent");
   assert.equal($("#agent-actions").hidden, false);
   const snapshot = await (await fetch(origin + "/api/state")).json();
   assert.equal(snapshot.runtime.agents[0].concurrency, 4);

@@ -1143,3 +1143,326 @@ dialog textarea {
 #agent-dialog {
   width: 540px;
 }
+
+/* Chat is the default workspace. Canvas keeps its controls and layout. */
+.view-switch {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.view-switch button {
+  border: 0;
+  padding: 7px 12px;
+}
+.view-switch [aria-pressed="true"] {
+  background: #ffffff12;
+  color: var(--green);
+}
+#team-sidebar,
+#welcome {
+  display: none;
+}
+#conversation-options {
+  flex-shrink: 0;
+}
+#conversation-options > summary {
+  padding: 10px 23px;
+  color: var(--muted);
+  cursor: pointer;
+}
+body:not(.simple-view) #conversation-options > summary {
+  display: none;
+}
+body.simple-view {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-rows: 76px minmax(0, 1fr);
+}
+.simple-view main {
+  display: contents;
+}
+.simple-view main > header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  height: auto;
+  padding: 0 24px;
+  gap: 16px;
+}
+.simple-view header .heading {
+  margin-right: auto;
+}
+.simple-view header h1 {
+  font-size: 19px;
+}
+.simple-view header .eyebrow,
+.simple-view #health,
+.simple-view .rail,
+.simple-view .toolbar,
+.simple-view #viewport,
+.simple-view footer,
+.simple-view #new-chat {
+  display: none;
+}
+.simple-view #error {
+  position: fixed;
+  top: 76px;
+  left: 280px;
+  right: 0;
+  z-index: 10;
+}
+.simple-view #team-sidebar {
+  display: flex;
+  grid-column: 1;
+  grid-row: 2;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  padding: 24px 16px 16px;
+  border-right: 1px solid var(--line);
+  background: #15171a;
+}
+#team-sidebar > label {
+  color: var(--muted);
+  font-size: 11px;
+}
+#team-select {
+  width: 100%;
+  min-width: 0;
+}
+#open-lead {
+  text-align: left;
+  padding: 13px;
+}
+#open-lead strong,
+#open-lead small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#open-lead small {
+  margin-top: 5px;
+  color: var(--muted);
+}
+.workers-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+}
+.workers-heading h2 {
+  font-size: 13px;
+  letter-spacing: 0;
+}
+#worker-count {
+  color: var(--muted);
+}
+#worker-search {
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+}
+#worker-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+.worker-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  margin-bottom: 4px;
+  padding: 10px;
+}
+.worker-row > span:last-child {
+  min-width: 0;
+}
+.worker-row strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.worker-row small {
+  display: block;
+  color: var(--muted);
+  margin-top: 5px;
+  font-size: 11px;
+}
+.worker-row.selected,
+#open-lead.selected {
+  background: #b4e89409;
+  border-color: #b4e89435;
+}
+.worker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+[data-tone="active"] .worker-dot {
+  background: var(--green);
+}
+[data-tone="attention"] .worker-dot {
+  background: var(--orange);
+}
+[data-tone="offline"] .worker-dot {
+  background: var(--red);
+}
+#team-alert {
+  border-color: var(--orange);
+  color: var(--orange);
+  white-space: normal;
+}
+#simple-operations {
+  font-size: 12px;
+  color: var(--muted);
+}
+.simple-view #inspector {
+  grid-column: 2;
+  grid-row: 2;
+  width: auto;
+  max-width: none;
+  min-width: 0;
+  min-height: 0;
+  position: static;
+  box-shadow: none;
+  border: 0;
+  background: var(--bg);
+}
+.simple-view .inspector-top {
+  padding: 24px 36px 8px;
+}
+.simple-view #detail-meta {
+  padding: 0 36px 12px;
+}
+.simple-view #detail-label {
+  font-size: 9px;
+}
+.simple-view #close-detail {
+  display: none;
+}
+.simple-view #conversation-options {
+  margin: 0 13px;
+  max-height: 40%;
+  overflow: auto;
+}
+.simple-view #detail-body {
+  padding: 8px max(36px, calc((100% - 820px) / 2)) 32px;
+}
+.simple-view .entry {
+  padding: 24px 0;
+}
+.simple-view .entry-text {
+  font-size: 14px;
+  line-height: 1.7;
+}
+.simple-view #composer {
+  padding: 16px max(36px, calc((100% - 820px) / 2)) 24px;
+  border-top: 0;
+}
+.simple-view #composer-label {
+  margin-bottom: 10px;
+}
+.simple-view #message {
+  min-height: 94px;
+  background: #1b1e23;
+  padding: 14px;
+}
+.simple-view #welcome {
+  display: flex;
+  grid-column: 2;
+  grid-row: 2;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  padding: 40px;
+  text-align: center;
+}
+#welcome p {
+  color: var(--muted);
+  max-width: 400px;
+  line-height: 1.7;
+}
+@media (max-width: 900px) {
+  body.simple-view {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+  .simple-view main > header {
+    padding: 0 16px;
+    gap: 10px;
+  }
+  .simple-view #error {
+    left: 220px;
+  }
+  .simple-view .inspector-top {
+    padding: 20px 20px 8px;
+  }
+  .simple-view #detail-meta {
+    padding: 0 20px 10px;
+  }
+  .simple-view #detail-body,
+  .simple-view #composer {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+}
+@media (max-width: 600px) {
+  body.simple-view {
+    grid-template-columns: 145px minmax(0, 1fr);
+    grid-template-rows: 64px minmax(0, 1fr);
+  }
+  .simple-view main > header {
+    gap: 6px;
+    padding: 0 10px;
+  }
+  .simple-view header h1 {
+    font-size: 14px;
+  }
+  .view-switch button {
+    padding: 7px 9px;
+  }
+  .simple-view #new-agent {
+    padding: 8px;
+  }
+  .simple-view #team-sidebar {
+    padding: 16px 8px 10px;
+    gap: 10px;
+  }
+  .simple-view #error {
+    left: 145px;
+    top: 64px;
+  }
+  #simple-operations {
+    white-space: normal;
+  }
+  .simple-view .inspector-top,
+  .simple-view #detail-meta,
+  .simple-view #detail-body,
+  .simple-view #composer {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .simple-view #send-note {
+    display: none;
+  }
+}
+
+#team-select {
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px;
+  font: inherit;
+}
+.simple-view .entry.user .entry-text,
+.simple-view .entry.assistant .entry-text {
+  font-family: inherit;
+}
