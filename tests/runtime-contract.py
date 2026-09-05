@@ -43,7 +43,7 @@ class FakeServer:
             assert params['config']['features.multi_agent'] is False
             if method == 'thread/start':
                 assert all(t['type'] == 'function' for t in params['dynamicTools'])
-            return {'thread': {'id': params.get('threadId', f'thread-{self.seq}')}, 'model': 'test-model',
+            return {'thread': {'id': params.get('threadId', f'thread-{self.seq}')}, 'model': params.get('model', 'gpt-6-astra'),
                     'sandbox': {'type': 'readOnly'}, 'approvalPolicy': 'on-request'}
         if method == 'turn/start':
             if self.start_gate is not None:
@@ -116,6 +116,92 @@ class RuntimeContract(unittest.TestCase):
 
     def complete(self, a):
         self.runtime.server.complete(a['threadId'], a['turnId'])
+
+    def test_blank_lead_is_persistent_and_has_no_model_call(self):
+        import uuid
+        key = str(uuid.uuid4())
+        a = self.runtime.new_lead({'id': key})
+        self.assertTrue(a['isLead'])
+        self.assertEqual(a['model'], 'gpt-6-astra')
+        self.assertEqual(a['status'], 'idle')
+        self.assertEqual(a['prompt'], '')
+        self.assertIsNone(self.runtime.server)
+        self.assertEqual(self.runtime.new_lead({'id': key})['id'], key)
+        with self.assertRaisesRegex(ValueError, 'different settings'):
+            self.runtime.new_lead({'id': key, 'model': 'gpt-5.6-sol'})
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertTrue(self.runtime.agent(key)['isLead'])
+        self.assertEqual(self.runtime.agent(key)['status'], 'idle')
+        self.assertIsNone(self.runtime.server)
+
+    def test_lead_model_and_role_are_server_enforced(self):
+        for model in ['gpt-5.6-luna', 'gpt-5.6-terra', 'fake-sol']:
+            with self.assertRaisesRegex(ValueError, 'Astra or Sol'):
+                self.runtime.new_lead({'model': model})
+            with self.assertRaisesRegex(ValueError, 'Astra or Sol'):
+                self.runtime.create({'cwd': str(self.root), 'prompt': 'Task', 'model': model})
+        a = self.runtime.new_lead({'model': 'gpt-5.6-sol'})
+        with self.assertRaisesRegex(ValueError, 'Astra or Sol'):
+            self.runtime.conversation_settings(a['id'], {'model': 'gpt-5.6-luna'})
+        reviewer = self.runtime.create({'cwd': str(self.root), 'prompt': 'Review', 'role': 'reviewer', 'model': 'gpt-5.6-luna'}, defer=True)
+        self.assertFalse(reviewer['isLead'])
+        with self.assertRaisesRegex(ValueError, 'Select a lead'):
+            self.runtime.new_lead({'previous': reviewer['id']})
+        with self.assertRaisesRegex(ValueError, 'Invalid agent role'):
+            self.runtime.create({'prompt': 'Task', 'role': 'orchestrator'}, parent=a['id'])
+
+    def test_model_generates_title_and_current_time_request_is_answered(self):
+        a = self.runtime.new_lead({})
+        self.runtime.send(a['id'], 'Review the release')
+        eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')
+        a = self.runtime.agent(a['id'])
+        self.runtime.server.request({'id': 210, 'method': 'item/tool/call', 'params': {
+            'threadId': a['threadId'], 'callId': 'title', 'tool': 'orchestration_title',
+            'arguments': {'title': 'Release review'}}})
+        eventually(lambda: self.runtime.agent(a['id'])['name'] == 'Release review')
+        self.assertFalse(self.runtime.agent(a['id'])['needsTitle'])
+        self.runtime.server.request({'id': 211, 'method': 'currentTime/read', 'params': {'threadId': a['threadId']}})
+        reply = next(r for r in self.runtime.server.responses if r['id'] == 211)
+        self.assertLess(abs(reply['result']['currentTimeAt'] - time.time()), 2)
+        self.assertEqual(self.runtime.snapshot()['requests'], [])
+        params = next(p for method, p in self.runtime.server.calls if method == 'thread/start')
+        self.assertFalse(params['config']['agents.enabled'])
+        self.assertFalse(params['config']['features.multi_agent_v2'])
+
+    def test_async_question_can_resume_a_finished_agent(self):
+        a = self.lead()
+        self.runtime.notification({'method': 'item/completed', 'params': {'threadId': a['threadId'],
+            'item': {'type': 'agentMessage', 'id': 'question-1', 'text': 'Choose a scope',
+                     'questions': [{'title': 'Choose a scope', 'options': ['One file', 'All files']}]}}})
+        self.complete(a)
+        question = self.runtime.snapshot()['requests'][0]
+        self.assertEqual(question['method'], 'agent/asyncQuestion')
+        self.assertEqual(self.runtime.agent(a['id'])['status'], 'completed')
+        self.runtime.answer(question['id'], {'answers': {'0': {'answers': ['One file']}}})
+        eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')
+        self.assertEqual(self.runtime.snapshot()['requests'], [])
+        self.assertIn('One file', self.runtime.transcript(a['id'])['items'][-1]['text'])
+
+    def test_lead_migration_does_not_promote_standalone_workers(self):
+        a = self.lead()
+        self.complete(a)
+        b = self.runtime.create({'cwd': str(self.root), 'prompt': 'Review', 'role': 'reviewer'}, defer=True)
+        with self.runtime.lock, self.runtime.db() as db:
+            for key in (a['id'], b['id']):
+                row = self.runtime.agent(key, db)
+                row.pop('isLead')
+                self.runtime.put(db, 'agents', row)
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertTrue(self.runtime.agent(a['id'])['isLead'])
+        self.assertFalse(self.runtime.agent(b['id'])['isLead'])
+
+    def test_pending_user_message_is_visible_before_next_turn(self):
+        a = self.lead()
+        self.runtime.send(a['id'], 'Queued followup')
+        messages = self.runtime.transcript(a['id'])['items']
+        self.assertTrue(any(i.get('pending') and i['text'] == 'Queued followup' for i in messages))
 
     def test_forty_children_respect_limit_and_wake_finished_parent(self):
         lead = self.lead(concurrency=5)

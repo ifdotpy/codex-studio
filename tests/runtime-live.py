@@ -16,16 +16,19 @@ root = Path(tempfile.mkdtemp(prefix='codex-runtime-live-'))
 r = Runtime(root)
 print('Evidence:', root, flush=True)
 try:
-    lead = r.create({'name': 'Live orchestration check', 'cwd': str(root), 'concurrency': 3,
-        'maxAgents': 4, 'tokenBudget': 250000,
-        'prompt': '''Test this orchestration runtime. Do not inspect files or use native shell tools.
+    lead = r.new_lead({})
+    r.conversation_settings(lead['id'], {'cwd': str(root)})
+    r.configure(lead['id'], {'concurrency': 3, 'maxAgents': 4, 'tokenBudget': 300000})
+    r.send(lead['id'], """Test this orchestration runtime. Do not inspect files or use native shell tools.
+First, set the conversation title with orchestration_title.
+Then use functions.exec to print ALL_TOOLS.map(t => t.name) once, without executing any nested tool.
 Call orchestration_spawn once with exactly two reviewer agents named Probe A and Probe B.
 Their prompts must ask for a single reply CHILD_A_OK and CHILD_B_OK respectively, without tools.
 Call orchestration_monitor once with command "sleep 2; printf MONITOR_OK" and timeout_ms 10000.
 Then finish this first turn with WAITING_FOR_EVENTS. Do not poll or launch more work.
 Completion events will resume you automatically. After both child results and the command's
 exit event have arrived, reply LIVE_ORCHESTRATION_OK. If some are still pending, finish
-with WAITING_FOR_EVENTS and wait for automatic continuation.'''} )
+with WAITING_FOR_EVENTS and wait for automatic continuation.""")
     end = time.monotonic() + 180
     while time.monotonic() < end:
         state = r.snapshot()
@@ -47,7 +50,8 @@ with WAITING_FOR_EVENTS and wait for automatic continuation.'''} )
             assert len(events) == 3 and all(e['status'] == 'delivered' for e in events)
             assert state['monitors'][0]['exitCode'] == 0
             assert state['monitors'][0]['tail'] == 'MONITOR_OK'
-            evidence = {'result': 'PASS', 'agents': [{k: x.get(k) for k in ('id', 'name', 'model', 'status', 'tokensUsed')} for x in state['agents']], 'events': events, 'monitor': state['monitors'][0]}
+            assert current['name'] != 'New chat' and not current['needsTitle'], 'No model-generated title'
+            evidence = {'result': 'PASS', 'title': current['name'], 'agents': [{k: x.get(k) for k in ('id', 'name', 'model', 'status', 'tokensUsed')} for x in state['agents']], 'events': events, 'monitor': state['monitors'][0]}
             (root / 'result.json').write_text(json.dumps(evidence, indent=2))
             print(json.dumps(evidence, indent=2), flush=True)
             break

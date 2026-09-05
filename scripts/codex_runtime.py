@@ -29,8 +29,16 @@ def tool(name, description, properties, required=()):
                             "required": list(required), "additionalProperties": False}}
 
 
+THREAD_CONFIG = {"features.multi_agent": False, "features.multi_agent_v2": False, "agents.enabled": False}
+LEAD_MODELS = ("gpt-6-astra", "gpt-5.6-sol")
 TEXT = {"type": "string"}
 TOOLS = [
+    tool("orchestration_title", "Set a short conversation title from the user's task. "
+         "Call once at the start of a new lead conversation, in the user's language.",
+         {"title": {"type": "string", "minLength": 1, "maxLength": 80}}, ["title"]),
+    tool("orchestration_interrupt", "Stop a descendant and disable its automatic continuation. "
+         "Use orchestration_send to resume it with a revised task.",
+         {"agent_id": TEXT}, ["agent_id"]),
     tool("orchestration_spawn", "Delegate a batch to managed agents. Returns immediately. "
          "Each child completion wakes you, even after your final answer. Use these agents "
          "instead of native subagents. Implementers receive isolated git worktrees at HEAD; "
@@ -65,7 +73,8 @@ task scope. Inspect worker changes and evidence before accepting them. A turn en
 does not prove the entire task is complete. Read each worker result and status.
 Give workers bounded files, an acceptance check and explicit commit authority.
 Implementer worktrees start from committed HEAD, not your uncommitted changes.
-Use orchestration_send for follow-ups. Model names can be omitted to inherit yours.
+Use orchestration_send for follow-ups and orchestration_interrupt to stop a descendant.
+Model names can be omitted to inherit yours.
 Do not merge work without review. Do not make recurring checks when an event is pending.
 """
 
@@ -209,6 +218,9 @@ class Runtime:
             """)
             db.execute("UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status='dispatching'")
             for a in self.records(db, "agents"):
+                # Only existing managed orchestrators with an admitted model become leads.
+                a.setdefault("isLead", not a.get("parentId") and a.get("role") == "orchestrator"
+                             and a.get("model") in LEAD_MODELS)
                 if a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
@@ -299,7 +311,7 @@ class Runtime:
         self.changed.set()
         return key
 
-    def create(self, data, parent=None, defer=False, parent_epoch=None):
+    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False):
         key = data.get("id") or uid()
         try:
             uuid.UUID(key)
@@ -308,10 +320,10 @@ class Runtime:
         name, prompt = data.get("name", "Lead"), data.get("prompt", "")
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
             raise ValueError("Agent name must have 1 to 100 characters")
-        if not isinstance(prompt, str) or not 1 <= len(prompt.strip()) <= 32000:
+        if not isinstance(prompt, str) or not (0 if draft else 1) <= len(prompt.strip()) <= 32000:
             raise ValueError("Task must have 1 to 32000 characters")
         role = data.get("role", "implementer" if parent else "orchestrator")
-        if role not in {"orchestrator", "implementer", "reviewer"}:
+        if role not in {"orchestrator", "implementer", "reviewer"} or (parent and role == "orchestrator"):
             raise ValueError("Invalid agent role")
         with self.lock, self.db() as db:
             existing = db.execute("SELECT record FROM runtime_agents WHERE id=?", (key,)).fetchone()
@@ -322,6 +334,10 @@ class Runtime:
                 return a
             p = self.agent(parent, db) if parent else None
             root = self.agent(p["rootId"], db) if p else None
+            is_lead = p is None and role == "orchestrator"
+            model = data.get("model") or (p["model"] if p else LEAD_MODELS[0])
+            if is_lead and model not in LEAD_MODELS:
+                raise ValueError("A lead must use Astra or Sol")
             if p and (not p["autoWake"] or not root["autoWake"]):
                 raise ValueError("This team is stopped")
             if p and parent_epoch is not None and p["epoch"] != parent_epoch:
@@ -339,19 +355,65 @@ class Runtime:
             if budget is not None and (not isinstance(budget, int) or budget <= 0):
                 raise ValueError("Token budget must be a positive integer")
             a = {"id": key, "threadId": None, "name": name.strip(), "prompt": prompt.strip(),
-                 "cwd": cwd, "role": role, "parentId": parent, "rootId": root["id"] if root else key,
-                 "model": data.get("model") or (p["model"] if p else None),
+                 "cwd": cwd, "role": role, "isLead": is_lead, "needsTitle": draft, "parentId": parent, "rootId": root["id"] if root else key,
+                 "model": model,
                  "effort": data.get("effort") or (p.get("effort") if p else None),
                  "concurrency": root["concurrency"] if root else concurrency,
                  "maxAgents": root["maxAgents"] if root else max_agents,
                  "tokenBudget": root["tokenBudget"] if root else budget,
-                 "status": "paused" if defer else "queued", "autoWake": not defer, "epoch": 0, "turnId": None,
+                 "status": "idle" if draft else "paused" if defer else "queued", "autoWake": draft or not defer, "epoch": 0, "turnId": None,
                  "inFlight": False, "turnEpoch": 0,
                  "tokensUsed": 0, "events": 0, "created": time.time(), "error": None,
                  "tail": "", "worktree": bool(p and role == "implementer"), "worktreeReady": False}
+            if draft:
+                a.update(quickCreate=True, quickCreateRequest=data.get("_creationSignature"))
             self.put(db, "agents", a)
-            if not defer:
+            if not defer and not draft:
                 self.enqueue(db, a, "user", prompt.strip(), key + ":initial")
+            return a
+
+    def new_lead(self, data):
+        key = data.get("id")
+        signature = json.dumps({k: data.get(k) for k in ("model", "previous")}, sort_keys=True)
+        with self.lock:
+            with self.db() as db:
+                if key:
+                    row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (key,)).fetchone()
+                    if row:
+                        existing = json.loads(row[0])
+                        if not existing.get("isLead") or not existing.get("quickCreate"):
+                            raise ValueError("This creation id belongs to another agent")
+                        if existing.get("quickCreateRequest") != signature:
+                            raise ValueError("This creation id has different settings")
+                        return existing
+                previous = self.agent(data["previous"], db) if data.get("previous") else None
+                if previous and not previous.get("isLead"):
+                    raise ValueError("Select a lead conversation")
+                cwd = previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd())
+            return self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
+                                "_creationSignature": signature,
+                                "model": data.get("model") or (previous["model"] if previous else LEAD_MODELS[0])}, draft=True)
+
+    def conversation_settings(self, key, data):
+        with self.lock, self.db() as db:
+            a = self.agent(key, db)
+            if not a.get("isLead"):
+                raise ValueError("Only a lead has conversation settings")
+            if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
+                raise ValueError("Wait for this turn to end before changing the model or project")
+            if "model" in data:
+                if data["model"] not in LEAD_MODELS:
+                    raise ValueError("A lead must use Astra or Sol")
+                a["model"] = data["model"]
+            if "cwd" in data:
+                if a.get("threadId"):
+                    raise ValueError("Choose the project before the first message, or create a new chat")
+                cwd = Path(data["cwd"]).expanduser().resolve()
+                if not cwd.is_dir():
+                    raise ValueError("Select an existing project directory")
+                a["cwd"] = str(cwd)
+            self.put(db, "agents", a)
+            self.loaded.discard(key)
             return a
 
     def send(self, key, text, message_id=None, manual=True, resume=False):
@@ -389,8 +451,10 @@ class Runtime:
                 self.put(db, "agents", latest)
                 a = latest
         if a["id"] not in self.loaded:
-            params = {"cwd": a["cwd"], "config": {"features.multi_agent": False},
-                      "developerInstructions": INSTRUCTIONS}
+            params = {"cwd": a["cwd"], "config": THREAD_CONFIG.copy(),
+                      "developerInstructions": INSTRUCTIONS + ("\nThis is a new lead conversation. "
+                          "Before working on the first user task, call orchestration_title with a short task title.\n"
+                          if a.get("needsTitle") else "")}
             if a["model"]:
                 params["model"] = a["model"]
             if a["role"] == "reviewer":
@@ -540,6 +604,14 @@ class Runtime:
                 if kind == "agentMessage" and method == "item/completed":
                     text = item.get("text", "")
                     self.item(db, a["id"], item["id"], "assistant", text)
+                    if item.get("questions"):
+                        request_id = a["id"] + ":question:" + item["id"]
+                        if not db.execute("SELECT 1 FROM runtime_requests WHERE id=?", (request_id,)).fetchone():
+                            questions = [{"id": str(i), "question": q["title"],
+                                          "options": [{"label": o} for o in q.get("options") or []]}
+                                         for i, q in enumerate(item["questions"])]
+                            self.put(db, "requests", {"id": request_id, "method": "agent/asyncQuestion",
+                                "agent": a["id"], "epoch": a["epoch"], "params": {"questions": questions}, "status": "pending"})
                     a["tail"] = text[-300:]
                     a["lastAnswer"] = text[-16000:]
                 elif kind not in {"reasoning", "userMessage", "agentMessage"}:
@@ -586,6 +658,9 @@ class Runtime:
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
 
     def request(self, message):
+        if message["method"] == "currentTime/read":
+            self.connect().write({"id": message["id"], "result": {"currentTimeAt": int(time.time())}})
+            return
         if message["method"] == "item/tool/call":
             self.pool.submit(self.dynamic, message)
             return
@@ -623,7 +698,28 @@ class Runtime:
                 if isinstance(args, str):
                     args = json.loads(args)
                 name = p.get("tool")
-                if name == "orchestration_spawn":
+                if name == "orchestration_title":
+                    title = args.get("title")
+                    if not a.get("isLead") or not isinstance(title, str) or not 1 <= len(title.strip()) <= 80:
+                        raise ValueError("Only a lead can set a title of 1 to 80 characters")
+                    with self.lock, self.db() as db:
+                        latest = self.agent(a["id"], db)
+                        latest.update(name=title.strip(), needsTitle=False)
+                        self.put(db, "agents", latest)
+                        value = {"title": latest["name"]}
+                elif name == "orchestration_interrupt":
+                    target = self.agent(args["agent_id"])
+                    cursor = target
+                    while cursor.get("parentId") and cursor["parentId"] != a["id"]:
+                        cursor = self.agent(cursor["parentId"])
+                    if cursor.get("parentId") != a["id"]:
+                        raise ValueError("You can interrupt only your descendants")
+                    with self.lock:
+                        sender = self.agent(a["id"])
+                        if not sender["autoWake"] or sender["epoch"] != a["epoch"]:
+                            raise ValueError("Sender was stopped")
+                        value = self.stop(target["id"], True)
+                elif name == "orchestration_spawn":
                     specs = args.get("agents")
                     if not isinstance(specs, list) or not 1 <= len(specs) <= 64:
                         raise ValueError("Supply 1 to 64 agents")
@@ -843,6 +939,18 @@ class Runtime:
             r = json.loads(row[0])
             if r["status"] != "pending":
                 raise ValueError("Request is no longer pending")
+            if r["method"] == "agent/asyncQuestion":
+                answers = data.get("answers")
+                if not isinstance(answers, dict):
+                    raise ValueError("Supply question answers")
+                a = self.agent(r["agent"], db)
+                if a["epoch"] != r["epoch"] or not a["autoWake"]:
+                    raise ValueError("This question belongs to a stopped turn")
+                text = "\n".join(q["question"] + "\n" + "\n".join(answers.get(q["id"], {}).get("answers", [])) for q in r["params"]["questions"])
+                self.enqueue(db, a, "user", text, key + ":answer")
+                r["status"] = "answered"
+                self.put(db, "requests", r)
+                return {"status": "answered"}
             if r["method"] == "monitor/approve":
                 m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (r["params"]["monitorId"],)).fetchone()[0])
                 a = self.agent(m["agent"], db)
@@ -858,11 +966,11 @@ class Runtime:
                     self.enqueue(db, a, "monitor_cancelled", "User declined command " + m["id"], "monitor-declined:" + m["id"])
                 return {"status": "answered"}
             method = r["method"]
-            if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+            if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval"}:
                 decision = data.get("decision")
                 if decision not in {"accept", "decline", "cancel"}:
                     raise ValueError("Choose accept, decline or cancel")
-                result = {"decision": decision}
+                result = {"decision": {"accept": "approved", "decline": "denied", "cancel": "abort"}[decision] if method in {"execCommandApproval", "applyPatchApproval"} else decision}
             elif method == "item/tool/requestUserInput":
                 answers = data.get("answers")
                 if not isinstance(answers, dict):
@@ -910,8 +1018,13 @@ class Runtime:
         self.agent(key)
         with self.lock, self.db() as db:
             rows = db.execute("SELECT record FROM runtime_items WHERE agent=? ORDER BY created DESC LIMIT 121", (key,)).fetchall()
-            return {"items": list(reversed([json.loads(r[0]) for r in rows[:120]])),
-                    "truncated": len(rows) > 120, "unavailable": None}
+            items = list(reversed([json.loads(r[0]) for r in rows[:120]]))
+            pending = db.execute("SELECT * FROM runtime_events WHERE agent=? AND kind='user' AND status='pending' ORDER BY created LIMIT 32", (key,)).fetchall()
+            for event in pending:
+                if not any(item["id"] == key + ":" + event["id"] for item in items):
+                    items.append({"id": key + ":" + event["id"], "role": "user", "title": "You",
+                                  "text": event["text"], "pending": True, "at": event["created"]})
+            return {"items": items, "truncated": len(rows) > 120, "unavailable": None}
 
     def catalog(self):
         return self.connect().call("model/list", {"limit": 100})

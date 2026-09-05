@@ -450,6 +450,13 @@ def make_server(canvas, port=0):
                 if path.path == "/api/state":
                     return self.send({**canvas.snapshot(), "token": token,
                                       "runtime": canvas.runtime.snapshot() if canvas.runtime else None})
+                if path.path == "/api/directories":
+                    directory = Path(parse_qs(path.query).get("path", [os.getcwd()])[0]).expanduser().resolve()
+                    if not directory.is_dir():
+                        raise ValueError("This directory is unavailable")
+                    folders = sorted((p for p in directory.iterdir() if p.is_dir() and not p.name.startswith('.')), key=lambda p: p.name.lower())
+                    return self.send({"path": str(directory), "parent": str(directory.parent) if directory != directory.parent else None,
+                        "directories": [{"name": p.name, "path": str(p)} for p in folders[:500]]})
                 if path.path == "/api/models" and canvas.runtime:
                     return self.send(canvas.runtime.catalog())
                 if path.path == "/api/import" and canvas.runtime:
@@ -459,6 +466,8 @@ def make_server(canvas, port=0):
                 if path.path == "/api/messages":
                     return self.send(canvas.messages(parse_qs(path.query).get("room", [""])[0]))
                 files = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
+                files.update({"/vendor/marked.js": ("vendor/marked.js", "text/javascript; charset=utf-8"),
+                              "/vendor/purify.js": ("vendor/purify.js", "text/javascript; charset=utf-8")})
                 if path.path in files:
                     name, mime = files[path.path]
                     return self.send((WEB / name).read_bytes(), content_type=mime)
@@ -480,6 +489,10 @@ def make_server(canvas, port=0):
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
                 if canvas.runtime:
+                    if self.path == "/api/leads":
+                        return self.send(canvas.runtime.new_lead(body))
+                    if self.path == "/api/conversation":
+                        return self.send(canvas.runtime.conversation_settings(body.get("id"), body))
                     if self.path == "/api/agents":
                         return self.send(canvas.runtime.create(body))
                     if self.path == "/api/configure":

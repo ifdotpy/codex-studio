@@ -3,12 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node ../tests/canvas-ui.mjs && node ../tests/runtime-ui.mjs && node ../tests/simple-ui.mjs",
-    "format": "prettier --write index.html style.css app.js ../tests/canvas-ui.mjs ../tests/runtime-ui.mjs ../tests/simple-ui.mjs",
-    "format:check": "prettier --check index.html style.css app.js ../tests/canvas-ui.mjs ../tests/runtime-ui.mjs ../tests/simple-ui.mjs"
+    "test": "node ../tests/product-ui.mjs",
+    "format": "prettier --write index.html style.css app.js ../tests/product-ui.mjs sync-vendor.mjs",
+    "format:check": "prettier --check index.html style.css app.js ../tests/product-ui.mjs sync-vendor.mjs",
+    "vendor": "node sync-vendor.mjs"
   },
   "devDependencies": {
     "jsdom": "26.1.0",
     "prettier": "3.6.2"
+  },
+  "dependencies": {
+    "dompurify": "3.4.14",
+    "marked": "18.0.11"
   }
 }

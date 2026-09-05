@@ -5,467 +5,154 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta
       name="description"
-      content="A local canvas for Codex agent work, live transcripts and shared group chats."
+      content="A conversation with your Codex lead and its team."
     />
-    <title>Codex Canvas</title>
+    <title>Codex agents</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
-  <body class="simple-view">
-    <aside class="rail">
-      <a class="brand" href="/" aria-label="Codex Canvas">c<span>·</span></a>
-      <button
-        class="rail-button active"
-        id="canvas-view"
-        title="Canvas"
-        aria-label="Canvas"
-      >
-        ▦
-      </button>
-      <button
-        class="rail-button"
-        id="chats"
-        title="All chats"
-        aria-label="All chats"
-      >
-        ☷
-      </button>
-      <button
-        class="rail-button"
-        id="resources"
-        title="Shared resources"
-        aria-label="Shared resources"
-      >
-        ▤
-      </button>
-      <button
-        class="rail-button"
-        id="operations"
-        title="Team operations"
-        aria-label="Team operations"
-      >
-        ⚙
-      </button>
-      <button
-        class="rail-button"
-        id="help"
-        title="Controls"
-        aria-label="Controls"
-      >
-        ?
-      </button>
-      <div class="rail-bottom">
-        <span class="connection-dot"></span><span>LOCAL</span>
+  <body>
+    <aside id="sidebar" aria-label="Conversations">
+      <a class="brand" href="/">codex<span>agents</span></a>
+      <button id="new-chat" class="new-chat"><span>＋</span> New chat</button>
+      <label class="search"
+        ><input
+          id="chat-search"
+          type="search"
+          placeholder="Search chats"
+          aria-label="Search chats"
+      /></label>
+      <nav id="chat-list" aria-label="Lead conversations"></nav>
+      <div class="sidebar-bottom">
+        <button id="import-chat">Import from Codex</button
+        ><button id="other-sessions">Other sessions</button>
       </div>
     </aside>
     <main>
       <header>
-        <div class="heading">
-          <div class="eyebrow">CODEX AGENTS <span>/</span> WORKSPACE</div>
-          <h1>Codex agents</h1>
-        </div>
-        <div id="health" class="health">Connecting…</div>
-        <div class="view-switch" role="group" aria-label="Workspace view">
-          <button id="simple-view" aria-pressed="true">Chat</button
-          ><button id="advanced-view" aria-pressed="false">Canvas</button>
-        </div>
-        <button class="primary" id="new-agent">+ New lead</button>
-        <button class="primary" id="new-chat">
-          + Create chat <kbd>G</kbd>
-        </button>
-      </header>
-      <section class="toolbar" aria-label="Canvas controls">
-        <label class="search"
-          ><span>⌕</span
-          ><input
-            id="search"
-            type="search"
-            placeholder="Find an agent, branch or wave…"
-            aria-label="Search agents"
-          /><kbd>/</kbd></label
+        <button
+          id="sidebar-toggle"
+          class="icon"
+          aria-label="Toggle conversations"
         >
-        <div class="filters" role="group" aria-label="Filter agents">
-          <button data-filter="all" class="selected">
-            All <span id="all-count">0</span></button
-          ><button data-filter="active">
-            Active <span id="active-count">0</span></button
-          ><button data-filter="attention">
-            Needs attention <span id="attention-count">0</span>
-          </button>
+          ☰
+        </button>
+        <div class="conversation-heading">
+          <button id="back-lead" hidden>← Lead</button>
+          <h1 id="conversation-title">New conversation</h1>
+          <span id="conversation-status"></span>
         </div>
-        <div class="toolbar-end">
-          <button id="select-mode" class="selected">Select</button
-          ><button id="pan-mode">Pan</button
-          ><button id="link-mode">Connect</button>
-          <button id="arrange" title="Arrange visible agents">Arrange</button
-          ><button id="fit" title="Fit visible agents (F)">
-            Fit to view <kbd>F</kbd>
-          </button>
-        </div>
+        <select id="model" aria-label="Lead model">
+          <option value="gpt-6-astra">Astra</option>
+          <option value="gpt-5.6-sol">Sol</option>
+        </select>
+        <button id="view-toggle" aria-pressed="false">Canvas</button>
+        <button id="team-toggle" aria-pressed="false" hidden>Team</button>
+        <details id="conversation-menu">
+          <summary aria-label="Conversation actions">•••</summary>
+          <div class="menu">
+            <button data-action="monitor">Monitor a command</button
+            ><button data-action="compact">Compact context</button
+            ><button data-action="review">Review changes</button
+            ><button data-action="stop-team" class="danger">Stop team</button>
+          </div>
+        </details>
+      </header>
+      <div id="error" role="alert" hidden></div>
+      <section id="conversation" aria-label="Conversation">
+        <div id="messages" tabindex="0"></div>
+        <button id="jump-latest" class="jump" hidden>↓ Latest</button>
+        <div id="requests" aria-live="polite"></div>
+        <form id="composer">
+          <textarea
+            id="message"
+            aria-label="Message"
+            placeholder="What should we work on?"
+            rows="2"
+            maxlength="12000"
+          ></textarea>
+          <div class="composer-bar">
+            <button type="button" id="project" title="Project directory">
+              Project</button
+            ><span id="send-state" role="status"></span
+            ><button
+              type="button"
+              id="stop"
+              class="icon"
+              aria-label="Stop agent"
+              hidden
+            >
+              ■</button
+            ><button
+              id="send"
+              type="submit"
+              class="send"
+              aria-label="Send message"
+            >
+              ↑
+            </button>
+          </div>
+        </form>
+        <p class="composer-hint">
+          Enter to send · Shift + Enter for a new line
+        </p>
       </section>
-      <div id="error" class="error-banner" role="alert" hidden></div>
       <section
-        id="viewport"
+        id="canvas"
         tabindex="0"
-        aria-label="Agent canvas. Click to select. Drag empty space for box selection. Hold Space to pan. Double-click to open."
+        aria-label="Agent canvas. Drag the background to pan. Scroll to zoom. Select an agent to open its chat."
+        hidden
       >
-        <div id="marquee" hidden></div>
         <div id="world">
-          <svg
-            id="connections"
-            role="group"
-            width="1"
-            height="1"
-            aria-label="Agent and chat connections"
-          ></svg>
-          <div id="cards"></div>
+          <svg id="edges" aria-hidden="true"></svg>
+          <div id="nodes"></div>
         </div>
-        <div id="empty" hidden>
-          <div class="empty-symbol">✳</div>
-          <h2>No agents here yet</h2>
-          <p>
-            Create a lead agent. Give it a task and ask it to delegate work.
-          </p>
-          <button id="clear-filter" hidden>Clear filters</button>
-        </div>
-        <div class="canvas-caption">
-          <span class="live-dot"></span>
-          <span id="caption">READING LOCAL WAVE STATE</span>
-        </div>
-        <div class="connection-legend">
-          <span><i class="spawn-sample"></i> Created agent</span
-          ><span><i></i> Shared chat</span>
-        </div>
-        <div id="selection-bar" hidden>
-          <button id="disconnect" hidden>Disconnect</button>
-          <span id="selection-count"></span
-          ><button id="chat-selected">Create shared chat</button
-          ><button id="clear-selection" aria-label="Clear selection">×</button>
-        </div>
-        <div class="canvas-controls">
-          <button id="zoom-out" aria-label="Zoom out">−</button
-          ><span id="zoom">100%</span
-          ><button id="zoom-in" aria-label="Zoom in">+</button><i></i
-          ><button id="reset-view" aria-label="Fit all agents">⌖</button>
-        </div>
-        <canvas
-          id="minimap"
-          width="190"
-          height="110"
-          aria-label="Canvas overview"
-        ></canvas>
+        <button id="fit" class="canvas-fit">Fit</button>
+        <p class="canvas-hint">Drag to pan · Scroll to zoom</p>
       </section>
-      <footer>
-        <div>
-          <span class="live-dot"></span
-          ><span id="connection">Connecting to local state</span>
-        </div>
-        <div>
-          Drag to move <span>·</span> Shift + click to select
-          <span>·</span> Ctrl + scroll to zoom
-        </div>
-        <div id="total-tokens"></div>
-      </footer>
     </main>
-    <aside id="team-sidebar" aria-label="Team">
-      <label for="team-select">Lead agent</label>
-      <select id="team-select" aria-label="Select lead"></select>
-      <button id="open-lead" class="team-lead">Open lead</button>
-      <div class="workers-heading">
-        <h2>Workers</h2>
-        <span id="worker-count">0</span>
+    <aside id="team" aria-label="Workers" hidden>
+      <div class="team-heading">
+        <h2>Team</h2>
+        <button id="team-close" class="icon" aria-label="Close team">×</button>
+        <span id="team-count"></span>
       </div>
+      <button id="lead-row"></button>
       <input
         id="worker-search"
         type="search"
-        placeholder="Find a worker…"
+        placeholder="Find a worker"
         aria-label="Find a worker"
       />
-      <div id="worker-list"></div>
-      <button id="team-alert" hidden></button>
-      <button id="simple-operations">Commands and requests</button>
+      <div id="workers"></div>
+      <div id="monitors"></div>
     </aside>
-    <section id="welcome">
-      <h2>One task. One lead.</h2>
-      <p>
-        Describe the outcome. Your lead can delegate work and collect the
-        results.
-      </p>
-      <button class="primary" id="welcome-start">+ New lead</button>
-    </section>
-    <aside id="inspector" hidden aria-label="Agent details">
-      <div class="inspector-top">
-        <div>
-          <div class="eyebrow" id="detail-label">AGENT</div>
-          <h2 id="detail-title"></h2>
-        </div>
-        <button
-          id="close-detail"
-          class="icon-button"
-          aria-label="Close details"
-        >
-          ×
-        </button>
+    <dialog id="picker">
+      <div class="dialog-heading">
+        <h2 id="picker-title"></h2>
+        <button class="icon" id="close-picker" aria-label="Close">×</button>
       </div>
-      <div id="detail-meta"></div>
-      <details id="conversation-options">
-        <summary>Options</summary>
-        <div id="agent-actions" hidden>
-          <button id="watch-command">Monitor command</button>
-          <button id="compact-agent">Compact context</button>
-          <button id="review-agent">Review changes</button>
-          <button id="stop-agent">Stop agent</button>
-          <button id="stop-team">Stop team</button>
-        </div>
-        <nav id="detail-tabs">
-          <button data-tab="activity" class="selected">Conversation</button
-          ><button data-tab="chat">Sent messages</button
-          ><button data-tab="details">Details</button>
-        </nav>
-        <div class="stream-controls" id="stream-controls">
-          <label
-            ><input type="checkbox" id="follow" checked /> Follow live</label
-          ><label><input type="checkbox" id="show-tools" /> Tools</label
-          ><button id="copy" title="Copy visible transcript">Copy</button>
-        </div>
-      </details>
-      <div id="detail-body"></div>
-      <form id="composer">
-        <div id="composer-label">Message this agent</div>
-        <textarea
-          id="message"
-          placeholder="Send an instruction…"
-          rows="3"
-          maxlength="12000"
-          required
-        ></textarea>
-        <div class="composer-bottom">
-          <span id="send-note">Uses the existing agent mailbox</span
-          ><button type="submit" class="primary">Send ↗</button>
-        </div>
-      </form>
-    </aside>
-    <dialog id="chat-dialog">
-      <form id="chat-form">
-        <div class="eyebrow">SHARED WORKSPACE</div>
-        <h2>Create a chat</h2>
-        <p>
-          A chat is a separate node. Connect agents now or later. An agent can
-          join several chats.
-        </p>
-        <label
-          >Chat name<input
-            id="chat-name"
-            maxlength="100"
-            placeholder="For example: Runtime team"
-            required
-        /></label>
-        <div id="chat-members"></div>
-        <div class="dialog-actions">
-          <button type="button" id="cancel-chat">Cancel</button
-          ><button type="submit" class="primary">Create chat</button>
-        </div>
-      </form>
-    </dialog>
-    <dialog id="help-dialog">
-      <div class="eyebrow">CANVAS CONTROLS</div>
-      <h2>See the work. Keep the context.</h2>
-      <dl>
-        <dt>Move an agent</dt>
-        <dd>Drag its card. Arrow keys move a focused card.</dd>
-        <dt>Read the work</dt>
-        <dd>Double-click a card to open its live transcript.</dd>
-        <dt>Create a chat</dt>
-        <dd>
-          Press G to create a chat. Use Connect to add participants. Select a
-          connection to disconnect it.
-        </dd>
-        <dt>Navigate</dt>
-        <dd>
-          Drag empty space to select. Hold Space to pan. Use Ctrl + scroll to
-          zoom. Press F to fit.
-        </dd>
-        <dt>Shared chat</dt>
-        <dd>
-          Your chat message goes to connected agents. Agents post replies with
-          codex-chat.
-        </dd>
-        <dt>Delivery</dt>
-        <dd>
-          Queued means a message is in the mailbox. It does not prove the agent
-          has read it.
-        </dd>
-        <dt>Data source</dt>
-        <dd>
-          App-server waves record their creator identity. Host agents appear
-          when the orchestrator registers them with codex-graph. Registered
-          status is a report from the host.
-        </dd>
-      </dl>
-      <button id="close-help" class="primary">Got it</button>
-    </dialog>
-    <dialog id="agent-dialog">
-      <form id="agent-form">
-        <div class="eyebrow">ONE LEAD, MANY WORKERS</div>
-        <h2>Create a lead</h2>
-        <label
-          >Name<input id="agent-name" value="Lead" maxlength="100" required
-        /></label>
-        <label
-          >Project directory<input
-            id="agent-cwd"
-            placeholder="/Users/igor/Projects/project"
-            required
-        /></label>
-        <label
-          >Task<textarea
-            id="agent-task"
-            rows="5"
-            maxlength="7000"
-            placeholder="Describe the outcome. The lead can delegate and will receive results automatically."
-            required
-          ></textarea>
-        </label>
-        <details>
-          <summary>Model and team limits</summary>
-          <label
-            >Model<select id="agent-model">
-              <option value="">Codex default</option>
-            </select></label
-          >
-          <label
-            >Reasoning effort<select id="agent-effort">
-              <option value="">Codex default</option>
-              <option>low</option>
-              <option>medium</option>
-              <option>high</option>
-              <option>xhigh</option>
-              <option>max</option>
-              <option>ultra</option>
-            </select></label
-          >
-          <div class="form-row">
-            <label
-              >Concurrent agents<input
-                id="agent-concurrency"
-                type="number"
-                min="1"
-                max="64"
-                value="8"
-                required
-            /></label>
-            <label
-              >Team size limit<input
-                id="agent-limit"
-                type="number"
-                min="1"
-                max="256"
-                value="64"
-                required
-            /></label>
-          </div>
-          <label
-            >Team token budget (optional)<input
-              id="agent-budget"
-              type="number"
-              min="1"
-              placeholder="No additional limit"
-          /></label>
-        </details>
-        <details>
-          <summary>Import a previous Codex conversation</summary>
-          <p>
-            Copies visible messages from the last 20 turns into a new managed
-            lead. The original conversation stays separate.
-          </p>
-          <button type="button" id="load-imports">Load conversations</button>
-          <select id="import-thread">
-            <option value="">Start fresh</option>
-          </select>
-          <button type="button" id="more-imports" hidden>Load more</button>
-        </details>
-        <p id="agent-form-error" class="notice" role="alert" hidden></p>
-        <div class="dialog-actions">
-          <button type="button" id="cancel-agent">Cancel</button
-          ><button type="submit" class="primary">Start lead</button>
-        </div>
-      </form>
-    </dialog>
-    <dialog id="monitor-dialog">
-      <form id="monitor-form">
-        <h2>Monitor a command</h2>
-        <p>
-          The server waits without model calls. The agent receives the exit code
-          and output when the command ends.
-        </p>
-        <label
-          >Command<textarea
-            id="monitor-command"
-            rows="4"
-            maxlength="12000"
-            required
-          ></textarea>
-        </label>
-        <label
-          >Timeout in minutes<input
-            id="monitor-timeout"
-            type="number"
-            min="1"
-            max="1440"
-            value="60"
-            required
-        /></label>
-        <div class="dialog-actions">
-          <button type="button" id="cancel-monitor-dialog">Cancel</button
-          ><button type="submit" class="primary">Run command</button>
-        </div>
-      </form>
+      <div id="picker-body"></div>
     </dialog>
     <dialog id="answer-dialog">
       <form id="answer-form">
-        <h2>Agent needs an answer</h2>
+        <div class="dialog-heading">
+          <h2>Reply to the agent</h2>
+          <button
+            type="button"
+            class="icon"
+            id="close-answer"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
         <div id="answer-fields"></div>
-        <div class="dialog-actions">
-          <button type="button" id="cancel-answer">Close</button
-          ><button type="submit" class="primary">Send answers</button>
-        </div>
-      </form>
-    </dialog>
-    <dialog id="team-dialog">
-      <form id="team-form">
-        <h2>Team limits</h2>
-        <label
-          >Concurrent agents<input
-            id="team-concurrency"
-            type="number"
-            min="1"
-            max="64"
-            required
-        /></label>
-        <label
-          >Team size limit<input
-            id="team-limit"
-            type="number"
-            min="1"
-            max="256"
-            required
-        /></label>
-        <label
-          >Token budget (blank means no additional limit)<input
-            id="team-budget"
-            type="number"
-            min="1"
-        /></label>
-        <p>
-          A lower concurrency limit applies to new turns. A new message resumes
-          a stopped lead.
-        </p>
-        <div class="dialog-actions">
-          <button type="button" id="cancel-team">Cancel</button
-          ><button type="submit" class="primary">Save limits</button>
-        </div>
+        <button class="primary" type="submit">Send answer</button>
       </form>
     </dialog>
     <div id="toast" role="status" hidden></div>
-    <script type="module" src="/app.js"></script>
+    <script src="/vendor/marked.js"></script>
+    <script src="/vendor/purify.js"></script>
+    <script src="/app.js" defer></script>
   </body>
 </html>
