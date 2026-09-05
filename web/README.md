@@ -85,3 +85,69 @@ scroll inside their cards.
 
 `tests/live-chat-ui.mjs` injects app-server notifications into an isolated runtime.
 It tests the real HTTP stream and React interface without model inference.
+
+## Orchestration workspace
+
+The **Work** button opens the shared work board, changes, attention inbox, search,
+plans, checkpoints, tools, profiles, rules, and resource leases. The main screen
+keeps the conversation and worker list. Canvas remains the shared graph.
+
+Work items have an owner, dependencies, submitted evidence, and an acceptance
+record. A completed agent turn does not accept a work item. The lead must inspect
+the changes and checks before acceptance. Only acceptance unblocks dependencies.
+
+The composer supports file upload, paste, and drop. Each message accepts eight
+files, up to 20 MiB per file. Images enter Codex as local images. Other files enter
+as explicit file references. HTML previews cannot run scripts or load remote files.
+Attachment drafts survive reloads. Failed sends retain the draft and attachments.
+
+Choose **Queue** for the next turn or **Steer** for the current turn. Queue entries
+can be edited, moved first, or cancelled. Uncertain delivery never silently retries
+as a new turn. Conversation branches include the complete selected native turn.
+
+Checkpoints retain the workspace files and visible conversation references. Restore
+requires an idle, isolated worker worktree and an unchanged preview. A recovery
+checkpoint preserves the state before each restore. Ignored files are outside the
+Git checkpoint. Restores do not change application databases or external services.
+
+Rules wait for a schedule, file change, or agent event without a model call. Script
+checks wake the agent only after exit zero; a final JSON line with
+`{"wakeAgent":false}` suppresses that wake. Pausing or deleting a rule cancels its
+active check. Stop and restart never silently repeat a command with an unknown result.
+
+Interactive monitors support input, interrupt, EOF, resize, and saved log downloads.
+Native Codex command sessions use **Send via agent**, because the public app-server
+cannot directly write to a native `unified_exec` session. Managed monitors use the
+connection's `command/exec` controls directly.
+
+The tool panel lists managed tool definitions, discovered skills and MCP tools,
+and observed native calls. Codex does not expose its complete native tool inventory
+through this API. Existing threads can use new managed tools through the documented
+`orchestration_send` workspace route. Worker profiles set the model, role, effort,
+and instructions. They do not grant additional permissions.
+
+Search covers stored conversations, tool output, work, plans, complaints, and agent
+rooms. Source previews open records beyond the chat's recent-message window.
+Model search respects room membership and cannot search another agent's private
+transcript. The resource panel uses the existing `codex-board` registry.
+
+Desktop alerts require an explicit browser permission. The inbox remains available
+when that permission is absent. Browser notification delivery depends on system settings.
+
+Backend regression commands run from the repository root:
+
+```bash
+python3 -B codex-agents/tests/runtime-contract.py
+python3 -B codex-agents/tests/canvas-contract.py
+python3 -B codex-agents/tests/workspace-contract.py
+python3 -B codex-agents/tests/workspace-races.py
+python3 -B codex-agents/tests/workspace-protocol.py
+python3 -B codex-agents/tests/workspace-native-turn.py
+```
+
+The last two checks use the installed Codex binary with temporary state. The native
+turn check supplies a local Responses fixture and blocks external traffic.
+
+The background panel includes all active processes and the latest 100 completed
+monitors and tool records. Older monitor records and logs remain on disk. Expected
+negative script checks remain in rule history; they do not fill the attention inbox.

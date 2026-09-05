@@ -56,6 +56,8 @@ export interface BackgroundTask {
   processId?: string;
   durationMs?: number;
   timeout_ms?: number;
+  interactive?: boolean;
+  stdinClosed?: boolean;
   exitCode?: number | null;
   arguments?: string;
   tail?: string;
@@ -75,6 +77,8 @@ export interface Snapshot {
     complaints: Complaint[];
     monitors: Json[];
     tasks?: BackgroundTask[];
+    work?: Json[];
+    rules?: Json[];
     tasksHistoryLimit?: number;
     requests: Json[];
     rateLimits?: Json;

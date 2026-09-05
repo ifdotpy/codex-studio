@@ -1,6 +1,7 @@
 """Local canvas API. Existing status, rollout and mailbox formats stay unchanged."""
 from __future__ import annotations
 
+import base64
 import argparse
 from contextlib import contextmanager
 import hashlib
@@ -428,7 +429,10 @@ def make_server(canvas, port=0):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
+            )
             self.end_headers()
             self.wfile.write(data)
 
@@ -495,6 +499,55 @@ def make_server(canvas, port=0):
                     folders = sorted((p for p in directory.iterdir() if p.is_dir() and not p.name.startswith('.')), key=lambda p: p.name.lower())
                     return self.send({"path": str(directory), "parent": str(directory.parent) if directory != directory.parent else None,
                         "directories": [{"name": p.name, "path": str(p)} for p in folders[:500]]})
+                if canvas.runtime:
+                    runtime = canvas.runtime
+                    q = {k: v[0] for k, v in parse_qs(path.query).items()}
+                    agent = q.get("agent")
+                    if path.path == "/api/workspace":
+                        return self.send(runtime.workspace_snapshot(agent))
+                    if path.path == "/api/work":
+                        return self.send(runtime.work_action(agent, {"action": "list"}))
+                    if path.path == "/api/queue":
+                        return self.send(runtime.queue_action(agent))
+                    if path.path == "/api/changes":
+                        return self.send(runtime.changes(agent))
+                    if path.path == "/api/plan":
+                        return self.send(runtime.plan_action(agent))
+                    if path.path == "/api/search/item":
+                        return self.send(runtime.search_item(q.get("id")))
+                    if path.path == "/api/search":
+                        return self.send(
+                            runtime.search_work(q.get("q"), limit=q.get("limit", 50))
+                        )
+                    if path.path == "/api/checkpoints":
+                        return self.send(
+                            {
+                                "checkpoints": runtime.workspace_snapshot(agent)[
+                                    "checkpoints"
+                                ]
+                            }
+                        )
+                    if path.path == "/api/capabilities":
+                        return self.send(runtime.capabilities(agent))
+                    if path.path == "/api/profiles":
+                        return self.send(runtime.profiles())
+                    if path.path == "/api/rules":
+                        return self.send(runtime.rules())
+                    if path.path == "/api/resources":
+                        return self.send(runtime.resource_action())
+                    if path.path == "/api/monitor/log":
+                        return self.send(runtime.monitor_log(q.get("id")))
+                    if path.path == "/api/file":
+                        content, mime, name = runtime.file_content(
+                            agent, q.get("path"), q.get("asset")
+                        )
+                        return self.send(
+                            {
+                                "name": name,
+                                "mime": mime,
+                                "base64": base64.b64encode(content).decode(),
+                            }
+                        )
                 if path.path == "/api/limits" and canvas.runtime:
                     return self.send(canvas.runtime.limits())
                 if path.path == "/api/task" and canvas.runtime:
@@ -531,7 +584,11 @@ def make_server(canvas, port=0):
                 return self.send({"error": "Local origin and session token required"}, 403)
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 65536:
+                if (
+                    not 0
+                    < length
+                    <= (28 * 1024 * 1024 if self.path == "/api/assets" else 262144)
+                ):
                     return self.send({"error": "Invalid request size"}, 413)
                 if self.headers.get_content_type() != "application/json":
                     return self.send({"error": "JSON required"}, 415)
@@ -540,6 +597,60 @@ def make_server(canvas, port=0):
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
                 if canvas.runtime:
+                    runtime = canvas.runtime
+                    agent = body.get("agent")
+                    if self.path == "/api/work":
+                        return self.send(
+                            runtime.work_action(agent, body, body.get("id"))
+                        )
+                    if self.path == "/api/queue":
+                        return self.send(runtime.queue_action(agent, body))
+                    if self.path == "/api/plan":
+                        return self.send(runtime.plan_action(agent, body))
+                    if self.path == "/api/annotation":
+                        return self.send(runtime.annotate(agent, body))
+                    if self.path == "/api/organization":
+                        return self.send(
+                            runtime.chat_organization(body.get("id"), body)
+                        )
+                    if self.path == "/api/assets":
+                        return self.send(runtime.upload_asset(body))
+                    if self.path == "/api/branch":
+                        return self.send(runtime.branch_conversation(agent, body))
+                    if self.path == "/api/checkpoint":
+                        return self.send(
+                            runtime.checkpoint_capture(
+                                agent, body.get("label", "Checkpoint")
+                            )
+                        )
+                    if self.path == "/api/checkpoint/preview":
+                        return self.send(
+                            runtime.checkpoint_preview(agent, body.get("checkpoint"))
+                        )
+                    if self.path == "/api/checkpoint/restore":
+                        return self.send(runtime.restore_checkpoint(agent, body))
+                    if self.path == "/api/profiles":
+                        return self.send(runtime.profiles(body))
+                    if self.path == "/api/rules":
+                        return self.send(runtime.rules(body))
+                    if self.path == "/api/resources":
+                        return self.send(runtime.resource_action(body))
+                    if self.path == "/api/monitor/input":
+                        return self.send(runtime.monitor_input(body.get("id"), body))
+                    if self.path == "/api/native-command":
+                        return self.send(runtime.native_command_action(body))
+                    if self.path == "/api/messages":
+                        with runtime.db() as db:
+                            managed = db.execute(
+                                "SELECT 1 FROM runtime_agents WHERE id=?",
+                                (body.get("room"),),
+                            ).fetchone()
+                        if managed:
+                            result=runtime.send(body['room'],body.get('text',''),body.get('id'),delivery=body.get('delivery','queue'),assets=body.get('assets',[]))
+                            # Keep the existing message-reader API as a mirror. Runtime owns delivery and retries.
+                            with canvas.lock,canvas.connect() as db:
+                                db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)',(result['id'],body['room'],'user',body.get('text','').strip(),time.time(),json.dumps({body['room']:result['status']})))
+                            return self.send(result)
                     if self.path == "/api/rename":
                         return self.send(canvas.runtime.rename(body.get("id"), body.get("name")))
                     if self.path == "/api/room/delete":
@@ -556,7 +667,9 @@ def make_server(canvas, port=0):
                     if self.path == "/api/conversation":
                         return self.send(canvas.runtime.conversation_settings(body.get("id"), body))
                     if self.path == "/api/agents":
-                        return self.send(canvas.runtime.create(body))
+                        return self.send(
+                            canvas.runtime.create(body, parent=body.get("parent"))
+                        )
                     if self.path == "/api/configure":
                         return self.send(canvas.runtime.configure(body.get("id"), body))
                     if self.path == "/api/action":

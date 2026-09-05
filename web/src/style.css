@@ -1848,3 +1848,20 @@ p {
     font-size: 13px;
   }
 }
+
+.attention-count {
+  font-size: 11px;
+  color: var(--mantine-color-orange-3);
+  margin-left: 6px;
+}
+@media (max-width: 480px) {
+  #workspace-toggle .workspace-button-label {
+    display: none;
+  }
+  #workspace-toggle {
+    padding-inline: 7px;
+  }
+  #workspace-toggle .mantine-Button-section {
+    margin-right: 0;
+  }
+}

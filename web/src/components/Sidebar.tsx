@@ -5,6 +5,7 @@ import {
   Button,
   Drawer,
   Menu,
+  Select,
   Tabs,
   TextInput,
   UnstyledButton,
@@ -12,6 +13,10 @@ import {
 import { useMediaQuery } from "@mantine/hooks";
 import {
   ArrowDownToLine,
+  Archive,
+  Pin,
+  PinOff,
+  ArchiveRestore,
   BookOpen,
   Check,
   FolderOpen,
@@ -24,7 +29,7 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
-import { save, saved } from "../api";
+import { api, errorText, save, saved } from "../api";
 import {
   busy,
   statusLabel,
@@ -46,13 +51,28 @@ type Props = {
   other: () => void;
   mobile: boolean;
   close: () => void;
+  refresh?: () => Promise<void>;
+  notify?: (message: string) => void;
 };
 export default function Sidebar(p: Props) {
   const [tab, setTab] = useState("leads"),
     [query, setQuery] = useState(""),
     [limit, setLimit] = useState(60),
     [renaming, setRenaming] = useState<string | null>(null),
-    [name, setName] = useState("");
+    [name, setName] = useState(""),
+    [archive, setArchive] = useState(false),
+    [project, setProject] = useState<string | null>(null),
+    [projectEdit, setProjectEdit] = useState<string | null>(null),
+    [projectName, setProjectName] = useState("");
+  const organize = async (id: string, data: Record<string, unknown>) => {
+    try {
+      await api("/api/organization", { id, ...data });
+      await p.refresh?.();
+      setProjectEdit(null);
+    } catch (error) {
+      p.notify?.(errorText(error));
+    }
+  };
   const key = `codex-chat-seen:${p.data.stateDir}`;
   const [seen, setSeen] = useState<Record<string, number>>(() =>
     saved(key, {}),
@@ -81,15 +101,22 @@ export default function Sidebar(p: Props) {
   }, [p.opened]);
   const rows: (Agent | Room)[] = tab === "leads" ? agents : rooms;
   const filtered = rows
+    .filter(
+      (row) =>
+        tab !== "leads" ||
+        (!!(row as Agent).archived === archive &&
+          (!project || (row as Agent).project === project)),
+    )
     .filter((a) =>
-      `${a.name} ${"lastMessage" in a ? a.lastMessage?.text : (a as Agent).tail}`
+      `${a.name} ${(a as Agent).project || ""} ${"lastMessage" in a ? a.lastMessage?.text : (a as Agent).tail}`
         .toLowerCase()
         .includes(query.toLowerCase()),
     )
     .sort(
       (a, b) =>
+        Number(!!(b as Agent).pinned) - Number(!!(a as Agent).pinned) ||
         (("updated" in b ? b.updated : b.created) || 0) -
-        (("updated" in a ? a.updated : a.created) || 0),
+          (("updated" in a ? a.updated : a.created) || 0),
     );
   const rename = async (e: React.FormEvent, id: string) => {
     e.preventDefault();
@@ -152,6 +179,42 @@ export default function Sidebar(p: Props) {
           </Tabs.Tab>
         </Tabs.List>
       </Tabs>
+      {tab === "leads" && (
+        <div className="sidebar-filters">
+          <Select
+            aria-label="Project filter"
+            placeholder="All projects"
+            clearable
+            data={[
+              ...new Set(
+                agents
+                  .map((a) => a.project)
+                  .filter(
+                    (value): value is string =>
+                      typeof value === "string" && !!value,
+                  ),
+              ),
+            ].sort()}
+            value={project}
+            onChange={(value) => {
+              setProject(value);
+              setLimit(60);
+            }}
+            size="xs"
+          />
+          <ActionIcon
+            variant={archive ? "light" : "subtle"}
+            aria-label={archive ? "Show active chats" : "Show archived chats"}
+            aria-pressed={archive}
+            onClick={() => {
+              setArchive(!archive);
+              setLimit(60);
+            }}
+          >
+            {archive ? <ArchiveRestore size={16} /> : <Archive size={16} />}
+          </ActionIcon>
+        </div>
+      )}
       <nav
         id={tab === "leads" ? "chat-list" : "agent-chat-list"}
         className="chat-scroll"
@@ -201,7 +264,13 @@ export default function Sidebar(p: Props) {
                   </Avatar>
                 )}
                 <span className="row-copy">
-                  <strong>{row.name}</strong>
+                  <strong>
+                    {a?.pinned && <Pin size={11} className="chat-pin" />}
+                    {row.name}
+                  </strong>
+                  {a?.project && (
+                    <small className="chat-project">{a.project}</small>
+                  )}
                   {room && <small>{preview}</small>}
                 </span>
                 <span className="row-meta">
@@ -219,7 +288,30 @@ export default function Sidebar(p: Props) {
                   {a && busy.has(a.status) && <span className="dot running" />}
                 </span>
               </UnstyledButton>
-              {renaming === row.id ? (
+              {projectEdit === row.id ? (
+                <form
+                  className="inline-rename"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void organize(row.id, { project: projectName });
+                  }}
+                >
+                  <TextInput
+                    aria-label="Project name"
+                    placeholder="Project name"
+                    maxLength={80}
+                    autoFocus
+                    value={projectName}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") setProjectEdit(null);
+                    }}
+                  />
+                  <ActionIcon type="submit" aria-label="Save project">
+                    <Check size={16} />
+                  </ActionIcon>
+                </form>
+              ) : renaming === row.id ? (
                 <form
                   className="inline-rename"
                   onSubmit={(e) => void rename(e, row.id)}
@@ -254,6 +346,45 @@ export default function Sidebar(p: Props) {
                     </ActionIcon>
                   </Menu.Target>
                   <Menu.Dropdown>
+                    {a && (
+                      <>
+                        <Menu.Item
+                          leftSection={
+                            a.pinned ? <PinOff size={14} /> : <Pin size={14} />
+                          }
+                          onClick={() =>
+                            void organize(a.id, { pinned: !a.pinned })
+                          }
+                        >
+                          {a.pinned ? "Unpin" : "Pin"}
+                        </Menu.Item>
+                        <Menu.Item
+                          leftSection={<FolderOpen size={14} />}
+                          onClick={() => {
+                            setProjectEdit(a.id);
+                            setProjectName(a.project || "");
+                          }}
+                        >
+                          Set project
+                        </Menu.Item>
+                        <Menu.Item
+                          leftSection={
+                            a.archived ? (
+                              <ArchiveRestore size={14} />
+                            ) : (
+                              <Archive size={14} />
+                            )
+                          }
+                          disabled={!!a.inFlight}
+                          onClick={() =>
+                            void organize(a.id, { archived: !a.archived })
+                          }
+                        >
+                          {a.archived ? "Restore chat" : "Archive"}
+                        </Menu.Item>
+                        <Menu.Divider />
+                      </>
+                    )}
                     <Menu.Item
                       leftSection={<Pencil size={14} />}
                       onClick={() => {

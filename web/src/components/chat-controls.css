@@ -1,0 +1,144 @@
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 7px;
+}
+.attach-button {
+  flex: none;
+}
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(220px, 100%);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 8px;
+  padding: 4px 5px 4px 7px;
+  font-size: 11px;
+}
+.attachment-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-chip img {
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+.attachment-chip svg {
+  flex-shrink: 0;
+}
+#composer.attachment-drop {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 3px;
+}
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+}
+.message-attachments button {
+  max-width: 100%;
+}
+.message-attachments button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.message-attachment-image {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 300px;
+}
+.message-attachment-image img {
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 9px;
+}
+.message-bottom {
+  gap: 4px;
+}
+.message-queue {
+  width: min(800px, calc(100% - 48px));
+  align-self: center;
+  margin: 0 auto 7px;
+  flex: none;
+}
+.queued-items {
+  max-height: 220px;
+  overflow: auto;
+  padding-top: 6px;
+}
+.queued-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-top: 1px solid var(--mantine-color-default-border);
+  padding: 8px 0;
+  font-size: 12px;
+}
+.queue-position {
+  opacity: 0.5;
+  font-size: 11px;
+  padding-top: 4px;
+}
+.queued-item p {
+  flex: 1;
+  min-width: 0;
+  margin: 2px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 80px;
+  overflow: auto;
+}
+.queue-actions {
+  display: flex;
+  flex: none;
+}
+.queue-editor {
+  flex: 1;
+  min-width: 0;
+}
+.queue-editor button {
+  margin: 5px 5px 0 0;
+}
+.sidebar-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+}
+.sidebar-filters > div {
+  min-width: 0;
+  flex: 1;
+}
+.sidebar-filters input {
+  background: transparent;
+  border-color: transparent;
+}
+.chat-pin {
+  margin-right: 5px;
+  vertical-align: -1px;
+  opacity: 0.55;
+}
+.chat-project {
+  opacity: 0.6;
+  font-size: 10px;
+}
+@media (max-width: 760px) {
+  .message-queue {
+    width: calc(100% - 24px);
+  }
+  .composer-bar {
+    flex-wrap: wrap;
+  }
+  .composer-bar #project {
+    max-width: 42%;
+  }
+}

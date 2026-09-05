@@ -11,6 +11,7 @@ import {
 import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
+  ListTodo,
   ArrowLeft,
   Folder,
   Maximize2,
@@ -33,6 +34,7 @@ import { useSnapshot } from "./hooks";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
 import Conversation from "./components/Conversation";
+import Workspace from "./components/Workspace";
 import Canvas from "./components/Canvas";
 import ComplaintBook from "./components/ComplaintBook";
 import BackgroundTasks, {
@@ -58,6 +60,7 @@ export default function App() {
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
+    [workspaceOpen, setWorkspaceOpen] = useState(false),
     [workerQuery, setWorkerQuery] = useState(""),
     [creating, setCreating] = useState(false),
     [sending, setSending] = useState(false),
@@ -87,6 +90,12 @@ export default function App() {
     lead = agents.find((a) => a.id === (agent?.rootId || room?.rootId)),
     team = agents.filter((a) => a.rootId === lead?.id),
     workers = team.filter((a) => !a.isLead);
+  const attentionCount =
+    (data?.runtime.requests.length || 0) +
+    (data?.runtime.complaints.filter((c) => c.needsResponse).length || 0) +
+    (data?.runtime.work?.filter((w: Json) => w.status === "review").length ||
+      0) +
+    agents.filter((a) => ["failed", "interrupted"].includes(a.status)).length;
   const taskCount = backgroundTasks(data).filter(activeTask).length;
   const setDraft = (text: string, id = opened || "new") =>
     setDrafts((old) => {
@@ -171,10 +180,13 @@ export default function App() {
       setCreating(false);
     }
   };
-  const send = async () => {
+  const send = async (options?: {
+    assets?: string[];
+    delivery?: "queue" | "steer";
+  }) => {
     const draftKey = opened || "new",
       text = (drafts[draftKey] || "").trim();
-    if (!text || sendingLock.current) return;
+    if ((!text && !options?.assets?.length) || sendingLock.current) return;
     sendingLock.current = true;
     setSending(true);
     try {
@@ -198,9 +210,31 @@ export default function App() {
           });
         else await api("/api/action", { id, action: command.slice(1) });
       } else {
-        if (sends.current[id]?.text !== text)
-          sends.current[id] = { id: crypto.randomUUID(), room: id, text };
+        if (
+          sends.current[id]?.text !== text ||
+          JSON.stringify(sends.current[id]?.assets || []) !==
+            JSON.stringify(options?.assets || []) ||
+          sends.current[id]?.delivery !== (options?.delivery || "queue")
+        )
+          sends.current[id] = {
+            id: crypto.randomUUID(),
+            room: id,
+            text,
+            assets: options?.assets || [],
+            delivery: options?.delivery || "queue",
+          };
         const result = await api("/api/messages", sends.current[id]);
+        if (result.status === "cancelled") {
+          delete sends.current[id];
+          throw new Error(
+            "This message was cancelled. Send it again to resume.",
+          );
+        }
+        if (result.status === "uncertain")
+          throw new Error(
+            result.error ||
+              "Delivery is uncertain. Inspect the conversation before sending again.",
+          );
         delete sends.current[id];
         if (Object.values(result.deliveries || {}).some((v) => v !== "queued"))
           notify("Message saved. Some deliveries are not confirmed.");
@@ -215,6 +249,7 @@ export default function App() {
       await refresh();
     } catch (e) {
       notify(errorText(e));
+      throw e;
     } finally {
       sendingLock.current = false;
       setSending(false);
@@ -473,6 +508,8 @@ export default function App() {
           setSidebar(false);
           setTeamOpen(false);
         }}
+        refresh={refresh}
+        notify={notify}
         rename={rename}
         remove={remove}
         importChat={() => void importChat()}
@@ -547,6 +584,17 @@ export default function App() {
             onClick={() => setView(view === "canvas" ? "chat" : "canvas")}
           >
             {view === "canvas" ? "Chat" : "Canvas"}
+          </Button>
+          <Button
+            id="workspace-toggle"
+            leftSection={<ListTodo size={16} />}
+            onClick={() => setWorkspaceOpen(true)}
+            aria-label={`Work workspace${attentionCount ? `, ${attentionCount} need attention` : ""}`}
+          >
+            <span className="workspace-button-label">Work</span>
+            {attentionCount > 0 && (
+              <span className="attention-count">{attentionCount}</span>
+            )}
           </Button>
           <Button
             id="tasks-toggle"
@@ -633,6 +681,7 @@ export default function App() {
             limits={limits}
             reloadLimits={reloadLimits}
             onPhase={onPhase}
+            onSelect={open}
           />
         )}
         {view === "canvas" && (
@@ -670,6 +719,15 @@ export default function App() {
         ) : (
           teamPanel
         ))}
+      <Workspace
+        opened={workspaceOpen}
+        onClose={() => setWorkspaceOpen(false)}
+        agent={agent || lead}
+        data={data}
+        onSelect={open}
+        refresh={refresh}
+        notify={notify}
+      />
       <BackgroundTasks
         opened={tasksOpen}
         close={() => setTasksOpen(false)}

@@ -18,6 +18,9 @@ import threading
 import time
 import uuid
 
+from codex_work import WorkMixin, work_tools
+from codex_workspace import WorkspaceMixin
+from codex_rules import RulesMixin, rule_tools
 
 def uid():
     return str(uuid.uuid4())
@@ -81,6 +84,23 @@ TOOLS = [
          {"monitor_id": TEXT}, ["monitor_id"]),
 ]
 
+TOOLS += work_tools(tool, TEXT) + rule_tools(tool, TEXT)
+for definition in TOOLS:
+    if definition["name"] == "orchestration_send":
+        definition["inputSchema"]["properties"]["delivery"] = {
+            "type": "string",
+            "enum": ["queue", "steer"],
+        }
+        definition[
+            "description"
+        ] += " delivery=steer corrects the current active turn; queue waits for its completion."
+    if definition["name"] == "orchestration_monitor":
+        definition["inputSchema"]["properties"]["interactive"] = {"type": "boolean"}
+    if definition["name"] == "orchestration_spawn":
+        definition["inputSchema"]["properties"]["agents"]["items"]["properties"][
+            "profile_id"
+        ] = TEXT
+
 INSTRUCTIONS = """You work in Codex Canvas. One lead agent coordinates a team.
 Use orchestration_spawn for delegation and orchestration_monitor for long commands.
 The server owns the wait. Do not run repeated status or sleep tool calls to wait.
@@ -107,6 +127,14 @@ or a next step. A read alone is not a response. Do not claim a fix without evide
 Before finishing any lead turn, read and respond to all complaints awaiting your response.
 If this older thread lacks orchestration_complaint, use orchestration_send with
 agent_id="complaint" and text containing JSON for the same action and fields.
+Use orchestration_task to track assignments, dependencies, submitted evidence and explicit acceptance.
+Use orchestration_watch for file changes or schedules with a script gate; no model runs during the wait.
+Use orchestration_resource to claim the shared codex-board. Never invent a separate resource registry.
+Worker profiles can be listed with orchestration_status and passed as profile_id to orchestration_spawn.
+Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
+and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
+Supported fallback tools: orchestration_task, orchestration_result, orchestration_search,
+orchestration_watch, orchestration_resource, orchestration_monitor_input.
 Model names can be omitted to inherit yours.
 Do not merge work without review. Do not make recurring checks when an event is pending.
 """
@@ -210,7 +238,7 @@ class AppServer:
         self.log.close()
 
 
-class Runtime:
+class Runtime(WorkMixin, WorkspaceMixin, RulesMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -251,6 +279,7 @@ class Runtime:
                 CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
                 CREATE TABLE IF NOT EXISTS runtime_monitors (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_monitor_status ON runtime_monitors(json_extract(record,'$.status'),json_extract(record,'$.created'));
                 CREATE TABLE IF NOT EXISTS runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_compactions (id TEXT PRIMARY KEY, agent TEXT NOT NULL);
@@ -264,7 +293,9 @@ class Runtime:
                   created REAL NOT NULL, deliveries TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
-            db.execute("UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status='dispatching'")
+            db.execute(
+                "UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status IN ('dispatching','reserved')"
+            )
             for a in self.records(db, "agents"):
                 # Only existing managed orchestrators with an admitted model become leads.
                 a.setdefault("isLead", not a.get("parentId") and a.get("role") == "orchestrator"
@@ -288,6 +319,9 @@ class Runtime:
                 if r["status"] == "pending":
                     r["status"] = "expired"
                     self.put(db, "requests", r)
+            self.setup_work(db)
+            self.setup_workspace(db)
+            self.setup_rules(db)
         os.chmod(self.db_path, 0o600)
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
         self.scheduler.start()
@@ -375,24 +409,59 @@ class Runtime:
             remaining = 20000
             for r in inputs:
                 excerpt = r["text"][:remaining]
-                record["inputs"].append({"kind": r["kind"], "text": excerpt, "truncated": len(excerpt) < len(r["text"])})
+                record["inputs"].append(
+                    {
+                        "kind": r["kind"],
+                        "text": excerpt,
+                        "truncated": len(excerpt) < len(r["text"]),
+                        "assets": r.get("assets", []),
+                    }
+                )
                 remaining -= len(excerpt)
         db.execute("INSERT INTO runtime_items VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (key, agent, json.dumps(record), time.time()))
+        self.index_item(db, key, agent, title or role, text)
         self.touch_ui(agent)
 
     def enqueue(self, db, a, kind, text, key=None):
         key = key or uid()
-        db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
-                   (key, a["id"], kind, text, "pending" if a["autoWake"] else "cancelled",
-                    time.time(), a["epoch"], None, None))
+        inserted = db.execute(
+            "INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                key,
+                a["id"],
+                kind,
+                text,
+                "pending" if a["autoWake"] else "cancelled",
+                time.time(),
+                a["epoch"],
+                None,
+                None,
+            ),
+        )
         if a["autoWake"] and a["status"] not in {"running", "starting", "approval"}:
             a["status"] = "queued"
             self.put(db, "agents", a)
+        if inserted.rowcount and kind != "rule":
+            self.rule_event(db, a, kind, text, key)
         self.changed.set()
         return key
 
     def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False):
+        if data.get("profile_id"):
+            with self.lock, self.db() as db:
+                row = db.execute(
+                    "SELECT record FROM runtime_profiles WHERE id=?",
+                    (data["profile_id"],),
+                ).fetchone()
+                if not row:
+                    raise ValueError("Unknown worker profile")
+                profile = json.loads(row[0])
+                data = {
+                    **{k: profile[k] for k in ("role", "model", "effort")},
+                    **data,
+                    "profileInstructions": profile["instructions"],
+                }
         key = data.get("id") or uid()
         try:
             uuid.UUID(key)
@@ -439,17 +508,41 @@ class Runtime:
             budget = data.get("tokenBudget") or None
             if budget is not None and (not isinstance(budget, int) or budget <= 0):
                 raise ValueError("Token budget must be a positive integer")
-            a = {"id": key, "threadId": None, "name": name.strip(), "prompt": prompt.strip(),
-                 "cwd": cwd, "role": role, "isLead": is_lead, "needsTitle": draft, "parentId": parent, "rootId": root["id"] if root else key,
-                 "model": model,
-                 "effort": data.get("effort") or (p.get("effort") if p else None),
-                 "concurrency": root["concurrency"] if root else concurrency,
-                 "maxAgents": root["maxAgents"] if root else max_agents,
-                 "tokenBudget": root["tokenBudget"] if root else budget,
-                 "status": "idle" if draft else "paused" if defer else "queued", "autoWake": draft or not defer, "epoch": 0, "turnId": None,
-                 "inFlight": False, "turnEpoch": 0,
-                 "tokensUsed": 0, "compactions": 0, "compactionsObservedOnly": False, "contextUsage": None, "events": 0, "created": time.time(), "error": None,
-                 "tail": "", "worktree": bool(p and role == "implementer"), "worktreeReady": False}
+            a = {
+                "id": key,
+                "threadId": None,
+                "name": name.strip(),
+                "prompt": prompt.strip(),
+                "cwd": cwd,
+                "role": role,
+                "isLead": is_lead,
+                "needsTitle": draft,
+                "parentId": parent,
+                "rootId": root["id"] if root else key,
+                "model": model,
+                "effort": data.get("effort") or (p.get("effort") if p else None),
+                "concurrency": root["concurrency"] if root else concurrency,
+                "maxAgents": root["maxAgents"] if root else max_agents,
+                "tokenBudget": root["tokenBudget"] if root else budget,
+                "status": "idle" if draft else "paused" if defer else "queued",
+                "autoWake": draft or not defer,
+                "epoch": 0,
+                "turnId": None,
+                "inFlight": False,
+                "turnEpoch": 0,
+                "tokensUsed": 0,
+                "compactions": 0,
+                "compactionsObservedOnly": False,
+                "contextUsage": None,
+                "events": 0,
+                "created": time.time(),
+                "error": None,
+                "profileId": data.get("profile_id"),
+                "profileInstructions": data.get("profileInstructions", ""),
+                "tail": "",
+                "worktree": bool(p and role == "implementer"),
+                "worktreeReady": False,
+            }
             if draft:
                 a.update(quickCreate=True, quickCreateRequest=data.get("_creationSignature"))
             self.put(db, "agents", a)
@@ -548,22 +641,173 @@ class Runtime:
             self.loaded.discard(key)
             return a
 
-    def send(self, key, text, message_id=None, manual=True, resume=False):
-        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 32000:
-            raise ValueError("Message must have 1 to 32000 characters")
+    def send(
+        self,
+        key,
+        text,
+        message_id=None,
+        manual=True,
+        resume=False,
+        delivery="queue",
+        assets=None,
+        sender=None,
+        sender_epoch=None,
+    ):
+        assets = assets or []
+        if (
+            not isinstance(text, str)
+            or len(text) > 32000
+            or (not text.strip() and not assets)
+        ):
+            raise ValueError(
+                "Message must have text or attachments, at most 32000 characters"
+            )
+        if delivery not in {"queue", "steer"}:
+            raise ValueError("Choose queue or steer")
+        inputs = self.message_inputs(key, text, assets)
+        message_id = message_id or uid()
         with self.lock, self.db() as db:
-            a = self.agent(key, db)
-            if a.get("deletedAt"):
-                raise ValueError("This conversation was deleted")
+            a = self.checked_actor(db, key)
+            if sender:
+                caller = self.agent(sender, db)
+                if not caller["autoWake"] or caller["epoch"] != sender_epoch:
+                    raise ValueError("Sender was stopped")
+            self.assert_workspace_available(db, a)
+            old = db.execute(
+                "SELECT * FROM runtime_events WHERE id=?", (message_id,)
+            ).fetchone()
+            if old:
+                meta = db.execute(
+                    "SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)
+                ).fetchone()
+                previous = (
+                    json.loads(meta[0]) if meta else {"assets": [], "delivery": "queue"}
+                )
+                if (
+                    old["agent"] != key
+                    or old["text"] != text.strip()
+                    or previous["assets"] != assets
+                    or previous["delivery"] != delivery
+                ):
+                    raise ValueError("This message id has different content")
+                return {
+                    "id": message_id,
+                    "status": old["status"],
+                    "error": old["error"],
+                }
+            if delivery == "steer" and (
+                not a.get("turnId") or not a.get("inFlight") or not a["autoWake"]
+            ):
+                raise ValueError("There is no active turn to steer. Choose queue")
             if manual or resume:
-                a.update(autoWake=True, error=None, complaintMisses=0)
                 root = self.agent(a["rootId"], db)
-                if root["tokenBudget"] and sum(t["tokensUsed"] for t in self.records(db, "agents") if t["rootId"] == root["id"]) >= root["tokenBudget"]:
-                    raise ValueError("Team token budget reached. Increase the budget before resuming.")
+                if (
+                    root["tokenBudget"]
+                    and sum(
+                        t["tokensUsed"]
+                        for t in self.records(db, "agents")
+                        if t["rootId"] == root["id"]
+                    )
+                    >= root["tokenBudget"]
+                ):
+                    raise ValueError(
+                        "Team token budget reached. Increase the budget before resuming"
+                    )
+                a.update(autoWake=True, error=None, complaintMisses=0)
                 self.put(db, "agents", a)
             if not a["autoWake"]:
                 raise ValueError("Agent is stopped; no message was queued")
-            return {"id": self.enqueue(db, a, "user" if manual else "followup", text.strip(), message_id), "status": "queued"}
+            db.execute(
+                "INSERT INTO runtime_event_meta VALUES (?,?)",
+                (message_id, json.dumps({"assets": assets, "delivery": delivery})),
+            )
+            if delivery == "queue":
+                return {
+                    "id": self.enqueue(
+                        db,
+                        a,
+                        "user" if manual else "followup",
+                        text.strip(),
+                        message_id,
+                    ),
+                    "status": "queued",
+                }
+            db.execute(
+                "INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    message_id,
+                    key,
+                    "user" if manual else "followup",
+                    text.strip(),
+                    "dispatching",
+                    time.time(),
+                    a["epoch"],
+                    a["turnId"],
+                    None,
+                ),
+            )
+            # Submission under the epoch lock prevents stop from overtaking steer.
+            submitted = self.connect().submit(
+                "turn/steer",
+                {
+                    "threadId": a["threadId"],
+                    "expectedTurnId": a["turnId"],
+                    "clientUserMessageId": message_id,
+                    "input": inputs,
+                },
+            )
+        try:
+            self.connect().wait(submitted)
+            with self.lock, self.db() as db:
+                db.execute(
+                    "UPDATE runtime_events SET status='delivered' WHERE id=?",
+                    (message_id,),
+                )
+                self.item(
+                    db,
+                    key,
+                    message_id,
+                    "user",
+                    text,
+                    turnId=a["turnId"],
+                    delivery="steer",
+                    assets=[self.asset_view(self.asset_record(v)) for v in assets],
+                )
+            return {"id": message_id, "status": "delivered"}
+        except Exception as error:
+            with self.lock, self.db() as db:
+                db.execute(
+                    "UPDATE runtime_events SET status='uncertain',error=? WHERE id=?",
+                    (str(error), message_id),
+                )
+            raise
+
+    @staticmethod
+    def thread_config():
+        return THREAD_CONFIG.copy()
+
+    @staticmethod
+    def tool_definitions():
+        return TOOLS
+
+    def new_thread_params(self, a):
+        params = {
+            "cwd": a["cwd"],
+            "config": THREAD_CONFIG.copy(),
+            "developerInstructions": INSTRUCTIONS
+            + "\nUse orchestration_task for assignments and explicit result acceptance. A final answer does not accept work. Read the shared plan supplied with each turn. Worker profiles set instructions, model, and role; they do not add permissions.\n"
+            + a.get("profileInstructions", ""),
+        }
+        if a.get("needsTitle"):
+            params[
+                "developerInstructions"
+            ] += "\nBefore the first task, call orchestration_title with a short task title.\n"
+        if a.get("model"):
+            params["model"] = a["model"]
+        if a["role"] == "reviewer":
+            params["sandbox"] = "read-only"
+        params["dynamicTools"] = TOOLS
+        return params
 
     def prepare(self, a):
         with self.lock:
@@ -584,17 +828,12 @@ class Runtime:
                 latest.update(cwd=directory, branch=branch, worktreeReady=True)
                 self.put(db, "agents", latest)
                 a = latest
+            self.checkpoint_capture(a["id"], "Before first turn", internal=True)
         if a["id"] not in self.loaded:
-            params = {"cwd": a["cwd"], "config": THREAD_CONFIG.copy(),
-                      "developerInstructions": INSTRUCTIONS + ("\nThis is a new lead conversation. "
-                          "Before working on the first user task, call orchestration_title with a short task title.\n"
-                          if a.get("needsTitle") else "")}
-            if a["model"]:
-                params["model"] = a["model"]
-            if a["role"] == "reviewer":
-                params["sandbox"] = "read-only"
+            params = self.new_thread_params(a)
             if a["threadId"]:
                 method = "thread/resume"
+                params.pop("dynamicTools", None)
                 params.update(threadId=a["threadId"], excludeTurns=True)
             else:
                 method = "thread/start"
@@ -615,6 +854,7 @@ class Runtime:
             self.changed.wait(1)
             self.changed.clear()
             try:
+                self.rules_tick()
                 self.dispatch()
             except Exception as error:
                 with (self.root / "runtime-errors.log").open("a") as log:
@@ -623,9 +863,23 @@ class Runtime:
     def dispatch(self):
         with self.lock, self.db() as db:
             agents = self.records(db, "agents")
+            reserved_cwds = {
+                str(Path(a["cwd"]).resolve())
+                for a in agents
+                if a.get("workspaceOperation")
+            }
             active = [a for a in agents if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}]
-            candidates = sorted((a for a in agents if a["status"] == "queued" and a["autoWake"] and not a.get("inFlight")),
-                                key=lambda a: (a["parentId"] is not None, a["created"]))
+            candidates = sorted(
+                (
+                    a
+                    for a in agents
+                    if a["status"] == "queued"
+                    and a["autoWake"]
+                    and not a.get("inFlight")
+                    and str(Path(a["cwd"]).resolve()) not in reserved_cwds
+                ),
+                key=lambda a: (a["parentId"] is not None, a["created"]),
+            )
             global_limit = max(1, min(64, int(os.environ.get("CODEX_CANVAS_CONCURRENCY", "16"))))
             for a in candidates:
                 if len(active) >= global_limit:
@@ -638,6 +892,24 @@ class Runtime:
                     a["status"] = "waiting"
                     self.put(db, "agents", a)
                     continue
+                selected = []
+                asset_count = 0
+                for event in rows:
+                    meta = db.execute(
+                        "SELECT record FROM runtime_event_meta WHERE id=?",
+                        (event["id"],),
+                    ).fetchone()
+                    count = len(json.loads(meta[0]).get("assets", [])) if meta else 0
+                    if asset_count + count > 8:
+                        break
+                    selected.append(event)
+                    asset_count += count
+                rows = selected
+                for event in rows:
+                    db.execute(
+                        "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
+                        (event["id"],),
+                    )
                 a.update(status="starting", inFlight=True, turnEpoch=a["epoch"])
                 self.put(db, "agents", a)
                 active.append(a)
@@ -655,8 +927,29 @@ class Runtime:
                     self.changed.set()
                     return
                 for r in rows:
-                    db.execute("UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='pending'", (r["id"],))
+                    db.execute(
+                        "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
+                        (r["id"],),
+                    )
             text = "\n\n".join(r["text"] if r["kind"] == "user" else f"[Orchestration event: {r['kind']}]\n{r['text']}" for r in rows)
+            asset_ids = []
+            with self.lock, self.db() as db:
+                for event in rows:
+                    meta = db.execute(
+                        "SELECT record FROM runtime_event_meta WHERE id=?",
+                        (event["id"],),
+                    ).fetchone()
+                    if meta:
+                        ids = json.loads(meta[0]).get("assets", [])
+                        asset_ids.extend(ids)
+                        event["assets"] = [
+                            self.asset_view(self.asset_record(v)) for v in ids
+                        ]
+                plan = db.execute(
+                    "SELECT record FROM runtime_plans WHERE id=?", (a["rootId"],)
+                ).fetchone()
+                if plan and json.loads(plan[0]).get("text"):
+                    text += "\n\n[Shared plan]\n" + json.loads(plan[0])["text"]
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
                 required = self.unanswered_complaints(db, a["id"])
@@ -665,9 +958,20 @@ class Runtime:
                 if required:
                     text += "\n\n[Required complaint review] Read the complaint book and record a response " \
                             "for each unanswered complaint before finishing. Pending ids: " + ", ".join(c["id"] for c in required)
-                self.item(db, a["id"], rows[0]["id"], "user", text, inputs=rows)
-            params = {"threadId": a["threadId"], "clientUserMessageId": rows[0]["id"],
-                      "input": [{"type": "text", "text": text}]}
+                self.item(
+                    db,
+                    a["id"],
+                    rows[0]["id"],
+                    "user",
+                    text,
+                    inputs=rows,
+                    assets=[self.asset_view(self.asset_record(v)) for v in asset_ids],
+                )
+            params = {
+                "threadId": a["threadId"],
+                "clientUserMessageId": rows[0]["id"],
+                "input": self.message_inputs(a["id"], text, asset_ids),
+            }
             if a.get("effort"):
                 params["effort"] = a["effort"]
             server = self.connect()
@@ -678,6 +982,7 @@ class Runtime:
                     self.put(db, "agents", current)
                     self.changed.set()
                     return
+                self.assert_workspace_available(db, current)
                 submitted = server.submit("turn/start", params)
             result = server.wait(submitted)
             with self.lock, self.db() as db:
@@ -686,6 +991,17 @@ class Runtime:
                 if current["status"] == "starting":
                     current.update(status="running", turnId=turn)
                     self.put(db, "agents", current)
+                stored = db.execute(
+                    "SELECT record FROM runtime_items WHERE id=?",
+                    (a["id"] + ":" + rows[0]["id"],),
+                ).fetchone()
+                if stored:
+                    item = json.loads(stored[0])
+                    item["turnId"] = turn
+                    db.execute(
+                        "UPDATE runtime_items SET record=? WHERE id=?",
+                        (json.dumps(item), item["id"]),
+                    )
                 for r in rows:
                     db.execute("UPDATE runtime_events SET status='delivered', turn_id=? WHERE id=? AND status='dispatching'", (turn, r["id"]))
                 stopped = not current["autoWake"] or current["epoch"] != epoch
@@ -699,7 +1015,10 @@ class Runtime:
                     current.update(status="failed", error=str(error))
                 self.put(db, "agents", current)
                 for r in rows:
-                    db.execute("UPDATE runtime_events SET status='uncertain', error=? WHERE id=? AND status IN ('pending','dispatching')", (str(error), r["id"]))
+                    db.execute(
+                        "UPDATE runtime_events SET status='uncertain', error=? WHERE id=? AND status IN ('pending','reserved','dispatching')",
+                        (str(error), r["id"]),
+                    )
                 self.parent_event(db, current, "start-failed:" + rows[0]["id"], str(error))
             self.changed.set()
 
@@ -866,6 +1185,22 @@ class Runtime:
                     self.item(db, a["id"], p["itemId"], "output", json.dumps(item, ensure_ascii=False), "commandExecution",
                               toolStatus="running", turnId=p.get("turnId") or a.get("turnId"))
             elif method in {"turn/plan/updated", "turn/diff/updated"}:
+                if method == "turn/plan/updated":
+                    row = db.execute(
+                        "SELECT record FROM runtime_plans WHERE id=?", (a["id"],)
+                    ).fetchone()
+                    plan = (
+                        json.loads(row[0])
+                        if row
+                        else {
+                            "id": a["id"],
+                            "rootId": a["rootId"],
+                            "text": "",
+                            "version": 0,
+                        }
+                    )
+                    plan.update(native=p, steps=p.get("plan", []), updated=time.time())
+                    self.put(db, "plans", plan)
                 self.item(db, a["id"], method, "output", json.dumps(p, ensure_ascii=False),
                           "Plan" if method == "turn/plan/updated" else "Changes")
             elif method == "thread/tokenUsage/updated":
@@ -886,6 +1221,7 @@ class Runtime:
                     if task.get("turnId") == a.get("turnId") and not (task["kind"] == "command" and task.get("processId")):
                         task.update(status="interrupted", finished=time.time())
                         self.put(db, "tasks", task)
+                a["lastCompletedTurn"] = turn.get("id")
                 a["turnId"] = None
                 a["activity"] = None
                 a["activeTools"] = []
@@ -910,6 +1246,11 @@ class Runtime:
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
                 if pending and a["autoWake"]:
                     a["status"] = "queued"
+                if a.get("worktreeReady"):
+                    a["workspaceOperation"] = "checkpoint"
+                    self.pool.submit(
+                        self.checkpoint_after_turn, a["id"], turn.get("id")
+                    )
                 self.changed.set()
             if a.get("activeTools") and (a.get("activity") or {}).get("phase") == "thinking":
                 a["activity"] = {"phase": "tool", "tools": a["activeTools"], "at": time.time()}
@@ -954,6 +1295,8 @@ class Runtime:
                 if previous:
                     result = json.loads(previous[0])
                 a = next((a for a in self.records(db, "agents") if a.get("threadId") == p.get("threadId")), None)
+            if a and p.get("turnId") and p["turnId"] != a.get("turnId"):
+                raise ValueError("This tool call belongs to an earlier turn")
             if not a or not a["autoWake"]:
                 raise ValueError("Agent is stopped or unknown")
             if result is None:
@@ -961,7 +1304,47 @@ class Runtime:
                 if isinstance(args, str):
                     args = json.loads(args)
                 name = p.get("tool")
-                if name == "orchestration_complaint":
+                if name == "orchestration_send" and args.get("agent_id") == "workspace":
+                    payload = json.loads(args["text"])
+                    name = payload.get("tool")
+                    args = payload.get("arguments", {})
+                    if name not in {
+                        t["name"]
+                        for t in work_tools(tool, TEXT) + rule_tools(tool, TEXT)
+                    }:
+                        raise ValueError("Unknown workspace tool")
+                if name in {"orchestration_task", "orchestration_result"}:
+                    if name == "orchestration_result" and args.get("action") == "read":
+                        value = self.work_action(
+                            a["id"], {"action": "list"}, actor=a["id"]
+                        )
+                        value = next(
+                            (
+                                w
+                                for w in value["items"]
+                                if w["id"] == args.get("task_id")
+                            ),
+                            None,
+                        )
+                        if value is None:
+                            raise ValueError("Unknown work item")
+                    else:
+                        value = self.work_action(
+                            a["id"], args, key, actor=a["id"], epoch=a["epoch"]
+                        )
+                elif name == "orchestration_search":
+                    value = self.search_work(
+                        args.get("query"), a["id"], args.get("limit", 50)
+                    )
+                elif name == "orchestration_watch":
+                    value = self.rules(args, a["id"], a["epoch"])
+                elif name == "orchestration_resource":
+                    value = self.resource_action(args, a["id"], a["epoch"])
+                elif name == "orchestration_monitor_input":
+                    value = self.monitor_input(
+                        args.get("monitor_id"), args, a["id"], a["epoch"]
+                    )
+                elif name == "orchestration_complaint":
                     value = self.complaint(a["id"], args, key, a["epoch"])
                 elif name == "orchestration_title":
                     title = args.get("title")
@@ -979,11 +1362,9 @@ class Runtime:
                         cursor = self.agent(cursor["parentId"])
                     if cursor.get("parentId") != a["id"]:
                         raise ValueError("You can interrupt only your descendants")
-                    with self.lock:
-                        sender = self.agent(a["id"])
-                        if not sender["autoWake"] or sender["epoch"] != a["epoch"]:
-                            raise ValueError("Sender was stopped")
-                        value = self.stop(target["id"], True)
+                    value = self.stop(
+                        target["id"], True, sender=a["id"], sender_epoch=a["epoch"]
+                    )
                 elif name == "orchestration_spawn":
                     specs = args.get("agents")
                     if not isinstance(specs, list) or not 1 <= len(specs) <= 64:
@@ -1009,7 +1390,13 @@ class Runtime:
                             children.append({k: child[k] for k in ("id", "name", "status", "model")})
                     value = {"agents": children, "delivery": "Results wake you automatically. Finish your turn while waiting."}
                 elif name in {"orchestration_status", "orchestration_peers"}:
-                    value = {**self.team(a["rootId"]), **self.peers(a["id"])}
+                    value = {
+                        **self.team(a["rootId"]),
+                        **self.peers(a["id"]),
+                        **self.profiles(),
+                        "workspaceTools": work_tools(tool, TEXT)
+                        + rule_tools(tool, TEXT),
+                    }
                     if name == "orchestration_status":
                         value["recentChats"] = [self.chat_read(r["id"], a["id"], limit=10)
                                                 for r in value["rooms"][:10]]
@@ -1021,19 +1408,34 @@ class Runtime:
                     value = self.complaint(a["id"], json.loads(args["text"]), key, a["epoch"])
                 elif name == "orchestration_send":
                     target_id = args["agent_id"]
-                    with self.lock:
-                        sender = self.agent(a["id"])
-                        if not sender["autoWake"] or sender["epoch"] != a["epoch"]:
-                            raise ValueError("Sender was stopped")
-                        # Old threads retain their tool schema. Support peer chat through send.
-                        target = None if target_id in {"parent", "lead", "broadcast", "all"} else self.agent(target_id)
-                        cursor = target
-                        while cursor and cursor.get("parentId") and cursor["parentId"] != a["id"]:
-                            cursor = self.agent(cursor["parentId"])
-                        if cursor and cursor.get("parentId") == a["id"]:
-                            value = self.send(target["id"], args["text"], key, manual=False, resume=True)
-                        else:
-                            value = self.chat_message(a["id"], target_id, args["text"], key, a["epoch"])
+                    # Resolve the edge here; send/chat enforce the sender epoch at the write boundary.
+                    target = (
+                        None
+                        if target_id in {"parent", "lead", "broadcast", "all"}
+                        else self.agent(target_id)
+                    )
+                    cursor = target
+                    while (
+                        cursor
+                        and cursor.get("parentId")
+                        and cursor["parentId"] != a["id"]
+                    ):
+                        cursor = self.agent(cursor["parentId"])
+                    if cursor and cursor.get("parentId") == a["id"]:
+                        value = self.send(
+                            target["id"],
+                            args["text"],
+                            key,
+                            manual=False,
+                            resume=True,
+                            delivery=args.get("delivery", "queue"),
+                            sender=a["id"],
+                            sender_epoch=a["epoch"],
+                        )
+                    else:
+                        value = self.chat_message(
+                            a["id"], target_id, args["text"], key, a["epoch"]
+                        )
                 elif name == "orchestration_monitor":
                     value = self.monitor(a["id"], args, key, approved=a.get("approvalPolicy") == "never", epoch=a["epoch"])
                 elif name == "orchestration_cancel_monitor":
@@ -1299,7 +1701,7 @@ class Runtime:
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
             return {"id": key, "room": room["id"], "deliveries": deliveries}
 
-    def monitor(self, agent_id, data, key=None, approved=False, epoch=None):
+    def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None):
         command = data.get("command")
         timeout = data.get("timeout_ms", 3600000)
         if not isinstance(command, str) or not 1 <= len(command.strip()) <= 12000:
@@ -1319,12 +1721,39 @@ class Runtime:
                 raise ValueError("Agent is stopped")
             if epoch is not None and a["epoch"] != epoch:
                 raise ValueError("The agent turn was stopped")
-            if sum(m["status"] in {"running", "starting", "approval"} for m in self.records(db, "monitors")) >= 64:
+            self.assert_workspace_available(db, a)
+            if rule:
+                record = db.execute(
+                    "SELECT record FROM runtime_rules WHERE id=?", (rule["id"],)
+                ).fetchone()
+                current_rule = json.loads(record[0]) if record else None
+                if (
+                    not current_rule
+                    or current_rule["agent"] != agent_id
+                    or current_rule["status"] != "active"
+                    or not current_rule.get("inFlight")
+                    or current_rule["epoch"] != a["epoch"]
+                    or current_rule["checks"] != rule["checks"]
+                ):
+                    raise ValueError("This rule check was paused, deleted, or replaced")
+            if db.execute("SELECT COUNT(*) FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval')").fetchone()[0] >= 64:
                 raise ValueError("Maximum 64 active command watches")
-            m = {"id": key, "agent": a["id"], "epoch": a["epoch"], "command": command,
-                 "cwd": a["cwd"], "timeout_ms": timeout, "status": "starting" if approved else "approval",
-                 "created": time.time(), "exitCode": None, "tail": "", "bytes": 0,
-                 "log": str(self.root / "monitor-logs" / (key + ".log"))}
+            m = {
+                "id": key,
+                "agent": a["id"],
+                "epoch": a["epoch"],
+                "command": command,
+                "cwd": a["cwd"],
+                "timeout_ms": timeout,
+                "status": "starting" if approved else "approval",
+                "created": time.time(),
+                "exitCode": None,
+                "tail": "",
+                "bytes": 0,
+                "interactive": bool(data.get("interactive", False)),
+                "ruleId": rule["id"] if rule else None,
+                "log": str(self.root / "monitor-logs" / (key + ".log")),
+            }
             self.put(db, "monitors", m)
             if not approved:
                 self.put(db, "requests", {"id": uid(), "method": "monitor/approve", "agent": agent_id,
@@ -1343,6 +1772,8 @@ class Runtime:
             a = self.prepare(a)
             params = {"command": ["/bin/sh", "-lc", m["command"]], "cwd": a["cwd"],
                       "processId": key, "streamStdoutStderr": True, "timeoutMs": m["timeout_ms"]}
+            if m.get("interactive"):
+                params.update(tty=True, streamStdin=True)
             if not a.get("sandbox"):
                 raise ValueError("Thread sandbox is unknown; refusing to run the command")
             if (a.get("profile") or {}).get("id"):
@@ -1355,6 +1786,13 @@ class Runtime:
                 current_monitor = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
                 if not current["autoWake"] or current["epoch"] != m["epoch"] or current_monitor["status"] != "starting":
                     return
+                self.assert_workspace_available(db, current)
+                if m.get("ruleId"):
+                    row = db.execute(
+                        "SELECT record FROM runtime_rules WHERE id=?", (m["ruleId"],)
+                    ).fetchone()
+                    if not row or json.loads(row[0])["status"] != "active":
+                        raise ValueError("This rule was paused or deleted")
                 # Stop cannot overtake command submission on the same connection.
                 submitted = server.submit("command/exec", params)
                 current_monitor.update(status="running", cwd=a["cwd"])
@@ -1391,7 +1829,9 @@ class Runtime:
             m.update(status="failed" if error or code != 0 else "completed", exitCode=code, error=error, finished=time.time())
             self.put(db, "monitors", m)
             a = self.agent(m["agent"], db)
-            if a["epoch"] == m["epoch"]:
+            if m.get("ruleId"):
+                self.rule_finished(m["ruleId"], code, error, m["tail"], db)
+            elif a["epoch"] == m["epoch"]:
                 self.enqueue(db, a, "monitor_exit", json.dumps({k: m.get(k) for k in
                     ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")}), "monitor:" + key)
 
@@ -1407,6 +1847,10 @@ class Runtime:
             if m["status"] not in {"running", "starting", "approval"}:
                 return {"id": key, "status": m["status"]}
             m.update(status="cancelled", finished=time.time())
+            if m.get("ruleId"):
+                self.rule_finished(
+                    m["ruleId"], None, "Monitor cancelled", m["tail"], db
+                )
             self.put(db, "monitors", m)
             for request in self.records(db, "requests"):
                 if request["status"] == "pending" and request["method"] == "monitor/approve" and request.get("params", {}).get("monitorId") == key:
@@ -1436,8 +1880,19 @@ class Runtime:
                     latest["error"] = f"Stop requested; interrupt acknowledgement unavailable: {error}"
                     self.put(db, "agents", latest)
 
-    def stop(self, key, descendants=True, reason="Stopped by user"):
+    def stop(
+        self,
+        key,
+        descendants=True,
+        reason="Stopped by user",
+        sender=None,
+        sender_epoch=None,
+    ):
         with self.lock, self.db() as db:
+            if sender:
+                caller = self.agent(sender, db)
+                if not caller["autoWake"] or caller["epoch"] != sender_epoch:
+                    raise ValueError("Sender was stopped")
             self.agent(key, db)
             agents = self.records(db, "agents")
             ids = {key}
@@ -1497,7 +1952,22 @@ class Runtime:
                 if m["status"] == "starting":
                     threading.Thread(target=self.run_monitor, args=(m["id"],), daemon=True).start()
                 else:
-                    self.enqueue(db, a, "monitor_cancelled", "User declined command " + m["id"], "monitor-declined:" + m["id"])
+                    if m.get("ruleId"):
+                        self.rule_finished(
+                            m["ruleId"],
+                            None,
+                            "User declined the command",
+                            m["tail"],
+                            db,
+                        )
+                    else:
+                        self.enqueue(
+                            db,
+                            a,
+                            "monitor_cancelled",
+                            "User declined command " + m["id"],
+                            "monitor-declined:" + m["id"],
+                        )
                 return {"status": "answered"}
             method = r["method"]
             if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval"}:
@@ -1555,12 +2025,38 @@ class Runtime:
                 UNION ALL SELECT record FROM (SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
                 ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
                 AND json_extract(t.record,'$.status')!='running' ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)""").fetchall()
-            return {"agents": agents, "tasks": [{k: v for k, v in json.loads(r[0]).items() if k not in {"tail", "arguments", "error"}} for r in task_rows], "tasksHistoryLimit": 100, "monitors": [m for m in self.records(db, "monitors") if m["agent"] in {a["id"] for a in agents}],
-                    "requests": [r for r in self.records(db, "requests") if r["status"] == "pending" and r.get("agent") in {a["id"] for a in agents}],
-                    "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
-                    "complaints": self.complaint_summaries(db),
-                    "rateLimits": self.rate_limits.copy(),
-                    "events": events, "connected": self.server is not None and not self.closed and not self.offline}
+            return {
+                "agents": agents,
+                "tasks": [
+                    {
+                        k: v
+                        for k, v in json.loads(r[0]).items()
+                        if k not in {"tail", "arguments", "error"}
+                    }
+                    for r in task_rows
+                ],
+                "tasksHistoryLimit": 100,
+                "monitors": [
+                    m
+                    for m in self.recent_monitors(db)
+                    if m["agent"] in {a["id"] for a in agents}
+                ],
+                "requests": [
+                    r
+                    for r in self.records(db, "requests")
+                    if r["status"] == "pending"
+                    and r.get("agent") in {a["id"] for a in agents}
+                ],
+                "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
+                "complaints": self.complaint_summaries(db),
+                "work": [w for w in self.records(db,"work") if w["rootId"] in {a["id"] for a in agents}],
+                "rules": [r for r in self.records(db,"rules") if r["agent"] in {a["id"] for a in agents}],
+                "rateLimits": self.rate_limits.copy(),
+                "events": events,
+                "connected": self.server is not None
+                and not self.closed
+                and not self.offline,
+            }
 
     def team(self, root):
         state = self.snapshot()
@@ -1571,7 +2067,10 @@ class Runtime:
     def transcript(self, key):
         self.agent(key)
         with self.lock, self.db() as db:
-            rows = db.execute("SELECT record FROM runtime_items WHERE agent=? ORDER BY created DESC LIMIT 121", (key,)).fetchall()
+            rows = db.execute(
+                "SELECT record FROM runtime_items WHERE agent=? AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created DESC LIMIT 121",
+                (key,),
+            ).fetchall()
             items = list(reversed([json.loads(r[0]) for r in rows[:120]]))
             pending = db.execute("SELECT * FROM runtime_events WHERE agent=? AND kind='user' AND status='pending' ORDER BY created LIMIT 32", (key,)).fetchall()
             for event in pending:
@@ -1618,6 +2117,7 @@ class Runtime:
             raise ValueError("Choose compact or review")
         with self.lock, self.db() as db:
             a = self.agent(key, db)
+            self.assert_workspace_available(db, a)
             if a["status"] in {"queued", "starting", "running", "approval"}:
                 raise ValueError("Wait for this agent's current turn before this action")
             if not a["autoWake"]:

@@ -2,10 +2,14 @@ import {
   ActionIcon,
   Badge,
   Button,
+  Checkbox,
+  Collapse,
   Drawer,
   NativeSelect,
+  NumberInput,
   SegmentedControl,
   TextInput,
+  Textarea,
   UnstyledButton,
 } from "@mantine/core";
 import {
@@ -16,7 +20,9 @@ import {
   ChevronDown,
   Clock,
   Copy,
+  Download,
   LoaderCircle,
+  Plus,
   Search,
   Square,
   Terminal,
@@ -24,6 +30,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
+import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../types";
 
 export const activeTask = (task: BackgroundTask) =>
@@ -120,7 +127,8 @@ export default function BackgroundTasks({
     [query, setQuery] = useState(""),
     [selected, setSelected] = useState<string | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
-    [now, setNow] = useState(Date.now() / 1000);
+    [now, setNow] = useState(Date.now() / 1000),
+    [creating, setCreating] = useState(false);
   useEffect(() => {
     if (!opened) return;
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
@@ -174,6 +182,36 @@ export default function BackgroundTasks({
         header: "tasks-drawer-header",
       }}
     >
+      <div className="monitor-create-toolbar">
+        <span>Run commands without keeping a model turn open.</span>
+        <Button
+          size="xs"
+          variant="light"
+          leftSection={<Plus size={13} />}
+          onClick={() => setCreating(!creating)}
+          aria-expanded={creating}
+        >
+          New monitor
+        </Button>
+      </div>
+      <Collapse expanded={creating} keepMounted={false}>
+        <MonitorForm
+          agents={agents}
+          leadId={leadId}
+          notify={notify}
+          cancel={() => setCreating(false)}
+          created={async (id) => {
+            setCreating(false);
+            setSelected(id);
+            setTab("active");
+            setScope("all");
+            setKind("all");
+            setQuery("");
+            setMobileDetail(true);
+            await refresh();
+          }}
+        />
+      </Collapse>
       <div className="tasks-toolbar">
         <SegmentedControl
           aria-label="Task status"
@@ -299,8 +337,8 @@ export default function BackgroundTasks({
             )}
           </div>
           <p className="tasks-footnote">
-            All monitors · Latest {data.runtime.tasksHistoryLimit || 100}{" "}
-            finished tool calls
+            All active · Latest 100 finished monitors · Latest{" "}
+            {data.runtime.tasksHistoryLimit || 100} finished tool calls
           </p>
         </section>
         {selectedTask ? (
@@ -391,10 +429,12 @@ function TaskDetail({
     setPending(true);
     try {
       const result = await api(path, body);
-      if (result?.error) notify(result.error);
+      if (result?.error) throw new Error(result.error);
       await refresh();
+      return true;
     } catch (error) {
       notify(errorText(error));
+      return false;
     } finally {
       setPending(false);
     }
@@ -504,6 +544,14 @@ function TaskDetail({
               </Button>
               <ActionIcon
                 size="sm"
+                aria-label="Download task log"
+                disabled={pending}
+                onClick={() => void downloadLog(task, notify)}
+              >
+                <Download size={13} />
+              </ActionIcon>
+              <ActionIcon
+                size="sm"
                 aria-label="Copy task output"
                 disabled={!task.tail}
                 onClick={() => {
@@ -540,6 +588,11 @@ function TaskDetail({
             </p>
           )}
         </div>
+        {task.status === "running" &&
+          ((task.kind === "monitor" && task.interactive) ||
+            (task.kind === "command" && task.processId)) && (
+            <ProcessInput task={task} pending={pending} act={act} />
+          )}
         <dl className="task-record">
           <div>
             <dt>Created</dt>
@@ -593,4 +646,291 @@ function TaskDetail({
       </div>
     </section>
   );
+}
+
+function MonitorForm({
+  agents,
+  leadId,
+  notify,
+  cancel,
+  created,
+}: {
+  agents: Agent[];
+  leadId?: string;
+  notify: (s: string) => void;
+  cancel: () => void;
+  created: (id: string) => Promise<void>;
+}) {
+  const available = agents.filter((agent) => agent.source === "managed");
+  const [agent, setAgent] = useState(
+    leadId || available.find((a) => a.isLead)?.id || available[0]?.id || "",
+  );
+  const [command, setCommand] = useState("");
+  const [interactive, setInteractive] = useState(false);
+  const [minutes, setMinutes] = useState<string | number>(30);
+  const [pending, setPending] = useState(false);
+  const request = useRef<{ signature: string; id: string } | null>(null);
+  const submit = async () => {
+    const body = {
+      agent,
+      command,
+      interactive,
+      timeout_ms: Number(minutes) * 60000,
+    };
+    const signature = JSON.stringify(body);
+    if (request.current?.signature !== signature)
+      request.current = { signature, id: crypto.randomUUID() };
+    setPending(true);
+    try {
+      const value = await api("/api/monitor", {
+        ...body,
+        id: request.current.id,
+      });
+      if (value.error) throw new Error(value.error);
+      await created(value.id);
+      setCommand("");
+      request.current = null;
+    } catch (error) {
+      notify(errorText(error));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <form
+      className="monitor-create-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <div className="monitor-create-settings">
+        <NativeSelect
+          label="Agent"
+          value={agent}
+          onChange={(e) => setAgent(e.target.value)}
+          data={available.map((a) => ({ value: a.id, label: a.name }))}
+          disabled={pending}
+          required
+        />
+        <NumberInput
+          label="Timeout (minutes)"
+          value={minutes}
+          onChange={setMinutes}
+          min={1}
+          max={1440}
+          allowDecimal={false}
+          disabled={pending}
+          required
+        />
+      </div>
+      <Textarea
+        label="Command"
+        aria-label="Command"
+        placeholder="npm run test"
+        value={command}
+        onChange={(e) => setCommand(e.target.value)}
+        autosize
+        minRows={2}
+        maxRows={5}
+        maxLength={32000}
+        disabled={pending}
+        required
+      />
+      <Checkbox
+        label="Interactive terminal"
+        description="Send input while the command runs."
+        checked={interactive}
+        onChange={(e) => setInteractive(e.currentTarget.checked)}
+        disabled={pending}
+      />
+      <div className="monitor-create-actions">
+        <Button size="xs" onClick={cancel} disabled={pending}>
+          Cancel
+        </Button>
+        <Button
+          size="xs"
+          type="submit"
+          variant="filled"
+          loading={pending}
+          disabled={
+            !agent ||
+            !command.trim() ||
+            !Number.isFinite(Number(minutes)) ||
+            Number(minutes) < 1 ||
+            Number(minutes) > 1440
+          }
+        >
+          Start monitor
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function ProcessInput({
+  task,
+  pending,
+  act,
+}: {
+  task: BackgroundTask;
+  pending: boolean;
+  act: (path: string, body: Json) => Promise<boolean>;
+}) {
+  const [input, setInput] = useState("");
+  const [rows, setRows] = useState<string | number>(24);
+  const [cols, setCols] = useState<string | number>(80);
+  const [inputClosed, setStdinClosed] = useState(false);
+  const stdinClosed = inputClosed || !!task.stdinClosed;
+  const native = task.kind === "command";
+  const send = async () => {
+    const sent = input;
+    const ok = await act(
+      native ? "/api/native-command" : "/api/monitor/input",
+      {
+        id: task.id,
+        text: sent + "\n",
+        ...(native ? { action: "input" } : {}),
+      },
+    );
+    if (ok) setInput((current) => (current === sent ? "" : current));
+  };
+  return (
+    <section className="process-input" aria-label="Command controls">
+      <p>
+        {native
+          ? "These requests use the agent to control its command."
+          : "Input goes directly to the terminal."}
+      </p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+        className="process-input-line"
+      >
+        <TextInput
+          aria-label="Terminal input"
+          placeholder="Type terminal input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          disabled={pending || stdinClosed}
+          maxLength={16000}
+        />
+        <Button size="sm" type="submit" disabled={pending || stdinClosed}>
+          {native ? "Send via agent" : "Send line"}
+        </Button>
+      </form>
+      <div className="process-input-actions">
+        {native ? (
+          <Button
+            size="compact-xs"
+            color="red"
+            disabled={pending}
+            onClick={() =>
+              void act("/api/native-command", { id: task.id, action: "cancel" })
+            }
+          >
+            Ask agent to stop command
+          </Button>
+        ) : (
+          <>
+            <Button
+              size="compact-xs"
+              disabled={pending || stdinClosed}
+              onClick={() =>
+                void act("/api/monitor/input", { id: task.id, text: "\u0003" })
+              }
+            >
+              Ctrl+C
+            </Button>
+            <Button
+              size="compact-xs"
+              disabled={pending || stdinClosed}
+              onClick={() => {
+                void act("/api/monitor/input", {
+                  id: task.id,
+                  closeStdin: true,
+                }).then((ok) => {
+                  if (ok) setStdinClosed(true);
+                });
+              }}
+            >
+              {stdinClosed ? "Input closed" : "Close input (EOF)"}
+            </Button>
+            <details className="process-resize">
+              <summary>Terminal size</summary>
+              <div>
+                <NumberInput
+                  label="Rows"
+                  size="xs"
+                  value={rows}
+                  onChange={setRows}
+                  min={1}
+                  max={500}
+                  allowDecimal={false}
+                />
+                <NumberInput
+                  label="Columns"
+                  size="xs"
+                  value={cols}
+                  onChange={setCols}
+                  min={1}
+                  max={500}
+                  allowDecimal={false}
+                />
+                <Button
+                  size="xs"
+                  disabled={pending || !Number(rows) || !Number(cols)}
+                  onClick={() =>
+                    void act("/api/monitor/input", {
+                      id: task.id,
+                      rows: Number(rows),
+                      cols: Number(cols),
+                    })
+                  }
+                >
+                  Resize
+                </Button>
+              </div>
+            </details>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+async function downloadLog(task: BackgroundTask, notify: (s: string) => void) {
+  try {
+    let blob: Blob, name: string;
+    if (task.kind === "monitor") {
+      const result = await api<{
+        name: string;
+        mime: string;
+        base64: string;
+        truncated?: boolean;
+      }>("/api/monitor/log?id=" + encodeURIComponent(task.id));
+      blob = new Blob(
+        [Uint8Array.from(atob(result.base64), (c) => c.charCodeAt(0))],
+        { type: result.mime || "text/plain" },
+      );
+      name = result.name;
+      if (result.truncated)
+        notify("The download contains the retained part of the log.");
+    } else {
+      blob = new Blob([task.tail || ""], { type: "text/plain" });
+      name = `command-${task.id}.log`;
+      if (task.outputTruncated)
+        notify("The download contains the retained output.");
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (error) {
+    notify(errorText(error));
+  }
 }

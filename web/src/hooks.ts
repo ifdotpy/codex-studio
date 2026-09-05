@@ -35,6 +35,7 @@ export function useMessages(
   managed = false,
 ) {
   const [items, setItems] = useState<Message[]>([]),
+    [loadedId, setLoadedId] = useState<string | null>(null),
     [notice, setNotice] = useState(""),
     [before, setBefore] = useState<number | null>(null),
     [liveAgent, setLiveAgent] = useState<Partial<Agent> | null>(null),
@@ -43,6 +44,7 @@ export function useMessages(
     expanded = useRef(false);
   active.current = id;
   const accept = useCallback((d: Json) => {
+    setLoadedId(active.current);
     setLiveAgent(d.agent || null);
     setItems(
       (d.items || []).flatMap((m: Message) =>
@@ -54,6 +56,8 @@ export function useMessages(
               ) => ({
                 ...m,
                 id: `${m.id}:${i}`,
+                sourceId: m.id,
+                assets: (r as Json).assets || (i === 0 ? m.assets : []),
                 role: r.kind === "user" ? "user" : "tool",
                 text: r.text,
                 truncated: r.truncated,
@@ -90,6 +94,7 @@ export function useMessages(
         if (kind === "room") {
           const d = await api(`/api/agent-chat?room=${encodeURIComponent(id)}`);
           if (active.current !== id || !allowed()) return;
+          setLoadedId(id);
           setItems((old) =>
             [
               ...new Map(
@@ -107,6 +112,7 @@ export function useMessages(
         } else if (kind === "legacy") {
           const d = await api(`/api/messages?room=${encodeURIComponent(id)}`);
           if (active.current !== id || !allowed()) return;
+          setLoadedId(id);
           setItems(
             d.map((m: Message) => ({
               ...m,
@@ -119,12 +125,16 @@ export function useMessages(
           accept(d);
         }
       } catch (e) {
-        if (active.current === id && allowed()) setNotice(errorText(e));
+        if (active.current === id && allowed()) {
+          setLoadedId(id);
+          setNotice(errorText(e));
+        }
       }
     },
     [id, kind, accept],
   );
   useEffect(() => {
+    setLoadedId(null);
     setItems([]);
     setLiveAgent(null);
     setConnection("");
@@ -192,6 +202,7 @@ export function useMessages(
         source.close();
         stopped = true;
         clearTimeout(timer);
+        setLoadedId(id);
         setConnection("unavailable");
         setNotice(JSON.parse((event as MessageEvent).data).error);
       });
@@ -232,5 +243,13 @@ export function useMessages(
       ].sort((a, b) => (a.seq || 0) - (b.seq || 0)),
     );
   };
-  return { items, notice, before, older, reload: load, liveAgent, connection };
+  return {
+    items: loadedId === id ? items : [],
+    notice: loadedId === id ? notice : "",
+    before: loadedId === id ? before : null,
+    older,
+    reload: load,
+    liveAgent: loadedId === id ? liveAgent : null,
+    connection,
+  };
 }
