@@ -1,3 +1,5 @@
+import { Button, Modal, NativeSelect, TextInput } from "@mantine/core";
+import { MessageCircleQuestion } from "lucide-react";
 import { useState } from "react";
 import { api, errorText } from "../api";
 import type { Json, Agent } from "../types";
@@ -98,111 +100,115 @@ export default function Requests({
             (r.method === "mcpServer/elicitation/request" && p.mode === "url");
         return (
           <div className="request" key={r.id}>
-            <strong>
-              {agents.find((a) => a.id === r.agent)?.name || "Codex"}
-            </strong>
-            <p>
-              {p.reason ||
-                p.message ||
-                (question ? "The agent has a question." : "Approval required.")}
-            </p>
-            {(p.command || r.preview?.command) && (
-              <pre>{JSON.stringify(p.command || r.preview.command)}</pre>
-            )}
-            {p.cwd && <p>{p.cwd}</p>}
-            {(p.permissions || r.preview?.changes) && (
-              <pre>
-                {JSON.stringify(p.permissions || r.preview.changes, null, 2)}
-              </pre>
-            )}
-            {p.url && /^https?:\/\//.test(p.url) && (
-              <a href={p.url} target="_blank" rel="noreferrer">
-                Open request
-              </a>
-            )}
-            {question ? (
-              <button
-                data-answer={r.id}
-                onClick={() => {
-                  setAnswer(r);
-                  setValues({});
-                }}
-              >
-                Answer
-              </button>
-            ) : approval ? (
-              <>
-                <button
-                  disabled={sending}
-                  onClick={() => void post(r.id, { decision: "accept" })}
+            <MessageCircleQuestion size={18} className="request-icon" />
+            <div className="request-copy">
+              <strong>
+                {agents.find((a) => a.id === r.agent)?.name || "Codex"}
+              </strong>
+              <p>
+                {p.reason ||
+                  p.message ||
+                  (question
+                    ? "The agent has a question."
+                    : "Approval required.")}
+              </p>
+              {(p.command || r.preview?.command) && (
+                <pre>{JSON.stringify(p.command || r.preview.command)}</pre>
+              )}
+              {p.cwd && <p>{p.cwd}</p>}
+              {(p.permissions || r.preview?.changes) && (
+                <pre>
+                  {JSON.stringify(p.permissions || r.preview.changes, null, 2)}
+                </pre>
+              )}
+              {p.url && /^https?:\/\//.test(p.url) && (
+                <a href={p.url} target="_blank" rel="noreferrer">
+                  Open request
+                </a>
+              )}
+            </div>
+            <div className="request-actions">
+              {question ? (
+                <Button
+                  data-answer={r.id}
+                  onClick={() => {
+                    setAnswer(r);
+                    setValues({});
+                  }}
                 >
-                  Approve
-                </button>
-                <button
-                  disabled={sending}
-                  onClick={() => void post(r.id, { decision: "decline" })}
-                >
-                  Decline
-                </button>
-              </>
-            ) : (
-              <p>Unsupported client request: {r.method}</p>
-            )}
+                  Answer
+                </Button>
+              ) : approval ? (
+                <>
+                  <Button
+                    disabled={sending}
+                    onClick={() => void post(r.id, { decision: "accept" })}
+                  >
+                    Approve
+                  </Button>
+                  <Button
+                    disabled={sending}
+                    onClick={() => void post(r.id, { decision: "decline" })}
+                  >
+                    Decline
+                  </Button>
+                </>
+              ) : (
+                <p>Unsupported client request: {r.method}</p>
+              )}
+            </div>
           </div>
         );
       })}
-      {answer && (
-        <div className="modal-backdrop">
-          <form
-            id="answer-form"
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Reply to the agent"
-            onSubmit={submit}
-          >
-            <div className="dialog-heading">
-              <h2>Reply to the agent</h2>
-              <button type="button" onClick={() => setAnswer(null)}>
-                ×
-              </button>
-            </div>
-            <div id="answer-fields">
-              {questions.map((q: Json) => (
-                <label key={q.id}>
-                  {q.question}
-                  {q.options?.length > 0 && (
-                    <select
-                      value={values[q.id] || ""}
-                      onChange={(e) =>
-                        setValues({ ...values, [q.id]: e.target.value })
-                      }
-                    >
-                      <option value="">Choose an answer</option>
-                      {q.options.map((o: Json) => (
-                        <option key={o.label} value={o.label}>
-                          {o.label}
-                          {o.description ? " · " + o.description : ""}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  <input
-                    aria-label={q.question}
-                    type={q.isSecret ? "password" : "text"}
+      <Modal
+        opened={!!answer}
+        onClose={() => setAnswer(null)}
+        title="Reply to the agent"
+      >
+        <form id="answer-form" onSubmit={submit}>
+          <div id="answer-fields">
+            {questions.map((q: Json) => (
+              <div className="answer-field" key={q.id}>
+                <p>{q.question}</p>
+                {q.options?.length > 0 && (
+                  <NativeSelect
+                    aria-label={`${q.question} options`}
                     value={values[q.id] || ""}
                     onChange={(e) =>
                       setValues({ ...values, [q.id]: e.target.value })
                     }
-                    placeholder="Your answer"
-                  />
-                </label>
-              ))}
-            </div>
-            <button disabled={sending}>Send answer</button>
-          </form>
-        </div>
-      )}
+                  >
+                    <option value="">Choose an answer</option>
+                    {q.options.map((o: Json) => (
+                      <option key={o.label} value={o.label}>
+                        {o.label}
+                        {o.description ? " · " + o.description : ""}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                )}
+                <TextInput
+                  aria-label={q.question}
+                  type={q.isSecret ? "password" : "text"}
+                  value={values[q.id] || ""}
+                  onChange={(e) =>
+                    setValues({ ...values, [q.id]: e.target.value })
+                  }
+                  placeholder="Your answer"
+                />
+              </div>
+            ))}
+          </div>
+          <Button
+            type="submit"
+            variant="filled"
+            color="indigo"
+            disabled={sending}
+          >
+            Send answer
+          </Button>
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -1,3 +1,5 @@
+import { Button, UnstyledButton } from "@mantine/core";
+import { Scan } from "lucide-react";
 import { useRef, useState } from "react";
 import { save, saved } from "../api";
 import { statusLabel, type Agent } from "../types";
@@ -171,7 +173,7 @@ export default function Canvas({
         </svg>
         <div id="nodes">
           {agents.map((a) => (
-            <button
+            <UnstyledButton
               key={a.id}
               data-node={a.id}
               className={`node ${opened === a.id ? "selected" : ""}`}
@@ -188,13 +190,19 @@ export default function Canvas({
                   {statusLabel(a.status)}
                 </small>
               </span>
-            </button>
+            </UnstyledButton>
           ))}
         </div>
       </div>
-      <button id="fit" className="canvas-fit" onClick={fit}>
+      <Button
+        id="fit"
+        className="canvas-fit"
+        variant="default"
+        leftSection={<Scan size={16} />}
+        onClick={fit}
+      >
         Fit
-      </button>
+      </Button>
       <p className="canvas-hint">Drag to pan · Scroll to zoom</p>
     </section>
   );

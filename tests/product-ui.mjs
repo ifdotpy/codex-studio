@@ -43,7 +43,35 @@ try {
     viewport: { width: 1440, height: 960 },
   });
   const errors = [];
+  const visibleInViewport = async (locator) => {
+    await locator.waitFor({ state: "visible" });
+    await poll(async () => {
+      const r = await locator.boundingBox();
+      const v = page.viewportSize();
+      return (
+        r &&
+        r.x >= 0 &&
+        r.y >= 0 &&
+        r.x + r.width <= v.width + 1 &&
+        r.y + r.height <= v.height + 1
+      );
+    }, "control fits the viewport");
+  };
+  const shot = async (name) => {
+    await page.evaluate(async () => {
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+      await Promise.all(
+        document
+          .getAnimations()
+          .filter((a) => a.effect?.getTiming().iterations !== Infinity)
+          .map((a) => a.finished.catch(() => {})),
+      );
+    });
+    await page.screenshot({ path: join(root, name + ".png") });
+  };
   page.on("pageerror", (e) => errors.push(e.message));
+  globalThis.testPage = page;
   await page.goto(origin);
   await page.locator("[data-chat]").first().waitFor();
   assert.equal(await page.locator("[data-chat]").count(), 2);
@@ -59,6 +87,19 @@ try {
   );
   assert.ok(await page.locator("#messages .prose strong").count());
   await page.locator("#requests [data-answer]").click();
+  const answerDialog = page.getByRole("dialog", { name: "Reply to the agent" });
+  await visibleInViewport(answerDialog);
+  await shot("question");
+  await page.keyboard.press("Escape");
+  await answerDialog.waitFor({ state: "hidden" });
+  await poll(
+    () =>
+      page
+        .locator("[data-answer]")
+        .evaluate((el) => el === document.activeElement),
+    "focus returns to Answer",
+  );
+  await page.locator("[data-answer]").click();
   await page.locator("#answer-fields select").selectOption("One file");
   await page
     .locator("#answer-form")
@@ -75,6 +116,15 @@ try {
   assert.match(
     await page.locator("#usage-footer").textContent(),
     /2 compactions/,
+  );
+  await page.screenshot({ path: join(root, "ai-conversation.png") });
+  assert.equal(
+    await page
+      .locator(
+        ".ai-conversation .bubble, #chat-list .mantine-Avatar-root, #chat-list time",
+      )
+      .count(),
+    0,
   );
   await page.locator("#message").fill("Lead draft");
   await page.locator("#worker-search").fill("Worker 07");
@@ -99,6 +149,12 @@ try {
     60,
     "bounded initial room list",
   );
+  // Menus remain inside the viewport at the bottom of a long, scrolled list.
+  await page.locator(".room-row").last().scrollIntoViewIfNeeded();
+  await page.locator(".room-row").last().locator(".row-actions").click();
+  await visibleInViewport(page.getByRole("menu"));
+  await shot("sidebar-menu");
+  await page.keyboard.press("Escape");
   await page.locator("#chat-search").fill("Release lead");
   const snapshot = await (await fetch(origin + "/api/state")).json();
   const privateRoom = snapshot.runtime.rooms.find(
@@ -109,6 +165,7 @@ try {
   );
   await page.locator(`[data-room="${privateRoom.id}"]`).click();
   await page
+    .locator("#messages")
     .getByText("A private update before the final answer.", { exact: true })
     .waitFor();
   assert.equal(await page.locator("#composer").count(), 0);
@@ -120,13 +177,16 @@ try {
   );
   await page.waitForTimeout(1100);
   assert.equal(await page.locator("#earlier-messages").count(), 0);
+  await page.locator("#messages").evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
   await page.screenshot({ path: join(root, "agent-chat.png") });
   // Rename in the actual sidebar row, then verify persistence through HTTP.
   const row = page
     .locator(".sidebar-row")
     .filter({ has: page.locator(`[data-room="${privateRoom.id}"]`) });
-  await row.locator("summary").click();
-  await row.getByRole("button", { name: "Rename", exact: true }).click();
+  await row.locator(".row-actions").click();
+  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
   await row.getByRole("textbox", { name: "Chat name" }).fill("Release notes");
   await row.getByRole("textbox", { name: "Chat name" }).press("Enter");
   await poll(
@@ -152,7 +212,10 @@ try {
   await page
     .getByText("The lead has not read this complaint.", { exact: true })
     .waitFor();
-  await page.screenshot({ path: join(root, "complaint.png") });
+  await visibleInViewport(
+    page.getByRole("dialog", { name: "Complaint", exact: true }),
+  );
+  await shot("complaint");
   await page
     .getByRole("dialog", { name: "Complaint", exact: true })
     .getByRole("button", { name: "Close", exact: true })
@@ -223,21 +286,50 @@ try {
     "monitor",
   );
   await page.locator("#usage-footer").waitFor();
-  await page.locator(".limits summary").click();
+  await page.locator(".limits-toggle").click();
   await page.getByText("5h: 42% used", { exact: false }).waitFor();
-  await page.locator(".limits summary").click();
+  await visibleInViewport(page.getByRole("dialog"));
+  await shot("limits");
+  await page.locator(".limits-toggle").click();
   await page.getByText("First task", { exact: true }).waitFor();
   await page.waitForTimeout(5200);
   await page.screenshot({ path: join(root, "lead-chat.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
   await page.screenshot({ path: join(root, "mobile.png") });
+  await page.locator("#team-toggle").click();
+  await visibleInViewport(page.getByRole("dialog", { name: "Team" }));
+  await page.locator("#monitors summary").click();
+  await shot("mobile-team");
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog", { name: "Team" }).waitFor({ state: "hidden" });
+  await page.locator("#sidebar-toggle").click();
+  await page
+    .locator("#sidebar [data-chat]")
+    .filter({ hasText: "Release lead" })
+    .click();
+  await page.locator("#sidebar").waitFor({ state: "hidden" });
+  await page.locator("#messages .prose table").waitFor();
+  await page.setViewportSize({ width: 320, height: 640 });
+  await visibleInViewport(page.locator("#send"));
+  assert.equal(await page.evaluate(() => document.body.scrollWidth), 320);
+  await shot("narrow-ai-chat");
+  await page.locator("#message").fill("A long draft.\n".repeat(60));
+  await visibleInViewport(page.locator("#send"));
+  await visibleInViewport(page.locator("#message"));
+  await shot("narrow-draft");
+  await page.locator("#message").fill("Lead draft");
+  await page.locator(".limits-toggle").click();
+  await visibleInViewport(page.getByRole("dialog"));
+  await shot("narrow-limits");
+  await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 1440, height: 960 });
+  await page.locator(`[data-chat="${newLead.id}"]`).click();
   const leadRow = page
     .locator(".sidebar-row")
     .filter({ has: page.locator(`[data-chat="${newLead.id}"]`) });
-  await leadRow.locator("summary").click();
-  await leadRow.getByRole("button", { name: "Rename", exact: true }).click();
+  await leadRow.locator(".row-actions").click();
+  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
   await leadRow
     .getByRole("textbox", { name: "Chat name" })
     .fill("Renamed lead");
@@ -248,8 +340,8 @@ try {
       "Renamed lead",
     "lead rename",
   );
-  await leadRow.locator("summary").click();
-  await leadRow.getByRole("button", { name: "Delete", exact: true }).click();
+  await leadRow.locator(".row-actions").click();
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
   await page.locator("[data-delete-chat]").click();
   await poll(
     async () =>
@@ -258,11 +350,26 @@ try {
       ),
     "lead deletion",
   );
+  // Read long message content at a wide viewport, then check an empty lead.
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.locator("#messages .prose table").waitFor();
+  await shot("wide-ai-chat");
+  await page
+    .locator("[data-chat]")
+    .filter({ hasText: "Other project" })
+    .click();
+  await page.locator(".empty-chat").waitFor();
+  await shot("empty-chat");
   assert.deepEqual(errors, [], "no React errors");
   console.log(
     "React product UI: PASS (production build, sidebar rename/delete, agent chat, history, complaint book, model, monitor, limits, desktop/mobile)",
   );
   console.log("Browser evidence:", root);
+} catch (error) {
+  await globalThis.testPage?.screenshot({ path: join(root, "failure.png") });
+  console.error("Failure evidence:", root);
+  throw error;
 } finally {
   await browser?.close();
   proc.kill("SIGTERM");

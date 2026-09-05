@@ -71,7 +71,38 @@ export function useMessages(
       } else {
         const d = await api(`/api/transcript?id=${encodeURIComponent(id)}`);
         if (active.current !== id) return;
-        setItems(d.items || []);
+        setItems(
+          (d.items || []).flatMap((m: Message) =>
+            m.inputs
+              ? m.inputs.map(
+                  (
+                    r: { kind: string; text: string; truncated: boolean },
+                    i: number,
+                  ) => ({
+                    ...m,
+                    id: `${m.id}:${i}`,
+                    role: r.kind === "user" ? "user" : "tool",
+                    text: r.text,
+                    truncated: r.truncated,
+                    title:
+                      r.kind === "user"
+                        ? "You"
+                        : (
+                            {
+                              agent_message: "Agent message received",
+                              child_result: "Worker result received",
+                              monitor_exit: "Command finished",
+                              monitor_cancelled: "Command cancelled",
+                              complaint_response: "Complaint response received",
+                              followup: "Agent follow-up",
+                              complaint: "Complaint requires a response",
+                            } as Record<string, string>
+                          )[r.kind] || "Team activity",
+                  }),
+                )
+              : [m],
+          ),
+        );
         setNotice(
           d.unavailable ||
             (d.truncated

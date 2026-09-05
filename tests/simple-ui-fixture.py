@@ -28,15 +28,23 @@ for i in range(40):
         c.runtime.item(db, child['id'], child['id'] + ':reply', 'assistant', f'Worker {i:02} report <script>', 'Agent')
 with c.runtime.lock, c.runtime.db() as db:
     c.runtime.item(db, lead['id'], lead['id'] + ':user', 'user', 'Review the release. Split the work across the team and report the blockers.', 'You')
-    c.runtime.item(db, lead['id'], lead['id'] + ':reply', 'assistant', 'I assigned 40 workers to the review. Seven workers are active and 15 have finished.\n\nWorker 07 found a failed check. I will collect the remaining results before I prepare the release report.\n\n**Evidence:** all reports remain available. [unsafe](javascript:alert(1)) <img src=\"https://invalid.example/track\" onerror=\"alert(1)\">', 'Lead')
+    c.runtime.item(db, lead['id'], lead['id'] + ':reply', 'assistant', 'I assigned 40 workers to the review. Seven workers are active and 15 have finished.\n\nWorker 07 found a failed check. I will collect the remaining results before I prepare the release report.\n\n| Area | Result | Next step |\n| :--- | :--- | :--- |\n| Message delivery | Passed | Review retry evidence |\n| Context and limits | Passed | Check account reset time |\n| Mobile dialogs | Needs a fix | Worker 07 owns the change |\n\n**Evidence:** all reports remain available. [unsafe](javascript:alert(1)) <img src=\"https://invalid.example/track\" onerror=\"alert(1)\">', 'Lead')
     c.runtime.item(db, lead['id'], lead['id'] + ':tool', 'tool', 'Hidden tool fixture', 'Tool')
     c.runtime.put(db, 'requests', {'id': 'async-question', 'method': 'agent/asyncQuestion', 'agent': lead['id'], 'epoch': 0, 'status': 'pending', 'params': {'questions': [{'id': '0', 'question': 'Which scope?', 'options': [{'label': 'One file'}, {'label': 'All files'}]}]}})
 with c.runtime.lock, c.runtime.db() as db:
     chat_sender = c.runtime.agent(child['id'], db)
     chat_sender['autoWake'] = True
     c.runtime.put(db, 'agents', chat_sender)
+updates = {
+    100: "The message retry check passes. A lost HTTP response produces one stored message, even after the user changes chats.",
+    101: "Good. Check the approval dialog on mobile next. Include keyboard focus and a long command in the evidence.",
+    102: "I found a focus issue in the old dialog. The new Modal returns focus to the Answer button after it closes.\n\n```tsx\n<Modal opened={!!answer} onClose={close} title=\"Reply to the agent\">\n  <AnswerForm request={answer} />\n</Modal>\n```",
+    103: "Fixed and checked at 390px. The dialog scrolls, the buttons stay reachable, and Escape closes it.",
+    104: "Thanks. Add the screenshot and test command to your report. I will include it in the release evidence.",
+}
 for i in range(105):
-    c.runtime.chat_message(child['id'], 'parent', f'Earlier finding {i}', f'fixture-earlier-{i}')
+    from_lead = i in {101, 104}
+    c.runtime.chat_message(lead['id'] if from_lead else child['id'], child['id'] if from_lead else 'parent', updates.get(i, f'Earlier finding {i}'), f'fixture-earlier-{i}')
 c.runtime.chat_message(child['id'], 'parent', 'A private update before the final answer.', 'fixture-private')
 c.runtime.chat_message(child['id'], 'broadcast', 'Release checks are ready for review.', 'fixture-broadcast')
 # Enough actual rooms to exercise the bounded sidebar at production-like sizes.

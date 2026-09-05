@@ -1,3 +1,12 @@
+import { ActionIcon, Button, Textarea } from "@mantine/core";
+import {
+  ArrowDown,
+  ArrowUp,
+  Copy,
+  Folder,
+  Square,
+  Terminal,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
@@ -47,13 +56,6 @@ export default function Conversation(p: {
     if (follow && scroll.current)
       scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [items, follow]);
-  useEffect(() => {
-    if (input.current) {
-      input.current.style.height = "auto";
-      input.current.style.height =
-        Math.min(220, input.current.scrollHeight) + "px";
-    }
-  }, [p.draft]);
   const copy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -71,7 +73,10 @@ export default function Conversation(p: {
   const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
   const canSend = !!p.agent?.canSend || !!p.legacy || !p.id;
   return (
-    <section id="conversation" className={p.room ? "agent-conversation" : ""}>
+    <section
+      id="conversation"
+      className={p.room ? "agent-conversation" : "ai-conversation"}
+    >
       {p.agent?.error && (
         <p className="agent-error" role="alert">
           {typeof p.agent.error === "string"
@@ -89,7 +94,7 @@ export default function Conversation(p: {
       >
         {notice && <p className="notice">{notice}</p>}
         {before && (
-          <button
+          <Button
             id="earlier-messages"
             onClick={() => {
               setFollow(false);
@@ -97,10 +102,15 @@ export default function Conversation(p: {
             }}
           >
             Earlier messages
-          </button>
+          </Button>
         )}
         {!items.length && !notice && (
           <div className="empty-chat">
+            {!p.room && (
+              <span className="empty-mark">
+                <Terminal size={28} />
+              </span>
+            )}
             <h2>{p.room ? "No messages yet" : "What should we work on?"}</h2>
             <p>
               {p.room
@@ -121,7 +131,7 @@ export default function Conversation(p: {
               data-message={m.id}
               className={`message ${m.role === "user" ? "user" : "assistant"} ${p.room ? "bubble " + (m.sender !== first ? "outgoing" : "incoming") : ""}`}
             >
-              {m.senderName && (
+              {p.room && m.senderName && (
                 <span className="message-label">{m.senderName}</span>
               )}
               {m.pending && <span className="message-label">Queued</span>}
@@ -137,7 +147,7 @@ export default function Conversation(p: {
                 <p className="notice">This message is clipped.</p>
               )}
               <div className="message-bottom">
-                {m.created && (
+                {p.room && m.created && (
                   <time>
                     {new Date(m.created * 1000).toLocaleTimeString([], {
                       hour: "2-digit",
@@ -145,26 +155,32 @@ export default function Conversation(p: {
                     })}
                   </time>
                 )}
-                <button
+                <ActionIcon
+                  size="sm"
                   className="copy-message"
                   aria-label="Copy message"
                   onClick={() => void copy(m.text)}
                 >
-                  Copy
-                </button>
+                  <Copy size={14} />
+                </ActionIcon>
               </div>
             </article>
           ),
         )}
       </div>
       {!follow && (
-        <button
-          id="jump-latest"
-          className="jump"
-          onClick={() => setFollow(true)}
-        >
-          ↓ Latest
-        </button>
+        <div className="jump-slot">
+          <Button
+            id="jump-latest"
+            className="jump"
+            variant="default"
+            radius="xl"
+            leftSection={<ArrowDown size={14} />}
+            onClick={() => setFollow(true)}
+          >
+            Latest
+          </Button>
+        </div>
       )}
       <Requests
         requests={requests}
@@ -188,7 +204,11 @@ export default function Conversation(p: {
               void p.send();
             }}
           >
-            <textarea
+            <Textarea
+              variant="unstyled"
+              autosize
+              minRows={2}
+              maxRows={8}
               id="message"
               ref={input}
               aria-label="Message"
@@ -214,20 +234,22 @@ export default function Conversation(p: {
               }}
             />
             <div className="composer-bar">
-              <button
+              <Button
                 type="button"
                 id="project"
+                size="compact-sm"
+                leftSection={<Folder size={15} />}
                 onClick={p.project}
                 disabled={!p.agent?.cwd}
               >
                 {p.agent?.cwd?.split("/").filter(Boolean).at(-1) || "Project"}
-              </button>
+              </Button>
               <span id="send-state">{p.sending ? "Sending…" : ""}</span>
               {p.agent &&
                 ["running", "starting", "approval"].includes(
                   p.agent.status,
                 ) && (
-                  <button
+                  <ActionIcon
                     type="button"
                     id="stop"
                     aria-label="Stop agent"
@@ -237,17 +259,21 @@ export default function Conversation(p: {
                         .catch((e) => p.notify(errorText(e)))
                     }
                   >
-                    ■
-                  </button>
+                    <Square size={14} fill="currentColor" />
+                  </ActionIcon>
                 )}
-              <button
+              <ActionIcon
+                type="submit"
+                variant="filled"
+                color="gray"
+                radius="xl"
                 id="send"
                 className="send"
                 disabled={!canSend || p.sending || !p.draft.trim()}
                 aria-label="Send message"
               >
-                ↑
-              </button>
+                <ArrowUp size={19} />
+              </ActionIcon>
             </div>
           </form>
           {p.agent?.source === "managed" && (

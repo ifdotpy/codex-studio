@@ -339,10 +339,17 @@ class Runtime:
                     r["status"] = "expired"
                     self.put(db, "requests", r)
 
-    def item(self, db, agent, key, role, text, title=None):
+    def item(self, db, agent, key, role, text, title=None, inputs=None):
         key = agent + ":" + key
         record = {"id": key, "role": role, "title": title or role.title(),
                   "text": text[:20000], "truncated": len(text) > 20000, "at": time.time()}
+        if inputs is not None:
+            record["inputs"] = []
+            remaining = 20000
+            for r in inputs:
+                excerpt = r["text"][:remaining]
+                record["inputs"].append({"kind": r["kind"], "text": excerpt, "truncated": len(excerpt) < len(r["text"])})
+                remaining -= len(excerpt)
         db.execute("INSERT INTO runtime_items VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (key, agent, json.dumps(record), time.time()))
 
@@ -630,7 +637,7 @@ class Runtime:
                 if required:
                     text += "\n\n[Required complaint review] Read the complaint book and record a response " \
                             "for each unanswered complaint before finishing. Pending ids: " + ", ".join(c["id"] for c in required)
-                self.item(db, a["id"], rows[0]["id"], "user", text)
+                self.item(db, a["id"], rows[0]["id"], "user", text, inputs=rows)
             params = {"threadId": a["threadId"], "clientUserMessageId": rows[0]["id"],
                       "input": [{"type": "text", "text": text}]}
             if a.get("effort"):

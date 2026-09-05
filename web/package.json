@@ -12,7 +12,10 @@
     "format:check": "prettier --check src index.html vite.config.ts tsconfig.json ../tests/product-ui.mjs"
   },
   "dependencies": {
+    "@mantine/core": "9.6.0",
+    "@mantine/hooks": "9.6.0",
     "dompurify": "3.4.14",
+    "lucide-react": "1.41.0",
     "marked": "18.0.11",
     "react": "19.2.8",
     "react-dom": "19.2.8"

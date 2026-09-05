@@ -1,4 +1,26 @@
 import {
+  ActionIcon,
+  Button,
+  Drawer,
+  Menu,
+  Modal,
+  NativeSelect,
+  TextInput,
+  UnstyledButton,
+} from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
+import {
+  ArrowLeft,
+  Folder,
+  Maximize2,
+  MessageSquare,
+  MoreHorizontal,
+  PanelLeft,
+  Search,
+  Users,
+  X,
+} from "lucide-react";
+import {
   useCallback,
   useEffect,
   useRef,
@@ -13,6 +35,7 @@ import Conversation from "./components/Conversation";
 import Canvas from "./components/Canvas";
 import ComplaintBook from "./components/ComplaintBook";
 export default function App() {
+  const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const { data, error, refresh } = useSnapshot(),
     [opened, setOpened] = useState<string | null>(null),
     [view, setView] = useState("chat"),
@@ -202,8 +225,9 @@ export default function App() {
               ? "Remove this agent chat from your list. A new agent message makes it appear again."
               : "Stop this agent and its workers, and remove their conversations. Files and stored history remain on disk."}
           </p>
-          <button
-            className="danger"
+          <Button
+            color="red"
+            variant="filled"
             data-delete-chat={id}
             onClick={() =>
               void run(async () => {
@@ -223,7 +247,7 @@ export default function App() {
             }
           >
             Delete chat
-          </button>
+          </Button>
         </>
       ),
     });
@@ -237,7 +261,7 @@ export default function App() {
         body: (
           <>
             <p className="notice">{d.path}</p>
-            <button
+            <Button
               onClick={() =>
                 void run(async () => {
                   await api("/api/conversation", { id: opened, cwd: d.path });
@@ -246,16 +270,16 @@ export default function App() {
               }
             >
               Use this folder
-            </button>
+            </Button>
             {d.parent && (
-              <button onClick={() => void folders(d.parent)}>
-                ↑ Parent folder
-              </button>
+              <Button onClick={() => void folders(d.parent)}>
+                Parent folder
+              </Button>
             )}
             {d.directories.map((r: Json) => (
-              <button key={r.path} onClick={() => void folders(r.path)}>
-                ▸ {r.name}
-              </button>
+              <Button key={r.path} onClick={() => void folders(r.path)}>
+                <Folder size={15} /> {r.name}
+              </Button>
             ))}
           </>
         ),
@@ -282,7 +306,7 @@ export default function App() {
             {d.data.map((t: Json) => {
               const id = crypto.randomUUID();
               return (
-                <button
+                <Button
                   key={t.id}
                   onClick={() =>
                     void run(async () => {
@@ -300,13 +324,13 @@ export default function App() {
                 >
                   {t.name || t.preview || "Untitled"}
                   <small>{t.cwd}</small>
-                </button>
+                </Button>
               );
             })}
             {d.nextCursor && (
-              <button onClick={() => void importChat(d.nextCursor)}>
+              <Button onClick={() => void importChat(d.nextCursor)}>
                 More conversations
-              </button>
+              </Button>
             )}
           </>
         ),
@@ -323,7 +347,7 @@ export default function App() {
           {agents
             .filter((a) => !a.isLead)
             .map((a) => (
-              <button
+              <Button
                 key={a.id}
                 onClick={() => {
                   setModal(null);
@@ -332,10 +356,10 @@ export default function App() {
               >
                 {a.name}
                 <small>{statusLabel(a.status)}</small>
-              </button>
+              </Button>
             ))}
           {data?.chats.map((c) => (
-            <button
+            <Button
               key={c.id}
               onClick={() => {
                 setModal(null);
@@ -344,7 +368,7 @@ export default function App() {
             >
               {c.name}
               <small>Shared chat</small>
-            </button>
+            </Button>
           ))}
         </>
       ),
@@ -360,7 +384,7 @@ export default function App() {
         ? "Complaint book"
         : agent?.name || room?.name || legacy?.name || "New conversation";
   const worker = (a: Agent) => (
-    <button
+    <UnstyledButton
       className={`worker ${opened === a.id ? "selected" : ""}`}
       data-worker={a.id}
       key={a.id}
@@ -371,12 +395,82 @@ export default function App() {
         <strong>{a.name}</strong>
         <small>{statusLabel(a.status)}</small>
       </span>
-    </button>
+    </UnstyledButton>
   );
   const shown = workers.filter((a) =>
     `${a.name} ${a.status} ${a.role}`
       .toLowerCase()
       .includes(workerQuery.toLowerCase()),
+  );
+  const teamPanel = (
+    <aside id="team" aria-label="Team">
+      <div className="team-heading">
+        <h2>Team</h2>
+        <ActionIcon
+          aria-label="Close team"
+          id="team-close"
+          onClick={() => setTeamOpen(false)}
+        >
+          <X size={16} />
+        </ActionIcon>
+        <span>
+          {workers.filter((a) => busy.has(a.status)).length} active /{" "}
+          {workers.length}
+        </span>
+      </div>
+      <Button id="lead-row" onClick={() => lead && open(lead.id)}>
+        {lead?.name || "Lead"}
+      </Button>
+      {workers.length >= 8 && (
+        <TextInput
+          leftSection={<Search size={14} />}
+          id="worker-search"
+          type="search"
+          aria-label="Find a worker"
+          placeholder="Find a worker"
+          value={workerQuery}
+          onChange={(e) => setWorkerQuery(e.target.value)}
+        />
+      )}
+      <div id="workers">
+        {shown.filter((a) => a.status !== "completed").map(worker)}
+        {shown.some((a) => a.status === "completed") && (
+          <details className="worker-group">
+            <summary>
+              Completed · {shown.filter((a) => a.status === "completed").length}
+            </summary>
+            {shown.filter((a) => a.status === "completed").map(worker)}
+          </details>
+        )}
+      </div>
+      <div id="monitors">
+        {monitors
+          .slice(-15)
+          .reverse()
+          .map((m) => (
+            <details key={m.id}>
+              <summary>
+                {m.command.slice(0, 50)} · {m.status}
+              </summary>
+              <pre>
+                {m.command}
+                {"\n\n"}
+                {m.tail || m.error || "No output yet"}
+                {"\n\n"}Exit: {m.exitCode ?? "pending"}
+              </pre>
+              {["running", "starting", "approval"].includes(m.status) && (
+                <Button
+                  onClick={() =>
+                    void run(() => api("/api/monitor/cancel", { id: m.id }))
+                  }
+                >
+                  Cancel command
+                </Button>
+              )}
+            </details>
+          ))}
+      </div>
+    </aside>
   );
   return (
     <>
@@ -397,21 +491,27 @@ export default function App() {
         importChat={() => void importChat()}
         other={other}
         mobile={sidebar}
+        close={() => setSidebar(false)}
       />
-      <main>
-        <header>
-          <button
+      <main className="workspace">
+        <header className="workspace-header">
+          <ActionIcon
             id="sidebar-toggle"
             aria-label="Toggle conversations"
             onClick={() => setSidebar(!sidebar)}
           >
-            ☰
-          </button>
+            <PanelLeft size={18} />
+          </ActionIcon>
           <div className="conversation-heading">
             {view === "chat" && lead && agent?.id !== lead.id && (
-              <button id="back-lead" onClick={() => open(lead.id)}>
-                ← Lead
-              </button>
+              <Button
+                size="compact-xs"
+                leftSection={<ArrowLeft size={13} />}
+                id="back-lead"
+                onClick={() => open(lead.id)}
+              >
+                Lead
+              </Button>
             )}
             <h1 id="conversation-title">{title}</h1>
             <span id="conversation-status">
@@ -427,7 +527,7 @@ export default function App() {
             </span>
           </div>
           {view === "chat" && agent?.isLead && (
-            <select
+            <NativeSelect
               id="model"
               aria-label="Lead model"
               value={agent.model}
@@ -443,30 +543,48 @@ export default function App() {
             >
               <option value="gpt-6-astra">Astra</option>
               <option value="gpt-5.6-sol">Sol</option>
-            </select>
+            </NativeSelect>
           )}
-          <button
+          <Button
             id="view-toggle"
+            leftSection={
+              view === "canvas" ? (
+                <MessageSquare size={15} />
+              ) : (
+                <Maximize2 size={15} />
+              )
+            }
             aria-pressed={view === "canvas"}
             onClick={() => setView(view === "canvas" ? "chat" : "canvas")}
           >
             {view === "canvas" ? "Chat" : "Canvas"}
-          </button>
-          {view === "chat" && !!workers.length && (
-            <button id="team-toggle" onClick={() => setTeamOpen(!teamOpen)}>
+          </Button>
+          {view === "chat" && (!!workers.length || !!monitors.length) && (
+            <Button
+              leftSection={<Users size={16} />}
+              id="team-toggle"
+              onClick={() => setTeamOpen(!teamOpen)}
+            >
               Team
-            </button>
+            </Button>
           )}
           {view === "chat" && agent?.source === "managed" && (
-            <details id="conversation-menu">
-              <summary aria-label="Conversation actions">•••</summary>
-              <div className="menu">
+            <Menu position="bottom-end" withinPortal width={200} shadow="lg">
+              <Menu.Target>
+                <ActionIcon
+                  id="conversation-menu"
+                  aria-label="Conversation actions"
+                >
+                  <MoreHorizontal size={18} />
+                </ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown>
                 {["monitor", "compact", "review", "stop-team"].map((action) => (
-                  <button
+                  <Menu.Item
                     key={action}
                     data-action={action}
-                    onClick={(e) => {
-                      e.currentTarget.closest("details")!.open = false;
+                    color={action === "stop-team" ? "red" : undefined}
+                    onClick={() => {
                       if (action === "monitor") setDraft("/monitor ");
                       else
                         void run(() =>
@@ -489,10 +607,10 @@ export default function App() {
                         "stop-team": "Stop team",
                       }[action]
                     }
-                  </button>
+                  </Menu.Item>
                 ))}
-              </div>
-            </details>
+              </Menu.Dropdown>
+            </Menu>
           )}
         </header>
         {error && (
@@ -535,91 +653,31 @@ export default function App() {
           />
         )}
       </main>
-      {view === "chat" && (!!workers.length || !!monitors.length) && (
-        <aside id="team" className={teamOpen ? "visible" : ""}>
-          <div className="team-heading">
-            <h2>Team</h2>
-            <button id="team-close" onClick={() => setTeamOpen(false)}>
-              ×
-            </button>
-            <span>
-              {workers.filter((a) => busy.has(a.status)).length} active /{" "}
-              {workers.length}
-            </span>
-          </div>
-          <button id="lead-row" onClick={() => lead && open(lead.id)}>
-            {lead?.name || "Lead"}
-          </button>
-          {workers.length >= 8 && (
-            <input
-              id="worker-search"
-              type="search"
-              aria-label="Find a worker"
-              placeholder="Find a worker"
-              value={workerQuery}
-              onChange={(e) => setWorkerQuery(e.target.value)}
-            />
-          )}
-          <div id="workers">
-            {shown.filter((a) => a.status !== "completed").map(worker)}
-            {shown.some((a) => a.status === "completed") && (
-              <details className="worker-group">
-                <summary>
-                  Completed ·{" "}
-                  {shown.filter((a) => a.status === "completed").length}
-                </summary>
-                {shown.filter((a) => a.status === "completed").map(worker)}
-              </details>
-            )}
-          </div>
-          <div id="monitors">
-            {monitors
-              .slice(-15)
-              .reverse()
-              .map((m) => (
-                <details key={m.id}>
-                  <summary>
-                    ⌘ {m.command.slice(0, 50)} · {m.status}
-                  </summary>
-                  <pre>
-                    {m.command}
-                    {"\n\n"}
-                    {m.tail || m.error || "No output yet"}
-                    {"\n\n"}Exit: {m.exitCode ?? "pending"}
-                  </pre>
-                  {["running", "starting", "approval"].includes(m.status) && (
-                    <button
-                      onClick={() =>
-                        void run(() => api("/api/monitor/cancel", { id: m.id }))
-                      }
-                    >
-                      Cancel command
-                    </button>
-                  )}
-                </details>
-              ))}
-          </div>
-        </aside>
-      )}
-      {modal && (
-        <div className="modal-backdrop" onClick={() => setModal(null)}>
-          <section
-            className="modal picker"
-            role="dialog"
-            aria-modal="true"
-            aria-label={modal.title}
-            onClick={(e) => e.stopPropagation()}
+      {view === "chat" &&
+        (!!workers.length || !!monitors.length) &&
+        (narrowTeam ? (
+          <Drawer
+            opened={teamOpen}
+            onClose={() => setTeamOpen(false)}
+            position="right"
+            size={300}
+            padding={0}
+            withCloseButton={false}
+            title="Team"
+            classNames={{ header: "sr-only" }}
           >
-            <div className="dialog-heading">
-              <h2>{modal.title}</h2>
-              <button aria-label="Close" onClick={() => setModal(null)}>
-                ×
-              </button>
-            </div>
-            {modal.body}
-          </section>
-        </div>
-      )}
+            {teamPanel}
+          </Drawer>
+        ) : (
+          teamPanel
+        ))}
+      <Modal
+        opened={!!modal}
+        onClose={() => setModal(null)}
+        title={modal?.title}
+      >
+        <div className="picker">{modal?.body}</div>
+      </Modal>
       {toast && (
         <div id="toast" role="status">
           {toast}

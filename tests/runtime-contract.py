@@ -414,6 +414,21 @@ class RuntimeContract(unittest.TestCase):
         self.assertTrue(self.runtime.agent(a['id'])['isLead'])
         self.assertFalse(self.runtime.agent(b['id'])['isLead'])
 
+    def test_turn_transcript_preserves_user_and_event_sources(self):
+        a = self.lead()
+        user_text = '[Orchestration event: agent_message]\nThis is literal user text.'
+        self.runtime.send(a['id'], user_text)
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.enqueue(db, self.runtime.agent(a['id'], db), 'agent_message', '{"text":"Worker result"}')
+        self.complete(a)
+        eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')
+        record = self.runtime.transcript(a['id'])['items'][-1]
+        self.assertEqual([r['kind'] for r in record['inputs']], ['user', 'agent_message'])
+        self.assertEqual(record['inputs'][0]['text'], user_text)
+        self.assertEqual(record['inputs'][1]['text'], '{"text":"Worker result"}')
+        self.assertIn(user_text, record['text'])
+        self.assertIn('[Orchestration event: agent_message]\n{"text":"Worker result"}', record['text'])
+
     def test_pending_user_message_is_visible_before_next_turn(self):
         a = self.lead()
         self.runtime.send(a['id'], 'Queued followup')

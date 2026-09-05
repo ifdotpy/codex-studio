@@ -1,3 +1,12 @@
+import {
+  Badge,
+  Button,
+  Modal,
+  NativeSelect,
+  Textarea,
+  UnstyledButton,
+} from "@mantine/core";
+import { BookOpen, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import { complaintLabel, type Snapshot, type Json } from "../types";
@@ -61,30 +70,33 @@ export default function ComplaintBook({
           Problems, decisions, and actions. Every complaint requires a lead
           response.
         </p>
-        <button
+        <Button
           id="new-complaint"
+          variant="light"
+          color="indigo"
+          leftSection={<Plus size={16} />}
           onClick={() => setCreate(true)}
           disabled={!leads.length}
         >
           New complaint
-        </button>
+        </Button>
       </div>
-      <label className="book-filter">
-        Show{" "}
-        <select
+      <div className="book-filter">
+        <NativeSelect
+          aria-label="Show complaints"
           id="complaint-filter"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         >
           <option value="pending">Needs a response</option>
           <option value="all">All complaints</option>
-        </select>
-      </label>
+        </NativeSelect>
+      </div>
       <div id="complaint-list">
         {records
           .filter((c) => filter === "all" || c.needsResponse)
           .map((c) => (
-            <button
+            <UnstyledButton
               className="complaint-card"
               key={c.id}
               data-complaint={c.id}
@@ -94,7 +106,12 @@ export default function ComplaintBook({
               }}
             >
               <span className="complaint-meta">
-                <strong>{complaintLabel(c.status)}</strong>
+                <Badge
+                  variant="light"
+                  color={c.needsResponse ? "orange" : "gray"}
+                >
+                  {complaintLabel(c.status)}
+                </Badge>
                 <span>
                   {c.authorName} → {c.leadName}
                 </span>
@@ -109,114 +126,94 @@ export default function ComplaintBook({
                     ? " · Lead stopped"
                     : ""}
               </small>
-            </button>
+            </UnstyledButton>
           ))}
       </div>
-      {detailId && (
-        <div className="modal-backdrop" onClick={() => setDetailId(null)}>
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-label="Complaint"
-            className="modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="dialog-heading">
-              <h2>Complaint</h2>
-              <button aria-label="Close" onClick={() => setDetailId(null)}>
-                ×
-              </button>
-            </div>
-            {detail ? (
-              <>
-                <p className="notice">
-                  {records.find((c) => c.id === detail.id)?.authorName} →{" "}
-                  {records.find((c) => c.id === detail.id)?.leadName} ·{" "}
-                  {complaintLabel(detail.status)}
-                </p>
-                <p className="complaint-text">{detail.text}</p>
-                <p className="notice">
-                  {detail.readAt
-                    ? "Read by lead: " +
-                      new Date(detail.readAt * 1000).toLocaleString()
-                    : "The lead has not read this complaint."}
-                </p>
-                {detail.responses.map((r: Json) => (
-                  <article className="complaint-response" key={r.id}>
-                    <strong>{complaintLabel(r.status)}</strong>
-                    <small>{new Date(r.at * 1000).toLocaleString()}</small>
-                    <p className="complaint-text">{r.text}</p>
-                  </article>
-                ))}
-                {!detail.responses.length && (
-                  <p>A response from the lead is required.</p>
-                )}
-              </>
-            ) : (
-              <p>Loading…</p>
-            )}
-          </section>
+      {!records.some((c) => filter === "all" || c.needsResponse) && (
+        <div className="book-empty">
+          <BookOpen size={26} />
+          <h2>
+            No complaints {filter === "pending" ? "need a response" : "yet"}
+          </h2>
+          <p>Problems reported by you or your agents appear here.</p>
         </div>
       )}
-      {create && (
-        <div className="modal-backdrop">
-          <form
-            id="complaint-form"
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="New complaint"
-            onSubmit={submit}
-          >
-            <div className="dialog-heading">
-              <h2>New complaint</h2>
-              <button
-                type="button"
-                aria-label="Close"
-                onClick={() => setCreate(false)}
-              >
-                ×
-              </button>
-            </div>
-            <label>
-              Responsible lead
-              <select
-                id="complaint-lead"
-                value={selected || leads[0]?.id}
-                onChange={(e) => setSelected(e.target.value)}
-              >
-                {leads.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              What went wrong?
-              <textarea
-                id="complaint-text"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                maxLength={12000}
-                rows={6}
-                required
-              />
-            </label>
+      <Modal
+        opened={!!detailId}
+        onClose={() => setDetailId(null)}
+        title="Complaint"
+      >
+        {detail ? (
+          <>
             <p className="notice">
-              The lead must read and respond. A stopped lead waits until you
-              resume it.
+              {records.find((c) => c.id === detail.id)?.authorName} →{" "}
+              {records.find((c) => c.id === detail.id)?.leadName} ·{" "}
+              {complaintLabel(detail.status)}
             </p>
-            <button
-              id="submit-complaint"
-              className="primary"
-              disabled={sending}
-            >
-              Submit complaint
-            </button>
-          </form>
-        </div>
-      )}
+            <p className="complaint-text">{detail.text}</p>
+            <p className="notice">
+              {detail.readAt
+                ? "Read by lead: " +
+                  new Date(detail.readAt * 1000).toLocaleString()
+                : "The lead has not read this complaint."}
+            </p>
+            {detail.responses.map((r: Json) => (
+              <article className="complaint-response" key={r.id}>
+                <strong>{complaintLabel(r.status)}</strong>
+                <small>{new Date(r.at * 1000).toLocaleString()}</small>
+                <p className="complaint-text">{r.text}</p>
+              </article>
+            ))}
+            {!detail.responses.length && (
+              <p>A response from the lead is required.</p>
+            )}
+          </>
+        ) : (
+          <p>Loading…</p>
+        )}
+      </Modal>
+      <Modal
+        opened={create}
+        onClose={() => setCreate(false)}
+        title="New complaint"
+      >
+        <form id="complaint-form" onSubmit={submit}>
+          <NativeSelect
+            label="Responsible lead"
+            id="complaint-lead"
+            value={selected || leads[0]?.id}
+            onChange={(e) => setSelected(e.target.value)}
+          >
+            {leads.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </NativeSelect>
+          <Textarea
+            label="What went wrong?"
+            id="complaint-text"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            maxLength={12000}
+            rows={6}
+            required
+          />
+          <p className="notice">
+            The lead must read and respond. A stopped lead waits until you
+            resume it.
+          </p>
+          <Button
+            id="submit-complaint"
+            variant="filled"
+            color="indigo"
+            type="submit"
+            disabled={sending}
+          >
+            Submit complaint
+          </Button>
+        </form>
+      </Modal>
     </section>
   );
 }
