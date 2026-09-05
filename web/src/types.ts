@@ -42,6 +42,28 @@ export interface Complaint extends Json {
   leadStopped: boolean;
   leadDeleted: boolean;
 }
+export interface BackgroundTask {
+  id: string;
+  agent: string;
+  kind: "monitor" | "command" | "tool";
+  status: string;
+  created: number;
+  finished?: number;
+  name?: string;
+  command?: string;
+  query?: string;
+  cwd?: string;
+  processId?: string;
+  durationMs?: number;
+  timeout_ms?: number;
+  exitCode?: number | null;
+  arguments?: string;
+  tail?: string;
+  error?: string;
+  bytes?: number;
+  log?: string;
+  outputTruncated?: boolean;
+}
 export interface Snapshot {
   token: string;
   stateDir: string;
@@ -52,6 +74,8 @@ export interface Snapshot {
     rooms: Room[];
     complaints: Complaint[];
     monitors: Json[];
+    tasks?: BackgroundTask[];
+    tasksHistoryLimit?: number;
     requests: Json[];
     rateLimits?: Json;
   };

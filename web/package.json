@@ -7,9 +7,9 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "npm run build && node ../tests/product-ui.mjs && node ../tests/live-chat-ui.mjs",
-    "format": "prettier --write src index.html vite.config.ts tsconfig.json ../tests/product-ui.mjs ../tests/live-chat-ui.mjs",
-    "format:check": "prettier --check src index.html vite.config.ts tsconfig.json ../tests/product-ui.mjs ../tests/live-chat-ui.mjs"
+    "test": "npm run build && node ../tests/product-ui.mjs && node ../tests/live-chat-ui.mjs && node ../tests/background-ui.mjs",
+    "format": "prettier --write src index.html vite.config.ts tsconfig.json ../tests/product-ui.mjs ../tests/live-chat-ui.mjs ../tests/background-ui.mjs",
+    "format:check": "prettier --check src index.html vite.config.ts tsconfig.json ../tests/product-ui.mjs ../tests/live-chat-ui.mjs ../tests/background-ui.mjs"
   },
   "dependencies": {
     "@mantine/core": "9.6.0",

@@ -287,11 +287,17 @@ try {
   );
   await page.locator("#message").fill("/monitor fixture-command");
   await page.locator("#send").click();
-  await poll(
-    async () =>
-      (await page.locator("#monitors").textContent()).includes("Exit: 7"),
-    "monitor",
-  );
+  await page.locator("#tasks-toggle").click();
+  await page.getByText("History", { exact: true }).click();
+  await page
+    .locator("[data-task]")
+    .filter({ hasText: "fixture-command" })
+    .click();
+  await page.getByText("Exit 7", { exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("dialog", { name: /Background tasks/ })
+    .waitFor({ state: "hidden" });
   await page.locator("#usage-footer").waitFor();
   await page.locator(".limits-toggle").click();
   await page.getByText("5h: 42% used", { exact: false }).waitFor();
@@ -304,12 +310,19 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
   await page.screenshot({ path: join(root, "mobile.png") });
-  await page.locator("#team-toggle").click();
-  await visibleInViewport(page.getByRole("dialog", { name: "Team" }));
-  await page.locator("#monitors summary").click();
-  await shot("mobile-team");
+  await page.locator("#tasks-toggle").click();
+  await page
+    .locator("[data-task]")
+    .filter({ hasText: "fixture-command" })
+    .click();
+  await visibleInViewport(
+    page.getByRole("dialog", { name: /Background tasks/ }),
+  );
+  await shot("mobile-tasks");
   await page.keyboard.press("Escape");
-  await page.getByRole("dialog", { name: "Team" }).waitFor({ state: "hidden" });
+  await page
+    .getByRole("dialog", { name: /Background tasks/ })
+    .waitFor({ state: "hidden" });
   await page.locator("#sidebar-toggle").click();
   await page
     .locator("#sidebar [data-chat]")

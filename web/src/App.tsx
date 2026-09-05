@@ -10,6 +10,7 @@ import {
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
+  Activity,
   ArrowLeft,
   Folder,
   Maximize2,
@@ -34,6 +35,10 @@ import Sidebar from "./components/Sidebar";
 import Conversation from "./components/Conversation";
 import Canvas from "./components/Canvas";
 import ComplaintBook from "./components/ComplaintBook";
+import BackgroundTasks, {
+  activeTask,
+  backgroundTasks,
+} from "./components/BackgroundTasks";
 export default function App() {
   const [livePhase, setLivePhase] = useState<{
     id: string | null;
@@ -52,6 +57,7 @@ export default function App() {
     [view, setView] = useState("chat"),
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
+    [tasksOpen, setTasksOpen] = useState(false),
     [workerQuery, setWorkerQuery] = useState(""),
     [creating, setCreating] = useState(false),
     [sending, setSending] = useState(false),
@@ -80,11 +86,8 @@ export default function App() {
     legacy = data?.chats.find((c) => c.id === opened),
     lead = agents.find((a) => a.id === (agent?.rootId || room?.rootId)),
     team = agents.filter((a) => a.rootId === lead?.id),
-    workers = team.filter((a) => !a.isLead),
-    monitors =
-      data?.runtime.monitors.filter((m) =>
-        team.some((a) => a.id === m.agent),
-      ) || [];
+    workers = team.filter((a) => !a.isLead);
+  const taskCount = backgroundTasks(data).filter(activeTask).length;
   const setDraft = (text: string, id = opened || "new") =>
     setDrafts((old) => {
       const next = { ...old, [id]: text };
@@ -454,33 +457,6 @@ export default function App() {
           </details>
         )}
       </div>
-      <div id="monitors">
-        {monitors
-          .slice(-15)
-          .reverse()
-          .map((m) => (
-            <details key={m.id}>
-              <summary>
-                {m.command.slice(0, 50)} · {m.status}
-              </summary>
-              <pre>
-                {m.command}
-                {"\n\n"}
-                {m.tail || m.error || "No output yet"}
-                {"\n\n"}Exit: {m.exitCode ?? "pending"}
-              </pre>
-              {["running", "starting", "approval"].includes(m.status) && (
-                <Button
-                  onClick={() =>
-                    void run(() => api("/api/monitor/cancel", { id: m.id }))
-                  }
-                >
-                  Cancel command
-                </Button>
-              )}
-            </details>
-          ))}
-      </div>
     </aside>
   );
   return (
@@ -572,7 +548,16 @@ export default function App() {
           >
             {view === "canvas" ? "Chat" : "Canvas"}
           </Button>
-          {view === "chat" && (!!workers.length || !!monitors.length) && (
+          <Button
+            id="tasks-toggle"
+            aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
+            leftSection={<Activity size={16} />}
+            onClick={() => setTasksOpen(true)}
+          >
+            Tasks{" "}
+            {taskCount > 0 && <span className="tasks-count">{taskCount}</span>}
+          </Button>
+          {view === "chat" && !!workers.length && (
             <Button
               leftSection={<Users size={16} />}
               id="team-toggle"
@@ -668,7 +653,7 @@ export default function App() {
         )}
       </main>
       {view === "chat" &&
-        (!!workers.length || !!monitors.length) &&
+        !!workers.length &&
         (narrowTeam ? (
           <Drawer
             opened={teamOpen}
@@ -685,6 +670,15 @@ export default function App() {
         ) : (
           teamPanel
         ))}
+      <BackgroundTasks
+        opened={tasksOpen}
+        close={() => setTasksOpen(false)}
+        data={data}
+        leadId={lead?.id}
+        openAgent={open}
+        refresh={refresh}
+        notify={notify}
+      />
       <Modal
         opened={!!modal}
         onClose={() => setModal(null)}

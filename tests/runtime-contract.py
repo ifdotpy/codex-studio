@@ -573,7 +573,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertFalse(any(method == 'command/exec' for method,p in self.runtime.server.calls))
         r = self.runtime.snapshot()['requests'][0]
         self.runtime.stop(lead['id'])
-        with self.assertRaisesRegex(ValueError, 'stopped'):
+        with self.assertRaisesRegex(ValueError, 'no longer pending'):
             self.runtime.answer(r['id'], {'decision': 'accept'})
 
     def test_completion_before_rpc_response_stays_terminal(self):
@@ -707,6 +707,79 @@ class RuntimeContract(unittest.TestCase):
         time.sleep(.15)
         self.assertEqual(sum(m == 'turn/start' for m,p in self.runtime.server.calls), 1)
         self.assertEqual(self.runtime.snapshot()['events'][0]['status'], 'uncertain')
+
+    def test_background_command_outlives_turn_and_late_exit_does_not_change_new_turn(self):
+        a = self.lead()
+        def event(method, **params):
+            self.runtime.notification({'method': method, 'params': {'threadId': a['threadId'], 'turnId': a['turnId'], **params}})
+        command = {'id': 'background-command', 'type': 'commandExecution', 'command': 'run build', 'processId': '42'}
+        event('item/started', item=command)
+        key = a['id'] + ':background-command'
+        self.complete(a)
+        self.assertEqual(self.runtime.task_detail(key)['status'], 'running')
+        self.assertEqual(next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)['toolStatus'], 'running')
+        self.runtime.notification({'method': 'turn/started', 'params': {'threadId': a['threadId'], 'turn': {'id': 'new-turn'}}})
+        event('item/commandExecution/outputDelta', itemId=command['id'], delta='x' * 14000)
+        self.assertEqual(len(self.runtime.task_detail(key)['tail']), 12000)
+        self.assertTrue(self.runtime.task_detail(key)['outputTruncated'])
+        event('item/completed', item={**command, 'exitCode': 7, 'durationMs': 2500, 'aggregatedOutput': 'failed check'})
+        finished = self.runtime.task_detail(key)
+        self.assertEqual(finished['status'], 'failed')
+        self.assertEqual(finished['exitCode'], 7)
+        self.assertEqual(self.runtime.agent(a['id'])['turnId'], 'new-turn')
+        self.assertEqual(self.runtime.agent(a['id'])['activity']['phase'], 'thinking')
+        item = next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)
+        self.assertEqual(item['toolStatus'], 'failed')
+        self.assertEqual(json.loads(item['text'])['exitCode'], 7)
+        event('item/started', item=command)
+        event('item/completed', item={**command, 'exitCode': 0})
+        self.assertEqual(self.runtime.task_detail(key), finished)
+        event('item/started', item={**command, 'id': 'unknown-old-command'})
+        self.assertEqual(len(self.runtime.snapshot()['tasks']), 1)
+        self.assertNotIn('tail', self.runtime.snapshot()['tasks'][0])
+
+    def test_task_history_is_bounded_but_active_tasks_are_not_hidden(self):
+        a = self.lead()
+        def event(method, item):
+            self.runtime.notification({'method': method, 'params': {'threadId': a['threadId'], 'turnId': a['turnId'], 'item': item}})
+        for i in range(105):
+            event('item/completed', {'id': f'tool-{i}', 'type': 'mcpToolCall', 'tool': 'test', 'status': 'completed'})
+        for i in range(110):
+            event('item/started', {'id': f'active-{i}', 'type': 'commandExecution', 'command': 'wait', 'processId': str(i)})
+        tasks = self.runtime.snapshot()['tasks']
+        self.assertEqual(sum(t['status'] == 'running' for t in tasks), 110)
+        self.assertEqual(sum(t['status'] == 'completed' for t in tasks), 100)
+        self.assertEqual(self.runtime.task_detail(a['id'] + ':tool-0')['status'], 'completed')
+        with self.runtime.lock, self.runtime.db() as db:
+            a['deletedAt'] = time.time()
+            self.runtime.put(db, 'agents', a)
+        self.assertEqual(self.runtime.snapshot()['tasks'], [])
+        with self.assertRaisesRegex(ValueError, 'deleted'):
+            self.runtime.task_detail(a['id'] + ':tool-0')
+
+    def test_tool_outcome_is_unknown_after_disconnect_and_restart(self):
+        a = self.lead()
+        self.runtime.notification({'method': 'item/started', 'params': {'threadId': a['threadId'], 'turnId': a['turnId'],
+            'item': {'id': 'tool', 'type': 'mcpToolCall', 'tool': 'watch'}}})
+        self.runtime.disconnected()
+        self.assertEqual(self.runtime.snapshot()['tasks'][0]['status'], 'lost')
+        with self.runtime.lock, self.runtime.db() as db:
+            task = self.runtime.task_detail(a['id'] + ':tool')
+            task.update(status='running')
+            self.runtime.put(db, 'tasks', task)
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertEqual(self.runtime.snapshot()['tasks'][0]['status'], 'lost')
+
+    def test_cancel_pending_monitor_expires_approval_and_stops_clock(self):
+        a = self.lead()
+        monitor = self.runtime.monitor(a['id'], {'command': 'pending approval'})
+        self.assertEqual(len(self.runtime.snapshot()['requests']), 1)
+        self.runtime.cancel_monitor(monitor['id'])
+        self.assertEqual(self.runtime.snapshot()['requests'], [])
+        record = self.runtime.snapshot()['monitors'][0]
+        self.assertEqual(record['status'], 'cancelled')
+        self.assertGreaterEqual(record['finished'], record['created'])
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

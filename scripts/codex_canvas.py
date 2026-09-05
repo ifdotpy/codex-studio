@@ -497,6 +497,8 @@ def make_server(canvas, port=0):
                         "directories": [{"name": p.name, "path": str(p)} for p in folders[:500]]})
                 if path.path == "/api/limits" and canvas.runtime:
                     return self.send(canvas.runtime.limits())
+                if path.path == "/api/task" and canvas.runtime:
+                    return self.send(canvas.runtime.task_detail(parse_qs(path.query).get("id", [""])[0]))
                 if path.path == "/api/complaint" and canvas.runtime:
                     return self.send(canvas.runtime.complaint_detail(parse_qs(path.query).get("id", [""])[0]))
                 if path.path == "/api/agent-chat" and canvas.runtime:

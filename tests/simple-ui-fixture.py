@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 import sys
+import os
+import threading
 
 sys.dont_write_bytecode = True
 skill = Path(__file__).resolve().parents[1]
@@ -14,7 +16,29 @@ spec = importlib.util.spec_from_file_location('fixture', skill / 'tests/runtime-
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 c = Canvas(Path(sys.argv[1]))
-c.runtime = Runtime(c.root, m.FakeServer)
+class BackgroundServer(m.FakeServer):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.commands = {}
+
+    def call(self, method, params, timeout=60):
+        if method == 'command/exec' and 'watch-fixture' in ' '.join(params['command']):
+            gate = self.commands.setdefault(params['processId'], threading.Event())
+            self.notify({'method': 'command/exec/outputDelta', 'params': {'processId': params['processId'],
+                'deltaBase64': m.base64.b64encode(b'Watching the build. Waiting for changes.\n').decode(), 'stream': 'stdout'}})
+            gate.wait(120)
+            return {'exitCode': 0}
+        if method == 'command/exec/terminate' and params['processId'] in self.commands:
+            self.commands[params['processId']].set()
+            return {}
+        return super().call(method, params, timeout)
+
+    def close(self):
+        for gate in self.commands.values():
+            gate.set()
+        super().close()
+
+c.runtime = Runtime(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else m.FakeServer)
 with c.runtime.lock, c.runtime.db() as db:
     lead = c.runtime.create({'name': 'Release lead', 'cwd': str(c.root), 'prompt': 'Review the release'}, defer=True)
     lead.update(autoWake=True, status='waiting')
@@ -64,6 +88,8 @@ with c.runtime.lock, c.runtime.db() as db:
 other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt': 'Separate task'}, defer=True)
 c.runtime.create({'name': 'Standalone reviewer', 'cwd': str(c.root), 'prompt': 'Review', 'role': 'reviewer', 'model': 'gpt-5.6-luna'}, defer=True)
 c.runtime.connect().gate.set()
+if os.environ.get('BACKGROUND_UI_FIXTURE'):
+    c.runtime.monitor(lead['id'], {'command': 'watch-fixture --deploy production'}, approved=False)
 server = make_server(c, port=int(sys.argv[2]) if len(sys.argv) > 2 else 0)
 # Test-only notification input drives the real runtime and HTTP stream.
 import json

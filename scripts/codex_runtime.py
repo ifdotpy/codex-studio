@@ -248,6 +248,8 @@ class Runtime:
                 CREATE TABLE IF NOT EXISTS runtime_items (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_item_agent ON runtime_items(agent, created);
+                CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
                 CREATE TABLE IF NOT EXISTS runtime_monitors (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
@@ -274,6 +276,10 @@ class Runtime:
                 a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
                 self.put(db, "agents", a)
+            for task in self.records(db, "tasks"):
+                if task["status"] == "running":
+                    task.update(status="lost", finished=time.time(), error="Server restarted. Tool outcome unknown.")
+                    self.put(db, "tasks", task)
             for m in self.records(db, "monitors"):
                 if m["status"] in {"running", "approval", "starting"}:
                     m.update(status="lost", error="Server restarted. Command outcome unknown; not rerun.")
@@ -349,6 +355,10 @@ class Runtime:
                     a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
                     a["inFlight"] = False
                     self.put(db, "agents", a)
+            for task in self.records(db, "tasks"):
+                if task["status"] == "running":
+                    task.update(status="lost", finished=time.time(), error="Codex disconnected. Tool outcome unknown.")
+                    self.put(db, "tasks", task)
             db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching'")
             for r in self.records(db, "requests"):
                 if r["status"] == "pending":
@@ -701,6 +711,64 @@ class Runtime:
                 "branch": a.get("branch"), "result": text[:16000]}, ensure_ascii=False),
                 "child:" + a["id"] + ":" + event_id)
 
+    def record_task(self, db, a, method, p, stale):
+        """Keep process lifetimes separate from model turns, including late exits."""
+        item = p.get("item") or {}
+        item_id = item.get("id") or p.get("itemId")
+        if not item_id:
+            return
+        key = a["id"] + ":" + item_id
+        row = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (key,)).fetchone()
+        task = json.loads(row[0]) if row else None
+        # Only a known command may report after its original model turn ends.
+        if stale and not (task and task["kind"] == "command" and task.get("turnId") == p.get("turnId")):
+            return
+        if method in {"item/started", "item/completed"}:
+            kind = item.get("type")
+            if kind not in {"commandExecution", "dynamicToolCall", "mcpToolCall", "webSearch", "fileChange", "contextCompaction"}:
+                return
+            if task and task["status"] != "running":
+                return
+            task = task or {"id": key, "agent": a["id"], "itemId": item_id,
+                            "turnId": p.get("turnId") or a.get("turnId"), "created": time.time(),
+                            "kind": "command" if kind == "commandExecution" else "tool"}
+            task.update(type=kind, name=item.get("tool") or kind, status="running")
+            for field in ("command", "cwd", "processId", "durationMs", "exitCode", "query", "server"):
+                if item.get(field) is not None:
+                    task[field] = item[field]
+            for field in ("arguments", "error"):
+                if item.get(field) is not None:
+                    value = item[field]
+                    task[field] = (value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))[:12000]
+            output = item.get("aggregatedOutput")
+            if output is None:
+                content = item.get("contentItems", item.get("result"))
+                if content is not None:
+                    output = json.dumps(content, ensure_ascii=False)
+            if output is not None:
+                task["tail"] = output[-12000:]
+                task["outputTruncated"] = len(output) > 12000
+            if method == "item/completed":
+                task.update(status="failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed", finished=time.time())
+        elif method == "item/commandExecution/outputDelta" and task:
+            output = task.get("tail", "") + p.get("delta", "")
+            task.update(tail=output[-12000:], outputTruncated=task.get("outputTruncated", False) or len(output) > 12000)
+        else:
+            return
+        self.put(db, "tasks", task)
+        if stale:
+            row = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
+            if row:
+                record = json.loads(row[0])
+                try:
+                    recorded = json.loads(record["text"])
+                except ValueError:
+                    recorded = {"id": item_id, "type": "commandExecution", "command": task.get("command")}
+                recorded.update(aggregatedOutput=task.get("tail", ""), exitCode=task.get("exitCode"), durationMs=task.get("durationMs"))
+                self.item(db, a["id"], item_id, "output", json.dumps(recorded), "commandExecution",
+                          toolStatus=task["status"], turnId=task.get("turnId"))
+        self.touch_ui(a["id"])
+
     def notification(self, message):
         method, p = message.get("method"), message.get("params", {})
         if method == "account/rateLimits/updated":
@@ -719,7 +787,11 @@ class Runtime:
             a = next((a for a in self.records(db, "agents") if a.get("threadId") == tid and tid), None)
             if not a:
                 return
-            if method.startswith("item/") and p.get("turnId") and p["turnId"] != a.get("turnId"):
+            if a.get("deletedAt"):
+                return
+            stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
+            self.record_task(db, a, method, p, stale)
+            if method.startswith("item/") and stale:
                 return
             a["events"] += 1
             a["lastEvent"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -809,6 +881,11 @@ class Runtime:
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
                     return
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
+                for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status')='running'", (a["id"],)).fetchall():
+                    task = json.loads(row[0])
+                    if task.get("turnId") == a.get("turnId") and not (task["kind"] == "command" and task.get("processId")):
+                        task.update(status="interrupted", finished=time.time())
+                        self.put(db, "tasks", task)
                 a["turnId"] = None
                 a["activity"] = None
                 a["activeTools"] = []
@@ -1329,13 +1406,21 @@ class Runtime:
             running = m["status"] == "running"
             if m["status"] not in {"running", "starting", "approval"}:
                 return {"id": key, "status": m["status"]}
-            m["status"] = "cancelled"
+            m.update(status="cancelled", finished=time.time())
             self.put(db, "monitors", m)
+            for request in self.records(db, "requests"):
+                if request["status"] == "pending" and request["method"] == "monitor/approve" and request.get("params", {}).get("monitorId") == key:
+                    request["status"] = "expired"
+                    self.put(db, "requests", request)
         if running and self.server:
             try:
                 self.server.call("command/exec/terminate", {"processId": key})
             except Exception as error:
-                return {"id": key, "status": "cancelled", "error": str(error)}
+                with self.lock, self.db() as db:
+                    current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
+                    current["error"] = "Cancel requested. Process termination was not confirmed: " + str(error)
+                    self.put(db, "monitors", current)
+                return {"id": key, "status": "cancelled", "error": current["error"]}
         return {"id": key, "status": "cancelled"}
 
     def interrupt(self, a):
@@ -1404,6 +1489,8 @@ class Runtime:
                 if m["status"] != "approval" or not a["autoWake"] or m["epoch"] != a["epoch"]:
                     raise ValueError("Command watch was stopped")
                 m["status"] = "starting" if data.get("decision") == "accept" else "cancelled"
+                if m["status"] == "cancelled":
+                    m["finished"] = time.time()
                 self.put(db, "monitors", m)
                 r["status"] = "answered"
                 self.put(db, "requests", r)
@@ -1442,6 +1529,16 @@ class Runtime:
                     self.put(db, "agents", a)
             return {"status": "answered"}
 
+    def task_detail(self, key):
+        with self.lock, self.db() as db:
+            row = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (key,)).fetchone()
+            if not row:
+                raise ValueError("Unknown task")
+            task = json.loads(row[0])
+            if self.agent(task["agent"], db).get("deletedAt"):
+                raise ValueError("This conversation was deleted")
+            return task
+
     def snapshot(self):
         with self.lock, self.db() as db:
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
@@ -1452,7 +1549,13 @@ class Runtime:
                 a.update(kind="agent", source="managed", canSend=True, launcherAlive=not self.closed,
                          wave="Team: " + next((r["name"] for r in agents if r["id"] == a["rootId"]), "Team"))
             events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
-            return {"agents": agents, "monitors": [m for m in self.records(db, "monitors") if m["agent"] in {a["id"] for a in agents}],
+            task_rows = db.execute("""SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
+                AND json_extract(t.record,'$.status')='running'
+                UNION ALL SELECT record FROM (SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
+                AND json_extract(t.record,'$.status')!='running' ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)""").fetchall()
+            return {"agents": agents, "tasks": [{k: v for k, v in json.loads(r[0]).items() if k not in {"tail", "arguments", "error"}} for r in task_rows], "tasksHistoryLimit": 100, "monitors": [m for m in self.records(db, "monitors") if m["agent"] in {a["id"] for a in agents}],
                     "requests": [r for r in self.records(db, "requests") if r["status"] == "pending" and r.get("agent") in {a["id"] for a in agents}],
                     "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
                     "complaints": self.complaint_summaries(db),
@@ -1483,7 +1586,8 @@ class Runtime:
                 if item.get("streaming") and (not live or item.get("turnId") != a.get("turnId")):
                     item["streaming"] = False
                 if item.get("toolStatus") == "running" and (not live or item.get("turnId") != a.get("turnId")):
-                    item["toolStatus"] = "interrupted"
+                    task = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (item["id"],)).fetchone()
+                    item["toolStatus"] = json.loads(task[0])["status"] if task else "interrupted"
             return {"items": items, "truncated": len(rows) > 120, "unavailable": None,
                     "agent": {k: a.get(k) for k in ("id", "status", "activity", "inFlight", "contextUsage", "compactions", "compactionsObservedOnly")}}
 
