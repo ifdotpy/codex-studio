@@ -20,7 +20,7 @@ Invalid diagrams show an error and their source.
 Verification: isolated runtime and HTTP tests, native tool schema check, browser
 render and isolation tests, and desktop/narrow-screen inspection.
 
-Status: implemented and verified in the task worktree. Local deployment follows.
+Status: implemented, verified, integrated into local main, and deployed at http://127.0.0.1:4620.
 
 ## Verified behavior
 
@@ -54,3 +54,16 @@ Latest browser evidence:
 - `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-rich-preview-ui-FDUJ73`
 - `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-user-tasks-ui-3B5Jha`
 
+
+## Local deployment
+
+Implementation commit: `054a3a6`. The live server serves the production build from
+local main. A headless browser opened Your tasks and the existing workspace
+sections at desktop and 390 px. Served JavaScript bytes match the build on disk.
+No page errors occurred. Both existing agents and their statuses remained intact.
+The new user-task endpoint returns the stored records. No production task or
+model turn was created for verification.
+
+Deployment evidence: `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-user-tasks-deployed-Nqq4Ms`.
+Database backup: `~/.local/state/codex-agents/backups/canvas-before-user-tasks-20260906-012412.sqlite3`.
+Process id at verification: `98904`.
