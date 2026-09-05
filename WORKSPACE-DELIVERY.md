@@ -24,7 +24,7 @@ Inspect desktop and narrow-screen renders. Retain existing runtime and browser r
 Verify native protocol operations separately where fixtures cannot prove compatibility.
 Deploy only after checks pass and existing user work is idle.
 
-Status: implemented and verified. Local deployment verification follows integration.
+Status: implemented, integrated into local main, and deployed at http://127.0.0.1:4620.
 
 ## Implementation and evidence
 
@@ -69,3 +69,15 @@ backend and native protocol checks provide execution evidence.
 - Desktop alerts require explicit browser permission. System notification delivery
   is unmeasured and depends on browser and operating-system settings.
 - No remote Git push or external package publication is part of this delivery.
+
+## Local deployment
+
+Implementation commit: `e1a74fd`.
+The server uses the production bundle from local main. A read-only headless browser
+opened the workspace sections at desktop and 390 px, verified served script bytes
+against the local bundle, and reported no page errors. Both existing agent ids and
+statuses remained unchanged. No production model turn or monitor was started.
+
+Deployment evidence: `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-workspace-deployed-TkKq6z`.
+Database backup: `~/.local/state/codex-agents/backups/canvas-before-workspace-20260906-010707.sqlite3`.
+Process id at verification: `19718`.
