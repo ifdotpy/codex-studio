@@ -277,6 +277,8 @@ async function testLauncher() {
     env: environment({
       CODEX_BIN: fakeCodex,
       CODEX_WAVE: "smoke",
+      CODEX_ORCHESTRATOR_ID: "fixture-orchestrator",
+      CODEX_ORCHESTRATOR_NAME: "Fixture lead",
       CODEX_INBOX_POLL_MS: "50",
       CODEX_INBOX_RETRIES: "2",
       CODEX_INBOX_BACKOFF_MS: "50",
@@ -343,6 +345,8 @@ async function testLauncher() {
         : null;
     });
     const byName = Object.fromEntries(status.map((item) => [item.name, item]));
+    assert.ok(status.every(row => row.orchestratorId === "fixture-orchestrator"));
+    assert.ok(status.every(row => row.orchestratorName === "Fixture lead"));
     assert.equal(byName["worker-limited"].goalStatus, "budgetLimited");
     assert.match(byName["worker-limited"].error, /goal budgetLimited/);
     assert.equal(byName["worker-reviewer"].role, "reviewer");

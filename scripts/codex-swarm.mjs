@@ -34,6 +34,8 @@ const INBOX_RETRY_MAX = Number(process.env.CODEX_INBOX_RETRIES || 5);
 const INBOX_BACKOFF_MS = Number(process.env.CODEX_INBOX_BACKOFF_MS || 5_000);
 const WAVE = process.env.CODEX_WAVE || "main";
 const RUN_ID = randomUUID();
+const ORCHESTRATOR_ID = process.env.CODEX_ORCHESTRATOR_ID || process.env.CODEX_THREAD_ID || null;
+const ORCHESTRATOR_NAME = process.env.CODEX_ORCHESTRATOR_NAME || "Orchestrator";
 const APPROVAL_POLICY = process.env.CODEX_APPROVAL_POLICY || null;
 const IMPLEMENTER_SANDBOX = process.env.CODEX_SANDBOX || null;
 const ROLES = new Set(["implementer", "reviewer"]);
@@ -132,6 +134,11 @@ function readTasks() {
     if (names.has(task.name)) throw new Error(`Duplicate task name: ${task.name}`);
     names.add(task.name);
     task.role = task.role || "implementer";
+    const parent = task.orchestratorId ?? ORCHESTRATOR_ID;
+    if (parent !== null && (typeof parent !== 'string' || !/^[A-Za-z0-9._:/-]{1,200}$/.test(parent))) {
+      throw new Error(`Task ${task.name} has an invalid orchestrator identity`);
+    }
+    task.orchestratorId = parent;
     if (!ROLES.has(task.role)) {
       throw new Error(`Task ${task.name} role must be implementer or reviewer`);
     }
@@ -687,6 +694,8 @@ for (const task of tasks) {
     launcherPid: process.pid,
     name: task.name,
     role: task.role,
+    orchestratorId: task.orchestratorId,
+    orchestratorName: ORCHESTRATOR_NAME,
     boardOwner,
     threadId,
     turnId: null,

@@ -42,7 +42,7 @@ class CanvasContract(unittest.TestCase):
     def group(self):
         key = str(uuid.uuid4())
         ids = [t["id"] for t in self.canvas.threads()]
-        self.canvas.create_group("Runtime team", ids, key)
+        self.canvas.create_chat("Runtime team", ids, key)
         return key, ids
 
     def test_snapshot_uses_process_liveness(self):
@@ -50,7 +50,95 @@ class CanvasContract(unittest.TestCase):
         dead = next(t for t in self.canvas.snapshot()["threads"] if t["name"] == "dead")
         self.assertEqual(dead["status"], "abandoned")
         self.assertFalse(dead["canSend"])
-        self.assertEqual(len(self.canvas.snapshot()["groups"]), 3)
+        self.assertEqual(len(self.canvas.snapshot()["chats"]), 0)
+
+    def test_chat_is_a_node_and_connections_define_membership(self):
+        chat = str(uuid.uuid4())
+        self.canvas.create_chat('Independent chat', [], chat)
+        first, second = [t['id'] for t in self.canvas.threads()]
+        self.canvas.connect_chat(first, chat)
+        self.canvas.connect_chat(first, chat)
+        other = str(uuid.uuid4())
+        self.canvas.create_chat('Other chat', [first, second], other)
+        snapshot = self.canvas.snapshot()
+        self.assertEqual(len([n for n in snapshot['nodes'] if n['kind'] == 'chat']), 2)
+        self.assertEqual(len([e for e in snapshot['edges'] if e['source'] == first]), 2)
+        self.canvas.post(chat, 'history', str(uuid.uuid4()), author=first, notify=False)
+        self.canvas.connect_chat(first, chat, False)
+        self.assertEqual(next(c for c in self.canvas.chats() if c['id'] == chat)['members'], [])
+        self.assertEqual(self.canvas.messages(chat)[0]['text'], 'history')
+        with self.assertRaisesRegex(ValueError, 'not a member'):
+            self.canvas.post(chat, 'not connected', str(uuid.uuid4()), author=first, notify=False)
+        with self.assertRaisesRegex(ValueError, 'target must be a chat'):
+            self.canvas.connect_chat(first, second)
+        restarted = Canvas()
+        self.assertEqual(next(c for c in restarted.chats() if c['id'] == chat)['members'], [])
+
+    def test_registered_native_parent_and_app_server_parent_edges(self):
+        self.canvas.register_agent('native-root', 'Lead', thread_id='root-thread', status='running')
+        self.canvas.register_agent('native-child', 'Research', parent='native-root', status='completed')
+        self.canvas.register_agent('native-child', 'Research', parent='native-root', status='completed')
+        with self.assertRaisesRegex(ValueError, 'different parent'):
+            self.canvas.register_agent('native-child', 'Research', parent=None)
+        with self.assertRaisesRegex(ValueError, 'Register the parent'):
+            self.canvas.register_agent('bad-child', 'Bad', parent='missing')
+        rows = self.canvas.threads()
+        self.write('three', [{'name':'third', 'threadId':'third-thread', 'runId':'third-run',
+                             'turnStatus':'running','launcherPid':os.getpid(), 'orchestratorId':'native-root'}])
+        graph = self.canvas.snapshot()
+        children = [e for e in graph['edges'] if e['source'] == 'native-root' and e['kind'] == 'spawn']
+        self.assertEqual(len(children), 2)
+        self.assertEqual(len([t for t in graph['threads'] if t['id'] == 'native-root']), 1)
+        native = next(t for t in graph['threads'] if t['id'] == 'native-child')
+        self.assertFalse(native['canSend'])
+        self.assertEqual(native['status'], 'completed')
+        self.assertIn('reportedAt', native)
+        self.canvas.register_agent('/root', 'Host root')
+        self.canvas.register_agent('/root/reviewer', 'Host reviewer', parent='/root')
+        self.assertTrue(any(e['source']=='/root' and e['target']=='/root/reviewer' for e in self.canvas.edges()))
+
+    def test_explicit_orchestrator_reference_has_unknown_status(self):
+        self.write('creator', [{'name':'child','threadId':'child-thread','runId':'child-run',
+                               'turnStatus':'running','launcherPid':os.getpid(),
+                               'orchestratorId':'actual-parent','orchestratorName':'Build lead'}])
+        parent = next(t for t in self.canvas.threads() if t['id'] == 'actual-parent')
+        self.assertEqual(parent['role'], 'orchestrator')
+        self.assertEqual(parent['status'], 'unknown')
+        self.assertFalse(parent['canSend'])
+
+    def test_chat_migration_preserves_history_without_readding_removed_edges(self):
+        chat = str(uuid.uuid4())
+        member = self.canvas.threads()[0]['id']
+        with self.canvas.connect() as db:
+            db.execute("DELETE FROM canvas_migrations WHERE name='chat-edges-v1'")
+            db.execute('INSERT INTO groups VALUES (?,?,?)', (chat,'Old team',json.dumps([member])))
+            db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?)', (str(uuid.uuid4()),chat,'user','Keep this',1,'{}'))
+        migrated = Canvas()
+        self.assertEqual(migrated.chats()[0]['members'], [member])
+        migrated.connect_chat(member, chat, False)
+        again = Canvas()
+        self.assertEqual(again.chats()[0]['members'], [])
+        self.assertEqual(again.messages(chat)[0]['text'], 'Keep this')
+
+    def test_cli_creates_chat_and_connects_native_agent(self):
+        result = subprocess.run([str(SCRIPTS/'codex-graph'), 'agent', '--id','host-root','--name','Lead'], capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        created = subprocess.run([str(SCRIPTS/'codex-chat'),'create','Planning'],capture_output=True,text=True)
+        self.assertEqual(created.returncode,0,created.stderr)
+        chat = json.loads(created.stdout)['id']
+        connected = subprocess.run([str(SCRIPTS/'codex-chat'),'connect',chat,'--agent','host-root'],capture_output=True,text=True)
+        self.assertEqual(connected.returncode,0,connected.stderr)
+        posted = subprocess.run([str(SCRIPTS/'codex-chat'),'post',chat,'Native report','--agent','host-root'],capture_output=True,text=True)
+        self.assertEqual(posted.returncode,0,posted.stderr)
+        self.assertEqual(self.canvas.messages(chat)[0]['author'],'host-root')
+
+    def test_chat_reads_do_not_write_state(self):
+        chat, _ = self.group()
+        before = {p.name:p.stat().st_mtime_ns for p in self.root.iterdir()}
+        for command, args in [('codex-chat',['list']),('codex-chat',['read',chat]),('codex-graph',['list'])]:
+            result = subprocess.run([str(SCRIPTS/command),*args],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(before, {p.name:p.stat().st_mtime_ns for p in self.root.iterdir()})
 
     def test_group_and_messages_survive_restart(self):
         room, ids = self.group()
@@ -59,7 +147,7 @@ class CanvasContract(unittest.TestCase):
         self.assertEqual(message["deliveries"], {})
         restarted = Canvas()
         self.assertEqual(restarted.messages(room)[0]["text"], "peer report")
-        self.assertTrue(any(g["id"] == room for g in restarted.groups(restarted.threads())))
+        self.assertTrue(any(g["id"] == room for g in restarted.chats()))
         self.assertEqual(restarted.post(room, "peer report", key, author=ids[0], notify=False)["id"], key)
         with self.assertRaisesRegex(ValueError, "different content"):
             restarted.post(room, "changed", key, author=ids[0], notify=False)
@@ -170,14 +258,14 @@ class CanvasContract(unittest.TestCase):
             token = json.loads(data)["token"]
             self.assertEqual(request("/", headers={"Host": "evil.example"})[0], 403)
             self.assertEqual(request("/api/state", headers={"Origin": "https://evil.example"})[0], 403)
-            self.assertEqual(request("/api/groups", {})[0], 403)
+            self.assertEqual(request("/api/chats", {})[0], 403)
             body = {"id": str(uuid.uuid4()), "name": "team", "members": [t["id"] for t in self.canvas.threads()]}
             headers = {"Origin": base, "X-Canvas-Token": token}
-            self.assertEqual(request("/api/groups", body, headers)[0], 200)
-            self.assertEqual(request("/api/groups", body, headers)[0], 200)
+            self.assertEqual(request("/api/chats", body, headers)[0], 200)
+            self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/../../scripts/codex_canvas.py")[0], 404)
             self.assertEqual(request("/app.js")[0], 200)
-            self.assertEqual(request("/api/groups", [], headers)[0], 400)
+            self.assertEqual(request("/api/chats", [], headers)[0], 400)
         finally:
             server.shutdown()
             server.server_close()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read or post to a canvas group chat, without starting a model."""
+"""Create chat nodes, edit membership connections, and read or post messages."""
 import argparse
 import json
 import os
@@ -9,24 +9,30 @@ sys.dont_write_bytecode = True
 from codex_canvas import Canvas
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("action", choices=["list", "read", "post"])
-parser.add_argument("group", nargs="?")
+parser.add_argument("action", choices=["list", "create", "connect", "disconnect", "read", "post"])
+parser.add_argument("chat", nargs="?")
 parser.add_argument("text", nargs="?")
 parser.add_argument("--owner", default=os.environ.get("CODEX_BOARD_OWNER"))
+parser.add_argument("--agent", help="Exact board agent identity for a connection or native author")
+parser.add_argument("--id", help="Stable request identity for creation or message retries")
 args = parser.parse_args()
 try:
-    canvas = Canvas()
+    canvas = Canvas(read_only=args.action in ('read', 'list'))
     if args.action == "list":
-        result = canvas.groups(canvas.threads())
-    elif args.action == "read" and args.group:
-        result = canvas.messages(args.group)
-    elif args.action == "post" and args.group and args.text and args.owner:
-        rows = [t for t in canvas.threads() if t.get("boardOwner") == args.owner]
+        result = canvas.chats()
+    elif args.action == "create" and args.chat:
+        result = canvas.create_chat(args.chat, [], args.id or str(uuid.uuid4()))
+    elif args.action in ('connect', 'disconnect') and args.chat and args.agent:
+        result = canvas.connect_chat(args.agent, args.chat, args.action == 'connect')
+    elif args.action == "read" and args.chat:
+        result = canvas.messages(args.chat)
+    elif args.action == "post" and args.chat and args.text and (args.owner or args.agent):
+        rows = [t for t in canvas.threads() if (t['id'] == args.agent if args.agent else t.get("boardOwner") == args.owner)]
         if len(rows) != 1:
             raise ValueError("The owner must identify one current worker.")
-        result = canvas.post(args.group, args.text, str(uuid.uuid4()), author=rows[0]["id"], notify=False)
+        result = canvas.post(args.chat, args.text, args.id or str(uuid.uuid4()), author=rows[0]["id"], notify=False)
     else:
-        parser.error("read needs GROUP. post needs GROUP TEXT and --owner (or CODEX_BOARD_OWNER).")
+        parser.error("create needs NAME. connect/disconnect need CHAT --agent ID. post needs CHAT TEXT and --owner or --agent.")
     print(json.dumps(result, ensure_ascii=False, indent=2))
 except (ValueError, RuntimeError) as error:
     sys.exit(str(error))

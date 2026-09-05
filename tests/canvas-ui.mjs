@@ -19,7 +19,7 @@ sys.dont_write_bytecode=True
 sys.path.insert(0,sys.argv[1])
 from codex_canvas import Canvas,make_server
 c=Canvas()
-rows=[dict(name=n,threadId=n,runId='fixture',turnStatus='running',goalStatus='active',launcherPid=os.getpid(),boardOwner='ui:fixture:'+n,tail='Read <script> safely',tokensUsed=12345,events=99) for n in ['alpha','beta']]
+rows=[dict(name=n,threadId=n,runId='fixture',turnStatus='running',goalStatus='active',launcherPid=os.getpid(),boardOwner='ui:fixture:'+n,tail='Read <script> safely',tokensUsed=12345,events=99,orchestratorId='fixture-lead',orchestratorName='Fixture lead') for n in ['alpha','beta']]
 (c.root/'codex-swarm-status.ui.json').write_text(json.dumps(rows))
 p=Path(os.environ['CODEX_HOME'])/'sessions/2026/09/05'
 p.mkdir(parents=True)
@@ -73,6 +73,9 @@ try {
   const w = dom.window,
     document = w.document;
   const $ = (s) => document.querySelector(s);
+  const style = document.createElement("style");
+  style.textContent = await readFile(join(skill, "web/style.css"), "utf8");
+  document.head.append(style);
   const context = { clearRect() {}, fillRect() {}, strokeRect() {} };
   w.HTMLCanvasElement.prototype.getContext = () => context;
   w.HTMLElement.prototype.setPointerCapture = () => {};
@@ -86,7 +89,7 @@ try {
     this.open = false;
   };
   w.crypto.randomUUID = randomUUID;
-  const lostReplies = new Set(["/api/groups", "/api/messages"]);
+  const lostReplies = new Set(["/api/chats", "/api/messages"]);
   w.fetch = async (url, options) => {
     const response = await fetch(new URL(url, origin), options);
     if (options?.method === "POST" && lostReplies.delete(url)) {
@@ -98,14 +101,17 @@ try {
   Object.defineProperty($("#viewport"), "clientHeight", { value: 800 });
   w.eval(await readFile(join(skill, "web/app.js"), "utf8"));
   await wait(
-    () => document.querySelectorAll(".agent-card").length === 2,
+    () => document.querySelectorAll(".agent-card").length === 3,
     "agents appear",
   );
   assert.equal($("#error").hidden, true);
   assert.equal(document.querySelectorAll(".agent-card script").length, 0);
-  assert.match($(".card-tail").textContent, /<script>/);
   const alpha = document.querySelector('[aria-label^="alpha,"]');
   const beta = document.querySelector('[aria-label^="beta,"]');
+  assert.match(alpha.querySelector(".card-tail").textContent, /<script>/);
+  assert.equal(w.getComputedStyle(alpha).width, "208px");
+  assert.equal(w.getComputedStyle(alpha).height, "76px");
+  assert.equal(document.querySelectorAll(".connection.spawn").length, 2);
   const pointer = (element, type, x, y) => {
     const e = new w.Event(type, { bubbles: true });
     Object.assign(e, { clientX: x, clientY: y, pointerId: 1, button: 0 });
@@ -129,20 +135,50 @@ try {
   assert.equal($("#inspector").hidden, false);
   assert.equal(document.querySelectorAll("#detail-body script").length, 0);
   $("#close-detail").click();
-  for (const el of [alpha, beta])
-    el.dispatchEvent(
-      new w.KeyboardEvent("keydown", {
-        key: " ",
-        shiftKey: true,
-        bubbles: true,
-      }),
-    );
+  $("#clear-selection").click();
+  pointer(alpha, "pointerdown", 100, 100);
+  pointer($("#viewport"), "pointerup", 100, 100);
+  assert.equal($("#inspector").hidden, true, "a click selects without opening");
+  assert.equal($("#selection-count").textContent, "1 selected");
+  $("#clear-selection").click();
+  const z = parseInt($("#zoom").textContent) / 100;
+  const minX =
+    Math.min(parseFloat(alpha.style.left), parseFloat(beta.style.left)) * z +
+    45 -
+    5;
+  const maxX =
+    (Math.max(parseFloat(alpha.style.left), parseFloat(beta.style.left)) +
+      208) *
+      z +
+    45 +
+    5;
+  const y = parseFloat(alpha.style.top) * z + 45;
+  pointer($("#viewport"), "pointerdown", minX, y - 5);
+  pointer($("#viewport"), "pointermove", maxX, y + 76 * z + 5);
+  pointer($("#viewport"), "pointerup", maxX, y + 76 * z + 5);
   assert.equal($("#selection-count").textContent, "2 selected");
-  $("#new-group").click();
-  assert.equal($("#group-dialog").open, true);
-  $("#group-name").value = "Fixture team";
-  const groupButton = $('#group-form button[type="submit"]');
-  $("#group-form").dispatchEvent(
+  const before = [alpha, beta].map((el) => parseFloat(el.style.left));
+  const beforeEdges = [...document.querySelectorAll(".connection.spawn")].map(
+    (p) => p.getAttribute("d"),
+  );
+  pointer(alpha, "pointerdown", 100, 100);
+  pointer($("#viewport"), "pointermove", 185, 100);
+  pointer($("#viewport"), "pointerup", 185, 100);
+  assert.deepEqual(
+    [alpha, beta].map((el) => parseFloat(el.style.left)),
+    before.map((x) => x + 100),
+  );
+  assert.notDeepEqual(
+    [...document.querySelectorAll(".connection.spawn")].map((p) =>
+      p.getAttribute("d"),
+    ),
+    beforeEdges,
+  );
+  $("#new-chat").click();
+  assert.equal($("#chat-dialog").open, true);
+  $("#chat-name").value = "Fixture team";
+  const groupButton = $('#chat-form button[type="submit"]');
+  $("#chat-form").dispatchEvent(
     new w.SubmitEvent("submit", {
       bubbles: true,
       cancelable: true,
@@ -153,7 +189,7 @@ try {
     () => $("#toast").textContent === "Fixture lost response",
     "lost group response",
   );
-  $("#group-form").dispatchEvent(
+  $("#chat-form").dispatchEvent(
     new w.SubmitEvent("submit", {
       bubbles: true,
       cancelable: true,
@@ -164,6 +200,8 @@ try {
     () => $("#detail-title").textContent === "Fixture team",
     "group opens",
   );
+  assert.equal(document.querySelectorAll(".chat-node").length, 1);
+  assert.equal(document.querySelectorAll(".connection.chat").length, 2);
   $("#message").value = "Inspect the fixture";
   const send = () =>
     $("#composer").dispatchEvent(
@@ -185,7 +223,7 @@ try {
   );
   assert.match($("#detail-body").textContent, /Queued in agent mailbox/);
   const snapshot = await (await fetch(origin + "/api/state")).json();
-  const groups = snapshot.groups.filter((g) => !g.automatic);
+  const groups = snapshot.chats;
   assert.equal(
     groups.length,
     1,
@@ -219,6 +257,26 @@ try {
     () => $("#detail-body").textContent.includes("Peer reply from alpha"),
     "live peer reply",
   );
+  const alphaEdge = [...document.querySelectorAll(".connection.chat")].find(
+    (p) => p.getAttribute("aria-label").startsWith("alpha "),
+  );
+  alphaEdge.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
+  assert.equal($("#disconnect").hidden, false);
+  $("#disconnect").click();
+  await wait(
+    () => document.querySelectorAll(".connection.chat").length === 1,
+    "disconnect edge",
+  );
+  const retained = await (
+    await fetch(origin + "/api/messages?room=" + room)
+  ).json();
+  assert.equal(retained.length, 2, "disconnect preserves messages");
+  alpha.querySelector("[data-port]").click();
+  $(".chat-node [data-port]").click();
+  await wait(
+    () => document.querySelectorAll(".connection.chat").length === 2,
+    "reconnect through ports",
+  );
   $("#close-detail").click();
   $("#chats").click();
   assert.match($("#detail-body").textContent, /Fixture team/);
@@ -226,13 +284,13 @@ try {
   $("#search").value = "absent";
   $("#search").dispatchEvent(new w.Event("input"));
   assert.equal($("#empty").hidden, false);
-  assert.equal($("#empty h2").textContent, "No matching agents");
+  assert.equal($("#empty h2").textContent, "No matching nodes");
   $("#clear-filter").click();
-  assert.equal(document.querySelectorAll(".agent-card").length, 2);
+  assert.equal(document.querySelectorAll(".agent-card").length, 4);
   $("#resources").click();
   assert.match($("#detail-body").textContent, /No resource claims/);
   console.log(
-    "canvas DOM integration: PASS (drag, layout persistence, transcript, XSS text, group, mailbox, lost-response retries, live peer reply, chat list, filters, resources)",
+    "canvas DOM integration: PASS (compact nodes, selection, marquee, multi-drag, creator edges, chat nodes, connect, disconnect, history, mailbox retries, live replies, filters)",
   );
 } finally {
   dom?.window.close();

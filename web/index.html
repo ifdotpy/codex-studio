@@ -24,8 +24,8 @@
       <button
         class="rail-button"
         id="chats"
-        title="All group chats"
-        aria-label="All group chats"
+        title="All chats"
+        aria-label="All chats"
       >
         ☷
       </button>
@@ -56,8 +56,8 @@
           <h1>Swarm canvas<span class="beta">LOCAL</span></h1>
         </div>
         <div id="health" class="health">Connecting…</div>
-        <button class="primary" id="new-group">
-          + Create group <kbd>G</kbd>
+        <button class="primary" id="new-chat">
+          + Create chat <kbd>G</kbd>
         </button>
       </header>
       <section class="toolbar" aria-label="Canvas controls">
@@ -80,6 +80,9 @@
           </button>
         </div>
         <div class="toolbar-end">
+          <button id="select-mode" class="selected">Select</button
+          ><button id="pan-mode">Pan</button
+          ><button id="link-mode">Connect</button>
           <button id="arrange" title="Arrange visible agents">Arrange</button
           ><button id="fit" title="Fit visible agents (F)">
             Fit to view <kbd>F</kbd>
@@ -90,10 +93,17 @@
       <section
         id="viewport"
         tabindex="0"
-        aria-label="Agent canvas. Drag cards to move. Drag empty space to pan. Use the wheel to zoom."
+        aria-label="Agent canvas. Click to select. Drag empty space for box selection. Hold Space to pan. Double-click to open."
       >
+        <div id="marquee" hidden></div>
         <div id="world">
-          <div id="groups"></div>
+          <svg
+            id="connections"
+            role="group"
+            width="1"
+            height="1"
+            aria-label="Agent and chat connections"
+          ></svg>
           <div id="cards"></div>
         </div>
         <div id="empty" hidden>
@@ -109,9 +119,14 @@
           <span class="live-dot"></span>
           <span id="caption">READING LOCAL WAVE STATE</span>
         </div>
+        <div class="connection-legend">
+          <span><i class="spawn-sample"></i> Created agent</span
+          ><span><i></i> Shared chat</span>
+        </div>
         <div id="selection-bar" hidden>
+          <button id="disconnect" hidden>Disconnect</button>
           <span id="selection-count"></span
-          ><button id="group-selected">Create shared chat</button
+          ><button id="chat-selected">Create shared chat</button
           ><button id="clear-selection" aria-label="Clear selection">×</button>
         </div>
         <div class="canvas-controls">
@@ -134,7 +149,7 @@
         </div>
         <div>
           Drag to move <span>·</span> Shift + click to select
-          <span>·</span> Scroll to zoom
+          <span>·</span> Ctrl + scroll to zoom
         </div>
         <div id="total-tokens"></div>
       </footer>
@@ -180,24 +195,25 @@
         </div>
       </form>
     </aside>
-    <dialog id="group-dialog">
-      <form id="group-form">
+    <dialog id="chat-dialog">
+      <form id="chat-form">
         <div class="eyebrow">SHARED WORKSPACE</div>
-        <h2>Create a group</h2>
+        <h2>Create a chat</h2>
         <p>
-          Selected agents share a chat. A message from you goes to each member.
+          A chat is a separate node. Connect agents now or later. An agent can
+          join several chats.
         </p>
         <label
-          >Group name<input
-            id="group-name"
+          >Chat name<input
+            id="chat-name"
             maxlength="100"
             placeholder="For example: Runtime team"
             required
         /></label>
-        <div id="group-members"></div>
+        <div id="chat-members"></div>
         <div class="dialog-actions">
-          <button type="button" id="cancel-group">Cancel</button
-          ><button type="submit" class="primary">Create group</button>
+          <button type="button" id="cancel-chat">Cancel</button
+          ><button type="submit" class="primary">Create chat</button>
         </div>
       </form>
     </dialog>
@@ -208,14 +224,20 @@
         <dt>Move an agent</dt>
         <dd>Drag its card. Arrow keys move a focused card.</dd>
         <dt>Read the work</dt>
-        <dd>Click a card to open its live transcript.</dd>
-        <dt>Create a team</dt>
-        <dd>Shift + click two or more agents. Press G.</dd>
+        <dd>Double-click a card to open its live transcript.</dd>
+        <dt>Create a chat</dt>
+        <dd>
+          Press G to create a chat. Use Connect to add participants. Select a
+          connection to disconnect it.
+        </dd>
         <dt>Navigate</dt>
-        <dd>Drag empty space to pan. Scroll to zoom. Press F to fit.</dd>
+        <dd>
+          Drag empty space to select. Hold Space to pan. Use Ctrl + scroll to
+          zoom. Press F to fit.
+        </dd>
         <dt>Shared chat</dt>
         <dd>
-          Your group message goes to each member. Agents post replies with
+          Your chat message goes to connected agents. Agents post replies with
           codex-chat.
         </dd>
         <dt>Delivery</dt>
@@ -225,8 +247,9 @@
         </dd>
         <dt>Data source</dt>
         <dd>
-          Only app-server waves from codex-agents. Native agents in this
-          conversation are not part of this feed.
+          App-server waves record their creator identity. Host agents appear
+          when the orchestrator registers them with codex-graph. Registered
+          status is a report from the host.
         </dd>
       </dl>
       <button id="close-help" class="primary">Got it</button>

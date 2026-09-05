@@ -64,7 +64,12 @@ const stamp = (value) =>
     : "";
 const state = {
   threads: [],
-  groups: [],
+  chats: [],
+  edges: [],
+  selectedEdge: null,
+  connectFrom: null,
+  mode: "select",
+  space: false,
   board: { claims: {}, notes: [], queue: {} },
   token: "",
   filter: "all",
@@ -122,7 +127,7 @@ function save() {
   }, 200);
 }
 function loadLayout(key) {
-  state.storageKey = `codex-canvas:${key}`;
+  state.storageKey = `codex-canvas-graph:${key}`;
   try {
     const saved = JSON.parse(localStorage.getItem(state.storageKey));
     if (saved) {
@@ -144,10 +149,16 @@ function loadLayout(key) {
     /* Ignore an invalid device-local preference. */
   }
 }
+const NODE_W = 208,
+  NODE_H = 76;
+function nodes() {
+  return [...state.threads, ...state.chats];
+}
 function visible() {
-  return state.threads.filter(
+  return nodes().filter(
     (t) =>
-      (state.filter === "all" ||
+      (t.kind === "chat" ||
+        state.filter === "all" ||
         (state.filter === "active" ? active : attention).has(t.status)) &&
       [t.name, t.wave, t.branch, t.cwd, t.status, t.model].some((v) =>
         String(v || "")
@@ -156,79 +167,53 @@ function visible() {
       ),
   );
 }
-function ownerGroup(id) {
-  return (
-    state.groups.find((g) => !g.automatic && g.members.includes(id)) ||
-    state.groups.find((g) => g.automatic && g.members.includes(id))
-  );
-}
-function groupLayout() {
-  const map = new Map();
-  for (const t of visible()) {
-    const g = ownerGroup(t.id);
-    if (!g) continue;
-    if (!map.has(g.id)) map.set(g.id, { ...g, agents: [] });
-    map.get(g.id).agents.push(t);
-  }
-  return [...map.values()].sort(
-    (a, b) =>
-      Math.min(
-        ...a.agents.map((t) =>
-          active.has(t.status) ? 0 : attention.has(t.status) ? 1 : 2,
-        ),
-      ) -
-      Math.min(
-        ...b.agents.map((t) =>
-          active.has(t.status) ? 0 : attention.has(t.status) ? 1 : 2,
-        ),
-      ),
-  );
-}
 function arrange(reset = false) {
-  let x = 35,
-    y = 45,
-    rowHeight = 0;
+  const shown = visible(),
+    ids = new Set(shown.map((n) => n.id)),
+    ordered = [],
+    seen = new Set();
+  const add = (n) => {
+    if (seen.has(n.id)) return;
+    seen.add(n.id);
+    ordered.push(n);
+    for (const child of shown.filter((t) => t.parentId === n.id)) add(child);
+  };
+  const rank = (n) =>
+    n.role === "orchestrator"
+      ? 0
+      : active.has(n.status)
+        ? 1
+        : attention.has(n.status)
+          ? 2
+          : 3;
+  shown
+    .filter((n) => n.kind === "agent" && !ids.has(n.parentId))
+    .sort((a, b) => rank(a) - rank(b))
+    .forEach(add);
+  shown.forEach(add);
   const columns = Math.max(
-    1,
-    Math.floor(($("#viewport").clientWidth - 100) / 360),
+    2,
+    Math.floor(($("#viewport").clientWidth - 80) / 255),
   );
-  let col = 0;
-  for (const g of groupLayout()) {
-    const wide = g.agents.length > 2 ? 2 : 1;
-    g.agents.forEach((t, i) => {
-      if (reset || !state.positions[t.id])
-        state.positions[t.id] = {
-          x: x + 26 + (i % wide) * 315,
-          y: y + 56 + Math.floor(i / wide) * 244,
-        };
-    });
-    const height = 84 + Math.ceil(g.agents.length / wide) * 244;
-    rowHeight = Math.max(rowHeight, height);
-    col += wide;
-    x += wide * 315 + 46;
-    if (col >= columns) {
-      x = 35;
-      y += rowHeight + 30;
-      col = 0;
-      rowHeight = 0;
-    }
-  }
+  ordered.forEach((n, i) => {
+    if (reset || !state.positions[n.id])
+      state.positions[n.id] = {
+        x: 40 + (i % columns) * 255,
+        y: 40 + Math.floor(i / columns) * 108,
+      };
+  });
   save();
 }
-function bounds(threads = visible()) {
-  if (!threads.length) return { x: 0, y: 0, w: 700, h: 400 };
-  const ps = threads.map((t) => state.positions[t.id]).filter(Boolean);
+function bounds(items = visible()) {
+  const ps = items.map((t) => state.positions[t.id]).filter(Boolean);
+  if (!ps.length) return { x: 0, y: 0, w: 700, h: 400 };
+  const x = Math.min(...ps.map((p) => p.x)) - 20,
+    y = Math.min(...ps.map((p) => p.y)) - 20;
   return {
-    x: Math.min(...ps.map((p) => p.x)) - 26,
-    y: Math.min(...ps.map((p) => p.y)) - 56,
-    w:
-      Math.max(...ps.map((p) => p.x + 292)) -
-      Math.min(...ps.map((p) => p.x)) +
-      52,
-    h:
-      Math.max(...ps.map((p) => p.y + 218)) -
-      Math.min(...ps.map((p) => p.y)) +
-      85,
+    x,
+    y,
+    w: Math.max(...ps.map((p) => p.x + NODE_W)) - x + 20,
+    h: Math.max(...ps.map((p) => p.y + NODE_H)) - y + 20,
   };
 }
 function fit() {
@@ -284,7 +269,7 @@ function drawMinimap() {
         : tone(t) === "attention"
           ? "#796849"
           : "#505862";
-    ctx.fillRect(ox + p.x * z, oy + p.y * z, 292 * z, 218 * z);
+    ctx.fillRect(ox + p.x * z, oy + p.y * z, NODE_W * z, NODE_H * z);
   }
   ctx.strokeStyle = "#b4e89488";
   ctx.lineWidth = 1;
@@ -296,40 +281,68 @@ function drawMinimap() {
     ($("#viewport").clientHeight / v.z) * z,
   );
 }
-function renderGroups() {
-  const container = $("#groups");
-  container.replaceChildren();
-  for (const g of groupLayout()) {
-    const b = bounds(g.agents),
-      el = document.createElement("div");
-    el.className = `group-boundary${g.automatic ? "" : " custom"}`;
-    Object.assign(el.style, {
-      left: `${b.x}px`,
-      top: `${b.y}px`,
-      width: `${b.w}px`,
-      height: `${b.h}px`,
-    });
-    el.innerHTML = `<div class="group-heading"><span class="group-name" title="${escape(g.name)}">${g.automatic ? "◌" : "◎"} &nbsp;${escape(g.name)}</span><span class="group-size">${g.agents.length} AGENT${g.agents.length === 1 ? "" : "S"}</span><button data-chat="${g.id}">Chat ↗</button></div>`;
-    container.append(el);
+function renderEdges() {
+  const svg = $("#connections"),
+    ids = new Set(visible().map((n) => n.id));
+  svg.replaceChildren();
+  const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+  defs.innerHTML =
+    '<marker id="spawn-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#8cad84" /></marker>';
+  svg.append(defs);
+  for (const edge of state.edges) {
+    if (!ids.has(edge.source) || !ids.has(edge.target)) continue;
+    const a = state.positions[edge.source],
+      b = state.positions[edge.target];
+    if (!a || !b) continue;
+    const start = { x: a.x + NODE_W, y: a.y + NODE_H / 2 },
+      end = { x: b.x, y: b.y + NODE_H / 2 };
+    const bend = Math.max(60, Math.abs(end.x - start.x) * 0.45);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute(
+      "d",
+      `M ${start.x} ${start.y} C ${start.x + bend} ${start.y}, ${end.x - bend} ${end.y}, ${end.x} ${end.y}`,
+    );
+    path.setAttribute(
+      "class",
+      `connection ${edge.kind}${state.selectedEdge === edge.id ? " selected" : ""}`,
+    );
+    path.dataset.edge = edge.id;
+    if (edge.kind === "spawn")
+      path.setAttribute("marker-end", "url(#spawn-arrow)");
+    path.setAttribute("tabindex", "0");
+    path.setAttribute("role", "button");
+    const source = nodes().find((n) => n.id === edge.source),
+      target = nodes().find((n) => n.id === edge.target);
+    path.setAttribute(
+      "aria-label",
+      `${source?.name} ${edge.kind === "spawn" ? "created" : "participates in"} ${target?.name}`,
+    );
+    svg.append(path);
   }
 }
 function card(t) {
-  return `<div class="card-top"><div class="avatar">${escape(
-    t.name
-      .split("-")
-      .slice(0, 2)
-      .map((s) => s[0])
-      .join("")
-      .toUpperCase(),
-  )}</div><div class="card-identity"><h3 title="${escape(t.name)}">${escape(t.name)}</h3><p>${escape(t.role || "Agent")} · ${escape(t.model || t.requestedModel || "Unknown model")}</p></div><span class="drag-grip">⠿</span></div><div class="card-status"><span class="status-dot"></span>${escape(label(t))}<time>${age(t.lastEvent)}</time></div><div class="card-tail">${escape(t.error || t.tail || "No agent message yet.")}</div><div class="card-footer"><span><strong>${number(t.tokensUsed)}</strong> goal tokens</span><span><strong>${number(t.events)}</strong> events</span><span>Open ↗</span></div>`;
+  const chat = t.kind === "chat",
+    children = state.edges.some((e) => e.kind === "spawn" && e.source === t.id);
+  const role = chat
+    ? "Chat"
+    : children || t.role === "orchestrator"
+      ? "Orchestrator"
+      : t.role || "Agent";
+  const status = chat
+    ? `${t.members.length} members · ${t.messageCount} messages`
+    : label(t);
+  return `<button class="node-port" data-port="${escape(t.id)}" aria-label="Connect ${escape(t.name)}" title="Connect to a chat"></button>
+    <div class="compact-heading"><span class="node-symbol">${chat ? "▤" : children || t.role === "orchestrator" ? "◈" : "●"}</span><h3>${escape(t.name)}</h3><button class="node-open" data-open="${escape(t.id)}" aria-label="Open ${escape(t.name)}">↗</button></div>
+    <div class="compact-meta"><span>${escape(role)}</span><span>${escape(status)}</span></div>
+    <div class="card-tail">${escape(chat ? t.tail || "No messages yet" : t.error || t.tail || "No message yet")}</div>`;
 }
 function render() {
   if (state.drag) return;
   arrange();
-  const threads = visible(),
-    ids = new Set(threads.map((t) => t.id));
+  const shown = visible(),
+    ids = new Set(shown.map((t) => t.id));
   for (const el of $$("#cards > *")) if (!ids.has(el.dataset.id)) el.remove();
-  for (const t of threads) {
+  for (const t of shown) {
     let el = document.getElementById(`agent-${t.id}`);
     if (!el) {
       el = document.createElement("article");
@@ -339,9 +352,12 @@ function render() {
       el.setAttribute("role", "button");
       $("#cards").append(el);
     }
-    el.className = `agent-card${state.selected.has(t.id) ? " chosen" : ""}${state.opened?.id === t.id ? " open" : ""}`;
-    el.dataset.tone = tone(t);
-    el.setAttribute("aria-label", `${t.name}, ${label(t)}. Open details.`);
+    el.className = `agent-card${t.kind === "chat" ? " chat-node" : ""}${state.selected.has(t.id) ? " chosen" : ""}${state.opened?.id === t.id ? " open" : ""}${state.connectFrom === t.id ? " link-source" : ""}`;
+    el.dataset.tone = t.kind === "chat" ? "chat" : tone(t);
+    el.setAttribute(
+      "aria-label",
+      `${t.name}, ${t.kind === "chat" ? "Chat" : label(t)}. Select node. Double-click to open.`,
+    );
     el.setAttribute("aria-pressed", String(state.selected.has(t.id)));
     const html = card(t);
     if (el.innerHTML !== html) el.innerHTML = html;
@@ -349,16 +365,16 @@ function render() {
     el.style.left = `${p.x}px`;
     el.style.top = `${p.y}px`;
   }
-  renderGroups();
+  renderEdges();
   transform();
-  $("#empty").hidden = threads.length > 0;
-  $("#empty h2").textContent = state.threads.length
-    ? "No matching agents"
-    : "No agents here yet";
-  $("#empty p").textContent = state.threads.length
-    ? "Change the search or filter to see more agents."
-    : "Start a wave with codex-agents. Its agents appear here automatically.";
-  $("#clear-filter").hidden = !state.threads.length;
+  $("#empty").hidden = shown.length > 0;
+  $("#empty h2").textContent = nodes().length
+    ? "No matching nodes"
+    : "Start your board";
+  $("#empty p").textContent = nodes().length
+    ? "Change the search or filter."
+    : "Create a chat or start agents with codex-agents.";
+  $("#clear-filter").hidden = !nodes().length;
   $("#all-count").textContent = state.threads.length;
   $("#active-count").textContent = state.threads.filter((t) =>
     active.has(t.status),
@@ -367,14 +383,52 @@ function render() {
     attention.has(t.status),
   ).length;
   $("#health").innerHTML =
-    `<span><strong>${state.threads.filter((t) => active.has(t.status)).length}</strong> active</span><span><strong>${state.groups.filter((g) => g.automatic).length}</strong> waves</span>`;
+    `<span><strong>${state.threads.length}</strong> agents</span><span><strong>${state.chats.length}</strong> chats</span>`;
   $("#total-tokens").textContent =
     `${number(state.threads.reduce((n, t) => n + (t.tokensUsed || 0), 0))} goal tokens`;
   $("#caption").textContent =
-    `${threads.length} AGENTS · ${groupLayout().length} GROUPS`;
-  $("#selection-bar").hidden = !state.selected.size;
-  $("#selection-count").textContent = `${state.selected.size} selected`;
-  $("#group-selected").disabled = state.selected.size < 2;
+    `${shown.length} NODES · ${state.edges.length} CONNECTIONS`;
+  $("#selection-bar").hidden = !state.selected.size && !state.selectedEdge;
+  $("#selection-count").textContent = state.selectedEdge
+    ? "Connection selected"
+    : `${state.selected.size} selected`;
+  $("#chat-selected").disabled = !state.selected.size;
+  $("#disconnect").hidden = !state.edges.some(
+    (e) => e.id === state.selectedEdge && e.kind === "chat",
+  );
+  $("#link-mode").classList.toggle("selected", state.mode === "connect");
+  $("#pan-mode").classList.toggle("selected", state.mode === "pan");
+  $("#select-mode").classList.toggle("selected", state.mode === "select");
+}
+function openNode(id) {
+  const n = nodes().find((n) => n.id === id);
+  if (n) openDetail(n.kind === "chat" ? "chat" : "agent", id);
+}
+async function connectNode(id) {
+  if (!state.connectFrom) {
+    state.connectFrom = id;
+    render();
+    toast("Select an agent or a chat to complete the connection.");
+    return;
+  }
+  const a = nodes().find((n) => n.id === state.connectFrom),
+    b = nodes().find((n) => n.id === id);
+  if (!a || !b || a.kind === b.kind) {
+    state.connectFrom = null;
+    render();
+    toast("Connect one agent to one chat.");
+    return;
+  }
+  const source = a.kind === "chat" ? b.id : a.id,
+    target = a.kind === "chat" ? a.id : b.id;
+  try {
+    await api("/api/connections", { source, target, connected: true });
+    state.connectFrom = null;
+    await refresh();
+    toast("Agent connected to the chat.");
+  } catch (error) {
+    toast(error.message);
+  }
 }
 async function refresh() {
   clearTimeout(refreshTimer);
@@ -384,15 +438,14 @@ async function refresh() {
     if (first) loadLayout(result.stateDir);
     Object.assign(state, {
       threads: result.threads,
-      groups: result.groups,
+      chats: result.chats,
+      edges: result.edges,
       board: result.board,
       boardError: result.boardError,
       token: result.token,
     });
     state.selected = new Set(
-      [...state.selected].filter((id) =>
-        state.threads.some((t) => t.id === id),
-      ),
+      [...state.selected].filter((id) => nodes().some((t) => t.id === id)),
     );
     $("#error").hidden = true;
     $("#connection").textContent = `Live · Updated ${stamp(result.at)}`;
@@ -420,7 +473,7 @@ function closeDetail() {
 }
 function openDetail(kind, id) {
   state.opened = { kind, id };
-  state.tab = kind === "group" ? "chat" : "activity";
+  state.tab = kind === "chat" ? "chat" : "activity";
   state.detailKey = "";
   state.pendingSend = null;
   $("#message").value = "";
@@ -437,13 +490,13 @@ function meta() {
   const o = state.opened;
   if (!o || ["resources", "chats"].includes(o.kind)) return;
   const t = state.threads.find((t) => t.id === o.id),
-    g = state.groups.find((g) => g.id === o.id),
-    isGroup = o.kind === "group";
+    g = state.chats.find((g) => g.id === o.id),
+    isGroup = o.kind === "chat";
   $("#detail-label").textContent = isGroup
-    ? "SHARED GROUP CHAT"
+    ? "SHARED CHAT"
     : "AGENT / " + (t?.role || "worker").toUpperCase();
   $("#detail-title").textContent = isGroup
-    ? g?.name || "Group unavailable"
+    ? g?.name || "Chat unavailable"
     : t?.name || "Agent unavailable";
   $("#detail-meta").innerHTML = isGroup
     ? `<span class="pill">${g?.members.length || 0} members</span><span>Persistent chat · local</span>`
@@ -456,16 +509,14 @@ function meta() {
   $("#stream-controls").hidden = state.tab !== "activity";
   $("#composer").hidden = state.tab === "details";
   $("#composer-label").textContent = isGroup
-    ? "Message all group members"
+    ? "Message connected agents"
     : "Message this agent";
-  const canSend = isGroup
-    ? !!g?.members.some((id) => state.threads.find((t) => t.id === id)?.canSend)
-    : !!t?.canSend;
+  const canSend = isGroup ? !!g : !!t?.canSend;
   $("#composer button").disabled = !canSend || state.sending;
   $("#message").disabled = !canSend || state.sending;
   $("#message").placeholder = canSend
     ? "Send an instruction…"
-    : "The launcher is offline";
+    : "No live mailbox for this agent";
   $("#send-note").textContent = isGroup
     ? "Each member gets your message. Offline members show a failure."
     : "Queued means mailbox receipt, not agent completion.";
@@ -501,11 +552,11 @@ async function loadDetail() {
   meta();
   try {
     if (tab === "details") {
-      const g = state.groups.find((g) => g.id === opened.id),
+      const g = state.chats.find((g) => g.id === opened.id),
         t = state.threads.find((t) => t.id === opened.id);
-      if (opened.kind === "group") {
+      if (opened.kind === "chat") {
         setBody(
-          `<p class="notice">Members keep their original run identity. A replacement run does not receive messages for this group.</p>${(
+          `<p class="notice">Connections define chat membership. An agent can join several chats. Replacement runs do not inherit connections.</p>${(
             g?.members || []
           )
             .map((id) => {
@@ -518,6 +569,11 @@ async function loadDetail() {
         );
       } else {
         const fields = {
+          Source: t?.source,
+          "Reported status at": t?.reportedAt
+            ? new Date(t.reportedAt * 1000).toISOString()
+            : undefined,
+          Parent: state.threads.find((n) => n.id === t?.parentId)?.name,
           Wave: t?.wave,
           Run: t?.runId,
           Thread: t?.threadId,
@@ -559,10 +615,10 @@ async function loadDetail() {
     } else {
       const messages = await api(`/api/messages?room=${opened.id}`);
       if (state.opened !== opened || state.tab !== tab) return;
-      const g = state.groups.find((g) => g.id === opened.id);
+      const g = state.chats.find((g) => g.id === opened.id);
       const html =
         (g
-          ? '<p class="notice">Your messages go to all members. Agents can read and post here with codex-chat. Peer posts do not start turns automatically.</p>'
+          ? '<p class="notice">Your messages go to connected agents. Agents can read and post here with codex-chat. Peer posts do not start turns automatically.</p>'
           : '<p class="notice">Instructions sent from this canvas. Read agent replies in Activity.</p>') +
         messages
           .map((m) => {
@@ -645,23 +701,46 @@ function renderResources() {
 }
 
 $("#viewport").addEventListener("pointerdown", (e) => {
-  if (e.target.closest("button,#minimap,.canvas-controls,#selection-bar"))
+  const port = e.target.closest("[data-port]");
+  if (port) {
+    e.preventDefault();
+    state.portDrag = { id: port.dataset.port, x: e.clientX, y: e.clientY };
     return;
-  const card = e.target.closest(".agent-card");
-  if (e.button !== 0) return;
+  }
+  if (
+    e.target.closest(
+      "button,#minimap,.canvas-controls,#selection-bar,[data-edge]",
+    )
+  )
+    return;
+  if (e.button !== 0 && e.button !== 1) return;
+  const node = e.target.closest(".agent-card");
+  if (state.mode === "connect" && node) {
+    connectNode(node.dataset.id);
+    return;
+  }
+  const pan = state.mode === "pan" || state.space || e.button === 1;
+  const id = pan ? null : node?.dataset.id;
   state.drag = {
     pointer: e.pointerId,
     startX: e.clientX,
     startY: e.clientY,
-    id: card?.dataset.id,
-    position: card
-      ? { ...state.positions[card.dataset.id] }
-      : { ...state.view },
-    moved: false,
+    id,
+    pan,
     shift: e.shiftKey,
+    moved: false,
+    wasSelected: id && state.selected.has(id),
+    view: { ...state.view },
+    selected: new Set(state.selected),
+    positions: {},
   };
+  if (id) {
+    if (!state.selected.has(id) && !e.shiftKey) state.selected.clear();
+    state.selected.add(id);
+    for (const key of state.selected)
+      state.drag.positions[key] = { ...state.positions[key] };
+  }
   $("#viewport").setPointerCapture(e.pointerId);
-  $("#viewport").classList.add("dragging");
 });
 $("#viewport").addEventListener("pointermove", (e) => {
   const d = state.drag;
@@ -671,83 +750,209 @@ $("#viewport").addEventListener("pointermove", (e) => {
   if (Math.hypot(dx, dy) > 4) d.moved = true;
   if (!d.moved) return;
   if (d.id) {
-    const p = {
-      x: d.position.x + dx / state.view.z,
-      y: d.position.y + dy / state.view.z,
-    };
-    state.positions[d.id] = p;
-    const el = document.getElementById(`agent-${d.id}`);
-    el.style.left = `${p.x}px`;
-    el.style.top = `${p.y}px`;
-    renderGroups();
+    for (const [id, start] of Object.entries(d.positions)) {
+      const p = {
+        x: start.x + dx / state.view.z,
+        y: start.y + dy / state.view.z,
+      };
+      state.positions[id] = p;
+      const el = document.getElementById(`agent-${id}`);
+      if (el) {
+        el.style.left = `${p.x}px`;
+        el.style.top = `${p.y}px`;
+        el.classList.add("chosen");
+      }
+    }
+    renderEdges();
     drawMinimap();
-  } else {
-    state.view.x = d.position.x + dx;
-    state.view.y = d.position.y + dy;
+  } else if (d.pan) {
+    state.view.x = d.view.x + dx;
+    state.view.y = d.view.y + dy;
     transform();
+  } else {
+    const rect = $("#viewport").getBoundingClientRect(),
+      x = Math.min(d.startX, e.clientX) - rect.left,
+      y = Math.min(d.startY, e.clientY) - rect.top,
+      w = Math.abs(dx),
+      h = Math.abs(dy);
+    const box = $("#marquee");
+    box.hidden = false;
+    Object.assign(box.style, {
+      left: `${x}px`,
+      top: `${y}px`,
+      width: `${w}px`,
+      height: `${h}px`,
+    });
+    const v = state.view;
+    state.selected = d.shift ? new Set(d.selected) : new Set();
+    for (const n of visible()) {
+      const p = state.positions[n.id],
+        nx = p.x * v.z + v.x,
+        ny = p.y * v.z + v.y;
+      if (
+        nx < x + w &&
+        nx + NODE_W * v.z > x &&
+        ny < y + h &&
+        ny + NODE_H * v.z > y
+      )
+        state.selected.add(n.id);
+    }
+    for (const el of $$(".agent-card"))
+      el.classList.toggle("chosen", state.selected.has(el.dataset.id));
   }
 });
 function finishDrag(e, cancel = false) {
   const d = state.drag;
   if (!d || d.pointer !== e.pointerId) return;
   state.drag = null;
-  $("#viewport").classList.remove("dragging");
-  if (!cancel && !d.moved && d.id) {
-    if (d.shift) {
-      state.selected.has(d.id)
-        ? state.selected.delete(d.id)
-        : state.selected.add(d.id);
-      render();
-    } else openDetail("agent", d.id);
-  } else {
-    save();
-    render();
+  $("#marquee").hidden = true;
+  if (cancel) {
+    state.selected = d.selected;
+    for (const [id, p] of Object.entries(d.positions)) state.positions[id] = p;
+    state.view = d.view;
+  } else if (!d.moved) {
+    if (d.id && d.shift && d.wasSelected) state.selected.delete(d.id);
+    else if (!d.id && !d.pan && !d.shift) state.selected.clear();
   }
+  state.selectedEdge = null;
+  save();
+  render();
 }
 $("#viewport").addEventListener("pointerup", (e) => finishDrag(e));
-$("#viewport").addEventListener("pointercancel", (e) => finishDrag(e, true));
+$("#viewport").addEventListener("pointercancel", (e) => {
+  state.portDrag = null;
+  finishDrag(e, true);
+});
+document.addEventListener("pointerup", (e) => {
+  const d = state.portDrag;
+  if (!d) return;
+  state.portDrag = null;
+  const el = document
+    .elementFromPoint?.(e.clientX, e.clientY)
+    ?.closest(".agent-card");
+  if (el && el.dataset.id !== d.id) {
+    state.connectFrom = d.id;
+    connectNode(el.dataset.id);
+  } else connectNode(d.id);
+});
+$("#cards").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-open]");
+  if (button) openNode(button.dataset.open);
+  const port = e.target.closest("[data-port]");
+  if (port && e.detail === 0) connectNode(port.dataset.port);
+});
+$("#cards").addEventListener("dblclick", (e) => {
+  const node = e.target.closest(".agent-card");
+  if (node && !e.target.closest("button")) openNode(node.dataset.id);
+});
+$("#connections").addEventListener("click", (e) => {
+  const edge = e.target.closest("[data-edge]");
+  if (edge) {
+    state.selectedEdge = edge.dataset.edge;
+    state.selected.clear();
+    render();
+  }
+});
+$("#connections").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    state.selectedEdge = e.target.dataset.edge;
+    state.selected.clear();
+    render();
+  }
+});
 $("#viewport").addEventListener(
   "wheel",
   (e) => {
     e.preventDefault();
     const r = $("#viewport").getBoundingClientRect();
-    zoom(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
+    if (e.ctrlKey || e.metaKey)
+      zoom(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
+    else {
+      state.view.x -= e.deltaX;
+      state.view.y -= e.deltaY;
+      transform();
+      save();
+    }
   },
   { passive: false },
 );
 $("#cards").addEventListener("keydown", (e) => {
+  if (e.target.closest("button")) return;
   const el = e.target.closest(".agent-card");
   if (!el) return;
   const id = el.dataset.id;
-  if (["Enter", " "].includes(e.key)) {
+  if (e.key === "Enter") {
     e.preventDefault();
-    if (e.shiftKey) {
-      state.selected.has(id)
-        ? state.selected.delete(id)
-        : state.selected.add(id);
-      render();
-    } else openDetail("agent", id);
+    if (state.mode === "connect") connectNode(id);
+    else openNode(id);
+  } else if (e.key === " ") {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.shiftKey) state.selected.clear();
+    state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id);
+    render();
   } else if (e.key.startsWith("Arrow")) {
     e.preventDefault();
-    const p = state.positions[id],
-      step = e.shiftKey ? 50 : 10;
-    if (e.key === "ArrowLeft") p.x -= step;
-    if (e.key === "ArrowRight") p.x += step;
-    if (e.key === "ArrowUp") p.y -= step;
-    if (e.key === "ArrowDown") p.y += step;
+    if (!state.selected.has(id)) {
+      state.selected.clear();
+      state.selected.add(id);
+    }
+    for (const key of state.selected) {
+      const p = state.positions[key],
+        step = e.shiftKey ? 50 : 10;
+      if (e.key === "ArrowLeft") p.x -= step;
+      if (e.key === "ArrowRight") p.x += step;
+      if (e.key === "ArrowUp") p.y -= step;
+      if (e.key === "ArrowDown") p.y += step;
+    }
     render();
     save();
   }
 });
-$("#groups").addEventListener("click", (e) => {
-  const button = e.target.closest("[data-chat]");
-  if (button) openDetail("group", button.dataset.chat);
+$("#select-mode").onclick = () => {
+  state.mode = "select";
+  state.connectFrom = null;
+  render();
+};
+$("#pan-mode").onclick = () => {
+  state.mode = "pan";
+  state.connectFrom = null;
+  render();
+};
+$("#link-mode").onclick = () => {
+  state.mode = "connect";
+  state.connectFrom = null;
+  render();
+  toast("Select an agent, then a chat.");
+};
+$("#disconnect").onclick = async () => {
+  const edge = state.edges.find((e) => e.id === state.selectedEdge);
+  if (edge?.kind !== "chat") return;
+  try {
+    await api("/api/connections", {
+      source: edge.source,
+      target: edge.target,
+      connected: false,
+    });
+    state.selectedEdge = null;
+    await refresh();
+    toast("Agent disconnected. Chat history stays available.");
+  } catch (error) {
+    toast(error.message);
+  }
+};
+document.addEventListener("keyup", (e) => {
+  if (e.key === " ") state.space = false;
+});
+window.addEventListener("blur", () => {
+  state.space = false;
 });
 $("#detail-body").addEventListener("click", (e) => {
   const button = e.target.closest("[data-member]");
   if (button) openDetail("agent", button.dataset.member);
-  const group = e.target.closest("[data-group]");
-  if (group) openDetail("group", group.dataset.group);
+  const group = e.target.closest("[data-chat]");
+  if (group) openDetail("chat", group.dataset.chat);
 });
 $("#detail-tabs").addEventListener("click", (e) => {
   if (e.target.dataset.tab) setTab(e.target.dataset.tab);
@@ -811,35 +1016,33 @@ $("#copy").onclick = async () => {
   }
 };
 function showGroup() {
-  if (state.selected.size < 2) {
-    toast("Select at least two agents with Shift + click.");
-    return;
-  }
-  $("#group-name").value = "";
-  $("#group-members").innerHTML = [...state.selected]
-    .map(
-      (id) =>
-        `<span class="pill">${escape(state.threads.find((t) => t.id === id)?.name)}</span>`,
-    )
+  $("#chat-name").value = "";
+  $("#chat-members").innerHTML = [...state.selected]
+    .map((id) => nodes().find((n) => n.id === id))
+    .filter((n) => n?.kind === "agent")
+    .map((n) => `<span class="pill">${escape(n.name)}</span>`)
     .join("");
-  $("#group-dialog").showModal();
-  $("#group-name").focus();
+  $("#chat-dialog").showModal();
+  $("#chat-name").focus();
 }
-$("#new-group").onclick = showGroup;
-$("#group-selected").onclick = showGroup;
+$("#new-chat").onclick = showGroup;
+$("#chat-selected").onclick = showGroup;
 $("#clear-selection").onclick = () => {
   state.selected.clear();
+  state.selectedEdge = null;
   render();
 };
-$("#cancel-group").onclick = () => $("#group-dialog").close();
-$("#group-form").onsubmit = async (e) => {
+$("#cancel-chat").onclick = () => $("#chat-dialog").close();
+$("#chat-form").onsubmit = async (e) => {
   e.preventDefault();
   if (state.creatingGroup) return;
   state.creatingGroup = true;
   const button = e.submitter;
   button.disabled = true;
-  const name = $("#group-name").value;
-  const members = [...state.selected].sort();
+  const name = $("#chat-name").value;
+  const members = [...state.selected]
+    .filter((id) => state.threads.some((t) => t.id === id))
+    .sort();
   if (
     !state.pendingGroup ||
     state.pendingGroup.name !== name ||
@@ -848,13 +1051,13 @@ $("#group-form").onsubmit = async (e) => {
     state.pendingGroup = { id: crypto.randomUUID(), name, members };
   }
   try {
-    const group = await api("/api/groups", state.pendingGroup);
+    const group = await api("/api/chats", state.pendingGroup);
     state.pendingGroup = null;
-    $("#group-dialog").close();
+    $("#chat-dialog").close();
     state.selected.clear();
     await refresh();
-    openDetail("group", group.id);
-    toast("Group created. Its chat is ready.");
+    openDetail("chat", group.id);
+    toast("Chat node created. Connect agents through its port.");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -911,6 +1114,17 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     closeDetail();
     state.selected.clear();
+    state.selectedEdge = null;
+    state.connectFrom = null;
+    render();
+  }
+  if (e.key === " ") {
+    e.preventDefault();
+    state.space = true;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+    e.preventDefault();
+    state.selected = new Set(visible().map((n) => n.id));
     render();
   }
 });
@@ -920,19 +1134,16 @@ refresh();
 function renderChats() {
   if (state.opened?.kind !== "chats") return;
   $("#detail-label").textContent = "TEAM CONVERSATIONS";
-  $("#detail-title").textContent = "Group chats";
-  $("#detail-meta").textContent =
-    "All waves and groups, including earlier members";
+  $("#detail-title").textContent = "Chats";
+  $("#detail-meta").textContent = "Chat nodes and their current connections";
   $("#detail-tabs").hidden = true;
   $("#stream-controls").hidden = true;
   $("#composer").hidden = true;
-  const groups = [...state.groups].sort(
-    (a, b) => Number(a.automatic) - Number(b.automatic),
-  );
+  const groups = state.chats;
   const html = groups
     .map(
       (g) =>
-        `<button class="member-button" data-group="${escape(g.id)}">${escape(g.name)}<small>${g.members.length} members · ${g.automatic ? "Wave" : "Custom group"}</small></button>`,
+        `<button class="member-button" data-chat="${escape(g.id)}">${escape(g.name)}<small>${g.members.length} members · Chat node</small></button>`,
     )
     .join("");
   setBody(html || '<p class="notice">No group chats yet.</p>', html);

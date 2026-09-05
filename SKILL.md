@@ -99,38 +99,82 @@ scripts/codex-report --wave parser [worker --answers]
 - Hand-rolled sentinel (when `codex-watch` is unavailable): copy terminal values from one real record first. `goalStatus` terminal values are `complete`, `budgetLimited`, `blocked` — not `completed`. Safe condition: goal present and not `active`, or turn `failed`/`interrupted`.
 - Arm the replacement watcher before stopping the old one; a gap is a missed event.
 
-## Local canvas and group chat
+## Canvas, chat nodes, and creator connections
 
 Run `scripts/codex-canvas` and open `http://127.0.0.1:4620`.
-Use `--port PORT` to select another port. No package install is necessary.
-The server uses Python's standard library and listens only on the local machine.
+Use `--port PORT` to select another port. The server uses Python's standard library and listens only on the local machine.
 Keep its terminal session alive while the canvas is in use.
 
-The canvas reads app-server waves from the same state directory as `luna`.
-Native agents in a host conversation are not part of this feed.
-Drag cards to move agents. Use Shift + click to select members for a group.
-The panel shows recent messages, tool calls, results, run identities, and resource claims.
-The transcript view has explicit size limits. It does not expose internal reasoning records.
+Agents and chats are separate nodes. Do not use a wave or a visual container as a chat.
+An agent can connect to several chats. Chat connections define membership.
+Creator connections record who started each subagent. They do not grant chat membership.
+Do not infer a creator from a shared wave, directory, model, or resource claim.
 
-Group chats persist in `canvas.sqlite3` inside the state directory.
+Click to select a node. Drag empty space for box selection. Drag a selected node to move the complete selection.
+Double-click to read a transcript or chat. Hold Space to pan. Use Ctrl + scroll to zoom.
+Use Connect, or drag a node port, to connect an agent to a chat.
+Select a chat connection to disconnect it. This preserves the chat and its messages.
 Canvas positions stay in browser storage on this device.
-A user message to a group uses `codex-steer` for each member.
-Members stay tied to their exact run and thread. Replacement agents do not inherit old messages.
-`queued` proves mailbox receipt, not agent acceptance or completion.
-Failed deliveries remain visible. The canvas does not resend them automatically.
 
-Agents can read and post shared replies with:
+### App-server creators
+
+The launcher records `orchestratorId` and `orchestratorName` with each worker.
+`CODEX_ORCHESTRATOR_ID` takes precedence over the host's `CODEX_THREAD_ID`.
+A task can supply its own `orchestratorId` when a different agent owns that task.
+Set `CODEX_ORCHESTRATOR_NAME` for a readable name.
+Before a wave launch from a host that has no `CODEX_THREAD_ID`, supply the actual stable creator identity with `CODEX_ORCHESTRATOR_ID`.
+No creator identity means no creator connection. Historical records remain unchanged.
+A creator reference with no status record displays an unknown status, not the launcher's status.
+
+### Native host agents
+
+Native delegation needs an explicit graph record because the canvas does not receive the host's native tool events.
+Before the first native spawn, register the orchestrator with its stable host identity.
+After a successful spawn, register the returned child identity and the actual parent.
+Do not register a child when its spawn fails.
+Update the same record after host notifications change its status.
+Only attach `--thread` when the host provides a real local Codex thread identity.
 
 ```bash
-scripts/codex-chat list
-scripts/codex-chat read GROUP_ID
-scripts/codex-chat post GROUP_ID "Result or question" --owner "$CODEX_BOARD_OWNER"
+scripts/codex-graph agent --id HOST_PARENT_ID --name "Lead" --status running
+scripts/codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status running
+scripts/codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status completed
+scripts/codex-graph list
 ```
 
-Only a current group member can post as an agent.
-The owner identifies a local worker, not an authenticated remote user.
+Reuse the same parent and thread values on updates. They are part of the identity.
+Register each actual parent before its children. A subagent that creates children also appears as an orchestrator.
+These records report host observations. They do not create a process or prove process liveness.
+Use the native host tools to send instructions to native agents. The web mailbox controls only app-server workers.
+
+### Chat operations for the orchestrator and agents
+
+Chats, connections, and messages persist in `canvas.sqlite3` inside the state directory.
+The schema migration preserves existing chat records and history.
+The same commands work while the web server is closed.
+Use the exact agent IDs from `codex-graph list` for connections.
+
+```bash
+scripts/codex-chat create "Runtime discussion"
+scripts/codex-chat connect CHAT_ID --agent AGENT_ID
+scripts/codex-chat disconnect CHAT_ID --agent AGENT_ID
+scripts/codex-chat list
+scripts/codex-chat read CHAT_ID
+scripts/codex-chat post CHAT_ID "Result or question" --owner "$CODEX_BOARD_OWNER"
+scripts/codex-chat post CHAT_ID "Native agent reply" --agent HOST_CHILD_ID
+```
+
+Use `--id UUID` on create or post to reuse an operation identity after a lost response.
+Only a connected agent can post as a member. Local identity labels are not remote authentication.
+A user message to a chat uses `codex-steer` for its connected app-server workers.
+Connections stay tied to exact run identities. Replacement workers do not inherit them.
+`queued` proves mailbox receipt, not agent acceptance or completion.
+Failed or uncertain deliveries stay visible. The canvas does not resend them automatically.
 Peer posts do not start new turns. Read the shared chat before coordination decisions.
-The canvas does not create agents or replace the wave launcher's lifecycle commands.
+
+The transcript panel shows recent messages, tool calls, and results with explicit size limits.
+It does not expose internal reasoning records.
+The canvas does not create agents or replace the launcher's lifecycle commands.
 
 ## Steer a worker
 
@@ -185,7 +229,8 @@ Implementers claim; reviewers only read. Claims never expire — `takeover` only
 | `codex-stop` | Verified launcher stop |
 | `luna` | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `board`, `waves`, `watch` |
 | `codex-canvas` | Local web canvas, live transcripts, group chat, and resource board |
-| `codex-chat` | List group chats, read messages, or post a member reply |
+| `codex-chat` | Create chat nodes, connect members, read messages, or post replies |
+| `codex-graph` | Register native agents and actual creator relationships |
 
 `luna say` writes through `codex-steer`; other commands only read existing state.
 For `show`, `tail`, and `say`, use `--wave NAME` when worker names repeat.

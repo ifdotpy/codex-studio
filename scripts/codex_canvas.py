@@ -22,6 +22,7 @@ from codex_state import state_dir, board_dir, codex_home, read_threads, effectiv
 SCRIPTS = Path(__file__).resolve().parent
 WEB = SCRIPTS.parent / "web"
 COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
+AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
 
 
@@ -52,13 +53,18 @@ def tail_json(path, limit=READ_LIMIT):
 
 
 class Canvas:
-    def __init__(self, root=None):
+    def __init__(self, root=None, read_only=False):
         self.root = root or state_dir()
+        self.read_only = read_only
         self.lock = threading.RLock()
         self.cache = {}
         self.rollouts = {}
-        self.root.mkdir(parents=True, exist_ok=True)
         self.db = self.root / "canvas.sqlite3"
+        if read_only:
+            if not self.db.exists():
+                raise ValueError('No canvas state exists. Create a chat or start the canvas first.')
+            return
+        self.root.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS groups (
@@ -67,12 +73,34 @@ class Canvas:
                   id TEXT PRIMARY KEY, room TEXT NOT NULL, author TEXT NOT NULL,
                   text TEXT NOT NULL, at REAL NOT NULL, deliveries TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS messages_room ON messages(room, at);
+                CREATE TABLE IF NOT EXISTS graph_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS graph_edges (
+                  id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+                  kind TEXT NOT NULL, UNIQUE(source, target, kind));
+                CREATE TABLE IF NOT EXISTS canvas_migrations (name TEXT PRIMARY KEY);
             """)
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute("SELECT 1 FROM canvas_migrations WHERE name='chat-edges-v1'").fetchone():
+                legacy = {r['room'] for r in db.execute("SELECT DISTINCT room FROM messages WHERE room LIKE 'wave-%'")}
+                waves = {}
+                for row in read_threads(self.root):
+                    key = 'wave-' + identity(row['wave'], row.get('runId'))
+                    wave = waves.setdefault(key, {'name': row['wave'], 'members': []})
+                    wave['members'].append(identity(row['wave'], row.get('runId'), row['threadId'], row['name']))
+                for key in legacy:
+                    wave = waves.get(key, {'name': 'Previous wave chat', 'members': []})
+                    db.execute('INSERT OR IGNORE INTO groups VALUES (?,?,?)', (key, wave['name'], json.dumps(wave['members'])))
+                for group in db.execute("SELECT * FROM groups").fetchall():
+                    for member in json.loads(group["members"]):
+                        db.execute("INSERT OR IGNORE INTO graph_edges VALUES (?,?,?,?)",
+                                   (identity('chat', member, group['id']), member, group['id'], 'chat'))
+                db.execute("INSERT INTO canvas_migrations VALUES ('chat-edges-v1')")
         os.chmod(self.db, 0o600)
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.db, timeout=10)
+        db = (sqlite3.connect(self.db.absolute().as_uri() + '?mode=ro', uri=True, timeout=10)
+              if self.read_only else sqlite3.connect(self.db, timeout=10))
         db.row_factory = sqlite3.Row
         try:
             with db:
@@ -89,18 +117,107 @@ class Canvas:
             row["canSend"] = row["launcherAlive"] and all(
                 isinstance(row.get(k), str) and COMPONENT.fullmatch(row[k])
                 for k in ("wave", "runId", "name"))
+            row["kind"] = "agent"
+            row["source"] = "app-server"
+        by_thread = {t['threadId']: t for t in rows}
+        with self.connect() as db:
+            registered = [json.loads(r['record']) for r in db.execute("SELECT record FROM graph_agents")]
+        for record in registered:
+            existing = by_thread.get(record.get('threadId'))
+            if existing:
+                existing['graphAlias'] = record['id']
+                existing['parentId'] = record.get('parentId')
+            else:
+                rows.append({**record, 'kind': 'agent', 'source': 'registered', 'canSend': False,
+                             'launcherAlive': False, 'events': 0, 'tokensUsed': 0})
+        by_id = {t['id']: t for t in rows}
+        aliases = {t.get('graphAlias'): t['id'] for t in rows if t.get('graphAlias')}
+        for row in list(rows):
+            parent = row.get('orchestratorId') or row.get('parentId')
+            if not parent:
+                continue
+            resolved = by_thread.get(parent, {}).get('id') or aliases.get(parent) or parent
+            row['parentId'] = resolved
+            if resolved not in by_id:
+                local_thread = parent if re.fullmatch(r'[a-fA-F0-9-]{36}', parent) else None
+                node = {'id': resolved, 'threadId': local_thread, 'name': row.get('orchestratorName') or 'Orchestrator',
+                        'role': 'orchestrator', 'kind': 'agent', 'source': 'orchestrator-reference',
+                        'status': 'unknown', 'canSend': False, 'launcherAlive': False}
+                rows.append(node)
+                by_id[resolved] = node
         return rows
 
-    def groups(self, threads):
-        groups = {}
-        for row in threads:
-            key = "wave-" + identity(row["wave"], row.get("runId"))
-            group = groups.setdefault(key, {"id": key, "name": row["wave"], "members": [], "automatic": True})
-            group["members"].append(row["id"])
+    def chats(self):
         with self.connect() as db:
+            chats = []
             for row in db.execute("SELECT * FROM groups"):
-                groups[row["id"]] = {**dict(row), "members": json.loads(row["members"]), "automatic": False}
-        return list(groups.values())
+                members = [e['source'] for e in db.execute("SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (row['id'],))]
+                last = db.execute("SELECT text, at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (row['id'],)).fetchone()
+                count = db.execute("SELECT count(*) FROM messages WHERE room=?", (row['id'],)).fetchone()[0]
+                chats.append({'id': row['id'], 'name': row['name'], 'members': members, 'kind': 'chat',
+                              'messageCount': count, 'tail': last['text'] if last else '', 'lastMessageAt': last['at'] if last else None})
+        return chats
+
+    def edges(self, threads=None):
+        threads = threads if threads is not None else self.threads()
+        with self.connect() as db:
+            edges = [dict(e) for e in db.execute('SELECT * FROM graph_edges')]
+        for row in threads:
+            if row.get('parentId'):
+                edges.append({'id': identity('spawn', row['parentId'], row['id']), 'source': row['parentId'],
+                              'target': row['id'], 'kind': 'spawn'})
+        return edges
+
+    def register_agent(self, key, name, parent=None, thread_id=None, status='unknown'):
+        if not isinstance(key, str) or not AGENT_ID.fullmatch(key):
+            raise ValueError('Use a stable host agent identity with at most 200 characters.')
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+            raise ValueError('Use an agent name with 1 to 100 characters.')
+        if thread_id is not None and (not isinstance(thread_id, str) or not COMPONENT.fullmatch(thread_id)):
+            raise ValueError('Invalid thread identity')
+        if status not in {'unknown', 'running', 'waiting', 'completed', 'blocked', 'failed', 'interrupted'}:
+            raise ValueError('Invalid reported status')
+        with self.lock, self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            old = db.execute('SELECT record FROM graph_agents WHERE id=?', (key,)).fetchone()
+            previous = json.loads(old['record']) if old else {}
+            if previous and (previous.get('parentId') != parent or previous.get('threadId') != thread_id):
+                raise ValueError('Agent identity already has a different parent or thread.')
+            agents = {t['id']: t for t in self.threads()}
+            if key in agents and agents[key].get('source') == 'app-server':
+                raise ValueError('The launcher owns this agent record.')
+            if any(c['id'] == key for c in self.chats()):
+                raise ValueError('This identity belongs to a chat.')
+            if parent is not None and (parent not in agents or parent == key):
+                raise ValueError('Register the parent agent first. An agent cannot be its own parent.')
+            cursor = parent
+            visited = set()
+            while cursor:
+                if cursor == key or cursor in visited:
+                    raise ValueError('A parent connection cannot contain a cycle.')
+                visited.add(cursor)
+                cursor = agents.get(cursor, {}).get('parentId')
+            record = {'id': key, 'name': name.strip(), 'parentId': parent, 'threadId': thread_id,
+                      'status': status, 'reportedAt': time.time(), 'role': 'agent' if parent else 'orchestrator'}
+            db.execute('INSERT INTO graph_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
+                       (key, json.dumps(record)))
+        return record
+
+    def connect_chat(self, source, target, connected=True):
+        if not isinstance(connected, bool):
+            raise ValueError('connected must be a boolean')
+        with self.lock, self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not any(c['id'] == target for c in self.chats()):
+                raise ValueError('The target must be a chat.')
+            if connected and not any(t['id'] == source for t in self.threads()):
+                raise ValueError('The source must be a current agent.')
+            key = identity('chat', source, target)
+            if connected:
+                db.execute('INSERT OR IGNORE INTO graph_edges VALUES (?,?,?,?)', (key, source, target, 'chat'))
+            else:
+                db.execute('DELETE FROM graph_edges WHERE id=?', (key,))
+        return {'id': key, 'connected': connected}
 
     def snapshot(self):
         threads = self.threads()
@@ -122,7 +239,8 @@ class Canvas:
         for claim in board["claims"].values():
             owner = owners.get(claim.get("worker"))
             claim["stale"] = bool(owner and not owner["launcherAlive"])
-        return {"threads": threads, "groups": self.groups(threads), "board": board,
+        chats = self.chats()
+        return {"threads": threads, "chats": chats, 'nodes': threads + chats, 'edges': self.edges(threads), "board": board,
                 "boardError": board_error, "at": time.time(), "stateDir": str(self.root)}
 
     def thread(self, key):
@@ -133,7 +251,9 @@ class Canvas:
 
     def transcript(self, key):
         thread = self.thread(key)
-        tid = thread["threadId"]
+        tid = thread.get("threadId")
+        if not tid:
+            return {'items': [], 'truncated': False, 'unavailable': 'No local thread is attached to this agent.'}
         if not COMPONENT.fullmatch(tid):
             raise ValueError("Invalid thread identity")
         now = time.monotonic()
@@ -175,23 +295,27 @@ class Canvas:
         self.cache[key] = (signature, result)
         return result
 
-    def create_group(self, name, members, key):
+    def create_chat(self, name, members, key):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
-            raise ValueError("Use a group name with 1 to 100 characters.")
-        if not isinstance(members, list) or not 2 <= len(members) <= 100 or not all(isinstance(m, str) for m in members):
-            raise ValueError("Select 2 to 100 agents.")
+            raise ValueError("Use a chat name with 1 to 100 characters.")
+        if not isinstance(members, list) or len(members) > 100 or not all(isinstance(m, str) for m in members):
+            raise ValueError("Select at most 100 agents.")
         members = sorted(set(members))
-        if len(members) < 2 or not set(members) <= {t["id"] for t in self.threads()}:
+        if not set(members) <= {t["id"] for t in self.threads()}:
             raise ValueError("The selected agents are no longer available.")
         if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9-]{36}", key):
             raise ValueError("Invalid request identity")
         with self.lock, self.connect() as db:
+            if any(t['id'] == key for t in self.threads()):
+                raise ValueError('This identity belongs to an agent.')
             existing = db.execute("SELECT * FROM groups WHERE id=?", (key,)).fetchone()
             if existing:
                 if existing["name"] != name.strip() or json.loads(existing["members"]) != members:
                     raise ValueError("The request identity already has different content.")
             else:
                 db.execute("INSERT INTO groups VALUES (?,?,?)", (key, name.strip(), json.dumps(members)))
+                for member in members:
+                    db.execute('INSERT INTO graph_edges VALUES (?,?,?,?)', (identity('chat', member, key), member, key, 'chat'))
         return {"id": key}
 
     def messages(self, room):
@@ -205,13 +329,14 @@ class Canvas:
         if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9-]{36}", key):
             raise ValueError("Invalid request identity")
         with self.lock, self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             previous = db.execute("SELECT * FROM messages WHERE id=?", (key,)).fetchone()
             if previous:
                 if (previous["room"], previous["author"], previous["text"]) != (room, author, text.strip()):
                     raise ValueError("The request identity already has different content.")
                 return {**dict(previous), "deliveries": json.loads(previous["deliveries"])}
             threads = self.threads()
-            group = next((g for g in self.groups(threads) if g["id"] == room), None)
+            group = next((g for g in self.chats() if g["id"] == room), None)
             if group:
                 members = group["members"]
             elif any(t["id"] == room for t in threads):
@@ -238,7 +363,7 @@ class Canvas:
                 try:
                     target = self.thread(member)
                     if not target["canSend"]:
-                        raise ValueError("The launcher is offline.")
+                        raise ValueError("No live mailbox for this agent. The message remains in the shared chat.")
                     # Reuse the installed mailbox writer, never a second app-server.
                     result = subprocess.run([str(SCRIPTS / "codex-steer"), "--wave", target["wave"],
                                              "--expected-run", target["runId"], "--expected-thread", target["threadId"],
@@ -318,8 +443,10 @@ def make_server(canvas, port=0):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
-                if self.path == "/api/groups":
-                    return self.send(canvas.create_group(body.get("name"), body.get("members"), body.get("id")))
+                if self.path == "/api/chats":
+                    return self.send(canvas.create_chat(body.get("name"), body.get("members", []), body.get("id")))
+                if self.path == "/api/connections":
+                    return self.send(canvas.connect_chat(body.get('source'), body.get('target'), body.get('connected', True)))
                 if self.path == "/api/messages":
                     return self.send(canvas.post(body.get("room"), body.get("text"), body.get("id")))
                 return self.send({"error": "Not found"}, 404)

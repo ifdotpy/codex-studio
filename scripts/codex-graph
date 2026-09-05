@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Register host agents and their actual parent relationships on the canvas."""
+import argparse
+import json
+import sys
+sys.dont_write_bytecode = True
+from codex_canvas import Canvas
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('action', choices=['list', 'agent'])
+parser.add_argument('--id', help='Stable identity returned by the host')
+parser.add_argument('--name')
+parser.add_argument('--parent', help='Exact board identity of the agent that created this agent')
+parser.add_argument('--thread', help='Local Codex thread identity, when the host provides one')
+parser.add_argument('--status', default='unknown', choices=['unknown', 'running', 'waiting', 'completed', 'blocked', 'failed', 'interrupted'])
+args = parser.parse_args()
+try:
+    canvas = Canvas(read_only=args.action == 'list')
+    if args.action == 'list':
+        snapshot = canvas.snapshot()
+        result = {k: snapshot[k] for k in ('nodes', 'edges')}
+    else:
+        result = canvas.register_agent(args.id, args.name, args.parent, args.thread, args.status)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+except (ValueError, RuntimeError) as error:
+    sys.exit(str(error))
