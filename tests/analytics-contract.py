@@ -257,6 +257,38 @@ class AnalyticsContract(unittest.TestCase):
         # A new owner is admitted only after the old batch has committed.
         self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
 
+    def test_history_completed_call_filters_by_known_start(self):
+        self.event('item/completed', {'startedAt': 100, 'completedAt': 200,
+            'item': {'id': 'historical-span', 'type': 'commandExecution', 'command': 'build', 'aggregatedOutput': 'done'}}, at=200, source='rollout')
+        calls = self.data(**{'from': 90, 'to': 110})['calls']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['at'], 100)
+        self.assertEqual(calls[0]['finishedAt'], 200)
+        self.assertEqual(self.data(**{'from': 190, 'to': 210})['calls'], [])
+
+    def test_history_enrichment_updates_live_call_indexed_start(self):
+        item = {'id': 'late-start', 'type': 'commandExecution', 'command': 'build', 'aggregatedOutput': 'done'}
+        self.event('item/completed', {'item': item}, at=200)
+        self.assertEqual(len(self.data(**{'from': 190, 'to': 210})['calls']), 1)
+        self.event('item/completed', {'item': item, 'startedAt': 100, 'completedAt': 200}, at=200, source='rollout')
+        call = self.data(**{'from': 90, 'to': 110})['calls'][0]
+        self.assertEqual(call['at'], 100)
+        self.assertEqual(call['firstSourceAt'], 200)
+        self.assertEqual(call['source'], 'live')
+        self.assertEqual(self.data(**{'from': 190, 'to': 210})['calls'], [])
+
+    def test_model_call_output_before_input_uses_input_start_for_filters(self):
+        with self.runtime.db() as db:
+            self.runtime.analytics_model_payload(db, self.agent,
+                {'type': 'function_call_output', 'call_id': 'unordered', 'output': 'done'}, at=200)
+            self.runtime.analytics_model_payload(db, self.agent,
+                {'type': 'function_call', 'call_id': 'unordered', 'name': 'exec', 'arguments': 'build'}, at=100)
+        call = self.data(**{'from': 90, 'to': 110})['calls'][0]
+        self.assertEqual(call['at'], 100)
+        self.assertEqual(call['finishedAt'], 200)
+        self.assertEqual(call['durationMs'], 100000)
+        self.assertEqual(self.data(**{'from': 190, 'to': 210})['calls'], [])
+
     def test_export_pagination_time_and_restart_retention(self):
         for index in range(3):
             self.event('item/completed', {'item': {'id': str(index), 'type': 'webSearch', 'query': str(index)}}, at=100 + index)

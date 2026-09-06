@@ -81,6 +81,9 @@ The same data is available through `GET /api/analytics`. Query fields:
 - `limit`, `offset`: the call-record page, with at most 500 rows per page.
 - `export=1`: all selected records, including raw provider usage metadata.
 
+Item date filters use the start time when known. Otherwise they use completion
+time or the first observation. Imported history can establish an earlier start.
+
 Normal responses contain at most 500 recent usage samples and 100 recent
 non-tool item records. Exports include the full selected history.
 Analytics adds no messages or tool definitions to model input.

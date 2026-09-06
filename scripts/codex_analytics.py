@@ -301,7 +301,12 @@ class AnalyticsMixin:
         self.analytics_store_item(db, record)
 
     def analytics_store_item(self, db, record):
-        db.execute('INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record,type=excluded.type,name=excluded.name,is_tool=excluded.is_tool',
+        # Date filters use call start when known, then completion or observation.
+        # Enrichment must update both the record and its indexed filter value.
+        record.setdefault('firstRecordedAt', record.get('recordedAt', time.time()))
+        record.setdefault('firstSourceAt', record['at'])
+        record['at'] = next((value for value in (record.get('startedAt'), record.get('finishedAt'), record['at']) if number(value) is not None))
+        db.execute('INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record,at=excluded.at,type=excluded.type,name=excluded.name,is_tool=excluded.is_tool',
                    (record['id'], record['agentId'], record.get('rootId'), record.get('threadId'), record.get('turnId'), record['at'], record['type'], record['name'], int(record['isTool']), json.dumps(record)))
 
     def analytics_dynamic(self, db, a, p, result, *, at=None, source='live'):
@@ -491,6 +496,7 @@ class AnalyticsMixin:
                 'coverage': {'trackingSince': tracking, 'captureErrors': capture_error, 'historyErrors': [r for r in history if r.get('status') == 'error'], 'provisionalUsageSamples': len(provisional), 'tokenAttribution': 'provider_usage_only', 'payloadMeasurement': 'observed_protocol_payload',
                              'history': 'live_and_stored_history', 'notes': [
                                  'Tool filters affect tool calls only. Provider usage is scoped to the selected agents and time.',
+                                 'Item date filters use start time when known, otherwise completion time or the first observation. History can establish an earlier start.',
                                  'Input and output sizes measure UTF-8 text or compact JSON observed at the protocol boundary, not context tokens or billed tokens.',
                                  'Cached input is part of input. Reasoning output is part of output. Do not add these subsets twice.',
                                  'Token totals use response-id records when available for a turn. Other notices in that turn remain provisional and are excluded.',
