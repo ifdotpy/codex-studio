@@ -671,6 +671,7 @@ export default function App() {
           />
           {view === "chat" && agent?.isLead && (
             <NativeSelect
+              className="execution-select execution-model"
               id="model"
               aria-label="Lead model"
               value={agent.model}

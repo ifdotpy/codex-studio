@@ -4,12 +4,39 @@
   gap: 3px;
   min-width: 0;
 }
-.execution-controls .mantine-NativeSelect-root {
-  width: 128px;
-  min-width: 0;
+.workspace-header .execution-select select {
+  height: 32px;
+  min-height: 32px;
+  padding-left: 10px;
+  padding-right: 28px;
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
 }
-.execution-controls select {
-  font-size: 11px;
+.workspace-header .execution-select select:hover:not(:disabled) {
+  background: var(--mantine-color-dark-6);
+  border-color: var(--line);
+}
+.workspace-header .execution-select select:focus-visible {
+  border-color: var(--mantine-color-blue-5);
+}
+.workspace-header .execution-select select:disabled {
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: default;
+}
+.execution-model {
+  width: 84px;
+}
+.execution-reasoning {
+  width: 140px;
+  min-width: 0;
 }
 .worker-defaults-summary {
   margin-left: 7px;

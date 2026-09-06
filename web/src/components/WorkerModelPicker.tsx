@@ -63,6 +63,7 @@ export default function WorkerModelPicker({
   return (
     <div className="worker-model-picker">
       <NativeSelect
+        className="execution-select"
         id={id}
         aria-label={`Model for ${agent.name}`}
         title={

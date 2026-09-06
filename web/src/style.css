@@ -342,11 +342,6 @@ p {
   padding: 0;
   margin-bottom: 3px;
 }
-#model {
-  min-width: 84px;
-  background: transparent;
-  border-color: transparent;
-}
 #view-toggle {
   font-size: 12px;
   padding: 0 10px;
@@ -1137,11 +1132,6 @@ p {
   }
   #conversation-status {
     font-size: 10px;
-  }
-  #model {
-    min-width: 66px;
-    font-size: 12px;
-    padding-left: 6px;
   }
   #view-toggle,
   #team-toggle {

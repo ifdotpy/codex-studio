@@ -78,6 +78,7 @@ export function ExecutionControls({
   return (
     <div className="execution-controls">
       <NativeSelect
+        className="execution-select execution-reasoning"
         aria-label={agent.isLead ? "Lead reasoning" : "Subagent reasoning"}
         title={
           disabled && (agent.inFlight || busy.has(agent.status))
