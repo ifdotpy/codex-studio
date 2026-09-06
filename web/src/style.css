@@ -593,8 +593,8 @@ p {
   width: calc(100% - 64px);
   max-width: 736px;
   flex-shrink: 0;
-  margin: 12px auto 0;
-  padding: 14px 16px 10px;
+  margin: 8px auto 0;
+  padding: 10px 12px 8px;
   background: #26262e;
   border: 1px solid #ffffff14;
   border-radius: 18px;
@@ -617,7 +617,7 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-top: 10px;
+  padding-top: 5px;
 }
 #project {
   max-width: 55%;
@@ -655,7 +655,7 @@ p {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  margin: 10px auto 0;
+  margin: 6px auto 8px;
   font-size: 10px;
   color: var(--muted);
 }

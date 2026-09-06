@@ -59,14 +59,13 @@ export default function ComposerAttachments(p: {
           event.target.value = "";
         }}
       />
-      <Button
+      <ActionIcon
         type="button"
-        size="compact-xs"
+        size={28}
         variant="subtle"
         className="attach-button"
-        leftSection={
-          p.uploading ? <Loader size={13} /> : <Paperclip size={14} />
-        }
+        aria-label="Attach files"
+        title="Attach files"
         disabled={p.disabled || p.uploading || p.assets.length >= 8}
         onClick={() => {
           if (!window.codexDesktop) {
@@ -94,30 +93,34 @@ export default function ComposerAttachments(p: {
             .catch((error) => p.notify(errorText(error)));
         }}
       >
-        Attach
-      </Button>
-      {p.assets.map((asset) => (
-        <div
-          className="attachment-chip"
-          key={asset.id}
-          title={`${asset.name} · ${Math.ceil(asset.size / 1024)} KiB`}
-        >
-          {asset.preview ? (
-            <img src={asset.preview} alt="" />
-          ) : (
-            <File size={15} />
-          )}
-          <span>{asset.name}</span>
-          <ActionIcon
-            type="button"
-            size="xs"
-            aria-label={`Remove ${asset.name}`}
-            onClick={() => p.remove(asset.id)}
-          >
-            <X size={12} />
-          </ActionIcon>
+        {p.uploading ? <Loader size={13} /> : <Paperclip size={16} />}
+      </ActionIcon>
+      {!!p.assets.length && (
+        <div className="attachment-list">
+          {p.assets.map((asset) => (
+            <div
+              className="attachment-chip"
+              key={asset.id}
+              title={`${asset.name} · ${Math.ceil(asset.size / 1024)} KiB`}
+            >
+              {asset.preview ? (
+                <img src={asset.preview} alt="" />
+              ) : (
+                <File size={15} />
+              )}
+              <span>{asset.name}</span>
+              <ActionIcon
+                type="button"
+                size="xs"
+                aria-label={`Remove ${asset.name}`}
+                onClick={() => p.remove(asset.id)}
+              >
+                <X size={12} />
+              </ActionIcon>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   );
 }

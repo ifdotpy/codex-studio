@@ -577,21 +577,6 @@ export default function Conversation(p: {
               void submit();
             }}
           >
-            {managed && (
-              <ComposerAttachments
-                notify={p.notify}
-                assets={assets}
-                uploading={uploading}
-                disabled={!canSend || p.sending}
-                add={(files) => void addFiles(files)}
-                remove={(id) =>
-                  setAttachments((current) => ({
-                    ...current,
-                    [p.id || ""]: assets.filter((asset) => asset.id !== id),
-                  }))
-                }
-              />
-            )}
             <Textarea
               onPaste={(event) => {
                 const files = Array.from(event.clipboardData.files);
@@ -602,11 +587,12 @@ export default function Conversation(p: {
               }}
               variant="unstyled"
               autosize
-              minRows={shortViewport && managed ? 1 : 2}
+              minRows={1}
               maxRows={shortViewport ? (managed ? 1 : 3) : 8}
               id="message"
               ref={input}
               aria-label="Message"
+              aria-description="Enter to send. Shift + Enter for a new line."
               placeholder={
                 canSend
                   ? "What should we work on?"
@@ -616,7 +602,7 @@ export default function Conversation(p: {
               value={p.draft}
               onChange={(e) => p.setDraft(e.target.value)}
               maxLength={12000}
-              rows={2}
+              rows={1}
               onKeyDown={(e) => {
                 if (
                   e.key === "Enter" &&
@@ -629,6 +615,21 @@ export default function Conversation(p: {
               }}
             />
             <div className="composer-bar">
+              {managed && (
+                <ComposerAttachments
+                  notify={p.notify}
+                  assets={assets}
+                  uploading={uploading}
+                  disabled={!canSend || p.sending}
+                  add={(files) => void addFiles(files)}
+                  remove={(id) =>
+                    setAttachments((current) => ({
+                      ...current,
+                      [p.id || ""]: assets.filter((asset) => asset.id !== id),
+                    }))
+                  }
+                />
+              )}
               {managed && canSteer && (
                 <div
                   className="message-delivery"
@@ -722,9 +723,6 @@ export default function Conversation(p: {
               reload={p.reloadLimits}
             />
           )}
-          <p className="composer-hint">
-            Enter to send · Shift + Enter for a new line
-          </p>
         </>
       )}
     </section>

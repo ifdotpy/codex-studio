@@ -7,12 +7,15 @@ import time
 def panel_tools(tool, text):
     return [tool(
         "orchestration_panel",
-        "Display HTML/CSS/SVG in your persistent 200px-high panel between the chat and composer. "
-        "Use it for progress, diagrams, or a compact dashboard. set replaces the whole panel; "
+        "Display HTML/CSS/SVG in your persistent 150px-high panel between the chat and composer. "
+        "Design a compact visual instrument, not another chat message: use CSS grids, segmented progress bars, "
+        "stage tracks, small SVG diagrams, or measured counters with short labels. Avoid paragraphs and repeated chat summaries. "
+        "Show the current phase and one bottleneck at a glance. Use real counts only; never invent percentages or fake progress. "
+        "set replaces the whole panel; "
         "get reads it; clear empties it. Supply html (fragment or document) and optional css. "
         "Updates appear in place without a chat message. Each agent owns its own panel. "
         "Scripts, navigation, and external resources are disabled; inline CSS and CSS animations work. "
-        "Keep content responsive and readable within 200px. Update on meaningful changes, not by polling.",
+        "Keep content responsive and readable within 150px. Update on meaningful changes, not by polling.",
         {
             "action": {"type": "string", "enum": ["get", "set", "clear"]},
             "html": {**text, "maxLength": 131072},

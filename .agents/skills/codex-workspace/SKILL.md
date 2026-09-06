@@ -96,9 +96,15 @@ settings APIs.
 The chat renders fenced Mermaid diagrams and isolated static HTML/CSS/SVG.
 Scripts and remote resources do not run in these previews.
 
-Use `orchestration_panel` for the persistent 200px display between your chat and
+Use `orchestration_panel` for the persistent 150px display between your chat and
 the message composer. `action=set` replaces its contents with `html` and optional
-`css`. Use it for progress, diagrams, or a compact dashboard. Update it when the
+`css`. Design a visual instrument, not another chat message. Use a stage track,
+segmented bars, a CSS grid, small SVG diagrams, or compact counters with short
+labels. Show the current phase and one bottleneck at a glance. Avoid paragraphs
+and repeated chat summaries. Use measured counts only; do not invent percentages.
+Use color with labels, not color alone. Animate only actual active work and honor
+`prefers-reduced-motion`. Fit the 150px height without vertical scrollbars.
+Update it when the
 work changes. Do not poll or add repeated chat messages just to refresh it.
 `action=get` reads it; `action=clear` empties it. Each agent owns a separate panel.
 Inline HTML/CSS/SVG and CSS animations work. Scripts, navigation, and external

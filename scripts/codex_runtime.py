@@ -168,8 +168,10 @@ Older threads can call the workspace tools through orchestration_send with agent
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_task, orchestration_result, orchestration_search,
 orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task, orchestration_panel.
-Use orchestration_panel action=set with html and optional css for your persistent 200px panel above the composer.
+Use orchestration_panel action=set with html and optional css for your persistent 150px panel above the composer.
 Update it in place for meaningful progress or diagrams. Each agent owns their own panel.
+Design it as a visual instrument: stage tracks, segmented bars, CSS grids, compact counters or SVG diagrams.
+Use short labels, measured values and one clear bottleneck. Do not repeat chat paragraphs or invent progress percentages.
 Scripts and external resources are disabled; inline HTML/CSS/SVG and CSS animations work.
 Use orchestration_user_task for things the user must do. Supply clear completion criteria.
 A user check wakes the requesting agent and awaits its review. Accept the result or return

@@ -99,7 +99,7 @@ try {
     const bounds = await panel.boundingBox();
     const transcript = await page.locator("#messages").boundingBox();
     const composer = await page.locator("#composer").boundingBox();
-    assert.equal(bounds.height, 200);
+    assert.equal(bounds.height, 150);
     assert.ok(transcript.y + transcript.height <= bounds.y + 1);
     assert.ok(bounds.y + bounds.height <= composer.y + 1);
     assert.ok(
@@ -107,6 +107,10 @@ try {
     );
   };
   await assertLayout();
+  assert.ok(
+    (await page.locator("#composer").boundingBox()).height <= 100,
+    "The empty composer must stay compact",
+  );
   put(
     lead,
     1,
@@ -234,7 +238,7 @@ try {
     footer.y >= 0 && footer.y + footer.height <= 640,
     "limits remain reachable on a short screen",
   );
-  assert.equal((await panel.boundingBox()).height, 200);
+  assert.equal((await panel.boundingBox()).height, 150);
   await page.setViewportSize({ width: 1280, height: 980 });
   await page.getByRole("tab", { name: /Agents/ }).click();
   await page.locator("[data-room]").first().click();
@@ -244,7 +248,7 @@ try {
   console.log(
     JSON.stringify({
       passed: true,
-      height: 200,
+      height: 150,
       update: true,
       clear: true,
       isolated: true,

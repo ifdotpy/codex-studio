@@ -1,3 +1,17 @@
+/* Attachments and delivery share the same action row below the text field. */
+.composer-bar .composer-attachments {
+  display: contents;
+}
+.composer-bar {
+  flex-wrap: wrap;
+}
+.attachment-list {
+  display: flex;
+  flex: 0 0 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  order: -1;
+}
 .composer-attachments {
   display: flex;
   flex-wrap: wrap;

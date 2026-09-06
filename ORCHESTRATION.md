@@ -71,11 +71,16 @@ The bottom terminal panel shows only user shells. **Background** lists agent com
 
 ### Agent display panel
 
-Each managed conversation has a fixed 200px panel between the transcript and
+Each managed conversation has a fixed 150px panel between the transcript and
 composer. The calling agent controls it through `orchestration_panel`:
 `set` replaces HTML and optional CSS, `get` reads the current document, and
 `clear` empties the display. A worker cannot overwrite its lead's panel.
 Agent chat rooms and unmanaged conversations do not have this display.
+The agent instructions call for visual status: stage tracks, segmented bars,
+compact counters, CSS grids, and SVG diagrams with short labels. Chat paragraphs
+and invented progress values do not belong in this panel. The composer uses one
+action row for attachments, delivery, and send. The text field grows with its draft;
+context, compactions, and account limits remain directly below it.
 
 The panel renders inline HTML/CSS/SVG and CSS animations in an opaque sandbox.
 Scripts, network requests, navigation, forms, and parent application access are
