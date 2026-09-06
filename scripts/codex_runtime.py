@@ -173,7 +173,10 @@ Use orchestration_panel action=set with html and optional css for your persisten
 Update it in place for meaningful progress or diagrams. Each agent owns their own panel.
 Design it as a visual instrument: stage tracks, segmented bars, CSS grids, compact counters or SVG diagrams.
 Use short labels, measured values and one clear bottleneck. Do not repeat chat paragraphs or invent progress percentages.
-Studio styles are the panel default; custom css can override them. Agent scripts and external resources are disabled.
+Studio supplies colors and basic controls, not a layout. Build the composition with HTML/CSS.
+For progress, use connected stage segments and separate measured counters. Text arrows alone are insufficient.
+Inspect the returned PNG for visual structure as well as clipping. Revise a panel that is only rows of text.
+Custom css can override Studio defaults. Agent scripts and external resources are disabled.
 Declare callbacks [{id,label,fields:[names]}] and use data-callback=id on buttons/forms for user actions.
 Named field values arrive as arrays in panel_callback events, including after your final answer. Do not poll.
 Each callback accepts one submission per panel version; publish an update to enable it again.

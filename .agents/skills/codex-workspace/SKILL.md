@@ -107,12 +107,20 @@ Use color with labels, not color alone. Animate only actual active work and hono
 Update it when the work changes. Do not poll or add repeated chat messages just to refresh it.
 `action=get` reads it; `action=clear` empties it. Each agent owns a separate panel.
 Semantic HTML uses Studio typography, colors, buttons, and inputs by default.
+The theme does not provide a layout. Use HTML/CSS to build the composition.
+For progress, use connected stage segments and separate measured counters.
+Rows of labels with arrows do not meet this visual requirement.
+Read [the progress example](assets/panel-progress.json) when you need a starting
+composition. It contains complete tool arguments. Replace its sample values
+with verified task data. Adapt the layout to the work; it is not a required template.
 Override `css` or `--studio-bg`, `--studio-surface`, `--studio-text`,
 `--studio-muted`, `--studio-accent`, `--studio-border`, `--studio-radius`, and
 `--studio-font` only when useful. Keep the design responsive within the fixed height.
 
 `set` and `get` return the rendered panel as a PNG at 1000x150 CSS pixels.
 Inspect it for clipping, contrast, and readable labels. Real chat widths can differ.
+Also check whether shape, position, or size communicates the state. If the PNG
+contains only rows of text, revise the composition before you continue.
 If rendering fails, the document remains saved. Use a new `get` call to retry the
 image instead of repeating the write.
 
@@ -131,4 +139,5 @@ the host bridge handles button clicks and form submissions.
 
 For an older thread without this tool, call `orchestration_send` with
 `agent_id="workspace"` and `text` containing JSON:
-`{"tool":"orchestration_panel","arguments":{"action":"set","html":"<p>Review in progress</p>"}}`.
+`{"tool":"orchestration_panel","arguments":{"action":"get"}}`.
+For `set`, supply the same visual HTML/CSS arguments through this wrapper.
