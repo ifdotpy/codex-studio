@@ -41,6 +41,7 @@ import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
 import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
+import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import TerminalDock from "./components/TerminalDock";
 import "./desktop";
 import Workspace from "./components/Workspace";
@@ -349,42 +350,20 @@ export default function App() {
         </>
       ),
     });
-  const folders = async (path?: string) => {
-    try {
-      const d = await api(
-        "/api/directories" + (path ? "?path=" + encodeURIComponent(path) : ""),
-      );
-      setModal({
-        title: "Project directory",
-        body: (
-          <>
-            <p className="notice">{d.path}</p>
-            <Button
-              onClick={() =>
-                void run(async () => {
-                  await api("/api/conversation", { id: opened, cwd: d.path });
-                  setModal(null);
-                })
-              }
-            >
-              Use this folder
-            </Button>
-            {d.parent && (
-              <Button onClick={() => void folders(d.parent)}>
-                Parent folder
-              </Button>
-            )}
-            {d.directories.map((r: Json) => (
-              <Button key={r.path} onClick={() => void folders(r.path)}>
-                <Folder size={15} /> {r.name}
-              </Button>
-            ))}
-          </>
-        ),
-      });
-    } catch (e) {
-      notify(errorText(e));
-    }
+  const folders = (target: Agent) => {
+    setModal({
+      title: "Project directory",
+      body: (
+        <ProjectDirectoryPicker
+          initialPath={target.cwd}
+          onSelect={async (cwd) => {
+            await api("/api/conversation", { id: target.id, cwd });
+            setModal(null);
+            await refresh();
+          }}
+        />
+      ),
+    });
   };
   const project = () => {
     if (window.codexDesktop && agent?.isLead && !agent.threadId) {
@@ -401,7 +380,7 @@ export default function App() {
       void window.codexDesktop
         .revealPath(agent.cwd)
         .catch((error) => notify(errorText(error)));
-    } else if (agent?.isLead && !agent.threadId) void folders(agent.cwd);
+    } else if (agent?.isLead && !agent.threadId) folders(agent);
     else if (agent?.cwd)
       setModal({ title: "Project directory", body: <p>{agent.cwd}</p> });
   };
@@ -615,7 +594,9 @@ export default function App() {
                       : statusLabel(agent.status, agent.activity?.phase)
                     : room?.kind === "private"
                       ? "Private between agents · Visible to you"
-                      : "Broadcast"}
+                      : room
+                        ? "Broadcast"
+                        : ""}
             </span>
           </div>
           <Accounts
@@ -685,7 +666,7 @@ export default function App() {
               Team
             </Button>
           )}
-          {view === "chat" && agent?.source === "managed" && (
+          {view === "chat" && agent?.source === "managed" && !agent.empty && (
             <div
               className="conversation-quick-actions"
               aria-label="Agent actions"
@@ -700,6 +681,12 @@ export default function App() {
                 <Button
                   key={String(action)}
                   data-action={String(action)}
+                  disabled={
+                    action !== "stop-team" &&
+                    (busy.has(agent.status) ||
+                      !!agent.inFlight ||
+                      !agent.threadId)
+                  }
                   size="compact-xs"
                   variant="subtle"
                   color={action === "stop-team" ? "red" : undefined}

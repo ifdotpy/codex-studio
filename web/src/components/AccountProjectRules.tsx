@@ -38,7 +38,11 @@ export default function AccountProjectRules({
     <div className="account-project-rules">
       <div className="account-rules-summary">
         <FolderLock size={13} />
-        <span>{projectRuleSummary(account)}</span>
+        <span>
+          {account.projectRules?.allowedProjects?.length
+            ? "Allowed projects"
+            : projectRuleSummary(account)}
+        </span>
         <Button
           size="compact-xs"
           variant="subtle"

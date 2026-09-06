@@ -1,0 +1,63 @@
+.directory-picker {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.directory-location {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.directory-location > span {
+  overflow-wrap: anywhere;
+}
+.directory-location > button {
+  flex-shrink: 0;
+}
+.directory-list {
+  height: min(320px, 40vh);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.directory-list > p,
+.directory-list > [role="alert"] {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.directory-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 11px 12px;
+  font-size: 13px;
+}
+.directory-row:hover,
+.directory-row:focus-visible {
+  background: #ffffff08;
+}
+.directory-row > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.directory-row > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.directory-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+.directory-error {
+  margin: 0;
+  color: var(--mantine-color-red-5);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}

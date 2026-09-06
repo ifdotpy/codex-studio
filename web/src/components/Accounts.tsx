@@ -115,9 +115,13 @@ function AccountCapacity({
                     dateTime={new Date(window.reset * 1000).toISOString()}
                     title={new Date(window.reset * 1000).toLocaleString()}
                   >
-                    {window.expired
-                      ? "Refresh required"
-                      : `Resets ${new Date(window.reset * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`}
+                    {window.expired ? "Due " : "Resets "}
+                    {new Date(window.reset * 1000).toLocaleString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
                   </time>
                 )}
               </span>
@@ -332,10 +336,6 @@ export default function Accounts({
         size="lg"
         classNames={{ body: "accounts-manager" }}
       >
-        <p className="accounts-intro">
-          Each team uses its own account and limits. Choose a default for new
-          conversations.
-        </p>
         {lead && (
           <div className="account-rule-override account-rule-override-panel">
             <Switch
@@ -360,51 +360,48 @@ export default function Accounts({
               data-account={account.id}
               aria-label={account.email || account.label}
             >
-              <span className="account-avatar">
-                <UserRound size={19} />
-              </span>
-              <div className="account-identity">
-                <strong>{account.email || account.label}</strong>
-                {account.email && account.label !== account.email && (
-                  <span>{account.label}</span>
+              <div className="account-row-header">
+                <div className="account-identity">
+                  <strong>{account.email || account.label}</strong>
+                  {account.plan && (
+                    <span className="account-plan">{account.plan}</span>
+                  )}
+                  {account.status !== "ready" && (
+                    <small>{account.status}</small>
+                  )}
+                </div>
+                {account.id === state.data.defaultAccountKey ? (
+                  <span className="account-default">
+                    <Check size={12} /> Default
+                  </span>
+                ) : (
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    disabled={!!pending || account.status !== "ready"}
+                    loading={pending === `default:${account.id}`}
+                    aria-label={`Use ${account.email || account.label} by default`}
+                    onClick={() =>
+                      void action(`default:${account.id}`, async () => {
+                        state.setData(
+                          await api<AccountsState>("/api/accounts/default", {
+                            account_key: account.id,
+                          }),
+                        );
+                      })
+                    }
+                  >
+                    Use by default
+                  </Button>
                 )}
-                <small>
-                  {[
-                    account.plan,
-                    account.source,
-                    account.status !== "ready" ? account.status : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </small>
-                {account.error && <p role="alert">{account.error}</p>}
-                <AccountProjectRules account={account} saved={state.setData} />
-                <AccountCapacity account={account} opened={opened} />
               </div>
-              {account.id === state.data.defaultAccountKey ? (
-                <span className="account-default">
-                  <Check size={12} /> Default
-                </span>
-              ) : (
-                <Button
-                  size="compact-xs"
-                  variant="subtle"
-                  disabled={!!pending || account.status !== "ready"}
-                  loading={pending === `default:${account.id}`}
-                  aria-label={`Use ${account.email || account.label} by default`}
-                  onClick={() =>
-                    void action(`default:${account.id}`, async () => {
-                      state.setData(
-                        await api<AccountsState>("/api/accounts/default", {
-                          account_key: account.id,
-                        }),
-                      );
-                    })
-                  }
-                >
-                  Use by default
-                </Button>
+              {account.error && (
+                <p className="account-action-error" role="alert">
+                  {account.error}
+                </p>
               )}
+              <AccountCapacity account={account} opened={opened} />
+              <AccountProjectRules account={account} saved={state.setData} />
             </section>
           ))}
         </div>

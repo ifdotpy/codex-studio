@@ -69,33 +69,50 @@ let delayed = null;
 let delayWork = false;
 let discoverCount = 0;
 let snapshotLimits = {};
-const limits = (key) => ({
-  accountKey: key,
-  at: Date.now() / 1000,
-  data: {
-    accountId: `native-${key}`,
-    rateLimits: {
-      limitId: "codex",
-      planType: "pro",
-      primary: {
-        usedPercent: key === "default" ? 11 : key === "work" ? 22 : 33,
-        windowDurationMins: 300,
-        resetsAt: Date.now() / 1000 + 3600,
+const limits = (key) => {
+  const codex = {
+    limitId: "codex",
+    planType: "pro",
+    primary: {
+      usedPercent: key === "default" ? 11 : key === "work" ? 22 : 33,
+      windowDurationMins: 300,
+      resetsAt: Date.now() / 1000 + 3600,
+    },
+    secondary: {
+      usedPercent: 35,
+      windowDurationMins: 10080,
+      resetsAt: Date.now() / 1000 + 172800,
+    },
+  };
+  return {
+    accountKey: key,
+    at: Date.now() / 1000,
+    data: {
+      accountId: `native-${key}`,
+      rateLimits: codex,
+      rateLimitsByLimitId: {
+        codex,
+        codex_bengalfox: {
+          limitId: "codex_bengalfox",
+          limitName: "GPT-5.3-Codex-Spark",
+          primary: { ...codex.primary, usedPercent: 6 },
+          secondary: { ...codex.secondary, usedPercent: 15 },
+        },
+      },
+      rateLimitResetCredits: {
+        availableCount: 1,
+        credits: [
+          {
+            id: `credit-${key}`,
+            title: "Full reset",
+            status: "available",
+            resetType: "codexRateLimits",
+          },
+        ],
       },
     },
-    rateLimitResetCredits: {
-      availableCount: 1,
-      credits: [
-        {
-          id: `credit-${key}`,
-          title: "Full reset",
-          status: "available",
-          resetType: "codexRateLimits",
-        },
-      ],
-    },
-  },
-});
+  };
+};
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   let body = {};
@@ -238,7 +255,7 @@ try {
     args: ["--disable-extensions", "--no-first-run"],
   });
   const page = await browser.newPage({
-    viewport: { width: 1440, height: 950 },
+    viewport: { width: 1440, height: 900 },
   });
   debugPage = page;
   page.setDefaultTimeout(10000);
@@ -379,6 +396,17 @@ try {
   );
   const bounds = await dialog.boundingBox();
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.screenshot({
+    path: join(evidence, "rules-320.png"),
+    animations: "disabled",
+  });
+  assert.ok(
+    await dialog.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    ),
+    "Rule editor does not overflow at 320px",
+  );
   await dialog.getByRole("switch", { name: "Dangerously skip rules" }).click();
   await page.locator(".account-rules-badge").waitFor({ state: "hidden" });
   await page.keyboard.press("Escape");
@@ -398,9 +426,7 @@ try {
       .isDisabled(),
     true,
   );
-  await dialog
-    .getByText("Wait for active turns to finish.")
-    .waitFor();
+  await dialog.getByText("Wait for active turns to finish.").waitFor();
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -414,7 +440,8 @@ try {
         "explicit team override",
         "loaded override badge",
         "busy worker disables override",
-        "390px layout",
+        "Codex and Spark dual-window quotas",
+        "390px and 320px layouts",
       ],
       evidence,
     }),

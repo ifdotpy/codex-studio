@@ -52,6 +52,79 @@ try {
     0,
     "idle has no loading status below messages",
   );
+  assert.equal(
+    await page.locator(".conversation-quick-actions").count(),
+    0,
+    "empty chats have no compact, review, or stop actions",
+  );
+  const emptyId = state.runtime.agents.find((a) => a.name === "New chat").id;
+  let failed = true;
+  await page.route("**/api/directories?**", async (route) => {
+    const path = new URL(route.request().url()).searchParams.get("path");
+    if (path === "/projects/Broken" && failed) {
+      failed = false;
+      return route.fulfill({
+        status: 403,
+        json: { error: "Cannot read this folder" },
+      });
+    }
+    const current = path?.startsWith("/projects") ? path : "/projects";
+    await route.fulfill({
+      json: {
+        path: current,
+        parent: current === "/projects" ? null : "/projects",
+        directories:
+          current === "/projects"
+            ? [
+                { name: "Alpha", path: "/projects/Alpha" },
+                { name: "Broken", path: "/projects/Broken" },
+                {
+                  name: "A folder with a very long name that must wrap on a small screen",
+                  path: "/projects/Long",
+                },
+              ]
+            : [],
+      },
+    });
+  });
+  const selections = [];
+  await page.route("**/api/conversation", async (route) => {
+    const body = route.request().postDataJSON();
+    if (!body.cwd) return route.continue();
+    selections.push(body);
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.locator("#project").click();
+  const picker = page.getByRole("dialog", { name: "Project directory" });
+  await picker.getByRole("button", { name: "Alpha", exact: true }).waitFor();
+  await picker.getByLabel("Filter folders").fill("alpha");
+  assert.equal(await picker.locator(".directory-row").count(), 1);
+  await picker.getByLabel("Filter folders").fill("");
+  await picker.getByRole("button", { name: "Broken", exact: true }).click();
+  await picker
+    .getByRole("alert")
+    .getByText("Cannot read this folder")
+    .waitFor();
+  assert.ok(
+    await picker.getByRole("button", { name: "Use this folder" }).isDisabled(),
+  );
+  await picker.getByRole("button", { name: "Retry", exact: true }).click();
+  await picker.getByText("No folders inside").waitFor();
+  await picker.getByLabel("Parent folder", { exact: true }).click();
+  await picker.getByRole("button", { name: "Alpha", exact: true }).waitFor();
+  for (const width of [1440, 320]) {
+    await page.setViewportSize({ width, height: 960 });
+    assert.ok(
+      await picker.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
+    );
+    await page.screenshot({ path: join(root, `folders-${width}.png`) });
+  }
+  await picker.getByRole("button", { name: "Alpha", exact: true }).click();
+  await picker.getByText("No folders inside").waitFor();
+  await picker.getByRole("button", { name: "Use this folder" }).click();
+  await picker.waitFor({ state: "hidden" });
+  assert.deepEqual(selections, [{ id: emptyId, cwd: "/projects/Alpha" }]);
+  await page.setViewportSize({ width: 1440, height: 960 });
   await page.locator("#message").fill("Keep my draft");
   for (const [section, title] of [
     ["user-tasks", "Your tasks"],

@@ -41,7 +41,7 @@
 }
 .accounts-intro {
   line-height: 1.6;
-  margin: 0 0 16px;
+  margin: 0 0 12px;
 }
 .accounts-list {
   border: 1px solid var(--line);
@@ -52,30 +52,26 @@
   display: none;
 }
 .account-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 15px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
 }
 .account-row + .account-row {
   border-top: 1px solid var(--line);
 }
-.account-avatar {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--surface-2, #262729);
-  color: var(--muted);
+.account-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .account-identity {
   min-width: 0;
   flex: 1;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   overflow-wrap: anywhere;
 }
 .account-identity strong {
@@ -83,9 +79,15 @@
   font-weight: 550;
 }
 .account-identity small,
-.account-identity > span {
+.account-plan {
   color: var(--muted);
   font-size: 11px;
+}
+.account-plan {
+  text-transform: capitalize;
+}
+.account-row-header > .mantine-Button-root {
+  flex-shrink: 0;
 }
 .account-default {
   display: inline-flex;
@@ -99,10 +101,10 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 18px;
+  margin-top: 14px;
 }
 .account-action-error,
-.account-identity p[role="alert"] {
+.account-row p[role="alert"] {
   color: var(--mantine-color-red-5);
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -135,7 +137,7 @@
   letter-spacing: 2px;
 }
 .account-register {
-  margin-top: 20px;
+  margin-top: 14px;
   font-size: 12px;
   color: var(--muted);
 }
@@ -151,6 +153,108 @@
 .account-register .mantine-TextInput-root {
   flex: 1;
   min-width: 0;
+}
+.account-capacity {
+  display: grid;
+  gap: 6px;
+  line-height: 1.4;
+}
+.account-capacity-pool {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.account-capacity-pool > span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.account-capacity-pool > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+}
+.account-capacity-window {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.account-capacity-window strong {
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.account-capacity-window time {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.account-rules-warning {
+  color: var(--mantine-color-orange-4);
+}
+.account-rules-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.account-project-rules {
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.account-rules-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+.account-rules-summary > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.account-rule-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.account-rule-editor {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.account-rule-editor .mantine-Radio-root {
+  margin-top: 8px;
+}
+.account-rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.account-rule-override {
+  padding: 8px 12px;
+}
+.account-rule-override p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+.account-rule-override .mantine-Switch-label {
+  font-size: 12px;
+}
+.account-rule-override-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
 }
 @media (max-width: 900px) {
   .account-picker {
@@ -172,143 +276,32 @@
   }
   .account-row {
     padding: 12px;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .account-row .mantine-Button-root {
-    margin-left: 44px;
-  }
-  .account-avatar {
-    width: 32px;
-    height: 32px;
-  }
-}
-
-.account-capacity {
-  margin-top: 7px;
-  display: grid;
-  gap: 6px;
-}
-.account-capacity-pool {
-  display: flex;
-  gap: 10px;
-  font-size: 10px;
-  align-items: baseline;
-}
-.account-capacity-pool > span {
-  color: var(--muted);
-  width: 38px;
-  flex-shrink: 0;
-}
-.account-capacity-pool > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px 16px;
-}
-.account-capacity-window {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.account-capacity-window strong {
-  font-size: 11px;
-  font-weight: 500;
-}
-.account-capacity-window time {
-  color: var(--muted);
-  font-size: 10px;
-}
-@media (max-width: 600px) {
-  .account-row {
-    display: grid;
-    grid-template-columns: 32px minmax(0, 1fr);
-    align-items: start;
-  }
-  .account-avatar {
-    grid-column: 1;
-    grid-row: 1;
   }
   .account-identity {
-    grid-column: 2;
+    flex-basis: 100%;
   }
-  .account-row > .mantine-Button-root,
-  .account-row > .account-default {
-    grid-column: 2;
-    justify-self: start;
-    margin-left: 0;
+  .account-capacity-pool {
+    grid-template-columns: 38px minmax(0, 1fr);
+    gap: 8px;
   }
-  .account-capacity-window {
-    min-width: 110px;
+  .account-capacity-pool > div {
+    gap: 6px;
   }
-}
-.account-rules-warning {
-  color: var(--mantine-color-orange-4);
-}
-.account-rules-badge {
-  flex-shrink: 0;
-  font-size: 11px;
-}
-.account-project-rules {
-  margin: 4px 0;
-}
-.account-rules-summary {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  font-size: 12px;
-}
-.account-rules-summary > svg {
-  flex-shrink: 0;
-  color: var(--muted);
-}
-.account-rule-paths {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 10px;
-  overflow-wrap: anywhere;
-}
-.account-rule-editor {
-  display: grid;
-  gap: 12px;
-  padding: 12px;
-  margin-top: 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.account-rule-editor .mantine-Radio-root {
-  margin-top: 8px;
-}
-.account-rule-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.account-row .account-project-rules .mantine-Button-root {
-  margin-left: 0;
-}
-.account-rule-override {
-  padding: 8px 12px;
-}
-.account-rule-override p {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-  margin: 6px 0 0;
-}
-.account-rule-override .mantine-Switch-label {
-  font-size: 12px;
-}
-.account-rule-override-panel {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  margin-bottom: 16px;
-  padding: 12px;
-}
-@media (max-width: 600px) {
+  .account-capacity-window strong {
+    font-size: 11px;
+  }
+  .account-capacity-window time {
+    font-size: 10px;
+  }
+  .accounts-actions > .mantine-Button-root {
+    width: 100%;
+  }
+  .account-register form {
+    flex-wrap: wrap;
+  }
+  .account-register .mantine-TextInput-root {
+    flex-basis: 100%;
+  }
   .account-rules-badge {
     padding-inline: 5px;
   }

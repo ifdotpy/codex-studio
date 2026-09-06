@@ -28,6 +28,10 @@ const accounts = [
     plan: "plus",
     source: "CodexBar",
     status: "ready",
+    projectRules: {
+      allowedProjects: ["/Users/igor/Projects/lumina"],
+      revision: 1,
+    },
   },
   {
     id: "other",
@@ -64,33 +68,57 @@ let delayed = null;
 let delayWork = false;
 let discoverCount = 0;
 let snapshotLimits = {};
-const limits = (key) => ({
-  accountKey: key,
-  at: Date.now() / 1000,
-  data: {
-    accountId: `native-${key}`,
-    rateLimits: {
-      limitId: "codex",
-      planType: "pro",
-      primary: {
-        usedPercent: key === "default" ? 11 : key === "work" ? 22 : 33,
-        windowDurationMins: 300,
-        resetsAt: Date.now() / 1000 + 3600,
+const limits = (key) => {
+  const codex = {
+    limitId: "codex",
+    planType: "pro",
+    primary: {
+      usedPercent: key === "default" ? 11 : key === "work" ? 22 : 33,
+      windowDurationMins: 300,
+      resetsAt: Date.now() / 1000 + 3600,
+    },
+    secondary: {
+      usedPercent: 35,
+      windowDurationMins: 10080,
+      resetsAt: Date.now() / 1000 + 172800,
+    },
+  };
+  return {
+    accountKey: key,
+    at: Date.now() / 1000,
+    data: {
+      accountId: `native-${key}`,
+      rateLimits: codex,
+      rateLimitsByLimitId: {
+        codex,
+        codex_bengalfox: {
+          limitId: "codex_bengalfox",
+          limitName: "GPT-5.3-Codex-Spark",
+          primary: {
+            ...codex.primary,
+            usedPercent: 6,
+            ...(key === "other" ? { resetsAt: Date.now() / 1000 - 60 } : {}),
+          },
+          secondary: {
+            ...codex.secondary,
+            usedPercent: key === "other" ? null : 15,
+          },
+        },
+      },
+      rateLimitResetCredits: {
+        availableCount: 1,
+        credits: [
+          {
+            id: `credit-${key}`,
+            title: "Full reset",
+            status: "available",
+            resetType: "codexRateLimits",
+          },
+        ],
       },
     },
-    rateLimitResetCredits: {
-      availableCount: 1,
-      credits: [
-        {
-          id: `credit-${key}`,
-          title: "Full reset",
-          status: "available",
-          resetType: "codexRateLimits",
-        },
-      ],
-    },
-  },
-});
+  };
+};
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   let body = {};
@@ -209,7 +237,7 @@ try {
     args: ["--disable-extensions", "--no-first-run"],
   });
   const page = await browser.newPage({
-    viewport: { width: 1440, height: 950 },
+    viewport: { width: 1440, height: 900 },
   });
   debugPage = page;
   page.setDefaultTimeout(10000);
@@ -321,7 +349,26 @@ try {
     .locator('[data-account="work"]')
     .getByText("5h 78% left", { exact: true })
     .waitFor();
-  assert.equal(await dialog.locator("time[datetime]").count(), 3);
+  assert.equal(await dialog.locator("time[datetime]").count(), 12);
+  assert.equal(await dialog.getByText("Spark", { exact: true }).count(), 3);
+  await dialog.getByText("5h Reset due", { exact: true }).waitFor();
+  await dialog.getByText("7d Unknown", { exact: true }).waitFor();
+  assert.match(
+    await dialog.locator('[data-account="other"] time').nth(2).innerText(),
+    /^Due .+\d/,
+  );
+  assert.equal(
+    await dialog.getByText("7d 65% left", { exact: true }).count(),
+    3,
+  );
+  await dialog
+    .getByText("/Users/igor/Projects/lumina", { exact: true })
+    .waitFor();
+  const desktopBounds = await dialog.boundingBox();
+  assert.ok(
+    desktopBounds.y >= 0 && desktopBounds.y + desktopBounds.height <= 900,
+    "Three accounts with both quota windows and project rules fit a 900px viewport",
+  );
   await dialog
     .getByRole("button", {
       name: "Use work@example.com by default",
@@ -339,6 +386,15 @@ try {
     () => !document.querySelector(".accounts-actions button")?.disabled,
   );
   assert.equal(discoverCount, 1);
+  assert.ok(
+    await dialog.locator(".accounts-manager").evaluate((element) => {
+      const top = element.getBoundingClientRect().top;
+      const bottom = element.getBoundingClientRect().bottom;
+      const dialog = element.closest('[role="dialog"]').getBoundingClientRect();
+      return top >= dialog.top && bottom <= dialog.bottom;
+    }),
+    "All account manager content fits without scrolling at 900px",
+  );
   await page.screenshot({
     path: join(evidence, "accounts-desktop.png"),
     animations: "disabled",
@@ -393,6 +449,17 @@ try {
     bounds.x >= 0 && bounds.x + bounds.width <= 390,
     "Account manager fits narrow screen",
   );
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.screenshot({
+    path: join(evidence, "accounts-320.png"),
+    animations: "disabled",
+  });
+  assert.ok(
+    await dialog.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth,
+    ),
+    "Account content does not overflow at 320px",
+  );
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   await page.screenshot({
@@ -415,7 +482,8 @@ try {
         "default new chat",
         "discovery",
         "device login",
-        "390px layout",
+        "Codex and Spark dual-window quotas",
+        "390px and 320px layouts",
       ],
       evidence,
     }),
