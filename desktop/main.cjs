@@ -142,6 +142,9 @@ async function start() {
     minHeight: 600,
     show: false,
     title: "Codex Agents",
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hidden", trafficLightPosition: { x: 20, y: 29 } }
+      : {}),
     backgroundColor: "#18181b",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),

@@ -296,6 +296,26 @@ p {
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
 }
+.desktop-mac .workspace-header,
+.desktop-mac .brand {
+  -webkit-app-region: drag;
+}
+.desktop-mac .workspace-header :is(button, a, input, select, [role="button"]),
+.desktop-mac .brand > span {
+  -webkit-app-region: no-drag;
+}
+.desktop-mac .brand {
+  min-height: 33px;
+  padding-left: 88px;
+}
+.desktop-mac .brand-mark {
+  display: none;
+}
+@media (max-width: 760px) {
+  .desktop-mac .workspace-header {
+    padding-left: 96px;
+  }
+}
 .conversation-heading {
   min-width: 0;
   flex: 1;

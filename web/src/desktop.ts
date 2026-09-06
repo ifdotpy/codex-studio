@@ -15,6 +15,10 @@ declare global {
   }
 }
 
+if (window.codexDesktop?.platform === "darwin") {
+  document.documentElement.classList.add("desktop-mac");
+}
+
 // Preview frames cannot access this main-frame bridge.
 document.addEventListener("click", (event) => {
   if (!window.codexDesktop || event.defaultPrevented || event.button !== 0)
