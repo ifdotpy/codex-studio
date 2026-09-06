@@ -29,6 +29,10 @@ application's managed capabilities are available.
 Use `orchestration_spawn` for independent worker tasks. Supply bounded ownership,
 a completion check, and explicit commit authority. Worktrees start from committed
 HEAD, so include or commit required inputs before delegation.
+Omit model, effort, and `fast_mode` to use the user's team defaults.
+Override a field only for a specific worker. Use `effort: null` for the model's native default.
+Use `fast_mode: false` to disable Fast for that worker. Explicit profile values override team defaults.
+Only the user can change team defaults. See [the execution contract](../../../ORCHESTRATION.md).
 
 The managed server queues child results and starts a new lead turn after a final
 answer. Finish the current turn when useful independent work is exhausted and a

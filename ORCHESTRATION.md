@@ -9,7 +9,28 @@ Leads carry an explicit `isLead` marker in SQLite. Only Astra and Sol can be lea
 Standalone workers and registered sessions stay in **Other sessions**.
 The project defaults to the previous lead's directory, `CODEX_CANVAS_CWD`, or the server's current directory.
 Before the first message, select the folder below the composer to change the project.
-Choose Astra or Sol in the chat header. Model changes require an idle turn.
+Choose Astra or Sol, its reasoning level, and **Fast** in the chat header.
+Changes to an agent's execution settings require an idle turn.
+
+**Subagents** sets the model, reasoning level, and Fast default for future workers in this team.
+The lead can override each value in `orchestration_spawn`.
+Omitted fields use the latest root lead defaults, including for workers created by another worker.
+A null default model uses the root lead model. A null effort uses the selected model's native default.
+Fast defaults to off. The main agent's reasoning and Fast settings do not become worker defaults.
+Explicit profile model and effort values override team defaults; explicit spawn fields override the profile.
+A profile's null effort leaves the team default in effect.
+If a worker selects another model that cannot use the inherited reasoning level, it uses that model's native default.
+An unsupported explicit reasoning level or Fast mode returns an error.
+The account's native model catalogue defines supported values.
+
+Only the user can change team defaults, including during a running turn.
+Existing workers retain their settings. A new chat in the same account copies the previous team's defaults.
+Fast uses native `serviceTier=priority`; off sends `serviceTier=default`.
+Reasoning and service tier apply on thread start, resume, and each turn.
+
+Codex 0.153.4 accepts dynamic tool definitions only when a native thread starts.
+Existing threads still use user defaults, but their old spawn schema lacks the per-worker `fast_mode` override.
+Start a new lead chat to expose that new tool parameter. Existing histories are preserved.
 
 The conversation shows Markdown, tool results, queued messages and agent questions.
 Enter sends a message. Shift + Enter inserts a new line.
@@ -51,7 +72,7 @@ The lead receives these additional tools:
 | `orchestration_chat_read` | Read a participant chat, with a cursor for older messages. |
 | `orchestration_title` | Set the conversation title from the task. Only a lead can call this tool. |
 | `orchestration_interrupt` | Stop a descendant and its descendants. A follow-up can resume them. |
-| `orchestration_spawn` | Create up to 64 workers in one request. Each worker has a task, role, optional model and effort. |
+| `orchestration_spawn` | Create up to 64 workers in one request. Each worker has a task, role, and optional model, effort, and `fast_mode` overrides. |
 | `orchestration_send` | Queue a follow-up for a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery. |
 | `orchestration_status` | Read team status and command watches for a decision. |
 | `orchestration_monitor` | Start a command watch. Deliver one result when the command exits. |

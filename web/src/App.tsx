@@ -42,6 +42,11 @@ import Sidebar from "./components/Sidebar";
 import WorkerModelPicker, {
   useWorkerModels,
 } from "./components/WorkerModelPicker";
+import {
+  ExecutionControls,
+  WorkerDefaults,
+  shortModel,
+} from "./components/ExecutionSettings";
 import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
@@ -111,8 +116,7 @@ export default function App() {
     (agent ? "default" : accounts.data.defaultAccountKey);
   const workerModels = useWorkerModels(
     accountKey,
-    workers.length > 0 ||
-      (!!agent && !agent.isLead && agent.source === "managed"),
+    !!agent && agent.source === "managed",
   );
   const changeWorkerModel = async (id: string, model: string) => {
     await api("/api/conversation", { id, model });
@@ -505,12 +509,17 @@ export default function App() {
           <small>{statusLabel(a.status)}</small>
         </span>
       </UnstyledButton>
-      <WorkerModelPicker
-        agent={a}
-        catalog={workerModels}
-        change={changeWorkerModel}
-        onError={notify}
-      />
+      <span
+        className="worker-model-summary"
+        title={[
+          a.model,
+          a.effort || "default reasoning",
+          a.fastMode ? "Fast" : "Standard",
+        ].join(" · ")}
+      >
+        {shortModel(a.model)}
+        {a.fastMode ? " · Fast" : ""}
+      </span>
     </div>
   );
   const shown = workers.filter((a) =>
@@ -687,6 +696,23 @@ export default function App() {
               catalog={workerModels}
               change={changeWorkerModel}
               onError={notify}
+            />
+          )}
+          {view === "chat" && agent?.source === "managed" && (
+            <ExecutionControls
+              key={"execution:" + agent.id}
+              agent={agent}
+              catalog={workerModels}
+              refresh={refresh}
+              onError={notify}
+            />
+          )}
+          {view === "chat" && lead?.isLead && (
+            <WorkerDefaults
+              key={"defaults:" + lead.id}
+              lead={lead}
+              catalog={workerModels}
+              refresh={refresh}
             />
           )}
           {view === "chat" && !!workers.length && (

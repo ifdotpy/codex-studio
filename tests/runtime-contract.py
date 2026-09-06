@@ -72,7 +72,7 @@ class FakeServer:
         if method == 'account/rateLimits/read':
             return {'rateLimits': {'limitId': 'codex', 'primary': {'usedPercent': 42, 'windowDurationMins': 300, 'resetsAt': 2000000000}}}
         if method == 'model/list':
-            return {'data': [{'model': 'test-model'}]}
+            return {'data': [{'model': model, 'defaultReasoningEffort': 'medium', 'supportedReasoningEfforts': [{'reasoningEffort': effort} for effort in ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']], 'serviceTiers': [{'id': 'priority'}]} for model in ['test-model', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra']]}
         raise AssertionError(method)
 
     def write(self, value):

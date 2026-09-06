@@ -59,8 +59,6 @@ try {
   if (process.env.CODEX_TEST_DESKTOP) {
     await page.waitForURL(url + "/");
     await page.locator("#message").waitFor();
-  } else {
-    await page.goto(url);
   }
   let requests = 0;
   await page.route("**/api/models?**", async (route) => {
@@ -80,20 +78,19 @@ try {
       },
     });
   });
+  if (process.env.CODEX_TEST_DESKTOP) await page.reload();
+  else await page.goto(url);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
-  await page
-    .getByRole("button", { name: "Retry model list" })
-    .first()
-    .waitFor();
-  assert.ok(
-    await page.getByLabel("Model for Worker 07", { exact: true }).isDisabled(),
+  const initialState = await (await fetch(url + "/api/state")).json();
+  const worker = initialState.runtime.agents.find(
+    (agent) => agent.name === "Worker 07",
   );
-  await page.getByRole("button", { name: "Retry model list" }).first().click();
-  const selector = page.getByLabel("Model for Worker 07", { exact: true });
-  await page.waitForFunction(
-    () =>
-      !document.querySelector('[aria-label="Model for Worker 07"]').disabled,
-  );
+  await page.locator(`[data-worker="${worker.id}"]`).click();
+  await page.getByRole("button", { name: "Retry model list" }).waitFor();
+  assert.ok(await page.locator("#model").isDisabled());
+  await page.getByRole("button", { name: "Retry model list" }).click();
+  const selector = page.locator("#model");
+  await page.waitForFunction(() => !document.querySelector("#model").disabled);
   assert.equal(
     await selector.locator('option[value="hidden-model"]').count(),
     0,
@@ -101,18 +98,17 @@ try {
   await selector.selectOption("test-model");
   await page.waitForFunction(
     () =>
-      document.querySelector('[aria-label="Model for Worker 07"]').value ===
-      "test-model",
+      !document.querySelector("#model").disabled &&
+      document.querySelector("#model").value === "test-model",
   );
   const state = await (await fetch(url + "/api/state")).json();
-  const worker = state.runtime.agents.find((a) => a.name === "Worker 07");
-  assert.equal(worker.model, "test-model");
-  await page.locator(`[data-worker="${worker.id}"]`).click();
-  await page.locator("#model").waitFor();
-  assert.equal(await page.locator("#model").inputValue(), "test-model");
+  assert.equal(
+    state.runtime.agents.find((agent) => agent.id === worker.id).model,
+    "test-model",
+  );
   await page.locator("#model").selectOption("ui-only");
   await page
-    .getByText("This model is not available for the subagent account", {
+    .getByText("This model is not available for this account", {
       exact: true,
     })
     .waitFor();

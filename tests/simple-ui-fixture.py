@@ -38,7 +38,18 @@ class BackgroundServer(m.FakeServer):
             gate.set()
         super().close()
 
-c.runtime = Runtime(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else m.FakeServer)
+class SettingsRuntime(Runtime):
+    def schedule(self):
+        # Execution settings tests control turns and worker creation explicitly.
+        while not self.closed:
+            self.changed.wait(0.1)
+            self.changed.clear()
+
+runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') else Runtime
+c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else m.FakeServer)
+if os.environ.get('EXECUTION_SETTINGS_CATALOG'):
+    fixture_catalog = __import__('json').loads(os.environ['EXECUTION_SETTINGS_CATALOG'])
+    c.runtime.catalog = lambda account='default': {'data': fixture_catalog}
 with c.runtime.lock, c.runtime.db() as db:
     lead = c.runtime.create({'name': 'Release lead', 'cwd': str(c.root), 'prompt': 'Review the release'}, defer=True)
     lead.update(autoWake=True, status='waiting')
@@ -102,6 +113,8 @@ def fixture_events():
             agent = c.runtime.agent(params['agent'])
             c.runtime.monitor(agent['id'], params, approved=params.get('approved', True),
                               key=params['id'], epoch=agent['epoch'])
+        elif message.get('method') == 'fixture/create-worker':
+            c.runtime.create(message['params'], parent=message['parent'], defer=True)
         else:
             c.runtime.notification(message)
 threading.Thread(target=fixture_events, daemon=True).start()

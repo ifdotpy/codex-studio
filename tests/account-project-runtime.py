@@ -145,6 +145,7 @@ class ProjectRuntime(unittest.TestCase):
 
     def test_loaded_thread_next_send_steer_and_resume_recheck(self):
         a = self.runtime.prepare(self.lead())
+        calls_before_denial = list(self.runtime.connect().calls)
         self.rules([])
         for action in (
             lambda: self.runtime.prepare(a),
@@ -155,7 +156,7 @@ class ProjectRuntime(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "cannot use project"):
                 action()
-        self.assertEqual(len(self.runtime.connect().calls), 1)
+        self.assertEqual(self.runtime.connect().calls, calls_before_denial)
 
     def test_unchanged_message_retry_cannot_replay_after_rule_change(self):
         a = self.lead()

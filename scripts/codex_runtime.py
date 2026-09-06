@@ -74,11 +74,14 @@ TOOLS = [
     tool("orchestration_spawn", "Delegate a batch to managed agents. Returns immediately. "
          "Each child completion wakes you, even after your final answer. Use these agents "
          "instead of native subagents. Implementers receive isolated git worktrees at HEAD; "
-         "reviewers share your directory read-only. Never poll for their completion.",
+         "reviewers share your directory read-only. Never poll for their completion. "
+         "Omit model, effort and fast_mode to use the user's team defaults. Override them "
+         "only for a specific worker. effort=null uses that model's native default.",
          {"agents": {"type": "array", "minItems": 1, "maxItems": 64, "items": {
              "type": "object", "properties": {"name": TEXT, "prompt": TEXT,
                  "role": {"type": "string", "enum": ["implementer", "reviewer"]},
-                 "model": TEXT, "effort": TEXT}, "required": ["name", "prompt"],
+                 "model": TEXT, "effort": {"type": ["string", "null"]},
+                 "fast_mode": {"type": "boolean"}}, "required": ["name", "prompt"],
              "additionalProperties": False}}}, ["agents"]),
     tool("orchestration_send", "Send a follow-up to one of your descendants. It queues "
          "behind an active turn. Completion returns to its parent automatically.",
@@ -142,6 +145,10 @@ Use orchestration_task to track assignments, dependencies, submitted evidence an
 Use orchestration_watch for file changes or schedules with a script gate; no model runs during the wait.
 Use orchestration_resource to claim the shared codex-board. Never invent a separate resource registry.
 Worker profiles can be listed with orchestration_status and passed as profile_id to orchestration_spawn.
+Omit model, effort and fast_mode to use the user's current team defaults for each new worker.
+An explicit profile model or effort overrides the team default; explicit spawn fields override the profile.
+Use effort=null to select a model's native default, or fast_mode=false to disable Fast for that worker.
+Only the user can change team defaults. Do not call settings APIs to change them.
 Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_task, orchestration_result, orchestration_search,
@@ -564,8 +571,47 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         allowed = self.accounts.get(account_key)["projectRules"]["allowedProjects"]
         return next((path for path in allowed or [] if Path(path).is_dir()), cwd)
 
-    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False):
+    @staticmethod
+    def worker_defaults(root):
+        return {"model": None, "effort": None, "fastMode": False,
+                **root.get("workerDefaults", {})}
+
+    @staticmethod
+    def validate_execution(catalog, model, effort, fast_mode, *, fallback_effort=False):
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("Select an available model")
+        if effort is not None and (not isinstance(effort, str) or not effort.strip()):
+            raise ValueError("Reasoning effort must be a non-empty string or null")
+        if type(fast_mode) is not bool:
+            raise ValueError("fast_mode must be a boolean")
+        info = next((row for row in catalog.get("data", [])
+                     if row.get("model") == model and not row.get("hidden")), None)
+        if info is None:
+            raise ValueError("This model is not available for this account")
+        supported = {row.get("reasoningEffort") for row in info.get("supportedReasoningEfforts", [])}
+        if effort is not None and effort not in supported:
+            if fallback_effort:
+                effort = None
+            else:
+                raise ValueError("This reasoning level is not supported by the selected model")
+        if fast_mode and not any(tier.get("id") == "priority" for tier in info.get("serviceTiers", [])):
+            raise ValueError("Fast mode is not supported by the selected model")
+        return effort, effort if effort is not None else info.get("defaultReasoningEffort")
+
+    def validate_worker_defaults(self, value, root_model, catalog):
+        if not isinstance(value, dict) or set(value) != {"model", "effort", "fast_mode"}:
+            raise ValueError("worker_defaults needs model, effort and fast_mode")
+        if value["model"] is not None and (not isinstance(value["model"], str) or not value["model"].strip()):
+            raise ValueError("Default model must be a model name or null")
+        self.validate_execution(catalog, value["model"] or root_model, value["effort"], value["fast_mode"])
+        return {"model": value["model"], "effort": value["effort"], "fastMode": value["fast_mode"]}
+
+    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False):
         requested_skip = self.requested_rule_override(data)
+        if "model" in data and (not isinstance(data["model"], str) or not data["model"].strip()):
+            raise ValueError("Select an available model")
+        if parent and "worker_defaults" in data:
+            raise ValueError("Only the user can change worker defaults on a lead")
         if parent and requested_skip:
             raise ValueError(
                 "Only the user can enable dangerously_skip_rules on a lead"
@@ -580,10 +626,15 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     raise ValueError("Unknown worker profile")
                 profile = json.loads(row[0])
                 data = {
-                    **{k: profile[k] for k in ("role", "model", "effort")},
+                    **{k: profile[k] for k in ("role", "model", "effort") if profile.get(k) is not None},
                     **data,
                     "profileInstructions": profile["instructions"],
                 }
+        # Obtain remote metadata before taking the database write lock. Batch spawn
+        # passes one catalogue snapshot for all children and validates under its lock.
+        needs_catalog = parent is not None or any(k in data for k in ("effort", "fast_mode", "worker_defaults"))
+        catalog_account = self.agent(parent).get("accountKey", "default") if parent else data.get("account_key", "default")
+        catalog = _catalog if _catalog is not None else self.catalog(catalog_account) if needs_catalog else None
         key = data.get("id") or uid()
         try:
             uuid.UUID(key)
@@ -605,6 +656,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     raise ValueError("This conversation was deleted")
                 if a["name"] != name.strip() or a["prompt"] != prompt.strip() or ("account_key" in data and a.get("accountKey", "default") != data["account_key"]):
                     raise ValueError("This request id has different content")
+                for request_field, stored_field in (("model", "model"), ("effort", "effort"), ("fast_mode", "fastMode")):
+                    if request_field in data and data[request_field] != a.get(stored_field):
+                        raise ValueError("This request id has different execution settings")
                 if "dangerously_skip_rules" in data and a.get("dangerouslySkipAccountRules", False) != requested_skip:
                     raise ValueError("This request id has different rules settings")
                 if not draft:
@@ -617,9 +671,22 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 raise ValueError("A worker must use its parent account")
             self.accounts.get(account_key)
             is_lead = p is None and role == "orchestrator"
-            model = data.get("model") or (p["model"] if p else LEAD_MODELS[0])
+            defaults = self.worker_defaults(root) if root else {"model": None, "effort": None, "fastMode": False}
+            model = data.get("model") or ((defaults["model"] or root["model"]) if root else LEAD_MODELS[0])
             if is_lead and model not in LEAD_MODELS:
                 raise ValueError("A lead must use Astra or Sol")
+            if needs_catalog and account_key != catalog_account:
+                raise ValueError("The account changed. Create the worker again")
+            effort = data.get("effort", defaults["effort"] if root else None)
+            fast_mode = data.get("fast_mode", defaults["fastMode"] if root else False)
+            native_effort = effort
+            if catalog is not None:
+                effort, native_effort = self.validate_execution(
+                    catalog, model, effort, fast_mode, fallback_effort=root is not None and "effort" not in data)
+            if "worker_defaults" in data:
+                if not is_lead:
+                    raise ValueError("Only a lead can store worker defaults")
+                defaults = self.validate_worker_defaults(data["worker_defaults"], model, catalog)
             if p and (p.get("deletedAt") or root.get("deletedAt")):
                 raise ValueError("This conversation was deleted")
             if p and (not p["autoWake"] or not root["autoWake"]):
@@ -655,7 +722,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 "parentId": parent,
                 "rootId": root["id"] if root else key,
                 "model": model,
-                "effort": data.get("effort") or (p.get("effort") if p else None),
+                "effort": effort,
+                "fastMode": fast_mode,
                 "concurrency": root["concurrency"] if root else concurrency,
                 "maxAgents": root["maxAgents"] if root else max_agents,
                 "tokenBudget": root["tokenBudget"] if root else budget,
@@ -678,8 +746,14 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 "worktree": bool(p and role == "implementer"),
                 "worktreeReady": False,
             }
+            if is_lead:
+                a["workerDefaults"] = defaults
+            if catalog is not None:
+                a["nativeEffort"] = native_effort
             if draft:
                 a.update(quickCreate=True, quickCreateRequest=data.get("_creationSignature"))
+            if _validate_only:
+                return a
             self.put(db, "agents", a)
             if not defer and not draft:
                 self.enqueue(db, a, "user", prompt.strip(), key + ":initial")
@@ -737,10 +811,19 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     return previous
                 cwd = previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd())
                 cwd = self.default_project(account_key, cwd)
-            return self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
+            created = self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
                                 "_creationSignature": signature, "account_key": account_key,
                                 "dangerously_skip_rules": data.get("dangerously_skip_rules", False),
                                 "model": data.get("model") or (previous["model"] if previous else LEAD_MODELS[0])}, draft=True)
+            if previous and previous.get("accountKey", "default") == account_key:
+                created["workerDefaults"] = self.worker_defaults(previous)
+                if created["model"] == previous["model"]:
+                    created.update(effort=previous.get("effort"), fastMode=previous.get("fastMode", False))
+                    if "nativeEffort" in previous:
+                        created["nativeEffort"] = previous["nativeEffort"]
+                with self.db() as db:
+                    self.put(db, "agents", created)
+            return created
 
     @staticmethod
     def empty_lead(db, a):
@@ -784,68 +867,45 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
 
     def conversation_settings(self, key, data):
         requested_skip = self.requested_rule_override(data)
-        model_info = None
+        execution_fields = {"model", "effort", "fast_mode"}
+        defaults_only = set(data) <= {"id", "worker_defaults"} and "worker_defaults" in data
         with self.lock, self.db() as db:
             target = self.agent(key, db)
-            if not target.get("isLead"):
-                if "model" not in data or set(data) - {"id", "model"}:
-                    raise ValueError(
-                        "Only a lead can change these settings; a subagent can change only its model"
-                    )
-                if target.get("inFlight") or target["status"] in {
-                    "running",
-                    "starting",
-                    "approval",
-                }:
-                    raise ValueError("Wait for this turn to end before changing the model")
-                if not isinstance(data["model"], str) or not data["model"].strip():
-                    raise ValueError("Select an available model")
-        if not target.get("isLead"):
-            catalog = self.catalog(target.get("accountKey", "default"))
-            model_info = next(
-                (
-                    row
-                    for row in catalog.get("data", [])
-                    if row.get("model") == data["model"] and not row.get("hidden")
-                ),
-                None,
-            )
-            if model_info is None:
-                raise ValueError("This model is not available for the subagent account")
+            if not target.get("isLead") and (set(data) - {"id", *execution_fields}):
+                raise ValueError("Only a lead can change these settings; a subagent can change only its execution settings")
+            if target.get("isLead") and "model" in data and data["model"] not in LEAD_MODELS:
+                raise ValueError("A lead must use Astra or Sol")
+            if not defaults_only and (target.get("inFlight") or target["status"] in {"running", "starting", "approval"}):
+                raise ValueError("Wait for this turn to end before changing execution settings")
+        needs_catalog = bool(execution_fields.intersection(data) or "worker_defaults" in data)
+        catalog = self.catalog(target.get("accountKey", "default")) if needs_catalog else None
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")
             if a.get("accountKey", "default") != target.get("accountKey", "default"):
                 raise ValueError("The account changed. Select the model again")
-            if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
-                raise ValueError(
-                    "Wait for this turn to end before changing the model or project"
-                )
+            if not defaults_only and (a.get("inFlight") or a["status"] in {"running", "starting", "approval"}):
+                raise ValueError("Wait for this turn to end before changing the model or project")
             if "dangerously_skip_rules" in data:
-                if any(
-                    other["rootId"] == a["id"]
-                    and (
-                        other.get("inFlight")
-                        or other["status"] in {"running", "starting", "approval"}
-                    )
-                    for other in self.records(db, "agents")
-                ):
-                    raise ValueError(
-                        "Wait for every team turn to end before changing account rules"
-                    )
+                if any(other["rootId"] == a["id"] and (other.get("inFlight") or other["status"] in {"running", "starting", "approval"})
+                       for other in self.records(db, "agents")):
+                    raise ValueError("Wait for every team turn to end before changing account rules")
                 a["dangerouslySkipAccountRules"] = requested_skip
-            if "model" in data:
-                if a.get("isLead") and data["model"] not in LEAD_MODELS:
-                    raise ValueError("A lead must use Astra or Sol")
-                a["model"] = data["model"]
-                if model_info is not None:
-                    supported = {
-                        row.get("reasoningEffort")
-                        for row in model_info.get("supportedReasoningEfforts", [])
-                    }
-                    if supported and a.get("effort") not in supported:
-                        a["effort"] = model_info.get("defaultReasoningEffort")
+            if execution_fields.intersection(data):
+                model = data.get("model", a["model"])
+                effort, native_effort = self.validate_execution(
+                    catalog, model, data.get("effort", a.get("effort")),
+                    data.get("fast_mode", a.get("fastMode", False)),
+                    fallback_effort="model" in data and "effort" not in data)
+                # Keep the established model-change behavior for an incompatible
+                # explicit level. A null user preference remains null.
+                if "effort" not in data and a.get("effort") is not None and effort is None:
+                    effort = native_effort
+                a.update(model=model, effort=effort, nativeEffort=native_effort,
+                         fastMode=data.get("fast_mode", a.get("fastMode", False)))
+            if "worker_defaults" in data:
+                a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], catalog)
             if "cwd" in data:
                 if a.get("threadId"):
                     raise ValueError(
@@ -861,7 +921,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     skip=a.get("dangerouslySkipAccountRules", False),
                 )
             self.put(db, "agents", a)
-            self.loaded.discard(key)
+            if not defaults_only:
+                self.loaded.discard(key)
             return a
 
     def send(
@@ -1039,10 +1100,16 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         params = {
             "cwd": a["cwd"],
             "config": THREAD_CONFIG.copy(),
+            "serviceTier": "priority" if a.get("fastMode", False) else "default",
             "developerInstructions": INSTRUCTIONS
             + "\nUse orchestration_task for assignments and explicit result acceptance. A final answer does not accept work. Read the shared plan supplied with each turn. Worker profiles set instructions, model, and role; they do not add permissions.\n"
             + a.get("profileInstructions", ""),
         }
+        if a.get("fastMode", False):
+            params["config"]["features.fast_mode"] = True
+        native_effort = a.get("nativeEffort", a.get("effort"))
+        if native_effort is not None:
+            params["config"]["model_reasoning_effort"] = native_effort
         policy = self.accounts.get(a.get("accountKey", "default"))["projectRules"]
         root = self.agent(a["rootId"])
         if policy["allowedProjects"] is not None:
@@ -1095,6 +1162,13 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 a = latest
             self.checkpoint_capture(a["id"], "Before first turn", internal=True)
         if a["id"] not in self.loaded:
+            if "nativeEffort" not in a:
+                catalog = self.catalog(a.get("accountKey", "default"))
+                effort, native_effort = self.validate_execution(catalog, a["model"], a.get("effort"), a.get("fastMode", False))
+                with self.lock, self.db() as db:
+                    a = self.agent(a["id"], db)
+                    a.update(effort=effort, nativeEffort=native_effort)
+                    self.put(db, "agents", a)
             params = self.new_thread_params(a)
             if a["threadId"]:
                 method = "thread/resume"
@@ -1252,8 +1326,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     a["id"], append_message_clocks(text, clocks), asset_ids
                 ),
             }
-            if a.get("effort"):
-                params["effort"] = a["effort"]
+            params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
+            if a.get("nativeEffort", a.get("effort")) is not None:
+                params["effort"] = a.get("nativeEffort", a.get("effort"))
             server = self.connect(a.get("accountKey", "default"))
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
@@ -1693,6 +1768,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                             or not 1 <= len(spec["prompt"].strip()) <= 32000
                             or spec.get("role", "implementer") not in {"implementer", "reviewer"}):
                             raise ValueError("Every worker needs a name, task and valid role")
+                    catalog = self.catalog(a.get("accountKey", "default"))
                     children = []
                     with self.lock:
                         roster = self.team(a["rootId"])["agents"]
@@ -1701,8 +1777,10 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                         if len(roster) + new_count > self.agent(a["rootId"])["maxAgents"]:
                             raise ValueError("This batch exceeds the team size limit; no workers were created")
                         for spec in planned:
-                            child = self.create(spec, a["id"], parent_epoch=a["epoch"])
-                            children.append({k: child[k] for k in ("id", "name", "status", "model")})
+                            self.create(spec, a["id"], parent_epoch=a["epoch"], _catalog=catalog, _validate_only=True)
+                        for spec in planned:
+                            child = self.create(spec, a["id"], parent_epoch=a["epoch"], _catalog=catalog)
+                            children.append({k: child[k] for k in ("id", "name", "status", "model", "effort", "fastMode")})
                     value = {"agents": children, "delivery": "Results wake you automatically. Finish your turn while waiting."}
                 elif name in {"orchestration_status", "orchestration_peers"}:
                     value = {
@@ -2440,7 +2518,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
     def team(self, root):
         state = self.snapshot()
         agents = [a for a in state["agents"] if a["rootId"] == root]
-        return {"agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "tokensUsed", "error")} for a in agents],
+        return {"workerDefaults": self.worker_defaults(self.agent(root)),
+                "agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "effort", "fastMode", "workerDefaults", "tokensUsed", "error")} for a in agents],
                 "monitors": [m for m in state["monitors"] if m["agent"] in {a["id"] for a in agents}]}
 
     def transcript(self, key):

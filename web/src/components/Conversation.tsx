@@ -1,4 +1,5 @@
 import { ActionIcon, Button, Menu, Textarea } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import {
   ArrowDown,
   ArrowUp,
@@ -59,6 +60,9 @@ export default function Conversation(p: {
   reloadLimits: () => void;
   onPhase: (id: string | null, label: string) => void;
 }) {
+  const shortViewport = useMediaQuery(
+    "(max-width: 760px) and (max-height: 750px)",
+  );
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const { items, notice, before, older, liveAgent, connection } = useMessages(
       p.id,
@@ -588,7 +592,7 @@ export default function Conversation(p: {
               variant="unstyled"
               autosize
               minRows={2}
-              maxRows={8}
+              maxRows={shortViewport ? 3 : 8}
               id="message"
               ref={input}
               aria-label="Message"
