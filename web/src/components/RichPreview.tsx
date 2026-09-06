@@ -5,10 +5,7 @@ import "./rich-preview.css";
 
 // A sandbox without permissions has an opaque origin. Remove navigation elements
 // as well: sandbox alone still permits a link to navigate its own frame.
-export function isolatedDocument(
-  source: string,
-  options: { css?: string; dark?: boolean } = {},
-) {
+export function sanitizedDocument(source: string) {
   // This document has no browsing context. Parsing preserves html/body attributes
   // without executing scripts or loading resources before removal.
   const doc = document.implementation.createHTMLDocument("");
@@ -53,6 +50,14 @@ export function isolatedDocument(
       }
     }
   });
+  return doc;
+}
+
+export function isolatedDocument(
+  source: string,
+  options: { css?: string; dark?: boolean } = {},
+) {
+  const doc = sanitizedDocument(source);
   const policy = doc.createElement("meta");
   policy.httpEquiv = "Content-Security-Policy";
   policy.content =

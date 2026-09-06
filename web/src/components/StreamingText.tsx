@@ -1,7 +1,14 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState } from "react";
+import { Modal } from "@mantine/core";
 import DOMPurify from "dompurify";
 import { marked, type Token } from "marked";
 import RichPreview from "./RichPreview";
+import FilePreview, { type PreviewTarget } from "./FilePreview";
+import {
+  localFileLink,
+  markdownUriPattern,
+  relativeFileLocation,
+} from "./fileLinks";
 
 // Release complete paragraphs. Blank lines inside fenced code are not boundaries.
 export function paragraphPrefix(text: string, streaming: boolean) {
@@ -32,13 +39,21 @@ const Block = memo(({ html }: { html: string }) => (
 export default function StreamingText({
   text,
   streaming = false,
+  agentId,
 }: {
   text: string;
   streaming?: boolean;
+  agentId?: string;
 }) {
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
+  const [linkError, setLinkError] = useState("");
   const visible = paragraphPrefix(text, streaming);
   const blocks = useMemo(() => {
     const tokens = marked.lexer(visible);
+    marked.walkTokens(tokens, (token) => {
+      if (token.type === "link" && relativeFileLocation(token.href))
+        token.href = "./" + token.href;
+    });
     const grouped: Token[] = [];
     for (const token of tokens) {
       if (token.type === "space") continue;
@@ -80,6 +95,7 @@ export default function StreamingText({
         html: DOMPurify.sanitize(
           marked.parser(Object.assign([token], { links: tokens.links })),
           {
+            ALLOWED_URI_REGEXP: markdownUriPattern,
             FORBID_TAGS: [
               "img",
               "form",
@@ -98,7 +114,35 @@ export default function StreamingText({
     });
   }, [visible]);
   return (
-    <div className="prose" data-streaming={streaming || undefined}>
+    <div
+      className="prose"
+      data-streaming={streaming || undefined}
+      onClick={(event) => {
+        const link = (event.target as Element).closest("a[href]");
+        if (
+          !(link instanceof HTMLAnchorElement) ||
+          link.hasAttribute("download")
+        )
+          return;
+        try {
+          const target = localFileLink(link.getAttribute("href") || "");
+          if (!target) return;
+          event.preventDefault();
+          if (!agentId)
+            throw new Error(
+              "This conversation has no workspace for file previews.",
+            );
+          setPreview({ agent: agentId, ...target });
+        } catch (error) {
+          event.preventDefault();
+          setLinkError(
+            error instanceof Error
+              ? error.message
+              : "Cannot open this file link.",
+          );
+        }
+      }}
+    >
       {blocks.map((block, i) =>
         block.kind ? (
           <RichPreview key={i} kind={block.kind} source={block.source} />
@@ -106,6 +150,16 @@ export default function StreamingText({
           <Block key={i} html={block.html!} />
         ),
       )}
+      {preview && (
+        <FilePreview target={preview} onClose={() => setPreview(null)} />
+      )}
+      <Modal
+        opened={!!linkError}
+        onClose={() => setLinkError("")}
+        title="Cannot open file"
+      >
+        <p role="alert">{linkError}</p>
+      </Modal>
     </div>
   );
 }

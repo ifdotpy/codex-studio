@@ -40,12 +40,13 @@ try {
   const lead = state.threads.find((a) => a.name === "Release lead");
   const other = state.threads.find((a) => a.name === "Other project");
   const panels = new Map();
-  const put = (agent, version, html = "", css = "") =>
+  const put = (agent, version, html = "", css = "", callbacks = []) =>
     panels.set(agent.id, {
       agent: agent.id,
       version,
       html,
       css,
+      callbacks,
       updated: Date.now() / 1000,
     });
   put(lead, 0);
@@ -89,6 +90,40 @@ try {
     }
     await route.fulfill({ json: panels.get(id) });
   });
+  let queued = false;
+  await page.route("**/api/queue?*", async (route) => {
+    await route.fulfill({
+      json: {
+        items: queued
+          ? [{ id: "queued-fixture", text: "A queued message" }]
+          : [],
+      },
+    });
+  });
+  const submissions = [];
+  let callbackMode = "success";
+  let pendingCallback;
+  await page.route("**/api/panel/callback", async (route) => {
+    const body = route.request().postDataJSON();
+    submissions.push(body);
+    assert.ok(route.request().headers()["x-canvas-token"]);
+    if (callbackMode === "lost") {
+      await route.abort("failed");
+      return;
+    }
+    if (callbackMode === "defer") {
+      pendingCallback = route;
+      return;
+    }
+    if (callbackMode === "stale") {
+      await route.fulfill({
+        status: 409,
+        json: { error: "Panel changed. Use the latest panel." },
+      });
+      return;
+    }
+    await route.fulfill({ json: { ...body, status: "pending" } });
+  });
   await page.goto(origin);
   const select = (name) =>
     page.locator("[data-chat]").filter({ hasText: name }).click();
@@ -100,6 +135,10 @@ try {
     const transcript = await page.locator("#messages").boundingBox();
     const composer = await page.locator("#composer").boundingBox();
     assert.equal(bounds.height, 150);
+    assert.equal(
+      await panel.evaluate((el) => el.nextElementSibling?.id),
+      "composer",
+    );
     assert.ok(transcript.y + transcript.height <= bounds.y + 1);
     assert.ok(bounds.y + bounds.height <= composer.y + 1);
     assert.ok(
@@ -156,13 +195,16 @@ try {
     `.remote{background:url(https://evil.invalid/panel-escape)}\n</style><meta http-equiv="refresh" content="0;url=https://evil.invalid/panel-escape"><script>parent.document.body.dataset.panelEscape='yes'</script><style>`,
   );
   await frame.getByText("Isolated panel").waitFor();
-  assert.equal(await panel.locator("iframe").getAttribute("sandbox"), "");
+  assert.equal(
+    await panel.locator("iframe").getAttribute("sandbox"),
+    "allow-scripts allow-forms",
+  );
   assert.equal(
     await panel.locator("iframe").getAttribute("referrerpolicy"),
     "no-referrer",
   );
   assert.equal(
-    await frame.locator("script,iframe,meta[http-equiv=refresh]").count(),
+    await frame.locator("iframe,meta[http-equiv=refresh]").count(),
     0,
   );
   assert.equal(
@@ -174,9 +216,16 @@ try {
     null,
   );
   await frame.getByText("Escape", { exact: true }).click();
-  await frame.getByRole("button", { name: "Submit" }).click();
+  assert.equal(
+    await frame.getByRole("button", { name: "Submit" }).isDisabled(),
+    true,
+  );
+  await frame
+    .locator("form")
+    .evaluate((form) => HTMLFormElement.prototype.requestSubmit.call(form));
   await page.waitForTimeout(250);
   assert.equal(page.url(), origin + "/");
+  assert.equal(submissions.length, 0, "Unbound form cannot send or navigate");
   assert.equal(
     await page.locator("body").getAttribute("data-panel-escape"),
     null,
@@ -231,6 +280,185 @@ try {
   );
   await frame.getByText("28 of 40 agents complete").waitFor();
   await page.screenshot({ path: join(root, "panel-desktop.png") });
+  const callbacks = [
+    {
+      id: "literal",
+      label: "Literal </script><script>alert(1)</script>",
+      fields: [],
+    },
+    { id: "approve", label: "Approve", fields: [] },
+    {
+      id: "choose",
+      label: "Choose",
+      fields: ["choice", "note", "submit", "reportValidity"],
+    },
+  ];
+  const interactive = `<h3>Review actions</h3><button data-callback="approve">Approve release</button><form id="choose-form" data-callback="choose"><label>Note <input name="note" required></label><select name="choice" multiple><option selected value="a">A</option><option selected value="b">B</option></select><input type="hidden" name="reportValidity" value="safe"><input type="hidden" name="secret" value="not sent"><input type="file" name="upload" style="display:none"></form><button form="choose-form" name="submit" value="yes">Send choice</button>`;
+  queued = true;
+  put(lead, 8, interactive, "", callbacks);
+  await frame.getByRole("button", { name: "Approve release" }).waitFor();
+  await page.locator(".message-queue").waitFor();
+  assert.equal(
+    await panel.evaluate((el) => el.previousElementSibling?.className),
+    "message-queue",
+  );
+  await page.waitForTimeout(400);
+  assert.equal(submissions.length, 0, "render never sends a callback");
+  await assertLayout();
+  assert.equal(await frame.locator("input[type=file]").isDisabled(), true);
+  assert.equal(
+    await frame.locator("html").evaluate((el) => getComputedStyle(el).color),
+    "rgb(233, 233, 238)",
+  );
+  assert.equal(
+    await frame
+      .getByRole("button", { name: "Approve release" })
+      .evaluate((el) => getComputedStyle(el).borderRadius),
+    "8px",
+  );
+  // Source spoofing with the correct public document channel still has the wrong Window.
+  const channel = await panel
+    .locator("iframe")
+    .evaluate(
+      (el) =>
+        JSON.parse(
+          decodeURIComponent(
+            new DOMParser()
+              .parseFromString(el.srcdoc, "text/html")
+              .querySelector("script")
+              .getAttribute("data-config"),
+          ),
+        ).channel,
+    );
+  await page.evaluate(
+    (channel) =>
+      window.postMessage(
+        { type: "panel-callback", channel, callback: "approve", values: {} },
+        "*",
+      ),
+    channel,
+  );
+  await frame
+    .getByRole("button", { name: "Approve release" })
+    .evaluate((el) => el.click());
+  await page.waitForTimeout(150);
+  assert.equal(
+    submissions.length,
+    0,
+    "synthetic click and source spoof cannot callback",
+  );
+  callbackMode = "defer";
+  await frame.getByRole("button", { name: "Approve release" }).click();
+  await poll(() => submissions.length === 1, "trusted button callback");
+  assert.equal(
+    await frame.getByRole("button", { name: "Approve release" }).isDisabled(),
+    true,
+  );
+  assert.equal(
+    await frame.getByRole("button", { name: "Send choice" }).isDisabled(),
+    true,
+  );
+  await pendingCallback.fulfill({
+    json: { ...submissions[0], status: "pending" },
+  });
+  await panel.getByText("Approve: sent to agent").waitFor();
+  callbackMode = "lost";
+  await frame.getByRole("button", { name: "Send choice" }).click();
+  await page.waitForTimeout(100);
+  assert.equal(
+    submissions.length,
+    1,
+    "required native form field blocks empty submit",
+  );
+  await frame.getByRole("textbox", { name: "Note" }).fill("Review it");
+  await frame.getByRole("button", { name: "Send choice" }).click();
+  await panel.getByRole("alert").waitFor();
+  assert.deepEqual(submissions[1].values, {
+    choice: ["a", "b"],
+    note: ["Review it"],
+    submit: ["yes"],
+    reportValidity: ["safe"],
+  });
+  await select("Other project");
+  await frame.getByText("Other agent panel").waitFor();
+  await select("Release lead");
+  await panel.getByRole("button", { name: "Retry", exact: true }).waitFor();
+  assert.equal(submissions.length, 2, "remount never retries automatically");
+  callbackMode = "success";
+  await panel.getByRole("button", { name: "Retry", exact: true }).click();
+  await panel.getByText("Choose: sent to agent").waitFor();
+  assert.deepEqual(
+    submissions[2],
+    submissions[1],
+    "lost response retry preserves body and identity",
+  );
+  assert.equal(
+    await frame.getByRole("button", { name: "Send choice" }).isDisabled(),
+    true,
+  );
+  put(lead, 9, interactive, "button{border-radius:2px}", callbacks);
+  await poll(
+    async () => (await panel.getAttribute("data-panel-version")) === "9",
+    "new version unlocks actions",
+  );
+  assert.equal(
+    await frame.getByRole("button", { name: "Approve release" }).isDisabled(),
+    false,
+  );
+  assert.equal(
+    await frame
+      .getByRole("button", { name: "Approve release" })
+      .evaluate((el) => getComputedStyle(el).borderRadius),
+    "2px",
+  );
+  callbackMode = "stale";
+  await frame.getByRole("button", { name: "Approve release" }).click();
+  await panel.getByText("Panel changed. Use the latest panel.").waitFor();
+  assert.equal(
+    await panel.getByRole("button", { name: "Retry", exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await frame.getByRole("button", { name: "Approve release" }).isDisabled(),
+    true,
+  );
+  put(lead, 10, interactive, "", callbacks);
+  panels.get(lead.id).submittedCallbacks = ["approve"];
+  await poll(
+    async () => (await panel.getAttribute("data-panel-version")) === "10",
+    "server accepted actions loaded",
+  );
+  assert.equal(
+    await frame.getByRole("button", { name: "Approve release" }).isDisabled(),
+    true,
+  );
+  deferred = undefined;
+  deferLead = true;
+  put(lead, 11, interactive, "", callbacks);
+  await poll(() => !!deferred, "next panel fetch");
+  await poll(
+    async () =>
+      await frame.getByRole("button", { name: "Send choice" }).isDisabled(),
+    "old actions disabled during version fetch",
+  );
+  deferLead = false;
+  await deferred.fulfill({ json: panels.get(lead.id) }).catch(() => {});
+  await poll(
+    async () => (await panel.getAttribute("data-panel-version")) === "11",
+    "latest panel loaded",
+  );
+  callbackMode = "success";
+  const beforeEnter = submissions.length;
+  await frame.getByRole("textbox", { name: "Note" }).fill("Keyboard submit");
+  await frame.getByRole("textbox", { name: "Note" }).press("Enter");
+  await poll(
+    () => submissions.length === beforeEnter + 1,
+    "Enter submits the registered form",
+  );
+  await panel.getByText("Choose: sent to agent").waitFor();
+  assert.deepEqual(submissions.at(-1).values.note, ["Keyboard submit"]);
+  await assertLayout();
+  await page.screenshot({ path: join(root, "panel-interactive.png") });
   await page.setViewportSize({ width: 320, height: 640 });
   await page.locator("#usage-footer").scrollIntoViewIfNeeded();
   const footer = await page.locator("#usage-footer").boundingBox();
@@ -256,6 +484,9 @@ try {
       errors: true,
       mobile: true,
       rooms: true,
+      callbacks: true,
+      exactRetry: true,
+      enterSubmit: true,
       screenshots: root,
     }),
   );

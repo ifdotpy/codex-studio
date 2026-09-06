@@ -93,3 +93,38 @@
     margin-block: 2px;
   }
 }
+
+.agent-panel:has(.agent-panel-feedback) iframe {
+  height: calc(100% - 28px);
+}
+.agent-panel-feedback {
+  position: absolute;
+  inset: auto 0 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-top: 1px solid #ffffff0a;
+  background: #18191c;
+  color: var(--muted);
+  font-size: 11px;
+}
+.agent-panel-feedback span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-panel-feedback.error,
+.agent-panel-feedback.rejected {
+  color: #f3b4b4;
+}
+.agent-panel-feedback button {
+  color: inherit;
+  background: transparent;
+  border: 1px solid #ffffff25;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+}

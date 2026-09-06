@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.request
 
 spec = importlib.util.spec_from_file_location("panel_fixture", Path(__file__).with_name("workspace-contract.py"))
@@ -14,7 +15,12 @@ spec.loader.exec_module(f)
 
 
 class PanelContract(unittest.TestCase):
-    setUp = f.WorkspaceContract.setUp
+    def setUp(self):
+        f.WorkspaceContract.setUp(self)
+        self.capture = patch("codex_runtime.render_panel", side_effect=lambda panel: {
+            "data_url": "data:image/png;base64,fixture", "width": 1000, "height": 150, "version": panel["version"]})
+        self.mock_capture = self.capture.start()
+        self.addCleanup(self.capture.stop)
     tearDown = f.WorkspaceContract.tearDown
     lead = f.WorkspaceContract.lead
     worker = f.WorkspaceContract.worker
@@ -80,6 +86,7 @@ class PanelContract(unittest.TestCase):
         a = self.lead()
         result = self.tool(a, "orchestration_panel", {"action": "set", "html": "Native"})
         self.assertTrue(result["success"], result)
+        self.assertTrue(any(item["type"] == "inputImage" for item in result["contentItems"]))
         result = self.tool(a, "orchestration_send", {
             "agent_id": "workspace",
             "text": json.dumps({"tool": "orchestration_panel", "arguments": {"action": "set", "html": "Legacy"}}),
@@ -105,6 +112,21 @@ class PanelContract(unittest.TestCase):
             self.assertEqual(self.runtime.server.responses[-1]["result"], first)
             self.assertEqual(self.runtime.panel(a["id"])["html"], "Second")
             self.assertEqual(self.runtime.panel(a["id"])["version"], 2)
+
+    def test_image_failure_retains_write_and_get_can_recover(self):
+        a = self.lead()
+        self.mock_capture.side_effect = RuntimeError("fixture renderer failed")
+        result = self.tool(a, "orchestration_panel", {"action": "set", "html": "Retained"})
+        self.assertFalse(result["success"])
+        meta = json.loads(result["contentItems"][0]["text"])
+        self.assertTrue(meta["panelSaved"])
+        self.assertEqual(self.runtime.panel(a["id"])["html"], "Retained")
+        self.mock_capture.side_effect = lambda panel: {
+            "data_url": "data:image/png;base64,recovered", "width": 1000, "height": 150, "version": panel["version"]}
+        result = self.tool(a, "orchestration_panel", {"action": "get"})
+        self.assertTrue(result["success"])
+        self.assertEqual(self.runtime.panel(a["id"])["version"], 1)
+        self.assertTrue(any(item["type"] == "inputImage" for item in result["contentItems"]))
 
     def test_http_reads_committed_tool_content(self):
         from codex_canvas import Canvas, make_server

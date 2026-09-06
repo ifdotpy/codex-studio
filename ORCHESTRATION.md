@@ -82,14 +82,42 @@ and invented progress values do not belong in this panel. The composer uses one
 action row for attachments, delivery, and send. The text field grows with its draft;
 context, compactions, and account limits remain directly below it.
 
+The panel and composer are adjacent siblings. Queued messages, errors, approvals,
+and user tasks appear above the panel. Callback feedback stays inside the panel.
+Semantic HTML inherits Studio colors, typography, buttons, and form controls.
+Agent CSS can override those defaults, including the `--studio-*` variables.
+
 The panel renders inline HTML/CSS/SVG and CSS animations in an opaque sandbox.
-Scripts, network requests, navigation, forms, and parent application access are
-disabled. HTML accepts up to 128 KiB of UTF-8 text; CSS accepts up to 32 KiB.
+Agent scripts, external requests, navigation, and parent access are disabled.
+Only the fixed host bridge runs. It handles declared buttons and forms after
+trusted user input. HTML accepts up to 128 KiB of UTF-8 text; CSS accepts up to 32 KiB.
 The server stores one current document per agent in `runtime_panels`. Each write
 increments its version. A retry with the same tool identity returns its original
 receipt and cannot replace a newer document. Native tool delivery returns the
 cached result for a repeated call identity; a new update needs a new call identity.
 The document survives a server restart. A new agent starts with an empty panel.
+
+`set` and `get` include a rendered PNG in the native tool result. An isolated,
+hidden Electron process renders the exact accepted revision at 1000x150 CSS pixels
+with the same document builder as the visible panel. The capture does not depend
+on an open chat. Real window widths can differ. At most two captures run together;
+capture waits at most 30 seconds for a slot and has a 15-second process timeout. Image failure leaves the saved document intact and
+returns an explicit error. A new `get` retries the image without another write.
+
+`set` can declare up to 16 callbacks, each with `id`, `label`, and up to 32 `fields`.
+Use `data-callback="id"` on a button or form and named form inputs. Field values
+arrive as arrays of strings. The parent verifies the current iframe and channel,
+then posts to `/api/panel/callback` with the local CSRF token. The token never enters
+the iframe. The server checks panel version, declared action/fields, and owner.
+It stores the receipt and `panel_callback` event in one transaction. The owner
+receives that event after its current turn, including after a final answer.
+Stopped or deleted agents do not resume through panel callbacks.
+
+One action is accepted per callback per panel version. Double-clicks and exact
+retries do not enqueue twice. Changed values for an already submitted action or a
+stale panel return HTTP 409. Publish a new panel version to enable the action again.
+Form submissions are limited to 16 KiB, 16 values per field, and 2000 characters
+per value. File fields are not uploaded by this bridge.
 
 Snapshots carry only `panelVersion`. The selected conversation fetches its
 document from `GET /api/panel?agent=<id>` when that version changes. Full documents

@@ -1,6 +1,12 @@
 import { defineConfig } from "vite";
 const target = "http://127.0.0.1:4620";
 export default defineConfig({
+  base: "./",
+  build: {
+    rollupOptions: {
+      input: { main: "index.html", panel: "panel-preview.html" },
+    },
+  },
   server: {
     proxy: {
       "/api": {

@@ -26,6 +26,7 @@ from codex_workspace import WorkspaceMixin
 from codex_rules import RulesMixin, rule_tools
 from codex_user_tasks import UserTasksMixin, user_task_tools
 from codex_panel import PanelMixin, panel_tools
+from codex_panel_render import render_panel
 
 def uid():
     return str(uuid.uuid4())
@@ -172,7 +173,11 @@ Use orchestration_panel action=set with html and optional css for your persisten
 Update it in place for meaningful progress or diagrams. Each agent owns their own panel.
 Design it as a visual instrument: stage tracks, segmented bars, CSS grids, compact counters or SVG diagrams.
 Use short labels, measured values and one clear bottleneck. Do not repeat chat paragraphs or invent progress percentages.
-Scripts and external resources are disabled; inline HTML/CSS/SVG and CSS animations work.
+Studio styles are the panel default; custom css can override them. Agent scripts and external resources are disabled.
+Declare callbacks [{id,label,fields:[names]}] and use data-callback=id on buttons/forms for user actions.
+Named field values arrive as arrays in panel_callback events, including after your final answer. Do not poll.
+Each callback accepts one submission per panel version; publish an update to enable it again.
+set/get return a rendered PNG at 1000x150 CSS pixels. Inspect it; use get to retry a failed render without repeating the write.
 Use orchestration_user_task for things the user must do. Supply clear completion criteria.
 A user check wakes the requesting agent and awaits its review. Accept the result or return
 it with a concrete reason and next action. Do not treat the user check as your acceptance.
@@ -1954,7 +1959,25 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin)
                     value = self.cancel_monitor(args["monitor_id"], a["id"])
                 else:
                     raise ValueError("Unknown orchestration tool")
-                result = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
+                image = None
+                render_failed = False
+                if name == "orchestration_panel" and args.get("action") in {"set", "get"}:
+                    # Render the accepted input, not a later revision another call may have published.
+                    exact_panel = ({**value, "html": args["html"], "css": args.get("css", ""),
+                                    "callbacks": self.validate_callbacks(args.get("callbacks", []))}
+                                   if args["action"] == "set" else value)
+                    value = dict(value)
+                    try:
+                        capture = render_panel(exact_panel)
+                        image = {"type": "inputImage", "imageUrl": capture["data_url"]}
+                        value["render"] = {k: capture[k] for k in ("width", "height", "version")}
+                    except Exception as error:
+                        render_failed = True
+                        value.update(panelSaved=args["action"] == "set", renderError=str(error),
+                                     recovery="The document is retained. Use action=get with a new tool call to retry its image; do not repeat the write.")
+                result = {"success": not render_failed, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
+                if image:
+                    result["contentItems"].append(image)
                 result = stamp_tool_result(result, time.time())
                 with self.lock, self.db() as db:
                     db.execute(

@@ -341,7 +341,17 @@ export default function Conversation(p: {
               {m.role === "user" ? (
                 <div className="prose plain">{m.text}</div>
               ) : (
-                <StreamingText text={m.text} streaming={!!m.streaming} />
+                <StreamingText
+                  text={m.text}
+                  streaming={!!m.streaming}
+                  agentId={
+                    p.room
+                      ? p.data.threads.find((item) => item.id === m.sender)?.id
+                      : managed
+                        ? agent?.id
+                        : undefined
+                  }
+                />
               )}
               {Array.isArray(m.assets) && (
                 <MessageAttachments assets={m.assets} notify={p.notify} />
@@ -451,16 +461,6 @@ export default function Conversation(p: {
         refresh={p.refresh}
         notify={p.notify}
       />
-      {managed && !p.room && !p.legacy && agent && (
-        <AgentPanel
-          key={agent.id}
-          agentId={agent.id}
-          version={Math.max(
-            p.agent?.panelVersion || 0,
-            agent.panelVersion || 0,
-          )}
-        />
-      )}
       {p.room ? (
         <p className="room-footer">
           {p.room.kind === "private"
@@ -553,6 +553,17 @@ export default function Conversation(p: {
                 </div>
               )}
             </div>
+          )}
+          {managed && !p.legacy && agent && (
+            <AgentPanel
+              key={agent.id}
+              agentId={agent.id}
+              token={p.data.token}
+              version={Math.max(
+                p.agent?.panelVersion || 0,
+                agent.panelVersion || 0,
+              )}
+            />
           )}
           <form
             id="composer"

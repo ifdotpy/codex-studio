@@ -1,0 +1,116 @@
+"""Render one immutable panel revision without connecting to the live workspace."""
+
+import base64
+import json
+import os
+from pathlib import Path
+import signal
+import struct
+import subprocess
+import tempfile
+import threading
+
+
+_RENDERERS = threading.BoundedSemaphore(2)
+_ROOT = Path(__file__).resolve().parent.parent
+_TIMEOUT = 15
+_QUEUE_TIMEOUT = 30
+WIDTH = 1000
+HEIGHT = 150
+
+
+class PanelRenderError(RuntimeError):
+    """The renderer did not produce a verified PNG for the submitted revision."""
+
+
+def _electron_command():
+    """Use the source Electron or this package, never another user's app state."""
+    configured = os.environ.get("CODEX_STUDIO_ELECTRON")
+    if configured:
+        executable = Path(configured).expanduser().resolve()
+        if not executable.is_file():
+            raise PanelRenderError("CODEX_STUDIO_ELECTRON does not name an executable.")
+        return [str(executable)]
+    source = _ROOT / "desktop/node_modules/electron/dist"
+    candidates = [source / "Electron.app/Contents/MacOS/Electron", source / "electron"]
+    for executable in candidates:
+        if executable.is_file():
+            return [str(executable), str(_ROOT / "desktop")]
+    packaged = _ROOT.parent.parent / "MacOS/Codex Studio"
+    if packaged.is_file():
+        return [str(packaged)]
+    raise PanelRenderError("The panel renderer needs the Codex Studio desktop package or desktop Electron dependency.")
+
+
+def render_panel(panel):
+    """Return {data_url, width, height, version} for the exact passed panel.
+
+    No database or runtime locks may be held by the caller. At most two renderer
+    processes run concurrently, with up to 30 seconds to acquire a slot and
+    15 seconds to finish each capture. Saturation or failure raises PanelRenderError;
+    callers must preserve the successful panel write and report the image error.
+    """
+    if not isinstance(panel, dict) or not isinstance(panel.get("html"), str):
+        raise PanelRenderError("A panel with HTML is required.")
+    # Make the revision independent of subsequent caller mutations before wait.
+    try:
+        immutable = json.loads(json.dumps(panel, ensure_ascii=False))
+    except (TypeError, ValueError) as error:
+        raise PanelRenderError("The panel is not JSON serializable.") from error
+    immutable.setdefault("css", "")
+    if not isinstance(immutable["css"], str):
+        raise PanelRenderError("Panel CSS must be a string.")
+    if len(immutable["html"]) > 131072 or len(immutable["css"]) > 32768:
+        raise PanelRenderError("The panel exceeds the render size limit.")
+    if not _RENDERERS.acquire(timeout=_QUEUE_TIMEOUT):
+        raise PanelRenderError("Both panel renderers stayed busy for 30 seconds. Use a new panel get call to request its image.")
+    try:
+        preview = _ROOT / "web/dist/panel-preview.html"
+        if not preview.is_file():
+            raise PanelRenderError("The panel preview is not built. Build or update Codex Studio.")
+        command = _electron_command()
+        with tempfile.TemporaryDirectory(prefix="codex-panel-render-") as directory:
+            folder = Path(directory)
+            request_path = folder / "request.json"
+            output = folder / "panel.png"
+            request_path.write_text(json.dumps({
+                "panel": immutable, "preview": str(preview), "output": str(output),
+                "width": WIDTH, "height": HEIGHT,
+            }, ensure_ascii=False), encoding="utf-8")
+            request_path.chmod(0o600)
+            environment = os.environ.copy()
+            for key in ("ELECTRON_RUN_AS_NODE", "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS"):
+                environment.pop(key, None)
+            environment["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true"
+            try:
+                with (folder / "stderr.log").open("wb") as errors:
+                    process = subprocess.Popen(
+                        command + ["--render-panel", str(request_path)],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
+                        env=environment, start_new_session=True,
+                    )
+                    try:
+                        status = process.wait(timeout=_TIMEOUT)
+                    except subprocess.TimeoutExpired as error:
+                        # Kill only the process group created for this render,
+                        # including Chromium children, before deleting its profile.
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                        raise PanelRenderError("The panel renderer timed out after 15 seconds.") from error
+                if status:
+                    detail = (folder / "stderr.log").read_text(errors="replace")[-1600:].strip()
+                    raise PanelRenderError(f"The panel renderer exited with code {status}: {detail}")
+                data = output.read_bytes()
+            except OSError as error:
+                raise PanelRenderError(f"The panel renderer could not produce its image: {error}") from error
+            if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+                raise PanelRenderError("The panel renderer did not return a PNG image.")
+            dimensions = struct.unpack(">II", data[16:24])
+            if dimensions != (WIDTH, HEIGHT):
+                raise PanelRenderError(f"The panel renderer returned unexpected dimensions {dimensions}.")
+            return {
+                "data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
+                "width": WIDTH, "height": HEIGHT, "version": immutable.get("version"),
+            }
+    finally:
+        _RENDERERS.release()

@@ -104,11 +104,30 @@ labels. Show the current phase and one bottleneck at a glance. Avoid paragraphs
 and repeated chat summaries. Use measured counts only; do not invent percentages.
 Use color with labels, not color alone. Animate only actual active work and honor
 `prefers-reduced-motion`. Fit the 150px height without vertical scrollbars.
-Update it when the
-work changes. Do not poll or add repeated chat messages just to refresh it.
+Update it when the work changes. Do not poll or add repeated chat messages just to refresh it.
 `action=get` reads it; `action=clear` empties it. Each agent owns a separate panel.
-Inline HTML/CSS/SVG and CSS animations work. Scripts, navigation, and external
-resources are disabled. Keep the design responsive within the fixed height.
+Semantic HTML uses Studio typography, colors, buttons, and inputs by default.
+Override `css` or `--studio-bg`, `--studio-surface`, `--studio-text`,
+`--studio-muted`, `--studio-accent`, `--studio-border`, `--studio-radius`, and
+`--studio-font` only when useful. Keep the design responsive within the fixed height.
+
+`set` and `get` return the rendered panel as a PNG at 1000x150 CSS pixels.
+Inspect it for clipping, contrast, and readable labels. Real chat widths can differ.
+If rendering fails, the document remains saved. Use a new `get` call to retry the
+image instead of repeating the write.
+
+For interactive controls, declare callbacks in `set`. Example:
+```json
+{"action":"set","html":"<form data-callback=review><label>Note <input name=note required></label><button type=submit>Send for review</button></form>","callbacks":[{"id":"review","label":"Review user note","fields":["note"]}]}
+```
+Use `<button type="button" data-callback="refresh">Refresh</button>` for a button
+without a form. Declare its callback with an empty `fields` list.
+Each callback sends its id, label, panel version, and named values to you as a
+`panel_callback` event. Values are arrays of strings. The event wakes you after
+your final answer; do not poll. Each action accepts one submission per panel version.
+Update the panel to acknowledge the result and enable the action again when needed.
+Your scripts, external resources, navigation, and file uploads remain disabled;
+the host bridge handles button clicks and form submissions.
 
 For an older thread without this tool, call `orchestration_send` with
 `agent_id="workspace"` and `text` containing JSON:

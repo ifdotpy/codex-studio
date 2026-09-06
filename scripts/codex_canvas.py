@@ -498,9 +498,13 @@ def make_server(canvas, port=0):
             self.close_connection = True
 
         def do_GET(self):
-            if not self.trusted():
-                return self.send({"error": "Local origin required"}, 403)
             path = urlparse(self.path)
+            # The opaque panel iframe can load only this public, stateless bridge
+            # across origins. APIs and all other assets retain the local-origin gate.
+            public_bridge = (path.path == "/assets/panel-bridge.js" and
+                             self.headers.get("Host") in {f"{name}:{self.server.server_port}" for name in ("127.0.0.1", "localhost")})
+            if not self.trusted() and not public_bridge:
+                return self.send({"error": "Local origin required"}, 403)
             try:
                 if path.path == "/api/state":
                     return self.send({**canvas.snapshot(), "token": token,
@@ -712,6 +716,12 @@ def make_server(canvas, port=0):
                         return self.send(runtime.restore_checkpoint(agent, body))
                     if self.path == "/api/user-tasks/complete":
                         return self.send(runtime.complete_user_task(body))
+                    if self.path == "/api/panel/callback":
+                        from codex_panel import PanelConflict
+                        try:
+                            return self.send(runtime.panel_callback(body))
+                        except PanelConflict as error:
+                            return self.send({"error": str(error)}, 409)
                     if self.path == "/api/profiles":
                         return self.send(runtime.profiles(body))
                     if self.path == "/api/rules":

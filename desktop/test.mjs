@@ -109,6 +109,9 @@ try {
       response.request().method() === "POST",
   );
   await page.locator("#project").click();
+  await page.getByRole("button", { name: "Browse in Finder…", exact: true }).click();
+  await page.locator(".directory-location").filter({ hasText: temp }).waitFor();
+  await page.getByRole("button", { name: "Use this folder", exact: true }).click();
   assert.equal((await projectResponse).status(), 200);
   const uiState = await (await fetch(`${backend.origin}/api/state`)).json();
   const lead = uiState.runtime.agents.find((agent) => agent.isLead);
@@ -119,7 +122,7 @@ try {
       response.url().endsWith("/api/assets") &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Attach", exact: true }).click();
+  await page.getByRole("button", { name: "Attach files", exact: true }).click();
   const uploaded = await uploadResponse;
   assert.equal(uploaded.status(), 200);
   const asset = await uploaded.json();
