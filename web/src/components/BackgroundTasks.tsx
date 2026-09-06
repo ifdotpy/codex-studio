@@ -105,6 +105,7 @@ export function backgroundTasks(data: Snapshot | null): BackgroundTask[] {
 }
 
 export default function BackgroundTasks({
+  createOnOpen = false,
   opened,
   close,
   data,
@@ -113,6 +114,7 @@ export default function BackgroundTasks({
   refresh,
   notify,
 }: {
+  createOnOpen?: boolean;
   opened: boolean;
   close: () => void;
   data: Snapshot;
@@ -134,6 +136,9 @@ export default function BackgroundTasks({
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [opened]);
+  useEffect(() => {
+    if (opened) setCreating(createOnOpen);
+  }, [opened, createOnOpen]);
   const agents = data.threads,
     tasks = backgroundTasks(data),
     owner = (id: string) => agents.find((a) => a.id === id);

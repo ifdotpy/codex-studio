@@ -1,0 +1,20 @@
+.selection-quote {
+  position: fixed;
+  z-index: 220;
+  min-height: 40px;
+  max-width: calc(100vw - 16px);
+  padding: 0 14px;
+  border: 1px solid var(--mantine-color-dark-3);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px #0005;
+  background: var(--mantine-color-dark-5);
+  color: var(--mantine-color-gray-0);
+  user-select: none;
+}
+.selection-quote:hover {
+  background: var(--mantine-color-dark-4);
+}
+.selection-quote:focus-visible {
+  outline: 2px solid var(--mantine-color-blue-4);
+  outline-offset: 3px;
+}

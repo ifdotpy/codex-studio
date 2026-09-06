@@ -169,3 +169,14 @@ Completed `mermaid` fences render diagrams. `html` fences and raw HTML blocks
 render isolated static HTML, CSS, and SVG. Each preview keeps its source, copy,
 and download controls. Scripts, external resources, and navigation are disabled.
 An invalid diagram shows its error. Mermaid loads only when a diagram is present.
+
+## Direct controls and quotes
+
+The navigation bar opens common workspace sections directly. Monitor opens its
+command form and preserves the message draft. Account capacity appears below
+the composer. The account panel groups percentages and reset times by limit.
+
+Select part of a message and choose **Quote selection**, or press Alt+Shift+Q.
+Each quote appends to the current draft. You can add several excerpts from the
+same message and write comments between them. The message quote button uses
+its selected excerpt, or the full message when no excerpt is selected.

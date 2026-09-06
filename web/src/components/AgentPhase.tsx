@@ -1,5 +1,10 @@
 import {
   Brain,
+  Circle,
+  Clock3,
+  CircleAlert,
+  Pause,
+  WifiOff,
   CircleCheck,
   LoaderCircle,
   PenLine,
@@ -31,16 +36,22 @@ export default function AgentPhase({
     interrupted: "Interrupted",
     idle: "Ready",
   };
-  const Icon =
-    phase === "thinking"
-      ? Brain
-      : phase === "writing"
-        ? PenLine
-        : phase === "tool"
-          ? Wrench
-          : phase === "completed"
-            ? CircleCheck
-            : LoaderCircle;
+  if (phase === "idle" && connection !== "reconnecting") return null;
+  const icons: Record<string, typeof Brain> = {
+    thinking: Brain,
+    writing: PenLine,
+    tool: Wrench,
+    completed: CircleCheck,
+    starting: LoaderCircle,
+    running: LoaderCircle,
+    queued: Clock3,
+    waiting: Clock3,
+    approval: Clock3,
+    failed: CircleAlert,
+    interrupted: CircleAlert,
+    paused: Pause,
+  };
+  const Icon = connection === "reconnecting" ? WifiOff : icons[phase] || Circle;
   return (
     <div
       className={`agent-phase ${active ? "active" : ""}`}

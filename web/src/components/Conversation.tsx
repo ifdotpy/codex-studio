@@ -30,6 +30,7 @@ import Requests from "./Requests";
 import UserTasks from "./UserTasks";
 import Activity from "./Activity";
 import StreamingText from "./StreamingText";
+import SelectionQuote, { selectedExcerpt } from "./SelectionQuote";
 import AgentPhase from "./AgentPhase";
 import ComposerAttachments, {
   MessageAttachments,
@@ -241,6 +242,20 @@ export default function Conversation(p: {
       p.notify("Clipboard access failed.");
     }
   };
+  const quote = (text: string) => {
+    const quoted = text
+      .split(/\r?\n/)
+      .map((line) => `> ${line}`)
+      .join("\n");
+    const separator =
+      !p.draft || p.draft.endsWith("\n\n")
+        ? ""
+        : p.draft.endsWith("\n")
+          ? "\n"
+          : "\n\n";
+    p.setDraft(`${p.draft}${separator}${quoted}\n\n`);
+    input.current?.focus();
+  };
   const team = p.data.threads.filter(
     (a) => a.rootId === (agent?.rootId || p.room?.rootId),
   );
@@ -352,14 +367,13 @@ export default function Conversation(p: {
                     <ActionIcon
                       size="sm"
                       aria-label="Quote message"
+                      onPointerDown={(event) => event.preventDefault()}
                       onClick={() => {
-                        p.setDraft(
-                          `${m.text
-                            .split("\n")
-                            .map((line: string) => `> ${line}`)
-                            .join("\n")}\n\n${p.draft}`,
+                        const excerpt = selectedExcerpt(scroll.current);
+                        quote(
+                          excerpt?.messageId === m.id ? excerpt.text : m.text,
                         );
-                        input.current?.focus();
+                        window.getSelection()?.removeAllRanges();
                       }}
                     >
                       <Quote size={14} />
@@ -394,6 +408,14 @@ export default function Conversation(p: {
         )}
         {!p.room && <AgentPhase agent={agent} connection={connection} />}
       </div>
+      {!p.room && (
+        <SelectionQuote
+          key={`selection:${p.id}`}
+          chatId={p.id}
+          root={scroll}
+          onQuote={quote}
+        />
+      )}
       {!follow && (
         <div className="jump-slot">
           <Button

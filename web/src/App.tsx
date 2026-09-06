@@ -2,7 +2,6 @@ import {
   ActionIcon,
   Button,
   Drawer,
-  Menu,
   Modal,
   NativeSelect,
   TextInput,
@@ -11,12 +10,20 @@ import {
 import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
+  BookOpen,
+  CheckCheck,
+  Clock3,
+  FileDiff,
+  Inbox,
+  Terminal,
+  Minimize2,
+  ShieldCheck,
+  Square,
   ListTodo,
   ArrowLeft,
   Folder,
   Maximize2,
   MessageSquare,
-  MoreHorizontal,
   PanelLeft,
   Search,
   Users,
@@ -60,7 +67,9 @@ export default function App() {
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
+    [createMonitor, setCreateMonitor] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
+    [workspaceSection, setWorkspaceSection] = useState("work"),
     [workerQuery, setWorkerQuery] = useState(""),
     [creating, setCreating] = useState(false),
     [sending, setSending] = useState(false),
@@ -573,6 +582,114 @@ export default function App() {
               <option value="gpt-5.6-sol">Sol</option>
             </NativeSelect>
           )}
+          {view === "chat" && !!workers.length && (
+            <Button
+              leftSection={<Users size={16} />}
+              id="team-toggle"
+              onClick={() => setTeamOpen(!teamOpen)}
+            >
+              Team
+            </Button>
+          )}
+          {view === "chat" && agent?.source === "managed" && (
+            <div
+              className="conversation-quick-actions"
+              aria-label="Agent actions"
+            >
+              {(
+                [
+                  ["monitor", "Monitor", Terminal],
+                  ["compact", "Compact", Minimize2],
+                  ["review", "Review", ShieldCheck],
+                  ["stop-team", "Stop team", Square],
+                ] as const
+              ).map(([action, label, Icon]) => (
+                <Button
+                  key={String(action)}
+                  data-action={String(action)}
+                  size="compact-xs"
+                  variant="subtle"
+                  color={action === "stop-team" ? "red" : undefined}
+                  leftSection={<Icon size={14} />}
+                  onClick={() => {
+                    if (action === "monitor") {
+                      setCreateMonitor(true);
+                      setTasksOpen(true);
+                    } else
+                      void run(() =>
+                        api(
+                          action === "stop-team" ? "/api/stop" : "/api/action",
+                          action === "stop-team"
+                            ? { id: agent.rootId, descendants: true }
+                            : { id: agent.id, action },
+                        ),
+                      );
+                  }}
+                >
+                  {String(label)}
+                </Button>
+              ))}
+            </div>
+          )}
+        </header>
+        <nav className="workspace-shortcuts" aria-label="Workspace shortcuts">
+          <Button
+            id="workspace-toggle"
+            leftSection={<ListTodo size={16} />}
+            onClick={() => {
+              setWorkspaceSection("work");
+              setWorkspaceOpen(true);
+            }}
+            aria-label={`Work workspace${attentionCount ? `, ${attentionCount} need attention` : ""}`}
+          >
+            <span className="workspace-button-label">Work</span>
+            {attentionCount > 0 && (
+              <span className="attention-count">{attentionCount}</span>
+            )}
+          </Button>
+          {(
+            [
+              ["user-tasks", "Your tasks", CheckCheck],
+              ["inbox", "Inbox", Inbox],
+              ["changes", "Changes", FileDiff],
+              ["search", "Search", Search],
+              ["plan", "Plan", BookOpen],
+              ["rules", "Rules", Clock3],
+            ] as const
+          ).map(([section, label, Icon]) => (
+            <Button
+              key={section}
+              data-workspace-section={section}
+              leftSection={<Icon size={14} />}
+              onClick={() => {
+                setWorkspaceSection(section);
+                setWorkspaceOpen(true);
+              }}
+            >
+              {label}
+              {section === "user-tasks" &&
+                !!data.runtime.userTasks?.some((t) => t.status === "open") && (
+                  <span className="attention-count">
+                    {
+                      data.runtime.userTasks.filter((t) => t.status === "open")
+                        .length
+                    }
+                  </span>
+                )}
+            </Button>
+          ))}
+          <Button
+            id="tasks-toggle"
+            aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
+            leftSection={<Activity size={16} />}
+            onClick={() => {
+              setCreateMonitor(false);
+              setTasksOpen(true);
+            }}
+          >
+            Background{" "}
+            {taskCount > 0 && <span className="tasks-count">{taskCount}</span>}
+          </Button>
           <Button
             id="view-toggle"
             leftSection={
@@ -587,80 +704,7 @@ export default function App() {
           >
             {view === "canvas" ? "Chat" : "Canvas"}
           </Button>
-          <Button
-            id="workspace-toggle"
-            leftSection={<ListTodo size={16} />}
-            onClick={() => setWorkspaceOpen(true)}
-            aria-label={`Work workspace${attentionCount ? `, ${attentionCount} need attention` : ""}`}
-          >
-            <span className="workspace-button-label">Work</span>
-            {attentionCount > 0 && (
-              <span className="attention-count">{attentionCount}</span>
-            )}
-          </Button>
-          <Button
-            id="tasks-toggle"
-            aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
-            leftSection={<Activity size={16} />}
-            onClick={() => setTasksOpen(true)}
-          >
-            Tasks{" "}
-            {taskCount > 0 && <span className="tasks-count">{taskCount}</span>}
-          </Button>
-          {view === "chat" && !!workers.length && (
-            <Button
-              leftSection={<Users size={16} />}
-              id="team-toggle"
-              onClick={() => setTeamOpen(!teamOpen)}
-            >
-              Team
-            </Button>
-          )}
-          {view === "chat" && agent?.source === "managed" && (
-            <Menu position="bottom-end" withinPortal width={200} shadow="lg">
-              <Menu.Target>
-                <ActionIcon
-                  id="conversation-menu"
-                  aria-label="Conversation actions"
-                >
-                  <MoreHorizontal size={18} />
-                </ActionIcon>
-              </Menu.Target>
-              <Menu.Dropdown>
-                {["monitor", "compact", "review", "stop-team"].map((action) => (
-                  <Menu.Item
-                    key={action}
-                    data-action={action}
-                    color={action === "stop-team" ? "red" : undefined}
-                    onClick={() => {
-                      if (action === "monitor") setDraft("/monitor ");
-                      else
-                        void run(() =>
-                          api(
-                            action === "stop-team"
-                              ? "/api/stop"
-                              : "/api/action",
-                            action === "stop-team"
-                              ? { id: agent.rootId, descendants: true }
-                              : { id: agent.id, action },
-                          ),
-                        );
-                    }}
-                  >
-                    {
-                      {
-                        monitor: "Monitor a command",
-                        compact: "Compact context",
-                        review: "Review changes",
-                        "stop-team": "Stop team",
-                      }[action]
-                    }
-                  </Menu.Item>
-                ))}
-              </Menu.Dropdown>
-            </Menu>
-          )}
-        </header>
+        </nav>
         {error && (
           <div id="error" role="alert">
             {error}
@@ -722,6 +766,7 @@ export default function App() {
           teamPanel
         ))}
       <Workspace
+        initialSection={workspaceSection}
         opened={workspaceOpen}
         onClose={() => setWorkspaceOpen(false)}
         agent={agent || lead}
@@ -731,6 +776,7 @@ export default function App() {
         notify={notify}
       />
       <BackgroundTasks
+        createOnOpen={createMonitor}
         opened={tasksOpen}
         close={() => setTasksOpen(false)}
         data={data}

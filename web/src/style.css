@@ -1865,3 +1865,88 @@ p {
     margin-right: 0;
   }
 }
+
+/* Direct routes stay labelled at every viewport width. */
+.workspace-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.workspace-shortcuts .mantine-Button-root {
+  padding: 0 9px;
+  height: 30px;
+  font-size: 11px;
+  font-weight: 450;
+  color: var(--muted);
+}
+.workspace-shortcuts .mantine-Button-root:hover {
+  color: var(--text);
+}
+.workspace-shortcuts #view-toggle {
+  margin-left: auto;
+}
+.conversation-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+.conversation-quick-actions .mantine-Button-root {
+  font-size: 11px;
+  padding: 0 7px;
+}
+@media (max-width: 1050px) {
+  .workspace-header {
+    height: auto;
+    min-height: 76px;
+    flex-wrap: wrap;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .conversation-quick-actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+}
+@media (max-width: 700px) {
+  .workspace-shortcuts {
+    gap: 2px;
+    padding: 5px 10px;
+  }
+  .workspace-shortcuts .mantine-Button-root {
+    padding: 0 8px;
+    height: 28px;
+  }
+  .workspace-shortcuts #view-toggle,
+  .workspace-shortcuts #tasks-toggle,
+  .workspace-shortcuts #workspace-toggle {
+    width: auto;
+    padding: 0 8px;
+  }
+  .workspace-shortcuts #view-toggle .mantine-Button-label,
+  .workspace-shortcuts #tasks-toggle .mantine-Button-label,
+  .workspace-shortcuts #workspace-toggle .workspace-button-label {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    display: inline-flex;
+  }
+  .workspace-shortcuts #view-toggle .mantine-Button-section,
+  .workspace-shortcuts #tasks-toggle .mantine-Button-section,
+  .workspace-shortcuts #workspace-toggle .mantine-Button-section {
+    margin-right: 6px;
+  }
+  .workspace-shortcuts #tasks-toggle::after {
+    display: none;
+  }
+  .workspace-shortcuts #view-toggle {
+    margin-left: 0;
+  }
+}

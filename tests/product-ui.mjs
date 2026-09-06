@@ -300,7 +300,8 @@ try {
     .waitFor({ state: "hidden" });
   await page.locator("#usage-footer").waitFor();
   await page.locator(".limits-toggle").click();
-  await page.getByText("5h: 42% used", { exact: false }).waitFor();
+  await page.getByText("5h", { exact: true }).waitFor();
+  await page.getByText("58% left", { exact: true }).waitFor();
   await visibleInViewport(page.getByRole("dialog"));
   await shot("limits");
   await page.locator(".limits-toggle").click();

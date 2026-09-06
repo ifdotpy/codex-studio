@@ -1,0 +1,148 @@
+.usage-footer .account-limits-toggle {
+  height: auto;
+  min-height: 26px;
+  padding: 4px 6px;
+  max-width: 100%;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+}
+.account-limits-toggle .mantine-Button-label {
+  white-space: normal;
+}
+.account-limits-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+.account-limits-label {
+  color: var(--muted);
+}
+.account-limits-warning {
+  color: #ffbd78;
+}
+.account-limits-popover {
+  padding: 0;
+  overflow: hidden;
+}
+.account-limits-panel {
+  font-size: 12px;
+  padding: 18px;
+}
+.account-limits-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.account-limits-heading h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+.account-limits-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.account-limits-groups {
+  display: grid;
+  gap: 12px;
+  max-height: min(460px, 53dvh);
+  overflow: auto;
+}
+.account-limit-group {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 13px;
+  min-width: 0;
+}
+.account-limit-group > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 14px;
+  overflow-wrap: anywhere;
+}
+.account-limit-group > header > strong {
+  font-size: 12px;
+}
+.account-limit-group > header > span {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.account-limit-windows {
+  display: grid;
+  gap: 16px;
+}
+.account-limit-value {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+.account-limit-value > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.account-limit-value > strong {
+  font-size: 19px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.account-limit-value small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.account-limit-reset {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+.account-limit-credits {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  margin-top: 13px;
+  padding-top: 11px;
+}
+.account-limit-credits > span {
+  color: var(--muted);
+}
+.account-limit-credits > strong {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.account-limits-updated {
+  margin-top: 13px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.account-limits-empty {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}
+.account-limits-error {
+  margin: 12px 0 0;
+  color: #ffbd78;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .usage-footer .account-limits-toggle {
+    margin-left: 0;
+  }
+  .account-limits-panel {
+    padding: 14px;
+  }
+}

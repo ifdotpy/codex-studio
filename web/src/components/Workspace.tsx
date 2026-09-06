@@ -39,6 +39,7 @@ import FilePreview, { type PreviewTarget } from "./FilePreview";
 import "./Workspace.css";
 
 type Props = {
+  initialSection?: string;
   opened: boolean;
   onClose: () => void;
   agent?: Agent;
@@ -181,6 +182,12 @@ export function Workspace(props: Props) {
   useEffect(() => {
     if (props.opened) setAgentId(props.agent?.id || "");
   }, [props.opened, props.agent?.id]);
+  useEffect(() => {
+    if (props.opened && props.initialSection) {
+      setSection(props.initialSection);
+      setFocusId("");
+    }
+  }, [props.opened, props.initialSection]);
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   useEffect(() => {
     if (!props.opened) return;
