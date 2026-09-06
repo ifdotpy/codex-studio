@@ -69,6 +69,7 @@ node tests/portable-smoke.mjs
 node tests/state-contract-smoke.mjs
 python3 -B tests/daemon-contract.py
 python3 -B tests/runtime-contract.py
+python3 -B tests/turn-start-contract.py
 python3 -B tests/accounts-contract.py
 python3 -B tests/runtime-accounts-contract.py
 python3 -B tests/canvas-contract.py

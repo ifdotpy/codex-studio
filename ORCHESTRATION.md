@@ -158,6 +158,13 @@ are combined in one input. Repeated completion notifications share an event id.
 A worker with pending children or command watches stays in the waiting state.
 Its parent receives a result after that work settles. A reported result still needs review.
 
+A `turn/start` timeout does not prove that the turn failed to start.
+The runtime retains its reservation until native events or the response establish the outcome.
+New input cannot start another turn while that outcome is unknown.
+Delivery requires the start response or a user-message event with the matching client ID.
+A late response can acknowledge its original input batch but cannot replace a newer turn's state.
+Unknown input is never replayed automatically.
+
 ## Agent chat
 
 Select the **Agents** tab in the sidebar to read private conversations and broadcasts.
@@ -361,6 +368,7 @@ npm test
 npm run format:check
 cd ..
 python3 tests/runtime-contract.py
+python3 tests/turn-start-contract.py
 python3 tests/canvas-contract.py
 node tests/portable-smoke.mjs
 ```
