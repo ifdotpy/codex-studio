@@ -53,3 +53,21 @@ retains their saved output.
 
 See the [desktop instructions](desktop/README.md) for startup, packaging, and
 native access boundaries. See [orchestration](ORCHESTRATION.md) for agent tools.
+
+## Installed artifact
+
+Source: `cb3b114`. The installed backend PID is `27679` at verification time.
+The final hidden app check shows Codex first, Spark second, three reset credits,
+and local cost estimates. All three credits remain available after the check.
+Closing the app leaves the same backend PID alive.
+
+Local evidence: `~/.local/state/codex-agents/evidence/desktop-20260906/`.
+`account-limits.png` records the installed UI. `verification.json` records every
+bundled backend and web file hash, the executable hash, and the app archive hash.
+Its sorted manifest SHA-256 is
+`10dc2a404a1f21b534cd9b4bdde205c9e58410c8abfeab91350daac068ed4fea`.
+
+The database backup before the final restart is
+`~/.local/state/codex-agents/backups/canvas-before-electron-20260906-091114.sqlite3`.
+Both existing agents remain. No active agent, monitor, or user terminal was
+interrupted by the restart. No real reset credit was consumed.
