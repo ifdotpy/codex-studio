@@ -571,6 +571,8 @@ def make_server(canvas, port=0):
                         )
                     if path.path == "/api/capabilities":
                         return self.send(runtime.capabilities(agent))
+                    if path.path == "/api/panel":
+                        return self.send(runtime.panel(agent))
                     if path.path == "/api/user-tasks":
                         return self.send(runtime.user_tasks(agent))
                     if path.path == "/api/profiles":

@@ -20,6 +20,7 @@ export interface Agent extends Json {
   created: number;
   inFlight?: boolean;
   compactions?: number;
+  panelVersion?: number;
   contextUsage?: { tokens: number | null; window: number | null; at: number };
 }
 export interface Room {

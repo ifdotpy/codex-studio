@@ -5,7 +5,10 @@ import "./rich-preview.css";
 
 // A sandbox without permissions has an opaque origin. Remove navigation elements
 // as well: sandbox alone still permits a link to navigate its own frame.
-export function isolatedDocument(source: string) {
+export function isolatedDocument(
+  source: string,
+  options: { css?: string; dark?: boolean } = {},
+) {
   // This document has no browsing context. Parsing preserves html/body attributes
   // without executing scripts or loading resources before removal.
   const doc = document.implementation.createHTMLDocument("");
@@ -56,9 +59,15 @@ export function isolatedDocument(source: string) {
     "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
   doc.head.prepend(policy);
   const style = doc.createElement("style");
-  style.textContent =
-    "html{color-scheme:light;background:#fff;color:#17202a;font-family:system-ui,sans-serif}body{margin:16px;overflow-wrap:anywhere}img,svg{max-width:100%}*{box-sizing:border-box}";
+  style.textContent = `html{color-scheme:${options.dark ? "dark" : "light"};background:${options.dark ? "#18191c" : "#fff"};color:${options.dark ? "#e5e5eb" : "#17202a"};font-family:system-ui,sans-serif}body{margin:16px;overflow-wrap:anywhere}img,svg{max-width:100%}*{box-sizing:border-box}`;
   policy.after(style);
+  if (options.css) {
+    const customStyle = doc.createElement("style");
+    // HTML serialization does not escape raw style text. A CSS escape prevents
+    // a closing style tag from inserting markup when srcdoc parses it again.
+    customStyle.textContent = options.css.replace(/</g, "\\3c ");
+    doc.head.append(customStyle);
+  }
   return "<!doctype html>" + doc.documentElement.outerHTML;
 }
 

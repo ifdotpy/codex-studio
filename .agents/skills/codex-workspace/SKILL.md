@@ -95,3 +95,15 @@ settings APIs.
 
 The chat renders fenced Mermaid diagrams and isolated static HTML/CSS/SVG.
 Scripts and remote resources do not run in these previews.
+
+Use `orchestration_panel` for the persistent 200px display between your chat and
+the message composer. `action=set` replaces its contents with `html` and optional
+`css`. Use it for progress, diagrams, or a compact dashboard. Update it when the
+work changes. Do not poll or add repeated chat messages just to refresh it.
+`action=get` reads it; `action=clear` empties it. Each agent owns a separate panel.
+Inline HTML/CSS/SVG and CSS animations work. Scripts, navigation, and external
+resources are disabled. Keep the design responsive within the fixed height.
+
+For an older thread without this tool, call `orchestration_send` with
+`agent_id="workspace"` and `text` containing JSON:
+`{"tool":"orchestration_panel","arguments":{"action":"set","html":"<p>Review in progress</p>"}}`.

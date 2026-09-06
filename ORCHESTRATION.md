@@ -68,6 +68,28 @@ the selected sandbox. The harness does not replace PATH with its own value.
 The monitor loads startup files when its process starts; it does not read a
 temporary native snapshot that can disappear when the agent's turn ends.
 The bottom terminal panel shows only user shells. **Background** lists agent commands and monitors across teams.
+
+### Agent display panel
+
+Each managed conversation has a fixed 200px panel between the transcript and
+composer. The calling agent controls it through `orchestration_panel`:
+`set` replaces HTML and optional CSS, `get` reads the current document, and
+`clear` empties the display. A worker cannot overwrite its lead's panel.
+Agent chat rooms and unmanaged conversations do not have this display.
+
+The panel renders inline HTML/CSS/SVG and CSS animations in an opaque sandbox.
+Scripts, network requests, navigation, forms, and parent application access are
+disabled. HTML accepts up to 128 KiB of UTF-8 text; CSS accepts up to 32 KiB.
+The server stores one current document per agent in `runtime_panels`. Each write
+increments its version. A retry with the same tool identity returns its original
+receipt and cannot replace a newer document. Native tool delivery returns the
+cached result for a repeated call identity; a new update needs a new call identity.
+The document survives a server restart. A new agent starts with an empty panel.
+
+Snapshots carry only `panelVersion`. The selected conversation fetches its
+document from `GET /api/panel?agent=<id>` when that version changes. Full documents
+are excluded from shared snapshots so dozens of agents do not multiply transfer
+size. Older threads use the documented `orchestration_send` workspace fallback.
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
 Team capacity and token budgets remain available through `codex-control configure`.
 One lead can delegate a batch of work to dozens of agents.

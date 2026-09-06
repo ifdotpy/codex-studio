@@ -25,6 +25,7 @@ from codex_work import WorkMixin, work_tools
 from codex_workspace import WorkspaceMixin
 from codex_rules import RulesMixin, rule_tools
 from codex_user_tasks import UserTasksMixin, user_task_tools
+from codex_panel import PanelMixin, panel_tools
 
 def uid():
     return str(uuid.uuid4())
@@ -105,7 +106,7 @@ TOOLS = [
          {"monitor_id": TEXT}, ["monitor_id"]),
 ]
 
-TOOLS += work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT)
+TOOLS += work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -166,7 +167,10 @@ Only the user can change team defaults. Do not call settings APIs to change them
 Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_task, orchestration_result, orchestration_search,
-orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task.
+orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task, orchestration_panel.
+Use orchestration_panel action=set with html and optional css for your persistent 200px panel above the composer.
+Update it in place for meaningful progress or diagrams. Each agent owns their own panel.
+Scripts and external resources are disabled; inline HTML/CSS/SVG and CSS animations work.
 Use orchestration_user_task for things the user must do. Supply clear completion criteria.
 A user check wakes the requesting agent and awaits its review. Accept the result or return
 it with a concrete reason and next action. Do not treat the user check as your acceptance.
@@ -287,7 +291,7 @@ class AppServer:
         self.log.close()
 
 
-class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
+class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -403,6 +407,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     self.put(db, "requests", r)
             self.setup_work(db)
             self.setup_user_tasks(db)
+            self.setup_panels(db)
             self.setup_workspace(db)
             self.setup_rules(db)
         os.chmod(self.db_path, 0o600)
@@ -1806,9 +1811,12 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                         for t in work_tools(tool, TEXT)
                         + rule_tools(tool, TEXT)
                         + user_task_tools(tool, TEXT)
+                        + panel_tools(tool, TEXT)
                     }:
                         raise ValueError("Unknown workspace tool")
-                if name == "orchestration_user_task":
+                if name == "orchestration_panel":
+                    value = self.panel_action(a["id"], args, key, epoch=a["epoch"])
+                elif name == "orchestration_user_task":
                     value = self.user_task_action(a["id"], args, key, epoch=a["epoch"])
                 elif name in {"orchestration_task", "orchestration_result"}:
                     if name == "orchestration_result" and args.get("action") == "read":
@@ -1896,7 +1904,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                         **self.profiles(),
                         "workspaceTools": work_tools(tool, TEXT)
                         + rule_tools(tool, TEXT)
-                        + user_task_tools(tool, TEXT),
+                        + user_task_tools(tool, TEXT)
+                        + panel_tools(tool, TEXT),
                     }
                     if name == "orchestration_status":
                         value["recentChats"] = [self.chat_read(r["id"], a["id"], limit=10)

@@ -1,0 +1,267 @@
+#!/usr/bin/env node
+// Production React build and isolated HTTP fixture. No model calls or user state.
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+const repo = dirname(dirname(fileURLToPath(import.meta.url)));
+const { chromium } = createRequire(join(repo, "web/package.json"))(
+  "playwright-core",
+);
+const root = await mkdtemp(join(tmpdir(), "codex-agent-panel-"));
+const proc = spawn(
+  "python3",
+  ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+  {
+    stdio: ["pipe", "pipe", "pipe"],
+  },
+);
+let browser,
+  page,
+  log = "";
+proc.stderr.on("data", (data) => (log += data));
+const poll = async (fn, label) => {
+  for (let n = 0; n < 120; n++) {
+    if (await fn()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(label + " " + log);
+};
+try {
+  const port = await new Promise((resolve, reject) => {
+    proc.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+    proc.once("exit", () => reject(new Error(log)));
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  const state = await (await fetch(origin + "/api/state")).json();
+  const lead = state.threads.find((a) => a.name === "Release lead");
+  const other = state.threads.find((a) => a.name === "Other project");
+  const panels = new Map();
+  const put = (agent, version, html = "", css = "") =>
+    panels.set(agent.id, {
+      agent: agent.id,
+      version,
+      html,
+      css,
+      updated: Date.now() / 1000,
+    });
+  put(lead, 0);
+  put(other, 1, "<strong>Other agent panel</strong>");
+  browser = await chromium.launch({
+    executablePath:
+      process.env.CHROME_BIN ||
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    headless: true,
+  });
+  page = await browser.newPage({ viewport: { width: 1280, height: 980 } });
+  const errors = [],
+    forbidden = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("request", (r) => {
+    if (/panel-escape|evil\.invalid/.test(r.url())) forbidden.push(r);
+  });
+  await page.route("**/api/state", async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    for (const agent of data.threads)
+      agent.panelVersion = panels.get(agent.id)?.version || 0;
+    data.runtime.requests = [];
+    await route.fulfill({ response, json: data });
+  });
+  let deferred,
+    deferLead = false,
+    failLead = false;
+  await page.route("**/api/panel?*", async (route) => {
+    const id = new URL(route.request().url()).searchParams.get("agent");
+    if (deferLead && id === lead.id) {
+      deferred = route;
+      return;
+    }
+    if (failLead && id === lead.id) {
+      await route.fulfill({
+        status: 503,
+        json: { error: "Fixture unavailable" },
+      });
+      return;
+    }
+    await route.fulfill({ json: panels.get(id) });
+  });
+  await page.goto(origin);
+  const select = (name) =>
+    page.locator("[data-chat]").filter({ hasText: name }).click();
+  await select("Release lead");
+  const panel = page.locator(".agent-panel");
+  await panel.getByText("Progress and updates appear here.").waitFor();
+  const assertLayout = async () => {
+    const bounds = await panel.boundingBox();
+    const transcript = await page.locator("#messages").boundingBox();
+    const composer = await page.locator("#composer").boundingBox();
+    assert.equal(bounds.height, 200);
+    assert.ok(transcript.y + transcript.height <= bounds.y + 1);
+    assert.ok(bounds.y + bounds.height <= composer.y + 1);
+    assert.ok(
+      bounds.x >= 0 && bounds.x + bounds.width <= page.viewportSize().width + 1,
+    );
+  };
+  await assertLayout();
+  put(
+    lead,
+    1,
+    '<div class="progress"><span>Review 12 of 40</span><svg width="160" height="20"><rect width="90" height="10" fill="#9c92ff"/></svg></div>',
+    ".progress{padding:16px;border-radius:10px;background:rgb(40,42,60);display:flex;gap:20px}",
+  );
+  const frame = panel.frameLocator("iframe");
+  await frame.getByText("Review 12 of 40").waitFor();
+  assert.equal(
+    await frame
+      .locator(".progress")
+      .evaluate((el) => getComputedStyle(el).backgroundColor),
+    "rgb(40, 42, 60)",
+  );
+  assert.equal(await frame.locator("svg rect").count(), 1);
+  assert.equal(
+    await page.locator("#messages").getByText("Review 12 of 40").count(),
+    0,
+  );
+  put(lead, 2, '<p id="progress">Review 28 of 40</p>');
+  await frame.getByText("Review 28 of 40").waitFor();
+  assert.equal(await frame.getByText("Review 12 of 40").count(), 0);
+  deferLead = true;
+  put(lead, 3, "<p>Late lead result</p>");
+  await poll(() => !!deferred, "lead refresh starts");
+  await select("Other project");
+  await frame.getByText("Other agent panel").waitFor();
+  await deferred.fulfill({ json: panels.get(lead.id) }).catch(() => {});
+  await page.waitForTimeout(150);
+  assert.equal(await frame.getByText("Late lead result").count(), 0);
+  assert.equal(await panel.getAttribute("data-agent"), other.id);
+  deferLead = false;
+  await select("Release lead");
+  await frame.getByText("Late lead result").waitFor();
+  put(lead, 4);
+  await panel.getByText("Progress and updates appear here.").waitFor();
+  assert.equal(await panel.locator("iframe").count(), 0);
+  await assertLayout();
+  put(
+    lead,
+    5,
+    `<meta http-equiv="refresh" content="0;url=https://evil.invalid/panel-escape"><meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline'"><script>parent.document.body.dataset.panelEscape='yes';fetch('/api/panel-escape')</script><p>Isolated panel</p><a href="https://evil.invalid/panel-escape" target="_top">Escape</a><form action="/api/panel-escape"><button>Submit</button></form><img src="https://evil.invalid/panel-escape"><div class="remote">Remote CSS</div><div style="width:3000px;height:450px">Scrollable content</div>`,
+    `.remote{background:url(https://evil.invalid/panel-escape)}\n</style><meta http-equiv="refresh" content="0;url=https://evil.invalid/panel-escape"><script>parent.document.body.dataset.panelEscape='yes'</script><style>`,
+  );
+  await frame.getByText("Isolated panel").waitFor();
+  assert.equal(await panel.locator("iframe").getAttribute("sandbox"), "");
+  assert.equal(
+    await panel.locator("iframe").getAttribute("referrerpolicy"),
+    "no-referrer",
+  );
+  assert.equal(
+    await frame.locator("script,iframe,meta[http-equiv=refresh]").count(),
+    0,
+  );
+  assert.equal(
+    await frame.locator('meta[http-equiv="Content-Security-Policy"]').count(),
+    1,
+  );
+  assert.equal(
+    await frame.getByText("Escape", { exact: true }).getAttribute("href"),
+    null,
+  );
+  await frame.getByText("Escape", { exact: true }).click();
+  await frame.getByRole("button", { name: "Submit" }).click();
+  await page.waitForTimeout(250);
+  assert.equal(page.url(), origin + "/");
+  assert.equal(
+    await page.locator("body").getAttribute("data-panel-escape"),
+    null,
+  );
+  assert.ok(
+    forbidden.every((request) =>
+      ["csp", "net::ERR_BLOCKED_BY_CSP"].includes(request.failure()?.errorText),
+    ),
+    "resource requests must be blocked by CSP: " +
+      JSON.stringify(
+        forbidden.map((request) => ({
+          url: request.url(),
+          failure: request.failure(),
+        })),
+      ),
+  );
+  assert.ok(
+    await frame
+      .locator("body")
+      .evaluate(() => document.documentElement.scrollHeight > innerHeight),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertLayout();
+  await page.screenshot({ path: join(root, "panel-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 980 });
+  failLead = true;
+  put(lead, 6, "<p>Unavailable</p>");
+  await panel.getByRole("alert").waitFor();
+  assert.match(
+    await panel.getByRole("alert").textContent(),
+    /Fixture unavailable/,
+  );
+  assert.equal(
+    await frame.getByText("Isolated panel").count(),
+    1,
+    "last good contents remain during failure",
+  );
+  failLead = false;
+  await panel.getByRole("button", { name: "Retry", exact: true }).click();
+  await frame.getByText("Unavailable", { exact: true }).waitFor();
+  assert.equal(await panel.getByRole("alert").count(), 0);
+  assert.equal(
+    await panel.getAttribute("data-panel-version"),
+    "6",
+    "retry recovers the same version",
+  );
+  put(
+    lead,
+    7,
+    '<div class="progress"><h3>Release review</h3><p>28 of 40 agents complete</p><progress value="28" max="40"></progress></div>',
+    ".progress{padding:12px 24px}h3{font-size:17px;margin:0}p{color:#9696a5}progress{width:100%;accent-color:#a399ff}",
+  );
+  await frame.getByText("28 of 40 agents complete").waitFor();
+  await page.screenshot({ path: join(root, "panel-desktop.png") });
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.locator("#usage-footer").scrollIntoViewIfNeeded();
+  const footer = await page.locator("#usage-footer").boundingBox();
+  assert.ok(
+    footer.y >= 0 && footer.y + footer.height <= 640,
+    "limits remain reachable on a short screen",
+  );
+  assert.equal((await panel.boundingBox()).height, 200);
+  await page.setViewportSize({ width: 1280, height: 980 });
+  await page.getByRole("tab", { name: /Agents/ }).click();
+  await page.locator("[data-room]").first().click();
+  await page.locator(".room-footer").waitFor();
+  assert.equal(await panel.count(), 0);
+  assert.deepEqual(errors, []);
+  console.log(
+    JSON.stringify({
+      passed: true,
+      height: 200,
+      update: true,
+      clear: true,
+      isolated: true,
+      lateResponse: true,
+      errors: true,
+      mobile: true,
+      rooms: true,
+      screenshots: root,
+    }),
+  );
+} catch (error) {
+  await page?.screenshot({ path: join(root, "failure.png") });
+  console.error("Failure evidence:", root);
+  throw error;
+} finally {
+  await browser?.close();
+  proc.kill("SIGTERM");
+  if (proc.exitCode === null)
+    await new Promise((resolve) => proc.once("exit", resolve));
+}
