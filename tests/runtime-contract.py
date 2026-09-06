@@ -38,6 +38,10 @@ class FakeServer:
 
     def call(self, method, params, timeout=60):
         self.calls.append((method, params))
+        if method == 'config/read':
+            # Fake commands have no host shell setup. Native parity is covered
+            # by monitor-shell-native.py with snapshots both enabled and disabled.
+            return {'config': {'features': {'shell_snapshot': False}}}
         if method in ('thread/start', 'thread/resume'):
             self.seq += 1
             assert params['config']['features.multi_agent'] is False

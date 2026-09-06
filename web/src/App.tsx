@@ -36,7 +36,13 @@ import {
 } from "react";
 import { api, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
-import { busy, statusLabel, type Agent, type Json } from "./types";
+import {
+  busy,
+  statusLabel,
+  complaintNeedsUserResponse,
+  type Agent,
+  type Json,
+} from "./types";
 import Sidebar from "./components/Sidebar";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings, shortModel } from "./components/ExecutionSettings";
@@ -119,7 +125,7 @@ export default function App() {
     (data?.runtime.requests.length || 0) +
     (data?.runtime.userTasks?.filter((task) => task.status === "open").length ||
       0) +
-    (data?.runtime.complaints.filter((c) => c.needsResponse).length || 0) +
+    (data?.runtime.complaints.filter(complaintNeedsUserResponse).length || 0) +
     (data?.runtime.work?.filter((w: Json) => w.status === "review").length ||
       0) +
     agents.filter((a) => ["failed", "interrupted"].includes(a.status)).length;
@@ -419,89 +425,6 @@ export default function App() {
         ),
       });
   };
-  const importChat = async (cursor?: string) => {
-    try {
-      const d = await api(
-        "/api/import?account_key=" +
-          encodeURIComponent(accountKey) +
-          (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""),
-      );
-      setModal({
-        title: "Import from Codex",
-        body: (
-          <>
-            <p className="notice">Copies the last 20 turns into a new lead.</p>
-            {d.data.map((t: Json) => {
-              const id = crypto.randomUUID();
-              return (
-                <Button
-                  key={t.id}
-                  onClick={() =>
-                    void run(async () => {
-                      const a = await api("/api/import", {
-                        id,
-                        threadId: t.id,
-                        account_key: accountKey,
-                        name: "Imported chat",
-                        model: lead?.model || "gpt-6-astra",
-                      });
-                      setModal(null);
-                      await refresh();
-                      open(a.id);
-                    })
-                  }
-                >
-                  {t.name || t.preview || "Untitled"}
-                  <small>{t.cwd}</small>
-                </Button>
-              );
-            })}
-            {d.nextCursor && (
-              <Button onClick={() => void importChat(d.nextCursor)}>
-                More conversations
-              </Button>
-            )}
-          </>
-        ),
-      });
-    } catch (e) {
-      notify(errorText(e));
-    }
-  };
-  const other = () =>
-    setModal({
-      title: "Other sessions",
-      body: (
-        <>
-          {agents
-            .filter((a) => !a.isLead)
-            .map((a) => (
-              <Button
-                key={a.id}
-                onClick={() => {
-                  setModal(null);
-                  open(a.id);
-                }}
-              >
-                {a.name}
-                <small>{statusLabel(a.status)}</small>
-              </Button>
-            ))}
-          {data?.chats.map((c) => (
-            <Button
-              key={c.id}
-              onClick={() => {
-                setModal(null);
-                open(c.id);
-              }}
-            >
-              {c.name}
-              <small>Shared chat</small>
-            </Button>
-          ))}
-        </>
-      ),
-    });
   if (!data)
     return (
       <div className="startup">{error || "Connecting to Codex Studio…"}</div>
@@ -622,8 +545,6 @@ export default function App() {
         notify={notify}
         rename={rename}
         remove={remove}
-        importChat={() => void importChat()}
-        other={other}
         mobile={sidebar}
         close={() => setSidebar(false)}
       />
@@ -652,7 +573,7 @@ export default function App() {
               {view === "canvas"
                 ? `${leads.length} leads · ${agents.length} agents`
                 : view === "complaints"
-                  ? "Lead review required"
+                  ? "Your inbox and orchestrator follow-up"
                   : agent
                     ? livePhase?.id === agent.id
                       ? livePhase.label
@@ -928,13 +849,7 @@ export default function App() {
         ) : (
           teamPanel
         ))}
-      <TerminalDock
-        data={data}
-        agent={agent || lead}
-        onOpenBackground={() => setTasksOpen(true)}
-        onSelectAgent={open}
-        notify={notify}
-      />
+      <TerminalDock data={data} agent={agent || lead} notify={notify} />
       <Workspace
         initialSection={workspaceSection}
         opened={workspaceOpen}

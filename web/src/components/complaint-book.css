@@ -1,0 +1,28 @@
+.complaint-owner-tabs {
+  margin-bottom: 20px;
+}
+.complaint-owner-tabs .mantine-Tabs-tab {
+  gap: 8px;
+  padding: 12px 14px;
+}
+.complaint-reply {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.complaint-reply h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.complaint-reply > button {
+  justify-self: start;
+}
+.complaint-reply-error {
+  color: var(--mantine-color-red-4);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  margin: 0;
+}

@@ -188,8 +188,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.terminal-shell-view,
-.terminal-agent-view {
+.terminal-shell-view {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -265,25 +264,6 @@
   color: #9398a8;
   padding: 10px 13px;
 }
-.terminal-agent-view pre {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 12px;
-  margin: 0;
-  padding: 4px 12px;
-}
-.terminal-agent-input {
-  display: flex;
-  gap: 8px;
-  padding: 5px 12px 9px;
-}
-.terminal-agent-input .mantine-TextInput-root {
-  flex: 1;
-  min-width: 0;
-}
 @media (max-width: 650px) {
   .terminal-dock-bar {
     padding: 0 8px;
@@ -314,9 +294,6 @@
   }
   .terminal-detail-heading {
     padding: 0 8px;
-  }
-  .terminal-agent-input {
-    flex-wrap: wrap;
   }
   .terminal-dock-bar .mantine-Button-root {
     font-size: 10px;

@@ -6,7 +6,7 @@ If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
 Creation itself does not call the model. A repeated creation request returns the same chat.
 Leads carry an explicit `isLead` marker in SQLite. Only Astra and Sol can be leads.
-Standalone workers and registered sessions stay in **Other sessions**.
+Standalone workers and registered sessions remain visible on **Canvas**.
 The project defaults to the previous lead's directory, `CODEX_CANVAS_CWD`, or the server's current directory.
 Before the first message, select **Project** beside the account to change the folder.
 Enter a folder path, browse directories, or use the native Finder picker.
@@ -45,7 +45,7 @@ Select **Canvas** for all orchestrators, workers and registered sessions. Drag n
 The canvas has one control, **Fit**. Parent links come from the runtime.
 The browser keeps existing canvas positions and message drafts when views change.
 Manual graph selection modes, chat wiring, the minimap, and duplicate zoom controls were removed.
-Existing shared chats and sessions remain accessible from **Other sessions**; their command-line tools remain available.
+Shared agent chats remain in the **Agents** tab. Registered sessions remain on **Canvas**.
 
 The conversation header provides context compaction, review, and team stop.
 The **Projects** sidebar groups lead chats by their actual working directory.
@@ -60,7 +60,14 @@ Deleting an agent chat removes it from the user list until the next agent messag
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
 Agents create monitors through `orchestration_monitor`. The interface shows their output and controls but has no manual monitor form.
-The terminal panel provides independent user shells and lists agent commands across teams.
+Monitor commands use the local user's shell and Codex's `allow_login_shell` setting.
+With shell snapshots enabled, they load the same zshrc or bashrc setup as native
+`exec_command`. Explicit `shell_environment_policy.set` values take priority over
+startup files. Codex `command/exec` still applies account environment filters and
+the selected sandbox. The harness does not replace PATH with its own value.
+The monitor loads startup files when its process starts; it does not read a
+temporary native snapshot that can disappear when the agent's turn ends.
+The bottom terminal panel shows only user shells. **Background** lists agent commands and monitors across teams.
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
 Team capacity and token budgets remain available through `codex-control configure`.
 One lead can delegate a batch of work to dozens of agents.
@@ -153,33 +160,45 @@ Account project admission rules remain separate. YOLO does not enable
 
 ## Complaint book
 
-Use the complaint book instead of a feedback section. Agents call
-`orchestration_complaint` with `action=submit`, a concrete problem, impact, and evidence.
-The server records the author and responsible team lead. The user can also submit
-and inspect complaints through **Complaint book** in the sidebar.
+Leads and workers call `orchestration_complaint` with `action=submit`, a concrete
+problem, impact, and evidence. Responsibility comes from the author:
 
-A new complaint queues a lead turn, including after a final answer. Stop remains
-a boundary: a stopped lead keeps the complaint but waits for an explicit resume.
-The lead receives a message with the author, complaint id, full text, and status.
-The lead calls `action=respond` with the complaint id, a concrete response, and
-`in_progress`, `resolved`, or `declined`. The lead does not poll the book or call
-`action=read` each turn. Reading the book remains optional for history or context.
-Only the responsible lead can respond. A response also records the complaint as read.
-Responses and status changes remain in an append-only response list. The reporter receives an event.
-The status records the lead's claim; it does not independently prove a repair.
+- Worker complaint: the team lead responds, under **For orchestrator**.
+- Lead complaint: the user responds, under **For you**.
+- User complaint: the selected team lead responds.
 
-Unanswered complaint messages remain in the lead's turn context until a response.
-No complaint message is added when none require a response. A final answer with
-unanswered complaints queues a message with their full details. Three consecutive
-turns that ignore presented complaints stop automatic lead continuation with a visible error.
-A recorded next step counts as a response; an `in_progress` complaint remains visible
-under **All complaints**. Reads alone cannot close a complaint. Duplicate tool calls
-cannot create duplicate complaints or responses. Complaints survive server restarts
-and deletion of their original conversation.
+Workers cannot close complaints. A lead cannot respond to or close their own
+complaint. The user cannot take over a complaint assigned to a lead through the
+user response endpoint. Only the assigned recipient can record a response.
 
-Existing Codex threads retain their initial tool schemas. They can use
-`orchestration_send` with `agent_id=complaint` and the same action object encoded
-as JSON in `text`. New threads receive the dedicated complaint tool.
+A worker complaint delivers its full text, author, and id to the lead and starts
+a turn, including after a final answer. The lead calls `action=respond` with a
+concrete action or reason and `in_progress`, `resolved`, or `declined`. The lead
+must not poll the book or routinely call `action=read`.
+
+Lead complaints stay in the user's inbox without starting a lead turn. The user
+records a response and status in the complaint dialog. That response notifies
+the reporting lead. A stopped lead keeps the record but does not resume.
+
+Unanswered complaints assigned to the lead remain in that lead's turn context.
+Three consecutive turns that ignore presented complaints stop automatic lead
+continuation with a visible error. Complaints assigned to the user do not block
+lead completion. A recorded next step counts as a response; `in_progress` entries
+remain visible under **All complaints**.
+
+Responses remain append-only and record their actual author. User responses use
+an exact request id and complaint version. Repeated requests cannot add a second
+response or notification. A stale version returns HTTP 409. Reads alone do not
+close complaints. A status records the recipient's claim, not independent proof
+of a repair. Records survive restarts and conversation deletion.
+
+Existing lead-authored entries move to **For you**. Historical lead responses
+remain visible, but cannot count as user action. Those entries reopen when no
+user response exists. Existing worker entries keep their responsible lead.
+
+Older threads can submit through `orchestration_send` with `agent_id=complaint`
+and the same action object encoded as JSON in `text`. New threads receive the
+dedicated complaint tool.
 
 ## Context and account usage
 

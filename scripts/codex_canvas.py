@@ -740,6 +740,14 @@ def make_server(canvas, port=0):
                         key = body.get("id")
                         if not isinstance(key, str) or not 1 <= len(key) <= 200:
                             raise ValueError("A complaint request id is required")
+                        if body.get("action", "submit") == "respond":
+                            from codex_runtime import ComplaintConflict
+                            try:
+                                return self.send(canvas.runtime.complaint_response_from_user(body, "user:" + key))
+                            except ComplaintConflict as error:
+                                return self.send({"error": str(error)}, 409)
+                        if body.get("action", "submit") != "submit":
+                            raise ValueError("Choose submit or respond")
                         return self.send(canvas.runtime.complaint(body.get("lead"), {"action": "submit", "text": body.get("text")}, "user:" + key, user=True))
                     if self.path == "/api/conversation/delete":
                         return self.send(canvas.runtime.delete_conversation(body.get("id")))

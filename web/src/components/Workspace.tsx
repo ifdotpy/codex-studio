@@ -1,3 +1,4 @@
+import { complaintNeedsUserResponse } from "../types";
 import {
   Badge,
   Button,
@@ -1171,7 +1172,7 @@ function Attention(c: Context) {
       <ComplaintBook data={c.data} refresh={c.refresh} notify={c.notify} />
       {!items.length &&
         !c.data.runtime.requests.length &&
-        !c.data.runtime.complaints.some((item) => item.needsResponse) &&
+        !c.data.runtime.complaints.some(complaintNeedsUserResponse) &&
         !state.loading && <Empty>No questions or unresolved problems.</Empty>}
     </>
   );

@@ -209,11 +209,21 @@ try {
     "room rename",
   );
   await page.locator("#open-complaints").click();
+  assert.equal(
+    await page
+      .getByRole("tab", { name: /^For you/ })
+      .getAttribute("aria-selected"),
+    "true",
+  );
   await page.locator("#new-complaint").click();
   await page
     .locator("#complaint-text")
     .fill("Fixture complaint: the test log is missing.");
   await page.locator("#submit-complaint").click();
+  await page
+    .locator('[role="tab"][aria-selected="true"]')
+    .filter({ hasText: "For orchestrator" })
+    .waitFor();
   await page
     .getByText("Fixture complaint: the test log is missing.", { exact: true })
     .waitFor();
@@ -222,7 +232,7 @@ try {
     .filter({ hasText: "Fixture complaint" })
     .click();
   await page
-    .getByText("The lead has not read this complaint.", { exact: true })
+    .getByText("The orchestrator has not read this complaint.", { exact: true })
     .waitFor();
   await visibleInViewport(
     page.getByRole("dialog", { name: "Complaint", exact: true }),

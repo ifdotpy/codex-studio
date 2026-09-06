@@ -62,11 +62,21 @@ A finished worker does not automatically accept its work. Acceptance requires
 review. Use the application's advertised resource tool when a task needs shared
 capacity; preserve the returned registry and holder identities.
 
-Use `orchestration_complaint` for concrete problems with evidence and impact.
-The server sends the full complaint to the responsible lead as a message and wakes
-them. Do not poll or routinely read the book. On notification, use `action=respond`
-to record an action, a reasoned refusal, or the next step. A separate `action=read`
-is optional. Respond before finishing the turn.
+Leads and workers can both call `orchestration_complaint` with `action=submit`.
+Record confirmed harness defects directly; do not leave them only in chat feedback.
+Include reproduction, evidence, impact, and any workaround. Distinguish confirmed
+defects from suspicions and project code errors. Do not duplicate an existing entry.
+Worker complaints go to the lead as messages and wake the lead. Lead complaints
+go to the user in **For you**. Only the user can respond to or close those entries.
+A lead must not resolve their own complaint by saying they reported it.
+
+Do not poll or routinely read the book. For a complaint assigned to the lead, use
+`action=respond` to record an action, a reasoned refusal, or the next step before
+finishing the turn. A separate `action=read` is optional. The user's response to a
+lead complaint arrives automatically as a message.
+
+If the dedicated tool is absent in an older thread, call `orchestration_send` with
+`agent_id="complaint"` and `text` containing the same action object as JSON.
 
 Use `orchestration_user_task` for actions the user must perform. Supply completion
 criteria. A user check starts review and notifies the requesting agent. Accept the

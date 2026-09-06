@@ -32,6 +32,8 @@ export interface Room {
   lastMessage?: { seq: number; text: string; sender: string; created: number };
 }
 export interface Complaint extends Json {
+  recipient?: "user" | "lead";
+  version?: number;
   id: string;
   leadId: string;
   author: string;
@@ -45,6 +47,11 @@ export interface Complaint extends Json {
   leadStopped: boolean;
   leadDeleted: boolean;
 }
+export const complaintNeedsUserResponse = (complaint: Complaint) =>
+  complaint.recipient
+    ? complaint.recipient === "user" && complaint.needsResponse
+    : complaint.author === complaint.leadId;
+
 export interface BackgroundTask {
   id: string;
   agent: string;

@@ -1,6 +1,5 @@
 import { ActionIcon, Button, TextInput } from "@mantine/core";
 import {
-  ArrowUpRight,
   ChevronDown,
   ChevronUp,
   Copy,
@@ -13,7 +12,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { api, errorText, save, saved } from "../api";
-import type { Agent, BackgroundTask, Snapshot } from "../types";
+import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 
 type Shell = {
@@ -26,16 +25,7 @@ type Shell = {
   error?: string;
   created: number;
 };
-type Entry = {
-  key: string;
-  id: string;
-  agent: string;
-  title: string;
-  cwd?: string;
-  status: string;
-  shell?: Shell;
-  task?: BackgroundTask;
-};
+type Entry = Shell & { key: string };
 type Output = {
   text: string;
   offset: number;
@@ -50,14 +40,10 @@ const running = (status: string) =>
 export default function TerminalDock({
   data,
   agent,
-  onOpenBackground,
-  onSelectAgent,
   notify,
 }: {
   data: Snapshot | null;
   agent?: Agent;
-  onOpenBackground?: () => void;
-  onSelectAgent?: (id: string) => void;
   notify: (message: string) => void;
 }) {
   const [opened, setOpened] = useState(() =>
@@ -132,26 +118,9 @@ export default function TerminalDock({
     save("codex.terminal.selected", selected);
     setRenaming(false);
   }, [selected]);
-  const tasks = [
-    ...(data?.runtime.monitors || []).map(
-      (task) => ({ ...task, kind: "monitor" }) as BackgroundTask,
-    ),
-    ...(data?.runtime.tasks || []).filter((task) => task.kind === "command"),
-  ];
-  const entries: Entry[] = [
-    ...shells
-      .filter((shell) => shell.status !== "closed")
-      .map((shell) => ({ key: `shell:${shell.id}`, ...shell, shell })),
-    ...tasks.map((task) => ({
-      key: `task:${task.id}`,
-      id: task.id,
-      agent: task.agent,
-      title: task.command || task.name || "Agent command",
-      cwd: task.cwd,
-      status: task.status,
-      task,
-    })),
-  ];
+  const entries: Entry[] = shells
+    .filter((shell) => shell.status !== "closed")
+    .map((shell) => ({ key: `shell:${shell.id}`, ...shell }));
   const current = entries.find((entry) => entry.key === selected);
   const owner = (id: string) =>
     data?.threads.find((item) => item.id === id)?.name || "Agent";
@@ -284,11 +253,6 @@ export default function TerminalDock({
         >
           New terminal
         </Button>
-        {onOpenBackground && (
-          <Button size="compact-xs" variant="subtle" onClick={onOpenBackground}>
-            Agent tools
-          </Button>
-        )}
       </header>
       {opened && (
         <div className="terminal-dock-body">
@@ -339,14 +303,7 @@ export default function TerminalDock({
                     />
                     <span className="terminal-session-description">
                       <strong>{entry.title}</strong>
-                      <small>
-                        {entry.shell
-                          ? "Your terminal"
-                          : entry.task?.kind === "monitor"
-                            ? "Agent monitor"
-                            : "Agent command"}{" "}
-                        · {owner(entry.agent)}
-                      </small>
+                      <small>Your terminal · {owner(entry.agent)}</small>
                     </span>
                   </button>
                 ))}
@@ -355,7 +312,7 @@ export default function TerminalDock({
                 <p className="terminal-dock-empty">
                   {query
                     ? "No matching sessions"
-                    : "Your shells and agent commands appear here."}
+                    : "Your terminals appear here."}
                 </p>
               )}
             </div>
@@ -411,12 +368,10 @@ export default function TerminalDock({
                   ) : (
                     <button
                       className="terminal-detail-title"
-                      title={current.shell ? "Rename terminal" : current.title}
+                      title="Rename terminal"
                       onClick={() => {
-                        if (current.shell) {
-                          setTitle(current.title);
-                          setRenaming(true);
-                        }
+                        setTitle(current.title);
+                        setRenaming(true);
                       }}
                     >
                       {current.title}
@@ -424,41 +379,26 @@ export default function TerminalDock({
                   )}
                   <span className="terminal-detail-status">
                     {current.status}
-                    {current.shell?.exitCode != null
-                      ? ` · Exit ${current.shell.exitCode}`
+                    {current.exitCode != null
+                      ? ` · Exit ${current.exitCode}`
                       : ""}
                   </span>
                   <span className="terminal-dock-spacer" />
-                  {current.shell && (
-                    <ActionIcon
-                      aria-label="Close terminal session"
-                      title="Close terminal session"
-                      disabled={pending}
-                      onClick={() =>
-                        void action("/api/terminals/close", { id: current.id })
-                      }
-                    >
-                      <X size={14} />
-                    </ActionIcon>
-                  )}
+                  <ActionIcon
+                    aria-label="Close terminal session"
+                    title="Close terminal session"
+                    disabled={pending}
+                    onClick={() =>
+                      void action("/api/terminals/close", { id: current.id })
+                    }
+                  >
+                    <X size={14} />
+                  </ActionIcon>
                 </div>
                 <div className="terminal-detail-path" title={current.cwd}>
                   {current.cwd || owner(current.agent)}
                 </div>
-                {current.shell ? (
-                  <ShellView
-                    key={current.key}
-                    shell={current.shell}
-                    notify={notify}
-                  />
-                ) : (
-                  <AgentTerminal
-                    key={current.key}
-                    task={current.task!}
-                    notify={notify}
-                    onOpenAgent={() => onSelectAgent?.(current.agent)}
-                  />
-                )}
+                <ShellView key={current.key} shell={current} notify={notify} />
               </>
             ) : (
               <div className="terminal-dock-welcome">
@@ -466,7 +406,7 @@ export default function TerminalDock({
                 <strong>Your terminals, always here</strong>
                 <p>
                   Start a shell in {agent?.cwd || "the selected agent’s folder"}
-                  , or select an agent command.
+                  .
                 </p>
                 <Button
                   size="xs"
@@ -673,93 +613,6 @@ function ShellView({
           Ctrl+C
         </Button>
       </footer>
-    </div>
-  );
-}
-function AgentTerminal({
-  task,
-  notify,
-  onOpenAgent,
-}: {
-  task: BackgroundTask;
-  notify: (message: string) => void;
-  onOpenAgent: () => void;
-}) {
-  const [input, setInput] = useState("");
-  const [pending, setPending] = useState(false);
-  const native = task.kind === "command";
-  const controllable =
-    running(task.status) && (native || (task.interactive && !task.stdinClosed));
-  const send = async () => {
-    const text = input;
-    setPending(true);
-    try {
-      const result = await api(
-        native ? "/api/native-command" : "/api/monitor/input",
-        {
-          id: task.id,
-          text: text + "\n",
-          ...(native ? { action: "input" } : {}),
-        },
-      );
-      if (result.error || result.ok === false)
-        throw new Error(result.error || "The command input was not delivered.");
-      setInput((value) => (value === text ? "" : value));
-    } catch (e) {
-      notify(errorText(e));
-    } finally {
-      setPending(false);
-    }
-  };
-  return (
-    <div className="terminal-agent-view">
-      {(task.outputTruncated ||
-        !!(task.bytes && task.bytes > (task.tail || "").length)) && (
-        <div className="terminal-output-notice">
-          Recent output. Open Agent tools for the saved log.
-        </div>
-      )}
-      <pre aria-label="Agent terminal output">
-        {task.tail || task.error || "Waiting for output…"}
-      </pre>
-      <footer className="terminal-output-actions">
-        <span>
-          {native
-            ? "Input requests go through the agent."
-            : task.interactive
-              ? "Input goes directly to the agent’s terminal."
-              : "Output only"}
-        </span>
-        <Button
-          size="compact-xs"
-          variant="subtle"
-          rightSection={<ArrowUpRight size={12} />}
-          onClick={onOpenAgent}
-        >
-          Open agent
-        </Button>
-      </footer>
-      {controllable && (
-        <form
-          className="terminal-agent-input"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void send();
-          }}
-        >
-          <TextInput
-            aria-label="Agent terminal input"
-            placeholder="Send input to this command"
-            value={input}
-            disabled={pending}
-            maxLength={16000}
-            onChange={(event) => setInput(event.currentTarget.value)}
-          />
-          <Button type="submit" size="xs" loading={pending}>
-            {native ? "Send via agent" : "Send line"}
-          </Button>
-        </form>
-      )}
     </div>
   );
 }

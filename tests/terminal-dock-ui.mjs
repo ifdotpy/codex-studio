@@ -178,11 +178,12 @@ try {
     await route.fulfill({ json: value });
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  assert.equal(await page.locator("#import-chat, #other-sessions").count(), 0);
   const dock = page.getByRole("region", { name: "Terminals", exact: true });
   await dock.getByRole("button", { name: "Show terminals" }).click();
   await dock
     .locator(".terminal-dock-count")
-    .filter({ hasText: "252" })
+    .filter({ hasText: "250" })
     .waitFor();
   assert.ok(
     (await dock.locator(".terminal-session").count()) < 30,
@@ -316,34 +317,23 @@ try {
     .waitFor();
   await page.screenshot({ path: join(root, "terminal-desktop.png") });
   await dock.getByLabel("Find terminal", { exact: true }).fill("npm run dev");
-  await dock.getByRole("button", { name: /npm run dev Agent command/ }).click();
-  await dock
-    .getByLabel("Agent terminal input", { exact: true })
-    .fill("continue");
-  await dock
-    .getByRole("button", { name: "Send via agent", exact: true })
-    .click();
-  await page.waitForTimeout(200);
-  assert.ok(
-    writes.some(
-      (write) =>
-        write.path === "/api/native-command" &&
-        write.body.action === "input" &&
-        write.body.text === "continue\n",
-    ),
-  );
+  await dock.getByText("No matching sessions", { exact: true }).waitFor();
+  assert.equal(await dock.locator(".terminal-session").count(), 0);
   await dock
     .getByLabel("Find terminal", { exact: true })
     .fill("await deployment");
-  await dock
-    .getByRole("button", { name: /await deployment Agent monitor/ })
-    .click();
+  await dock.getByText("No matching sessions", { exact: true }).waitFor();
+  assert.equal(await dock.locator(".terminal-session").count(), 0);
   assert.equal(
-    await dock.getByLabel("Agent terminal input", { exact: true }).count(),
+    await dock
+      .getByRole("button", { name: "Agent tools", exact: true })
+      .count(),
     0,
   );
   assert.equal(
-    writes.filter((write) => write.path === "/api/monitor").length,
+    writes.filter((write) =>
+      ["/api/native-command", "/api/monitor/input"].includes(write.path),
+    ).length,
     0,
   );
   await dock.getByLabel("Find terminal", { exact: true }).fill("Release logs");
@@ -385,8 +375,8 @@ try {
         "rename",
         "reconnect",
         "truncation",
-        "native input routing",
-        "monitor read only",
+        "agent commands excluded",
+        "agent monitors excluded",
         "close",
         "mobile",
       ],
@@ -432,6 +422,7 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(liveOrigin);
+  assert.equal(await page.locator("#import-chat, #other-sessions").count(), 0);
   const dock = page.getByRole("region", { name: "Terminals", exact: true });
   await dock.getByRole("button", { name: "New terminal", exact: true }).click();
   await dock.locator(".xterm-helper-textarea").waitFor();

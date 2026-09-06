@@ -11,7 +11,6 @@ import {
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
-  ArrowDownToLine,
   Archive,
   Pin,
   PinOff,
@@ -35,6 +34,7 @@ import { api, errorText, save, saved } from "../api";
 import "./sidebar-projects.css";
 import {
   busy,
+  complaintNeedsUserResponse,
   statusLabel,
   type Agent,
   type Room,
@@ -52,8 +52,6 @@ type Props = {
   complaints: () => void;
   rename: (id: string, name: string) => Promise<void>;
   remove: (id: string, room: boolean) => void;
-  importChat: () => void;
-  other: () => void;
   mobile: boolean;
   close: () => void;
   refresh?: () => Promise<void>;
@@ -336,7 +334,9 @@ export default function Sidebar(p: Props) {
         <span className="brand-mark">
           <Terminal size={18} />
         </span>
-        Codex <span>Studio</span>
+        <span className="brand-name">
+          <strong>Codex</strong> <span>Studio</span>
+        </span>
       </a>
       <Button
         id="new-chat"
@@ -544,29 +544,13 @@ export default function Sidebar(p: Props) {
           onClick={p.complaints}
           rightSection={
             <span id="complaint-count">
-              {p.data.runtime.complaints?.filter((c) => c.needsResponse)
+              {p.data.runtime.complaints?.filter(complaintNeedsUserResponse)
                 .length || ""}
             </span>
           }
         >
           Complaint book
         </Button>
-        <div className="sidebar-bottom">
-          <Button
-            id="import-chat"
-            leftSection={<ArrowDownToLine size={15} />}
-            onClick={p.importChat}
-          >
-            Import from Codex
-          </Button>
-          <Button
-            id="other-sessions"
-            leftSection={<FolderOpen size={15} />}
-            onClick={p.other}
-          >
-            Other sessions
-          </Button>
-        </div>
       </div>
     </aside>
   );

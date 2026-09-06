@@ -19,6 +19,7 @@ import time
 import uuid
 
 from codex_accounts import AccountStore
+from codex_shell import monitor_command
 from codex_time import append_message_clocks, message_clock, stamp_tool_result
 from codex_work import WorkMixin, work_tools
 from codex_workspace import WorkspaceMixin
@@ -44,14 +45,20 @@ THREAD_CONFIG = {
     "features.current_time_reminder.delivery_mode": "after_user_or_tool_output",
     "features.current_time_reminder.clock_source": "system",
 }
+
+
+class ComplaintConflict(ValueError):
+    """The user response targets an older complaint version."""
+
+
 LEAD_MODELS = ("gpt-6-astra", "gpt-5.6-sol")
 TEXT = {"type": "string"}
 TOOLS = [
-    tool("orchestration_complaint", "Use the complaint book instead of a feedback section. "
-         "submit sends the full complaint to your lead and wakes them. No book polling is needed. "
+    tool("orchestration_complaint", "Every agent, including the lead, can submit to the complaint book. "
+         "Worker submit sends the complaint to the lead and wakes them. Lead submit assigns it to the user. "
          "respond records a decision from that notification: in_progress, resolved, or declined. "
-         "read optionally retrieves the team book. Only the responsible lead can respond. "
-         "Respond to each notified complaint before finishing; a separate read call is not required.",
+         "read optionally retrieves the team book. Only the assigned recipient can respond; user-owned complaints require the user. "
+         "Respond to notified complaints assigned to you before finishing; a separate read call is not required.",
          {"action": {"type": "string", "enum": ["submit", "read", "respond"]},
           "complaint_id": TEXT, "text": TEXT,
           "status": {"type": "string", "enum": ["in_progress", "resolved", "declined"]}}, ["action"]),
@@ -134,11 +141,17 @@ Messages wake recipients automatically. Send only useful questions, findings or 
 Do not reply merely to acknowledge receipt. Do not create broadcast reply loops.
 If this existing thread lacks the new chat tools, orchestration_status includes the
 peer directory and recent chats; orchestration_send accepts peer ids and these targets.
-Use orchestration_complaint instead of a feedback section for concrete problems with
-instructions, tools, resources, coordination, or process. Include evidence and impact.
-The server delivers each full complaint as a message from its author and wakes the lead.
-Do not poll or routinely read the complaint book. On notification, the responsible lead
-must use action=respond with an action, a reasoned refusal, or a next step before finishing.
+Every agent, including the lead, can use orchestration_complaint action=submit for
+concrete problems with the harness, instructions, tools, resources, or coordination.
+Record confirmed defects in the book instead of leaving them only in chat feedback.
+Include reproduction, evidence, impact, and any workaround. Distinguish confirmed
+defects from suspicions and project code errors. Do not duplicate an existing entry.
+Worker complaints go to the lead as messages and wake the lead.
+Lead complaints go to the user in the UI. Only the user can respond to or close
+a lead complaint. Do not send yourself a response or poll for the user decision.
+The user response automatically notifies the reporting lead.
+Do not poll or routinely read the complaint book. For complaints assigned to the lead,
+use action=respond with an action, a reasoned refusal, or a next step before finishing.
 A separate action=read is optional. Do not claim a fix without evidence.
 If this older thread lacks orchestration_complaint, use orchestration_send with
 agent_id="complaint" and text containing JSON for the same action and fields.
@@ -357,6 +370,25 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
                 self.put(db, "agents", a)
+            for complaint in self.records(db, "complaints"):
+                if "recipient" not in complaint:
+                    complaint["recipient"] = self.complaint_recipient(complaint)
+                    if complaint["recipient"] == "user" and not any(r["author"] == "user" for r in complaint["responses"]):
+                        # Keep historical lead responses, but they cannot count as user action.
+                        complaint.update(legacyLeadReadAt=complaint["readAt"], legacyStatus=complaint["status"],
+                                         readAt=None, status="open")
+                complaint.setdefault("version", 1)
+                self.put(db, "complaints", complaint)
+            # Rerouted complaints belong to the user, not to another lead turn.
+            for lead in self.records(db, "agents"):
+                if not lead.get("isLead") or self.unanswered_complaints(db, lead["id"]):
+                    continue
+                cancelled = db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND kind='complaint' AND status='pending'", (lead["id"],)).rowcount
+                if cancelled and lead["status"] == "queued" and not db.execute(
+                    "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending'", (lead["id"],)
+                ).fetchone():
+                    lead["status"] = "waiting"
+                    self.put(db, "agents", lead)
             for task in self.records(db, "tasks"):
                 if task["status"] == "running":
                     task.update(status="lost", finished=time.time(), error="Server restarted. Tool outcome unknown.")
@@ -1950,7 +1982,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
 
     @staticmethod
     def unanswered_complaints(db, lead_id):
-        return [c for c in Runtime.records(db, "complaints") if c["leadId"] == lead_id and not c["responses"]]
+        return [c for c in Runtime.records(db, "complaints") if c["leadId"] == lead_id
+                and Runtime.complaint_recipient(c) == "lead" and Runtime.complaint_needs_response(c)]
 
     def complaint_message(self, db, complaints):
         authors = {a["id"]: a["name"] for a in self.records(db, "agents")}
@@ -2038,12 +2071,48 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     self.set_rate_limits(account_key, {**cached, "error": str(error)})
             return self.rate_limits_for(account_key)
 
+    @staticmethod
+    def complaint_recipient(c):
+        return c.get("recipient", "user" if c["author"] == c["leadId"] else "lead")
+
+    @staticmethod
+    def complaint_needs_response(c):
+        responsible = "user" if Runtime.complaint_recipient(c) == "user" else c["leadId"]
+        return not any(r["author"] == responsible for r in c["responses"])
+
+    def complaint_response_from_user(self, data, key):
+        with self.lock, self.db() as db:
+            signature, prior = self.operation_receipt(db, key, {**data, "operation": "complaint_response"})
+            if prior is not None:
+                return prior
+            row = db.execute("SELECT record FROM runtime_complaints WHERE id=?", (data.get("complaint_id"),)).fetchone()
+            if not row:
+                raise ValueError("Unknown complaint")
+            c = json.loads(row[0])
+            if self.complaint_recipient(c) != "user":
+                raise ValueError("This complaint requires a response from its orchestrator")
+            if type(data.get("version")) is not int or data["version"] != c.get("version", 1):
+                raise ComplaintConflict("This complaint changed. Review the latest response before replying")
+            text, status = data.get("text"), data.get("status")
+            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or status not in {"in_progress", "resolved", "declined"}:
+                raise ValueError("Record an action or reason and select in_progress, resolved, or declined")
+            response = {"id": key, "author": "user", "text": text.strip(), "status": status, "at": time.time()}
+            c["responses"].append(response)
+            c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"], version=c.get("version", 1) + 1)
+            self.put(db, "complaints", c)
+            reporter = self.agent(c["author"], db)
+            if not reporter.get("deletedAt"):
+                self.enqueue(db, reporter, "complaint_response", json.dumps({"complaint_id": c["id"],
+                    "responder": "user", "response": response}, ensure_ascii=False), "complaint-response:" + key)
+            return self.save_receipt(db, key, signature, c)
+
     def complaint_summaries(self, db):
         agents = {a["id"]: a for a in self.records(db, "agents")}
         result = []
         for c in self.records(db, "complaints"):
             result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
-                           "title": c["text"][:140], "needsResponse": not c["responses"],
+                           "title": c["text"][:140], "recipient": self.complaint_recipient(c),
+                           "version": c.get("version", 1), "needsResponse": self.complaint_needs_response(c),
                            "authorName": agents.get(c["author"], {}).get("name", "You" if c["author"] == "user" else c["author"]),
                            "leadName": agents.get(c["leadId"], {}).get("name", c["leadId"]),
                            "leadStopped": not agents.get(c["leadId"], {}).get("autoWake", False),
@@ -2081,24 +2150,26 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                         raise ValueError("This complaint id has different content")
                     return previous
                 c = {"id": cid, "leadId": lead["id"], "author": author, "text": text.strip(),
+                     "recipient": "user" if author == lead["id"] else "lead", "version": 1,
                      "status": "open", "created": time.time(), "updated": time.time(), "readAt": None, "responses": []}
                 self.put(db, "complaints", c)
-                self.enqueue(db, lead, "complaint", self.complaint_message(db, [c]), "complaint:" + cid)
+                if c["recipient"] == "lead":
+                    self.enqueue(db, lead, "complaint", self.complaint_message(db, [c]), "complaint:" + cid)
                 return c
             if user:
                 raise ValueError("Only the responsible lead can record a read or response")
             if action == "read":
                 complaints = [c for c in self.records(db, "complaints") if c["leadId"] == lead["id"]
                               and (not data.get("complaint_id") or c["id"] == data["complaint_id"])]
-                complaints.sort(key=lambda c: (bool(c["responses"]), -c["created"]))
+                complaints.sort(key=lambda c: (not self.complaint_needs_response(c), -c["created"]))
                 if data.get("complaint_id") and not complaints:
                     raise ValueError("Unknown complaint in this team")
                 for c in complaints[:50]:
-                    if actor_id == lead["id"] and not c["readAt"]:
+                    if actor_id == lead["id"] and self.complaint_recipient(c) == "lead" and not c["readAt"]:
                         c["readAt"] = time.time()
                         self.put(db, "complaints", c)
                 return {"complaints": complaints[:50], "remaining": max(0, len(complaints) - 50),
-                        "instruction": "Respond to unanswered entries. New complaints arrive as messages; do not poll the book."}
+                        "instruction": "Respond only to entries assigned to the lead. Entries assigned to user wait for the user. Do not poll the book."}
             if action == "respond":
                 if actor_id != lead["id"]:
                     raise ValueError("Only the responsible lead can respond")
@@ -2106,6 +2177,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 c = json.loads(row[0]) if row else None
                 if not c or c["leadId"] != actor_id:
                     raise ValueError("Unknown complaint for this lead")
+                if self.complaint_recipient(c) == "user":
+                    raise ValueError("This complaint is assigned to the user. An agent cannot respond or close it")
                 text, status = data.get("text"), data.get("status")
                 if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or status not in {"in_progress", "resolved", "declined"}:
                     raise ValueError("Record an action or reason and select in_progress, resolved, or declined")
@@ -2116,7 +2189,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     return c
                 response = {"id": key, "author": actor_id, "text": text.strip(), "status": status, "at": time.time()}
                 c["responses"].append(response)
-                c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"])
+                c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"], version=c.get("version", 1) + 1)
                 self.put(db, "complaints", c)
                 if c["author"] != "user" and c["author"] != actor_id:
                     reporter = self.agent(c["author"], db)
@@ -2289,7 +2362,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 if m["status"] != "starting" or not a["autoWake"] or m["epoch"] != a["epoch"]:
                     return
             a = self.prepare(a)
-            params = {"command": ["/bin/sh", "-lc", m["command"]], "cwd": a["cwd"],
+            server = self.connect(a.get("accountKey", "default"))
+            params = {"command": monitor_command(server, m["command"], a["cwd"]), "cwd": a["cwd"],
                       "processId": key, "streamStdoutStderr": True, "timeoutMs": m["timeout_ms"]}
             if m.get("interactive"):
                 params.update(tty=True, streamStdin=True)
@@ -2302,7 +2376,6 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 params["permissionProfile"] = a["profile"]["id"]
             else:
                 params["sandboxPolicy"] = a["sandbox"]
-            server = self.connect(a.get("accountKey", "default"))
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
                 current_monitor = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
