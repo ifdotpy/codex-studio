@@ -450,20 +450,22 @@ export default function App() {
         <span className={`dot ${a.status}`} />
         <span className="worker-text">
           <strong>{a.name}</strong>
-          <small>{statusLabel(a.status)}</small>
+          <span className="worker-meta">
+            <small>{statusLabel(a.status)}</small>
+            <span
+              className="worker-model-summary"
+              title={[
+                a.model,
+                a.effort || "default reasoning",
+                a.fastMode ? "Fast" : "Standard",
+              ].join(" · ")}
+            >
+              {shortModel(a.model)}
+              {a.fastMode ? " · Fast" : ""}
+            </span>
+          </span>
         </span>
       </UnstyledButton>
-      <span
-        className="worker-model-summary"
-        title={[
-          a.model,
-          a.effort || "default reasoning",
-          a.fastMode ? "Fast" : "Standard",
-        ].join(" · ")}
-      >
-        {shortModel(a.model)}
-        {a.fastMode ? " · Fast" : ""}
-      </span>
     </div>
   );
   const shown = workers.filter((a) =>

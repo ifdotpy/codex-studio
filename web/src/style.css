@@ -827,20 +827,28 @@ p {
 }
 .worker-text {
   min-width: 0;
+  flex: 1;
 }
 .worker-text strong {
   display: block;
   font-size: 12px;
   font-weight: 450;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+.worker-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 3px;
 }
 .worker-text small {
   display: block;
   font-size: 10px;
-  margin-top: 3px;
 }
+
 .dot {
   display: inline-block;
   flex-shrink: 0;
@@ -1991,7 +1999,7 @@ html body #root {
 
 .worker-entry {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 112px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   padding: 8px;
