@@ -82,6 +82,15 @@ try {
   const fileCard = page
     .locator(".tool-card")
     .filter({ has: page.locator(".tool-title", { hasText: "config.ts" }) });
+  const group = page.locator(".tool-group").last();
+  await group.waitFor();
+  assert.equal(
+    await group.getAttribute("open"),
+    null,
+    "running calls start collapsed",
+  );
+  await group.locator(":scope > summary").click();
+  await fileCard.locator(":scope > summary").click();
   await fileCard
     .locator(".tool-title")
     .filter({ hasText: "Read file" })
@@ -235,6 +244,37 @@ try {
     0,
     "paths remain text",
   );
+  // Closing the group must survive new calls, output, and failures.
+  await group.locator(":scope > summary").click();
+  event("item/started", {
+    id: "compact-live",
+    type: "commandExecution",
+    command: "npm test",
+    status: "inProgress",
+  });
+  await poll(
+    () => group.getAttribute("data-running").then((value) => value === "1"),
+    "group reports live work",
+  );
+  assert.equal(await group.getAttribute("open"), null);
+  assert.ok(
+    (await group.boundingBox()).height <= 30,
+    "collapsed group stays one line",
+  );
+  event("item/completed", {
+    id: "compact-live",
+    type: "commandExecution",
+    command: "npm test",
+    status: "completed",
+    exitCode: 2,
+    aggregatedOutput: "failed\n".repeat(100),
+  });
+  await poll(
+    () => group.getAttribute("data-failed").then((value) => value === "2"),
+    "failures stay visible in the summary",
+  );
+  assert.equal(await group.getAttribute("open"), null);
+  await page.screenshot({ path: join(root, "compact-group.png") });
   event("item/completed", {
     id: "prose-only",
     type: "agentMessage",
@@ -245,13 +285,13 @@ try {
     .waitFor();
   assert.equal(
     await page.locator(".tool-card").count(),
-    9,
+    10,
     "assistant prose does not invent calls",
   );
   await page.locator(".tool-group > summary").first().scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(root, "read-activity-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator(".tool-card").first().scrollIntoViewIfNeeded();
+  await page.locator(".tool-group").first().scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(root, "read-activity-mobile.png") });
   assert.equal(
     await page.evaluate(() => document.body.scrollWidth),

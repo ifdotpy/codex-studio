@@ -35,6 +35,9 @@ Existing threads still use user defaults, but their old spawn schema lacks the p
 Start a new lead chat to expose that new tool parameter. Existing histories are preserved.
 
 The conversation shows Markdown, tool results, queued messages and agent questions.
+Consecutive tool calls share one collapsed activity row. Running calls and failures remain visible as counts.
+Open the row to inspect compact tool entries. Open an entry for its command, arguments, and output.
+New calls and output updates do not reopen a group that the user closed.
 Enter sends a message. Shift + Enter inserts a new line.
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.

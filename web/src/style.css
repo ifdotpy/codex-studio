@@ -555,11 +555,15 @@ p {
   color: var(--muted);
 }
 .tool-group {
-  margin: 0 0 22px;
+  margin: 0 0 6px;
   color: var(--muted);
   font-size: 12px;
 }
 .tool-group > summary {
+  min-height: 26px;
+  padding: 3px 0;
+  white-space: nowrap;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -574,7 +578,17 @@ p {
 }
 .tool-group summary {
   cursor: pointer;
-  padding: 6px 0;
+}
+.tool-group > summary > svg {
+  flex-shrink: 0;
+}
+.tool-group > summary > span:first-of-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-group > summary::-webkit-details-marker {
+  display: none;
 }
 #composer {
   width: calc(100% - 64px);
@@ -1297,11 +1311,11 @@ p {
   max-width: 100%;
 }
 .activity-list {
-  border: 0;
-  margin: 10px 0 0;
-  padding: 0;
+  border-left: 1px solid var(--line);
+  margin: 2px 0 6px 6px;
+  padding: 0 0 0 12px;
   display: grid;
-  gap: 8px;
+  gap: 0;
   min-width: 0;
 }
 .activity-list > details {
@@ -1315,16 +1329,17 @@ p {
 .tool-card {
   min-width: 0;
   max-width: 100%;
-  background: #212128;
-  border: 1px solid #ffffff13;
-  border-radius: 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   overflow: hidden;
 }
 .tool-card > summary {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 12px;
+  gap: 7px;
+  min-height: 28px;
+  padding: 3px 0;
   list-style: none;
   cursor: pointer;
 }
@@ -1338,6 +1353,9 @@ p {
   flex-shrink: 0;
 }
 .tool-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
   flex: 1;
   color: #d9d9e3;
@@ -1361,7 +1379,7 @@ p {
 }
 .tool-body {
   border-top: 1px solid #ffffff0b;
-  padding: 14px;
+  padding: 8px 0 8px 22px;
   min-width: 0;
   font-size: 12px;
   color: #b5b5c6;

@@ -138,6 +138,11 @@ try {
   event("item/started", { item: command });
   await page.locator('[data-phase="tool"]').waitFor();
   const card = page.locator(".tool-card").filter({ hasText: "npm run test" });
+  const group = page.locator(".tool-group").last();
+  await group.waitFor();
+  assert.equal(await group.getAttribute("open"), null);
+  await group.locator(":scope > summary").click();
+  await card.locator(":scope > summary").click();
   await card.waitFor();
   event("item/commandExecution/outputDelta", {
     itemId: command.id,

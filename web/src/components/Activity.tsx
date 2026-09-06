@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { Badge } from "@mantine/core";
+import { useState } from "react";
 import {
   BookOpen,
   Check,
@@ -179,7 +178,7 @@ function ToolCard({ item }: { item: Message }) {
     p.aggregatedOutput ??
     textResult(p.contentItems ?? p.result?.content ?? p.result);
   const args = p.arguments;
-  const [open, setOpen] = useState(state === "running");
+  const [open, setOpen] = useState(false);
   return (
     <details
       className="tool-card"
@@ -194,6 +193,12 @@ function ToolCard({ item }: { item: Message }) {
         </span>
         <span className="tool-title">
           <span>{label}</span>
+          {!read.targets.length &&
+            (typeof p.command === "string" || typeof p.query === "string") && (
+              <small className="tool-read-summary" title={p.command || p.query}>
+                {p.command || p.query}
+              </small>
+            )}
           {read.targets.length > 0 && (
             <small
               className="tool-read-summary"
@@ -207,28 +212,15 @@ function ToolCard({ item }: { item: Message }) {
           {typeof p.durationMs === "number" && (
             <small>{(p.durationMs / 1000).toFixed(1)}s</small>
           )}
-          <Badge
-            size="xs"
-            variant="light"
-            color={
-              state === "failed"
-                ? "red"
-                : state === "running"
-                  ? "indigo"
-                  : "gray"
-            }
-            leftSection={
-              state === "running" ? (
-                <LoaderCircle size={10} className="spin" />
-              ) : state === "failed" ? (
-                <CircleX size={10} />
-              ) : state === "completed" ? (
-                <Check size={10} />
-              ) : undefined
-            }
-          >
-            {state === "completed" ? "Done" : state}
-          </Badge>
+          <span className="tool-state" title={state} aria-label={state}>
+            {state === "running" ? (
+              <LoaderCircle size={12} className="spin" />
+            ) : state === "failed" ? (
+              <CircleX size={12} />
+            ) : state === "completed" ? (
+              <Check size={12} />
+            ) : null}
+          </span>
           <ChevronRight size={13} className="tool-chevron" />
         </span>
       </summary>
@@ -321,22 +313,28 @@ export default function Activity({ items }: { items: Message[] }) {
     (item) => status(item, payload(item)) === "running",
   ).length;
   const reads = items.flatMap((item) => readActivity(payload(item)).targets);
-  const [open, setOpen] = useState(running > 0);
-  useEffect(() => {
-    if (running) setOpen(true);
-  }, [running]);
+  const failed = items.filter(
+    (item) => status(item, payload(item)) === "failed",
+  ).length;
+  const [open, setOpen] = useState(false);
   return (
     <details
       className="tool-group"
+      data-running={running}
+      data-failed={failed}
       open={open}
       onToggle={(e) => setOpen(e.currentTarget.open)}
     >
       <summary>
-        <Wrench size={13} />
+        {running ? (
+          <LoaderCircle size={13} className="spin" />
+        ) : (
+          <Wrench size={13} />
+        )}
         <span>
           {items.length === 1
             ? describe(items[0], payload(items[0])).label
-            : `${items.length} actions`}
+            : `${items.length} tool calls`}
         </span>
         {reads.length > 0 && (
           <span
@@ -348,9 +346,14 @@ export default function Activity({ items }: { items: Message[] }) {
               : `Read ${readLabel(reads)}`}
           </span>
         )}
-        {running > 0 && (
-          <span className="activity-running">{running} running</span>
-        )}
+        <span className="activity-state">
+          {running > 0 && (
+            <span className="activity-running">{running} running</span>
+          )}
+          {failed > 0 && (
+            <span className="activity-failed">{failed} failed</span>
+          )}
+        </span>
       </summary>
       <div className="activity-list">
         {items.map((item) => (
