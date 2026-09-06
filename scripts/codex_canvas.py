@@ -545,6 +545,8 @@ def make_server(canvas, port=0):
                     runtime = canvas.runtime
                     q = {k: v[0] for k, v in parse_qs(path.query).items()}
                     agent = q.get("agent")
+                    if path.path == "/api/analytics":
+                        return self.send(runtime.analytics(**q))
                     if path.path == "/api/accounts":
                         return self.send(runtime.accounts.snapshot())
                     if path.path == "/api/projects":

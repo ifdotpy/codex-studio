@@ -50,6 +50,7 @@ Run `npm --prefix desktop run package` to build the desktop application.
 - [Desktop](desktop/README.md): native boundaries, launch, and packaging.
 - [Accounts](ACCOUNTS.md): account selection, profile discovery, and isolation.
 - [Time awareness](TIME-AWARENESS.md): native time reminders and cache evidence.
+- [Context analytics](ANALYTICS.md): response tokens, tool payloads, history, and measurement limits.
 - [Extraction record](EXTRACTION.md): source history and local migration checks.
 
 ## State

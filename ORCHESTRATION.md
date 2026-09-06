@@ -280,6 +280,10 @@ credits, and individual limits when available. Reads share a 30-second cache.
 Missing or failed account data is explicit. These are account limits, not a separate
 allowance for each agent.
 
+[Context analytics](ANALYTICS.md) retains response usage and tool measurements
+separately from the latest context indicator. The report supports agent, team,
+and all-agent scopes, a period filter, call details, and JSON export.
+
 ## Capacity and work ownership
 
 Each team defaults to 8 concurrent agents and a maximum of 64 total agents,

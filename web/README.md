@@ -39,6 +39,7 @@ Set `CHROME_BIN` if Chrome uses another executable path.
 - `src/components/Canvas.tsx`: the shared agent graph and stored positions.
 - `src/components/ComplaintBook.tsx`: complaints, lead decisions, and user submissions.
 - `src/components/Usage.tsx`: context usage, compaction count, and account limits.
+- `src/components/Analytics.tsx`: response usage history, tool payload measurements, and export.
 - `src/hooks.ts`: server snapshots and transcript updates.
 
 The sidebar renders 60 rows initially and adds rows as the user scrolls.

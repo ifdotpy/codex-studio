@@ -4,6 +4,7 @@ import { ChevronUp, Gauge, RefreshCw, RotateCcw } from "lucide-react";
 import type { Agent, Json } from "../types";
 import { api, errorText } from "../api";
 import "./Usage.css";
+import Analytics from "./Analytics";
 
 type LimitWindow = {
   label: string;
@@ -127,6 +128,7 @@ export default function Usage({
   limits: Json | null;
   reload: () => void;
 }) {
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState<string | null>(null);
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState("");
@@ -253,11 +255,16 @@ export default function Usage({
       <Tooltip
         label={
           known
-            ? `${c!.tokens!.toLocaleString()} / ${c!.window!.toLocaleString()} tokens. Last reported context.`
-            : "Codex has not reported context use yet."
+            ? `${c!.tokens!.toLocaleString()} / ${c!.window!.toLocaleString()} tokens. Last reported context. Click for analytics.`
+            : "Codex has not reported context use yet. Click for analytics."
         }
       >
-        <span className="context-use" tabIndex={0}>
+        <button
+          type="button"
+          className="context-use"
+          aria-label="Open context analytics"
+          onClick={() => setAnalyticsOpen(true)}
+        >
           <Progress
             size={3}
             w={28}
@@ -266,8 +273,15 @@ export default function Usage({
             aria-label="Context used"
           />
           {percent === null ? "Context unavailable" : `Context ${percent}%`}
-        </span>
+        </button>
       </Tooltip>
+      {analyticsOpen && (
+        <Analytics
+          key={agent.id}
+          agent={agent}
+          onClose={() => setAnalyticsOpen(false)}
+        />
+      )}
       <span className="compactions">
         <RotateCcw size={12} />
         {agent.compactions === undefined

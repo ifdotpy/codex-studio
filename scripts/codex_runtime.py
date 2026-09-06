@@ -19,6 +19,8 @@ import time
 import uuid
 
 from codex_accounts import AccountStore
+from codex_analytics import AnalyticsMixin
+from codex_analytics_history import AnalyticsHistoryMixin
 from codex_shell import monitor_command
 from codex_time import append_message_clocks, message_clock, stamp_tool_result
 from codex_work import WorkMixin, work_tools
@@ -307,7 +309,7 @@ class AppServer:
         self.log.close()
 
 
-class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
+class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -422,6 +424,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin)
                 if r["status"] == "pending":
                     r["status"] = "expired"
                     self.put(db, "requests", r)
+            self.analytics_init(db)
+            self.analytics_history_init(db)
             self.setup_work(db)
             self.setup_user_tasks(db)
             self.setup_panels(db)
@@ -430,6 +434,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin)
         os.chmod(self.db_path, 0o600)
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
         self.scheduler.start()
+        if server_factory is AppServer:
+            self.analytics_history_start()
 
     @contextmanager
     def db(self):
@@ -1676,6 +1682,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin)
             if a.get("deletedAt"):
                 return
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
+            self.analytics_safe(db, self.analytics_event, a, method, p)
             self.record_task(db, a, method, p, stale)
             if method.startswith("item/") and stale:
                 return
@@ -1883,6 +1890,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin)
     def dynamic(self, message, account_key="default", connection_id=None):
         p = message.get("params", {})
         result = None
+        a = None
         key = str(p.get("threadId")) + ":" + str(p.get("callId", message["id"]))
         if account_key != "default":
             key = account_key + ":" + key
@@ -2105,6 +2113,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin)
                 )
                 if not saved.get("success"):
                     result = saved
+        if a is not None:
+            with self.lock, self.db() as db:
+                self.analytics_safe(db, self.analytics_dynamic, a, p, result)
         try:
             self.reply({"id": message["id"], "result": result}, account_key, connection_id)
         except Exception:
@@ -2182,6 +2193,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin)
 
     def set_rate_limits(self, account_key, value):
         value = {**value, "accountKey": account_key}
+        with self.db() as db:
+            self.analytics_safe(db, self.analytics_limit, account_key, value)
         self.rate_limits_by_account[account_key] = value
         if account_key == "default":
             self.rate_limits = value
@@ -2943,5 +2956,10 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin)
         for server in list(self.servers.values()):
             server.close()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        history_thread = getattr(self, "analytics_history_thread", None)
+        if history_thread is not None:
+            # A final import batch can still need self.lock and the database.
+            # Retain the runtime lease until that writer has stopped.
+            history_thread.join()
         fcntl.flock(self.lease, fcntl.LOCK_UN)
         self.lease.close()
