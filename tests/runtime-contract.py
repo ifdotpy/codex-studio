@@ -94,6 +94,9 @@ class FakeServer:
     def wait(self, future, timeout=60):
         return future.result(timeout)
 
+    def on_result(self, future, callback):
+        future.add_done_callback(callback)
+
     def complete(self, tid, turn, text='Result with evidence'):
         self.notify({'method': 'item/completed', 'params': {'threadId': tid,
             'item': {'id': turn + '-answer', 'type': 'agentMessage', 'text': text}}})
@@ -784,10 +787,13 @@ class RuntimeContract(unittest.TestCase):
     def test_timeout_does_not_retry_model_call(self):
         self.runtime.connect().fail_start = True
         a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': 'Finish'})
-        eventually(lambda: self.runtime.agent(a['id'])['status'] == 'failed')
+        eventually(lambda: 'outcome unknown' in str(self.runtime.agent(a['id']).get('error')))
+        self.assertEqual(self.runtime.agent(a['id'])['status'], 'starting')
+        self.assertTrue(self.runtime.agent(a['id'])['inFlight'])
+        self.runtime.send(a['id'], 'Additional work must wait')
         time.sleep(.15)
         self.assertEqual(sum(m == 'turn/start' for m,p in self.runtime.server.calls), 1)
-        self.assertEqual(self.runtime.snapshot()['events'][0]['status'], 'uncertain')
+        self.assertEqual(sum(e['status'] == 'uncertain' for e in self.runtime.snapshot()['events']), 1)
 
     def test_background_command_outlives_turn_and_late_exit_does_not_change_new_turn(self):
         a = self.lead()
