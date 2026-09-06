@@ -95,7 +95,7 @@ function AccountCapacity({
       )}
       {buckets.map((bucket) => (
         <div key={bucket.id} className="account-capacity-pool">
-          <span>{bucket.name}</span>
+          <span>{/spark/i.test(bucket.name) ? "Spark" : bucket.name}</span>
           <div>
             {bucket.windows.map((window) => (
               <span key={window.label} className="account-capacity-window">
