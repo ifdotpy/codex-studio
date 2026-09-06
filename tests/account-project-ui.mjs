@@ -399,7 +399,7 @@ try {
     true,
   );
   await dialog
-    .getByText("Stop the team before you change this setting.")
+    .getByText("Wait for active turns to finish.")
     .waitFor();
   assert.deepEqual(errors, []);
   console.log(
