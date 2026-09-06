@@ -134,7 +134,7 @@ export default function Sidebar(p: Props) {
         <span className="brand-mark">
           <Terminal size={18} />
         </span>
-        Codex <span>Agents</span>
+        Codex <span>Studio</span>
       </a>
       <Button
         id="new-chat"

@@ -1,4 +1,4 @@
-# Codex Agents
+# Codex Studio
 
 A desktop workspace for one lead agent and many workers. The application uses
 Codex app-server for model sessions, tools, and permissions. It adds durable

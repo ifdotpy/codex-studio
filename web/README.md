@@ -1,4 +1,4 @@
-# Codex agents web client
+# Codex Studio web client
 
 React and TypeScript components, built with Vite. Mantine provides controls,
 menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,

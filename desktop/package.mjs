@@ -19,8 +19,8 @@ try {
   });
   const output = await packager({
     dir: root,
-    name: "Codex Agents",
-    executableName: "Codex Agents",
+    name: "Codex Studio",
+    executableName: "Codex Studio",
     appBundleId: "local.codex.agents",
     appCategoryType: "public.app-category.developer-tools",
     platform: "darwin",

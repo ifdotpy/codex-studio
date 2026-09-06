@@ -1,4 +1,4 @@
-# Codex Agents
+# Codex Studio
 
 This repository owns the application, command tools, and the project-local
 `.agents/skills/codex-workspace` skill for its managed capabilities. Keep that

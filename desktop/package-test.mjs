@@ -18,7 +18,7 @@ const port = await new Promise((resolve) => {
 });
 const executable = path.join(
   root,
-  "dist/Codex Agents-darwin-arm64/Codex Agents.app/Contents/MacOS/Codex Agents",
+  "dist/Codex Studio-darwin-arm64/Codex Studio.app/Contents/MacOS/Codex Studio",
 );
 const origin = `http://127.0.0.1:${port}`;
 let desktop;
@@ -49,7 +49,7 @@ try {
   );
   assert.ok(
     command.includes(
-      "Codex Agents.app/Contents/Resources/workspace/scripts/codex-canvas",
+      "Codex Studio.app/Contents/Resources/workspace/scripts/codex-canvas",
     ),
   );
   assert.equal(await desktop.evaluate(({ app }) => app.isPackaged), true);

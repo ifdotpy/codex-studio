@@ -275,13 +275,13 @@ export function Workspace(props: Props) {
             .join(", ");
           if (window.codexDesktop) {
             await window.codexDesktop.notify({
-              title: "Codex workspace needs attention",
+              title: "Codex Studio needs attention",
               body,
             });
             return;
           }
           const notification = new Notification(
-            "Codex workspace needs attention",
+            "Codex Studio needs attention",
             { body, tag: "codex-workspace-attention" },
           );
           notification.onclick = () => {

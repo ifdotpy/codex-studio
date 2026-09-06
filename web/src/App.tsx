@@ -469,7 +469,7 @@ export default function App() {
     });
   if (!data)
     return (
-      <div className="startup">{error || "Connecting to Codex agents…"}</div>
+      <div className="startup">{error || "Connecting to Codex Studio…"}</div>
     );
   const title =
     view === "canvas"

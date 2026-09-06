@@ -1,4 +1,4 @@
-# Codex Agents desktop
+# Codex Studio desktop
 
 The Electron app opens the existing React workspace. The Python backend owns agents, terminals, monitors, and the SQLite database. Closing the app leaves that backend active.
 
@@ -18,6 +18,8 @@ npm run dev
 The app attaches to a compatible backend at `http://127.0.0.1:4620`. Otherwise, it starts the bundled Python backend as a detached process. A backend identity endpoint checks the protocol and canonical state directory before the app loads the page. The runtime file lock prevents two servers from owning the same database. An incompatible service causes a visible error. The app does not stop that service or choose another database.
 
 The default state remains `~/.local/state/codex-agents`. Existing chats remain there. Browser local storage, including canvas positions, belongs to each browser profile. Electron uses its own profile; it does not copy Chrome local storage.
+The profile remains at `~/Library/Application Support/Codex Agents` after the
+rename to Codex Studio. The bundle identifier and state paths stay unchanged.
 
 The launcher checks `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. It skips Python versions below 3.11. Set `CODEX_AGENTS_PYTHON` or `CODEX_BIN` to an absolute executable path when needed. It does not run a login shell. `CODEX_AGENTS_STATE_DIR`, `XDG_STATE_HOME`, and `CODEX_HOME` retain the backend meanings. `CODEX_DESKTOP_PORT` and `CODEX_DESKTOP_PROFILE` support isolated tests.
 
@@ -29,7 +31,7 @@ Backend logs and its PID remain in `canvas.log` and `canvas.pid` under the state
 npm run package
 ```
 
-The command creates `dist/Codex Agents-darwin-arm64/Codex Agents.app`. The package includes Electron, Python source files, and the compiled web assets. Python and Codex remain installed prerequisites. The package uses no checkout paths at runtime. It is unsigned and not notarized; this build is for local use.
+The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. The package includes Electron, Python source files, and the compiled web assets. Python and Codex remain installed prerequisites. The package uses no checkout paths at runtime. It is unsigned and not notarized; this build is for local use.
 
 ## Native bridge
 

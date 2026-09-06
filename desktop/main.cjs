@@ -11,9 +11,13 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { ensureBackend } = require("./backend.cjs");
 const hidden = process.argv.includes("--hidden");
-if (process.env.CODEX_DESKTOP_PROFILE)
-  app.setPath("userData", process.env.CODEX_DESKTOP_PROFILE);
-app.setName("Codex Agents");
+// Preserve the existing browser profile when the product name changes.
+app.setPath(
+  "userData",
+  process.env.CODEX_DESKTOP_PROFILE ||
+    path.join(app.getPath("appData"), "Codex Agents"),
+);
+app.setName("Codex Studio");
 app.enableSandbox();
 let win;
 let backend;
@@ -141,7 +145,7 @@ async function start() {
     minWidth: 420,
     minHeight: 600,
     show: false,
-    title: "Codex Agents",
+    title: "Codex Studio",
     ...(process.platform === "darwin"
       ? { titleBarStyle: "hidden", trafficLightPosition: { x: 20, y: 12 } }
       : {}),
@@ -170,7 +174,7 @@ async function start() {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
-        label: "Codex Agents",
+        label: "Codex Studio",
         submenu: [{ role: "about" }, { type: "separator" }, { role: "quit" }],
       },
       { role: "editMenu" },
@@ -210,7 +214,7 @@ else
     .catch((error) => {
       console.error(error.stack || error);
       if (!hidden)
-        dialog.showErrorBox("Codex Agents cannot start", error.message);
+        dialog.showErrorBox("Codex Studio cannot start", error.message);
       app.exit(1);
     });
 app.on("window-all-closed", () => app.quit());
