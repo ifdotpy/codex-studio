@@ -182,6 +182,24 @@ class ProjectRuntime(unittest.TestCase):
         )
         self.assertEqual(self.runtime.agent(a["id"])["cwd"], str(self.other.resolve()))
 
+    def test_account_and_folder_change_is_atomic_and_keeps_rules(self):
+        a = self.lead()
+        allowed = self.root / "lumina"
+        allowed.mkdir()
+        self.rules([str(allowed)], self.other_key)
+        original = self.runtime.agent(a["id"])
+        for folder in (str(self.root), str(allowed / "missing"), "", 42):
+            with self.subTest(folder=folder), self.assertRaises(ValueError):
+                self.runtime.set_account(a["id"], self.other_key, folder)
+            self.assertEqual(self.runtime.agent(a["id"]), original)
+        changed = self.runtime.set_account(a["id"], self.other_key, str(allowed))
+        self.assertEqual((changed["accountKey"], changed["cwd"]), (self.other_key, str(allowed.resolve())))
+        self.assertFalse(changed["dangerouslySkipAccountRules"])
+        self.runtime.send(a["id"], "Start")
+        with self.assertRaisesRegex(ValueError, "fixed after"):
+            self.runtime.set_account(a["id"], "default", str(self.root))
+        self.assertEqual(self.runtime.agent(a["id"])["accountKey"], self.other_key)
+
     def test_new_lead_chooses_allowed_project_and_reuses_empty_identity(self):
         allowed = self.root / "allowed"
         allowed.mkdir()

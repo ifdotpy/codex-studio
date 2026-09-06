@@ -834,16 +834,23 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     and not db.execute("SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.parentId')=?", (a["id"],)).fetchone()
                     and not db.execute("SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.agent')=?", (a["id"],)).fetchone())
 
-    def set_account(self, key, account_key):
+    def set_account(self, key, account_key, cwd=None):
         self.accounts.get(account_key)
         with self.lock, self.db() as db:
             a = self.agent(key, db)
-            if a.get("accountKey", "default") == account_key:
+            if a.get("accountKey", "default") == account_key and cwd is None:
                 return a
             if not self.empty_lead(db, a) or a.get("inFlight"):
                 raise ValueError("The account is fixed after the first message. Create a new chat")
-            self.accounts.check_project(account_key, a["cwd"], skip=a.get("dangerouslySkipAccountRules", False))
-            a["accountKey"] = account_key
+            directory = a["cwd"]
+            if cwd is not None:
+                if not isinstance(cwd, str) or not cwd.strip():
+                    raise ValueError("Select an existing project directory")
+                directory = str(Path(cwd).expanduser().resolve())
+                if not Path(directory).is_dir():
+                    raise ValueError("Select an existing project directory")
+            self.accounts.check_project(account_key, directory, skip=a.get("dangerouslySkipAccountRules", False))
+            a.update(accountKey=account_key, cwd=directory)
             self.put(db, "agents", a)
             return a
 

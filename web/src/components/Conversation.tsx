@@ -11,7 +11,6 @@ import {
   Pencil,
   Trash2,
   ChevronUp,
-  Folder,
   Square,
   Terminal,
 } from "lucide-react";
@@ -55,7 +54,6 @@ export default function Conversation(p: {
   sending: boolean;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
-  project: () => void;
   limits: Json | null;
   reloadLimits: () => void;
   onPhase: (id: string | null, label: string) => void;
@@ -618,16 +616,6 @@ export default function Conversation(p: {
               }}
             />
             <div className="composer-bar">
-              <Button
-                type="button"
-                id="project"
-                size="compact-sm"
-                leftSection={<Folder size={15} />}
-                onClick={p.project}
-                disabled={!agent?.cwd}
-              >
-                {agent?.cwd?.split("/").filter(Boolean).at(-1) || "Project"}
-              </Button>
               {managed && canSteer && (
                 <Menu position="top-end" withinPortal>
                   <Menu.Target>

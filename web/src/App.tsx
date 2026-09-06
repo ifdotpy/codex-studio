@@ -355,14 +355,27 @@ export default function App() {
         </>
       ),
     });
-  const folders = (target: Agent) => {
+  const folders = (target: Agent, nextAccount?: string) => {
+    const account = accounts.data.accounts.find(
+      (a) => a.id === (nextAccount || target.accountKey || "default"),
+    );
+    const suggested = account?.projectRules?.allowedProjects || [];
     setModal({
-      title: "Project directory",
+      title: nextAccount
+        ? "Choose project for " +
+          (account?.email || account?.label || "account")
+        : "Choose project folder",
       body: (
         <ProjectDirectoryPicker
-          initialPath={target.cwd}
+          initialPath={nextAccount ? suggested[0] || target.cwd : target.cwd}
+          suggestedPaths={suggested}
           onSelect={async (cwd) => {
-            await api("/api/conversation", { id: target.id, cwd });
+            await api(
+              nextAccount ? "/api/agents/account" : "/api/conversation",
+              nextAccount
+                ? { id: target.id, account_key: nextAccount, cwd }
+                : { id: target.id, cwd },
+            );
             setModal(null);
             await refresh();
           }}
@@ -371,23 +384,31 @@ export default function App() {
     });
   };
   const project = () => {
-    if (window.codexDesktop && agent?.isLead && !agent.threadId) {
-      const id = agent.id;
-      void window.codexDesktop
-        .pickDirectory()
-        .then(async (cwd) => {
-          if (!cwd) return;
-          await api("/api/conversation", { id, cwd });
-          await refresh();
-        })
-        .catch((error) => notify(errorText(error)));
-    } else if (window.codexDesktop && agent?.cwd) {
-      void window.codexDesktop
-        .revealPath(agent.cwd)
-        .catch((error) => notify(errorText(error)));
-    } else if (agent?.isLead && !agent.threadId) folders(agent);
+    if (agent?.isLead && !agent.threadId) folders(agent);
     else if (agent?.cwd)
-      setModal({ title: "Project directory", body: <p>{agent.cwd}</p> });
+      setModal({
+        title: "Project folder",
+        body: (
+          <>
+            <p>{agent.cwd}</p>
+            <p>
+              This chat keeps its project. Start a new chat to choose another
+              folder.
+            </p>
+            {window.codexDesktop && (
+              <Button
+                onClick={() =>
+                  void window.codexDesktop
+                    ?.revealPath(agent.cwd!)
+                    .catch((error) => notify(errorText(error)))
+                }
+              >
+                Show in Finder
+              </Button>
+            )}
+          </>
+        ),
+      });
   };
   const importChat = async (cursor?: string) => {
     try {
@@ -646,6 +667,20 @@ export default function App() {
             }}
             changeAccount={async (key) => {
               if (agent?.isLead) {
+                const allowed = accounts.data.accounts.find((a) => a.id === key)
+                  ?.projectRules?.allowedProjects;
+                if (
+                  allowed &&
+                  !agent.dangerouslySkipAccountRules &&
+                  !allowed.some(
+                    (path) =>
+                      agent.cwd === path ||
+                      agent.cwd?.startsWith(path.replace(/\/$/, "") + "/"),
+                  )
+                ) {
+                  folders(agent, key);
+                  return;
+                }
                 await api("/api/agents/account", {
                   id: agent.id,
                   account_key: key,
@@ -658,6 +693,18 @@ export default function App() {
               }
             }}
           />
+          {view === "chat" && agent?.cwd && (
+            <Button
+              id="project"
+              className="project-picker"
+              leftSection={<Folder size={15} />}
+              aria-label="Choose project folder"
+              title={agent.cwd}
+              onClick={project}
+            >
+              Project · {agent.cwd.split("/").filter(Boolean).at(-1)}
+            </Button>
+          )}
           {view === "chat" && agent?.source === "managed" && (
             <ExecutionSettings
               key={"execution:" + agent.id}
@@ -816,7 +863,6 @@ export default function App() {
             sending={sending}
             refresh={refresh}
             notify={notify}
-            project={project}
             limits={visibleLimits}
             reloadLimits={reloadLimits}
             onPhase={onPhase}

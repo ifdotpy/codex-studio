@@ -673,7 +673,7 @@ def make_server(canvas, port=0):
                     if self.path == "/api/accounts/login":
                         return self.send(runtime.accounts.start_login(runtime, body.get("request_id")))
                     if self.path == "/api/agents/account":
-                        return self.send(runtime.set_account(body.get("id"), body.get("account_key")))
+                        return self.send(runtime.set_account(body.get("id"), body.get("account_key"), body.get("cwd")))
                     if self.path == "/api/work":
                         return self.send(
                             runtime.work_action(agent, body, body.get("id"))

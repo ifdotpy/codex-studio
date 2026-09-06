@@ -61,3 +61,31 @@
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+
+.directory-path-entry {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.directory-path-entry .mantine-TextInput-root {
+  flex: 1;
+  min-width: 0;
+}
+.directory-suggestions {
+  display: grid;
+  gap: 8px;
+}
+.directory-suggestions small {
+  color: var(--muted);
+}
+.directory-suggestions .mantine-Button-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.workspace-header #project {
+  max-width: 220px;
+  flex-shrink: 1;
+  height: 32px;
+  font-size: 12px;
+}

@@ -12,12 +12,15 @@ type Directory = {
 
 export default function ProjectDirectoryPicker({
   initialPath,
+  suggestedPaths = [],
   onSelect,
 }: {
   initialPath?: string;
+  suggestedPaths?: string[];
   onSelect: (path: string) => Promise<void>;
 }) {
   const [path, setPath] = useState(initialPath);
+  const [typedPath, setTypedPath] = useState(initialPath || "");
   const [directory, setDirectory] = useState<Directory | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -52,12 +55,63 @@ export default function ProjectDirectoryPicker({
     setSelectionError("");
     setQuery("");
     setPath(next);
+    setTypedPath(next);
   };
   const rows = directory?.directories.filter((row) =>
     row.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
   );
   return (
     <div className="directory-picker" aria-busy={loading || saving}>
+      {!!suggestedPaths.length && (
+        <div className="directory-suggestions">
+          <small>Allowed projects</small>
+          {suggestedPaths.map((folder) => (
+            <Button
+              key={folder}
+              variant="light"
+              disabled={saving}
+              title={folder}
+              onClick={() => navigate(folder)}
+            >
+              {folder}
+            </Button>
+          ))}
+        </div>
+      )}
+      <form
+        className="directory-path-entry"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (typedPath.trim()) navigate(typedPath.trim());
+        }}
+      >
+        <TextInput
+          label="Folder path"
+          placeholder="/Users/…/Projects/…"
+          value={typedPath}
+          onChange={(event) => setTypedPath(event.currentTarget.value)}
+          disabled={saving}
+        />
+        <Button type="submit" disabled={saving || !typedPath.trim()}>
+          Go
+        </Button>
+      </form>
+      {window.codexDesktop && (
+        <Button
+          variant="light"
+          onClick={() => {
+            void window
+              .codexDesktop!.pickDirectory()
+              .then((folder) => {
+                if (folder) navigate(folder);
+              })
+              .catch((failure) => setSelectionError(errorText(failure)));
+          }}
+          disabled={saving}
+        >
+          Browse in Finder…
+        </Button>
+      )}
       <div className="directory-location">
         <ActionIcon
           aria-label="Parent folder"

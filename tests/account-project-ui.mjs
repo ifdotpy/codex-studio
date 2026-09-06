@@ -174,13 +174,18 @@ const server = createServer(async (req, res) => {
     return json(agent);
   }
   if (url.pathname === "/api/agents/account") {
-    if (body.account_key === "work") {
+    if (body.account_key === "work" && body.cwd !== "/projects/Lumina") {
       res.statusCode = 403;
       return json({ error: "Project /tmp/fixture is not allowed for Work." });
     }
     const agent = agents.find((a) => a.id === body.id);
     agent.accountKey = body.account_key;
+    if (body.cwd) agent.cwd = body.cwd;
     return json(agent);
+  }
+  if (url.pathname === "/api/directories") {
+    const path = url.searchParams.get("path") || "/projects";
+    return json({ path, parent: "/projects", directories: [] });
   }
   if (url.pathname === "/api/limits") {
     const key = url.searchParams.get("account_key") || "default";
@@ -410,6 +415,53 @@ try {
   await dialog.getByRole("switch", { name: "Dangerously skip rules" }).click();
   await page.locator(".account-rules-badge").waitFor({ state: "hidden" });
   await page.keyboard.press("Escape");
+  accounts[1].projectRules.allowedProjects = ["/projects/Lumina"];
+  await page.reload();
+  await page.locator("#project").waitFor();
+  assert.ok(
+    (await page.locator("#project").boundingBox()).y < 300,
+    "Project picker is in the header",
+  );
+  const chooseWork = async () => {
+    await picker.click();
+    await page
+      .getByRole("menuitem")
+      .filter({ hasText: "work@example.com" })
+      .click();
+  };
+  await chooseWork();
+  const folderDialog = page.getByRole("dialog", {
+    name: "Choose project for work@example.com",
+    exact: true,
+  });
+  await folderDialog.getByLabel("Folder path").waitFor();
+  assert.equal(agents.find((a) => a.id === "empty").accountKey, "default");
+  await page.keyboard.press("Escape");
+  assert.equal(agents.find((a) => a.id === "empty").accountKey, "default");
+  await chooseWork();
+  await folderDialog.getByLabel("Folder path").fill("/projects/Denied");
+  await folderDialog.getByRole("button", { name: "Go", exact: true }).click();
+  await folderDialog
+    .getByRole("button", { name: "Use this folder", exact: true })
+    .click();
+  await folderDialog.getByRole("alert").waitFor();
+  assert.equal(agents.find((a) => a.id === "empty").accountKey, "default");
+  await folderDialog
+    .getByRole("button", { name: "/projects/Lumina", exact: true })
+    .click();
+  await folderDialog
+    .getByRole("button", { name: "Use this folder", exact: true })
+    .click();
+  await folderDialog.waitFor({ state: "hidden" });
+  assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
+  assert.equal(agents.find((a) => a.id === "empty").cwd, "/projects/Lumina");
+  assert.ok(!agents.find((a) => a.id === "empty").dangerouslySkipAccountRules);
+  await page.screenshot({ path: join(evidence, "project-recovery.png") });
+  await picker.click();
+  await page
+    .getByRole("menuitem")
+    .filter({ hasText: "personal@example.com" })
+    .click();
   agents.push({
     ...makeLead("worker", "Busy worker", "default", false),
     rootId: "empty",

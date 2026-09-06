@@ -8,7 +8,8 @@ Creation itself does not call the model. A repeated creation request returns the
 Leads carry an explicit `isLead` marker in SQLite. Only Astra and Sol can be leads.
 Standalone workers and registered sessions stay in **Other sessions**.
 The project defaults to the previous lead's directory, `CODEX_CANVAS_CWD`, or the server's current directory.
-Before the first message, select the folder below the composer to change the project.
+Before the first message, select **Project** beside the account to change the folder.
+Enter a folder path, browse directories, or use the native Finder picker.
 Open **Lead** in the chat header to choose Astra or Sol, its reasoning level, and **Fast**.
 **Lead** and **Subagents** use the same dropdown. Changes save immediately.
 Changes to an agent's execution settings require an idle turn.

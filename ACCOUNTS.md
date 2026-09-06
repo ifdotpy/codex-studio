@@ -5,6 +5,8 @@ at the same time with different accounts. Each account has its own app-server
 process, limits cache, approvals, and native profile directory.
 
 Use the account menu beside the model to choose an account for an empty chat.
+If its rules exclude the current folder, choose an allowed project in the folder dialog.
+The server applies the account and folder together. Cancel or rejection preserves both.
 After the first message, the account stays fixed. Set the default in **Manage
 accounts** for new chats. Existing chats keep their account.
 
