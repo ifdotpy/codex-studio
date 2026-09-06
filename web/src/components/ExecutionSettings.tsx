@@ -1,6 +1,6 @@
-import { Button, Modal, NativeSelect, Switch } from "@mantine/core";
-import { ChevronDown, Zap } from "lucide-react";
-import { useState } from "react";
+import { Button, Popover, NativeSelect, Switch } from "@mantine/core";
+import { ChevronDown } from "lucide-react";
+import { useEffect, useState } from "react";
 import { api, errorText } from "../api";
 import { busy, type Agent, type Json } from "../types";
 import type { useWorkerModels } from "./WorkerModelPicker";
@@ -37,250 +37,201 @@ export function shortModel(model: string) {
   );
 }
 
-export function ExecutionControls({
+export function ExecutionSettings({
   agent,
   catalog,
   refresh,
-  onError,
+  teamDefaults = false,
 }: {
   agent: Agent;
   catalog: Catalog;
   refresh: () => Promise<void>;
-  onError: (text: string) => void;
+  teamDefaults?: boolean;
 }) {
+  const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if (!opened) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpened(false);
+    };
+    document.addEventListener("keydown", close);
+    return () => document.removeEventListener("keydown", close);
+  }, [opened]);
   const [saving, setSaving] = useState(false);
-  const info = infoFor(catalog, agent.model);
+  const [pending, setPending] = useState<Json | null>(null);
+  const [error, setError] = useState("");
+  const label = teamDefaults
+    ? "Subagent defaults"
+    : agent.isLead
+      ? "Lead settings"
+      : "Subagent settings";
+  const prefix = teamDefaults
+    ? "Default subagent"
+    : agent.isLead
+      ? "Lead"
+      : "Subagent";
+  const stored = teamDefaults
+    ? {
+        model: agent.workerDefaults?.model ?? null,
+        effort: agent.workerDefaults?.effort ?? null,
+        fast_mode: !!agent.workerDefaults?.fastMode,
+      }
+    : {
+        model: agent.model,
+        effort: agent.effort ?? null,
+        fast_mode: !!agent.fastMode,
+      };
+  const current = pending || stored;
+  const selectedModel = current.model || agent.model;
+  const info = infoFor(catalog, selectedModel);
+  const active = !teamDefaults && (!!agent.inFlight || busy.has(agent.status));
+  const disabled = saving || active || catalog.loading || !!catalog.error;
+  const models = catalog.models.filter(
+    (row) =>
+      teamDefaults ||
+      !agent.isLead ||
+      ["gpt-6-astra", "gpt-5.6-sol"].includes(row.model),
+  );
+  const modelOptions = models.map((row) => ({
+    value: row.model as string,
+    label: row.displayName || shortModel(row.model),
+  }));
+  if (teamDefaults)
+    modelOptions.unshift({
+      value: DEFAULT,
+      label: `Same as lead (${shortModel(agent.model)})`,
+    });
+  if (!modelOptions.some((row) => row.value === (current.model || DEFAULT)))
+    modelOptions.unshift({
+      value: current.model || DEFAULT,
+      label: shortModel(selectedModel),
+    });
   const options = effortOptions(info);
-  if (
-    agent.effort &&
-    !options.some((option) => option.value === agent.effort)
-  ) {
-    options.push({ value: agent.effort, label: title(agent.effort) });
-  }
-  const disabled =
-    saving ||
-    !!agent.inFlight ||
-    busy.has(agent.status) ||
-    catalog.loading ||
-    !!catalog.error ||
-    !info;
-  const change = async (value: Json) => {
+  if (current.effort && !options.some((row) => row.value === current.effort))
+    options.push({ value: current.effort, label: title(current.effort) });
+  const change = async (patch: Json) => {
+    if (disabled) return;
+    const next = { ...current, ...patch };
+    if ("model" in patch) {
+      const nextInfo = infoFor(catalog, next.model || agent.model);
+      if (
+        !nextInfo?.supportedReasoningEfforts?.some(
+          (row: Json) => row.reasoningEffort === next.effort,
+        )
+      )
+        next.effort = null;
+      if (!fastTier(nextInfo)) next.fast_mode = false;
+    }
+    setPending(next);
     setSaving(true);
+    setError("");
     try {
-      await api("/api/conversation", { id: agent.id, ...value });
+      await api("/api/conversation", {
+        id: agent.id,
+        ...(teamDefaults ? { worker_defaults: next } : next),
+      });
       await refresh();
-    } catch (error) {
-      onError(errorText(error));
+    } catch (failure) {
+      setError(errorText(failure));
     } finally {
+      setPending(null);
       setSaving(false);
     }
   };
   return (
-    <div className="execution-controls">
-      <NativeSelect
-        className="execution-select execution-reasoning"
-        aria-label={agent.isLead ? "Lead reasoning" : "Subagent reasoning"}
-        title={
-          disabled && (agent.inFlight || busy.has(agent.status))
-            ? "Wait for this turn to end"
-            : "Reasoning effort"
-        }
-        data={options}
-        value={agent.effort || DEFAULT}
-        disabled={disabled}
-        onChange={(event) =>
-          void change({
-            effort:
-              event.currentTarget.value === DEFAULT
-                ? null
-                : event.currentTarget.value,
-          })
-        }
-      />
-      <Button
-        className="execution-fast"
-        size="compact-xs"
-        variant={agent.fastMode ? "light" : "subtle"}
-        color={agent.fastMode ? "blue" : "gray"}
-        leftSection={<Zap size={14} />}
-        aria-label={agent.isLead ? "Lead fast mode" : "Subagent fast mode"}
-        aria-pressed={!!agent.fastMode}
-        title={
-          fastTier(info)?.description ||
-          "Fast mode is unavailable for this model"
-        }
-        disabled={disabled || (!agent.fastMode && !fastTier(info))}
-        onClick={() => void change({ fast_mode: !agent.fastMode })}
-      >
-        Fast
-      </Button>
-    </div>
-  );
-}
-
-export function WorkerDefaults({
-  lead,
-  catalog,
-  refresh,
-}: {
-  lead: Agent;
-  catalog: Catalog;
-  refresh: () => Promise<void>;
-}) {
-  const [opened, setOpened] = useState(false);
-  const [model, setModel] = useState(DEFAULT);
-  const [effort, setEffort] = useState(DEFAULT);
-  const [fast, setFast] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const selectedModel = model === DEFAULT ? lead.model : model;
-  const info = infoFor(catalog, selectedModel);
-  const options = effortOptions(info);
-  const modelOptions = [
-    { value: DEFAULT, label: `Same as lead (${shortModel(lead.model)})` },
-    ...catalog.models.map((row) => ({
-      value: row.model as string,
-      label: row.displayName || row.model,
-    })),
-  ];
-  if (!modelOptions.some((option) => option.value === model))
-    modelOptions.push({ value: model, label: model });
-  if (!options.some((option) => option.value === effort))
-    options.push({ value: effort, label: title(effort) });
-  const validEffort =
-    effort === DEFAULT ||
-    info?.supportedReasoningEfforts?.some(
-      (row: Json) => row.reasoningEffort === effort,
-    );
-  const defaults = lead.workerDefaults;
-  const summary = [
-    shortModel(defaults?.model || lead.model),
-    defaults?.effort || "default reasoning",
-    defaults?.fastMode ? "Fast" : "Standard",
-  ].join(" · ");
-  return (
-    <>
-      <Button
-        className="execution-menu worker-defaults-button"
-        rightSection={<ChevronDown size={14} />}
-        title={summary}
-        aria-label="Subagent defaults"
-        onClick={() => {
-          setModel(defaults?.model || DEFAULT);
-          setEffort(defaults?.effort || DEFAULT);
-          setFast(!!defaults?.fastMode);
-          setError("");
-          setOpened(true);
-        }}
-      >
-        Subagents · {shortModel(defaults?.model || lead.model)}
-      </Button>
-      <Modal
-        opened={opened}
-        onClose={() => !saving && setOpened(false)}
-        title="Subagent defaults"
-        size="sm"
-      >
-        <form
-          className="worker-defaults-form"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            if (saving || !info || !validEffort || (fast && !fastTier(info)))
-              return;
-            setSaving(true);
+    <Popover
+      opened={opened}
+      onChange={setOpened}
+      position="bottom-end"
+      width={300}
+      shadow="md"
+      trapFocus
+      returnFocus
+    >
+      <Popover.Target>
+        <Button
+          className="execution-menu"
+          rightSection={<ChevronDown size={14} />}
+          aria-label={label}
+          aria-expanded={opened}
+          title={[
+            selectedModel,
+            current.effort || "Default reasoning",
+            current.fast_mode ? "Fast" : "Standard",
+          ].join(" · ")}
+          onClick={() => {
             setError("");
-            try {
-              await api("/api/conversation", {
-                id: lead.id,
-                worker_defaults: {
-                  model: model === DEFAULT ? null : model,
-                  effort: effort === DEFAULT ? null : effort,
-                  fast_mode: fast,
-                },
-              });
-              await refresh();
-              setOpened(false);
-            } catch (failure) {
-              setError(errorText(failure));
-            } finally {
-              setSaving(false);
-            }
+            setOpened(!opened);
           }}
         >
+          {teamDefaults ? "Subagents" : agent.isLead ? "Lead" : "Subagent"} ·{" "}
+          {shortModel(selectedModel)}
+        </Button>
+      </Popover.Target>
+      <Popover.Dropdown
+        className="execution-dropdown"
+        role="dialog"
+        aria-label={label}
+      >
+        <NativeSelect
+          id={teamDefaults ? undefined : "model"}
+          label={prefix + " model"}
+          data={modelOptions}
+          value={current.model || DEFAULT}
+          disabled={disabled}
+          onChange={(event) =>
+            void change({
+              model:
+                event.currentTarget.value === DEFAULT
+                  ? null
+                  : event.currentTarget.value,
+            })
+          }
+        />
+        <NativeSelect
+          label={prefix + " reasoning"}
+          data={options}
+          value={current.effort || DEFAULT}
+          disabled={disabled || !info}
+          onChange={(event) =>
+            void change({
+              effort:
+                event.currentTarget.value === DEFAULT
+                  ? null
+                  : event.currentTarget.value,
+            })
+          }
+        />
+        <Switch
+          label="Fast mode"
+          aria-label="Fast mode"
+          checked={current.fast_mode}
+          disabled={disabled || (!current.fast_mode && !fastTier(info))}
+          description={
+            fastTier(info)?.description || "Unavailable for this model"
+          }
+          onChange={(event) =>
+            void change({ fast_mode: event.currentTarget.checked })
+          }
+        />
+        {teamDefaults && (
           <p className="notice">
-            For new subagents in this team. The orchestrator can override these
-            settings for each launch.
+            For new subagents. The orchestrator can override each launch.
           </p>
-          <NativeSelect
-            label="Default subagent model"
-            data={modelOptions}
-            value={model}
-            disabled={saving || catalog.loading || !!catalog.error}
-            onChange={(event) => {
-              const next = event.currentTarget.value;
-              const nextInfo = infoFor(
-                catalog,
-                next === DEFAULT ? lead.model : next,
-              );
-              setModel(next);
-              if (
-                !nextInfo?.supportedReasoningEfforts?.some(
-                  (row: Json) => row.reasoningEffort === effort,
-                )
-              )
-                setEffort(DEFAULT);
-              if (!fastTier(nextInfo)) setFast(false);
-            }}
-          />
-          <NativeSelect
-            label="Default subagent reasoning"
-            data={options}
-            value={effort}
-            disabled={saving || !info}
-            onChange={(event) => setEffort(event.currentTarget.value)}
-          />
-          <Switch
-            aria-label="Fast mode"
-            label="Fast mode"
-            description={
-              fastTier(info)?.description || "Unavailable for this model"
-            }
-            checked={fast}
-            disabled={saving || !fastTier(info)}
-            onChange={(event) => setFast(event.currentTarget.checked)}
-          />
-          {catalog.error && (
-            <div role="alert">
-              <p>{catalog.error}</p>
-              <Button onClick={catalog.retry}>Retry model list</Button>
-            </div>
-          )}
-          {error && (
-            <p className="execution-error" role="alert">
-              {error}
-            </p>
-          )}
-          <div className="worker-defaults-footer">
-            <Button onClick={() => setOpened(false)} disabled={saving}>
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              variant="filled"
-              loading={saving}
-              disabled={
-                catalog.loading ||
-                !!catalog.error ||
-                !info ||
-                !validEffort ||
-                (fast && !fastTier(info))
-              }
-            >
-              Save defaults
-            </Button>
+        )}
+        {active && <p className="notice">Available when this turn ends.</p>}
+        {catalog.error && (
+          <div role="alert">
+            <p>{catalog.error}</p>
+            <Button onClick={catalog.retry}>Retry model list</Button>
           </div>
-        </form>
-      </Modal>
-    </>
+        )}
+        {error && (
+          <p className="execution-error" role="alert">
+            {error}
+          </p>
+        )}
+      </Popover.Dropdown>
+    </Popover>
   );
 }

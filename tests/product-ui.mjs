@@ -78,7 +78,12 @@ try {
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await page.getByText("I assigned 40 workers", { exact: false }).waitFor();
   assert.equal(await page.locator("[data-worker]").count(), 40);
+  await page
+    .getByRole("button", { name: "Lead settings", exact: true })
+    .click();
+  await page.locator("#model").waitFor();
   assert.equal(await page.locator("#model option").count(), 2);
+  await page.keyboard.press("Escape");
   assert.equal(
     await page
       .locator('#messages img,#messages script,#messages [href^="javascript:"]')
@@ -255,7 +260,11 @@ try {
     1,
   );
   const newLead = afterCreate.runtime.agents.find((a) => a.quickCreate);
+  await page
+    .getByRole("button", { name: "Lead settings", exact: true })
+    .click();
   await page.locator("#model").selectOption("gpt-5.6-sol");
+  await page.keyboard.press("Escape");
   let loseMessage = true;
   await page.route("**/api/messages", async (route) => {
     if (route.request().method() !== "POST") return route.continue();

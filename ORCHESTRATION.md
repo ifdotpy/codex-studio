@@ -9,7 +9,8 @@ Leads carry an explicit `isLead` marker in SQLite. Only Astra and Sol can be lea
 Standalone workers and registered sessions stay in **Other sessions**.
 The project defaults to the previous lead's directory, `CODEX_CANVAS_CWD`, or the server's current directory.
 Before the first message, select the folder below the composer to change the project.
-Choose Astra or Sol, its reasoning level, and **Fast** in the chat header.
+Open **Lead** in the chat header to choose Astra or Sol, its reasoning level, and **Fast**.
+**Lead** and **Subagents** use the same dropdown. Changes save immediately.
 Changes to an agent's execution settings require an idle turn.
 
 **Subagents** sets the model, reasoning level, and Fast default for future workers in this team.

@@ -1,47 +1,18 @@
-.execution-controls {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  min-width: 0;
-}
-.workspace-header .execution-select select,
 .workspace-header .execution-menu {
   height: 32px;
   min-height: 32px;
-  padding-left: 10px;
-  padding-right: 28px;
+  padding: 0 28px 0 10px;
   font-size: 12px;
   font-weight: 500;
   color: var(--text);
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    border-color 0.15s;
 }
-.workspace-header .execution-select select:hover:not(:disabled),
-.workspace-header .execution-menu:hover:not(:disabled) {
+.workspace-header .execution-menu:hover,
+.workspace-header .execution-menu[aria-expanded="true"] {
   background: var(--mantine-color-dark-6);
   border-color: var(--line);
-}
-.workspace-header .execution-select select:focus-visible,
-.workspace-header .execution-menu:focus-visible {
-  border-color: var(--mantine-color-blue-5);
-}
-.workspace-header .execution-select select:disabled,
-.workspace-header .execution-menu:disabled {
-  color: var(--muted);
-  opacity: 0.55;
-  cursor: default;
-}
-.execution-model {
-  width: 122px;
-}
-.execution-reasoning {
-  width: 140px;
-  min-width: 0;
 }
 .execution-menu .mantine-Button-section[data-position="right"] {
   position: absolute;
@@ -51,17 +22,17 @@
   margin: 0;
   color: var(--mantine-color-dimmed);
 }
-.worker-defaults-form {
+.execution-dropdown {
   display: grid;
-  gap: 18px;
+  gap: 16px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  padding: 16px;
 }
-.worker-defaults-form > .notice {
+.execution-dropdown .notice {
   margin: 0;
-}
-.worker-defaults-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
+  font-size: 11px;
 }
 .execution-error {
   color: var(--mantine-color-red-5);
@@ -75,7 +46,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.workspace-header:has(.execution-controls) {
+.workspace-header:has(.execution-menu) {
   height: auto;
   min-height: 76px;
   flex-wrap: wrap;

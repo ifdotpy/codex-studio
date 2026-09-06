@@ -72,6 +72,8 @@ try {
       json: {
         data: [
           { model: "test-model", displayName: "Test model" },
+          { model: "gpt-6-astra" },
+          { model: "gpt-5.6-sol" },
           { model: "ui-only", displayName: "No longer available" },
           { model: "hidden-model", hidden: true },
         ],
@@ -86,6 +88,9 @@ try {
     (agent) => agent.name === "Worker 07",
   );
   await page.locator(`[data-worker="${worker.id}"]`).click();
+  await page
+    .getByRole("button", { name: "Subagent settings", exact: true })
+    .click();
   await page.getByRole("button", { name: "Retry model list" }).waitFor();
   assert.ok(await page.locator("#model").isDisabled());
   await page.getByRole("button", { name: "Retry model list" }).click();
@@ -125,9 +130,18 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 960 });
   const busyWorker = state.runtime.agents.find((a) => a.name === "Worker 01");
+  await page.keyboard.press("Escape");
   await page.locator(`[data-worker="${busyWorker.id}"]`).click();
+  await page
+    .getByRole("button", { name: "Subagent settings", exact: true })
+    .click();
   assert.ok(await page.locator("#model").isDisabled());
+  await page.keyboard.press("Escape");
   await page.locator("#back-lead").click();
+  await page
+    .getByRole("button", { name: "Lead settings", exact: true })
+    .click();
+  await page.locator("#model").waitFor();
   assert.deepEqual(
     await page
       .locator("#model option")

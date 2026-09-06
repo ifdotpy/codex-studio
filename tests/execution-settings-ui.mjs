@@ -111,19 +111,18 @@ try {
   };
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   const lead = (await state()).find((a) => a.name === "Release lead");
-  await page.waitForFunction(
-    () => !document.querySelector('[aria-label="Lead reasoning"]').disabled,
-  );
+  await page
+    .getByRole("button", { name: "Lead settings", exact: true })
+    .click();
   await page.getByLabel("Lead reasoning", { exact: true }).selectOption("high");
   await waitFor(
     async () => (await state()).find((a) => a.id === lead.id).effort === "high",
   );
-  await page
-    .getByRole("button", { name: "Lead fast mode", exact: true })
-    .click();
+  await page.getByRole("switch", { name: "Fast mode", exact: true }).check();
   await waitFor(
     async () => (await state()).find((a) => a.id === lead.id).fastMode === true,
   );
+  await page.keyboard.press("Escape");
   await page
     .getByRole("button", { name: "Subagent defaults", exact: true })
     .click();
@@ -150,9 +149,11 @@ try {
     );
     await page.screenshot({ path: join(root, `defaults-${width}.png`) });
   }
-  await dialog
-    .getByRole("button", { name: "Save defaults", exact: true })
-    .click();
+  await waitFor(
+    async () =>
+      !(await dialog.getByLabel("Default subagent model").isDisabled()),
+  );
+  await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   let current = (await state()).find((a) => a.id === lead.id);
   assert.deepEqual(current.workerDefaults, {
@@ -188,6 +189,7 @@ try {
   assert.equal(overridden.effort, "low");
   assert.equal(overridden.fastMode, false);
   await page.setViewportSize({ width: 1440, height: 960 });
+  await page.keyboard.press("Escape");
   await page
     .getByRole("button", { name: "Subagent defaults", exact: true })
     .click();
@@ -211,23 +213,21 @@ try {
     await dialog.getByLabel("Default subagent reasoning").inputValue(),
     "__model_default__",
   );
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await dialog.waitFor({ state: "hidden" });
-  assert.equal(
-    (await state()).find((a) => a.id === lead.id).workerDefaults.model,
-    "gpt-5.6-luna",
+  await waitFor(
+    async () =>
+      (await state()).find((a) => a.id === lead.id).workerDefaults.model ===
+      "test-slow",
   );
-  await page
-    .getByRole("button", { name: "Subagent defaults", exact: true })
-    .click();
   await dialog.getByLabel("Default subagent model").selectOption("gpt-5.6-sol");
   await dialog.getByLabel("Default subagent reasoning").selectOption("low");
   await dialog
     .getByRole("switch", { name: "Fast mode", exact: true })
     .uncheck();
-  await dialog
-    .getByRole("button", { name: "Save defaults", exact: true })
-    .click();
+  await waitFor(
+    async () =>
+      !(await dialog.getByLabel("Default subagent model").isDisabled()),
+  );
+  await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   const next = await spawnWorker("New defaults");
   assert.equal(next.model, "gpt-5.6-sol");
@@ -249,7 +249,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(
-    "PASS execution settings UI: lead reasoning/Fast, per-model choices, persisted defaults, actual child inheritance and orchestrator overrides, unsupported Fast, cancellation, existing worker unchanged, responsive layout. Evidence " +
+    "PASS execution settings UI: lead reasoning/Fast, per-model choices, persisted defaults, actual child inheritance and orchestrator overrides, unsupported Fast, immediate save, existing worker unchanged, responsive layout. Evidence " +
       root,
   );
 } finally {

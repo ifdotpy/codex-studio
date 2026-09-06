@@ -3,7 +3,6 @@ import {
   Button,
   Drawer,
   Modal,
-  NativeSelect,
   TextInput,
   UnstyledButton,
 } from "@mantine/core";
@@ -12,7 +11,6 @@ import {
   Activity,
   BookOpen,
   CheckCheck,
-  ChevronDown,
   Clock3,
   FileDiff,
   Inbox,
@@ -40,14 +38,8 @@ import { api, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
-import WorkerModelPicker, {
-  useWorkerModels,
-} from "./components/WorkerModelPicker";
-import {
-  ExecutionControls,
-  WorkerDefaults,
-  shortModel,
-} from "./components/ExecutionSettings";
+import { useWorkerModels } from "./components/WorkerModelPicker";
+import { ExecutionSettings, shortModel } from "./components/ExecutionSettings";
 import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
@@ -119,10 +111,6 @@ export default function App() {
     accountKey,
     !!agent && agent.source === "managed",
   );
-  const changeWorkerModel = async (id: string, model: string) => {
-    await api("/api/conversation", { id, model });
-    await refresh();
-  };
   const limitsRequest = useRef(0);
   const currentAccountKey = useRef(accountKey);
   currentAccountKey.current = accountKey;
@@ -670,52 +658,21 @@ export default function App() {
               }
             }}
           />
-          {view === "chat" && agent?.isLead && (
-            <NativeSelect
-              className="execution-select execution-model"
-              rightSection={<ChevronDown size={14} />}
-              id="model"
-              aria-label="Lead model"
-              value={agent.model}
-              disabled={busy.has(agent.status) || agent.inFlight}
-              onChange={(e) =>
-                void run(() =>
-                  api("/api/conversation", {
-                    id: agent.id,
-                    model: e.target.value,
-                  }),
-                )
-              }
-            >
-              <option value="gpt-6-astra">Lead · Astra</option>
-              <option value="gpt-5.6-sol">Lead · Sol</option>
-            </NativeSelect>
-          )}
-          {view === "chat" && agent?.source === "managed" && !agent.isLead && (
-            <WorkerModelPicker
-              key={agent.id}
-              id="model"
-              agent={agent}
-              catalog={workerModels}
-              change={changeWorkerModel}
-              onError={notify}
-            />
-          )}
           {view === "chat" && agent?.source === "managed" && (
-            <ExecutionControls
+            <ExecutionSettings
               key={"execution:" + agent.id}
               agent={agent}
               catalog={workerModels}
               refresh={refresh}
-              onError={notify}
             />
           )}
           {view === "chat" && lead?.isLead && (
-            <WorkerDefaults
+            <ExecutionSettings
               key={"defaults:" + lead.id}
-              lead={lead}
+              agent={lead}
               catalog={workerModels}
               refresh={refresh}
+              teamDefaults
             />
           )}
           {view === "chat" && !!workers.length && (
