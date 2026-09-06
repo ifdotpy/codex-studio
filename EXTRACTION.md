@@ -11,15 +11,16 @@ product documentation. The full command guide moved to `CLI.md`. The application
 does not need the skill checkout to import modules, build, run, or start workers.
 Runtime worker prompts remain with their launcher.
 
-The separate skill retains `SKILL.md`, `agents/openai.yaml`, and one small
+The initial extraction retained `SKILL.md`, `agents/openai.yaml`, and one small
 `codex-board` compatibility entrypoint. That entrypoint forwards old external
 callers to the installed command. It contains no board implementation.
-The installed skill link remains `~/.agents/skills/codex-agents`.
+The native skill link remains `~/.agents/skills/codex-agents`.
 
-The command installer creates 13 links in `~/.local/bin`, including the existing
+The initial command installer created 13 links in `~/.local/bin`, including the existing
 `luna` command. It resolves implementation paths into this repository. It checks
 all conflicts before changing links and refuses unrelated files or link targets.
-The skill finds application documentation through the resolved command location.
+The initial skill found application documentation through the command location.
+The independent-skill boundary below supersedes that arrangement.
 
 Database, model profiles, wave state, resource claims, and browser storage retain
 their existing locations. The installed Electron package is self-contained and
@@ -56,3 +57,24 @@ Evidence: `~/.local/state/codex-agents/evidence/source-extraction-20260906/`.
 Old ignored web build files were preserved outside the skill at
 `~/.local/state/codex-agents/migration-backups/skill-build-cache-20260906/web/`.
 Unrelated old Python cache files remain untouched.
+
+## Independent skill boundary
+
+Owner clarification, 2026-09-06: the native agent skill must work in standard
+Codex CLI without this application. The temporary `codex-board` forwarding entry
+and its global command link were removed. The installer now exports 12 commands.
+The application's resource registry remains an internal application capability.
+
+This repository owns `.agents/skills/codex-workspace` for its managed tools and
+workflows. Codex discovers it in this project. Its references resolve inside this
+repository. No external skill repository is required to use the application.
+The independent native skill uses only the host's exposed native agent tools.
+It does not import this application's continuation or monitor behavior.
+
+Boundary verification: both skill validators pass. Installed Codex CLI 0.153.4
+loads a copy of the native skill from an isolated project's `.agents/skills`.
+That project does not discover `codex-workspace`; the application project does.
+The probe sends only initialize and skills/list requests, with no model turn.
+A separate read-only scenario review checks native tools, missing native tools,
+required pending workers, managed continuation, and ordinary project edits.
+All three command installer contracts pass after removal of the global board link.

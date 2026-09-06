@@ -5,8 +5,10 @@ Codex app-server for model sessions, tools, and permissions. It adds durable
 orchestration, agent messages, command monitors, user tasks, and shared resources.
 
 This repository owns the application, command tools, tests, and runtime prompts.
-The separate `codex-agents` skill in `engineering-skills` contains agent instructions.
-The application does not load source code or prompts from that skill.
+Its project-local [codex-workspace skill](.agents/skills/codex-workspace/SKILL.md)
+describes managed tools and application workflows. No external skill repository
+is required. Standard Codex CLI delegation belongs to the independent native
+agent skill, not this application skill.
 
 ## Setup
 
@@ -26,7 +28,7 @@ npm --prefix desktop start
 The command installer creates links in `~/.local/bin`. Add that directory to PATH
 if your shell does not include it. Use `--bin-dir` for another directory.
 It refuses to replace unrelated files or links. To update links from the old
-checkout, pass `--replace-from /path/to/engineering-skills/codex-agents`.
+checkout, pass `--replace-from /path/to/previous-checkout`.
 
 For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.

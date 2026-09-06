@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Agents workspace"
+  short_description: "Operate managed teams in the Codex Agents app"
+  default_prompt: "Use $codex-workspace to coordinate managed agents and monitor their work in the Codex Agents application."

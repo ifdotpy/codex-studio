@@ -1,8 +1,9 @@
 # Codex Agents
 
-This repository owns the application and command tools. Agent skill instructions
-belong to the separate engineering-skills repository. Do not place SKILL.md or
-copied skill implementations here.
+This repository owns the application, command tools, and the project-local
+`.agents/skills/codex-workspace` skill for its managed capabilities. Keep that
+skill specific to this application. The application requires no external skill
+repository.
 
 Read README.md and the relevant source before editing. Use the engineering-protocol
 skill for substantive work when it is available. Match checks to the changed scope.

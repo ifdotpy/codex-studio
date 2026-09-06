@@ -8,7 +8,6 @@ import sys
 import uuid
 
 COMMANDS = (
-    "codex-board",
     "codex-canvas",
     "codex-chat",
     "codex-control",

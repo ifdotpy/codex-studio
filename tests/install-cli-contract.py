@@ -22,6 +22,7 @@ class InstallContract(unittest.TestCase):
             target = root / "bin"
             first = module.install(ROOT, target)
             self.assertEqual(first, module.install(ROOT, target))
+            self.assertFalse((target / "codex-board").exists())
             for name in [
                 "codex-canvas",
                 "codex-graph",
@@ -41,7 +42,7 @@ class InstallContract(unittest.TestCase):
                 "CODEX_AGENTS_STATE_DIR": str(root / "state"),
                 "CODEX_BOARD_STATE_DIR": str(root / "board"),
             }
-            for name, args in [("codex-board", ["show"]), ("luna", ["ls", "--all"])]:
+            for name, args in [("luna", ["ls", "--all"])]:
                 result = subprocess.run(
                     [str(target / name), *args],
                     cwd=root,
