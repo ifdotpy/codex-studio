@@ -41,3 +41,15 @@ new cases cover account variants, direct navigation, idle status, exact quotes,
 paragraph boundaries, keyboard input, touch activation, and 320/390 px layouts.
 The parent reviewed source changes and desktop/mobile screenshots. Tests use
 isolated runtime state. Native mobile long-press behavior is not measured.
+
+## Delivery
+
+Implementation commit: `b737eec`. Local main serves the new production bundle at
+http://127.0.0.1:4620. The server process remains `98904`; no restart was needed.
+A headless browser verified the served script bytes, direct section routes,
+account panel, idle state, and 390 px layout. It sent no mutation request and
+reported no page errors. Existing agent identifiers and statuses stayed intact.
+
+Live evidence: `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-clarity-deployed-z05vyN`.
+Selection evidence: `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-selection-quote-ui-E3VHBA`.
+Account variants: `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-limits-ui-4K2bH5`.
