@@ -12,6 +12,7 @@ import {
   Activity,
   BookOpen,
   CheckCheck,
+  ChevronDown,
   Clock3,
   FileDiff,
   Inbox,
@@ -672,6 +673,7 @@ export default function App() {
           {view === "chat" && agent?.isLead && (
             <NativeSelect
               className="execution-select execution-model"
+              rightSection={<ChevronDown size={14} />}
               id="model"
               aria-label="Lead model"
               value={agent.model}
@@ -685,8 +687,8 @@ export default function App() {
                 )
               }
             >
-              <option value="gpt-6-astra">Astra</option>
-              <option value="gpt-5.6-sol">Sol</option>
+              <option value="gpt-6-astra">Lead · Astra</option>
+              <option value="gpt-5.6-sol">Lead · Sol</option>
             </NativeSelect>
           )}
           {view === "chat" && agent?.source === "managed" && !agent.isLead && (

@@ -1,5 +1,5 @@
 import { Button, Modal, NativeSelect, Switch } from "@mantine/core";
-import { Users, Zap } from "lucide-react";
+import { ChevronDown, Zap } from "lucide-react";
 import { useState } from "react";
 import { api, errorText } from "../api";
 import { busy, type Agent, type Json } from "../types";
@@ -161,9 +161,8 @@ export function WorkerDefaults({
   return (
     <>
       <Button
-        className="worker-defaults-button"
-        size="compact-xs"
-        leftSection={<Users size={14} />}
+        className="execution-menu worker-defaults-button"
+        rightSection={<ChevronDown size={14} />}
         title={summary}
         aria-label="Subagent defaults"
         onClick={() => {
@@ -174,10 +173,7 @@ export function WorkerDefaults({
           setOpened(true);
         }}
       >
-        Subagents{" "}
-        <span className="worker-defaults-summary">
-          {shortModel(defaults?.model || lead.model)}
-        </span>
+        Subagents · {shortModel(defaults?.model || lead.model)}
       </Button>
       <Modal
         opened={opened}

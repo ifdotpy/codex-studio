@@ -4,13 +4,15 @@
   gap: 3px;
   min-width: 0;
 }
-.workspace-header .execution-select select {
+.workspace-header .execution-select select,
+.workspace-header .execution-menu {
   height: 32px;
   min-height: 32px;
   padding-left: 10px;
   padding-right: 28px;
   font-size: 12px;
   font-weight: 500;
+  color: var(--text);
   background: transparent;
   border: 1px solid transparent;
   border-radius: 7px;
@@ -19,28 +21,35 @@
     background 0.15s,
     border-color 0.15s;
 }
-.workspace-header .execution-select select:hover:not(:disabled) {
+.workspace-header .execution-select select:hover:not(:disabled),
+.workspace-header .execution-menu:hover:not(:disabled) {
   background: var(--mantine-color-dark-6);
   border-color: var(--line);
 }
-.workspace-header .execution-select select:focus-visible {
+.workspace-header .execution-select select:focus-visible,
+.workspace-header .execution-menu:focus-visible {
   border-color: var(--mantine-color-blue-5);
 }
-.workspace-header .execution-select select:disabled {
+.workspace-header .execution-select select:disabled,
+.workspace-header .execution-menu:disabled {
   color: var(--muted);
   opacity: 0.55;
   cursor: default;
 }
 .execution-model {
-  width: 84px;
+  width: 122px;
 }
 .execution-reasoning {
   width: 140px;
   min-width: 0;
 }
-.worker-defaults-summary {
-  margin-left: 7px;
-  color: var(--muted);
+.execution-menu .mantine-Button-section[data-position="right"] {
+  position: absolute;
+  right: 0;
+  width: 28px;
+  justify-content: center;
+  margin: 0;
+  color: var(--mantine-color-dimmed);
 }
 .worker-defaults-form {
   display: grid;
