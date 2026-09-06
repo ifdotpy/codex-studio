@@ -7,13 +7,15 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "npm run build && node ../tests/product-ui.mjs && node ../tests/live-chat-ui.mjs && node ../tests/background-ui.mjs && node ../tests/chat-controls-ui.mjs && node ../tests/background-controls-ui.mjs && node ../tests/workspace-ui.mjs && node ../tests/rich-preview-ui.mjs && node ../tests/user-tasks-ui.mjs && node ../tests/limits-ui.mjs && node ../tests/selection-quote-ui.mjs && node ../tests/chat-navigation-ui.mjs",
+    "test": "npm run build && node ../tests/product-ui.mjs && node ../tests/live-chat-ui.mjs && node ../tests/background-ui.mjs && node ../tests/chat-controls-ui.mjs && node ../tests/background-controls-ui.mjs && node ../tests/workspace-ui.mjs && node ../tests/rich-preview-ui.mjs && node ../tests/user-tasks-ui.mjs && node ../tests/limits-ui.mjs && node ../tests/selection-quote-ui.mjs && node ../tests/chat-navigation-ui.mjs && node ../tests/read-activity-ui.mjs && node ../tests/terminal-dock-ui.mjs",
     "format": "prettier --write src index.html vite.config.ts tsconfig.json ../tests/*ui.mjs",
     "format:check": "prettier --check src index.html vite.config.ts tsconfig.json ../tests/*ui.mjs"
   },
   "dependencies": {
     "@mantine/core": "9.6.0",
     "@mantine/hooks": "9.6.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "dompurify": "3.4.14",
     "lucide-react": "1.41.0",
     "marked": "18.0.11",

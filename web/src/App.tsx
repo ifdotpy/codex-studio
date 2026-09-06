@@ -15,7 +15,6 @@ import {
   Clock3,
   FileDiff,
   Inbox,
-  Terminal,
   Minimize2,
   ShieldCheck,
   Square,
@@ -41,6 +40,8 @@ import { useSnapshot } from "./hooks";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
 import Conversation from "./components/Conversation";
+import TerminalDock from "./components/TerminalDock";
+import "./desktop";
 import Workspace from "./components/Workspace";
 import Canvas from "./components/Canvas";
 import ComplaintBook from "./components/ComplaintBook";
@@ -67,7 +68,6 @@ export default function App() {
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
-    [createMonitor, setCreateMonitor] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [workspaceSection, setWorkspaceSection] = useState("work"),
     [workerQuery, setWorkerQuery] = useState(""),
@@ -124,6 +124,12 @@ export default function App() {
     if (data && (!opened || (!agent && !room && !legacy)))
       setOpened(leads.at(-1)?.id || null);
   }, [data, opened, agent, room, legacy]);
+  useEffect(() => {
+    const onError = (event: Event) =>
+      notify((event as CustomEvent<string>).detail);
+    window.addEventListener("desktop-error", onError);
+    return () => window.removeEventListener("desktop-error", onError);
+  }, [notify]);
   const reloadLimits = useCallback(() => {
     void api("/api/limits")
       .then(setLimits)
@@ -205,16 +211,10 @@ export default function App() {
       if (!id) return;
       if (
         agent?.source === "managed" &&
-        /^\/(monitor|compact|review|stop|stop-team)(\s|$)/.test(text)
+        /^\/(compact|review|stop|stop-team)(\s|$)/.test(text)
       ) {
-        const [command, ...rest] = text.split(" ");
-        if (command === "/monitor")
-          await api("/api/monitor", {
-            id: crypto.randomUUID(),
-            agent: id,
-            command: rest.join(" "),
-          });
-        else if (command.startsWith("/stop"))
+        const [command] = text.split(/\s+/);
+        if (command === "/stop" || command === "/stop-team")
           await api("/api/stop", {
             id: command === "/stop-team" ? agent.rootId : id,
             descendants: command === "/stop-team",
@@ -349,7 +349,21 @@ export default function App() {
     }
   };
   const project = () => {
-    if (agent?.isLead && !agent.threadId) void folders(agent.cwd);
+    if (window.codexDesktop && agent?.isLead && !agent.threadId) {
+      const id = agent.id;
+      void window.codexDesktop
+        .pickDirectory()
+        .then(async (cwd) => {
+          if (!cwd) return;
+          await api("/api/conversation", { id, cwd });
+          await refresh();
+        })
+        .catch((error) => notify(errorText(error)));
+    } else if (window.codexDesktop && agent?.cwd) {
+      void window.codexDesktop
+        .revealPath(agent.cwd)
+        .catch((error) => notify(errorText(error)));
+    } else if (agent?.isLead && !agent.threadId) void folders(agent.cwd);
     else if (agent?.cwd)
       setModal({ title: "Project directory", body: <p>{agent.cwd}</p> });
   };
@@ -598,7 +612,6 @@ export default function App() {
             >
               {(
                 [
-                  ["monitor", "Monitor", Terminal],
                   ["compact", "Compact", Minimize2],
                   ["review", "Review", ShieldCheck],
                   ["stop-team", "Stop team", Square],
@@ -612,18 +625,14 @@ export default function App() {
                   color={action === "stop-team" ? "red" : undefined}
                   leftSection={<Icon size={14} />}
                   onClick={() => {
-                    if (action === "monitor") {
-                      setCreateMonitor(true);
-                      setTasksOpen(true);
-                    } else
-                      void run(() =>
-                        api(
-                          action === "stop-team" ? "/api/stop" : "/api/action",
-                          action === "stop-team"
-                            ? { id: agent.rootId, descendants: true }
-                            : { id: agent.id, action },
-                        ),
-                      );
+                    void run(() =>
+                      api(
+                        action === "stop-team" ? "/api/stop" : "/api/action",
+                        action === "stop-team"
+                          ? { id: agent.rootId, descendants: true }
+                          : { id: agent.id, action },
+                      ),
+                    );
                   }}
                 >
                   {String(label)}
@@ -683,7 +692,6 @@ export default function App() {
             aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
             leftSection={<Activity size={16} />}
             onClick={() => {
-              setCreateMonitor(false);
               setTasksOpen(true);
             }}
           >
@@ -765,6 +773,13 @@ export default function App() {
         ) : (
           teamPanel
         ))}
+      <TerminalDock
+        data={data}
+        agent={agent || lead}
+        onOpenBackground={() => setTasksOpen(true)}
+        onSelectAgent={open}
+        notify={notify}
+      />
       <Workspace
         initialSection={workspaceSection}
         opened={workspaceOpen}
@@ -776,7 +791,6 @@ export default function App() {
         notify={notify}
       />
       <BackgroundTasks
-        createOnOpen={createMonitor}
         opened={tasksOpen}
         close={() => setTasksOpen(false)}
         data={data}

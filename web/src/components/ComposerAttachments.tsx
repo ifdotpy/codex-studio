@@ -1,7 +1,7 @@
 import { ActionIcon, Button, Loader } from "@mantine/core";
 import { File, Paperclip, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, errorText } from "../api";
 import FilePreview from "./FilePreview";
 
 export interface Attachment {
@@ -38,6 +38,7 @@ export async function uploadAttachment(
   };
 }
 export default function ComposerAttachments(p: {
+  notify: (message: string) => void;
   assets: Attachment[];
   uploading: boolean;
   disabled: boolean;
@@ -67,7 +68,31 @@ export default function ComposerAttachments(p: {
           p.uploading ? <Loader size={13} /> : <Paperclip size={14} />
         }
         disabled={p.disabled || p.uploading || p.assets.length >= 8}
-        onClick={() => input.current?.click()}
+        onClick={() => {
+          if (!window.codexDesktop) {
+            input.current?.click();
+            return;
+          }
+          void window.codexDesktop
+            .pickFiles()
+            .then((files) => {
+              p.add(
+                files.map(
+                  (file) =>
+                    new globalThis.File(
+                      [
+                        Uint8Array.from(atob(file.data), (c) =>
+                          c.charCodeAt(0),
+                        ),
+                      ],
+                      file.name,
+                      { type: file.mime },
+                    ),
+                ),
+              );
+            })
+            .catch((error) => p.notify(errorText(error)));
+        }}
       >
         Attach
       </Button>

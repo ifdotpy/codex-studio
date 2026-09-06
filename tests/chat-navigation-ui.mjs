@@ -67,17 +67,24 @@ try {
     await page.keyboard.press("Escape");
     await drawer.waitFor({ state: "hidden" });
   }
-  await page.locator('[data-action="monitor"]').click();
+  assert.equal(
+    await page.locator('[data-action="monitor"]').count(),
+    0,
+    "no manual monitor header action",
+  );
   const background = page.getByRole("dialog", { name: /Background tasks/ });
-  await background.getByLabel("Command", { exact: true }).waitFor();
-  await page.keyboard.press("Escape");
-  await background.waitFor({ state: "hidden" });
   assert.equal(await page.locator("#message").inputValue(), "Keep my draft");
   await page.locator("#tasks-toggle").click();
   assert.equal(
     await background.getByLabel("Command", { exact: true }).count(),
     0,
-    "normal background route does not force creation",
+    "background tasks have no manual command form",
+  );
+  assert.equal(
+    await background
+      .getByRole("button", { name: /^(New monitor|Start monitor)$/ })
+      .count(),
+    0,
   );
   await page.keyboard.press("Escape");
   await background.waitFor({ state: "hidden" });
@@ -100,9 +107,42 @@ try {
     );
     await page.screenshot({ path: join(root, `navigation-${width}.png`) });
   }
+  await page.locator("#message").fill("/monitor must-not-run");
+  await page.locator("#send").click();
+  await page.getByText("/monitor must-not-run", { exact: true }).waitFor();
+  const afterMessage = await (await fetch(url + "/api/state")).json();
+  assert.equal(
+    afterMessage.runtime.monitors.length,
+    state.runtime.monitors.length,
+    "a literal /monitor message does not run a command",
+  );
+  await page.setViewportSize({ width: 1440, height: 960 });
+  const stops = [];
+  await page.route("**/api/stop", async (route) => {
+    stops.push(route.request().postDataJSON());
+    await route.fulfill({ json: { ok: true } });
+  });
+  for (const command of ["/stop", "/stop-team"]) {
+    await page.locator("#message").fill(command);
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () => document.querySelector("#message").value === "",
+    );
+  }
+  assert.equal(
+    stops.length,
+    2,
+    "both slash stop commands use the stop endpoint",
+  );
+  assert.equal(stops[0].descendants, false);
+  assert.equal(stops[1].descendants, true);
+  assert.ok(
+    stops.every((request) => request.id),
+    "stop requests include target",
+  );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS chat navigation: direct sections, monitor form, preserved draft, idle status, labelled controls at 320/390/768/1440px. Evidence " +
+    "PASS chat navigation: direct sections, no manual monitor, preserved draft, idle status, labelled controls at 320/390/768/1440px. Evidence " +
       root,
   );
 } finally {

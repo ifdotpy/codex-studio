@@ -564,6 +564,7 @@ export default function Conversation(p: {
           >
             {managed && (
               <ComposerAttachments
+                notify={p.notify}
                 assets={assets}
                 uploading={uploading}
                 disabled={!canSend || p.sending}

@@ -673,7 +673,8 @@ class RuntimeContract(unittest.TestCase):
         eventually(lambda: sum(m == 'turn/start' for m,p in self.runtime.server.calls) == 3)
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
         calls = [p for m,p in self.runtime.server.calls if m == 'turn/start']
-        self.assertEqual(calls[-1]['input'][0]['text'], 'New instruction after Stop')
+        self.assertEqual(calls[-1]['input'][0]['text'].split('\n\n[Time awareness, message receipt time]')[0], 'New instruction after Stop')
+        self.assertIn('accepted at ', calls[-1]['input'][0]['text'])
         self.assertTrue(any(m == 'turn/interrupt' for m,p in self.runtime.server.calls))
 
     def test_old_turn_cannot_spawn_or_monitor_after_resume(self):

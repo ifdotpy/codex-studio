@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 
+from codex_time import append_message_clocks, message_clock, stamp_tool_result
 from codex_work import WorkMixin, work_tools
 from codex_workspace import WorkspaceMixin
 from codex_rules import RulesMixin, rule_tools
@@ -33,7 +34,15 @@ def tool(name, description, properties, required=()):
                             "required": list(required), "additionalProperties": False}}
 
 
-THREAD_CONFIG = {"features.multi_agent": False, "features.multi_agent_v2": False, "agents.enabled": False}
+THREAD_CONFIG = {
+    "features.multi_agent": False,
+    "features.multi_agent_v2": False,
+    "agents.enabled": False,
+    "features.current_time_reminder.enabled": True,
+    "features.current_time_reminder.reminder_interval_seconds": 0,
+    "features.current_time_reminder.delivery_mode": "after_user_or_tool_output",
+    "features.current_time_reminder.clock_source": "system",
+}
 LEAD_MODELS = ("gpt-6-astra", "gpt-5.6-sol")
 TEXT = {"type": "string"}
 TOOLS = [
@@ -694,8 +703,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 if (
                     old["agent"] != key
                     or old["text"] != text.strip()
-                    or previous["assets"] != assets
-                    or previous["delivery"] != delivery
+                    or previous.get("assets", []) != assets
+                    or previous.get("delivery", "queue") != delivery
                 ):
                     raise ValueError("This message id has different content")
                 return {
@@ -727,7 +736,16 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 raise ValueError("Agent is stopped; no message was queued")
             db.execute(
                 "INSERT INTO runtime_event_meta VALUES (?,?)",
-                (message_id, json.dumps({"assets": assets, "delivery": delivery})),
+                (
+                    message_id,
+                    json.dumps(
+                        {
+                            "assets": assets,
+                            "delivery": delivery,
+                            "acceptedAt": time.time(),
+                        }
+                    ),
+                ),
             )
             if delivery == "queue":
                 return {
@@ -753,6 +771,18 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     a["turnId"],
                     None,
                 ),
+            )
+            meta = json.loads(
+                db.execute(
+                    "SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)
+                ).fetchone()[0]
+            )
+            inputs = self.message_inputs(
+                key,
+                append_message_clocks(
+                    text, [message_clock(message_id, meta["acceptedAt"])]
+                ),
+                assets,
             )
             # Submission under the epoch lock prevents stop from overtaking steer.
             submitted = self.connect().submit(
@@ -941,6 +971,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     )
             text = "\n\n".join(r["text"] if r["kind"] == "user" else f"[Orchestration event: {r['kind']}]\n{r['text']}" for r in rows)
             asset_ids = []
+            clocks = []
             with self.lock, self.db() as db:
                 for event in rows:
                     meta = db.execute(
@@ -948,11 +979,21 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                         (event["id"],),
                     ).fetchone()
                     if meta:
-                        ids = json.loads(meta[0]).get("assets", [])
+                        metadata = json.loads(meta[0])
+                        ids = metadata.get("assets", [])
                         asset_ids.extend(ids)
                         event["assets"] = [
                             self.asset_view(self.asset_record(v)) for v in ids
                         ]
+                    else:
+                        metadata = {}
+                    if (
+                        event["kind"] in {"user", "followup"}
+                        and "acceptedAt" in metadata
+                    ):
+                        clocks.append(
+                            message_clock(event["id"], metadata["acceptedAt"])
+                        )
                 plan = db.execute(
                     "SELECT record FROM runtime_plans WHERE id=?", (a["rootId"],)
                 ).fetchone()
@@ -979,7 +1020,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             params = {
                 "threadId": a["threadId"],
                 "clientUserMessageId": rows[0]["id"],
-                "input": self.message_inputs(a["id"], text, asset_ids),
+                "input": self.message_inputs(
+                    a["id"], append_message_clocks(text, clocks), asset_ids
+                ),
             }
             if a.get("effort"):
                 params["effort"] = a["effort"]
@@ -1457,10 +1500,37 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 else:
                     raise ValueError("Unknown orchestration tool")
                 result = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
+                result = stamp_tool_result(result, time.time())
                 with self.lock, self.db() as db:
-                    db.execute("INSERT OR REPLACE INTO runtime_tool_results VALUES (?,?)", (key, json.dumps(result)))
+                    db.execute(
+                        "INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
+                        (key, json.dumps(result)),
+                    )
+                    result = json.loads(
+                        db.execute(
+                            "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
+                        ).fetchone()[0]
+                    )
         except Exception as error:
-            result = {"success": False, "contentItems": [{"type": "inputText", "text": str(error)}]}
+            result = stamp_tool_result(
+                {
+                    "success": False,
+                    "contentItems": [{"type": "inputText", "text": str(error)}],
+                },
+                time.time(),
+            )
+            with self.lock, self.db() as db:
+                db.execute(
+                    "INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
+                    (key, json.dumps(result)),
+                )
+                saved = json.loads(
+                    db.execute(
+                        "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
+                    ).fetchone()[0]
+                )
+                if not saved.get("success"):
+                    result = saved
         try:
             self.connect().write({"id": message["id"], "result": result})
         except Exception:

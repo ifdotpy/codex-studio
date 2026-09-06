@@ -146,3 +146,132 @@
     padding: 14px;
   }
 }
+/* Dense quota rows keep both pools and reset clocks visible together. */
+.account-limits-panel {
+  padding: 12px;
+  max-height: min(680px, 78dvh);
+  overflow-y: auto;
+}
+.account-limits-heading {
+  margin-bottom: 10px;
+}
+.account-limits-heading h3 {
+  font-size: 13px;
+}
+.account-limits-heading p {
+  font-size: 10px;
+  margin-top: 2px;
+}
+.account-limits-groups {
+  gap: 10px;
+  max-height: none;
+  overflow: visible;
+}
+.account-limit-group {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+.account-limit-group + .account-limit-group {
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+.account-limit-group > header {
+  margin-bottom: 7px;
+}
+.account-limit-windows {
+  gap: 8px;
+}
+.account-limit-window {
+  display: grid;
+  grid-template-columns: 106px minmax(0, 1fr);
+  align-items: center;
+  gap: 3px 12px;
+}
+.account-limit-value {
+  margin: 0;
+  gap: 5px;
+}
+.account-limit-value > span {
+  font-size: 11px;
+}
+.account-limit-value > strong {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.account-limit-value small {
+  font-size: 9px;
+}
+.account-limit-reset {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  font-size: 10px;
+}
+.account-limit-reset time {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.account-limit-credits {
+  margin-top: 7px;
+  padding-top: 6px;
+  font-size: 10px;
+}
+.account-limits-updated {
+  margin-top: 8px;
+}
+.account-cost-summary {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.account-costs {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.account-costs > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+}
+.account-costs > header > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.account-cost-values {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 8px 0;
+}
+.account-cost-values > div {
+  display: grid;
+  gap: 3px;
+}
+.account-cost-values span {
+  font-size: 10px;
+  color: var(--muted);
+}
+.account-cost-values strong {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.account-costs p {
+  margin: 4px 0 0;
+  font-size: 10px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+.account-costs .account-limits-warning {
+  color: #ffbd78;
+}
+@media (max-width: 600px) {
+  .account-limits-panel {
+    padding: 12px;
+  }
+}

@@ -2,8 +2,6 @@ import {
   ActionIcon,
   Badge,
   Button,
-  Checkbox,
-  Collapse,
   Drawer,
   NativeSelect,
   NumberInput,
@@ -22,7 +20,6 @@ import {
   Copy,
   Download,
   LoaderCircle,
-  Plus,
   Search,
   Square,
   Terminal,
@@ -105,7 +102,6 @@ export function backgroundTasks(data: Snapshot | null): BackgroundTask[] {
 }
 
 export default function BackgroundTasks({
-  createOnOpen = false,
   opened,
   close,
   data,
@@ -114,7 +110,6 @@ export default function BackgroundTasks({
   refresh,
   notify,
 }: {
-  createOnOpen?: boolean;
   opened: boolean;
   close: () => void;
   data: Snapshot;
@@ -129,16 +124,12 @@ export default function BackgroundTasks({
     [query, setQuery] = useState(""),
     [selected, setSelected] = useState<string | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
-    [now, setNow] = useState(Date.now() / 1000),
-    [creating, setCreating] = useState(false);
+    [now, setNow] = useState(Date.now() / 1000);
   useEffect(() => {
     if (!opened) return;
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [opened]);
-  useEffect(() => {
-    if (opened) setCreating(createOnOpen);
-  }, [opened, createOnOpen]);
   const agents = data.threads,
     tasks = backgroundTasks(data),
     owner = (id: string) => agents.find((a) => a.id === id);
@@ -187,36 +178,6 @@ export default function BackgroundTasks({
         header: "tasks-drawer-header",
       }}
     >
-      <div className="monitor-create-toolbar">
-        <span>Run commands without keeping a model turn open.</span>
-        <Button
-          size="xs"
-          variant="light"
-          leftSection={<Plus size={13} />}
-          onClick={() => setCreating(!creating)}
-          aria-expanded={creating}
-        >
-          New monitor
-        </Button>
-      </div>
-      <Collapse expanded={creating} keepMounted={false}>
-        <MonitorForm
-          agents={agents}
-          leadId={leadId}
-          notify={notify}
-          cancel={() => setCreating(false)}
-          created={async (id) => {
-            setCreating(false);
-            setSelected(id);
-            setTab("active");
-            setScope("all");
-            setKind("all");
-            setQuery("");
-            setMobileDetail(true);
-            await refresh();
-          }}
-        />
-      </Collapse>
       <div className="tasks-toolbar">
         <SegmentedControl
           aria-label="Task status"
@@ -650,126 +611,6 @@ function TaskDetail({
         </Button>
       </div>
     </section>
-  );
-}
-
-function MonitorForm({
-  agents,
-  leadId,
-  notify,
-  cancel,
-  created,
-}: {
-  agents: Agent[];
-  leadId?: string;
-  notify: (s: string) => void;
-  cancel: () => void;
-  created: (id: string) => Promise<void>;
-}) {
-  const available = agents.filter((agent) => agent.source === "managed");
-  const [agent, setAgent] = useState(
-    leadId || available.find((a) => a.isLead)?.id || available[0]?.id || "",
-  );
-  const [command, setCommand] = useState("");
-  const [interactive, setInteractive] = useState(false);
-  const [minutes, setMinutes] = useState<string | number>(30);
-  const [pending, setPending] = useState(false);
-  const request = useRef<{ signature: string; id: string } | null>(null);
-  const submit = async () => {
-    const body = {
-      agent,
-      command,
-      interactive,
-      timeout_ms: Number(minutes) * 60000,
-    };
-    const signature = JSON.stringify(body);
-    if (request.current?.signature !== signature)
-      request.current = { signature, id: crypto.randomUUID() };
-    setPending(true);
-    try {
-      const value = await api("/api/monitor", {
-        ...body,
-        id: request.current.id,
-      });
-      if (value.error) throw new Error(value.error);
-      await created(value.id);
-      setCommand("");
-      request.current = null;
-    } catch (error) {
-      notify(errorText(error));
-    } finally {
-      setPending(false);
-    }
-  };
-  return (
-    <form
-      className="monitor-create-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-    >
-      <div className="monitor-create-settings">
-        <NativeSelect
-          label="Agent"
-          value={agent}
-          onChange={(e) => setAgent(e.target.value)}
-          data={available.map((a) => ({ value: a.id, label: a.name }))}
-          disabled={pending}
-          required
-        />
-        <NumberInput
-          label="Timeout (minutes)"
-          value={minutes}
-          onChange={setMinutes}
-          min={1}
-          max={1440}
-          allowDecimal={false}
-          disabled={pending}
-          required
-        />
-      </div>
-      <Textarea
-        label="Command"
-        aria-label="Command"
-        placeholder="npm run test"
-        value={command}
-        onChange={(e) => setCommand(e.target.value)}
-        autosize
-        minRows={2}
-        maxRows={5}
-        maxLength={32000}
-        disabled={pending}
-        required
-      />
-      <Checkbox
-        label="Interactive terminal"
-        description="Send input while the command runs."
-        checked={interactive}
-        onChange={(e) => setInteractive(e.currentTarget.checked)}
-        disabled={pending}
-      />
-      <div className="monitor-create-actions">
-        <Button size="xs" onClick={cancel} disabled={pending}>
-          Cancel
-        </Button>
-        <Button
-          size="xs"
-          type="submit"
-          variant="filled"
-          loading={pending}
-          disabled={
-            !agent ||
-            !command.trim() ||
-            !Number.isFinite(Number(minutes)) ||
-            Number(minutes) < 1 ||
-            Number(minutes) > 1440
-          }
-        >
-          Start monitor
-        </Button>
-      </div>
-    </form>
   );
 }
 

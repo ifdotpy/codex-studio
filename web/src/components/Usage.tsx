@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button, Popover, Progress, Tooltip } from "@mantine/core";
 import { ChevronUp, Gauge, RefreshCw, RotateCcw } from "lucide-react";
 import type { Agent, Json } from "../types";
+import { api } from "../api";
 import "./Usage.css";
 
 type LimitWindow = {
@@ -75,7 +76,32 @@ function readBuckets(limits: Json | null, now: number): LimitBucket[] {
         data,
         windows,
       };
+    })
+    .sort((a, b) => {
+      const rank = (bucket: LimitBucket) =>
+        bucket.id === "codex" || bucket.data.limitId === "codex"
+          ? 0
+          : /spark/i.test(bucket.name)
+            ? 2
+            : 1;
+      return rank(a) - rank(b) || a.name.localeCompare(b.name);
     });
+}
+const dollars = (value: unknown) =>
+  number(value)
+    ? new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 2,
+      }).format(value)
+    : "Unavailable";
+function resetIn(reset: number, now: number) {
+  const minutes = Math.max(0, Math.ceil((reset - now) / 60));
+  if (!minutes) return "Awaiting update";
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `in ${hours}h ${minutes % 60}m`;
+  return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 function selectedBucket(buckets: LimitBucket[], model: string) {
   const matches = buckets.filter((bucket) =>
@@ -101,6 +127,32 @@ export default function Usage({
   limits: Json | null;
   reload: () => void;
 }) {
+  const [costs, setCosts] = useState<Json | null>(null);
+  useEffect(() => {
+    let active = true;
+    let timer: number;
+    const load = async () => {
+      try {
+        const result = await api<Json>("/api/costs");
+        if (!active) return;
+        setCosts(result);
+        timer = window.setTimeout(load, result.refreshing ? 1500 : 60000);
+      } catch {
+        if (active) {
+          setCosts((previous) => ({
+            ...previous,
+            error: "Local costs unavailable",
+          }));
+          timer = window.setTimeout(load, 60000);
+        }
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, []);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);
@@ -151,7 +203,7 @@ export default function Usage({
       </span>
       <Popover
         position="top-end"
-        width="min(390px, calc(100vw - 24px))"
+        width="min(370px, calc(100vw - 24px))"
         withArrow
         shadow="lg"
         trapFocus
@@ -174,6 +226,14 @@ export default function Usage({
               >
                 {summary}
               </span>
+              {number(costs?.data?.todayUSD) && (
+                <span
+                  className="account-cost-summary"
+                  title="Local API estimate today, not billed spend"
+                >
+                  ≈{dollars(costs?.data?.todayUSD)} today
+                </span>
+              )}
               {limits?.error && (
                 <span className="account-limits-warning">Update failed</span>
               )}
@@ -188,7 +248,7 @@ export default function Usage({
             <header className="account-limits-heading">
               <div>
                 <h3>Account limits</h3>
-                <p>Remaining allowance</p>
+                <p>Allowance left · local time</p>
               </div>
               <Button
                 size="compact-xs"
@@ -250,11 +310,35 @@ export default function Usage({
                             aria-label={`${bucket.name} ${window.label} remaining`}
                           />
                         )}
-                        <p className="account-limit-reset">
-                          {window.reset
-                            ? `${window.expired ? "Reset was" : "Resets"} ${new Date(window.reset * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
-                            : "Reset time unavailable"}
-                        </p>
+                        <div className="account-limit-reset">
+                          {window.reset ? (
+                            <>
+                              <span>
+                                {window.expired
+                                  ? "Reset passed"
+                                  : `Resets ${resetIn(window.reset, now)}`}
+                              </span>
+                              <time
+                                dateTime={new Date(
+                                  window.reset * 1000,
+                                ).toISOString()}
+                                title={new Date(window.reset * 1000).toString()}
+                              >
+                                {new Date(window.reset * 1000).toLocaleString(
+                                  undefined,
+                                  {
+                                    month: "short",
+                                    day: "numeric",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  },
+                                )}
+                              </time>
+                            </>
+                          ) : (
+                            <span>Reset time unavailable</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -287,6 +371,62 @@ export default function Usage({
                 </p>
               )}
             </div>
+            <section
+              className="account-costs"
+              aria-label="Local cost estimates"
+            >
+              <header>
+                <strong>Local API estimate</strong>
+                <span>USD</span>
+              </header>
+              <div className="account-cost-values">
+                <div>
+                  <span>Today</span>
+                  <strong>{dollars(costs?.data?.todayUSD)}</strong>
+                </div>
+                <div>
+                  <span>Last 30 days</span>
+                  <strong>{dollars(costs?.data?.last30DaysUSD)}</strong>
+                </div>
+              </div>
+              <p>Codex sessions on this computer. Not your ChatGPT bill.</p>
+              {costs?.data?.coverage === "unverified" && (
+                <p className="account-limits-warning">
+                  Pricing and history coverage unverified by this CodexBar
+                  version.
+                </p>
+              )}
+              {costs?.data?.coverage === "partial" && (
+                <p className="account-limits-warning">
+                  Partial estimate. Some history or model prices are missing.
+                </p>
+              )}
+              {!!costs?.data?.unknownModels?.length && (
+                <p>Unpriced: {costs.data.unknownModels.join(", ")}</p>
+              )}
+              {costs?.refreshing && <p role="status">Reading local usage…</p>}
+              {costs?.error && (
+                <p className="account-limits-warning" role="status">
+                  {costs.error}
+                  {costs.data ? " Previous estimate retained." : ""}
+                </p>
+              )}
+              {costs?.data?.sourceUpdatedAt && (
+                <p>
+                  Costs as of{" "}
+                  {new Date(costs.data.sourceUpdatedAt).toLocaleString(
+                    undefined,
+                    {
+                      month: "short",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    },
+                  )}
+                  {costs.stale ? " · stale" : ""}
+                </p>
+              )}
+            </section>
             {limits?.error && (
               <p className="account-limits-error" role="status">
                 Update failed: {limits.error}

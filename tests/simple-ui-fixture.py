@@ -96,7 +96,14 @@ import json
 import threading
 def fixture_events():
     for line in sys.stdin:
-        c.runtime.notification(json.loads(line))
+        message = json.loads(line)
+        if message.get('method') == 'fixture/agent-monitor':
+            params = message['params']
+            agent = c.runtime.agent(params['agent'])
+            c.runtime.monitor(agent['id'], params, approved=params.get('approved', True),
+                              key=params['id'], epoch=agent['epoch'])
+        else:
+            c.runtime.notification(message)
 threading.Thread(target=fixture_events, daemon=True).start()
 print(server.server_port, flush=True)
 try:

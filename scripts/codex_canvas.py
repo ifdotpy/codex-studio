@@ -416,6 +416,19 @@ class Canvas:
 
 def make_server(canvas, port=0):
     token = secrets.token_urlsafe(32)
+    terminal_manager = [None]
+    cost_reader = [None]
+    terminal_lock = threading.RLock()
+
+    def terminals():
+        if not canvas.runtime:
+            raise ValueError("The agent runtime is unavailable")
+        with terminal_lock:
+            if terminal_manager[0] is None:
+                from codex_terminals import TerminalManager
+
+                terminal_manager[0] = TerminalManager(canvas.root)
+            return terminal_manager[0]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -492,6 +505,31 @@ def make_server(canvas, port=0):
                 if path.path == "/api/state":
                     return self.send({**canvas.snapshot(), "token": token,
                                       "runtime": canvas.runtime.snapshot() if canvas.runtime else None})
+                if path.path == "/api/costs":
+                    with terminal_lock:
+                        if cost_reader[0] is None:
+                            from codex_costs import CostReader
+
+                            cost_reader[0] = CostReader(canvas.root)
+                    return self.send(cost_reader[0].snapshot())
+                if path.path == "/api/desktop":
+                    return self.send(
+                        {
+                            "application": "codex-agents",
+                            "protocol": 1,
+                            "pid": os.getpid(),
+                            "stateDir": str(Path(canvas.root).resolve()),
+                        }
+                    )
+                if path.path == "/api/terminals":
+                    return self.send(terminals().listing())
+                if path.path == "/api/terminals/output":
+                    query = parse_qs(path.query)
+                    return self.send(
+                        terminals().output(
+                            query.get("id", [None])[0], query.get("offset", [0])[0]
+                        )
+                    )
                 if path.path == "/api/directories":
                     directory = Path(parse_qs(path.query).get("path", [os.getcwd()])[0]).expanduser().resolve()
                     if not directory.is_dir():
@@ -598,6 +636,17 @@ def make_server(canvas, port=0):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
+                if self.path == "/api/terminals/create":
+                    return self.send(terminals().create(canvas.runtime, body))
+                if self.path in {
+                    "/api/terminals/input",
+                    "/api/terminals/resize",
+                    "/api/terminals/rename",
+                    "/api/terminals/close",
+                }:
+                    return self.send(
+                        terminals().action(self.path.rsplit("/", 1)[1], body)
+                    )
                 if canvas.runtime:
                     runtime = canvas.runtime
                     agent = body.get("agent")
@@ -682,8 +731,6 @@ def make_server(canvas, port=0):
                         return self.send(canvas.runtime.import_thread(body))
                     if self.path == "/api/stop":
                         return self.send(canvas.runtime.stop(body.get("id"), body.get("descendants", True)))
-                    if self.path == "/api/monitor":
-                        return self.send(canvas.runtime.monitor(body.get("agent"), body, body.get("id"), approved=True))
                     if self.path == "/api/monitor/cancel":
                         return self.send(canvas.runtime.cancel_monitor(body.get("id")))
                     if self.path == "/api/answer":
@@ -698,7 +745,15 @@ def make_server(canvas, port=0):
             except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
                 return self.send({"error": str(error)}, 400)
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    class LocalServer(ThreadingHTTPServer):
+        def server_close(self):
+            if cost_reader[0] is not None:
+                cost_reader[0].close()
+            if terminal_manager[0] is not None:
+                terminal_manager[0].close()
+            super().server_close()
+
+    server = LocalServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     return server
 
@@ -711,6 +766,7 @@ def main():
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, terminate)
     runtime = None
+    server = None
     try:
         from codex_runtime import Runtime
         canvas = Canvas()
@@ -725,5 +781,7 @@ def main():
     except (RuntimeError, OSError) as error:
         parser.exit(1, f"codex-canvas: {error}\n")
     finally:
+        if server:
+            server.server_close()
         if runtime:
             runtime.close()

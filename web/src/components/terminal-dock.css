@@ -1,0 +1,328 @@
+.terminal-dock {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 90;
+  background: #18191e;
+  border-top: 1px solid #33343c;
+  color: #d7d9e1;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.terminal-dock.is-open {
+  box-shadow: 0 -10px 36px #0004;
+}
+.terminal-dock-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 37px;
+  min-height: 37px;
+  padding: 0 12px;
+}
+.terminal-dock-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 6px 0;
+  font: inherit;
+}
+.terminal-dock-toggle strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+.terminal-dock-count {
+  color: #a6a9b8;
+  font-variant-numeric: tabular-nums;
+}
+.terminal-dock-running {
+  color: #9ac9a7;
+  font-size: 11px;
+}
+.terminal-dock-current {
+  color: #989caa;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 35%;
+}
+.terminal-dock-spacer {
+  flex: 1;
+}
+.terminal-dock-resizer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  height: 7px;
+  cursor: ns-resize;
+  z-index: 2;
+  touch-action: none;
+}
+.terminal-dock-resizer:hover,
+.terminal-dock-resizer:focus-visible {
+  background: #8480d777;
+  outline: 0;
+}
+.terminal-dock-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid #292b32;
+}
+.terminal-dock-sessions {
+  width: 245px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #30323a;
+  padding: 8px 0 0;
+}
+.terminal-dock-sessions > .mantine-TextInput-root {
+  margin: 0 9px 8px;
+}
+.terminal-dock-list {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.terminal-session {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 13px;
+  border: 0;
+  border-left: 2px solid transparent;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.terminal-session:hover {
+  background: #22242d;
+}
+.terminal-session.is-selected {
+  background: #282837;
+  border-left-color: #9690e8;
+}
+.terminal-session-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #696c78;
+}
+.terminal-session-dot.is-running {
+  background: #98c7a1;
+}
+.terminal-session-description {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.terminal-session-description strong {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.terminal-session-description small {
+  font-size: 10px;
+  color: #9ca0af;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.terminal-dock-detail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #141519;
+}
+.terminal-detail-heading {
+  height: 33px;
+  min-height: 33px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+}
+.terminal-detail-heading form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.terminal-detail-title {
+  color: #dee0e9;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  padding: 0;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-detail-status {
+  color: #9398a8;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.terminal-detail-path {
+  font-size: 10px;
+  color: #858a9b;
+  padding: 0 12px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.terminal-shell-view,
+.terminal-agent-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.terminal-xterm {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 2px 10px;
+}
+.terminal-xterm .xterm {
+  height: 100%;
+}
+.terminal-output-actions {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 11px;
+  color: #969bac;
+  font-size: 10px;
+  flex-wrap: wrap;
+}
+.terminal-output-notice {
+  font-size: 11px;
+  padding: 4px 12px;
+  background: #333025;
+  color: #d9cb9c;
+}
+.terminal-dock-error {
+  margin: 0;
+  padding: 6px 12px;
+  color: #edacac;
+  background: #43262a;
+  font-size: 11px;
+}
+.terminal-dock-error button {
+  color: inherit;
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.terminal-dock-welcome {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  color: #a6aaba;
+  padding: 18px;
+  text-align: center;
+}
+.terminal-dock-welcome strong {
+  color: #dedee9;
+  font-size: 14px;
+  font-weight: 500;
+}
+.terminal-dock-welcome p {
+  margin: 0 0 5px;
+  max-width: 470px;
+  overflow-wrap: anywhere;
+}
+.terminal-dock-welcome small {
+  color: #818594;
+  font-size: 10px;
+  margin-top: 5px;
+}
+.terminal-dock-empty {
+  font-size: 11px;
+  color: #9398a8;
+  padding: 10px 13px;
+}
+.terminal-agent-view pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  margin: 0;
+  padding: 4px 12px;
+}
+.terminal-agent-input {
+  display: flex;
+  gap: 8px;
+  padding: 5px 12px 9px;
+}
+.terminal-agent-input .mantine-TextInput-root {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 650px) {
+  .terminal-dock-bar {
+    padding: 0 8px;
+    gap: 6px;
+  }
+  .terminal-dock-running {
+    display: none;
+  }
+  .terminal-dock-sessions {
+    width: 155px;
+    min-width: 135px;
+  }
+  .terminal-session {
+    padding: 8px;
+    gap: 6px;
+  }
+  .terminal-detail-status {
+    display: none;
+  }
+  .terminal-detail-title {
+    max-width: 85%;
+  }
+  .terminal-output-actions > span:first-child {
+    display: none;
+  }
+  .terminal-dock-current {
+    display: none;
+  }
+  .terminal-detail-heading {
+    padding: 0 8px;
+  }
+  .terminal-agent-input {
+    flex-wrap: wrap;
+  }
+  .terminal-dock-bar .mantine-Button-root {
+    font-size: 10px;
+  }
+}
+
+.terminal-dock .terminal-xterm .xterm-viewport {
+  background-color: #141519;
+}

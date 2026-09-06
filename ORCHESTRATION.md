@@ -1,6 +1,6 @@
 # Managed Codex teams
 
-Build the [React interface](web/README.md), then start `scripts/codex-canvas` and open <http://127.0.0.1:4620>.
+Use the [Electron desktop app](desktop/README.md), or build the [React interface](web/README.md), start `scripts/codex-canvas`, and open <http://127.0.0.1:4620>.
 Select **New chat**. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
@@ -21,13 +21,14 @@ The browser keeps existing canvas positions and message drafts when views change
 Manual graph selection modes, chat wiring, the minimap, and duplicate zoom controls were removed.
 Existing shared chats and sessions remain accessible from **Other sessions**; their command-line tools remain available.
 
-The conversation menu provides context compaction, review, command monitoring, and team stop.
+The conversation header provides context compaction, review, and team stop.
 Use the sidebar row menu to rename or delete a lead or agent chat.
 Renaming stays in SQLite and takes priority over an automatic lead title.
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
-`/monitor <command>` submits a command directly. Results appear below the worker list.
+Agents create monitors through `orchestration_monitor`. The interface shows their output and controls but has no manual monitor form.
+The terminal panel provides independent user shells and lists agent commands across teams.
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
 Team capacity and token budgets remain available through `codex-control configure`.
 One lead can delegate a batch of work to dozens of agents.
@@ -100,8 +101,8 @@ The default command timeout is one hour; the maximum is 24 hours.
 
 The inherited `never` approval policy does not add an approval step. Other policies
 require approval for a model-created Monitor command in the conversation.
-A command submitted directly through the user interface is an explicit user action.
-The same sandbox still applies. This runtime does not bypass sandbox restrictions.
+Monitor execution retains that sandbox. User shells in the terminal panel run directly as the local user, like an ordinary terminal.
+They do not start a model turn.
 
 ## Complaint book
 
@@ -254,3 +255,25 @@ It requires one lead, two reviewers, one successful command watch and all three
 completion events delivered to the lead. The test prints its evidence directory.
 
 See [UI and tool evidence](UI-AND-TOOLS.md) for the interface decisions and Codex tool checks.
+
+## Desktop, time, and local costs
+
+The [desktop host](desktop/README.md) provides native file and folder dialogs,
+Finder actions, external links, and optional notifications. Closing its window
+preserves the backend and agent work. Existing SQLite chats use the same state
+directory. Canvas positions remain browser-profile data.
+
+The terminal panel has a searchable session list without a fixed session count.
+It retains the latest 1,048,576 characters per user shell in SQLite. Reopening the UI
+restores that text. A backend restart marks old sessions ended; it does not
+recreate their processes. Input with uncertain delivery pauses until the user
+reconnects and never retries the same keystrokes automatically.
+
+[Time awareness](TIME-AWARENESS.md) uses the native Codex clock plus durable
+message acceptance times. New timestamps do not rewrite earlier input.
+
+Account limits show Codex before Spark, the remaining allowance, reset countdowns,
+and exact local reset dates. Cost estimates come from the installed CodexBar CLI.
+The display shows today and the last 30 days across local Codex logs. These are
+API-rate estimates, not ChatGPT subscription charges. Missing prices or unknown
+history coverage remain visible. The backend caches scans for 15 minutes.

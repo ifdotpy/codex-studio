@@ -526,6 +526,16 @@ class WorkMixin:
                     "UPDATE runtime_events SET text=? WHERE id=?",
                     (text_field(data.get("text"), "a message"), row["id"]),
                 )
+                if row["text"] != data.get("text", "").strip():
+                    saved = db.execute(
+                        "SELECT record FROM runtime_event_meta WHERE id=?", (row["id"],)
+                    ).fetchone()
+                    metadata = json.loads(saved[0]) if saved else {}
+                    metadata["acceptedAt"] = time.time()
+                    db.execute(
+                        "INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)",
+                        (row["id"], json.dumps(metadata)),
+                    )
             elif data.get("action") == "first":
                 first = min(r["created"] for r in rows)
                 db.execute(

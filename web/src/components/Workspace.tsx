@@ -173,7 +173,7 @@ export function Workspace(props: Props) {
   const [pending, setPending] = useState(0),
     [focusId, setFocusId] = useState("");
   const [notifications, setNotifications] = useState(() =>
-    saved("workspace-notifications", false),
+    window.codexDesktop ? false : saved("workspace-notifications", false),
   );
   const refreshRef = useRef(props.refresh),
     notifyRef = useRef(props.notify);
@@ -213,8 +213,24 @@ export function Workspace(props: Props) {
   );
   const toggleNotifications = async () => {
     if (notifications) {
-      setNotifications(false);
-      save("workspace-notifications", false);
+      try {
+        if (window.codexDesktop)
+          await window.codexDesktop.setNotifications(false);
+        setNotifications(false);
+        save("workspace-notifications", false);
+      } catch (error) {
+        props.notify(errorText(error));
+      }
+      return;
+    }
+    if (window.codexDesktop) {
+      try {
+        const allowed = await window.codexDesktop.setNotifications(true);
+        setNotifications(allowed);
+        save("workspace-notifications", allowed);
+      } catch (error) {
+        props.notify(errorText(error));
+      }
       return;
     }
     if (!("Notification" in window)) {
@@ -234,8 +250,8 @@ export function Workspace(props: Props) {
   useEffect(() => {
     if (
       !notifications ||
-      !("Notification" in window) ||
-      Notification.permission !== "granted"
+      (!window.codexDesktop &&
+        (!("Notification" in window) || Notification.permission !== "granted"))
     )
       return;
     let active = true,
@@ -254,17 +270,19 @@ export function Workspace(props: Props) {
           const groups = new Map<string, number>();
           for (const item of added)
             groups.set(item.kind, (groups.get(item.kind) || 0) + 1);
+          const body = [...groups]
+            .map(([kind, count]) => `${count} ${kind}${count === 1 ? "" : "s"}`)
+            .join(", ");
+          if (window.codexDesktop) {
+            await window.codexDesktop.notify({
+              title: "Codex workspace needs attention",
+              body,
+            });
+            return;
+          }
           const notification = new Notification(
             "Codex workspace needs attention",
-            {
-              body: [...groups]
-                .map(
-                  ([kind, count]) =>
-                    `${count} ${kind}${count === 1 ? "" : "s"}`,
-                )
-                .join(", "),
-              tag: "codex-workspace-attention",
-            },
+            { body, tag: "codex-workspace-attention" },
           );
           notification.onclick = () => {
             notification.close();

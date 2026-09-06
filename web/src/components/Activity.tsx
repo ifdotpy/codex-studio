@@ -1,17 +1,20 @@
 import { useEffect, useState } from "react";
 import { Badge } from "@mantine/core";
 import {
+  BookOpen,
   Check,
   ChevronRight,
   CircleX,
   Code,
   FileDiff,
+  FileText,
   Globe,
   LoaderCircle,
   Terminal,
   Wrench,
 } from "lucide-react";
 import type { Json, Message } from "../types";
+import "./read-activity.css";
 
 const names: Record<string, string> = {
   commandExecution: "Run command",
@@ -65,20 +68,113 @@ function status(item: Message, p: Json) {
           : "recorded")
   );
 }
+interface ReadTarget {
+  name: string;
+  path: string;
+  skill: boolean;
+}
+function readActivity(p: Json): { targets: ReadTarget[]; onlyReads: boolean } {
+  const target = (path: string, name?: string, skill = false): ReadTarget => {
+    const parts = path.split(/[\\/]/).filter(Boolean);
+    const skillFile = /(?:^|[\\/])SKILL\.md$/i.test(path);
+    return {
+      path,
+      name: skillFile
+        ? parts.slice(-2).join("/")
+        : typeof name === "string" && name
+          ? name
+          : parts.at(-1) || path,
+      skill: skill || skillFile,
+    };
+  };
+  if (p.type === "commandExecution") {
+    const actions: Json[] = Array.isArray(p.commandActions)
+      ? p.commandActions
+      : [];
+    return {
+      targets: actions
+        .filter((a) => a?.type === "read" && typeof a.path === "string")
+        .map((a) => target(a.path, a.name)),
+      onlyReads: actions.length > 0 && actions.every((a) => a?.type === "read"),
+    };
+  }
+  const tool = String(p.tool || p.type || "");
+  const skillRead =
+    ["skills/read", "skills.read", "read_skill"].includes(tool) ||
+    (tool === "read" && (p.namespace === "skills" || p.server === "skills"));
+  const fileRead = [
+    "read_file",
+    "read_text_file",
+    "read_multiple_files",
+  ].includes(tool);
+  if (!skillRead && !fileRead) return { targets: [], onlyReads: false };
+  let args = p.arguments;
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      args = {};
+    }
+  }
+  const paths = args?.paths || [
+    args?.path || args?.file_path || args?.resource || args?.uri || p.path,
+  ];
+  const targets = (Array.isArray(paths) ? paths : [paths])
+    .filter(
+      (path): path is string => typeof path === "string" && path.length > 0,
+    )
+    .map((path) => target(path, undefined, skillRead));
+  // An explicit tool remains visible even when its arguments omit a path.
+  return {
+    targets: targets.length
+      ? targets
+      : [target("", args?.name || tool, skillRead)],
+    onlyReads: true,
+  };
+}
+function readLabel(targets: ReadTarget[]) {
+  const skills = targets.filter((t) => t.skill).length;
+  const files = targets.length - skills;
+  return [
+    files ? `${files === 1 ? "file" : `${files} files`}` : "",
+    skills ? `${skills === 1 ? "skill" : `${skills} skills`}` : "",
+  ]
+    .filter(Boolean)
+    .join(" and ");
+}
+function describe(item: Message, p: Json) {
+  const read = readActivity(p);
+  const kind = p.type || item.title;
+  return {
+    ...read,
+    label:
+      read.onlyReads && read.targets.length
+        ? `Read ${readLabel(read.targets)}`
+        : toolNames[p.tool] ||
+          p.tool ||
+          names[kind] ||
+          item.title ||
+          "Tool activity",
+  };
+}
 function ToolCard({ item }: { item: Message }) {
   const p = payload(item),
     state = status(item, p),
-    kind = p.type || item.title;
+    kind = p.type || item.title,
+    read = describe(item, p);
   const Icon =
-    kind === "commandExecution"
-      ? Terminal
-      : kind === "webSearch"
-        ? Globe
-        : kind === "fileChange"
-          ? FileDiff
-          : Wrench;
-  const label =
-    toolNames[p.tool] || p.tool || names[kind] || item.title || "Tool activity";
+    read.onlyReads && read.targets.length
+      ? read.targets.every((t) => t.skill)
+        ? BookOpen
+        : FileText
+      : kind === "commandExecution"
+        ? Terminal
+        : kind === "webSearch"
+          ? Globe
+          : kind === "fileChange"
+            ? FileDiff
+            : Wrench;
+  const label = read.label;
   const output =
     p.aggregatedOutput ??
     textResult(p.contentItems ?? p.result?.content ?? p.result);
@@ -88,6 +184,7 @@ function ToolCard({ item }: { item: Message }) {
     <details
       className="tool-card"
       data-tool-status={state}
+      data-read-count={read.targets.length || undefined}
       open={open}
       onToggle={(e) => setOpen(e.currentTarget.open)}
     >
@@ -95,7 +192,17 @@ function ToolCard({ item }: { item: Message }) {
         <span className="tool-icon">
           <Icon size={15} />
         </span>
-        <span className="tool-title">{label}</span>
+        <span className="tool-title">
+          <span>{label}</span>
+          {read.targets.length > 0 && (
+            <small
+              className="tool-read-summary"
+              title={read.targets.map((t) => t.path || t.name).join("\n")}
+            >
+              {read.targets.map((t) => t.name).join(", ")}
+            </small>
+          )}
+        </span>
         <span className="tool-meta">
           {typeof p.durationMs === "number" && (
             <small>{(p.durationMs / 1000).toFixed(1)}s</small>
@@ -126,6 +233,19 @@ function ToolCard({ item }: { item: Message }) {
         </span>
       </summary>
       <div className="tool-body">
+        {read.targets.length > 0 && (
+          <ul className="tool-read-targets" aria-label="Read targets">
+            {read.targets.map((target, i) => (
+              <li key={`${target.path}:${i}`}>
+                {target.skill ? <BookOpen size={14} /> : <FileText size={14} />}
+                <span>
+                  <small>{target.skill ? "Skill" : "File"}</small>
+                  <code>{target.path || target.name}</code>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
         {p.command && (
           <div className="tool-section">
             <span>Command</span>
@@ -200,6 +320,7 @@ export default function Activity({ items }: { items: Message[] }) {
   const running = items.filter(
     (item) => status(item, payload(item)) === "running",
   ).length;
+  const reads = items.flatMap((item) => readActivity(payload(item)).targets);
   const [open, setOpen] = useState(running > 0);
   useEffect(() => {
     if (running) setOpen(true);
@@ -214,9 +335,19 @@ export default function Activity({ items }: { items: Message[] }) {
         <Wrench size={13} />
         <span>
           {items.length === 1
-            ? names[items[0].title || ""] || items[0].title || "Tool activity"
+            ? describe(items[0], payload(items[0])).label
             : `${items.length} actions`}
         </span>
+        {reads.length > 0 && (
+          <span
+            className="activity-read-summary"
+            title={reads.map((t) => t.path || t.name).join("\n")}
+          >
+            {items.length === 1
+              ? reads.map((t) => t.name).join(", ")
+              : `Read ${readLabel(reads)}`}
+          </span>
+        )}
         {running > 0 && (
           <span className="activity-running">{running} running</span>
         )}

@@ -66,6 +66,19 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/api/limits", (route) => route.fulfill({ json: limits }));
+  let costs = {
+    at: now,
+    stale: false,
+    refreshing: false,
+    data: {
+      todayUSD: 12.5,
+      last30DaysUSD: 1234.56,
+      sourceUpdatedAt: new Date().toISOString(),
+      coverage: "unverified",
+      unknownModels: [],
+    },
+  };
+  await page.route("**/api/costs", (route) => route.fulfill({ json: costs }));
   await page.route("**/api/state", async (route) => {
     const response = await route.fetch();
     const state = await response.json();
@@ -97,6 +110,22 @@ try {
   assert.match(await details().innerText(), /7d/);
   assert.match(await details().innerText(), /Credits\s+12.50/);
   assert.match(await details().innerText(), /Updated/);
+  assert.match(await details().innerText(), /Resets in 1h/);
+  assert.equal(await details().locator("time[datetime]").count(), 2);
+  assert.match(
+    await details()
+      .getByRole("region", { name: "Local cost estimates" })
+      .innerText(),
+    /\$12.50/,
+  );
+  assert.match(await details().innerText(), /\$1,234.56/);
+  assert.match(await details().innerText(), /Not your ChatGPT bill/);
+  assert.match(await details().innerText(), /coverage unverified/);
+  assert.ok(
+    (await details().locator(".account-limit-group").boundingBox()).height <
+      150,
+    "quota pool remains compact",
+  );
   await page.waitForFunction(
     () =>
       getComputedStyle(document.querySelector(".account-limits-popover"))
@@ -111,7 +140,7 @@ try {
     data: {
       rateLimitsByLimitId: {
         unrelated: {
-          limitName: "Other model",
+          limitName: "GPT-5.3-Codex-Spark",
           primary: { ...primary, usedPercent: 1 },
         },
         codex: { limitId: "codex", primary },
@@ -131,6 +160,15 @@ try {
   await details().waitFor();
   assert.equal(await details().locator(".account-limit-group").count(), 3);
   await details().getByText("99% left", { exact: true }).waitFor();
+  const names = await details()
+    .locator(".account-limit-group > header > strong")
+    .allTextContents();
+  assert.equal(names[0], "Codex");
+  assert.equal(names.at(-1), "GPT-5.3-Codex-Spark");
+  await page.screenshot({
+    path: join(root, "limits-pools-desktop.png"),
+    animations: "disabled",
+  });
 
   limits = {
     data: {
@@ -190,6 +228,18 @@ try {
   assert.doesNotMatch(await details().innerText(), /58%/);
   assert.match(await details().innerText(), /Account connection failed/);
 
+  costs = {
+    at: now,
+    stale: true,
+    refreshing: false,
+    error: "Scanner unavailable",
+    data: {
+      todayUSD: null,
+      last30DaysUSD: null,
+      coverage: "partial",
+      unknownModels: ["unknown-astra"],
+    },
+  };
   limits = { data: null, at: now + 5 };
   await load();
   assert.match(await toggle().innerText(), /Unavailable/);
@@ -197,6 +247,9 @@ try {
   await details().waitFor();
   assert.equal(await details().getByRole("progressbar").count(), 0);
   assert.match(await details().innerText(), /has not supplied/);
+  assert.match(await details().innerText(), /Partial estimate/);
+  assert.match(await details().innerText(), /unknown-astra/);
+  assert.doesNotMatch(await details().innerText(), /\$0\.00/);
 
   limits = {
     data: {
@@ -267,6 +320,11 @@ try {
         "empty data",
         "empty map fallback",
         "mobile",
+        "compact pools",
+        "Codex before Spark",
+        "reset countdown and exact time",
+        "local cost scope and coverage",
+        "unknown cost never zero",
       ],
     }),
   );

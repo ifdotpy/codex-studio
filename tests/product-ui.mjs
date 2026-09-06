@@ -14,7 +14,7 @@ const root = await mkdtemp(join(tmpdir(), "codex-react-ui-"));
 const proc = spawn(
   "python3",
   ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-  { stdio: ["ignore", "pipe", "pipe"] },
+  { stdio: ["pipe", "pipe", "pipe"] },
 );
 let log = "",
   browser;
@@ -285,8 +285,28 @@ try {
     1,
     "no duplicate user message",
   );
-  await page.locator("#message").fill("/monitor fixture-command");
-  await page.locator("#send").click();
+  assert.equal(await page.locator('[data-action="monitor"]').count(), 0);
+  proc.stdin.write(
+    JSON.stringify({
+      method: "fixture/agent-monitor",
+      params: {
+        id: crypto.randomUUID(),
+        agent: newLead.id,
+        command: "fixture-command",
+        timeout_ms: 1800000,
+      },
+    }) + "\n",
+  );
+  await poll(
+    async () =>
+      (await (await fetch(origin + "/api/state")).json()).runtime.monitors.some(
+        (monitor) =>
+          monitor.agent === newLead.id &&
+          monitor.command === "fixture-command" &&
+          monitor.exitCode === 7,
+      ),
+    "agent monitor completes",
+  );
   await page.locator("#tasks-toggle").click();
   await page.getByText("History", { exact: true }).click();
   await page
@@ -384,7 +404,7 @@ try {
   await shot("empty-chat");
   assert.deepEqual(errors, [], "no React errors");
   console.log(
-    "React product UI: PASS (production build, sidebar rename/delete, agent chat, history, complaint book, model, monitor, limits, desktop/mobile)",
+    "React product UI: PASS (production build, sidebar rename/delete, agent chat, history, complaint book, model, agent monitor, limits, desktop/mobile)",
   );
   console.log("Browser evidence:", root);
 } catch (error) {

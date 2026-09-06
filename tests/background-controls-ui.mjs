@@ -51,6 +51,18 @@ const native = {
   created: Date.now() / 1000 - 20,
   tail: "Waiting for input",
 };
+const monitor = {
+  id: "6f2ed4dd-f6ab-4d46-94a5-8a774333876a",
+  agent: "lead",
+  kind: "monitor",
+  command: "read value; echo $value",
+  interactive: true,
+  timeout_ms: 1800000,
+  status: "running",
+  created: Date.now() / 1000,
+  tail: "ready",
+  log: "/fixture/monitor.log",
+};
 const state = {
   token: "fixture-token",
   stateDir: root,
@@ -60,7 +72,7 @@ const state = {
     agents: [agent],
     rooms: [],
     complaints: [],
-    monitors: [],
+    monitors: [monitor],
     tasks: [native],
     requests: [],
   },
@@ -97,17 +109,9 @@ try {
     else if (path === "/api/transcript/stream")
       return route.fulfill({ status: 503, body: "fixture polling" });
     else if (path === "/api/limits") value = { data: null };
-    else if (path === "/api/monitor") {
-      value = {
-        ...body,
-        kind: "monitor",
-        status: "running",
-        created: Date.now() / 1000,
-        tail: "ready",
-        log: "/fixture/monitor.log",
-      };
-      state.runtime.monitors.push(value);
-    } else if (path === "/api/monitor/log")
+    else if (path === "/api/monitor")
+      return route.fulfill({ status: 404, json: { error: "Not found" } });
+    else if (path === "/api/monitor/log")
       value = {
         name: "monitor.log",
         mime: "text/plain",
@@ -125,20 +129,22 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.locator("#tasks-toggle").click();
   const drawer = page.getByRole("dialog", { name: /Background tasks/ });
-  await drawer.getByRole("button", { name: "New monitor" }).click();
-  await drawer
-    .getByLabel("Command", { exact: true })
-    .fill("read value; echo $value");
-  await drawer.getByLabel("Interactive terminal", { exact: true }).check();
-  await drawer.getByRole("button", { name: "Start monitor" }).click();
+  assert.equal(
+    await drawer
+      .getByRole("button", { name: /^(New monitor|Start monitor)$/ })
+      .count(),
+    0,
+  );
+  await drawer.locator(`[data-task="${monitor.id}"]`).click();
   await drawer
     .getByRole("button", { name: "Send line", exact: true })
     .waitFor();
-  const created = writes.find((w) => w.path === "/api/monitor").body;
-  assert.equal(created.agent, "lead");
-  assert.equal(created.interactive, true);
-  assert.equal(created.timeout_ms, 1800000);
-  assert.match(created.id, /^[a-f\d-]{36}$/);
+  assert.equal(
+    writes.some((w) => w.path === "/api/monitor"),
+    false,
+    "opening an agent monitor does not start a command",
+  );
+  const created = monitor;
   const input = drawer.getByLabel("Terminal input");
   await input.fill("hello");
   await drawer.getByRole("button", { name: "Send line", exact: true }).click();

@@ -1,0 +1,20 @@
+{
+  "name": "codex-agents-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native desktop host for the Codex Agents workspace",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "npm --prefix ../web run build && electron .",
+    "start:hidden": "electron . --hidden",
+    "package": "node package.mjs",
+    "test": "node test.mjs",
+    "test:package": "node package-test.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.2.0",
+    "playwright-core": "1.63.0"
+  }
+}

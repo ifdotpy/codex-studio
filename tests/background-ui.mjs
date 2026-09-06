@@ -38,19 +38,19 @@ try {
   const origin = `http://127.0.0.1:${port}`;
   const state = async () => (await fetch(origin + "/api/state")).json();
   const initial = await state();
-  const post = async (path, body) => {
-    const response = await fetch(origin + path, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Canvas-Token": initial.token,
-        Origin: origin,
-      },
-      body: JSON.stringify(body),
-    });
-    assert.equal(response.status, 200, await response.clone().text());
-    return response.json();
-  };
+  const manual = await fetch(origin + "/api/monitor", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Canvas-Token": initial.token,
+      Origin: origin,
+    },
+    body: JSON.stringify({
+      agent: initial.runtime.agents[0].id,
+      command: "must-not-run",
+    }),
+  });
+  assert.equal(manual.status, 404, "manual monitor creation route is absent");
   browser = await chromium.launch({
     executablePath:
       process.env.CHROME_BIN ||
@@ -109,22 +109,33 @@ try {
       arguments: { service: "release", environment: "staging" },
     },
   });
-  const monitor = await post("/api/monitor", {
-    id: crypto.randomUUID(),
-    agent: agent.id,
-    command: "watch-fixture --tests",
-    timeout_ms: 1800000,
-  });
-  await poll(
-    async () =>
-      (await state()).runtime.monitors.some(
-        (m) => m.id === monitor.id && m.status === "running",
-      ),
-    "monitor starts",
+  proc.stdin.write(
+    JSON.stringify({
+      method: "fixture/agent-monitor",
+      params: {
+        id: crypto.randomUUID(),
+        agent: agent.id,
+        command: "watch-fixture --tests",
+        timeout_ms: 1800000,
+      },
+    }) + "\n",
   );
+  let monitor;
+  await poll(async () => {
+    monitor = (await state()).runtime.monitors.find(
+      (m) => m.agent === agent.id && m.command === "watch-fixture --tests",
+    );
+    return monitor?.status === "running";
+  }, "agent monitor starts");
   await page.locator("#tasks-toggle").click();
   const drawer = page.getByRole("dialog", { name: /Background tasks/ });
   await drawer.waitFor();
+  assert.equal(
+    await drawer
+      .getByRole("button", { name: /^(New monitor|Start monitor)$/ })
+      .count(),
+    0,
+  );
   await poll(
     async () => (await drawer.locator("[data-task]").count()) === 4,
     "all tasks from both teams",
