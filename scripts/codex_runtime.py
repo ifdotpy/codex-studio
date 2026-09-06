@@ -48,10 +48,10 @@ LEAD_MODELS = ("gpt-6-astra", "gpt-5.6-sol")
 TEXT = {"type": "string"}
 TOOLS = [
     tool("orchestration_complaint", "Use the complaint book instead of a feedback section. "
-         "submit records a concrete problem and wakes your lead. read returns your team's book "
-         "and records that the responsible lead read it. respond requires a prior read and "
-         "a concrete decision: in_progress, resolved, or declined. Only the responsible lead "
-         "can respond. Every unanswered complaint must receive a recorded response before you finish.",
+         "submit sends the full complaint to your lead and wakes them. No book polling is needed. "
+         "respond records a decision from that notification: in_progress, resolved, or declined. "
+         "read optionally retrieves the team book. Only the responsible lead can respond. "
+         "Respond to each notified complaint before finishing; a separate read call is not required.",
          {"action": {"type": "string", "enum": ["submit", "read", "respond"]},
           "complaint_id": TEXT, "text": TEXT,
           "status": {"type": "string", "enum": ["in_progress", "resolved", "declined"]}}, ["action"]),
@@ -136,9 +136,10 @@ If this existing thread lacks the new chat tools, orchestration_status includes 
 peer directory and recent chats; orchestration_send accepts peer ids and these targets.
 Use orchestration_complaint instead of a feedback section for concrete problems with
 instructions, tools, resources, coordination, or process. Include evidence and impact.
-The responsible lead must read the book and respond with an action, a reasoned refusal,
-or a next step. A read alone is not a response. Do not claim a fix without evidence.
-Before finishing any lead turn, read and respond to all complaints awaiting your response.
+The server delivers each full complaint as a message from its author and wakes the lead.
+Do not poll or routinely read the complaint book. On notification, the responsible lead
+must use action=respond with an action, a reasoned refusal, or a next step before finishing.
+A separate action=read is optional. Do not claim a fix without evidence.
 If this older thread lacks orchestration_complaint, use orchestration_send with
 agent_id="complaint" and text containing JSON for the same action and fields.
 Use orchestration_task to track assignments, dependencies, submitted evidence and explicit acceptance.
@@ -351,6 +352,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                              error="Server restarted during a turn. Review history, then send a new instruction.")
                 a.setdefault("accountKey", "default")
                 a.setdefault("dangerouslySkipAccountRules", False)
+                a.setdefault("yoloMode", None)
                 a.setdefault("compactions", 0)
                 a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
@@ -608,6 +610,10 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
 
     def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False):
         requested_skip = self.requested_rule_override(data)
+        if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
+            raise ValueError("yolo_mode must be a boolean")
+        if parent and "yolo_mode" in data:
+            raise ValueError("Only the user can change YOLO mode on a lead")
         if "model" in data and (not isinstance(data["model"], str) or not data["model"].strip()):
             raise ValueError("Select an available model")
         if parent and "worker_defaults" in data:
@@ -656,7 +662,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     raise ValueError("This conversation was deleted")
                 if a["name"] != name.strip() or a["prompt"] != prompt.strip() or ("account_key" in data and a.get("accountKey", "default") != data["account_key"]):
                     raise ValueError("This request id has different content")
-                for request_field, stored_field in (("model", "model"), ("effort", "effort"), ("fast_mode", "fastMode")):
+                for request_field, stored_field in (("model", "model"), ("effort", "effort"), ("fast_mode", "fastMode"), ("yolo_mode", "yoloMode")):
                     if request_field in data and data[request_field] != a.get(stored_field):
                         raise ValueError("This request id has different execution settings")
                 if "dangerously_skip_rules" in data and a.get("dangerouslySkipAccountRules", False) != requested_skip:
@@ -713,6 +719,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 "threadId": None,
                 "accountKey": account_key,
                 "dangerouslySkipAccountRules": skip,
+                "yoloMode": root.get("yoloMode") if root else data.get("yolo_mode", True),
                 "name": name.strip(),
                 "prompt": prompt.strip(),
                 "cwd": cwd,
@@ -761,12 +768,16 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
 
     def new_lead(self, data):
         self.requested_rule_override(data)
+        if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
+            raise ValueError("yolo_mode must be a boolean")
         key = data.get("id")
         settings = {k: data.get(k) for k in ("model", "previous")}
         if "account_key" in data:
             settings["account_key"] = data["account_key"]
         if "dangerously_skip_rules" in data:
             settings["dangerously_skip_rules"] = data["dangerously_skip_rules"]
+        if "yolo_mode" in data:
+            settings["yolo_mode"] = data["yolo_mode"]
         requested_cwd = self.project_directory(data["cwd"]) if "cwd" in data else None
         if requested_cwd is not None:
             settings["cwd"] = requested_cwd
@@ -805,6 +816,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     if previous.get("accountKey", "default") != account_key:
                         previous["cwd"] = requested_cwd or self.default_project(account_key, previous["cwd"])
                         previous["dangerouslySkipAccountRules"] = False
+                    if "yolo_mode" in data:
+                        previous["yoloMode"] = data["yolo_mode"]
                     previous["accountKey"] = account_key
                     if "dangerously_skip_rules" in data:
                         previous["dangerouslySkipAccountRules"] = data["dangerously_skip_rules"]
@@ -823,6 +836,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     cwd = self.default_project(account_key, cwd)
             created = self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
                                 "_creationSignature": signature, "account_key": account_key,
+                                "yolo_mode": data.get("yolo_mode", previous.get("yoloMode") is not False if previous else True),
                                 "dangerously_skip_rules": data.get("dangerously_skip_rules", False),
                                 "model": data.get("model") or (previous["model"] if previous else LEAD_MODELS[0])}, draft=True)
             if previous and previous.get("accountKey", "default") == account_key:
@@ -884,6 +898,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
 
     def conversation_settings(self, key, data):
         requested_skip = self.requested_rule_override(data)
+        if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
+            raise ValueError("yolo_mode must be a boolean")
         execution_fields = {"model", "effort", "fast_mode"}
         defaults_only = set(data) <= {"id", "worker_defaults"} and "worker_defaults" in data
         with self.lock, self.db() as db:
@@ -904,6 +920,19 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 raise ValueError("The account changed. Select the model again")
             if not defaults_only and (a.get("inFlight") or a["status"] in {"running", "starting", "approval"}):
                 raise ValueError("Wait for this turn to end before changing the model or project")
+            team = []
+            if "yolo_mode" in data:
+                team = [other for other in self.records(db, "agents") if other["rootId"] == a["id"]]
+                team_ids = {other["id"] for other in team}
+                if any(other.get("workspaceOperation") for other in team):
+                    raise ValueError("Wait for team workspace operations to end before changing YOLO mode")
+                if any(other.get("inFlight") or other["status"] in {"running", "starting", "approval"} for other in team):
+                    raise ValueError("Wait for every team turn to end before changing YOLO mode")
+                if any(m["agent"] in team_ids and m["status"] in {"starting", "running", "approval"} for m in self.records(db, "monitors")):
+                    raise ValueError("Wait for team monitors to end before changing YOLO mode")
+                if any(t["agent"] in team_ids and t["status"] == "running" for t in self.records(db, "tasks")):
+                    raise ValueError("Wait for team tools to end before changing YOLO mode")
+                a["yoloMode"] = data["yolo_mode"]
             if "dangerously_skip_rules" in data:
                 if any(other["rootId"] == a["id"] and (other.get("inFlight") or other["status"] in {"running", "starting", "approval"})
                        for other in self.records(db, "agents")):
@@ -938,6 +967,11 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     skip=a.get("dangerouslySkipAccountRules", False),
                 )
             self.put(db, "agents", a)
+            for member in team:
+                if member["id"] != key:
+                    member["yoloMode"] = a["yoloMode"]
+                    self.put(db, "agents", member)
+                self.loaded.discard(member["id"])
             if not defaults_only:
                 self.loaded.discard(key)
             return a
@@ -1113,6 +1147,22 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
     def tool_definitions():
         return TOOLS
 
+    @staticmethod
+    def turn_permissions(a):
+        if a.get("yoloMode") is True:
+            return {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
+        if a.get("yoloMode") is False:
+            sandbox = {"type": "readOnly"} if a["role"] == "reviewer" else {
+                "type": "workspaceWrite", "writableRoots": [a["cwd"]], "networkAccess": False}
+            return {"approvalPolicy": "on-request", "sandboxPolicy": sandbox}
+        return {}
+
+    @staticmethod
+    def monitor_auto_approved(a):
+        if a.get("yoloMode") is not None:
+            return a["yoloMode"]
+        return a.get("approvalPolicy") == "never"
+
     def new_thread_params(self, a, *, inherit_account_rule_override=True):
         params = {
             "cwd": a["cwd"],
@@ -1150,7 +1200,11 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             ] += "\nBefore the first task, call orchestration_title with a short task title.\n"
         if a.get("model"):
             params["model"] = a["model"]
-        if a["role"] == "reviewer":
+        if a.get("yoloMode") is True:
+            params.update(approvalPolicy="never", sandbox="danger-full-access")
+        elif a.get("yoloMode") is False:
+            params.update(approvalPolicy="on-request", sandbox="read-only" if a["role"] == "reviewer" else "workspace-write")
+        elif a["role"] == "reviewer":
             params["sandbox"] = "read-only"
         params["dynamicTools"] = TOOLS
         return params
@@ -1288,7 +1342,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                         "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
                         (r["id"],),
                     )
-            text = "\n\n".join(r["text"] if r["kind"] == "user" else f"[Orchestration event: {r['kind']}]\n{r['text']}" for r in rows)
+            text = "\n\n".join(r["text"] if r["kind"] == "user" else f"[Orchestration event: {r['kind']}]\n{r['text']}" for r in rows if r["kind"] != "complaint")
             asset_ids = []
             clocks = []
             with self.lock, self.db() as db:
@@ -1325,8 +1379,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 latest["complaintsPresented"] = [c["id"] for c in required]
                 self.put(db, "agents", latest)
                 if required:
-                    text += "\n\n[Required complaint review] Read the complaint book and record a response " \
-                            "for each unanswered complaint before finishing. Pending ids: " + ", ".join(c["id"] for c in required)
+                    text += "\n\n[Complaint messages requiring a response]\n" + self.complaint_message(db, required)
+                elif not text:
+                    text = "[Complaint update] No complaints require a response."
                 self.item(
                     db,
                     a["id"],
@@ -1343,6 +1398,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     a["id"], append_message_clocks(text, clocks), asset_ids
                 ),
             }
+            # A subscribed native thread ignores resume overrides. Each turn must
+            # receive the selected policy, including an explicit downgrade from YOLO.
+            params.update(self.turn_permissions(a))
             params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
             if a.get("nativeEffort", a.get("effort")) is not None:
                 params["effort"] = a.get("nativeEffort", a.get("effort"))
@@ -1848,7 +1906,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                             a["id"], target_id, args["text"], key, a["epoch"]
                         )
                 elif name == "orchestration_monitor":
-                    value = self.monitor(a["id"], args, key, approved=a.get("approvalPolicy") == "never", epoch=a["epoch"])
+                    value = self.monitor(a["id"], args, key, approved=self.monitor_auto_approved(a), epoch=a["epoch"])
                 elif name == "orchestration_cancel_monitor":
                     value = self.cancel_monitor(args["monitor_id"], a["id"])
                 else:
@@ -1894,6 +1952,17 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
     def unanswered_complaints(db, lead_id):
         return [c for c in Runtime.records(db, "complaints") if c["leadId"] == lead_id and not c["responses"]]
 
+    def complaint_message(self, db, complaints):
+        authors = {a["id"]: a["name"] for a in self.records(db, "agents")}
+        return json.dumps({
+            "complaints": [{"complaint_id": c["id"], "author": c["author"],
+                            "author_name": authors.get(c["author"], c["author"]),
+                            "text": c["text"], "status": c["status"], "created": c["created"]}
+                           for c in complaints],
+            "required": "Respond to each complaint with orchestration_complaint action=respond before finishing. "
+                        "The full complaint is in this message. No separate read call is required.",
+        }, ensure_ascii=False)
+
     def enforce_complaints(self, db, a, completion):
         required = self.unanswered_complaints(db, a["id"])
         if not a.get("isLead") or not required:
@@ -1912,8 +1981,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND kind='complaint' AND status='pending' AND epoch=?",
                              (a["id"], a["epoch"])).fetchone()
         if not pending:
-            self.enqueue(db, a, "complaint", "Read the complaint book and record a concrete response for: " +
-                         ", ".join(c["id"] for c in required), "complaint-review:" + completion)
+            self.enqueue(db, a, "complaint", self.complaint_message(db, required),
+                         "complaint-review:" + completion)
         a["status"] = "queued"
 
     def rename(self, key, name):
@@ -2014,8 +2083,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 c = {"id": cid, "leadId": lead["id"], "author": author, "text": text.strip(),
                      "status": "open", "created": time.time(), "updated": time.time(), "readAt": None, "responses": []}
                 self.put(db, "complaints", c)
-                self.enqueue(db, lead, "complaint", json.dumps({"complaint_id": cid, "author": author,
-                    "text": c["text"], "required": "Read the book and record a response before finishing."}, ensure_ascii=False), "complaint:" + cid)
+                self.enqueue(db, lead, "complaint", self.complaint_message(db, [c]), "complaint:" + cid)
                 return c
             if user:
                 raise ValueError("Only the responsible lead can record a read or response")
@@ -2030,7 +2098,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                         c["readAt"] = time.time()
                         self.put(db, "complaints", c)
                 return {"complaints": complaints[:50], "remaining": max(0, len(complaints) - 50),
-                        "instruction": "Respond to unanswered entries, then read again for the next pending entries."}
+                        "instruction": "Respond to unanswered entries. New complaints arrive as messages; do not poll the book."}
             if action == "respond":
                 if actor_id != lead["id"]:
                     raise ValueError("Only the responsible lead can respond")
@@ -2038,8 +2106,6 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 c = json.loads(row[0]) if row else None
                 if not c or c["leadId"] != actor_id:
                     raise ValueError("Unknown complaint for this lead")
-                if not c["readAt"]:
-                    raise ValueError("Read this complaint before responding")
                 text, status = data.get("text"), data.get("status")
                 if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or status not in {"in_progress", "resolved", "declined"}:
                     raise ValueError("Record an action or reason and select in_progress, resolved, or declined")
@@ -2050,7 +2116,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     return c
                 response = {"id": key, "author": actor_id, "text": text.strip(), "status": status, "at": time.time()}
                 c["responses"].append(response)
-                c.update(status=status, updated=response["at"])
+                c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"])
                 self.put(db, "complaints", c)
                 if c["author"] != "user" and c["author"] != actor_id:
                     reporter = self.agent(c["author"], db)
@@ -2174,6 +2240,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 raise ValueError("The agent turn was stopped")
             self.assert_workspace_available(db, a)
             if rule:
+                # A rule can race a user permission change between prepare and this lock.
+                approved = self.monitor_auto_approved(a)
                 record = db.execute(
                     "SELECT record FROM runtime_rules WHERE id=?", (rule["id"],)
                 ).fetchone()
@@ -2225,9 +2293,12 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                       "processId": key, "streamStdoutStderr": True, "timeoutMs": m["timeout_ms"]}
             if m.get("interactive"):
                 params.update(tty=True, streamStdin=True)
-            if not a.get("sandbox"):
+            selected_policy = self.turn_permissions(a).get("sandboxPolicy")
+            if selected_policy is not None:
+                params["sandboxPolicy"] = selected_policy
+            elif not a.get("sandbox"):
                 raise ValueError("Thread sandbox is unknown; refusing to run the command")
-            if (a.get("profile") or {}).get("id"):
+            elif (a.get("profile") or {}).get("id"):
                 params["permissionProfile"] = a["profile"]["id"]
             else:
                 params["sandboxPolicy"] = a["sandbox"]

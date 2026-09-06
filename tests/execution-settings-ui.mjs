@@ -118,6 +118,14 @@ try {
   await waitFor(
     async () => (await state()).find((a) => a.id === lead.id).effort === "high",
   );
+  const yolo = page.getByRole("switch", { name: "YOLO mode", exact: true });
+  await yolo.uncheck();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Wait for every team turn" })
+    .waitFor();
+  assert.equal((await state()).find((a) => a.id === lead.id).yoloMode, true);
+  await waitFor(() => yolo.isChecked());
   await page.getByRole("switch", { name: "Fast mode", exact: true }).check();
   await waitFor(
     async () => (await state()).find((a) => a.id === lead.id).fastMode === true,
@@ -247,6 +255,41 @@ try {
       "header fits " + width,
     );
   }
+  await page.setViewportSize({ width: 1440, height: 960 });
+  const snapshot = await (await fetch(url + "/api/state")).json();
+  const freshResponse = await fetch(url + "/api/leads", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Origin: url,
+      "X-Canvas-Token": snapshot.token,
+    },
+    body: JSON.stringify({ cwd: root }),
+  });
+  assert.equal(freshResponse.status, 200);
+  const fresh = await freshResponse.json();
+  await page.reload();
+  await page.locator(`[data-chat="${fresh.id}"]`).click();
+  await page
+    .getByRole("button", { name: "Lead settings", exact: true })
+    .click();
+  const freshYolo = page.getByRole("switch", {
+    name: "YOLO mode",
+    exact: true,
+  });
+  assert.equal(await freshYolo.isChecked(), true);
+  await freshYolo.uncheck();
+  await waitFor(
+    async () =>
+      (await state()).find((a) => a.id === fresh.id).yoloMode === false,
+  );
+  await freshYolo.check();
+  await waitFor(
+    async () =>
+      (await state()).find((a) => a.id === fresh.id).yoloMode === true,
+  );
+  await waitFor(async () => !(await freshYolo.isDisabled()));
+  await page.screenshot({ path: join(root, "lead-yolo.png") });
   assert.deepEqual(errors, []);
   console.log(
     "PASS execution settings UI: lead reasoning/Fast, per-model choices, persisted defaults, actual child inheritance and orchestrator overrides, unsupported Fast, immediate save, existing worker unchanged, responsive layout. Evidence " +

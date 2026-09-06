@@ -307,7 +307,7 @@ class RulesMixin:
                         ),
                     },
                     "rule:" + r["id"] + ":" + str(r["checks"]),
-                    approved=a.get("approvalPolicy") == "never",
+                    approved=self.monitor_auto_approved(a),
                     epoch=r["epoch"],
                     rule=r,
                 )

@@ -12,6 +12,7 @@ export interface Agent extends Json {
   model: string;
   accountKey?: string;
   dangerouslySkipAccountRules?: boolean;
+  yoloMode?: boolean | null;
   canSend?: boolean;
   threadId?: string;
   empty?: boolean;

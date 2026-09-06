@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Menu, Textarea } from "@mantine/core";
+import { ActionIcon, Button, Textarea, Tooltip } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   ArrowDown,
@@ -7,7 +7,6 @@ import {
   GitBranch,
   Quote,
   ListOrdered,
-  Zap,
   Pencil,
   Trash2,
   ChevronUp,
@@ -120,7 +119,7 @@ export default function Conversation(p: {
     setQueueOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const canSteer = managed && agent?.status === "running" && !!agent?.turnId;
+  const canSteer = managed && !!agent?.inFlight && !!agent?.turnId;
   const loadQueue = async (id: string) => {
     const result = await api(`/api/queue?agent=${encodeURIComponent(id)}`);
     if (activeId.current === id) setQueue(result.items || []);
@@ -335,7 +334,9 @@ export default function Conversation(p: {
               {p.room && m.senderName && (
                 <span className="message-label">{m.senderName}</span>
               )}
-              {m.pending && <span className="message-label">Queued</span>}
+              {m.pending && (
+                <span className="message-label">Queued · after turn</span>
+              )}
               {m.role === "user" ? (
                 <div className="prose plain">{m.text}</div>
               ) : (
@@ -471,6 +472,7 @@ export default function Conversation(p: {
                 leftSection={<ListOrdered size={14} />}
                 onClick={() => setQueueOpen(!queueOpen)}
                 aria-expanded={queueOpen}
+                title="These messages start a new turn after the current turn ends."
               >
                 {queue.length} queued{" "}
                 {queue.length === 1 ? "message" : "messages"}
@@ -617,39 +619,47 @@ export default function Conversation(p: {
             />
             <div className="composer-bar">
               {managed && canSteer && (
-                <Menu position="top-end" withinPortal>
-                  <Menu.Target>
-                    <Button
-                      type="button"
-                      size="compact-xs"
-                      variant="subtle"
-                      aria-label="Message delivery"
-                      leftSection={
-                        delivery === "steer" ? (
-                          <Zap size={13} />
-                        ) : (
-                          <ListOrdered size={13} />
-                        )
-                      }
+                <div
+                  className="message-delivery"
+                  role="group"
+                  aria-label="Message delivery"
+                >
+                  {(
+                    [
+                      [
+                        "steer",
+                        "After tool call",
+                        "Add to the current turn at the next model step. Active tool calls finish first; compaction can delay delivery.",
+                      ],
+                      [
+                        "queue",
+                        "After turn",
+                        "Start a new turn after the current turn ends.",
+                      ],
+                    ] as const
+                  ).map(([mode, label, description]) => (
+                    <Tooltip
+                      key={mode}
+                      label={description}
+                      position="top"
+                      multiline
+                      w={260}
+                      withArrow
                     >
-                      {delivery === "steer" ? "Send now" : "Queue"}
-                    </Button>
-                  </Menu.Target>
-                  <Menu.Dropdown>
-                    <Menu.Item
-                      leftSection={<ListOrdered size={14} />}
-                      onClick={() => setDelivery("queue")}
-                    >
-                      Queue after the current turn
-                    </Menu.Item>
-                    <Menu.Item
-                      leftSection={<Zap size={14} />}
-                      onClick={() => setDelivery("steer")}
-                    >
-                      Correct the current turn
-                    </Menu.Item>
-                  </Menu.Dropdown>
-                </Menu>
+                      <Button
+                        type="button"
+                        size="compact-xs"
+                        variant={delivery === mode ? "light" : "subtle"}
+                        aria-pressed={delivery === mode}
+                        aria-description={description}
+                        disabled={p.sending}
+                        onClick={() => setDelivery(mode)}
+                      >
+                        {label}
+                      </Button>
+                    </Tooltip>
+                  ))}
+                </div>
               )}
               <span id="send-state">{p.sending ? "Sending…" : ""}</span>
               {agent &&
@@ -681,6 +691,13 @@ export default function Conversation(p: {
                   (!p.draft.trim() && !assets.length)
                 }
                 aria-label="Send message"
+                title={
+                  canSteer
+                    ? delivery === "steer"
+                      ? "Send after active tool calls"
+                      : "Send after the current turn"
+                    : "Send message"
+                }
               >
                 <ArrowUp size={19} />
               </ActionIcon>

@@ -379,6 +379,7 @@ class WorkspaceMixin:
                         "lastTurnId": checkpoint["turnId"],
                         "cwd": a["cwd"],
                         "config": self.thread_config(),
+                        **{k: v for k, v in self.new_thread_params(a).items() if k in {"approvalPolicy", "sandbox"}},
                         "model": a["model"],
                     },
                 )
@@ -397,6 +398,9 @@ class WorkspaceMixin:
                 current = self.agent(key, db)
                 current.update(
                     threadId=response["thread"]["id"],
+                    sandbox=response.get("sandbox"),
+                    approvalPolicy=response.get("approvalPolicy"),
+                    profile=response.get("activePermissionProfile"),
                     turnId=None,
                     inFlight=False,
                     status="paused",
@@ -515,6 +519,7 @@ class WorkspaceMixin:
                 "lastTurnId": turn_id,
                 "cwd": a["cwd"],
                 "config": self.thread_config(),
+                **{k: v for k, v in self.new_thread_params(a).items() if k in {"approvalPolicy", "sandbox"}},
                 "model": a["model"] if a.get("isLead") else "gpt-5.6-sol",
                 "developerInstructions": self.new_thread_params(a, inherit_account_rule_override=False)[
                     "developerInstructions"
@@ -535,6 +540,7 @@ class WorkspaceMixin:
         )
         with self.lock, self.db() as db:
             lead.update(
+                yoloMode=a.get("yoloMode"),
                 sandbox=response.get("sandbox", a.get("sandbox")),
                 approvalPolicy=response.get("approvalPolicy", a.get("approvalPolicy")),
                 profile=response.get("activePermissionProfile", a.get("profile")),

@@ -58,6 +58,7 @@ export function ExecutionSettings({
     return () => document.removeEventListener("keydown", close);
   }, [opened]);
   const [saving, setSaving] = useState(false);
+  const [pendingYolo, setPendingYolo] = useState<boolean | null>(null);
   const [pending, setPending] = useState<Json | null>(null);
   const [error, setError] = useState("");
   const label = teamDefaults
@@ -138,6 +139,20 @@ export function ExecutionSettings({
       setSaving(false);
     }
   };
+  const changeYolo = async (enabled: boolean) => {
+    setPendingYolo(enabled);
+    setSaving(true);
+    setError("");
+    try {
+      await api("/api/conversation", { id: agent.id, yolo_mode: enabled });
+      await refresh();
+    } catch (failure) {
+      setError(errorText(failure));
+    } finally {
+      setPendingYolo(null);
+      setSaving(false);
+    }
+  };
   return (
     <Popover
       opened={opened}
@@ -214,6 +229,22 @@ export function ExecutionSettings({
             void change({ fast_mode: event.currentTarget.checked })
           }
         />
+        {!teamDefaults && agent.isLead && (
+          <Switch
+            label="YOLO mode"
+            aria-label="YOLO mode"
+            checked={pendingYolo ?? agent.yoloMode === true}
+            disabled={saving || active || !("yoloMode" in agent)}
+            description={
+              !("yoloMode" in agent)
+                ? "Available after the server update."
+                : agent.yoloMode == null
+                  ? "Uses the existing Codex permissions. Enable for full access without prompts."
+                  : "Full access without permission prompts for the whole team. Account project rules still apply."
+            }
+            onChange={(event) => void changeYolo(event.currentTarget.checked)}
+          />
+        )}
         {teamDefaults && (
           <p className="notice">
             For new subagents. The orchestrator can override each launch.

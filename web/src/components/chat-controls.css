@@ -142,3 +142,22 @@
     max-width: 42%;
   }
 }
+
+.message-delivery {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 7px;
+}
+.message-delivery button {
+  height: 25px;
+  padding-inline: 8px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.message-delivery button[aria-pressed="false"] {
+  color: var(--muted);
+}

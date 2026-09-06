@@ -288,12 +288,42 @@ try {
     async () => (await queue()).items.length === 1,
     "queue cancellation is persisted",
   );
-  await page
-    .getByRole("button", { name: "Message delivery", exact: true })
-    .click();
-  await page
-    .getByRole("menuitem", { name: "Correct the current turn", exact: true })
-    .click();
+  const delivery = page.getByRole("group", {
+    name: "Message delivery",
+    exact: true,
+  });
+  const afterTool = delivery.getByRole("button", {
+    name: "After tool call",
+    exact: true,
+  });
+  const afterTurn = delivery.getByRole("button", {
+    name: "After turn",
+    exact: true,
+  });
+  assert.equal(await afterTurn.getAttribute("aria-pressed"), "true");
+  assert.equal(await afterTool.getAttribute("aria-pressed"), "false");
+  await afterTool.click();
+  assert.equal(await afterTool.getAttribute("aria-pressed"), "true");
+  assert.equal(await afterTurn.getAttribute("aria-pressed"), "false");
+  assert.match(
+    await afterTool.getAttribute("aria-description"),
+    /Active tool calls finish first/,
+  );
+  await afterTurn.click();
+  assert.equal(await afterTurn.getAttribute("aria-pressed"), "true");
+  await afterTool.click();
+  await page.screenshot({ path: join(root, "message-delivery-desktop.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await afterTool.isVisible(), true);
+  assert.equal(await afterTurn.isVisible(), true);
+  assert.ok(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+    "delivery modes fit mobile",
+  );
+  await page.screenshot({ path: join(root, "message-delivery-mobile.png") });
+  await page.setViewportSize({ width: 1440, height: 960 });
   await page
     .locator("#message")
     .fill("Steering failure keeps this instruction");

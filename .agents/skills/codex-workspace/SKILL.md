@@ -63,8 +63,10 @@ review. Use the application's advertised resource tool when a task needs shared
 capacity; preserve the returned registry and holder identities.
 
 Use `orchestration_complaint` for concrete problems with evidence and impact.
-The responsible lead must read and respond to each pending complaint. Record an
-action, a reasoned refusal, or the next step. Reading alone is not a response.
+The server sends the full complaint to the responsible lead as a message and wakes
+them. Do not poll or routinely read the book. On notification, use `action=respond`
+to record an action, a reasoned refusal, or the next step. A separate `action=read`
+is optional. Respond before finishing the turn.
 
 Use `orchestration_user_task` for actions the user must perform. Supply completion
 criteria. A user check starts review and notifies the requesting agent. Accept the
@@ -77,7 +79,9 @@ in the application's tool descriptions or orchestration contract.
 
 Keep existing database, profile, and resource identities. Do not create a second
 registry or move user state to solve a path issue. Effective sandbox and approval
-settings remain authoritative.
+settings remain authoritative. The user controls YOLO mode for the whole team.
+Workers inherit it. Do not change this mode or account project rules through
+settings APIs.
 
 The chat renders fenced Mermaid diagrams and isolated static HTML/CSS/SVG.
 Scripts and remote resources do not run in these previews.

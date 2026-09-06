@@ -136,6 +136,21 @@ require approval for a model-created Monitor command in the conversation.
 Monitor execution retains that sandbox. User shells in the terminal panel run directly as the local user, like an ordinary terminal.
 They do not start a model turn.
 
+## Permissions
+
+New teams start with **YOLO mode** enabled. The Lead settings menu controls it for
+all team members, including future workers. It sends `approvalPolicy=never` and
+`sandbox=danger-full-access` to Codex, the native CLI skip-permissions combination.
+Turning it off explicitly selects `on-request` and `workspace-write` (read-only
+for reviewers). Wait for team turns, tools, and monitors to end before changing it.
+Each turn also receives the explicit policy because native resume can ignore
+overrides for a loaded thread. Monitors use the same selected sandbox.
+Existing teams retain their inherited Codex permissions until the user selects a
+mode. A new chat copies an explicit mode preference from the previous chat.
+
+Account project admission rules remain separate. YOLO does not enable
+**Dangerously skip rules**. It does not supply answers to agent questions.
+
 ## Complaint book
 
 Use the complaint book instead of a feedback section. Agents call
@@ -145,15 +160,18 @@ and inspect complaints through **Complaint book** in the sidebar.
 
 A new complaint queues a lead turn, including after a final answer. Stop remains
 a boundary: a stopped lead keeps the complaint but waits for an explicit resume.
-The lead must call `action=read`, then `action=respond` with the complaint id,
-a concrete response, and `in_progress`, `resolved`, or `declined`.
-Only the responsible lead can respond. User or worker reads do not satisfy the lead's read requirement.
+The lead receives a message with the author, complaint id, full text, and status.
+The lead calls `action=respond` with the complaint id, a concrete response, and
+`in_progress`, `resolved`, or `declined`. The lead does not poll the book or call
+`action=read` each turn. Reading the book remains optional for history or context.
+Only the responsible lead can respond. A response also records the complaint as read.
 Responses and status changes remain in an append-only response list. The reporter receives an event.
 The status records the lead's claim; it does not independently prove a repair.
 
-Each lead turn receives the ids that still require a response. A final answer with
-unanswered complaints queues a review turn. Three consecutive turns that ignore
-presented complaints stop automatic lead continuation with a visible error.
+Unanswered complaint messages remain in the lead's turn context until a response.
+No complaint message is added when none require a response. A final answer with
+unanswered complaints queues a message with their full details. Three consecutive
+turns that ignore presented complaints stop automatic lead continuation with a visible error.
 A recorded next step counts as a response; an `in_progress` complaint remains visible
 under **All complaints**. Reads alone cannot close a complaint. Duplicate tool calls
 cannot create duplicate complaints or responses. Complaints survive server restarts
@@ -192,7 +210,7 @@ Lowering a limit does not interrupt existing turns.
 Implementers receive separate Git worktrees under the parent's repository:
 `.worktrees/codex-agents/<agent-id>`, on branch `codex-agent/<agent-id>`.
 They start from committed HEAD. Parent changes that are not committed are absent.
-Reviewers use the parent's directory with a read-only sandbox.
+Reviewers use the parent's directory. They have a read-only sandbox when YOLO is off.
 The lead owns review and integration. The runtime never merges or deletes worktrees.
 
 An optional team token budget sums Codex's reported thread usage. This includes
@@ -226,6 +244,10 @@ Command process survival across a server or machine restart is not guaranteed.
 The underlying Codex configuration supplies model access, skills, tools, MCP servers,
 context management and permissions. Agent transcripts include answers, tool results,
 plans and changes. Internal reasoning records are not displayed.
+
+The composer offers **After tool call** (native steer at the next model step) and
+**After turn** (a queued message starts the next turn). Parallel tools must finish
+before steer input is consumed; compaction can delay it.
 
 The client exposes model selection, message queues, approvals, synchronous and asynchronous user questions,
 context compaction and a native review of uncommitted changes.

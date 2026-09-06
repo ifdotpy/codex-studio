@@ -57,7 +57,7 @@ class FakeServer:
                 self.complete(params['threadId'], turn['id'])
             return {'turn': turn}
         if method == 'command/exec':
-            assert params['sandboxPolicy'] == {'type': 'readOnly'}
+            assert params['sandboxPolicy']['type'] in {'readOnly', 'workspaceWrite', 'dangerFullAccess'}
             self.notify({'method': 'command/exec/outputDelta', 'params': {'processId': params['processId'],
                 'deltaBase64': base64.b64encode(b'early output\n').decode(), 'stream': 'stdout'}})
             self.gate.wait(5)
@@ -243,7 +243,7 @@ class RuntimeContract(unittest.TestCase):
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.snapshot()['agents'], [])
 
-    def test_complaint_requires_lead_read_and_response_then_notifies_reporter(self):
+    def test_complaint_message_allows_direct_response_then_notifies_reporter(self):
         lead = self.lead()
         child = self.runtime.create({'name': 'Reporter', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
@@ -255,13 +255,18 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.complaint(child['id'], {'action': 'read'}, 'worker-read', 0)
         self.assertIsNone(self.runtime.complaint_detail(c['id'])['readAt'], 'worker and UI reads are not lead reads')
         response = {'action': 'respond', 'complaint_id': c['id'], 'text': 'I attached the log and checked the failed test.', 'status': 'resolved'}
-        with self.assertRaisesRegex(ValueError, 'Read this complaint'):
-            self.runtime.complaint(lead['id'], response, 'response', 0)
         with self.assertRaisesRegex(ValueError, 'responsible lead'):
             self.runtime.complaint(child['id'], response, 'forged', 0)
-        self.runtime.complaint(lead['id'], {'action': 'read'}, 'lead-read', 0)
-        self.assertIsNotNone(self.runtime.complaint_detail(c['id'])['readAt'])
+        self.complete(lead)
+        eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+        prompt = [p for method, p in self.runtime.server.calls if method == 'turn/start' and p['threadId'] == lead['threadId']][-1]['input'][0]['text']
+        self.assertEqual(prompt.count(c['text']), 1, 'deliver the full complaint once, not an ID-only reminder')
+        self.assertIn(c['id'], prompt)
+        self.assertIn(child['id'], prompt)
+        self.assertIn('Reporter', prompt)
+        self.assertNotIn('Read the complaint book', prompt)
         first = self.runtime.complaint(lead['id'], response, 'response', 0)
+        self.assertIsNotNone(first['readAt'], 'a direct response confirms receipt without a separate read tool call')
         self.assertEqual(self.runtime.complaint(lead['id'], response, 'response', 0), first)
         self.assertEqual(len(first['responses']), 1)
         with self.runtime.db() as db:
@@ -277,6 +282,9 @@ class RuntimeContract(unittest.TestCase):
         c = self.runtime.complaint(lead['id'], {'action': 'submit', 'text': 'Do not ignore this broken check.'}, 'user-complaint', user=True)
         for index in range(3):
             eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+            prompt = [p for method, p in self.runtime.server.calls if method == 'turn/start'][-1]['input'][0]['text']
+            self.assertEqual(prompt.count(c['text']), 1)
+            self.assertIn('"author": "user"', prompt)
             self.complete(self.runtime.agent(lead['id']))
         stopped = self.runtime.agent(lead['id'])
         self.assertFalse(stopped['autoWake'])
@@ -286,10 +294,23 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.send(lead['id'], 'Read the complaint and act')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
         a = self.runtime.agent(lead['id'])
-        self.runtime.complaint(a['id'], {'action': 'read'}, 'read-after-resume', a['epoch'])
         self.runtime.complaint(a['id'], {'action':'respond','complaint_id':c['id'],'text':'I will recover the missing log before the next review.','status':'in_progress'}, 'act', a['epoch'])
         self.complete(a)
         self.assertEqual(self.runtime.agent(a['id'])['status'], 'completed')
+
+    def test_no_complaint_book_check_for_normal_turns(self):
+        lead = self.lead()
+        first = [p for method, p in self.runtime.server.calls if method == 'turn/start'][-1]['input'][0]['text']
+        self.assertNotIn('complaint', first.lower())
+        self.complete(lead)
+        self.runtime.send(lead['id'], 'Continue the work')
+        eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+        second = [p for method, p in self.runtime.server.calls if method == 'turn/start'][-1]['input'][0]['text']
+        self.assertNotIn('complaint', second.lower())
+        self.complete(self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['status'], 'completed')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE kind='complaint'").fetchone()[0], 0)
 
     def test_complaint_honors_stop_and_old_thread_tool_route(self):
         a = self.lead()
@@ -372,7 +393,7 @@ class RuntimeContract(unittest.TestCase):
             self.runtime.create({'prompt': 'Task', 'role': 'orchestrator'}, parent=a['id'])
 
     def test_subagent_model_change_resumes_same_thread_and_keeps_permissions(self):
-        lead = self.runtime.new_lead({})
+        lead = self.runtime.new_lead({'yolo_mode': False})
         worker = self.runtime.create({'prompt': 'Review', 'role': 'reviewer', 'effort': 'ultra'}, parent=lead['id'], defer=True)
         worker = self.runtime.prepare(worker)
         self.runtime.catalog = lambda account: {'data': [{

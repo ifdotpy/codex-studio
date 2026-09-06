@@ -54,12 +54,13 @@ class ProjectRuntime(unittest.TestCase):
         for value in ("true", "false", 1, None):
             with self.assertRaisesRegex(ValueError, "boolean"):
                 self.lead(dangerously_skip_rules=value)
-        a = self.lead(dangerously_skip_rules=True)
+        a = self.lead(dangerously_skip_rules=True, yolo_mode=False)
         a = self.runtime.prepare(a)
         self.assertEqual(a["sandbox"], {"type": "readOnly"})
         self.assertEqual(a["approvalPolicy"], "on-request")
         params = self.runtime.new_thread_params(a)
-        self.assertNotIn("approvalPolicy", params)
+        self.assertEqual(params["approvalPolicy"], "on-request")
+        self.assertEqual(params["sandbox"], "workspace-write")
         self.assertNotIn("dangerouslySkipAccountRules", params)
         self.assertNotIn("dangerously_skip_rules", params)
 
