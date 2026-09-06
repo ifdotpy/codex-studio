@@ -275,3 +275,72 @@
     padding: 12px;
   }
 }
+
+.account-reset-summary {
+  color: var(--muted);
+}
+.account-reset-credits {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.account-reset-credits > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+}
+.account-reset-credits > header > span {
+  color: var(--muted);
+}
+.account-reset-credit {
+  padding-top: 8px;
+}
+.account-reset-credit-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.account-reset-credit-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.account-reset-credit-row strong {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.account-reset-credit-row span,
+.account-reset-credits p {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.account-reset-credits p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+.account-reset-credits .account-limits-warning {
+  color: #ffbd78;
+}
+.account-reset-credit-row > button {
+  flex-shrink: 0;
+}
+.account-reset-confirm {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin-top: 6px;
+  padding: 8px;
+}
+.account-reset-confirm > p {
+  color: var(--text);
+  margin-top: 0;
+}
+.account-reset-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 8px;
+}

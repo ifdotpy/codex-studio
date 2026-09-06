@@ -636,6 +636,10 @@ def make_server(canvas, port=0):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
+                if self.path == "/api/limits/reset" and canvas.runtime:
+                    from codex_limit_resets import consume_reset
+
+                    return self.send(consume_reset(canvas.runtime, body))
                 if self.path == "/api/terminals/create":
                     return self.send(terminals().create(canvas.runtime, body))
                 if self.path in {

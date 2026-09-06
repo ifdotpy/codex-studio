@@ -313,7 +313,10 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.notification(message)
         self.assertEqual(self.runtime.agent(a['id'])['compactions'], 1)
         self.assertIsNone(self.runtime.agent(a['id'])['contextUsage'])
+        self.runtime.rate_limits['data'] = {'accountId': 'test-account', 'rateLimitResetCredits': {'availableCount': 3, 'credits': []}}
         self.runtime.notification({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':42,'windowDurationMins':300}}}})
+        self.assertEqual(self.runtime.rate_limits['data']['accountId'], 'test-account')
+        self.assertEqual(self.runtime.rate_limits['data']['rateLimitResetCredits']['availableCount'], 3)
         self.assertEqual(self.runtime.snapshot()['rateLimits']['data']['rateLimits']['primary']['usedPercent'], 42)
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)

@@ -273,7 +273,10 @@ reconnects and never retries the same keystrokes automatically.
 message acceptance times. New timestamps do not rewrite earlier input.
 
 Account limits show Codex before Spark, the remaining allowance, reset countdowns,
-and exact local reset dates. Cost estimates come from the installed CodexBar CLI.
+and exact local reset dates. Earned reset credits show their expiration dates.
+Applying one requires a user confirmation. A retry retains the same account,
+credit, and server idempotency key, including after an uncertain response.
+Cost estimates come from the installed CodexBar CLI.
 The display shows today and the last 30 days across local Codex logs. These are
 API-rate estimates, not ChatGPT subscription charges. Missing prices or unknown
 history coverage remain visible. The backend caches scans for 15 minutes.

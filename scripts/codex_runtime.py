@@ -1148,7 +1148,15 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 data = self.rate_limits.get("data") or {}
                 buckets = dict(data.get("rateLimitsByLimitId") or {})
                 buckets[bucket.get("limitId") or "codex"] = bucket
-                self.rate_limits = {"data": {"rateLimits": bucket, "rateLimitsByLimitId": buckets}, "at": time.time(), "error": None}
+                self.rate_limits = {
+                    "data": {
+                        **data,
+                        "rateLimits": bucket,
+                        "rateLimitsByLimitId": buckets,
+                    },
+                    "at": time.time(),
+                    "error": None,
+                }
             return
         if method == "command/exec/outputDelta":
             self.output(p)

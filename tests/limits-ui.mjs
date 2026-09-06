@@ -136,6 +136,174 @@ try {
     animations: "disabled",
   });
 
+  const resetCredit = {
+    id: "credit-test",
+    title: "Full reset",
+    description: "Restore Codex limits.",
+    resetType: "codexRateLimits",
+    status: "available",
+    expiresAt: now + 86400,
+  };
+  limits.data.accountId = "test-account";
+  limits.data.rateLimitResetCredits = {
+    availableCount: 3,
+    credits: [resetCredit],
+  };
+  let resetOutcome = "uncertain";
+  const resetRequests = [];
+  let releaseReset;
+  let holdReset = false;
+  await page.route("**/api/limits/reset", async (route) => {
+    resetRequests.push(route.request().postDataJSON());
+    if (holdReset)
+      await new Promise((resolve) => {
+        releaseReset = resolve;
+      });
+    if (resetOutcome === "reset") {
+      limits.data.rateLimitResetCredits = {
+        availableCount: 2,
+        credits: [{ ...resetCredit, status: "redeemed" }],
+      };
+    }
+    await route.fulfill({
+      json: {
+        outcome: resetOutcome,
+        error:
+          resetOutcome === "uncertain"
+            ? "Reset result uncertain. Refresh to check."
+            : undefined,
+      },
+    });
+  });
+  await load();
+  assert.match(await toggle().innerText(), /3 resets/);
+  await toggle().click();
+  const resetPanel = () =>
+    details().getByRole("region", { name: "Limit reset credits" });
+  await resetPanel()
+    .getByRole("button", { name: "Apply reset", exact: true })
+    .click();
+  await resetPanel()
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  assert.equal(resetRequests.length, 0, "cancel never spends a credit");
+  await resetPanel()
+    .getByRole("button", { name: "Apply reset", exact: true })
+    .click();
+  await resetPanel()
+    .getByRole("button", { name: "Use one reset credit", exact: true })
+    .click();
+  await resetPanel()
+    .getByRole("alert")
+    .getByText(/uncertain/)
+    .waitFor();
+  assert.equal(resetRequests.length, 1);
+  assert.equal(resetRequests[0].account_id, "test-account");
+  assert.equal(resetRequests[0].credit_id, "credit-test");
+  assert.match(resetRequests[0].request_id, /^[0-9a-f-]{36}$/);
+  resetOutcome = "reset";
+  holdReset = true;
+  await resetPanel()
+    .getByRole("button", { name: "Use one reset credit", exact: true })
+    .evaluate((button) => {
+      button.click();
+      button.click();
+    });
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".account-reset-confirm button:last-child")
+        ?.disabled === true,
+  );
+  for (let attempt = 0; attempt < 100 && !releaseReset; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    resetRequests.length,
+    2,
+    "duplicate click starts only one request",
+  );
+  assert.equal(
+    resetRequests[1].request_id,
+    resetRequests[0].request_id,
+    "uncertain retry reuses its receipt",
+  );
+  assert.match(
+    await resetPanel().innerText(),
+    /3 available/,
+    "no optimistic credit count",
+  );
+  releaseReset();
+  await resetPanel()
+    .getByRole("status")
+    .getByText(/Reset applied/)
+    .waitFor();
+  await resetPanel().getByText("2 available", { exact: true }).waitFor();
+  assert.equal(
+    await resetPanel()
+      .getByRole("button", { name: "Apply reset", exact: true })
+      .count(),
+    0,
+  );
+  holdReset = false;
+  for (const outcome of ["nothingToReset", "noCredit", "alreadyRedeemed"]) {
+    resetOutcome = outcome;
+    limits.data.rateLimitResetCredits = {
+      availableCount: 3,
+      credits: [resetCredit],
+    };
+    await load();
+    await toggle().click();
+    await resetPanel()
+      .getByRole("button", { name: "Apply reset", exact: true })
+      .click();
+    await resetPanel()
+      .getByRole("button", { name: "Use one reset credit", exact: true })
+      .click();
+    await resetPanel()
+      .getByText(
+        outcome === "nothingToReset"
+          ? "No limits need a reset."
+          : outcome === "noCredit"
+            ? "This reset credit is no longer available."
+            : "This reset credit was already used.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.doesNotMatch(await resetPanel().innerText(), /Reset applied/);
+  }
+  resetOutcome = "reset";
+  limits.data.rateLimitResetCredits = {
+    availableCount: 3,
+    credits: [
+      resetCredit,
+      { ...resetCredit, id: "credit-two" },
+      { ...resetCredit, id: "credit-three" },
+    ],
+  };
+  await load();
+  await toggle().click();
+  await resetPanel()
+    .getByRole("button", { name: "Apply reset", exact: true })
+    .first()
+    .click();
+  assert.equal(
+    await resetPanel().locator("strong[title='Restore Codex limits.']").count(),
+    3,
+  );
+  assert.equal(
+    await resetPanel()
+      .getByText("Restore Codex limits.", { exact: true })
+      .count(),
+    0,
+  );
+  await page.waitForFunction(
+    () =>
+      getComputedStyle(document.querySelector(".account-limits-popover"))
+        .opacity === "1",
+  );
+  await page.screenshot({
+    path: join(root, "limits-reset-credits.png"),
+    animations: "disabled",
+  });
   limits = {
     data: {
       rateLimitsByLimitId: {
@@ -325,6 +493,12 @@ try {
         "reset countdown and exact time",
         "local cost scope and coverage",
         "unknown cost never zero",
+        "reset confirmation and cancel",
+        "reset account binding",
+        "uncertain reset retry receipt",
+        "reset duplicate click lock",
+        "server credit count",
+        "all reset outcomes",
       ],
     }),
   );

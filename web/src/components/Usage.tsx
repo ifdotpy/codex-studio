@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress, Tooltip } from "@mantine/core";
 import { ChevronUp, Gauge, RefreshCw, RotateCcw } from "lucide-react";
 import type { Agent, Json } from "../types";
-import { api } from "../api";
+import { api, errorText } from "../api";
 import "./Usage.css";
 
 type LimitWindow = {
@@ -127,6 +127,65 @@ export default function Usage({
   limits: Json | null;
   reload: () => void;
 }) {
+  const [confirmReset, setConfirmReset] = useState<string | null>(null);
+  const [resetPending, setResetPending] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [resetNotice, setResetNotice] = useState("");
+  const [resetApplied, setResetApplied] = useState<string[]>([]);
+  const resetLock = useRef(false);
+  const resetAttempts = useRef(new Map<string, string>());
+  const applyReset = async (creditId: string) => {
+    if (resetLock.current || resetApplied.includes(creditId)) return;
+    resetLock.current = true;
+    setResetPending(true);
+    setResetError("");
+    setResetNotice("");
+    try {
+      const key = `${limits?.data?.accountId}:${creditId}`;
+      const requestId = resetAttempts.current.get(key) || crypto.randomUUID();
+      resetAttempts.current.set(key, requestId);
+      const result = await api("/api/limits/reset", {
+        credit_id: creditId,
+        account_id: limits?.data?.accountId,
+        request_id: requestId,
+      });
+      if (
+        ["reset", "alreadyRedeemed", "nothingToReset", "noCredit"].includes(
+          result.outcome,
+        )
+      )
+        resetAttempts.current.delete(key);
+      if (result.outcome === "reset" || result.outcome === "alreadyRedeemed") {
+        setResetApplied((ids) => [...ids, creditId]);
+        setConfirmReset(null);
+        setResetNotice(
+          result.outcome === "reset"
+            ? "Reset applied. Allowance updates from Codex."
+            : "This reset credit was already used.",
+        );
+      } else if (result.outcome === "nothingToReset") {
+        setConfirmReset(null);
+        setResetNotice("No limits need a reset.");
+      } else if (result.outcome === "noCredit") {
+        setResetError("This reset credit is no longer available.");
+      } else if (result.outcome === "uncertain") {
+        setResetError(
+          result.error ||
+            "Reset result uncertain. Refresh limits before trying again.",
+        );
+      } else {
+        throw new Error(
+          "Reset result unavailable. Refresh limits before trying again.",
+        );
+      }
+      reload();
+    } catch (error) {
+      setResetError(errorText(error));
+    } finally {
+      resetLock.current = false;
+      setResetPending(false);
+    }
+  };
   const [costs, setCosts] = useState<Json | null>(null);
   useEffect(() => {
     let active = true;
@@ -158,6 +217,19 @@ export default function Usage({
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);
     return () => window.clearInterval(timer);
   }, []);
+  const resetCredits = limits?.data?.rateLimitResetCredits;
+  const resetCount = number(resetCredits?.availableCount)
+    ? resetCredits.availableCount
+    : null;
+  const availableResets: Json[] = Array.isArray(resetCredits?.credits)
+    ? resetCredits.credits.filter(
+        (credit: Json) =>
+          credit &&
+          typeof credit.id === "string" &&
+          credit.status === "available" &&
+          (!number(credit.expiresAt) || credit.expiresAt > now),
+      )
+    : [];
   const c = agent.contextUsage;
   const known = c && number(c.tokens) && number(c.window) && c.window > 0;
   const percent = known ? Math.round((c.tokens! / c.window!) * 100) : null;
@@ -226,6 +298,11 @@ export default function Usage({
               >
                 {summary}
               </span>
+              {resetCount !== null && resetCount > 0 && (
+                <span className="account-reset-summary">
+                  {resetCount} resets
+                </span>
+              )}
               {number(costs?.data?.todayUSD) && (
                 <span
                   className="account-cost-summary"
@@ -371,6 +448,118 @@ export default function Usage({
                 </p>
               )}
             </div>
+            {resetCredits && (
+              <section
+                className="account-reset-credits"
+                aria-label="Limit reset credits"
+              >
+                <header>
+                  <strong>Limit resets</strong>
+                  <span>
+                    {resetCount === null
+                      ? "Count unavailable"
+                      : `${resetCount} available`}
+                  </span>
+                </header>
+                {availableResets.map((credit) => (
+                  <div className="account-reset-credit" key={credit.id}>
+                    <div className="account-reset-credit-row">
+                      <div>
+                        <strong title={credit.description || undefined}>
+                          {credit.title || "Reset credit"}
+                        </strong>
+                        <span>
+                          {number(credit.expiresAt) ? (
+                            <>
+                              Expires {resetIn(credit.expiresAt, now)} ·{" "}
+                              <time
+                                dateTime={new Date(
+                                  credit.expiresAt * 1000,
+                                ).toISOString()}
+                              >
+                                {new Date(
+                                  credit.expiresAt * 1000,
+                                ).toLocaleString(undefined, {
+                                  month: "short",
+                                  day: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </time>
+                            </>
+                          ) : (
+                            "Expiration unavailable"
+                          )}
+                        </span>
+                      </div>
+                      <Button
+                        size="compact-xs"
+                        variant="light"
+                        disabled={
+                          resetPending ||
+                          resetApplied.includes(credit.id) ||
+                          credit.resetType !== "codexRateLimits" ||
+                          !limits?.data?.accountId
+                        }
+                        onClick={() => {
+                          setConfirmReset(credit.id);
+                          setResetError("");
+                        }}
+                      >
+                        {resetApplied.includes(credit.id)
+                          ? "Applied"
+                          : "Apply reset"}
+                      </Button>
+                    </div>
+                    {confirmReset === credit.id && (
+                      <div
+                        className="account-reset-confirm"
+                        role="group"
+                        aria-label={`Confirm ${credit.title || "limit reset"}`}
+                      >
+                        <p>
+                          Use this reset credit now? This spends one credit.
+                        </p>
+                        <div>
+                          <Button
+                            size="compact-xs"
+                            variant="default"
+                            disabled={resetPending}
+                            onClick={() => {
+                              setConfirmReset(null);
+                              setResetError("");
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            size="compact-xs"
+                            loading={resetPending}
+                            disabled={resetPending}
+                            onClick={() => void applyReset(credit.id)}
+                          >
+                            Use one reset credit
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {!availableResets.length && (
+                  <p>
+                    {resetCount === 0
+                      ? "No reset credits available."
+                      : "Reset credit details unavailable. Refresh to check."}
+                  </p>
+                )}
+                {resetError && (
+                  <p className="account-limits-warning" role="alert">
+                    {resetError}
+                  </p>
+                )}
+                {resetNotice && <p role="status">{resetNotice}</p>}
+              </section>
+            )}
             <section
               className="account-costs"
               aria-label="Local cost estimates"
