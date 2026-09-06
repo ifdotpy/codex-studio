@@ -21,6 +21,7 @@ try {
     dir: root,
     name: "Codex Studio",
     executableName: "Codex Studio",
+    icon: path.join(root, "assets/codex-studio.icns"),
     appBundleId: "local.codex.agents",
     appCategoryType: "public.app-category.developer-tools",
     platform: "darwin",
@@ -32,6 +33,7 @@ try {
     prune: true,
     extraResource: [resources],
     ignore: [
+      /^\/assets($|\/)/,
       /^\/dist($|\/)/,
       /^\/node_modules($|\/)/,
       /^\/test\.mjs$/,
