@@ -39,3 +39,20 @@ can attach to the relocated backend without a package rebuild.
 
 These checks use fixtures. They make no paid model requests and consume no real
 reset credits. Historical delivery documents retain their original evidence.
+
+## Local transition
+
+The live server now starts from `/Users/igor/Projects/codex-agents/scripts/codex-canvas` (PID `37912` at verification).
+Its URL and state directory remain unchanged. Both existing agents remain.
+The database backup is `/Users/igor/.local/state/codex-agents/backups/canvas-before-source-extraction-20260906-104252.sqlite3`.
+
+After removal of the old source paths, the installed Electron application attaches
+to this backend and displays the client built from this repository. Verification
+uses a hidden window with a separate Electron profile because the user's normal
+application is already open. Closing the test instance preserves the backend.
+The installed `codex-control list` command also reads the same runtime.
+
+Evidence: `~/.local/state/codex-agents/evidence/source-extraction-20260906/`.
+Old ignored web build files were preserved outside the skill at
+`~/.local/state/codex-agents/migration-backups/skill-build-cache-20260906/web/`.
+Unrelated old Python cache files remain untouched.
