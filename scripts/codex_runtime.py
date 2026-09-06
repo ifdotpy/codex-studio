@@ -767,6 +767,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             settings["account_key"] = data["account_key"]
         if "dangerously_skip_rules" in data:
             settings["dangerously_skip_rules"] = data["dangerously_skip_rules"]
+        requested_cwd = self.project_directory(data["cwd"]) if "cwd" in data else None
+        if requested_cwd is not None:
+            settings["cwd"] = requested_cwd
         signature = json.dumps(settings, sort_keys=True)
         with self.lock:
             with self.db() as db:
@@ -800,17 +803,24 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 self.accounts.get(account_key)
                 if previous and self.empty_lead(db, previous):
                     if previous.get("accountKey", "default") != account_key:
-                        previous["cwd"] = self.default_project(account_key, previous["cwd"])
+                        previous["cwd"] = requested_cwd or self.default_project(account_key, previous["cwd"])
                         previous["dangerouslySkipAccountRules"] = False
                     previous["accountKey"] = account_key
                     if "dangerously_skip_rules" in data:
                         previous["dangerouslySkipAccountRules"] = data["dangerously_skip_rules"]
+                    if requested_cwd is not None:
+                        self.accounts.check_project(account_key, requested_cwd, skip=previous.get("dangerouslySkipAccountRules", False))
+                        previous["cwd"] = requested_cwd
                     self.put(db, "agents", previous)
                     if key:
                         db.execute("INSERT INTO runtime_lead_requests VALUES (?,?,?)", (key, previous["id"], signature))
                     return previous
-                cwd = previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd())
-                cwd = self.default_project(account_key, cwd)
+                if requested_cwd is not None:
+                    self.accounts.check_project(account_key, requested_cwd, skip=data.get("dangerously_skip_rules", False))
+                    cwd = requested_cwd
+                else:
+                    cwd = previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd())
+                    cwd = self.default_project(account_key, cwd)
             created = self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
                                 "_creationSignature": signature, "account_key": account_key,
                                 "dangerously_skip_rules": data.get("dangerously_skip_rules", False),
@@ -2483,6 +2493,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 AND json_extract(t.record,'$.status')!='running' ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)""").fetchall()
             return {
                 "agents": agents,
+                "projects": self.projects(db=db)["items"],
                 "tasks": [
                     {
                         k: v

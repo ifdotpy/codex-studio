@@ -2,7 +2,7 @@
 // Exercise production components against isolated HTTP and SQLite, with one transport failure.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,19 +65,28 @@ try {
       (await state()).threads.find((agent) => agent.id === lead.id).pinned,
     "pin is persisted",
   );
+  const folder = join(root, "Release checks");
+  await mkdir(folder);
   await actions().click();
   await page
-    .getByRole("menuitem", { name: "Set project", exact: true })
+    .getByRole("menuitem", { name: "Change project folder", exact: true })
     .click();
-  await page
-    .getByRole("textbox", { name: "Project name", exact: true })
-    .fill("Release checks");
-  await page.getByRole("button", { name: "Save project", exact: true }).click();
+  const folderDialog = page.getByRole("dialog", {
+    name: "Choose project folder",
+    exact: true,
+  });
+  await folderDialog.getByLabel("Folder path").fill(folder);
+  await folderDialog.getByRole("button", { name: "Go", exact: true }).click();
+  await folderDialog
+    .getByRole("button", { name: "Use this folder", exact: true })
+    .click();
+  await folderDialog.waitFor({ state: "hidden" });
   await poll(
     async () =>
-      (await state()).threads.find((agent) => agent.id === lead.id).project ===
-      "Release checks",
-    "project is persisted",
+      (await state()).threads
+        .find((a) => a.id === lead.id)
+        .cwd.endsWith("/Release checks"),
+    "project directory is persisted",
   );
   await actions().click();
   await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
@@ -86,7 +95,10 @@ try {
     "archived chat leaves active list",
   );
   await page
-    .getByRole("button", { name: "Show archived chats", exact: true })
+    .getByRole("button", { name: "Project list options", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Show archived chats", exact: true })
     .click();
   await row().waitFor();
   await actions().click();
@@ -98,7 +110,10 @@ try {
     "restored chat leaves archive list",
   );
   await page
-    .getByRole("button", { name: "Show active chats", exact: true })
+    .getByRole("button", { name: "Project list options", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Show active chats", exact: true })
     .click();
   await row().click();
 

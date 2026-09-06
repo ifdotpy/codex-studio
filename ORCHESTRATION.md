@@ -45,6 +45,12 @@ Manual graph selection modes, chat wiring, the minimap, and duplicate zoom contr
 Existing shared chats and sessions remain accessible from **Other sessions**; their command-line tools remain available.
 
 The conversation header provides context compaction, review, and team stop.
+The **Projects** sidebar groups lead chats by their actual working directory.
+Use **+** beside Projects to add a folder, including a project with no chats.
+Use **+** beside a folder to start a chat there. An empty current chat is reused.
+Folder registration lives in SQLite. Removing an empty project from the sidebar does not delete files.
+Each folder initially shows five chats. **Show more** expands the list, and search includes hidden chats.
+Folder collapse preferences stay in browser storage. Agent chats retain their separate **Agents** tab.
 Use the sidebar row menu to rename or delete a lead or agent chat.
 Renaming stays in SQLite and takes priority over an automatic lead title.
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.

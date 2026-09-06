@@ -543,6 +543,8 @@ def make_server(canvas, port=0):
                     agent = q.get("agent")
                     if path.path == "/api/accounts":
                         return self.send(runtime.accounts.snapshot())
+                    if path.path == "/api/projects":
+                        return self.send(runtime.projects())
                     if path.path == "/api/workspace":
                         return self.send(runtime.workspace_snapshot(agent))
                     if path.path == "/api/work":
@@ -657,6 +659,8 @@ def make_server(canvas, port=0):
                 if canvas.runtime:
                     runtime = canvas.runtime
                     agent = body.get("agent")
+                    if self.path == "/api/projects":
+                        return self.send(runtime.projects(body))
                     if self.path == "/api/accounts/discover":
                         return self.send(runtime.accounts.discover())
                     if self.path == "/api/accounts/register":

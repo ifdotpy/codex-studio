@@ -1,0 +1,92 @@
+.projects-heading,
+.project-tree-heading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 2px;
+}
+.projects-heading {
+  margin: 12px 4px 4px;
+  color: var(--muted);
+}
+.projects-heading-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.projects-heading-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+.projects-heading .mantine-ActionIcon-root {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+}
+.sidebar-project {
+  margin: 10px 0 16px;
+}
+.project-tree-heading {
+  padding: 0 4px;
+}
+.project-tree-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+.project-tree-toggle svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.project-tree-toggle span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.project-tree-action {
+  opacity: 0;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+}
+.project-tree-heading:hover .project-tree-action,
+.project-tree-heading:focus-within .project-tree-action {
+  opacity: 1;
+}
+.project-chats {
+  padding-left: 24px;
+}
+.project-chats .sidebar-row {
+  margin: 1px 0;
+}
+.project-chats .chat-row {
+  min-height: 34px;
+  padding: 7px 8px;
+}
+.project-chats .row-copy strong {
+  font-weight: 400;
+}
+.project-empty,
+.project-show-more {
+  display: block;
+  margin: 0;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.project-show-more:hover {
+  color: var(--text);
+}
+@media (hover: none) {
+  .project-tree-action {
+    opacity: 1;
+  }
+}

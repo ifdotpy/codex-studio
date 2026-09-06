@@ -232,7 +232,7 @@ try {
     .getByRole("dialog", { name: "Complaint", exact: true })
     .getByRole("button", { name: "Close", exact: true })
     .click();
-  await page.getByRole("tab", { name: "Leads", exact: true }).click();
+  await page.getByRole("tab", { name: "Chats", exact: true }).click();
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   // Creation reply lost after the database commit.
   let lose = true;

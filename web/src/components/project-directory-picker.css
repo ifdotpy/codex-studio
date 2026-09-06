@@ -82,6 +82,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   display: block;
+  height: auto;
 }
 .workspace-header #project {
   max-width: 220px;

@@ -75,6 +75,7 @@ export interface Snapshot {
   chats: Json[];
   runtime: {
     agents: Agent[];
+    projects?: { id: string; path: string; name: string; created: number }[];
     rooms: Room[];
     complaints: Complaint[];
     monitors: Json[];

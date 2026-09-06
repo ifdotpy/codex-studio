@@ -210,9 +210,14 @@ export default function App() {
       notify(errorText(e));
     }
   };
-  const newChat = async () => {
+  const newChat = async (cwd?: string) => {
     if (creationLock.current) return null;
-    if (agent?.isLead && agent.empty && !creation.current) {
+    if (
+      agent?.isLead &&
+      agent.empty &&
+      !creation.current &&
+      (!cwd || cwd === agent.cwd)
+    ) {
       setView("chat");
       return agent.id;
     }
@@ -222,7 +227,11 @@ export default function App() {
       id: crypto.randomUUID(),
       previous: lead?.id || null,
       model: lead?.model || "gpt-6-astra",
-      account_key: accounts.data.defaultAccountKey,
+      account_key:
+        agent?.isLead && agent.empty
+          ? agent.accountKey
+          : accounts.data.defaultAccountKey,
+      ...(cwd ? { cwd } : {}),
     };
     if (!opened && drafts.new) setDraft(drafts.new, creation.current.id);
     try {
@@ -587,7 +596,22 @@ export default function App() {
         opened={opened}
         view={view}
         open={open}
-        newChat={() => void newChat()}
+        newChat={(path) => void newChat(path)}
+        addProject={() =>
+          setModal({
+            title: "Add project",
+            body: (
+              <ProjectDirectoryPicker
+                onSelect={async (path) => {
+                  await api("/api/projects", { path });
+                  setModal(null);
+                  await refresh();
+                }}
+              />
+            ),
+          })
+        }
+        changeProject={folders}
         creating={creating}
         complaints={() => {
           setView("complaints");
@@ -702,7 +726,7 @@ export default function App() {
               title={agent.cwd}
               onClick={project}
             >
-              Project · {agent.cwd.split("/").filter(Boolean).at(-1)}
+              {agent.cwd.split("/").filter(Boolean).at(-1)}
             </Button>
           )}
           {view === "chat" && agent?.source === "managed" && (

@@ -20,6 +20,7 @@ class WorkspaceMixin:
             CREATE TABLE IF NOT EXISTS runtime_assets (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_projects (id TEXT PRIMARY KEY, record TEXT NOT NULL);
         """)
         for a in self.records(db, "agents"):
             if a.get("workspaceOperation"):
@@ -31,6 +32,36 @@ class WorkspaceMixin:
                 )
                 self.put(db, "agents", a)
         self.capability_cache = {}
+
+    @staticmethod
+    def project_directory(value, require_existing=True):
+        text_field(value, "a project path", 4096)
+        path = Path(value).expanduser().resolve()
+        if require_existing and not path.is_dir():
+            raise ValueError("Select an existing project directory")
+        return str(path)
+
+    def projects(self, data=None, db=None):
+        if data is None:
+            if db is None:
+                with self.lock, self.db() as connection:
+                    return self.projects(db=connection)
+            return {"items": sorted(self.records(db, "projects"), key=lambda p: (p["created"], p["id"]))}
+        action = data.get("action", "register")
+        if action not in ("register", "remove"):
+            raise ValueError("Unknown project action")
+        path = self.project_directory(data.get("path"), require_existing=action == "register")
+        name = text_field(data["name"], "a project name", 255) if "name" in data else Path(path).name or path
+        with self.lock, self.db() as connection:
+            if action == "remove":
+                removed = connection.execute("DELETE FROM runtime_projects WHERE id=?", (path,)).rowcount
+                return {"id": path, "removed": bool(removed)}
+            existing = connection.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
+            if existing:
+                return json.loads(existing[0])
+            project = {"id": path, "path": path, "name": name, "created": time.time()}
+            self.put(connection, "projects", project)
+            return project
 
     def workspace_path(self, agent_id, path):
         a = self.agent(agent_id)
