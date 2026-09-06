@@ -15,7 +15,7 @@ import os
 import re
 import sys
 from pathlib import Path
-# Keep import caches out of the installed skill checkout.
+# Keep import caches out of the project checkout.
 sys.dont_write_bytecode = True
 from codex_state import state_dir, process_is_alive, final_answer
 

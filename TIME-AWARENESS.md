@@ -39,9 +39,9 @@ They do not measure or guarantee OpenAI cache hits or billing.
 
 ## Evidence
 
-- `python3 -B codex-agents/tests/time-awareness.py`: receipt, queue edit,
+- `python3 -B tests/time-awareness.py`: receipt, queue edit,
   reorder, steer, successful and failed result replay, restart, and clean UI text.
-- `python3 -B codex-agents/tests/time-awareness-native.py`: installed Codex,
+- `python3 -B tests/time-awareness-native.py`: installed Codex,
   local Responses server, successful command, exit code 7, invalid freeform
   patch, unknown tool, immutable request prefixes, and process restart.
 - The native test uses an isolated Codex home and rejects external requests.

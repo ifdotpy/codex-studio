@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const SKILL_DIR = dirname(SCRIPT_DIR);
+const PROJECT_DIR = dirname(SCRIPT_DIR);
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const MODEL = process.env.CODEX_MODEL || "gpt-5.6-luna";
 const EFFORT = process.env.CODEX_EFFORT || "max";
@@ -189,7 +189,7 @@ const tasks = readTasks();
 const preamblePath = resolve(
   process.env.CODEX_PREAMBLE
     ? expandHome(process.env.CODEX_PREAMBLE)
-    : join(SKILL_DIR, "prompts", "worker-preamble.md"),
+    : join(PROJECT_DIR, "prompts", "worker-preamble.md"),
 );
 const preambleTemplate = readFileSync(preamblePath, "utf8");
 const shellLiteral = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`;

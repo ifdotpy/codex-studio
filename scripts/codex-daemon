@@ -29,7 +29,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-# Keep import caches out of the installed skill checkout.
+# Keep import caches out of the project checkout.
 sys.dont_write_bytecode = True
 from codex_state import state_dir, board_dir, codex_home, outside_claude, process_is_alive
 

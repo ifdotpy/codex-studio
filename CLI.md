@@ -1,19 +1,14 @@
----
-name: codex-agents
-description: Coordinate authorized Codex delegation with native agent tools or durable app-server workers. Use for parallel agent work, reviewer workers, separate Codex processes, worker waves, goal budgets, monitoring, and steering.
----
-
-# Codex worker orchestration
+# Codex command guide
 
 Use the host's native agent tools for bounded work within the current session.
 Use `codex app-server` for a separate process, durable workers, or a host without native delegation.
 Delegate only when the user or applicable instructions authorize delegation.
 This skill does not itself require extra workers for every task.
 
-For app-server mode, use the bundled scripts. Do not copy their logic into a project.
+Run examples from this project root, or use the installed commands without the `scripts/` prefix.
 The protocol uses JSON Lines on stdio, without Content-Length framing.
-Keep runtime state outside the skill checkout.
-The scripts require Node.js and Python 3.9 or later on macOS or Linux.
+Keep runtime state outside the project checkout.
+The scripts require Node.js and Python 3.11 or later on macOS or Linux.
 
 ## Managed teams
 
@@ -43,7 +38,7 @@ The remaining sections describe app-server mode unless they explicitly mention n
 
 - State dir: `$CODEX_AGENTS_STATE_DIR`, else `$XDG_STATE_HOME/codex-agents`, else `~/.local/state/codex-agents`. Scripts create it.
 - Board dir: `$CODEX_BOARD_STATE_DIR`, else the state directory's `board/` subdirectory. Use the same directory for every client of a shared resource.
-- `CODEX_HOME` selects the Codex login (default `~/.codex`). Canonical install: `~/.agents/skills/codex-agents`.
+- `CODEX_HOME` selects the Codex login (default `~/.codex`). Install commands with `python3 scripts/install-cli.py`.
 - Codex state, board, and profile directories must resolve outside `.claude`. Scripts reject these paths and do not discover legacy Claude job directories.
 - Move historical state only with explicit authorization. Preserve claims and messages. Never create a second board for an occupied resource during migration.
 - Schemas move; before depending on a protocol field: `codex --version; codex app-server generate-json-schema --experimental --out /tmp/codex-schema` (drop `--experimental` if it fails; read `v2`). Goal methods need `capabilities.experimentalApi: true` at `initialize`.
@@ -254,7 +249,7 @@ Unknown owners remain claimed; missing local history is not evidence that a reso
 
 ## Script verification
 
-Run from the skill directory:
+Run from the project root:
 
 ```bash
 node tests/portable-smoke.mjs
@@ -271,5 +266,5 @@ Mock protocol tests do not prove compatibility with every app-server version.
 
 For canvas client changes, run `npm --prefix . ci` and `npm --prefix . test` from `web/`.
 Build the React client before starting the canvas server. The built client does not require a Node.js server.
-The client check uses a synthetic Document Object Model (DOM) and a local fixture server.
-It does not prove browser appearance.
+The client checks use headless Chrome and a local fixture server.
+They verify rendered behavior without model inference.

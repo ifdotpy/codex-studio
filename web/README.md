@@ -137,13 +137,13 @@ when that permission is absent. Browser notification delivery depends on system 
 Backend regression commands run from the repository root:
 
 ```bash
-python3 -B codex-agents/tests/runtime-contract.py
-python3 -B codex-agents/tests/canvas-contract.py
-python3 -B codex-agents/tests/user-tasks-contract.py
-python3 -B codex-agents/tests/workspace-contract.py
-python3 -B codex-agents/tests/workspace-races.py
-python3 -B codex-agents/tests/workspace-protocol.py
-python3 -B codex-agents/tests/workspace-native-turn.py
+python3 -B tests/runtime-contract.py
+python3 -B tests/canvas-contract.py
+python3 -B tests/user-tasks-contract.py
+python3 -B tests/workspace-contract.py
+python3 -B tests/workspace-races.py
+python3 -B tests/workspace-protocol.py
+python3 -B tests/workspace-native-turn.py
 ```
 
 The last two checks use the installed Codex binary with temporary state. The native
@@ -172,8 +172,8 @@ An invalid diagram shows its error. Mermaid loads only when a diagram is present
 
 ## Direct controls and quotes
 
-The navigation bar opens common workspace sections directly. Monitor opens its
-command form and preserves the message draft. Account capacity appears below
+The navigation bar opens common workspace sections directly. Agents create
+monitors; the background panel shows their controls. Account capacity appears below
 the composer. The account panel groups percentages and reset times by limit.
 
 Select part of a message and choose **Quote selection**, or press Alt+Shift+Q.

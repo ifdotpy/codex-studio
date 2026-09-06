@@ -6,7 +6,7 @@ The Electron app opens the existing React workspace. The Python backend owns age
 
 Requirements: macOS on Apple silicon, Node.js 22 or later, Python 3.11 or later, and the installed Codex CLI with its existing sign-in.
 
-From `codex-agents/desktop`:
+From `desktop/`:
 
 ```sh
 npm ci

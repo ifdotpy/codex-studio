@@ -16,8 +16,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const SKILL_DIR = dirname(TEST_DIR);
-const SCRIPTS = join(SKILL_DIR, "scripts");
+const PROJECT_DIR = dirname(TEST_DIR);
+const SCRIPTS = join(PROJECT_DIR, "scripts");
 const ROOT = mkdtempSync(join(tmpdir(), "codex-agents-smoke-"));
 const STATE = join(ROOT, "state");
 mkdirSync(STATE);
