@@ -784,12 +784,40 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
 
     def conversation_settings(self, key, data):
         requested_skip = self.requested_rule_override(data)
+        model_info = None
+        with self.lock, self.db() as db:
+            target = self.agent(key, db)
+            if not target.get("isLead"):
+                if "model" not in data or set(data) - {"id", "model"}:
+                    raise ValueError(
+                        "Only a lead can change these settings; a subagent can change only its model"
+                    )
+                if target.get("inFlight") or target["status"] in {
+                    "running",
+                    "starting",
+                    "approval",
+                }:
+                    raise ValueError("Wait for this turn to end before changing the model")
+                if not isinstance(data["model"], str) or not data["model"].strip():
+                    raise ValueError("Select an available model")
+        if not target.get("isLead"):
+            catalog = self.catalog(target.get("accountKey", "default"))
+            model_info = next(
+                (
+                    row
+                    for row in catalog.get("data", [])
+                    if row.get("model") == data["model"] and not row.get("hidden")
+                ),
+                None,
+            )
+            if model_info is None:
+                raise ValueError("This model is not available for the subagent account")
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")
-            if not a.get("isLead"):
-                raise ValueError("Only a lead has conversation settings")
+            if a.get("accountKey", "default") != target.get("accountKey", "default"):
+                raise ValueError("The account changed. Select the model again")
             if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
                 raise ValueError(
                     "Wait for this turn to end before changing the model or project"
@@ -808,9 +836,16 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     )
                 a["dangerouslySkipAccountRules"] = requested_skip
             if "model" in data:
-                if data["model"] not in LEAD_MODELS:
+                if a.get("isLead") and data["model"] not in LEAD_MODELS:
                     raise ValueError("A lead must use Astra or Sol")
                 a["model"] = data["model"]
+                if model_info is not None:
+                    supported = {
+                        row.get("reasoningEffort")
+                        for row in model_info.get("supportedReasoningEfforts", [])
+                    }
+                    if supported and a.get("effort") not in supported:
+                        a["effort"] = model_info.get("defaultReasoningEffort")
             if "cwd" in data:
                 if a.get("threadId"):
                     raise ValueError(

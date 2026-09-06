@@ -39,6 +39,9 @@ import { api, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
+import WorkerModelPicker, {
+  useWorkerModels,
+} from "./components/WorkerModelPicker";
 import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
@@ -106,6 +109,15 @@ export default function App() {
     agent?.accountKey ||
     lead?.accountKey ||
     (agent ? "default" : accounts.data.defaultAccountKey);
+  const workerModels = useWorkerModels(
+    accountKey,
+    workers.length > 0 ||
+      (!!agent && !agent.isLead && agent.source === "managed"),
+  );
+  const changeWorkerModel = async (id: string, model: string) => {
+    await api("/api/conversation", { id, model });
+    await refresh();
+  };
   const limitsRequest = useRef(0);
   const currentAccountKey = useRef(accountKey);
   currentAccountKey.current = accountKey;
@@ -478,18 +490,28 @@ export default function App() {
         ? "Complaint book"
         : agent?.name || room?.name || legacy?.name || "New conversation";
   const worker = (a: Agent) => (
-    <UnstyledButton
-      className={`worker ${opened === a.id ? "selected" : ""}`}
-      data-worker={a.id}
+    <div
+      className={`worker-entry ${opened === a.id ? "selected" : ""}`}
       key={a.id}
-      onClick={() => open(a.id)}
     >
-      <span className={`dot ${a.status}`} />
-      <span className="worker-text">
-        <strong>{a.name}</strong>
-        <small>{statusLabel(a.status)}</small>
-      </span>
-    </UnstyledButton>
+      <UnstyledButton
+        className="worker"
+        data-worker={a.id}
+        onClick={() => open(a.id)}
+      >
+        <span className={`dot ${a.status}`} />
+        <span className="worker-text">
+          <strong>{a.name}</strong>
+          <small>{statusLabel(a.status)}</small>
+        </span>
+      </UnstyledButton>
+      <WorkerModelPicker
+        agent={a}
+        catalog={workerModels}
+        change={changeWorkerModel}
+        onError={notify}
+      />
+    </div>
   );
   const shown = workers.filter((a) =>
     `${a.name} ${a.status} ${a.role}`
@@ -656,6 +678,16 @@ export default function App() {
               <option value="gpt-6-astra">Astra</option>
               <option value="gpt-5.6-sol">Sol</option>
             </NativeSelect>
+          )}
+          {view === "chat" && agent?.source === "managed" && !agent.isLead && (
+            <WorkerModelPicker
+              key={agent.id}
+              id="model"
+              agent={agent}
+              catalog={workerModels}
+              change={changeWorkerModel}
+              onError={notify}
+            />
           )}
           {view === "chat" && !!workers.length && (
             <Button

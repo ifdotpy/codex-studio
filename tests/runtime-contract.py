@@ -371,6 +371,58 @@ class RuntimeContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Invalid agent role'):
             self.runtime.create({'prompt': 'Task', 'role': 'orchestrator'}, parent=a['id'])
 
+    def test_subagent_model_change_resumes_same_thread_and_keeps_permissions(self):
+        lead = self.runtime.new_lead({})
+        worker = self.runtime.create({'prompt': 'Review', 'role': 'reviewer', 'effort': 'ultra'}, parent=lead['id'], defer=True)
+        worker = self.runtime.prepare(worker)
+        self.runtime.catalog = lambda account: {'data': [{
+            'model': 'test-model', 'defaultReasoningEffort': 'low',
+            'supportedReasoningEfforts': [{'reasoningEffort': 'low'}]}]}
+        changed = self.runtime.conversation_settings(worker['id'], {'id': worker['id'], 'model': 'test-model'})
+        self.assertEqual(changed['model'], 'test-model')
+        self.assertEqual(changed['effort'], 'low')
+        for field in ['threadId', 'rootId', 'parentId', 'role', 'cwd', 'accountKey', 'approvalPolicy', 'sandbox']:
+            self.assertEqual(changed[field], worker[field])
+        self.assertNotIn(worker['id'], self.runtime.loaded)
+        self.runtime.send(worker['id'], 'Continue the review')
+        eventually(lambda: self.runtime.agent(worker['id'])['status'] == 'running')
+        resumed = [params for method, params in self.runtime.server.calls if method == 'thread/resume'][-1]
+        self.assertEqual(resumed['threadId'], worker['threadId'])
+        self.assertEqual(resumed['model'], 'test-model')
+        self.assertEqual(resumed['sandbox'], 'read-only')
+        turns = [params for method, params in self.runtime.server.calls if method == 'turn/start']
+        self.assertEqual(turns[-1]['effort'], 'low')
+
+    def test_subagent_model_rejects_unavailable_and_privileged_settings(self):
+        lead = self.runtime.new_lead({})
+        worker = self.runtime.create({'prompt': 'Review', 'role': 'reviewer'}, parent=lead['id'], defer=True)
+        for extra in [{'cwd': str(self.root)}, {'dangerously_skip_rules': True}, {'isLead': True}]:
+            with self.assertRaisesRegex(ValueError, 'Only a lead'):
+                self.runtime.conversation_settings(worker['id'], {'model': 'test-model', **extra})
+        for model in ['', None, [], 'missing-model']:
+            with self.assertRaises(ValueError):
+                self.runtime.conversation_settings(worker['id'], {'model': model})
+        self.runtime.catalog = lambda account: {'data': [{'model': 'hidden', 'hidden': True}]}
+        with self.assertRaisesRegex(ValueError, 'not available'):
+            self.runtime.conversation_settings(worker['id'], {'model': 'hidden'})
+        self.assertEqual(self.runtime.agent(worker['id'])['model'], worker['model'])
+        self.assertFalse(self.runtime.agent(worker['id'])['dangerouslySkipAccountRules'])
+        self.assertFalse(self.runtime.agent(worker['id'])['isLead'])
+
+    def test_subagent_model_rechecks_active_turn_after_catalog_read(self):
+        worker = self.runtime.create({'cwd': str(self.root), 'prompt': 'Review', 'role': 'reviewer'}, defer=True)
+        def catalog(account):
+            self.assertEqual(account, worker['accountKey'])
+            with self.runtime.lock, self.runtime.db() as db:
+                current = self.runtime.agent(worker['id'], db)
+                current.update(status='starting', inFlight=True)
+                self.runtime.put(db, 'agents', current)
+            return {'data': [{'model': 'test-model'}]}
+        self.runtime.catalog = catalog
+        with self.assertRaisesRegex(ValueError, 'Wait for this turn'):
+            self.runtime.conversation_settings(worker['id'], {'model': 'test-model'})
+        self.assertEqual(self.runtime.agent(worker['id'])['model'], worker['model'])
+
     def test_model_generates_title_and_current_time_request_is_answered(self):
         a = self.runtime.new_lead({})
         self.runtime.send(a['id'], 'Review the release')

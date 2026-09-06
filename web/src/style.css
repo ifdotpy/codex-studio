@@ -813,7 +813,7 @@ p {
   text-align: left;
 }
 .worker:hover,
-.worker.selected {
+.worker-entry.selected {
   background: #ffffff08;
 }
 .worker-text {
@@ -1978,4 +1978,41 @@ p {
 html body #root {
   height: calc(100dvh - var(--terminal-dock-height, 38px));
   min-height: 0;
+}
+
+.worker-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 7px;
+}
+.worker-entry > .worker {
+  padding: 2px 0;
+  gap: 6px;
+}
+.worker-model-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 200px;
+}
+.worker-model-picker .mantine-NativeSelect-root {
+  min-width: 0;
+  flex: 1;
+}
+.worker-model-picker select {
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+.worker-entry > .worker-model-picker select {
+  height: 28px;
+  min-height: 28px;
+  padding-left: 6px;
+}
+.worker-model-picker select:disabled {
+  color: var(--muted);
+  opacity: 1;
 }
