@@ -143,7 +143,7 @@ async function start() {
     show: false,
     title: "Codex Agents",
     ...(process.platform === "darwin"
-      ? { titleBarStyle: "hidden", trafficLightPosition: { x: 20, y: 29 } }
+      ? { titleBarStyle: "hidden", trafficLightPosition: { x: 20, y: 12 } }
       : {}),
     backgroundColor: "#18181b",
     webPreferences: {

@@ -308,6 +308,9 @@ p {
   min-height: 33px;
   padding-left: 88px;
 }
+.desktop-mac #sidebar {
+  padding-top: 5px;
+}
 .desktop-mac .brand-mark {
   display: none;
 }
