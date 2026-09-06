@@ -21,7 +21,7 @@ const number = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 const percentage = (value: unknown) =>
   number(value) && value >= 0 && value <= 100 ? value : null;
-const formatPercent = (value: number) =>
+export const formatPercent = (value: number) =>
   value > 0 && value < 1 ? "<1%" : `${Math.floor(value)}%`;
 const duration = (minutes: unknown, fallback: string) => {
   if (!number(minutes) || minutes <= 0) return fallback;
@@ -29,7 +29,7 @@ const duration = (minutes: unknown, fallback: string) => {
   if (minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;
 };
-function readBuckets(limits: Json | null, now: number): LimitBucket[] {
+export function readBuckets(limits: Json | null, now: number): LimitBucket[] {
   const reported = limits?.data?.rateLimitsByLimitId;
   const buckets =
     reported && Object.keys(reported).length
@@ -147,6 +147,7 @@ export default function Usage({
       const result = await api("/api/limits/reset", {
         credit_id: creditId,
         account_id: limits?.data?.accountId,
+        account_key: agent.accountKey || "default",
         request_id: requestId,
       });
       if (
@@ -306,7 +307,7 @@ export default function Usage({
               {number(costs?.data?.todayUSD) && (
                 <span
                   className="account-cost-summary"
-                  title="Local API estimate today, not billed spend"
+                  title="Local cost estimate, shared across chats; not per account"
                 >
                   ≈{dollars(costs?.data?.todayUSD)} today
                 </span>
@@ -578,7 +579,9 @@ export default function Usage({
                   <strong>{dollars(costs?.data?.last30DaysUSD)}</strong>
                 </div>
               </div>
-              <p>Codex sessions on this computer. Not your ChatGPT bill.</p>
+              <p>
+                Shared across chats; not per account. Not your ChatGPT bill.
+              </p>
               {costs?.data?.coverage === "unverified" && (
                 <p className="account-limits-warning">
                   Pricing and history coverage unverified by this CodexBar

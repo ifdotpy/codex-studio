@@ -541,6 +541,8 @@ def make_server(canvas, port=0):
                     runtime = canvas.runtime
                     q = {k: v[0] for k, v in parse_qs(path.query).items()}
                     agent = q.get("agent")
+                    if path.path == "/api/accounts":
+                        return self.send(runtime.accounts.snapshot())
                     if path.path == "/api/workspace":
                         return self.send(runtime.workspace_snapshot(agent))
                     if path.path == "/api/work":
@@ -589,7 +591,7 @@ def make_server(canvas, port=0):
                             }
                         )
                 if path.path == "/api/limits" and canvas.runtime:
-                    return self.send(canvas.runtime.limits())
+                    return self.send(canvas.runtime.limits(parse_qs(path.query).get("account_key", ["default"])[0]))
                 if path.path == "/api/task" and canvas.runtime:
                     return self.send(canvas.runtime.task_detail(parse_qs(path.query).get("id", [""])[0]))
                 if path.path == "/api/complaint" and canvas.runtime:
@@ -599,9 +601,10 @@ def make_server(canvas, port=0):
                     before = int(query["before"][0]) if query.get("before") else None
                     return self.send(canvas.runtime.chat_read(query.get("room", [""])[0], before=before))
                 if path.path == "/api/models" and canvas.runtime:
-                    return self.send(canvas.runtime.catalog())
+                    return self.send(canvas.runtime.catalog(parse_qs(path.query).get("account_key", ["default"])[0]))
                 if path.path == "/api/import" and canvas.runtime:
-                    return self.send(canvas.runtime.import_list(parse_qs(path.query).get("cursor", [None])[0]))
+                    query = parse_qs(path.query)
+                    return self.send(canvas.runtime.import_list(query.get("cursor", [None])[0], account_key=query.get("account_key", ["default"])[0]))
                 if path.path == "/api/transcript/stream" and canvas.runtime:
                     return self.stream_transcript(parse_qs(path.query).get("id", [""])[0])
                 if path.path == "/api/transcript":
@@ -654,6 +657,18 @@ def make_server(canvas, port=0):
                 if canvas.runtime:
                     runtime = canvas.runtime
                     agent = body.get("agent")
+                    if self.path == "/api/accounts/discover":
+                        return self.send(runtime.accounts.discover())
+                    if self.path == "/api/accounts/register":
+                        runtime.accounts.register(body.get("home"))
+                        return self.send(runtime.accounts.snapshot())
+                    if self.path == "/api/accounts/default":
+                        runtime.accounts.default(body.get("account_key"))
+                        return self.send(runtime.accounts.snapshot())
+                    if self.path == "/api/accounts/login":
+                        return self.send(runtime.accounts.start_login(runtime, body.get("request_id")))
+                    if self.path == "/api/agents/account":
+                        return self.send(runtime.set_account(body.get("id"), body.get("account_key")))
                     if self.path == "/api/work":
                         return self.send(
                             runtime.work_action(agent, body, body.get("id"))

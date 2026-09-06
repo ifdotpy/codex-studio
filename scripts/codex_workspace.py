@@ -338,7 +338,7 @@ class WorkspaceMixin:
         try:
             # Create the matching conversation before changing files. A provider rejection leaves files intact.
             if checkpoint.get("turnId"):
-                response = self.connect().call(
+                response = self.connect(a.get("accountKey", "default")).call(
                     "thread/fork",
                     {
                         "threadId": checkpoint["threadId"],
@@ -349,7 +349,7 @@ class WorkspaceMixin:
                     },
                 )
             else:
-                response = self.connect().call(
+                response = self.connect(a.get("accountKey", "default")).call(
                     "thread/start", self.new_thread_params(a)
                 )
             if self.snapshot_tree(a) != preview["expectedTree"]:
@@ -472,7 +472,7 @@ class WorkspaceMixin:
             self.assert_workspace_available(db, a)
             if turn_id == a.get("turnId"):
                 raise ValueError("Wait for this turn to finish before branching")
-        response = self.connect().call(
+        response = self.connect(a.get("accountKey", "default")).call(
             "thread/fork",
             {
                 "threadId": a["threadId"],
@@ -489,6 +489,7 @@ class WorkspaceMixin:
         lead = self.create(
             {
                 "name": a["name"][:90] + " (branch)",
+                "account_key": a.get("accountKey", "default"),
                 "cwd": a["cwd"],
                 "model": a["model"] if a.get("isLead") else "gpt-5.6-sol",
                 "prompt": "",
@@ -631,7 +632,7 @@ class WorkspaceMixin:
             ),
         ]:
             try:
-                response = self.connect().call(method, params, timeout=15)
+                response = self.connect(a.get("accountKey", "default")).call(method, params, timeout=15)
                 result[label] = response.get("data", response.get("servers", []))
                 result[label + "Cursor"] = response.get("nextCursor")
             except Exception as error:

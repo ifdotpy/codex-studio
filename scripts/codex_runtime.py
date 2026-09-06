@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 
+from codex_accounts import AccountStore
 from codex_time import append_message_clocks, message_clock, stamp_tool_result
 from codex_work import WorkMixin, work_tools
 from codex_workspace import WorkspaceMixin
@@ -157,15 +158,23 @@ Do not merge work without review. Do not make recurring checks when an event is 
 
 
 class AppServer:
-    def __init__(self, root, notification, request, died):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False):
         self.notification, self.request, self.died = notification, request, died
         self.lock = threading.RLock()
         self.pending = {}
         self.sequence = 0
         self.closed = False
         self.log = (root / "app-server.log").open("ab")
+        command = [os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
+        env = os.environ.copy()
+        if home is not None:
+            env["CODEX_HOME"] = str(home)
+        if isolated:
+            env.pop("OPENAI_API_KEY", None)
+            env.pop("CODEX_API_KEY", None)
+            command.extend(["-c", 'cli_auth_credentials_store="file"'])
         self.proc = subprocess.Popen(
-            [os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"],
+            command, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
             text=True, encoding="utf-8", bufsize=1, start_new_session=True)
         self.reader = threading.Thread(target=self.read, daemon=True)
@@ -219,7 +228,10 @@ class AppServer:
                     message = json.loads(line)
                     if "method" in message:
                         if "id" in message:
-                            self.request(message)
+                            if message["method"] == "currentTime/read":
+                                self.write({"id": message["id"], "result": {"currentTimeAt": int(time.time())}})
+                            else:
+                                self.request(message)
                         else:
                             self.notification(message)
                     else:
@@ -268,10 +280,14 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         self.changed = threading.Event()
         self.closed = False
         self.server = None
+        self.servers = {}
+        self.connection_ids = {}
+        self.offline_accounts = set()
+        self.rate_limits_by_account = {}
         self.factory = server_factory
         self.loaded = set()
         self.limits_lock = threading.Lock()
-        self.rate_limits = {"data": None, "at": None, "error": None}
+        self.rate_limits = {"accountKey": "default", "data": None, "at": None, "error": None}
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=16)
         self.lease = (self.root / "runtime.lock").open("a+")
         try:
@@ -280,6 +296,13 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             self.lease.close()
             self.pool.shutdown(wait=False)
             raise RuntimeError("Another canvas runtime owns this state directory")
+        try:
+            self.accounts = AccountStore(self.root)
+        except Exception:
+            fcntl.flock(self.lease, fcntl.LOCK_UN)
+            self.lease.close()
+            self.pool.shutdown(wait=False)
+            raise
         with self.db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
@@ -319,6 +342,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 if a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
+                a.setdefault("accountKey", "default")
                 a.setdefault("compactions", 0)
                 a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
@@ -385,34 +409,87 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             raise ValueError("Unknown managed agent")
         return json.loads(row[0])
 
-    def connect(self):
+    def connect(self, account_key="default"):
+        self.accounts.get(account_key)
+        home = self.accounts.home(account_key) if self.factory is AppServer else None
         with self.start_lock:
             if self.closed:
                 raise RuntimeError("Runtime is stopped")
-            if self.offline and self.server:
-                self.server.close()
-                self.server = None
-            if self.server is None:
-                self.offline = False
-                self.server = self.factory(self.root, self.notification, self.request, self.disconnected)
-            return self.server
+            server = self.servers.get(account_key)
+            if account_key in self.offline_accounts and server:
+                server.close()
+                self.servers.pop(account_key, None)
+                server = None
+            if server is None:
+                connection_id = uid()
+                self.connection_ids[account_key] = connection_id
+                self.offline_accounts.discard(account_key)
+                if account_key == "default":
+                    self.offline = False
+                callbacks = (
+                    lambda message: self.notification(message, account_key, connection_id),
+                    lambda message: self.request(message, account_key, connection_id),
+                    lambda: self.disconnected(account_key, connection_id),
+                )
+                root = self.root if account_key == "default" else self.root / "account-servers" / account_key
+                root.mkdir(parents=True, exist_ok=True)
+                if self.factory is AppServer:
+                    server = self.factory(root, *callbacks, home=home,
+                                          isolated=account_key != "default")
+                else:
+                    # Existing fixtures implement the original four-argument factory.
+                    server = self.factory(root, *callbacks)
+                self.servers[account_key] = server
+                if account_key == "default":
+                    self.server = server
+            return server
 
-    def disconnected(self):
-        self.offline = True
-        self.loaded.clear()
+    def connection_current(self, account_key, connection_id):
+        return connection_id is None or (
+            self.connection_ids.get(account_key) == connection_id
+            and account_key not in self.offline_accounts
+        )
+
+    def reply(self, message, account_key="default", connection_id=None):
+        # Never deliver an old approval or tool result to a replacement process.
+        server = self.servers.get(account_key)
+        if not self.connection_current(account_key, connection_id):
+            raise RuntimeError("The original account connection is no longer active")
+        if server is None:
+            if connection_id is not None:
+                raise RuntimeError("The account connection is not ready")
+            server = self.connect(account_key)
+        server.write(message)
+
+    def disconnected(self, account_key="default", connection_id=None):
         with self.lock, self.db() as db:
-            for a in self.records(db, "agents"):
+            if connection_id is not None and self.connection_ids.get(account_key) != connection_id:
+                return
+            self.offline_accounts.add(account_key)
+            if account_key == "default":
+                self.offline = True
+            agents = [a for a in self.records(db, "agents") if a.get("accountKey", "default") == account_key]
+            ids = {a["id"] for a in agents}
+            self.loaded.difference_update(ids)
+            for a in agents:
                 if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
                     a["inFlight"] = False
                     self.put(db, "agents", a)
+                db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
             for task in self.records(db, "tasks"):
-                if task["status"] == "running":
+                if task.get("agent") in ids and task["status"] == "running":
                     task.update(status="lost", finished=time.time(), error="Codex disconnected. Tool outcome unknown.")
                     self.put(db, "tasks", task)
-            db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching'")
+            for monitor in self.records(db, "monitors"):
+                if monitor.get("agent") in ids and monitor["status"] in {"running", "starting", "approval"}:
+                    monitor.update(status="lost", finished=time.time(), error="Codex disconnected. Command outcome unknown; not rerun.")
+                    self.put(db, "monitors", monitor)
             for r in self.records(db, "requests"):
-                if r["status"] == "pending":
+                if (r.get("agent") in ids or r.get("accountKey", "default") == account_key) and r["status"] == "pending":
+                    # Local requests without account metadata are owned by their agent.
+                    if r.get("agent") and r["agent"] not in ids:
+                        continue
                     r["status"] = "expired"
                     self.put(db, "requests", r)
 
@@ -498,11 +575,15 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 a = json.loads(existing[0])
                 if a.get("deletedAt"):
                     raise ValueError("This conversation was deleted")
-                if a["name"] != name.strip() or a["prompt"] != prompt.strip():
+                if a["name"] != name.strip() or a["prompt"] != prompt.strip() or ("account_key" in data and a.get("accountKey", "default") != data["account_key"]):
                     raise ValueError("This request id has different content")
                 return a
             p = self.agent(parent, db) if parent else None
             root = self.agent(p["rootId"], db) if p else None
+            account_key = p.get("accountKey", "default") if p else data.get("account_key", "default")
+            if p and data.get("account_key", account_key) != account_key:
+                raise ValueError("A worker must use its parent account")
+            self.accounts.get(account_key)
             is_lead = p is None and role == "orchestrator"
             model = data.get("model") or (p["model"] if p else LEAD_MODELS[0])
             if is_lead and model not in LEAD_MODELS:
@@ -528,6 +609,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             a = {
                 "id": key,
                 "threadId": None,
+                "accountKey": account_key,
                 "name": name.strip(),
                 "prompt": prompt.strip(),
                 "cwd": cwd,
@@ -569,7 +651,10 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
 
     def new_lead(self, data):
         key = data.get("id")
-        signature = json.dumps({k: data.get(k) for k in ("model", "previous")}, sort_keys=True)
+        settings = {k: data.get(k) for k in ("model", "previous")}
+        if "account_key" in data:
+            settings["account_key"] = data["account_key"]
+        signature = json.dumps(settings, sort_keys=True)
         with self.lock:
             with self.db() as db:
                 if data.get("model") and data["model"] not in LEAD_MODELS:
@@ -598,13 +683,17 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     raise ValueError("Select a lead conversation")
                 if previous and previous.get("deletedAt"):
                     raise ValueError("This conversation was deleted")
+                account_key = data.get("account_key", previous.get("accountKey", "default") if previous else self.accounts.default())
+                self.accounts.get(account_key)
                 if previous and self.empty_lead(db, previous):
+                    previous["accountKey"] = account_key
+                    self.put(db, "agents", previous)
                     if key:
                         db.execute("INSERT INTO runtime_lead_requests VALUES (?,?,?)", (key, previous["id"], signature))
                     return previous
                 cwd = previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd())
             return self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
-                                "_creationSignature": signature,
+                                "_creationSignature": signature, "account_key": account_key,
                                 "model": data.get("model") or (previous["model"] if previous else LEAD_MODELS[0])}, draft=True)
 
     @staticmethod
@@ -615,6 +704,18 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     and not db.execute("SELECT 1 FROM runtime_items WHERE agent=?", (a["id"],)).fetchone()
                     and not db.execute("SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.parentId')=?", (a["id"],)).fetchone()
                     and not db.execute("SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.agent')=?", (a["id"],)).fetchone())
+
+    def set_account(self, key, account_key):
+        self.accounts.get(account_key)
+        with self.lock, self.db() as db:
+            a = self.agent(key, db)
+            if a.get("accountKey", "default") == account_key:
+                return a
+            if not self.empty_lead(db, a) or a.get("inFlight"):
+                raise ValueError("The account is fixed after the first message. Create a new chat")
+            a["accountKey"] = account_key
+            self.put(db, "agents", a)
+            return a
 
     def delete_conversation(self, key):
         # Keep tombstones so late callbacks cannot recreate deleted work.
@@ -785,7 +886,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 assets,
             )
             # Submission under the epoch lock prevents stop from overtaking steer.
-            submitted = self.connect().submit(
+            server = self.connect(a.get("accountKey", "default"))
+            submitted = server.submit(
                 "turn/steer",
                 {
                     "threadId": a["threadId"],
@@ -795,7 +897,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 },
             )
         try:
-            self.connect().wait(submitted)
+            server.wait(submitted)
             with self.lock, self.db() as db:
                 db.execute(
                     "UPDATE runtime_events SET status='delivered' WHERE id=?",
@@ -854,7 +956,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             return self.prepare_locked(self.agent(a["id"]))
 
     def prepare_locked(self, a):
-        server = self.connect()
+        server = self.connect(a.get("accountKey", "default"))
         if a["worktree"] and not a["worktreeReady"]:
             repo = subprocess.check_output(["git", "-C", a["cwd"], "rev-parse", "--show-toplevel"], text=True).strip()
             directory = str(Path(repo) / ".worktrees" / "codex-agents" / a["id"])
@@ -1026,7 +1128,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             }
             if a.get("effort"):
                 params["effort"] = a["effort"]
-            server = self.connect()
+            server = self.connect(a.get("accountKey", "default"))
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
                 if not current["autoWake"] or current["epoch"] != epoch:
@@ -1140,15 +1242,25 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                           toolStatus=task["status"], turnId=task.get("turnId"))
         self.touch_ui(a["id"])
 
-    def notification(self, message):
+    def notification(self, message, account_key="default", connection_id=None):
+        if not self.connection_current(account_key, connection_id):
+            return
         method, p = message.get("method"), message.get("params", {})
+        if method == "account/login/completed":
+            self.accounts.login_completed(account_key, p)
+            return
+        if method == "account/updated":
+            self.accounts.refresh(account_key)
+            return
         if method == "account/rateLimits/updated":
             with self.lock:
+                if not self.connection_current(account_key, connection_id):
+                    return
                 bucket = p.get("rateLimits", {})
-                data = self.rate_limits.get("data") or {}
+                data = self.rate_limits_for(account_key).get("data") or {}
                 buckets = dict(data.get("rateLimitsByLimitId") or {})
                 buckets[bucket.get("limitId") or "codex"] = bucket
-                self.rate_limits = {
+                self.set_rate_limits(account_key, {
                     "data": {
                         **data,
                         "rateLimits": bucket,
@@ -1156,14 +1268,16 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     },
                     "at": time.time(),
                     "error": None,
-                }
+                })
             return
         if method == "command/exec/outputDelta":
-            self.output(p)
+            self.output(p, account_key, connection_id)
             return
         tid = p.get("threadId") or p.get("thread", {}).get("id")
         with self.lock, self.db() as db:
-            a = next((a for a in self.records(db, "agents") if a.get("threadId") == tid and tid), None)
+            if not self.connection_current(account_key, connection_id):
+                return
+            a = next((a for a in self.records(db, "agents") if a.get("threadId") == tid and tid and a.get("accountKey", "default") == account_key), None)
             if not a:
                 return
             if a.get("deletedAt"):
@@ -1321,18 +1435,23 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 if total >= root["tokenBudget"]:
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
 
-    def request(self, message):
+    def request(self, message, account_key="default", connection_id=None):
+        if not self.connection_current(account_key, connection_id):
+            return
         if message["method"] == "currentTime/read":
-            self.connect().write({"id": message["id"], "result": {"currentTimeAt": int(time.time())}})
+            self.reply({"id": message["id"], "result": {"currentTimeAt": int(time.time())}}, account_key, connection_id)
             return
         if message["method"] == "item/tool/call":
-            self.pool.submit(self.dynamic, message)
+            self.pool.submit(self.dynamic, message, account_key, connection_id)
             return
         with self.lock, self.db() as db:
+            if not self.connection_current(account_key, connection_id):
+                return
             p = message.get("params", {})
-            a = next((a for a in self.records(db, "agents") if a.get("threadId") == p.get("threadId")), None)
+            a = next((a for a in self.records(db, "agents") if p.get("threadId") and a.get("threadId") == p.get("threadId") and a.get("accountKey", "default") == account_key), None)
             r = {"id": uid(), "rpcId": message["id"], "method": message["method"],
-                 "params": p, "agent": a["id"] if a else None, "status": "pending"}
+                 "params": p, "agent": a["id"] if a else None, "status": "pending",
+                 "accountKey": account_key, "connectionId": connection_id}
             if a and p.get("itemId"):
                 row = db.execute("SELECT record FROM runtime_items WHERE id=?", (a["id"] + ":" + p["itemId"],)).fetchone()
                 if row:
@@ -1345,16 +1464,22 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 a["status"] = "approval"
                 self.put(db, "agents", a)
 
-    def dynamic(self, message):
+    def dynamic(self, message, account_key="default", connection_id=None):
         p = message.get("params", {})
         result = None
         key = str(p.get("threadId")) + ":" + str(p.get("callId", message["id"]))
+        if account_key != "default":
+            key = account_key + ":" + key
+        if not self.connection_current(account_key, connection_id):
+            return
         try:
             with self.lock, self.db() as db:
+                if not self.connection_current(account_key, connection_id):
+                    return
                 previous = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
                 if previous:
                     result = json.loads(previous[0])
-                a = next((a for a in self.records(db, "agents") if a.get("threadId") == p.get("threadId")), None)
+                a = next((a for a in self.records(db, "agents") if p.get("threadId") and a.get("threadId") == p.get("threadId") and a.get("accountKey", "default") == account_key), None)
             if a and p.get("turnId") and p["turnId"] != a.get("turnId"):
                 raise ValueError("This tool call belongs to an earlier turn")
             if not a or not a["autoWake"]:
@@ -1540,7 +1665,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 if not saved.get("success"):
                     result = saved
         try:
-            self.connect().write({"id": message["id"], "result": result})
+            self.reply({"id": message["id"], "result": result}, account_key, connection_id)
         except Exception:
             pass
 
@@ -1597,18 +1722,31 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             self.put(db, "rooms", room)
             return {"deleted": [key]}
 
-    def limits(self):
+    def rate_limits_for(self, account_key="default"):
+        if account_key == "default":
+            return self.rate_limits
+        return self.rate_limits_by_account.get(account_key, {"accountKey": account_key, "data": None, "at": None, "error": None})
+
+    def set_rate_limits(self, account_key, value):
+        value = {**value, "accountKey": account_key}
+        self.rate_limits_by_account[account_key] = value
+        if account_key == "default":
+            self.rate_limits = value
+
+    def limits(self, account_key="default", force=False):
+        self.accounts.get(account_key)
         with self.limits_lock:
-            if self.rate_limits["at"] and time.time() - self.rate_limits["at"] < 30:
-                return self.rate_limits
+            cached = self.rate_limits_for(account_key)
+            if not force and cached["at"] and time.time() - cached["at"] < 30:
+                return cached
             try:
-                data = self.connect().call("account/rateLimits/read", {}, timeout=10)
+                data = self.connect(account_key).call("account/rateLimits/read", {}, timeout=10)
                 with self.lock:
-                    self.rate_limits = {"data": data, "at": time.time(), "error": None}
+                    self.set_rate_limits(account_key, {"data": data, "at": time.time(), "error": None})
             except Exception as error:
                 with self.lock:
-                    self.rate_limits = {**self.rate_limits, "error": str(error)}
-            return self.rate_limits
+                    self.set_rate_limits(account_key, {**cached, "error": str(error)})
+            return self.rate_limits_for(account_key)
 
     def complaint_summaries(self, db):
         agents = {a["id"]: a for a in self.records(db, "agents")}
@@ -1872,7 +2010,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 params["permissionProfile"] = a["profile"]["id"]
             else:
                 params["sandboxPolicy"] = a["sandbox"]
-            server = self.connect()
+            server = self.connect(a.get("accountKey", "default"))
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
                 current_monitor = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
@@ -1894,13 +2032,17 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         except Exception as error:
             self.finish_monitor(key, None, str(error))
 
-    def output(self, p):
+    def output(self, p, account_key="default", connection_id=None):
         key = p.get("processId")
         with self.lock, self.db() as db:
+            if not self.connection_current(account_key, connection_id):
+                return
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if not row:
                 return
             m = json.loads(row[0])
+            if self.agent(m["agent"], db).get("accountKey", "default") != account_key:
+                return
             chunk = base64.b64decode(p.get("deltaBase64", ""))
             path = Path(m["log"])
             path.parent.mkdir(exist_ok=True)
@@ -1948,9 +2090,10 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 if request["status"] == "pending" and request["method"] == "monitor/approve" and request.get("params", {}).get("monitorId") == key:
                     request["status"] = "expired"
                     self.put(db, "requests", request)
-        if running and self.server:
+        server = self.servers.get(self.agent(m["agent"]).get("accountKey", "default"))
+        if running and server:
             try:
-                self.server.call("command/exec/terminate", {"processId": key})
+                server.call("command/exec/terminate", {"processId": key})
             except Exception as error:
                 with self.lock, self.db() as db:
                     current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
@@ -1960,12 +2103,13 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         return {"id": key, "status": "cancelled"}
 
     def interrupt(self, a):
-        if self.server and a.get("turnId"):
+        server = self.servers.get(a.get("accountKey", "default"))
+        if server and a.get("turnId"):
             current = self.agent(a["id"])
             if current.get("turnId") != a["turnId"] or not current.get("inFlight"):
                 return
             try:
-                self.server.call("turn/interrupt", {"threadId": a["threadId"], "turnId": a["turnId"]})
+                server.call("turn/interrupt", {"threadId": a["threadId"], "turnId": a["turnId"]})
             except Exception as error:
                 with self.lock, self.db() as db:
                     latest = self.agent(a["id"], db)
@@ -2081,7 +2225,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 result = {"action": decision, "content": data.get("content") if decision == "accept" else None}
             else:
                 raise ValueError("Unsupported request type; stop the agent and use a supported Codex client")
-            self.connect().write({"id": r["rpcId"], "result": result})
+            self.reply({"id": r["rpcId"], "result": result}, r.get("accountKey", "default"), r.get("connectionId"))
             r["status"] = "answered"
             self.put(db, "requests", r)
             if r.get("agent"):
@@ -2153,10 +2297,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     if r["agent"] in {a["id"] for a in agents}
                 ],
                 "rateLimits": self.rate_limits.copy(),
+                "rateLimitsByAccount": {k: self.rate_limits_for(k).copy() for k in self.rate_limits_by_account},
                 "events": events,
-                "connected": self.server is not None
-                and not self.closed
-                and not self.offline,
+                "connected": bool(set(self.servers) - self.offline_accounts) and not self.closed,
             }
 
     def team(self, root):
@@ -2191,8 +2334,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             return {"items": items, "truncated": len(rows) > 120, "unavailable": None,
                     "agent": {k: a.get(k) for k in ("id", "status", "activity", "inFlight", "contextUsage", "compactions", "compactionsObservedOnly")}}
 
-    def catalog(self):
-        return self.connect().call("model/list", {"limit": 100})
+    def catalog(self, account_key="default"):
+        return self.connect(account_key).call("model/list", {"limit": 100})
 
     def configure(self, key, data):
         with self.lock, self.db() as db:
@@ -2228,8 +2371,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         try:
             a = self.prepare(a)
             if action == "compact":
-                return self.connect().call("thread/compact/start", {"threadId": a["threadId"]})
-            return self.connect().call("review/start", {"threadId": a["threadId"],
+                return self.connect(a.get("accountKey", "default")).call("thread/compact/start", {"threadId": a["threadId"]})
+            return self.connect(a.get("accountKey", "default")).call("review/start", {"threadId": a["threadId"],
                 "target": {"type": "uncommittedChanges"}, "delivery": "inline"})
         except Exception as error:
             with self.lock, self.db() as db:
@@ -2238,13 +2381,15 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 self.put(db, "agents", latest)
             raise
 
-    def import_list(self, cursor=None):
-        return self.connect().call("thread/list", {"limit": 50, "cursor": cursor})
+    def import_list(self, cursor=None, account_key="default"):
+        return self.connect(account_key).call("thread/list", {"limit": 50, "cursor": cursor})
 
     def import_thread(self, data):
         # Import visible messages into a new thread with our dynamic tools.
         # Never resume a thread that another live client may own.
         tid = data.get("threadId")
+        account_key = data.get("account_key", "default")
+        self.accounts.get(account_key)
         if not isinstance(tid, str) or not tid:
             raise ValueError("Select a Codex thread")
         if data.get("id"):
@@ -2252,12 +2397,12 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (data["id"],)).fetchone()
                 if row:
                     a = json.loads(row[0])
-                    if a.get("importedFrom") != tid:
+                    if a.get("importedFrom") != tid or a.get("accountKey", "default") != account_key:
                         raise ValueError("This import id belongs to another conversation")
                     return a
-        result = self.connect().call("thread/read", {"threadId": tid, "includeTurns": False})
+        result = self.connect(account_key).call("thread/read", {"threadId": tid, "includeTurns": False})
         thread = result["thread"]
-        page = self.connect().call("thread/turns/list", {"threadId": tid, "limit": 20,
+        page = self.connect(account_key).call("thread/turns/list", {"threadId": tid, "limit": 20,
                                   "sortDirection": "desc", "itemsView": "full"})
         visible = []
         for turn in reversed(page.get("data", [])):
@@ -2286,8 +2431,8 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             self.ui_condition.notify_all()
         self.changed.set()
         self.scheduler.join(2)
-        if self.server:
-            self.server.close()
+        for server in list(self.servers.values()):
+            server.close()
         self.pool.shutdown(wait=True, cancel_futures=True)
         fcntl.flock(self.lease, fcntl.LOCK_UN)
         self.lease.close()

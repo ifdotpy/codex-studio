@@ -1,0 +1,243 @@
+.account-picker {
+  max-width: 190px;
+  padding: 0 8px;
+  flex-shrink: 1;
+  min-width: 38px;
+  font-size: 12px;
+}
+.account-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-picker .mantine-Button-label {
+  min-width: 0;
+}
+.account-menu-identity {
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: anywhere;
+  gap: 3px;
+}
+.account-menu-identity small,
+.account-menu-note,
+.accounts-intro {
+  color: var(--muted);
+  font-size: 12px;
+}
+.account-menu-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 12px;
+  line-height: 1.5;
+}
+.account-menu-note svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.accounts-manager {
+  padding-top: 0;
+}
+.accounts-intro {
+  line-height: 1.6;
+  margin: 0 0 16px;
+}
+.accounts-list {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.accounts-list:empty {
+  display: none;
+}
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px;
+}
+.account-row + .account-row {
+  border-top: 1px solid var(--line);
+}
+.account-avatar {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--surface-2, #262729);
+  color: var(--muted);
+}
+.account-identity {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.account-identity strong {
+  font-size: 13px;
+  font-weight: 550;
+}
+.account-identity small,
+.account-identity > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.account-default {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.accounts-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+}
+.account-action-error,
+.account-identity p {
+  color: var(--mantine-color-red-5);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.account-login {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 16px;
+  padding: 16px;
+  font-size: 13px;
+}
+.account-login p {
+  margin: 8px 0;
+  color: var(--muted);
+}
+.account-login > small {
+  display: block;
+  margin-top: 12px;
+  color: var(--muted);
+}
+.account-login-code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 12px 0;
+}
+.account-login-code code {
+  font-size: 20px;
+  letter-spacing: 2px;
+}
+.account-register {
+  margin-top: 20px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.account-register summary {
+  cursor: pointer;
+}
+.account-register form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.account-register .mantine-TextInput-root {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .account-picker {
+    max-width: 135px;
+  }
+}
+@media (max-width: 600px) {
+  .account-picker {
+    width: 32px;
+    padding: 0;
+    flex-shrink: 0;
+  }
+  .account-picker .account-picker-label,
+  .account-picker .mantine-Button-section[data-position="right"] {
+    display: none;
+  }
+  .account-picker .mantine-Button-section[data-position="left"] {
+    margin: 0;
+  }
+  .account-row {
+    padding: 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .account-row .mantine-Button-root {
+    margin-left: 44px;
+  }
+  .account-avatar {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+.account-capacity {
+  margin-top: 7px;
+  display: grid;
+  gap: 6px;
+}
+.account-capacity-pool {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  align-items: baseline;
+}
+.account-capacity-pool > span {
+  color: var(--muted);
+  width: 38px;
+  flex-shrink: 0;
+}
+.account-capacity-pool > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 16px;
+}
+.account-capacity-window {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.account-capacity-window strong {
+  font-size: 11px;
+  font-weight: 500;
+}
+.account-capacity-window time {
+  color: var(--muted);
+  font-size: 10px;
+}
+@media (max-width: 600px) {
+  .account-row {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    align-items: start;
+  }
+  .account-avatar {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .account-identity {
+    grid-column: 2;
+  }
+  .account-row > .mantine-Button-root,
+  .account-row > .account-default {
+    grid-column: 2;
+    justify-self: start;
+    margin-left: 0;
+  }
+  .account-capacity-window {
+    min-width: 110px;
+  }
+}

@@ -48,6 +48,7 @@ Run `npm --prefix desktop run package` to build the desktop application.
 - [Command guide](CLI.md): waves, steering, resource claims, and CLI usage.
 - [Web development](web/README.md): client structure and browser checks.
 - [Desktop](desktop/README.md): native boundaries, launch, and packaging.
+- [Accounts](ACCOUNTS.md): account selection, profile discovery, and isolation.
 - [Time awareness](TIME-AWARENESS.md): native time reminders and cache evidence.
 - [Extraction record](EXTRACTION.md): source history and local migration checks.
 
@@ -68,6 +69,8 @@ node tests/portable-smoke.mjs
 node tests/state-contract-smoke.mjs
 python3 -B tests/daemon-contract.py
 python3 -B tests/runtime-contract.py
+python3 -B tests/accounts-contract.py
+python3 -B tests/runtime-accounts-contract.py
 python3 -B tests/canvas-contract.py
 python3 -B tests/install-cli-contract.py
 npm --prefix web test

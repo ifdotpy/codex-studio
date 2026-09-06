@@ -39,6 +39,7 @@ import { api, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
+import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import TerminalDock from "./components/TerminalDock";
 import "./desktop";
@@ -99,6 +100,15 @@ export default function App() {
     lead = agents.find((a) => a.id === (agent?.rootId || room?.rootId)),
     team = agents.filter((a) => a.rootId === lead?.id),
     workers = team.filter((a) => !a.isLead);
+  const accounts = useAccounts(data?.stateDir);
+  const accountKey =
+    agent?.accountKey ||
+    lead?.accountKey ||
+    (agent ? "default" : accounts.data.defaultAccountKey);
+  const limitsRequest = useRef(0);
+  const currentAccountKey = useRef(accountKey);
+  currentAccountKey.current = accountKey;
+  const visibleLimits = limits?.accountKey === accountKey ? limits : null;
   const attentionCount =
     (data?.runtime.requests.length || 0) +
     (data?.runtime.userTasks?.filter((task) => task.status === "open").length ||
@@ -131,16 +141,43 @@ export default function App() {
     return () => window.removeEventListener("desktop-error", onError);
   }, [notify]);
   const reloadLimits = useCallback(() => {
-    void api("/api/limits")
-      .then(setLimits)
-      .catch((e) => setLimits({ data: null, error: errorText(e) }));
-  }, []);
+    const request = ++limitsRequest.current;
+    const query =
+      accountKey === "default"
+        ? ""
+        : `?account_key=${encodeURIComponent(accountKey)}`;
+    void api("/api/limits" + query)
+      .then((result) => {
+        if (result.accountKey && result.accountKey !== accountKey)
+          throw new Error("Codex returned limits for another account.");
+        if (
+          request === limitsRequest.current &&
+          currentAccountKey.current === accountKey
+        )
+          setLimits({ ...result, accountKey });
+      })
+      .catch((e) => {
+        if (
+          request === limitsRequest.current &&
+          currentAccountKey.current === accountKey
+        )
+          setLimits({ data: null, error: errorText(e), accountKey });
+      });
+  }, [accountKey]);
   useEffect(() => {
     if (data?.stateDir) reloadLimits();
   }, [data?.stateDir, reloadLimits]);
   useEffect(() => {
-    if (data?.runtime.rateLimits?.at) setLimits(data.runtime.rateLimits);
-  }, [data?.runtime.rateLimits]);
+    const result =
+      data?.runtime.rateLimitsByAccount?.[accountKey] ||
+      (accountKey === "default" ? data?.runtime.rateLimits : null);
+    if (result?.at && (result.accountKey || "default") === accountKey)
+      setLimits((old) =>
+        !old || old.accountKey !== accountKey || result.at >= (old.at || 0)
+          ? { ...result, accountKey }
+          : old,
+      );
+  }, [data?.runtime.rateLimits, data?.runtime.rateLimitsByAccount, accountKey]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -179,6 +216,7 @@ export default function App() {
       id: crypto.randomUUID(),
       previous: lead?.id || null,
       model: lead?.model || "gpt-6-astra",
+      account_key: accounts.data.defaultAccountKey,
     };
     if (!opened && drafts.new) setDraft(drafts.new, creation.current.id);
     try {
@@ -370,7 +408,9 @@ export default function App() {
   const importChat = async (cursor?: string) => {
     try {
       const d = await api(
-        "/api/import" + (cursor ? "?cursor=" + encodeURIComponent(cursor) : ""),
+        "/api/import?account_key=" +
+          encodeURIComponent(accountKey) +
+          (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""),
       );
       setModal({
         title: "Import from Codex",
@@ -387,6 +427,7 @@ export default function App() {
                       const a = await api("/api/import", {
                         id,
                         threadId: t.id,
+                        account_key: accountKey,
                         name: "Imported chat",
                         model: lead?.model || "gpt-6-astra",
                       });
@@ -577,6 +618,24 @@ export default function App() {
                       : "Broadcast"}
             </span>
           </div>
+          <Accounts
+            state={accounts}
+            agent={agent || lead}
+            accountKey={accountKey}
+            changeAccount={async (key) => {
+              if (agent?.isLead) {
+                await api("/api/agents/account", {
+                  id: agent.id,
+                  account_key: key,
+                });
+                await refresh();
+              } else {
+                accounts.setData(
+                  await api("/api/accounts/default", { account_key: key }),
+                );
+              }
+            }}
+          />
           {view === "chat" && agent?.isLead && (
             <NativeSelect
               id="model"
@@ -732,7 +791,7 @@ export default function App() {
             refresh={refresh}
             notify={notify}
             project={project}
-            limits={limits}
+            limits={visibleLimits}
             reloadLimits={reloadLimits}
             onPhase={onPhase}
             onSelect={open}

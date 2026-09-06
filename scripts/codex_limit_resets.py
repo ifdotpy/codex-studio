@@ -13,18 +13,28 @@ def _identity(value, name):
     return value
 
 
-def _read_limits(runtime):
+def _read_limits(runtime, account_key="default"):
     try:
-        data = runtime.connect().call("account/rateLimits/read", {}, timeout=10)
+        data = runtime.connect(account_key).call(
+            "account/rateLimits/read", {}, timeout=10
+        )
         if not isinstance(data, dict):
             raise ValueError("The account usage response is invalid")
-        value = {"data": data, "at": time.time(), "error": None}
+        value = {
+            "accountKey": account_key,
+            "data": data,
+            "at": time.time(),
+            "error": None,
+        }
     except Exception as error:
         with runtime.lock:
-            runtime.rate_limits = {**runtime.rate_limits, "error": str(error)}
+            runtime.set_rate_limits(
+                account_key,
+                {**runtime.rate_limits_for(account_key), "error": str(error)},
+            )
         raise
     with runtime.lock:
-        runtime.rate_limits = value
+        runtime.set_rate_limits(account_key, value)
     return value
 
 
@@ -51,6 +61,7 @@ def _result(attempt, limits):
         "request_id": attempt["id"],
         "credit_id": attempt["credit_id"],
         "account_id": attempt["account_id"],
+        "account_key": limits.get("accountKey", attempt.get("account_key", "default")),
         "limits": limits,
     }
     if attempt.get("error"):
@@ -65,6 +76,8 @@ def consume_reset(runtime, data):
     Retry that exact credit with the same idempotency key, even if its fresh
     detail no longer says available. Never select a replacement credit.
     """
+    account_key = data.get("account_key", "default")
+    runtime.accounts.get(account_key)
     account = _identity(data.get("account_id"), "the account id from current usage")
     credit = _identity(data.get("credit_id"), "an exact reset credit id")
     request = data.get("request_id") or str(uuid.uuid4())
@@ -106,7 +119,7 @@ def consume_reset(runtime, data):
                     None,
                 )
 
-        limits = _read_limits(runtime)
+        limits = _read_limits(runtime, account_key)
         if limits["data"].get("accountId") != account:
             raise ValueError(
                 "The account changed. Reload usage before using a reset credit"
@@ -132,6 +145,7 @@ def consume_reset(runtime, data):
             attempt = {
                 "id": request,
                 "account_id": account,
+                "account_key": account_key,
                 "credit_id": credit,
                 "idempotency_key": str(uuid.uuid4()),
                 "status": "pending",
@@ -147,7 +161,7 @@ def consume_reset(runtime, data):
             return _result(attempt, limits)
 
         try:
-            response = runtime.connect().call(
+            response = runtime.connect(account_key).call(
                 "account/rateLimitResetCredit/consume",
                 {"creditId": credit, "idempotencyKey": attempt["idempotency_key"]},
                 timeout=20,
@@ -165,8 +179,8 @@ def consume_reset(runtime, data):
             _save(db, attempt)
         # A failed refresh cannot turn a confirmed reset into an unknown spend.
         try:
-            limits = _read_limits(runtime)
+            limits = _read_limits(runtime, account_key)
         except Exception:
             with runtime.lock:
-                limits = runtime.rate_limits.copy()
+                limits = runtime.rate_limits_for(account_key).copy()
         return _result(attempt, limits)

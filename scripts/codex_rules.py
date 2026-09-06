@@ -380,7 +380,7 @@ class RulesMixin:
                 or a["epoch"] != m["epoch"]
             ):
                 raise ValueError("This interactive monitor is not active")
-            server = self.connect()
+            server = self.connect(a.get("accountKey", "default"))
             close = False
             if "rows" in data or "cols" in data:
                 rows, cols = data.get("rows", 24), data.get("cols", 80)

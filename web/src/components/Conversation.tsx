@@ -695,7 +695,12 @@ export default function Conversation(p: {
             </div>
           </form>
           {agent?.source === "managed" && (
-            <Usage agent={agent} limits={p.limits} reload={p.reloadLimits} />
+            <Usage
+              key={p.agent?.accountKey || "default"}
+              agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
+              limits={p.limits}
+              reload={p.reloadLimits}
+            />
           )}
           <p className="composer-hint">
             Enter to send · Shift + Enter for a new line

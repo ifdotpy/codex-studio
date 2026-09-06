@@ -11,9 +11,13 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--url', default=os.environ.get('CODEX_CANVAS_URL', 'http://127.0.0.1:4620'))
 s = p.add_subparsers(dest='command', required=True)
 s.add_parser('list')
-s.add_parser('models')
+s.add_parser('accounts')
+for command in ('models', 'limits'):
+    c = s.add_parser(command)
+    c.add_argument('--account', help='Account key from codex-control accounts')
 c = s.add_parser('create')
 c.add_argument('task')
+c.add_argument('--account', help='Account key from codex-control accounts')
 c.add_argument('--cwd', default=os.getcwd())
 c.add_argument('--name', default='Lead')
 c.add_argument('--model')
@@ -54,11 +58,15 @@ try:
     token = state['token']
     if a.command == 'list':
         result = [{'id': t['id'], 'name': t['name'], 'parent': t.get('parentId'), 'status': t['status'],
-                   'model': t.get('model'), 'tokens': t.get('tokensUsed')} for t in state['threads']]
-    elif a.command == 'models':
-        result = request('/api/models')
+                   'model': t.get('model'), 'accountKey': t.get('accountKey'), 'tokens': t.get('tokensUsed')} for t in state['threads']]
+    elif a.command == 'accounts':
+        result = request('/api/accounts')
+    elif a.command in ('models', 'limits'):
+        account = a.account or request('/api/accounts')['defaultAccountKey']
+        result = request('/api/' + a.command + '?account_key=' + quote(account))
     elif a.command == 'create':
         result = request('/api/agents', dict(id=str(uuid.uuid4()), name=a.name, cwd=a.cwd, prompt=a.task,
+            account_key=a.account or request('/api/accounts')['defaultAccountKey'],
             model=a.model, effort=a.effort, concurrency=a.concurrency, maxAgents=a.max_agents, tokenBudget=a.token_budget), token)
     elif a.command == 'send':
         result = request('/api/messages', dict(id=str(uuid.uuid4()), room=a.agent, text=a.text), token)

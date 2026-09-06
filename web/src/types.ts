@@ -10,6 +10,7 @@ export interface Agent extends Json {
   status: string;
   cwd?: string;
   model: string;
+  accountKey?: string;
   canSend?: boolean;
   threadId?: string;
   empty?: boolean;
@@ -83,6 +84,7 @@ export interface Snapshot {
     tasksHistoryLimit?: number;
     requests: Json[];
     rateLimits?: Json;
+    rateLimitsByAccount?: Record<string, Json>;
   };
 }
 export interface Message extends Json {
