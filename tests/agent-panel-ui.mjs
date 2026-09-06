@@ -129,7 +129,7 @@ try {
     page.locator("[data-chat]").filter({ hasText: name }).click();
   await select("Release lead");
   const panel = page.locator(".agent-panel");
-  await panel.getByText("Progress and updates appear here.").waitFor();
+  await panel.waitFor({ state: "hidden" });
   const assertLayout = async () => {
     const bounds = await panel.boundingBox();
     const transcript = await page.locator("#messages").boundingBox();
@@ -145,7 +145,6 @@ try {
       bounds.x >= 0 && bounds.x + bounds.width <= page.viewportSize().width + 1,
     );
   };
-  await assertLayout();
   assert.ok(
     (await page.locator("#composer").boundingBox()).height <= 100,
     "The empty composer must stay compact",
@@ -158,6 +157,7 @@ try {
   );
   const frame = panel.frameLocator("iframe");
   await frame.getByText("Review 12 of 40").waitFor();
+  await assertLayout();
   assert.equal(
     await frame
       .locator(".progress")
@@ -185,9 +185,8 @@ try {
   await select("Release lead");
   await frame.getByText("Late lead result").waitFor();
   put(lead, 4);
-  await panel.getByText("Progress and updates appear here.").waitFor();
-  assert.equal(await panel.locator("iframe").count(), 0);
-  await assertLayout();
+  await panel.waitFor({ state: "hidden" });
+  assert.equal(await panel.count(), 0);
   put(
     lead,
     5,

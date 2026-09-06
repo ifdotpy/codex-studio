@@ -275,15 +275,17 @@ export default function AgentPanel({
     return () => removeEventListener("message", receive);
   }, []);
   const feedback = state.latest;
+  const hasContent = !!(current?.html.trim() || current?.css.trim());
+  if (!hasContent && !error) return null;
   return (
     <section
-      className="agent-panel"
+      className={hasContent ? "agent-panel" : "agent-panel-notice"}
       aria-label="Agent panel"
       aria-busy={loading}
       data-agent={agentId}
       data-panel-version={current?.version || 0}
     >
-      {current?.html || current?.css ? (
+      {hasContent && (
         <iframe
           ref={iframe}
           title="Agent panel content"
@@ -291,11 +293,6 @@ export default function AgentPanel({
           referrerPolicy="no-referrer"
           srcDoc={frameDocument.html}
         />
-      ) : (
-        <div className="agent-panel-empty">
-          {loading ? "Loading agent panel…" : "Agent panel"}
-          {!loading && <span>Progress and updates appear here.</span>}
-        </div>
       )}
       {error ? (
         <p className="agent-panel-error" role="alert">
