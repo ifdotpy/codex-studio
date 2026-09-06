@@ -296,7 +296,7 @@ export default function Accounts({
                 }}
               />
               <p>For this team only. Codex permissions stay active.</p>
-              {teamBusy && <p>Stop the team before you change this setting.</p>}
+              {teamBusy && <p>Wait for active turns to finish.</p>}
             </div>
           )}
           <Menu.Item
@@ -349,7 +349,7 @@ export default function Accounts({
               }}
             />
             <p>For this team only. Codex permissions stay active.</p>
-            {teamBusy && <p>Stop the team before you change this setting.</p>}
+            {teamBusy && <p>Wait for active turns to finish.</p>}
           </div>
         )}
         <div className="accounts-list" aria-label="Saved accounts">
