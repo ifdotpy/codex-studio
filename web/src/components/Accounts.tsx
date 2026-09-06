@@ -1,4 +1,4 @@
-import { Button, Menu, Modal, TextInput } from "@mantine/core";
+import { Button, Menu, Modal, Switch, TextInput } from "@mantine/core";
 import {
   Check,
   ChevronDown,
@@ -7,6 +7,7 @@ import {
   LockKeyhole,
   Plus,
   RefreshCw,
+  ShieldAlert,
   UserRound,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,6 +15,7 @@ import { api, errorText } from "../api";
 import type { Agent, Json } from "../types";
 import "./accounts.css";
 import { readBuckets, formatPercent } from "./Usage";
+import AccountProjectRules, { projectRuleSummary } from "./AccountProjectRules";
 
 export interface Account {
   id: string;
@@ -24,6 +26,7 @@ export interface Account {
   source?: string;
   status: string;
   error?: string | null;
+  projectRules?: { allowedProjects: string[] | null; revision: number };
 }
 export interface AccountsState {
   accounts: Account[];
@@ -134,11 +137,19 @@ export default function Accounts({
   agent,
   accountKey,
   changeAccount,
+  lead,
+  teamBusy,
+  changeRuleOverride,
+  onError,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
   accountKey: string;
   changeAccount: (key: string) => Promise<void>;
+  lead?: Agent;
+  teamBusy: boolean;
+  changeRuleOverride: (enabled: boolean) => Promise<void>;
+  onError: (message: string) => void;
 }) {
   const [opened, setOpened] = useState(false);
   const [pending, setPending] = useState("");
@@ -159,6 +170,7 @@ export default function Accounts({
     !!agent &&
     (!agent.isLead || !agent.empty || !!agent.threadId || !!agent.inFlight);
   const title = selected?.email || selected?.label || "Codex account";
+  const skipped = !!lead?.dangerouslySkipAccountRules;
   const action = async (key: string, run: () => Promise<unknown>) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -168,6 +180,7 @@ export default function Accounts({
       await run();
     } catch (e) {
       setError(errorText(e));
+      onError(errorText(e));
     } finally {
       actionLock.current = false;
       setPending("");
@@ -209,7 +222,13 @@ export default function Accounts({
             variant="subtle"
             aria-label={`Account: ${title}`}
             title={title}
-            leftSection={<UserRound size={15} />}
+            leftSection={
+              skipped ? (
+                <ShieldAlert size={15} className="account-rules-warning" />
+              ) : (
+                <UserRound size={15} />
+              )
+            }
             rightSection={<ChevronDown size={13} />}
           >
             <span className="account-picker-label">{title}</span>
@@ -253,6 +272,7 @@ export default function Accounts({
                     ? " · Default"
                     : ""}
                 </small>
+                <small>{projectRuleSummary(account)}</small>
               </span>
             </Menu.Item>
           ))}
@@ -263,6 +283,22 @@ export default function Accounts({
             </p>
           )}
           <Menu.Divider />
+          {lead && (
+            <div className="account-rule-override">
+              <Switch
+                label="Dangerously skip rules"
+                color="orange"
+                checked={skipped}
+                disabled={teamBusy || !!pending || !lead.isLead}
+                onChange={(event) => {
+                  const checked = event.currentTarget.checked;
+                  void action("override", () => changeRuleOverride(checked));
+                }}
+              />
+              <p>For this team only. Codex permissions stay active.</p>
+              {teamBusy && <p>Stop the team before you change this setting.</p>}
+            </div>
+          )}
           <Menu.Item
             leftSection={<UserRound size={14} />}
             onClick={() => setOpened(true)}
@@ -276,6 +312,19 @@ export default function Accounts({
           )}
         </Menu.Dropdown>
       </Menu>
+      {skipped && (
+        <Button
+          className="account-rules-badge"
+          size="compact-xs"
+          color="orange"
+          variant="light"
+          leftSection={<ShieldAlert size={12} />}
+          title="Dangerously skip rules is enabled for this team"
+          onClick={() => setOpened(true)}
+        >
+          Rules off
+        </Button>
+      )}
       <Modal
         opened={opened}
         onClose={() => setOpened(false)}
@@ -287,6 +336,22 @@ export default function Accounts({
           Each team uses its own account and limits. Choose a default for new
           conversations.
         </p>
+        {lead && (
+          <div className="account-rule-override account-rule-override-panel">
+            <Switch
+              label="Dangerously skip rules"
+              color="orange"
+              checked={skipped}
+              disabled={teamBusy || !!pending || !lead.isLead}
+              onChange={(event) => {
+                const checked = event.currentTarget.checked;
+                void action("override", () => changeRuleOverride(checked));
+              }}
+            />
+            <p>For this team only. Codex permissions stay active.</p>
+            {teamBusy && <p>Stop the team before you change this setting.</p>}
+          </div>
+        )}
         <div className="accounts-list" aria-label="Saved accounts">
           {accounts.map((account) => (
             <section
@@ -313,6 +378,7 @@ export default function Accounts({
                     .join(" · ")}
                 </small>
                 {account.error && <p role="alert">{account.error}</p>}
+                <AccountProjectRules account={account} saved={state.setData} />
                 <AccountCapacity account={account} opened={opened} />
               </div>
               {account.id === state.data.defaultAccountKey ? (

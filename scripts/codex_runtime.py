@@ -343,6 +343,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
                 a.setdefault("accountKey", "default")
+                a.setdefault("dangerouslySkipAccountRules", False)
                 a.setdefault("compactions", 0)
                 a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
@@ -541,7 +542,34 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         self.changed.set()
         return key
 
+    @staticmethod
+    def requested_rule_override(data):
+        value = data.get("dangerously_skip_rules", False)
+        if type(value) is not bool:
+            raise ValueError("dangerously_skip_rules must be a boolean")
+        return value
+
+    def check_account_project(self, a, db=None):
+        """Check project admission using the current team override, not a worker copy."""
+        root = self.agent(a["rootId"], db)
+        self.accounts.check_project(
+            a.get("accountKey", "default"),
+            a["cwd"],
+            skip=root.get("dangerouslySkipAccountRules", False),
+        )
+
+    def default_project(self, account_key, cwd):
+        if self.accounts.project_allowed(account_key, cwd):
+            return cwd
+        allowed = self.accounts.get(account_key)["projectRules"]["allowedProjects"]
+        return next((path for path in allowed or [] if Path(path).is_dir()), cwd)
+
     def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False):
+        requested_skip = self.requested_rule_override(data)
+        if parent and requested_skip:
+            raise ValueError(
+                "Only the user can enable dangerously_skip_rules on a lead"
+            )
         if data.get("profile_id"):
             with self.lock, self.db() as db:
                 row = db.execute(
@@ -577,6 +605,10 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     raise ValueError("This conversation was deleted")
                 if a["name"] != name.strip() or a["prompt"] != prompt.strip() or ("account_key" in data and a.get("accountKey", "default") != data["account_key"]):
                     raise ValueError("This request id has different content")
+                if "dangerously_skip_rules" in data and a.get("dangerouslySkipAccountRules", False) != requested_skip:
+                    raise ValueError("This request id has different rules settings")
+                if not draft:
+                    self.check_account_project(a, db)
                 return a
             p = self.agent(parent, db) if parent else None
             root = self.agent(p["rootId"], db) if p else None
@@ -599,6 +631,9 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             cwd = str(Path(p["cwd"] if p else data.get("cwd", "")).expanduser().resolve())
             if not Path(cwd).is_dir() or (not p and not data.get("cwd")):
                 raise ValueError("Select an existing project directory")
+            skip = root.get("dangerouslySkipAccountRules", False) if root else requested_skip
+            if not draft:
+                self.accounts.check_project(account_key, cwd, skip=skip)
             concurrency = int(data.get("concurrency", 8))
             max_agents = int(data.get("maxAgents", 64))
             if not 1 <= concurrency <= 64 or not 1 <= max_agents <= 256:
@@ -610,6 +645,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 "id": key,
                 "threadId": None,
                 "accountKey": account_key,
+                "dangerouslySkipAccountRules": skip,
                 "name": name.strip(),
                 "prompt": prompt.strip(),
                 "cwd": cwd,
@@ -650,10 +686,13 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             return a
 
     def new_lead(self, data):
+        self.requested_rule_override(data)
         key = data.get("id")
         settings = {k: data.get(k) for k in ("model", "previous")}
         if "account_key" in data:
             settings["account_key"] = data["account_key"]
+        if "dangerously_skip_rules" in data:
+            settings["dangerously_skip_rules"] = data["dangerously_skip_rules"]
         signature = json.dumps(settings, sort_keys=True)
         with self.lock:
             with self.db() as db:
@@ -686,14 +725,21 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 account_key = data.get("account_key", previous.get("accountKey", "default") if previous else self.accounts.default())
                 self.accounts.get(account_key)
                 if previous and self.empty_lead(db, previous):
+                    if previous.get("accountKey", "default") != account_key:
+                        previous["cwd"] = self.default_project(account_key, previous["cwd"])
+                        previous["dangerouslySkipAccountRules"] = False
                     previous["accountKey"] = account_key
+                    if "dangerously_skip_rules" in data:
+                        previous["dangerouslySkipAccountRules"] = data["dangerously_skip_rules"]
                     self.put(db, "agents", previous)
                     if key:
                         db.execute("INSERT INTO runtime_lead_requests VALUES (?,?,?)", (key, previous["id"], signature))
                     return previous
                 cwd = previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd())
+                cwd = self.default_project(account_key, cwd)
             return self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
                                 "_creationSignature": signature, "account_key": account_key,
+                                "dangerously_skip_rules": data.get("dangerously_skip_rules", False),
                                 "model": data.get("model") or (previous["model"] if previous else LEAD_MODELS[0])}, draft=True)
 
     @staticmethod
@@ -713,6 +759,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                 return a
             if not self.empty_lead(db, a) or a.get("inFlight"):
                 raise ValueError("The account is fixed after the first message. Create a new chat")
+            self.accounts.check_project(account_key, a["cwd"], skip=a.get("dangerouslySkipAccountRules", False))
             a["accountKey"] = account_key
             self.put(db, "agents", a)
             return a
@@ -736,6 +783,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
         return {"deleted": sorted(ids)}
 
     def conversation_settings(self, key, data):
+        requested_skip = self.requested_rule_override(data)
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             if a.get("deletedAt"):
@@ -743,18 +791,40 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             if not a.get("isLead"):
                 raise ValueError("Only a lead has conversation settings")
             if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
-                raise ValueError("Wait for this turn to end before changing the model or project")
+                raise ValueError(
+                    "Wait for this turn to end before changing the model or project"
+                )
+            if "dangerously_skip_rules" in data:
+                if any(
+                    other["rootId"] == a["id"]
+                    and (
+                        other.get("inFlight")
+                        or other["status"] in {"running", "starting", "approval"}
+                    )
+                    for other in self.records(db, "agents")
+                ):
+                    raise ValueError(
+                        "Wait for every team turn to end before changing account rules"
+                    )
+                a["dangerouslySkipAccountRules"] = requested_skip
             if "model" in data:
                 if data["model"] not in LEAD_MODELS:
                     raise ValueError("A lead must use Astra or Sol")
                 a["model"] = data["model"]
             if "cwd" in data:
                 if a.get("threadId"):
-                    raise ValueError("Choose the project before the first message, or create a new chat")
+                    raise ValueError(
+                        "Choose the project before the first message, or create a new chat"
+                    )
                 cwd = Path(data["cwd"]).expanduser().resolve()
                 if not cwd.is_dir():
                     raise ValueError("Select an existing project directory")
                 a["cwd"] = str(cwd)
+                self.accounts.check_project(
+                    a.get("accountKey", "default"),
+                    a["cwd"],
+                    skip=a.get("dangerouslySkipAccountRules", False),
+                )
             self.put(db, "agents", a)
             self.loaded.discard(key)
             return a
@@ -930,7 +1000,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
     def tool_definitions():
         return TOOLS
 
-    def new_thread_params(self, a):
+    def new_thread_params(self, a, *, inherit_account_rule_override=True):
         params = {
             "cwd": a["cwd"],
             "config": THREAD_CONFIG.copy(),
@@ -938,6 +1008,23 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             + "\nUse orchestration_task for assignments and explicit result acceptance. A final answer does not accept work. Read the shared plan supplied with each turn. Worker profiles set instructions, model, and role; they do not add permissions.\n"
             + a.get("profileInstructions", ""),
         }
+        policy = self.accounts.get(a.get("accountKey", "default"))["projectRules"]
+        root = self.agent(a["rootId"])
+        if policy["allowedProjects"] is not None:
+            params["developerInstructions"] += (
+                "\n[Account project rules] Project admission policy; stay within these projects. "
+                "Allowed project roots: " + json.dumps(policy["allowedProjects"]) + ". "
+                "Only the user can change these rules or enable an exception. "
+                "Do not modify account policy files or call settings APIs to bypass this policy."
+            )
+        if inherit_account_rule_override and root.get(
+            "dangerouslySkipAccountRules", False
+        ):
+            params["developerInstructions"] += (
+                "\nThe user enabled Dangerously skip rules for this team. "
+                "The account project admission restriction is bypassed. "
+                "Native Codex permissions and sandbox rules still apply."
+            )
         if a.get("needsTitle"):
             params[
                 "developerInstructions"
@@ -956,16 +1043,19 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             return self.prepare_locked(self.agent(a["id"]))
 
     def prepare_locked(self, a):
+        self.check_account_project(a)
         server = self.connect(a.get("accountKey", "default"))
         if a["worktree"] and not a["worktreeReady"]:
             repo = subprocess.check_output(["git", "-C", a["cwd"], "rev-parse", "--show-toplevel"], text=True).strip()
+            relative_project = Path(a["cwd"]).resolve().relative_to(Path(repo).resolve())
             directory = str(Path(repo) / ".worktrees" / "codex-agents" / a["id"])
+            project_directory = str(Path(directory) / relative_project)
             branch = "codex-agent/" + a["id"]
             subprocess.run(["git", "-C", repo, "worktree", "add", "-b", branch, directory, "HEAD"],
                            check=True, capture_output=True, text=True, timeout=60)
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
-                latest.update(cwd=directory, branch=branch, worktreeReady=True)
+                latest.update(cwd=project_directory, branch=branch, worktreeReady=True)
                 self.put(db, "agents", latest)
                 a = latest
             self.checkpoint_capture(a["id"], "Before first turn", internal=True)
@@ -978,6 +1068,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             else:
                 method = "thread/start"
                 params["dynamicTools"] = TOOLS
+            self.check_account_project(a)
             result = server.call(method, params)
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
@@ -2206,6 +2297,15 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                         )
                 return {"status": "answered"}
             method = r["method"]
+            if data.get("decision") == "accept" and method in {
+                "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+                "execCommandApproval", "applyPatchApproval", "item/permissions/requestApproval",
+                "mcpServer/elicitation/request",
+            }:
+                if r.get("agent"):
+                    self.check_account_project(self.agent(r["agent"], db), db)
+                elif self.accounts.get(r.get("accountKey", "default"))["projectRules"]["allowedProjects"] is not None:
+                    raise ValueError("Cannot approve this action without its project identity")
             if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval"}:
                 decision = data.get("decision")
                 if decision not in {"accept", "decline", "cancel"}:
@@ -2370,6 +2470,7 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
             self.put(db, "agents", a)
         try:
             a = self.prepare(a)
+            self.check_account_project(a)
             if action == "compact":
                 return self.connect(a.get("accountKey", "default")).call("thread/compact/start", {"threadId": a["threadId"]})
             return self.connect(a.get("accountKey", "default")).call("review/start", {"threadId": a["threadId"],
@@ -2399,9 +2500,11 @@ class Runtime(WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin):
                     a = json.loads(row[0])
                     if a.get("importedFrom") != tid or a.get("accountKey", "default") != account_key:
                         raise ValueError("This import id belongs to another conversation")
+                    self.check_account_project(a, db)
                     return a
         result = self.connect(account_key).call("thread/read", {"threadId": tid, "includeTurns": False})
         thread = result["thread"]
+        self.accounts.check_project(account_key, thread.get("cwd"), skip=self.requested_rule_override(data))
         page = self.connect(account_key).call("thread/turns/list", {"threadId": tid, "limit": 20,
                                   "sortDirection": "desc", "itemsView": "full"})
         visible = []

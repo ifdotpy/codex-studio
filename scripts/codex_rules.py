@@ -230,6 +230,12 @@ class RulesMixin:
                     )
                     self.put(db, "rules", r)
                     continue
+                try:
+                    self.check_account_project(a, db)
+                except ValueError as error:
+                    r.update(status="paused", error=str(error))
+                    self.put(db, "rules", r)
+                    continue
                 if r["kind"] == "event" or r["nextAt"] > now:
                     continue
                 r["nextAt"] = now + r["intervalSeconds"]
@@ -380,6 +386,7 @@ class RulesMixin:
                 or a["epoch"] != m["epoch"]
             ):
                 raise ValueError("This interactive monitor is not active")
+            self.check_account_project(a, db)
             server = self.connect(a.get("accountKey", "default"))
             close = False
             if "rows" in data or "cols" in data:

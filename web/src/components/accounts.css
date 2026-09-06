@@ -102,7 +102,7 @@
   margin-top: 18px;
 }
 .account-action-error,
-.account-identity p {
+.account-identity p[role="alert"] {
   color: var(--mantine-color-red-5);
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -239,5 +239,80 @@
   }
   .account-capacity-window {
     min-width: 110px;
+  }
+}
+.account-rules-warning {
+  color: var(--mantine-color-orange-4);
+}
+.account-rules-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.account-project-rules {
+  margin: 4px 0;
+}
+.account-rules-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+.account-rules-summary > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.account-rule-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.account-rule-editor {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.account-rule-editor .mantine-Radio-root {
+  margin-top: 8px;
+}
+.account-rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.account-row .account-project-rules .mantine-Button-root {
+  margin-left: 0;
+}
+.account-rule-override {
+  padding: 8px 12px;
+}
+.account-rule-override p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+.account-rule-override .mantine-Switch-label {
+  font-size: 12px;
+}
+.account-rule-override-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+}
+@media (max-width: 600px) {
+  .account-rules-badge {
+    padding-inline: 5px;
+  }
+  .account-rule-editor {
+    padding: 8px;
   }
 }

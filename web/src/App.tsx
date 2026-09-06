@@ -622,6 +622,27 @@ export default function App() {
             state={accounts}
             agent={agent || lead}
             accountKey={accountKey}
+            onError={notify}
+            lead={lead || (agent?.isLead ? agent : undefined)}
+            teamBusy={
+              team.some(
+                (member) =>
+                  !!member.inFlight ||
+                  busy.has(member.status) ||
+                  member.status === "queued",
+              ) ||
+              !!agent?.inFlight ||
+              (!!agent && busy.has(agent.status))
+            }
+            changeRuleOverride={async (enabled) => {
+              const root = lead || (agent?.isLead ? agent : undefined);
+              if (!root) return;
+              await api("/api/conversation", {
+                id: root.id,
+                dangerously_skip_rules: enabled,
+              });
+              await refresh();
+            }}
             changeAccount={async (key) => {
               if (agent?.isLead) {
                 await api("/api/agents/account", {

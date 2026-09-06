@@ -665,6 +665,11 @@ def make_server(canvas, port=0):
                     if self.path == "/api/accounts/default":
                         runtime.accounts.default(body.get("account_key"))
                         return self.send(runtime.accounts.snapshot())
+                    if self.path == "/api/accounts/rules":
+                        if "allowed_projects" not in body:
+                            raise ValueError("Supply allowed_projects, or null for all projects")
+                        runtime.accounts.set_project_rules(body.get("account_key"), body["allowed_projects"], body.get("expected_revision"))
+                        return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/login":
                         return self.send(runtime.accounts.start_login(runtime, body.get("request_id")))
                     if self.path == "/api/agents/account":

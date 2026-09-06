@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import threading
 import uuid
@@ -156,7 +157,137 @@ class AccountStore:
 
     def get(self, key):
         with self.lock:
-            return self.refresh(key)
+            result = self.refresh(key)
+            result["projectRules"] = self._rule_owner(key).setdefault(
+                "projectRules", {"allowedProjects": None, "revision": 0}
+            )
+            return result
+
+    def _rule_owner(self, key):
+        row = self._row(key)
+        identity = row.get("accountId") or row.get("_credentialIdentity")
+        if identity:
+            for candidate in self.data["accounts"].values():
+                if (
+                    candidate.get("accountId") or candidate.get("_credentialIdentity")
+                ) == identity:
+                    return candidate
+        return row
+
+    def set_project_rules(self, key, allowed, expected_revision):
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("Supply the current project rule revision")
+        if allowed is not None:
+            if not isinstance(allowed, list) or len(allowed) > 128:
+                raise ValueError("Supply up to 128 project directories")
+            normalized = []
+            for value in allowed:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError("Each project needs a directory path")
+                path = Path(value).expanduser().resolve()
+                if not path.is_dir():
+                    raise ValueError("A project directory does not exist: " + str(path))
+                if str(path) not in normalized:
+                    normalized.append(str(path))
+            allowed = normalized
+        with self.lock:
+            previous = self.get(key)["projectRules"]
+            if previous["revision"] != expected_revision:
+                if previous["allowedProjects"] == allowed:
+                    return dict(previous)
+                raise ValueError("Project rules changed. Reload them before saving")
+            if previous["allowedProjects"] == allowed:
+                return dict(previous)
+            rules = {"allowedProjects": allowed, "revision": expected_revision + 1}
+            owner = self._rule_owner(key)
+            owner["projectRules"] = rules
+            try:
+                self._save()
+            except Exception:
+                owner["projectRules"] = previous
+                raise
+            return dict(rules)
+
+    @staticmethod
+    def _git(path, *args):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(path), *args],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+                env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+    @classmethod
+    def _linked_worktree(cls, cwd, allowed):
+        target_top = cls._git(cwd, "rev-parse", "--show-toplevel")
+        source_top = cls._git(allowed, "rev-parse", "--show-toplevel")
+        if not target_top or not source_top:
+            return False
+        target_top, source_top = Path(target_top).resolve(), Path(source_top).resolve()
+        target_common = cls._git(
+            cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        )
+        source_common = cls._git(
+            allowed, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        )
+        if (
+            not target_common
+            or not source_common
+            or Path(target_common).resolve() != Path(source_common).resolve()
+        ):
+            return False
+        entries = cls._git(allowed, "worktree", "list", "--porcelain", "-z")
+        registered = {
+            Path(part[9:]).resolve()
+            for part in (entries or "").split("\0")
+            if part.startswith("worktree ")
+        }
+        if target_top not in registered:
+            return False
+        try:
+            # A rule for a subdirectory grants the matching subtree, not the whole repository.
+            subtree = allowed.relative_to(source_top)
+            cwd.relative_to(target_top / subtree)
+            return True
+        except ValueError:
+            return False
+
+    def project_allowed(self, key, cwd):
+        allowed = self.get(key)["projectRules"]["allowedProjects"]
+        if allowed is None:
+            return True
+        if not isinstance(cwd, (str, Path)) or not str(cwd).strip():
+            return False
+        directory = Path(cwd).expanduser().resolve()
+        for value in allowed:
+            root = Path(value)
+            # Replacing a saved root with a symlink does not grant a different project.
+            if root.resolve() != root or not root.is_dir():
+                continue
+            if directory == root or root in directory.parents:
+                return True
+            if self._linked_worktree(directory, root):
+                return True
+        return False
+
+    def check_project(self, key, cwd, skip=False):
+        if type(skip) is not bool:
+            raise ValueError("Dangerously skip rules must be true or false")
+        account = self.get(key)
+        if skip or self.project_allowed(key, cwd):
+            return
+        allowed = account["projectRules"]["allowedProjects"]
+        roots = ", ".join(allowed) if allowed else "none"
+        raise ValueError(
+            f"Account {account.get('email') or account['label']} cannot use project {cwd}. "
+            f"Allowed projects: {roots}. Choose another account or enable Dangerously skip rules for this team"
+        )
 
     def home(self, key):
         row = self.get(key)

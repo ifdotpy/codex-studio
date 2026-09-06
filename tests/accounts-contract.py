@@ -252,6 +252,71 @@ class AccountsContract(unittest.TestCase):
             self.assertEqual(limits["accountKey"], key)
             self.assertEqual(request("/api/limits?account_key=missing")[0], 400)
             self.assertNotIn("SECRET", json.dumps(request("/api/accounts")[1]))
+            status, policy = request(
+                "/api/accounts/rules",
+                {
+                    "account_key": key,
+                    "allowed_projects": [str(other)],
+                    "expected_revision": 0,
+                },
+            )
+            self.assertEqual(status, 200)
+            rules = next(
+                a["projectRules"] for a in policy["accounts"] if a["id"] == key
+            )
+            self.assertEqual(rules["allowedProjects"], [str(other.resolve())])
+            self.assertEqual(
+                request(
+                    "/api/accounts/rules",
+                    {
+                        "account_key": key,
+                        "allowed_projects": None,
+                        "expected_revision": 0,
+                    },
+                )[0],
+                400,
+            )
+            self.assertEqual(
+                request(
+                    "/api/accounts/rules", {"account_key": key, "expected_revision": 1}
+                )[0],
+                400,
+            )
+            self.assertEqual(
+                request("/api/agents/account", {"id": lead["id"], "account_key": key})[
+                    0
+                ],
+                400,
+            )
+            self.assertTrue(
+                request(
+                    "/api/conversation",
+                    {"id": lead["id"], "dangerously_skip_rules": True},
+                )[1]["dangerouslySkipAccountRules"]
+            )
+            self.assertEqual(
+                request("/api/agents/account", {"id": lead["id"], "account_key": key})[
+                    0
+                ],
+                200,
+            )
+            self.assertFalse(
+                request(
+                    "/api/conversation",
+                    {"id": lead["id"], "dangerously_skip_rules": False},
+                )[1]["dangerouslySkipAccountRules"]
+            )
+            self.assertEqual(
+                request(
+                    "/api/messages",
+                    {
+                        "id": str(uuid.uuid4()),
+                        "room": lead["id"],
+                        "text": "blocked task",
+                    },
+                )[0],
+                400,
+            )
         finally:
             server.shutdown()
             server.server_close()

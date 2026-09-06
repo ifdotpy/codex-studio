@@ -34,6 +34,7 @@ class WorkspaceMixin:
 
     def workspace_path(self, agent_id, path):
         a = self.agent(agent_id)
+        self.check_account_project(a)
         root = Path(a["cwd"]).resolve()
         supplied = Path(text_field(path, "a path", 4096)).expanduser()
         resolved = (supplied if supplied.is_absolute() else root / supplied).resolve()
@@ -156,6 +157,7 @@ class WorkspaceMixin:
         return file.read_bytes(), mime, file.name
 
     def git(self, a, args, env=None, input=None):
+        self.check_account_project(a)
         result = subprocess.run(
             ["git", "-C", a["cwd"], *args],
             input=input,
@@ -321,6 +323,7 @@ class WorkspaceMixin:
     def restore_checkpoint(self, key, data):
         with self.lock:
             a = self.checked_actor_in_own_db(key)
+            self.check_account_project(a)
             self.assert_workspace_idle(a)
             if not a.get("worktreeReady"):
                 raise ValueError(
@@ -472,6 +475,8 @@ class WorkspaceMixin:
             self.assert_workspace_available(db, a)
             if turn_id == a.get("turnId"):
                 raise ValueError("Wait for this turn to finish before branching")
+        # A branch starts a new team, without the source team's exception.
+        self.accounts.check_project(a.get("accountKey", "default"), a["cwd"])
         response = self.connect(a.get("accountKey", "default")).call(
             "thread/fork",
             {
@@ -480,7 +485,7 @@ class WorkspaceMixin:
                 "cwd": a["cwd"],
                 "config": self.thread_config(),
                 "model": a["model"] if a.get("isLead") else "gpt-5.6-sol",
-                "developerInstructions": self.new_thread_params(a)[
+                "developerInstructions": self.new_thread_params(a, inherit_account_rule_override=False)[
                     "developerInstructions"
                 ],
             },
@@ -599,6 +604,7 @@ class WorkspaceMixin:
 
     def capabilities(self, key):
         a = self.checked_actor_in_own_db(key)
+        self.check_account_project(a)
         cache = self.capability_cache.get(key)
         if cache and time.time() - cache["at"] < 30:
             return cache
@@ -820,6 +826,7 @@ class WorkspaceMixin:
         )
 
     def assert_workspace_available(self, db, a):
+        self.check_account_project(a, db)
         cwd = Path(a["cwd"]).resolve()
         if any(
             other.get("workspaceOperation") and Path(other["cwd"]).resolve() == cwd

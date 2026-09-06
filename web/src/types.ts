@@ -11,6 +11,7 @@ export interface Agent extends Json {
   cwd?: string;
   model: string;
   accountKey?: string;
+  dangerouslySkipAccountRules?: boolean;
   canSend?: boolean;
   threadId?: string;
   empty?: boolean;
