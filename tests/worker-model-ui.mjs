@@ -56,7 +56,12 @@ try {
   }
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(url);
+  if (process.env.CODEX_TEST_DESKTOP) {
+    await page.waitForURL(url + "/");
+    await page.locator("#message").waitFor();
+  } else {
+    await page.goto(url);
+  }
   let requests = 0;
   await page.route("**/api/models?**", async (route) => {
     requests++;
