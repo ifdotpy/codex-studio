@@ -3,6 +3,7 @@ import {
   Button,
   Drawer,
   Modal,
+  Menu,
   TextInput,
   UnstyledButton,
 } from "@mantine/core";
@@ -15,6 +16,7 @@ import {
   FileDiff,
   Inbox,
   Minimize2,
+  MoreHorizontal,
   ShieldCheck,
   Square,
   ListTodo,
@@ -681,40 +683,57 @@ export default function App() {
               className="conversation-quick-actions"
               aria-label="Agent actions"
             >
-              {(
-                [
-                  ["compact", "Compact", Minimize2],
-                  ["review", "Review", ShieldCheck],
-                  ["stop-team", "Stop team", Square],
-                ] as const
-              ).map(([action, label, Icon]) => (
-                <Button
-                  key={String(action)}
-                  data-action={String(action)}
-                  disabled={
-                    action !== "stop-team" &&
-                    (busy.has(agent.status) ||
-                      !!agent.inFlight ||
-                      !agent.threadId)
-                  }
-                  size="compact-xs"
-                  variant="subtle"
-                  color={action === "stop-team" ? "red" : undefined}
-                  leftSection={<Icon size={14} />}
-                  onClick={() => {
-                    void run(() =>
-                      api(
-                        action === "stop-team" ? "/api/stop" : "/api/action",
-                        action === "stop-team"
-                          ? { id: agent.rootId, descendants: true }
-                          : { id: agent.id, action },
-                      ),
-                    );
-                  }}
-                >
-                  {String(label)}
-                </Button>
-              ))}
+              <Menu position="bottom-end" withinPortal>
+                <Menu.Target>
+                  <ActionIcon
+                    aria-label="Chat actions"
+                    title="Chat actions"
+                    variant="subtle"
+                  >
+                    <MoreHorizontal size={18} />
+                  </ActionIcon>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  {(
+                    [
+                      ["compact", "Compact", Minimize2],
+                      ["review", "Review", ShieldCheck],
+                    ] as const
+                  ).map(([action, label, Icon]) => (
+                    <Menu.Item
+                      key={action}
+                      data-action={action}
+                      disabled={
+                        busy.has(agent.status) ||
+                        !!agent.inFlight ||
+                        !agent.threadId
+                      }
+                      leftSection={<Icon size={14} />}
+                      onClick={() => {
+                        void run(() =>
+                          api("/api/action", { id: agent.id, action }),
+                        );
+                      }}
+                    >
+                      {label}
+                    </Menu.Item>
+                  ))}
+                </Menu.Dropdown>
+              </Menu>
+              <Button
+                data-action="stop-team"
+                size="compact-xs"
+                variant="subtle"
+                color="red"
+                leftSection={<Square size={14} />}
+                onClick={() => {
+                  void run(() =>
+                    api("/api/stop", { id: agent.rootId, descendants: true }),
+                  );
+                }}
+              >
+                Stop team
+              </Button>
             </div>
           )}
         </header>
