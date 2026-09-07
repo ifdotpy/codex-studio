@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 import threading
 import urllib.error
 import urllib.request
@@ -81,6 +82,11 @@ class ResetContracts(unittest.TestCase):
         return consume_reset(
             self.runtime, {"credit_id": "credit-A", "account_id": "account-A", **data}
         )
+
+    def test_source_update_keeps_older_runtime_reset_compatible(self):
+        with patch.object(self.runtime, "limit_refresh_lock", None):
+            self.assertEqual(self.reset()["outcome"], "reset")
+        self.assertEqual(len(self.server.consume_calls), 1)
 
     def test_exact_credit_and_completed_retry_do_not_spend_another_credit(self):
         request = str(uuid.uuid4())

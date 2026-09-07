@@ -1,5 +1,6 @@
 """Redeem an exact reset credit with durable native idempotency."""
 
+from contextlib import nullcontext
 import json
 import time
 import uuid
@@ -86,7 +87,10 @@ def consume_reset(runtime, data):
     except (ValueError, TypeError, AttributeError):
         raise ValueError("Supply a UUID request_id") from None
 
-    with runtime.limits_lock, runtime.limit_refresh_lock(account_key):
+    # A running server can import this module after its source was updated.
+    # Older runtimes already serialize reads with the global reset lock.
+    account_lock = getattr(runtime, "limit_refresh_lock", None)
+    with runtime.limits_lock, (account_lock(account_key) if account_lock else nullcontext()):
         with runtime.lock, runtime.db() as db:
             _setup(db)
             alias = db.execute(
