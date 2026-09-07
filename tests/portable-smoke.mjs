@@ -388,10 +388,9 @@ async function testLauncher() {
     assert.equal(successSteer.params.expectedTurnId, "turn-thread-4-2");
     assert.match(successSteer.params.clientUserMessageId, /^[0-9a-f-]+$/);
     assert.equal(successSteer.params.input[0].text, "Inspect one path.\n");
-    assert.equal(
-      existsSync(join(STATE, `codex-inbox.smoke.${summary.runId}`, "worker-active.json")),
-      false,
-    );
+    await waitFor(() => !existsSync(
+      join(STATE, `codex-inbox.smoke.${summary.runId}`, "worker-active.json"),
+    ));
 
     runScript(
       "codex-steer",
@@ -405,10 +404,9 @@ async function testLauncher() {
     );
     assert.equal(waitingStarts[1].params.input[0].text, "Start the next turn.\n");
     assert.match(waitingStarts[1].params.clientUserMessageId, /^[0-9a-f-]+$/);
-    assert.equal(
-      existsSync(join(STATE, `codex-inbox.smoke.${summary.runId}`, "worker-waiting.json")),
-      false,
-    );
+    await waitFor(() => !existsSync(
+      join(STATE, `codex-inbox.smoke.${summary.runId}`, "worker-waiting.json"),
+    ));
 
     runScript(
       "codex-steer",
