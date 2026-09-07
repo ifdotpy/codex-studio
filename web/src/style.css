@@ -306,18 +306,6 @@ p {
   flex: 0 0 38px;
   justify-content: flex-start;
   padding: 0 0 0 84px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0;
-}
-.desktop-mac .brand-name {
-  gap: 4px;
-  line-height: 16px;
-}
-.desktop-mac .brand-name > span {
-  color: inherit;
-  font-weight: inherit;
 }
 .desktop-mac #sidebar {
   padding-top: 0;
