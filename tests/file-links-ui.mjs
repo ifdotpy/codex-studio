@@ -18,6 +18,10 @@ await writeFile(
   Array.from({ length: 400 }, (_, i) => `Report line ${i + 1}`).join("\n"),
 );
 await writeFile(join(root, "report with spaces.md"), "Encoded file content");
+await writeFile(
+  join(root, "report\u200bname.md"),
+  "Interior character preserved",
+);
 const proc = spawn(
   "python3",
   ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
@@ -69,12 +73,16 @@ try {
   });
   const links = [
     `[отчёте official-build](${report}:357)`,
+    `[Zero width prefix](\u200b${report}:383)`,
+    `[Encoded zero width](%E2%80%8B${report}:384%E2%80%8B)`,
+    "[Interior character](report%E2%80%8Bname.md)",
     "[Relative](official-build.md:3:2)",
     "[Anchor](./official-build.md#L25)",
     `[File URL](${pathToFileURL(report)}#L12)`,
     "[Encoded](report%20with%20spaces.md)",
     "[Missing](missing.md)",
     "[Outside](/etc/hosts)",
+    "[Zero width outside](\u200b/etc/hosts)",
     "[Sandbox](sandbox:/mnt/data/report.md)",
     "[Remote file](file://remote.invalid/report.md)",
     "[External](https://example.com/report)",
@@ -120,6 +128,12 @@ try {
   };
   await check("отчёте official-build", /Report line 357/, 357);
   assert.equal(requests.at(-1).searchParams.get("path"), report);
+  await check("Zero width prefix", /Report line 383/, 383);
+  assert.equal(requests.at(-1).searchParams.get("path"), report);
+  await check("Encoded zero width", /Report line 384/, 384);
+  assert.equal(requests.at(-1).searchParams.get("path"), report);
+  await check("Interior character", /Interior character preserved/);
+  assert.equal(requests.at(-1).searchParams.get("path"), "report\u200bname.md");
   await check("Relative", /Report line 3/, 3);
   await check("Anchor", /Report line 25/, 25);
   await check("File URL", /Report line 12/, 12);
@@ -127,6 +141,7 @@ try {
   for (const [name, message] of [
     ["Missing", /does not exist/],
     ["Outside", /outside this agent workspace/],
+    ["Zero width outside", /outside this agent workspace/],
     ["Sandbox", /outside this agent workspace/],
     ["Remote file", /Remote file links are not supported/],
   ]) {
@@ -151,7 +166,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "File links UI: PASS (official-build absolute line, relative, anchors, file URL, encoded name, visible missing/containment errors, sandbox, external preservation, unsafe URL sanitation)",
+    "File links UI: PASS (official-build absolute line, boundary zero-width cleanup, encoded zero-width cleanup, interior character preserved, relative, anchors, file URL, encoded name, visible missing/containment errors, sandbox, external preservation, unsafe URL sanitation)",
   );
   console.log("Evidence:", root);
 } catch (error) {

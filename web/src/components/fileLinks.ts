@@ -7,8 +7,14 @@ export interface LocalFileLink {
 export const markdownUriPattern =
   /^(?:(?:https?|mailto|tel|sms|cid|xmpp|file|sandbox):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 
+// Generated Markdown can carry zero-width padding around a path. Preserve
+// interior characters, which can be part of an actual filename.
+function trimLinkPadding(value: string) {
+  return value.replace(/^[\s\u200b]+|[\s\u200b]+$/g, "");
+}
+
 export function localFileLink(href: string): LocalFileLink | null {
-  const value = href.trim();
+  const value = trimLinkPadding(href);
   if (!value || value.startsWith("#") || value.startsWith("//")) return null;
   if (
     /^[a-z][a-z\d+.-]*:/i.test(value) &&
@@ -30,7 +36,7 @@ export function localFileLink(href: string): LocalFileLink | null {
   const fragment = path.indexOf("#");
   const anchor = fragment < 0 ? "" : path.slice(fragment + 1);
   path = fragment < 0 ? path : path.slice(0, fragment);
-  path = decodeURIComponent(path);
+  path = decodeURIComponent(path).replace(/^\u200b+|\u200b+$/g, "");
   const location = path.match(/:(\d+)(?::\d+)?$/);
   if (location) path = path.slice(0, location.index);
   const line = Number(
