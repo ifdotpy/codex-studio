@@ -238,6 +238,52 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(self.records, ["blocked", "accepted-1", "accepted-2", "died"])
         self.assertIn("callback queue saturated", (self.root / "app-server.log").read_text())
 
+    def test_slow_queue_diagnostic_contains_identity_without_message_contents(self):
+        server, proc = self.start()
+        server.enqueue(server.request, {'id': 'slow', 'method': 'item/tool/call',
+            '_studioReceivedAt': time.time() - 2,
+            'params': {'threadId': 'thread', 'text': 'private payload'}})
+        done = threading.Event()
+        server.after_events(done.set)
+        self.assertTrue(done.wait(1))
+        log = (self.root / 'app-server.log').read_text()
+        row = json.loads(next(line for line in log.splitlines() if 'callbackLatency' in line))
+        self.assertGreaterEqual(row['queueDelayMs'], 2000)
+        self.assertEqual(row['threadId'], 'thread')
+        self.assertEqual(row['rpcId'], 'slow')
+        self.assertNotIn('private payload', log)
+
+    def test_delta_backlog_batches_without_crossing_request_or_item_boundaries(self):
+        server, proc = self.start()
+        self.block(proc)
+        batches, order = [], []
+        def notification(message):
+            batches.append(message)
+            order.append(message['params']['itemId'])
+        server.notification = notification
+        server.request = lambda message: order.append('request')
+        samples = []
+        for i in range(300):
+            params = {'threadId': 't', 'turnId': 'turn', 'itemId': 'a', 'delta': f'{i} Привет\n'}
+            samples.append(params)
+            proc.emit({'method': 'item/agentMessage/delta', 'params': params})
+        proc.emit({'method': 'item/tool/call', 'id': 'request'})
+        for item in ['a', 'b']:
+            proc.emit({'method': 'item/agentMessage/delta', 'params': {
+                'threadId': 't', 'turnId': 'turn', 'itemId': item, 'delta': 'tail'}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)  # All preceding wire messages are now enqueued.
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        self.assertEqual(order, ['a', 'a', 'a', 'request', 'a', 'b'])
+        self.assertEqual(''.join(m['params']['delta'] for m in batches[:3]),
+                         ''.join(p['delta'] for p in samples))
+        self.assertEqual([p for m in batches[:3] for p in m['_studioNotificationSamples']], samples)
+        self.assertTrue(all(isinstance(m['_studioDispatchedAt'], float) for m in batches))
+
 
 if __name__ == "__main__":
     unittest.main()

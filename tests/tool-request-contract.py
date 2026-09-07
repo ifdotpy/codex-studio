@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_tool_requests import RequestMixin
@@ -96,6 +97,20 @@ class RequestContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different content'):
             self.reserve(args={**args, 'agents': [{'name': 'other', 'task': 'Inspect'}]})
         self.assertEqual(self.runtime.tool_request(first['id'])['stage'], 'completed')
+
+    def test_latency_separates_callback_reservation_and_execution_waits(self):
+        message = self.message('latency')
+        message.update(_studioReceivedAt=100.0, _studioDispatchedAt=140.0)
+        with patch('codex_tool_requests.time.time', return_value=150.0):
+            record = self.runtime.reserve_tool_request(message)
+        with patch('codex_tool_requests.time.time', return_value=151.0):
+            self.assertTrue(self.runtime.begin_tool_request(record['id']))
+        record = self.runtime.tool_request(record['id'])
+        self.assertEqual(record['callbackQueueDelayMs'], 40000)
+        self.assertEqual(record['reservationDelayMs'], 10000)
+        self.assertEqual(record['admissionDelayMs'], 50000)
+        self.assertEqual(record['executionQueueDelayMs'], 1000)
+        self.assertEqual(record['queueDelayMs'], 51000)
 
     def test_queued_cancel_proves_nonexecution_and_prevents_begin(self):
         record = self.reserve()

@@ -389,22 +389,77 @@ class AppServer:
 
     def dispatch(self):
         import queue
+        deferred = None
         try:
             while True:
                 try:
-                    callback, message = self.callbacks.get(timeout=0.05)
+                    if deferred is not None:
+                        callback, message = deferred
+                        deferred = None
+                    else:
+                        callback, message = self.callbacks.get(timeout=0.05)
                 except queue.Empty:
                     with self.callback_lock:
                         if self.reader_done.is_set() and self.callbacks.empty():
                             self.dispatch_stopped = True
                             break
                     continue
+                count = 1
+                # Drain adjacent text fragments in one runtime transaction. Never
+                # cross a request, receipt, lifecycle event, or another item.
+                if callback == self.notification and isinstance(message, dict) and message.get("method") == "item/agentMessage/delta":
+                    params = message.get("params", {})
+                    if isinstance(params, dict) and isinstance(params.get("delta"), str):
+                        identity = {k: v for k, v in params.items() if k != "delta"}
+                        samples = [params]
+                        size = len(params["delta"])
+                        while count < 128 and size < 65536:
+                            try:
+                                following = self.callbacks.get_nowait()
+                            except queue.Empty:
+                                break
+                            next_callback, next_message = following
+                            next_params = next_message.get("params", {}) if isinstance(next_message, dict) else {}
+                            if (next_callback != callback or not isinstance(next_message, dict)
+                                    or next_message.get("method") != message["method"]
+                                    or not isinstance(next_params, dict) or not isinstance(next_params.get("delta"), str)
+                                    or {k: v for k, v in next_params.items() if k != "delta"} != identity):
+                                deferred = following
+                                break
+                            samples.append(next_params)
+                            count += 1
+                            size += len(next_params["delta"])
+                        if count > 1:
+                            message = {**message, "params": {**params, "delta": "".join(p["delta"] for p in samples)},
+                                       "_studioNotificationSamples": samples}
+                callback_started = time.monotonic()
                 try:
+                    if isinstance(message, dict):
+                        message["_studioDispatchedAt"] = time.time()
                     callback(message)
                 except Exception as error:
                     self.protocol_error(error)
                 finally:
-                    self.callbacks.task_done()
+                    duration = (time.monotonic() - callback_started) * 1000
+                    metadata = message if isinstance(message, dict) else {}
+                    received = metadata.get("_studioReceivedAt")
+                    delay = max(0, metadata.get("_studioDispatchedAt", time.time()) - received) * 1000 if type(received) in (int, float) else 0
+                    if duration >= 100 or delay >= 1000:
+                        params = metadata.get("params") or {}
+                        params = params if isinstance(params, dict) else {}
+                        diagnostic = {"kind": "callbackLatency", "at": time.time(),
+                                      "method": metadata.get("method", "receipt"), "rpcId": metadata.get("id"),
+                                      "threadId": params.get("threadId"), "turnId": params.get("turnId"),
+                                      "itemId": params.get("itemId"), "queueDelayMs": round(delay, 3),
+                                      "durationMs": round(duration, 3), "notificationCount": count,
+                                      "queuedCallbacks": self.callbacks.qsize() + int(deferred is not None)}
+                        try:
+                            self.log.write((json.dumps(diagnostic) + "\n").encode())
+                            self.log.flush()
+                        except (OSError, ValueError):
+                            pass
+                    for _ in range(count):
+                        self.callbacks.task_done()
             if not self.closed:
                 self.died()
         finally:
@@ -648,7 +703,9 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
             if self.closed:
                 return None, None
             current = self.ui_revisions.get(key, 0)
-            return current, self.transcript(key) if current != revision else None
+        # Writers hold Runtime.lock before notifying ui_condition. Do not acquire
+        # Runtime.lock through transcript while holding the opposite lock order.
+        return current, self.transcript(key) if current != revision else None
 
     def agent(self, key, db=None):
         if db is None:
@@ -2065,11 +2122,13 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                                "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
                                (item["clientId"], a["id"], operation["epoch"], operation["turnId"]))
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
-            self.analytics_safe(db, self.analytics_event, a, method, p)
+            samples = message.get("_studioNotificationSamples") if method == "item/agentMessage/delta" else None
+            for sample in samples or [p]:
+                self.analytics_safe(db, self.analytics_event, a, method, sample)
             self.record_task(db, a, method, p, stale)
             if method.startswith("item/") and stale:
                 return
-            a["events"] += 1
+            a["events"] += len(samples) if samples else 1
             a["lastEvent"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             if method == "turn/started":
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (a["id"] + ":" + p["turn"]["id"],)).fetchone():

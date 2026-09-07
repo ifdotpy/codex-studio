@@ -146,6 +146,13 @@ class RequestMixin:
                 received = message.get("_studioReceivedAt")
                 if type(received) in (int, float) and math.isfinite(received):
                     record["wireReceivedAt"] = received
+                    record["admissionDelayMs"] = max(0, now - received) * 1000
+                dispatched = message.get("_studioDispatchedAt")
+                if type(dispatched) in (int, float) and math.isfinite(dispatched):
+                    record["callbackStartedAt"] = dispatched
+                    record["reservationDelayMs"] = max(0, now - dispatched) * 1000
+                    if "wireReceivedAt" in record:
+                        record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
                 if params.get("tool") == "orchestration_spawn" and "request_id" in args:
                     record["request_id"] = args["request_id"]
                 self.put(db, "tool_requests", record)
@@ -169,6 +176,7 @@ class RequestMixin:
                 return False
             now = time.time()
             record.update(stage="running", updated=now, started=now)
+            record["executionQueueDelayMs"] = max(0, now - record["created"]) * 1000
             if "wireReceivedAt" in record:
                 record["queueDelayMs"] = max(0, now - record["wireReceivedAt"]) * 1000
             self.put(db, "tool_requests", record)
