@@ -71,6 +71,10 @@ try {
         }
     return data;
   };
+  // This fixture tests the legacy API used by servers before mobile sync.
+  await page.route("**/api/sync/identity", (route) =>
+    route.fulfill({ status: 404, json: { error: "Not found" } }),
+  );
   await page.route("**/api/state", async (route) => {
     const data = snapshot();
     requests.push({ revision, held: holdNext, failure: currentFailure });
@@ -104,6 +108,8 @@ try {
     .fill("Only this fixture");
   const answer = card.getByRole("button", { name: "Send answer", exact: true });
   const label = answer.locator(".mantine-Button-inner");
+  // Finish the browser scroll before measuring the loading transition.
+  await answer.scrollIntoViewIfNeeded();
   const before = await label.boundingBox();
   await answer.click();
   await waitFor(() => pendingAnswer, "Answer request reaches the held route");
@@ -118,6 +124,7 @@ try {
     "Loading keeps the inner button transform unset",
   );
   const during = await label.boundingBox();
+
   for (const key of ["x", "y", "width", "height"])
     assert.ok(
       Math.abs(before[key] - during[key]) <= 1,

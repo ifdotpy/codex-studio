@@ -55,6 +55,10 @@ try {
       inFlight: ["running", "starting", "approval"].includes(phase),
       turnId: phase === "completed" ? null : "fixture-turn",
     });
+    // This fixture tests the legacy API used by servers before mobile sync.
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ status: 404, json: { error: "Not found" } }),
+    );
     await page.route("**/api/state", (route) =>
       route.fulfill({
         json: {
@@ -91,7 +95,7 @@ try {
     await page.locator("#stop:disabled").waitFor();
     await page.locator("#message").fill("Check this task");
     const boxes = () =>
-      page.evaluate(() => {
+      page.evaluate((mobile) => {
         const result = {};
         for (const selector of [
           "#composer",
@@ -99,10 +103,10 @@ try {
           ".composer-bar",
           ".message-delivery",
           ".attach-button",
-          ".dictation-trigger",
+          ...(mobile ? [] : [".dictation-trigger"]),
           "#stop",
           "#send",
-          ".usage-footer",
+          ...(mobile ? [] : [".usage-footer"]),
         ]) {
           const node = document.querySelector(selector);
           const box = node.getBoundingClientRect();
@@ -111,7 +115,7 @@ try {
           );
         }
         return result;
-      });
+      }, width <= 760);
     const baseline = await boxes();
     const stable = async (label) => {
       const current = await boxes();
@@ -133,7 +137,7 @@ try {
       for (const selector of [
         ".message-delivery",
         ".attach-button",
-        ".dictation-trigger",
+        ...(width <= 760 ? [] : [".dictation-trigger"]),
         "#stop",
         "#send",
       ])

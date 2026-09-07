@@ -13,6 +13,7 @@ import signal
 import shlex
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -414,10 +415,13 @@ class Canvas:
             return row
 
 
-def make_server(canvas, port=0):
+def make_server(canvas, port=0, public_origin=None):
+    from codex_remote import RemoteAccess
+    remote = RemoteAccess(canvas.root, public_origin)
     token = secrets.token_urlsafe(32)
     terminal_manager = [None]
     cost_reader = [None]
+    sync_store = [None]
     terminal_lock = threading.RLock()
 
     def terminals():
@@ -429,6 +433,19 @@ def make_server(canvas, port=0):
 
                 terminal_manager[0] = TerminalManager(canvas.root)
             return terminal_manager[0]
+
+    def sync():
+        with terminal_lock:
+            if sync_store[0] is None:
+                from codex_sync import SyncStore
+
+                def snapshot():
+                    with canvas.lock:
+                        return {**canvas.snapshot(),
+                                "runtime": canvas.runtime.snapshot() if canvas.runtime else None}
+
+                sync_store[0] = SyncStore(canvas.connect, snapshot, canvas.transcript)
+            return sync_store[0]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -444,17 +461,15 @@ def make_server(canvas, port=0):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com; img-src 'self' data: blob:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
             )
             self.end_headers()
             self.wfile.write(data)
 
         def trusted(self, write=False):
-            host = self.headers.get("Host")
-            allowed = {f"{name}:{self.server.server_port}" for name in ("127.0.0.1", "localhost")}
-            if host not in allowed:
+            origin = remote.request_origin(self.headers, self.client_address[0], self.server.server_port)
+            if origin is None:
                 return False
-            origin = f"http://{host}"
             if self.headers.get("Origin") not in (None, origin):
                 return False
             if self.headers.get("Sec-Fetch-Site") == "cross-site":
@@ -474,7 +489,11 @@ def make_server(canvas, port=0):
             revision, previous = -1, {}
             try:
                 while not runtime.closed:
+                    if not self.trusted():
+                        break
                     current, data = runtime.wait_transcript(key, revision)
+                    if not self.trusted():
+                        break
                     if current is None:
                         break
                     if data is None:
@@ -497,15 +516,44 @@ def make_server(canvas, port=0):
                     pass
             self.close_connection = True
 
+        def stream_sync(self):
+            store = sync()
+            self.connection.settimeout(20)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            previous = None
+            try:
+                while not (canvas.runtime and canvas.runtime.closed):
+                    if not self.trusted():
+                        break
+                    current = store.generation()
+                    self.wfile.write(b'data: "RESYNC"\n\n' if current != previous else b": heartbeat\n\n")
+                    self.wfile.flush()
+                    previous = current
+                    time.sleep(1)
+            except (OSError, sqlite3.Error):
+                pass
+            self.close_connection = True
+
         def do_GET(self):
             path = urlparse(self.path)
             # The opaque panel iframe can load only these public, stateless scripts
             # across origins. APIs and all other assets retain the local-origin gate.
             public_bridge = (path.path in {"/assets/panel-bridge.js", "/assets/panel-ui.js"} and
-                             self.headers.get("Host") in {f"{name}:{self.server.server_port}" for name in ("127.0.0.1", "localhost")})
+                             remote.request_origin(self.headers, self.client_address[0], self.server.server_port) is not None)
             if not self.trusted() and not public_bridge:
                 return self.send({"error": "Local origin required"}, 403)
             try:
+                if path.path == "/api/sync/identity":
+                    return self.send(sync().identity())
+                if path.path == "/api/sync/pull":
+                    q = {k: v[0] for k, v in parse_qs(path.query).items()}
+                    return self.send(sync().pull(q.get("scope", "state"), q.get("after", 0), q.get("limit", 100)))
+                if path.path == "/api/sync/stream":
+                    return self.stream_sync()
                 if path.path == "/api/state":
                     return self.send({**canvas.snapshot(), "token": token,
                                       "runtime": canvas.runtime.snapshot() if canvas.runtime else None})
@@ -521,6 +569,8 @@ def make_server(canvas, port=0):
                         {
                             "application": "codex-agents",
                             "protocol": 1,
+                            "mobileProtocol": 1,
+                            "publicOrigin": remote.origin(),
                             "pid": os.getpid(),
                             "stateDir": str(Path(canvas.root).resolve()),
                         }
@@ -625,8 +675,8 @@ def make_server(canvas, port=0):
                     return self.send(canvas.messages(parse_qs(path.query).get("room", [""])[0]))
                 relative = "index.html" if path.path == "/" else path.path.lstrip("/")
                 asset = (WEB / relative).resolve()
-                if asset.is_relative_to(WEB.resolve()) and asset.is_file() and (relative == "index.html" or relative.startswith("assets/")):
-                    mime = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}.get(asset.suffix, "application/octet-stream")
+                if asset.is_relative_to(WEB.resolve()) and asset.is_file() and (relative in {"index.html", "manifest.webmanifest", "apple-touch-icon.png", "icon.svg", "icon-192.png", "icon-512.png"} or relative.startswith("assets/")):
+                    mime = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".webmanifest": "application/manifest+json", ".png": "image/png", ".svg": "image/svg+xml"}.get(asset.suffix, "application/octet-stream")
                     return self.send(asset.read_bytes(), content_type=mime)
                 if path.path == "/":
                     return self.send({"error": "Build the interface: cd web && npm ci && npm run build"}, 503)
@@ -642,7 +692,7 @@ def make_server(canvas, port=0):
                 if (
                     not 0
                     < length
-                    <= (28 * 1024 * 1024 if self.path == "/api/assets" else 262144)
+                    <= (28 * 1024 * 1024 if self.path == "/api/assets" else 6 * 1024 * 1024 if self.path == "/api/voice/audio" else 262144)
                 ):
                     return self.send({"error": "Invalid request size"}, 413)
                 if self.headers.get_content_type() != "application/json":
@@ -651,6 +701,31 @@ def make_server(canvas, port=0):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
+                workspace = self.headers.get("X-Canvas-Workspace")
+                if (workspace is not None or self.path == "/api/sync/drafts") and workspace != sync().identity()["workspaceId"]:
+                    return self.send({"error": "The server workspace changed. Reload before sending."}, 409)
+                if self.path.startswith("/api/voice/") and canvas.runtime:
+                    voice = canvas.runtime.voice()
+                    action = self.path.removeprefix("/api/voice/")
+                    fields = {
+                        "status": (), "start": ("session_id", "sdp"), "end": ("session_id",),
+                        "record": ("session_id", "event_id", "kind", "text", "item_id", "previous_item_id", "payload"),
+                        "records": ("after",), "speech": ("record_id", "session_id"),
+                        "submit": ("message_id", "record_ids", "edited_text"),
+                        "audio": ("session_id", "chunk_id", "audio", "mime"),
+                        "approvals": (), "approval_speech": ("request_id",),
+                        "approve": ("session_id", "speech_id", "transcript_id"),
+                    }
+                    if action not in fields:
+                        raise ValueError("Unknown voice action")
+                    optional = {"record": {"text", "item_id", "previous_item_id", "payload"},
+                                "records": {"after"}, "submit": {"edited_text"}}
+                    if any(key not in body for key in fields[action] if key not in optional.get(action, set())):
+                        raise ValueError("Missing voice request fields")
+                    args = {key: body[key] for key in fields[action] if key in body}
+                    return self.send(getattr(voice, action)(body.get("agent"), **args))
+                if self.path == "/api/sync/drafts":
+                    return self.send(sync().push_drafts(body.get("rows")))
                 if self.path == "/api/limits/reset" and canvas.runtime:
                     from codex_limit_resets import consume_reset
 
@@ -800,6 +875,18 @@ def make_server(canvas, port=0):
                 return self.send({"error": str(error)}, 400)
 
     class LocalServer(ThreadingHTTPServer):
+        voice_pruned_at = 0
+
+        def service_actions(self):
+            if time.monotonic() - self.voice_pruned_at >= 3600:
+                self.voice_pruned_at = time.monotonic()
+                if canvas.runtime:
+                    from codex_voice import prune_audio
+                    try:
+                        prune_audio(canvas.root)
+                    except OSError as error:
+                        print(f"Voice audio cleanup failed: {error}", file=sys.stderr)
+
         def server_close(self):
             if cost_reader[0] is not None:
                 cost_reader[0].close()

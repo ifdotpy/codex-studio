@@ -27,6 +27,7 @@ import {
   Plus,
   Trash2,
   Users,
+  X,
 } from "lucide-react";
 import { api, errorText, save, saved } from "../api";
 import "./sidebar-projects.css";
@@ -56,6 +57,7 @@ type Props = {
   notify?: (message: string) => void;
 };
 export default function Sidebar(p: Props) {
+  const compact = useMediaQuery("(max-width: 760px)");
   const [tab, setTab] = useState("leads"),
     [query, setQuery] = useState(""),
     [limit, setLimit] = useState(60),
@@ -116,6 +118,9 @@ export default function Sidebar(p: Props) {
       }
     }
   }, [p.opened]);
+  useEffect(() => {
+    if (compact) setTab("leads");
+  }, [compact]);
   const rows: (Agent | Room)[] = tab === "leads" ? agents : rooms;
   const filtered = rows
     .filter((row) => tab !== "leads" || !!(row as Agent).archived === archive)
@@ -278,13 +283,15 @@ export default function Sidebar(p: Props) {
                   >
                     {a.pinned ? "Unpin" : "Pin"}
                   </Menu.Item>
-                  <Menu.Item
-                    leftSection={<FolderOpen size={14} />}
-                    disabled={!!a.threadId || !!a.inFlight}
-                    onClick={() => p.changeProject(a)}
-                  >
-                    Change project folder
-                  </Menu.Item>
+                  {!compact && (
+                    <Menu.Item
+                      leftSection={<FolderOpen size={14} />}
+                      disabled={!!a.threadId || !!a.inFlight}
+                      onClick={() => p.changeProject(a)}
+                    >
+                      Change project folder
+                    </Menu.Item>
+                  )}
                   <Menu.Item
                     leftSection={
                       a.archived ? (
@@ -325,7 +332,6 @@ export default function Sidebar(p: Props) {
       </div>
     );
   };
-  const compact = useMediaQuery("(max-width: 760px)");
   const content = (
     <aside id="sidebar" aria-label="Conversations">
       <div className="sidebar-header">
@@ -334,6 +340,11 @@ export default function Sidebar(p: Props) {
             <strong>Codex</strong> <span>Studio</span>
           </span>
         </a>
+        {compact && (
+          <ActionIcon aria-label="Close conversations" onClick={p.close}>
+            <X size={20} />
+          </ActionIcon>
+        )}
       </div>
       <TextInput
         id="chat-search"
@@ -347,27 +358,29 @@ export default function Sidebar(p: Props) {
           setLimit(60);
         }}
       />
-      <Tabs
-        className="chat-tabs"
-        value={tab}
-        onChange={(v) => {
-          setTab(v || "leads");
-          setQuery("");
-          setLimit(60);
-        }}
-      >
-        <Tabs.List grow>
-          <Tabs.Tab value="leads" leftSection={<MessageSquare size={14} />}>
-            Chats
-          </Tabs.Tab>
-          <Tabs.Tab value="agents" leftSection={<Users size={14} />}>
-            Agents{" "}
-            {rooms.length > 0 && (
-              <span className="tab-count">{rooms.length}</span>
-            )}
-          </Tabs.Tab>
-        </Tabs.List>
-      </Tabs>
+      {!compact && (
+        <Tabs
+          className="chat-tabs"
+          value={tab}
+          onChange={(v) => {
+            setTab(v || "leads");
+            setQuery("");
+            setLimit(60);
+          }}
+        >
+          <Tabs.List grow>
+            <Tabs.Tab value="leads" leftSection={<MessageSquare size={14} />}>
+              Chats
+            </Tabs.Tab>
+            <Tabs.Tab value="agents" leftSection={<Users size={14} />}>
+              Agents{" "}
+              {rooms.length > 0 && (
+                <span className="tab-count">{rooms.length}</span>
+              )}
+            </Tabs.Tab>
+          </Tabs.List>
+        </Tabs>
+      )}
       {tab === "leads" && (
         <div className="projects-heading">
           <UnstyledButton
@@ -399,9 +412,11 @@ export default function Sidebar(p: Props) {
               </Menu.Item>
             </Menu.Dropdown>
           </Menu>
-          <ActionIcon aria-label="Add project" onClick={p.addProject}>
-            <Plus size={18} />
-          </ActionIcon>
+          {!compact && (
+            <ActionIcon aria-label="Add project" onClick={p.addProject}>
+              <Plus size={18} />
+            </ActionIcon>
+          )}
         </div>
       )}
       <nav
@@ -446,7 +461,7 @@ export default function Sidebar(p: Props) {
                       )}
                       <span>{group.name}</span>
                     </UnstyledButton>
-                    {!archive && (
+                    {!archive && (!compact || !!group.path) && (
                       <ActionIcon
                         className="project-tree-action"
                         aria-label={`New chat in ${group.name}`}
@@ -456,7 +471,7 @@ export default function Sidebar(p: Props) {
                         <Plus size={15} />
                       </ActionIcon>
                     )}
-                    {group.registered && !group.hasChats && (
+                    {!compact && group.registered && !group.hasChats && (
                       <Menu withinPortal position="bottom-end">
                         <Menu.Target>
                           <ActionIcon
@@ -521,31 +536,33 @@ export default function Sidebar(p: Props) {
           </Button>
         )}
       </nav>
-      <div className="sidebar-footer">
-        <Button
-          id="open-complaints"
-          fullWidth
-          justify="space-between"
-          className={p.view === "complaints" ? "selected" : ""}
-          leftSection={<BookOpen size={16} />}
-          onClick={p.complaints}
-          rightSection={
-            <span id="complaint-count">
-              {p.data.runtime.complaints?.filter(complaintNeedsUserResponse)
-                .length || ""}
-            </span>
-          }
-        >
-          Complaint book
-        </Button>
-      </div>
+      {!compact && (
+        <div className="sidebar-footer">
+          <Button
+            id="open-complaints"
+            fullWidth
+            justify="space-between"
+            className={p.view === "complaints" ? "selected" : ""}
+            leftSection={<BookOpen size={16} />}
+            onClick={p.complaints}
+            rightSection={
+              <span id="complaint-count">
+                {p.data.runtime.complaints?.filter(complaintNeedsUserResponse)
+                  .length || ""}
+              </span>
+            }
+          >
+            Complaint book
+          </Button>
+        </div>
+      )}
     </aside>
   );
   return compact ? (
     <Drawer
       opened={p.mobile}
       onClose={p.close}
-      size={300}
+      size="min(360px, 100vw)"
       padding={0}
       withCloseButton={false}
       title="Conversations"

@@ -5,6 +5,7 @@ import {
   Drawer,
   Modal,
   Menu,
+  NativeSelect,
   TextInput,
   UnstyledButton,
 } from "@mantine/core";
@@ -19,6 +20,7 @@ import {
   Minimize2,
   MoreHorizontal,
   ShieldCheck,
+  Settings,
   Square,
   ListTodo,
   ArrowLeft,
@@ -39,6 +41,8 @@ import {
 } from "react";
 import { api, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
+import { durableSend, useOutbox } from "./sync/send";
+import { useSyncedDrafts } from "./sync/drafts";
 import {
   busy,
   statusLabel,
@@ -68,6 +72,7 @@ import BackgroundTasks, {
   backgroundTasks,
 } from "./components/BackgroundTasks";
 export default function App() {
+  const outbox = useOutbox();
   const [livePhase, setLivePhase] = useState<{
     id: string | null;
     label: string;
@@ -79,9 +84,31 @@ export default function App() {
       ),
     [],
   );
+  const mobileClient = useMediaQuery("(max-width: 760px)");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountChanging, setAccountChanging] = useState(false);
+  useEffect(() => {
+    if (!mobileClient || !window.visualViewport) return;
+    const viewport = window.visualViewport;
+    const resize = () =>
+      document.documentElement.style.setProperty(
+        "--mobile-viewport-height",
+        `${viewport.height}px`,
+      );
+    resize();
+    viewport.addEventListener("resize", resize);
+    return () => {
+      viewport.removeEventListener("resize", resize);
+      document.documentElement.style.removeProperty("--mobile-viewport-height");
+    };
+  }, [mobileClient]);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const { data, error, refresh } = useSnapshot(),
-    [opened, setOpened] = useState<string | null>(null),
+    [opened, setOpened] = useState<string | null>(() =>
+      window.matchMedia("(max-width: 760px)").matches
+        ? saved("codex-mobile-opened", null)
+        : null,
+    ),
     [view, setView] = useState("chat"),
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
@@ -98,14 +125,25 @@ export default function App() {
       null,
     ),
     [limits, setLimits] = useState<Json | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>(() =>
-    saved("codex-agent-drafts", {}),
-  );
+  const {
+    drafts,
+    setDrafts,
+    conflicts: draftConflicts,
+    error: draftError,
+  } = useSyncedDrafts();
+  const [pendingCreation, setPendingCreation] = useState<Json | null>(null);
+  const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<Json | null>(null),
     sends = useRef<Record<string, Json>>({}),
     sendingLock = useRef(false),
     creationLock = useRef(false),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!data?.stateDir) return;
+    const pending = saved<Json | null>(creationKey, null);
+    creation.current = pending;
+    setPendingCreation(pending);
+  }, [creationKey, data?.stateDir]);
   const notify = useCallback((s: string) => {
     setToast(s);
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -134,6 +172,18 @@ export default function App() {
     if (agent && !agent.isLead && agent.status === "completed")
       setCompletedOpen(true);
   }, [agent?.id, agent?.status]);
+  useEffect(() => {
+    if (!mobileClient) return;
+    setView("chat");
+    setTeamOpen(false);
+    setWorkspaceOpen(false);
+    setTasksOpen(false);
+    if (opened && (agent || room || legacy) && !agent?.isLead)
+      setOpened(lead?.id || leads.at(-1)?.id || null);
+  }, [mobileClient, opened, agent?.isLead, lead?.id]);
+  useEffect(() => {
+    if (mobileClient) save("codex-mobile-opened", opened);
+  }, [mobileClient, opened]);
   const accounts = useAccounts(data?.stateDir);
   const accountKey =
     agent?.accountKey ||
@@ -168,6 +218,14 @@ export default function App() {
       return next;
     });
   const open = (id: string) => {
+    if (mobileClient) {
+      const target = agents.find((item) => item.id === id);
+      const root = target?.isLead
+        ? target
+        : agents.find((item) => item.id === target?.rootId && item.isLead);
+      if (!root) return;
+      id = root.id;
+    }
     setOpened(id);
     setView("chat");
     setSidebar(false);
@@ -267,6 +325,32 @@ export default function App() {
   };
   const newChat = async (cwd?: string) => {
     if (creationLock.current) return null;
+    try {
+      const pending = JSON.parse(localStorage.getItem(creationKey) || "null");
+      if (pending && (typeof pending.id !== "string" || !pending.id))
+        throw new Error("The saved chat request is invalid.");
+      creation.current = pending;
+    } catch (error) {
+      notify("Cannot read the saved chat request: " + errorText(error));
+      return null;
+    }
+    if (creation.current && cwd && creation.current.cwd !== cwd) {
+      notify(
+        "Retry the previous chat request before you start a chat in another project.",
+      );
+      return null;
+    }
+    if (creation.current) cwd = creation.current.cwd;
+    if (mobileClient && !cwd) {
+      cwd =
+        lead?.cwd ||
+        data?.runtime.projects?.[0]?.path ||
+        leads.find((item) => item.cwd)?.cwd;
+      if (!cwd) {
+        notify("Add a project on your Mac before you start a chat.");
+        return null;
+      }
+    }
     if (
       agent?.isLead &&
       agent.empty &&
@@ -290,12 +374,22 @@ export default function App() {
     };
     if (!opened && drafts.new) setDraft(drafts.new, creation.current.id);
     try {
+      // Save the exact request before sending it. A lost response must retain this identity.
+      localStorage.setItem(creationKey, JSON.stringify(creation.current));
+      setPendingCreation(creation.current);
       const a = await api("/api/leads", creation.current);
+      if (a.id !== creation.current.id)
+        throw new Error("The server returned another chat identity.");
+      localStorage.removeItem(creationKey);
+      setPendingCreation(null);
       if (!opened && drafts.new) setDraft(drafts.new, a.id);
       setToast("");
       creation.current = null;
       await refresh();
-      open(a.id);
+      setOpened(a.id);
+      setView("chat");
+      setSidebar(false);
+      setTeamOpen(false);
       return a.id as string;
     } catch (e) {
       notify(errorText(e));
@@ -342,7 +436,11 @@ export default function App() {
             assets: options?.assets || [],
             delivery: options?.delivery || "queue",
           };
-        const result = await api("/api/messages", sends.current[id]);
+        const result = await durableSend(sends.current[id]);
+        if (result.queued)
+          notify(
+            "Message saved on this device. It will send when the connection returns.",
+          );
         if (result.status === "cancelled") {
           delete sends.current[id];
           throw new Error(
@@ -424,6 +522,55 @@ export default function App() {
       (a) => a.id === (nextAccount || target.accountKey || "default"),
     );
     const suggested = account?.projectRules?.allowedProjects || [];
+    if (mobileClient) {
+      const paths = [
+        ...new Set([
+          ...(data?.runtime.projects || []).map((item) => item.path),
+          ...leads
+            .map((item) => item.cwd)
+            .filter((path): path is string => !!path),
+        ]),
+      ].filter(
+        (path) =>
+          !nextAccount ||
+          target.dangerouslySkipAccountRules ||
+          !suggested.length ||
+          suggested.some(
+            (allowed) =>
+              path === allowed ||
+              path.startsWith(allowed.replace(/\/$/, "") + "/"),
+          ),
+      );
+      setModal({
+        title: "Choose existing project",
+        body: (
+          <div className="mobile-project-list">
+            {paths.map((cwd) => (
+              <Button
+                key={cwd}
+                onClick={() =>
+                  void run(async () => {
+                    await api(
+                      nextAccount ? "/api/agents/account" : "/api/conversation",
+                      nextAccount
+                        ? { id: target.id, account_key: nextAccount, cwd }
+                        : { id: target.id, cwd },
+                    );
+                    setModal(null);
+                  })
+                }
+              >
+                {cwd}
+              </Button>
+            ))}
+            {!paths.length && (
+              <p>No available projects. Add a project on your Mac.</p>
+            )}
+          </div>
+        ),
+      });
+      return;
+    }
     setModal({
       title: nextAccount
         ? "Choose project for " +
@@ -688,6 +835,9 @@ export default function App() {
             )}
             <h1 id="conversation-title">{title}</h1>
             <span id="conversation-status">
+              {mobileClient && agent?.cwd
+                ? `${agent.cwd.split("/").filter(Boolean).at(-1)} · `
+                : ""}
               {view === "canvas"
                 ? `${leads.length} leads · ${agents.length} agents`
                 : view === "complaints"
@@ -703,60 +853,71 @@ export default function App() {
                         : ""}
             </span>
           </div>
-          <Accounts
-            state={accounts}
-            agent={agent || lead}
-            accountKey={accountKey}
-            onError={notify}
-            lead={lead || (agent?.isLead ? agent : undefined)}
-            teamBusy={
-              team.some(
-                (member) =>
-                  !!member.inFlight ||
-                  busy.has(member.status) ||
-                  member.status === "queued",
-              ) ||
-              !!agent?.inFlight ||
-              (!!agent && busy.has(agent.status))
-            }
-            changeRuleOverride={async (enabled) => {
-              const root = lead || (agent?.isLead ? agent : undefined);
-              if (!root) return;
-              await api("/api/conversation", {
-                id: root.id,
-                dangerously_skip_rules: enabled,
-              });
-              await refresh();
-            }}
-            changeAccount={async (key) => {
-              if (agent?.isLead) {
-                const allowed = accounts.data.accounts.find((a) => a.id === key)
-                  ?.projectRules?.allowedProjects;
-                if (
-                  allowed &&
-                  !agent.dangerouslySkipAccountRules &&
-                  !allowed.some(
-                    (path) =>
-                      agent.cwd === path ||
-                      agent.cwd?.startsWith(path.replace(/\/$/, "") + "/"),
-                  )
-                ) {
-                  folders(agent, key);
-                  return;
-                }
-                await api("/api/agents/account", {
-                  id: agent.id,
-                  account_key: key,
+          {!mobileClient && (
+            <Accounts
+              state={accounts}
+              agent={agent || lead}
+              accountKey={accountKey}
+              onError={notify}
+              lead={lead || (agent?.isLead ? agent : undefined)}
+              teamBusy={
+                team.some(
+                  (member) =>
+                    !!member.inFlight ||
+                    busy.has(member.status) ||
+                    member.status === "queued",
+                ) ||
+                !!agent?.inFlight ||
+                (!!agent && busy.has(agent.status))
+              }
+              changeRuleOverride={async (enabled) => {
+                const root = lead || (agent?.isLead ? agent : undefined);
+                if (!root) return;
+                await api("/api/conversation", {
+                  id: root.id,
+                  dangerously_skip_rules: enabled,
                 });
                 await refresh();
-              } else {
-                accounts.setData(
-                  await api("/api/accounts/default", { account_key: key }),
-                );
-              }
-            }}
-          />
-          {view === "chat" && agent?.cwd && (
+              }}
+              changeAccount={async (key) => {
+                if (agent?.isLead) {
+                  const allowed = accounts.data.accounts.find(
+                    (a) => a.id === key,
+                  )?.projectRules?.allowedProjects;
+                  if (
+                    allowed &&
+                    !agent.dangerouslySkipAccountRules &&
+                    !allowed.some(
+                      (path) =>
+                        agent.cwd === path ||
+                        agent.cwd?.startsWith(path.replace(/\/$/, "") + "/"),
+                    )
+                  ) {
+                    folders(agent, key);
+                    return;
+                  }
+                  await api("/api/agents/account", {
+                    id: agent.id,
+                    account_key: key,
+                  });
+                  await refresh();
+                } else {
+                  accounts.setData(
+                    await api("/api/accounts/default", { account_key: key }),
+                  );
+                }
+              }}
+            />
+          )}
+          {mobileClient && (
+            <ActionIcon
+              aria-label="Chat settings"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Settings size={20} />
+            </ActionIcon>
+          )}
+          {!mobileClient && view === "chat" && agent?.cwd && (
             <Button
               id="project"
               className="project-picker"
@@ -768,7 +929,7 @@ export default function App() {
               {agent.cwd.split("/").filter(Boolean).at(-1)}
             </Button>
           )}
-          {view === "chat" && agent?.source === "managed" && (
+          {!mobileClient && view === "chat" && agent?.source === "managed" && (
             <ExecutionSettings
               key={"execution:" + agent.id}
               agent={agent}
@@ -776,7 +937,7 @@ export default function App() {
               refresh={refresh}
             />
           )}
-          {view === "chat" && lead?.isLead && (
+          {!mobileClient && view === "chat" && lead?.isLead && (
             <ExecutionSettings
               key={"defaults:" + lead.id}
               agent={lead}
@@ -785,7 +946,7 @@ export default function App() {
               teamDefaults
             />
           )}
-          {view === "chat" && !!workers.length && (
+          {!mobileClient && view === "chat" && !!workers.length && (
             <Button
               leftSection={<Users size={16} />}
               id="team-toggle"
@@ -794,145 +955,210 @@ export default function App() {
               Team
             </Button>
           )}
-          {view === "chat" && agent?.source === "managed" && !agent.empty && (
-            <div
-              className="conversation-quick-actions"
-              aria-label="Agent actions"
-            >
-              <Menu position="bottom-end" withinPortal>
-                <Menu.Target>
-                  <ActionIcon
-                    aria-label="Chat actions"
-                    title="Chat actions"
-                    variant="subtle"
-                  >
-                    <MoreHorizontal size={18} />
-                  </ActionIcon>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  {(
-                    [
-                      ["compact", "Compact", Minimize2],
-                      ["review", "Review", ShieldCheck],
-                    ] as const
-                  ).map(([action, label, Icon]) => (
-                    <Menu.Item
-                      key={action}
-                      data-action={action}
-                      disabled={
-                        busy.has(agent.status) ||
-                        !!agent.inFlight ||
-                        !agent.threadId
-                      }
-                      leftSection={<Icon size={14} />}
-                      onClick={() => {
-                        void run(() =>
-                          api("/api/action", { id: agent.id, action }),
-                        );
-                      }}
-                    >
-                      {label}
-                    </Menu.Item>
-                  ))}
-                </Menu.Dropdown>
-              </Menu>
-              <Button
-                data-action="stop-team"
-                size="compact-xs"
-                variant="subtle"
-                color="red"
-                leftSection={<Square size={14} />}
-                onClick={() => {
-                  void run(() =>
-                    api("/api/stop", { id: agent.rootId, descendants: true }),
-                  );
-                }}
+          {!mobileClient &&
+            view === "chat" &&
+            agent?.source === "managed" &&
+            !agent.empty && (
+              <div
+                className="conversation-quick-actions"
+                aria-label="Agent actions"
               >
-                Stop team
-              </Button>
-            </div>
-          )}
-        </header>
-        <nav className="workspace-shortcuts" aria-label="Workspace shortcuts">
-          <Button
-            id="workspace-toggle"
-            leftSection={<ListTodo size={16} />}
-            onClick={() => {
-              setWorkspaceSection("work");
-              setWorkspaceOpen(true);
-            }}
-            aria-label={`Work workspace${attentionCount ? `, ${attentionCount} need attention` : ""}`}
-          >
-            <span className="workspace-button-label">Work</span>
-            {attentionCount > 0 && (
-              <span className="attention-count">{attentionCount}</span>
+                <Menu position="bottom-end" withinPortal>
+                  <Menu.Target>
+                    <ActionIcon
+                      aria-label="Chat actions"
+                      title="Chat actions"
+                      variant="subtle"
+                    >
+                      <MoreHorizontal size={18} />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    {(
+                      [
+                        ["compact", "Compact", Minimize2],
+                        ["review", "Review", ShieldCheck],
+                      ] as const
+                    ).map(([action, label, Icon]) => (
+                      <Menu.Item
+                        key={action}
+                        data-action={action}
+                        disabled={
+                          busy.has(agent.status) ||
+                          !!agent.inFlight ||
+                          !agent.threadId
+                        }
+                        leftSection={<Icon size={14} />}
+                        onClick={() => {
+                          void run(() =>
+                            api("/api/action", { id: agent.id, action }),
+                          );
+                        }}
+                      >
+                        {label}
+                      </Menu.Item>
+                    ))}
+                  </Menu.Dropdown>
+                </Menu>
+                <Button
+                  data-action="stop-team"
+                  size="compact-xs"
+                  variant="subtle"
+                  color="red"
+                  leftSection={<Square size={14} />}
+                  onClick={() => {
+                    void run(() =>
+                      api("/api/stop", { id: agent.rootId, descendants: true }),
+                    );
+                  }}
+                >
+                  Stop team
+                </Button>
+              </div>
             )}
-          </Button>
-          {(
-            [
-              ["user-tasks", "Your tasks", CheckCheck],
-              ["inbox", "Inbox", Inbox],
-              ["changes", "Changes", FileDiff],
-              ["search", "Search", Search],
-              ["plan", "Plan", BookOpen],
-              ["rules", "Rules", Clock3],
-            ] as const
-          ).map(([section, label, Icon]) => (
+        </header>
+        {!mobileClient && (
+          <nav className="workspace-shortcuts" aria-label="Workspace shortcuts">
             <Button
-              key={section}
-              data-workspace-section={section}
-              leftSection={<Icon size={14} />}
+              id="workspace-toggle"
+              leftSection={<ListTodo size={16} />}
               onClick={() => {
-                setWorkspaceSection(section);
+                setWorkspaceSection("work");
                 setWorkspaceOpen(true);
               }}
+              aria-label={`Work workspace${attentionCount ? `, ${attentionCount} need attention` : ""}`}
             >
-              {label}
-              {section === "user-tasks" &&
-                !!chatData?.runtime.userTasks?.some(
-                  (t) => t.status === "open",
-                ) && (
-                  <span className="attention-count">
-                    {
-                      chatData!.runtime.userTasks!.filter(
-                        (t) => t.status === "open",
-                      ).length
-                    }
-                  </span>
-                )}
+              <span className="workspace-button-label">Work</span>
+              {attentionCount > 0 && (
+                <span className="attention-count">{attentionCount}</span>
+              )}
             </Button>
-          ))}
-          <Button
-            id="tasks-toggle"
-            aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
-            leftSection={<Activity size={16} />}
-            onClick={() => {
-              setTasksOpen(true);
-            }}
-          >
-            Background{" "}
-            {taskCount > 0 && <span className="tasks-count">{taskCount}</span>}
-          </Button>
-          <Button
-            id="view-toggle"
-            leftSection={
-              view === "canvas" ? (
-                <MessageSquare size={15} />
-              ) : (
-                <Maximize2 size={15} />
-              )
-            }
-            aria-pressed={view === "canvas"}
-            onClick={() => setView(view === "canvas" ? "chat" : "canvas")}
-          >
-            {view === "canvas" ? "Chat" : "Canvas"}
-          </Button>
-        </nav>
+            {(
+              [
+                ["user-tasks", "Your tasks", CheckCheck],
+                ["inbox", "Inbox", Inbox],
+                ["changes", "Changes", FileDiff],
+                ["search", "Search", Search],
+                ["plan", "Plan", BookOpen],
+                ["rules", "Rules", Clock3],
+              ] as const
+            ).map(([section, label, Icon]) => (
+              <Button
+                key={section}
+                data-workspace-section={section}
+                leftSection={<Icon size={14} />}
+                onClick={() => {
+                  setWorkspaceSection(section);
+                  setWorkspaceOpen(true);
+                }}
+              >
+                {label}
+                {section === "user-tasks" &&
+                  !!chatData?.runtime.userTasks?.some(
+                    (t) => t.status === "open",
+                  ) && (
+                    <span className="attention-count">
+                      {
+                        chatData!.runtime.userTasks!.filter(
+                          (t) => t.status === "open",
+                        ).length
+                      }
+                    </span>
+                  )}
+              </Button>
+            ))}
+            <Button
+              id="tasks-toggle"
+              aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
+              leftSection={<Activity size={16} />}
+              onClick={() => {
+                setTasksOpen(true);
+              }}
+            >
+              Background{" "}
+              {taskCount > 0 && (
+                <span className="tasks-count">{taskCount}</span>
+              )}
+            </Button>
+            <Button
+              id="view-toggle"
+              leftSection={
+                view === "canvas" ? (
+                  <MessageSquare size={15} />
+                ) : (
+                  <Maximize2 size={15} />
+                )
+              }
+              aria-pressed={view === "canvas"}
+              onClick={() => setView(view === "canvas" ? "chat" : "canvas")}
+            >
+              {view === "canvas" ? "Chat" : "Canvas"}
+            </Button>
+          </nav>
+        )}
         {error && (
           <div id="error" role="alert">
             {error}
           </div>
         )}
+        <div className="sync-notices">
+          {pendingCreation && !creating && (
+            <div className="sync-status">
+              <p>
+                The previous chat request needs confirmation:{" "}
+                {pendingCreation.cwd || "default project"}.
+              </p>
+              <Button onClick={() => void newChat()}>Retry chat request</Button>
+            </div>
+          )}
+          {draftError && (
+            <p className="sync-status" role="alert">
+              Draft sync: {draftError}
+            </p>
+          )}
+          {draftConflicts
+            .filter((version) => version.session === (opened || "new"))
+            .map((version) => (
+              <details className="sync-status" key={version.id}>
+                <summary>Draft from another device</summary>
+                <p>{version.text}</p>
+                <Button
+                  onClick={() =>
+                    setDraft(
+                      (drafts[opened || "new"] || "") +
+                        (drafts[opened || "new"] || "" ? "\n\n" : "") +
+                        version.text,
+                    )
+                  }
+                >
+                  Add to this draft
+                </Button>
+              </details>
+            ))}
+          {outbox.error && (
+            <p className="sync-status" role="alert">
+              {outbox.error}
+            </p>
+          )}
+          {outbox.entries
+            .filter(
+              (entry) =>
+                entry.body.room === opened && entry.status !== "accepted",
+            )
+            .map((entry) => (
+              <details className="sync-status" key={entry.id}>
+                <summary>
+                  {entry.status === "queued"
+                    ? "Message awaits connection"
+                    : entry.status === "uncertain"
+                      ? "Message delivery is uncertain"
+                      : "Message could not be sent"}
+                </summary>
+                <p>{entry.body.text}</p>
+                {entry.error && <p>{entry.error}</p>}
+              </details>
+            ))}
+        </div>
         {view === "chat" && (
           <Conversation
             id={opened}
@@ -969,7 +1195,8 @@ export default function App() {
           />
         )}
       </main>
-      {view === "chat" &&
+      {!mobileClient &&
+        view === "chat" &&
         !!workers.length &&
         (narrowTeam ? (
           <Drawer
@@ -987,7 +1214,9 @@ export default function App() {
         ) : (
           teamPanel
         ))}
-      <TerminalDock data={data} agent={agent || lead} notify={notify} />
+      {!mobileClient && (
+        <TerminalDock data={data} agent={agent || lead} notify={notify} />
+      )}
       <Workspace
         key={`workspace:${lead?.id || "none"}`}
         initialSection={workspaceSection}
@@ -1009,6 +1238,84 @@ export default function App() {
         refresh={refresh}
         notify={notify}
       />
+      <Modal
+        opened={mobileClient && settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        title="Chat settings"
+      >
+        <div className="mobile-chat-settings">
+          {agent?.cwd && <p className="mobile-project-path">{agent.cwd}</p>}
+          <NativeSelect
+            label="Account"
+            aria-label="Chat account"
+            value={accountKey}
+            disabled={
+              accountChanging ||
+              (!!agent &&
+                (!agent.empty || !!agent.threadId || !!agent.inFlight))
+            }
+            data={accounts.data.accounts.map((account) => ({
+              value: account.id,
+              label: account.email || account.label || account.id,
+            }))}
+            onChange={(event) => {
+              const key = event.currentTarget.value;
+              setAccountChanging(true);
+              void run(async () => {
+                if (agent?.isLead) {
+                  const allowed = accounts.data.accounts.find(
+                    (account) => account.id === key,
+                  )?.projectRules?.allowedProjects;
+                  if (
+                    allowed &&
+                    !agent.dangerouslySkipAccountRules &&
+                    !allowed.some(
+                      (path) =>
+                        agent.cwd === path ||
+                        agent.cwd?.startsWith(path.replace(/\/$/, "") + "/"),
+                    )
+                  ) {
+                    setSettingsOpen(false);
+                    folders(agent, key);
+                    return;
+                  }
+                  await api("/api/agents/account", {
+                    id: agent.id,
+                    account_key: key,
+                  });
+                } else
+                  accounts.setData(
+                    await api("/api/accounts/default", { account_key: key }),
+                  );
+              }).finally(() => setAccountChanging(false));
+            }}
+          />
+          {agent && (!agent.empty || agent.threadId) && (
+            <p className="notice">
+              Start a new chat to choose another account.
+            </p>
+          )}
+          {agent?.source === "managed" && (
+            <ExecutionSettings
+              key={agent.id}
+              agent={agent}
+              catalog={workerModels}
+              refresh={refresh}
+            />
+          )}
+          {agent?.cwd && (
+            <Button
+              disabled={creating}
+              onClick={() => {
+                setSettingsOpen(false);
+                void newChat(agent.cwd);
+              }}
+            >
+              New chat in this project
+            </Button>
+          )}
+        </div>
+      </Modal>
       <Modal
         opened={!!modal}
         onClose={() => setModal(null)}

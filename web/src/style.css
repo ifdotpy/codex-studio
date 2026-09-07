@@ -2028,3 +2028,110 @@ html body #root {
   display: flow-root;
   min-width: 0;
 }
+
+/* The phone keeps the selected orchestrator chat in the full viewport. */
+.mobile-chat-settings,
+.mobile-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.mobile-project-path {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+@media (max-width: 760px) {
+  html body #root {
+    height: var(--mobile-viewport-height, 100dvh);
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+  .workspace-header {
+    flex-wrap: nowrap;
+    min-height: 56px;
+    height: 56px;
+    padding: 6px 10px;
+    gap: 8px;
+  }
+  .workspace-header .conversation-heading {
+    flex: 1;
+    min-width: 0;
+  }
+  #conversation-title {
+    font-size: 15px;
+  }
+  #conversation-status {
+    font-size: 12px;
+  }
+  #sidebar {
+    padding-top: max(16px, env(safe-area-inset-top));
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+  #sidebar .row-actions,
+  #sidebar .project-tree-action {
+    opacity: 1;
+    visibility: visible;
+    width: 40px;
+    height: 40px;
+  }
+  #sidebar .chat-row {
+    min-height: 44px;
+  }
+  .workspace-header .mantine-ActionIcon-root,
+  #composer .mantine-ActionIcon-root {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  #conversation {
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  #messages {
+    padding: 16px 14px;
+    scrollbar-gutter: auto;
+  }
+  #composer {
+    width: calc(100% - 16px);
+    margin-bottom: 0;
+    padding: 8px 10px;
+  }
+  #chat-search,
+  #composer textarea,
+  html body input,
+  html body textarea,
+  html body select {
+    font-size: 16px;
+  }
+  #composer .composer-bar {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  #composer .message-delivery {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: center;
+  }
+  #composer .composer-submit-actions {
+    margin-left: auto;
+  }
+  .mobile-project-list .mantine-Button-label {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+.sync-status {
+  flex-shrink: 0;
+  margin: 4px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  max-height: 160px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.sync-notices {
+  flex-shrink: 0;
+  max-height: 25dvh;
+  overflow: auto;
+}

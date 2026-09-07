@@ -111,7 +111,14 @@ TOOLS = [
          {"monitor_id": TEXT}, ["monitor_id"]),
 ]
 
-TOOLS += work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT)
+def voice_tools():
+    return [tool("orchestration_speak", "Save exact text for the user's voice session. "
+                 "Active voice reads this text aloud. Without active voice, save it silently. "
+                 "Use only for text the user should hear; this does not end your turn.",
+                 {"text": TEXT}, ["text"])]
+
+
+TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -169,9 +176,11 @@ Omit model, effort and fast_mode to use the user's current team defaults for eac
 An explicit profile model or effort overrides the team default; explicit spawn fields override the profile.
 Use effort=null to select a model's native default, or fast_mode=false to disable Fast for that worker.
 Only the user can change team defaults. Do not call settings APIs to change them.
+Use orchestration_speak(text) when the user needs a spoken response. Active voice reads the exact text.
+Without active voice the text is saved silently. Voice interruption does not stop your task.
 Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
-Supported fallback tools: orchestration_task, orchestration_result, orchestration_search,
+Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
 orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task, orchestration_panel.
 Use orchestration_user_task for things the user must do. Supply clear completion criteria.
 A user check wakes the requesting agent and awaits its review. Accept the result or return
@@ -447,6 +456,13 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
         self.scheduler.start()
         if server_factory is AppServer:
             self.analytics_history_start()
+
+    def voice(self):
+        with self.lock:
+            if not hasattr(self, "_voice_store"):
+                from codex_voice import VoiceStore
+                self._voice_store = VoiceStore(self)
+            return self._voice_store
 
     @contextmanager
     def db(self):
@@ -955,6 +971,7 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             return a
 
     def delete_conversation(self, key):
+        voice = self.voice()
         # Keep tombstones so late callbacks cannot recreate deleted work.
         with self.lock, self.db() as db:
             a = self.agent(key, db)
@@ -969,6 +986,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 if a["id"] in ids:
                     a.update(deletedAt=a.get("deletedAt") or time.time(), autoWake=False)
                     self.put(db, "agents", a)
+            for agent_id in ids:
+                voice.delete_agent(agent_id, db)
         self.stop(key, True, "Conversation deleted")
         return {"deleted": sorted(ids)}
 
@@ -2131,10 +2150,13 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                         + rule_tools(tool, TEXT)
                         + user_task_tools(tool, TEXT)
                         + panel_tools(tool, TEXT)
+                        + voice_tools()
                     }:
                         raise ValueError("Unknown workspace tool")
                 panel_capture = {}
-                if name == "orchestration_panel":
+                if name == "orchestration_speak":
+                    value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
+                elif name == "orchestration_panel":
                     value = self.panel_action(a["id"], args, key, epoch=a["epoch"], capture=panel_capture)
                 elif name == "orchestration_user_task":
                     value = self.user_task_action(a["id"], args, key, epoch=a["epoch"])
@@ -2225,7 +2247,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                         "workspaceTools": work_tools(tool, TEXT)
                         + rule_tools(tool, TEXT)
                         + user_task_tools(tool, TEXT)
-                        + panel_tools(tool, TEXT),
+                        + panel_tools(tool, TEXT)
+                        + voice_tools(),
                     }
                     if name == "orchestration_status":
                         value["recentChats"] = [self.chat_read(r["id"], a["id"], limit=10)

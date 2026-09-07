@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, setToken } from "./api";
+import { watchProjection, UnsupportedSyncError } from "./sync/client";
 import type { Snapshot, Message, Agent, Json } from "./types";
 export function useSnapshot() {
   const [data, setData] = useState<Snapshot | null>(null),
     [error, setError] = useState("");
+  const [syncError, setSyncError] = useState("");
   const generation = useRef(0);
+  const replicated = useRef(false);
   const refresh = useCallback(async () => {
     const request = ++generation.current;
     try {
       const next = await api<Snapshot>("/api/state");
       if (request !== generation.current) return;
       setToken(next.token);
-      setData(next);
+      if (!replicated.current) setData(next);
       setError("");
     } catch (e) {
       if (request !== generation.current) return;
@@ -31,7 +34,33 @@ export function useSnapshot() {
       clearTimeout(timer);
     };
   }, [refresh]);
-  return { data, error, refresh };
+  useEffect(() => {
+    let stopped = false,
+      dispose = () => {};
+    void watchProjection(
+      "state",
+      (next) => {
+        if (!stopped && next) {
+          replicated.current = true;
+          setSyncError("");
+          setData((old) => ({ ...next, token: old?.token || "" }));
+        }
+      },
+      (error) => { if (!stopped) setSyncError(errorText(error)); },
+    )
+      .then((stop) => {
+        if (stopped) stop();
+        else dispose = stop;
+      })
+      .catch((error) => {
+        if (!stopped && !(error instanceof UnsupportedSyncError)) setSyncError(errorText(error));
+      });
+    return () => {
+      stopped = true;
+      dispose();
+    };
+  }, []);
+  return { data, error: error || syncError, refresh };
 }
 export function useMessages(
   id: string | null,
@@ -43,8 +72,10 @@ export function useMessages(
     [notice, setNotice] = useState(""),
     [before, setBefore] = useState<number | null>(null),
     [liveAgent, setLiveAgent] = useState<Partial<Agent> | null>(null),
-    [connection, setConnection] = useState("");
+    [connection, setConnection] = useState(""),
+    [syncId, setSyncId] = useState<string | null>(null);
   const revision = useRef(0);
+  const syncActive = useRef<string | null>(null);
   const active = useRef(id),
     expanded = useRef(false);
   active.current = id;
@@ -98,7 +129,10 @@ export function useMessages(
       if (!id) return;
       const request = ++revision.current;
       const current = () =>
-        active.current === id && request === revision.current && allowed();
+        active.current === id &&
+        syncActive.current !== id &&
+        request === revision.current &&
+        allowed();
       try {
         if (kind === "room") {
           const d = await api(`/api/agent-chat?room=${encodeURIComponent(id)}`);
@@ -143,6 +177,7 @@ export function useMessages(
     [id, kind, accept],
   );
   useEffect(() => {
+    if (syncId === id && id && managed && kind === "agent") return;
     setLoadedId(null);
     setItems([]);
     setLiveAgent(null);
@@ -183,7 +218,8 @@ export function useMessages(
         `/api/transcript/stream?id=${encodeURIComponent(id)}`,
       );
       source.onmessage = (event) => {
-        if (stopped || active.current !== id) return;
+        if (stopped || active.current !== id || syncActive.current === id)
+          return;
         try {
           const d = JSON.parse(event.data);
           if (d.replace) records = new Map();
@@ -232,7 +268,39 @@ export function useMessages(
       window.removeEventListener("offline", offline);
       window.removeEventListener("online", connect);
     };
-  }, [load, id, kind, managed, accept]);
+  }, [load, id, kind, managed, accept, syncId]);
+  useEffect(() => {
+    if (!id || kind !== "agent" || !managed) return;
+    let stopped = false,
+      seen = false,
+      dispose = () => {};
+    void watchProjection(
+      `transcript:${id}`,
+      (next) => {
+        if (!stopped && active.current === id && next) {
+          seen = true;
+          syncActive.current = id;
+          setSyncId(id);
+          accept(next);
+        } else if (!stopped && seen && active.current === id) {
+          accept({
+            items: [],
+            unavailable: "This session is no longer available.",
+          });
+        }
+      },
+      () => {},
+    )
+      .then((stop) => {
+        if (stopped) stop();
+        else dispose = stop;
+      })
+      .catch(() => {});
+    return () => {
+      stopped = true;
+      dispose();
+    };
+  }, [id, kind, managed, accept]);
   const older = async () => {
     if (!id || !before) return;
     const d = await api(

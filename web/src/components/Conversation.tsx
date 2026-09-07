@@ -31,6 +31,7 @@ import Requests from "./Requests";
 import UserTasks from "./UserTasks";
 import TurnHistory from "./TurnHistory";
 import { Dictation } from "./Dictation";
+import RealtimeVoice from "./RealtimeVoice";
 import StreamingText from "./StreamingText";
 import SelectionQuote, { selectedExcerpt } from "./SelectionQuote";
 import AgentPhase from "./AgentPhase";
@@ -61,6 +62,7 @@ export default function Conversation(p: {
   reloadLimits: () => void;
   onPhase: (id: string | null, label: string) => void;
 }) {
+  const mobileClient = useMediaQuery("(max-width: 760px)");
   const shortViewport = useMediaQuery(
     "(max-width: 760px) and (max-height: 750px)",
   );
@@ -283,7 +285,10 @@ export default function Conversation(p: {
     (a) => a.rootId === (agent?.rootId || p.room?.rootId),
   );
   const requests = p.data.runtime.requests.filter(
-    (r) => !r.agent || r.agent === p.id || team.some((a) => a.id === r.agent),
+    (r) =>
+      !r.agent ||
+      r.agent === p.id ||
+      (!mobileClient && team.some((a) => a.id === r.agent)),
   );
   const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
   const canSend = !!agent?.canSend || !!p.legacy || !p.id;
@@ -466,7 +471,19 @@ export default function Conversation(p: {
       {agent?.source === "managed" && !p.room && (
         <UserTasks
           key={agent.rootId || agent.id}
-          data={p.data}
+          data={
+            mobileClient
+              ? {
+                  ...p.data,
+                  runtime: {
+                    ...p.data.runtime,
+                    userTasks: p.data.runtime.userTasks?.filter(
+                      (task) => task.agent === agent.id,
+                    ),
+                  },
+                }
+              : p.data
+          }
           agent={agent}
           compact
           refresh={p.refresh}
@@ -574,7 +591,7 @@ export default function Conversation(p: {
               )}
             </div>
           )}
-          {managed && !p.legacy && agent && (
+          {!mobileClient && managed && !p.legacy && agent && (
             <AgentPanel
               key={agent.id}
               agentId={agent.id}
@@ -584,6 +601,9 @@ export default function Conversation(p: {
                 agent.panelVersion || 0,
               )}
             />
+          )}
+          {managed && agent?.isLead && p.id && (
+            <RealtimeVoice key={p.id} agentId={p.id} notify={p.notify} />
           )}
           <form
             id="composer"
@@ -619,11 +639,15 @@ export default function Conversation(p: {
               variant="unstyled"
               autosize
               minRows={1}
-              maxRows={shortViewport ? (managed ? 1 : 3) : 8}
+              maxRows={shortViewport ? 3 : 8}
               id="message"
               ref={input}
               aria-label="Message"
-              aria-description="Enter to send. Shift + Enter for a new line."
+              aria-description={
+                mobileClient
+                  ? "Use the send button to send."
+                  : "Enter to send. Shift + Enter for a new line."
+              }
               placeholder={
                 canSend
                   ? "What should we work on?"
@@ -636,6 +660,7 @@ export default function Conversation(p: {
               rows={1}
               onKeyDown={(e) => {
                 if (
+                  !mobileClient &&
                   e.key === "Enter" &&
                   !e.shiftKey &&
                   !e.nativeEvent.isComposing
@@ -661,7 +686,7 @@ export default function Conversation(p: {
                   }
                 />
               )}
-              {managed && p.id && (
+              {!mobileClient && managed && p.id && (
                 <Dictation
                   key={`${p.data.stateDir}:${p.id}`}
                   chatId={`${p.data.stateDir}:${p.id}`}
@@ -796,7 +821,7 @@ export default function Conversation(p: {
               </div>
             </div>
           </form>
-          {agent?.source === "managed" && (
+          {!mobileClient && agent?.source === "managed" && (
             <Usage
               key={p.agent?.accountKey || "default"}
               agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
