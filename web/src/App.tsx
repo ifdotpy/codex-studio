@@ -1,3 +1,4 @@
+import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot } from "./chatScope";
 import {
   ActionIcon,
@@ -125,21 +126,7 @@ export default function App() {
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountChanging, setAccountChanging] = useState(false);
-  useEffect(() => {
-    if (!mobileClient || !window.visualViewport) return;
-    const viewport = window.visualViewport;
-    const resize = () =>
-      document.documentElement.style.setProperty(
-        "--mobile-viewport-height",
-        `${viewport.height}px`,
-      );
-    resize();
-    viewport.addEventListener("resize", resize);
-    return () => {
-      viewport.removeEventListener("resize", resize);
-      document.documentElement.style.removeProperty("--mobile-viewport-height");
-    };
-  }, [mobileClient]);
+  useMobileViewport(mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const { data, error, refresh } = useSnapshot(),
     [opened, setOpened] = useState<string | null>(() =>
