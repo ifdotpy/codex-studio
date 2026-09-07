@@ -24,6 +24,7 @@ import { useRemovedMessages } from "./removedMessages";
 import { useConversationScroll } from "./useConversationScroll";
 import {
   statusLabel,
+  agentErrorLabel,
   type Agent,
   type Json,
   type Message,
@@ -497,9 +498,7 @@ export default function Conversation(p: {
     >
       {agent?.error && (
         <p className="agent-error" role="alert">
-          {typeof agent.error === "string"
-            ? agent.error
-            : JSON.stringify(agent.error)}
+          {agentErrorLabel(agent)}
         </p>
       )}
       <div className="prompt-navigation-slot">

@@ -161,3 +161,16 @@ export interface UserTask extends Json {
   reason: string;
   completionNote: string;
 }
+
+// A stored turn failure is not the current health of the account connection.
+export function agentErrorLabel(agent: Agent): string {
+  if (
+    agent.error === "Codex app-server is offline" &&
+    ["failed", "interrupted", "paused"].includes(agent.status) &&
+    !agent.inFlight
+  )
+    return "The previous attempt stopped because Codex was offline.";
+  return typeof agent.error === "string"
+    ? agent.error
+    : JSON.stringify(agent.error);
+}

@@ -3,7 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { save, saved } from "../api";
 import { shortModel } from "./ExecutionSettings";
-import { statusLabel, type Agent, type Json } from "../types";
+import { agentErrorLabel, statusLabel, type Agent, type Json } from "../types";
 
 export function awaitingAnswerIds(requests: Json[]) {
   return new Set(
@@ -182,7 +182,7 @@ export default function WorkerCard({
             </span>
           </span>
           {agent.error && (
-            <span className="worker-error">{String(agent.error)}</span>
+            <span className="worker-error">{agentErrorLabel(agent)}</span>
           )}
         </span>
       </UnstyledButton>
