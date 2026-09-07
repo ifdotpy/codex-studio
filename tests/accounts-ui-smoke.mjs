@@ -326,7 +326,7 @@ try {
     await page
       .getByRole("region", { name: "Local cost estimates" })
       .innerText(),
-    /Shared across chats; not per account/,
+    /All local chats/,
   );
   await quota.click();
 

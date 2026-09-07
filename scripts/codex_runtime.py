@@ -2425,17 +2425,29 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
     def limits(self, account_key="default", force=False):
         self.accounts.get(account_key)
         with self.limits_lock:
-            cached = self.rate_limits_for(account_key)
-            if not force and cached["at"] and time.time() - cached["at"] < 30:
-                return cached
-            try:
-                data = self.connect(account_key).call("account/rateLimits/read", {}, timeout=10)
+            with self.lock:
+                cached = self.rate_limits_for(account_key)
+                if not force and not cached.get("error") and cached["at"] and time.time() - cached["at"] < 30:
+                    return cached
+            for attempt in range(2):
+                error = None
+                try:
+                    data = self.connect(account_key).call("account/rateLimits/read", {}, timeout=10)
+                except Exception as cause:
+                    error = cause
                 with self.lock:
-                    self.set_rate_limits(account_key, {"data": data, "at": time.time(), "error": None})
-            except Exception as error:
-                with self.lock:
-                    self.set_rate_limits(account_key, {**cached, "error": str(error)})
-            return self.rate_limits_for(account_key)
+                    current = self.rate_limits_for(account_key)
+                    # Notifications can update this account while the read waits.
+                    if current is not cached and current.get("data") is not None and not current.get("error"):
+                        return current
+                    if error is None:
+                        self.set_rate_limits(account_key, {"data": data, "at": time.time(), "error": None})
+                    elif isinstance(error, ResponseTimeout) and attempt == 0:
+                        # Only this read is safe to repeat after a lost response.
+                        continue
+                    else:
+                        self.set_rate_limits(account_key, {**current, "error": str(error)})
+                    return self.rate_limits_for(account_key)
 
     @staticmethod
     def complaint_recipient(c):

@@ -321,13 +321,10 @@ export default function Usage({
               {number(costs?.data?.todayUSD) && (
                 <span
                   className="account-cost-summary"
-                  title="Local cost estimate, shared across chats; not per account"
+                  title="API cost estimate for all local chats"
                 >
                   ≈{dollars(costs?.data?.todayUSD)} today
                 </span>
-              )}
-              {limits?.error && (
-                <span className="account-limits-warning">Update failed</span>
               )}
             </span>
           </Button>
@@ -580,7 +577,7 @@ export default function Usage({
               aria-label="Local cost estimates"
             >
               <header>
-                <strong>Local API estimate</strong>
+                <strong>API cost estimate</strong>
                 <span>USD</span>
               </header>
               <div className="account-cost-values">
@@ -593,55 +590,26 @@ export default function Usage({
                   <strong>{dollars(costs?.data?.last30DaysUSD)}</strong>
                 </div>
               </div>
-              <p>
-                Shared across chats; not per account. Not your ChatGPT bill.
+              <p className="account-cost-caption">
+                All local chats
+                {costs?.data?.coverage === "partial" && " · Partial estimate"}
+                {(costs?.stale || costs?.error) &&
+                  (number(costs?.data?.todayUSD) ||
+                  number(costs?.data?.last30DaysUSD)
+                    ? " · Saved estimate"
+                    : " · Estimate unavailable")}
               </p>
-              {costs?.data?.coverage === "unverified" && (
-                <p className="account-limits-warning">
-                  Pricing and history coverage unverified by this CodexBar
-                  version.
-                </p>
-              )}
-              {costs?.data?.coverage === "partial" && (
-                <p className="account-limits-warning">
-                  Partial estimate. Some history or model prices are missing.
-                </p>
-              )}
-              {!!costs?.data?.unknownModels?.length && (
-                <p>Unpriced: {costs.data.unknownModels.join(", ")}</p>
-              )}
-              {costs?.refreshing && <p role="status">Reading local usage…</p>}
-              {costs?.error && (
-                <p className="account-limits-warning" role="status">
-                  {costs.error}
-                  {costs.data ? " Previous estimate retained." : ""}
-                </p>
-              )}
-              {costs?.data?.sourceUpdatedAt && (
-                <p>
-                  Costs as of{" "}
-                  {new Date(costs.data.sourceUpdatedAt).toLocaleString(
-                    undefined,
-                    {
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    },
-                  )}
-                  {costs.stale ? " · stale" : ""}
-                </p>
-              )}
             </section>
-            {limits?.error && (
-              <p className="account-limits-error" role="status">
-                Update failed: {limits.error}
-              </p>
-            )}
-            <footer className="account-limits-updated">
-              {number(limits?.at)
-                ? `Updated ${new Date(limits!.at * 1000).toLocaleTimeString()}`
-                : "Update time unavailable"}
+            <footer className="account-limits-updated" role="status">
+              {limits?.error
+                ? limits?.data
+                  ? "Saved limits"
+                  : "Limits temporarily unavailable"
+                : number(limits?.at)
+                  ? "Updated"
+                  : ""}
+              {number(limits?.at) &&
+                ` · ${new Date(limits!.at * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`}
             </footer>
           </section>
         </Popover.Dropdown>

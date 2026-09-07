@@ -135,8 +135,12 @@ try {
     /\$12.50/,
   );
   assert.match(await details().innerText(), /\$1,234.56/);
-  assert.match(await details().innerText(), /Not your ChatGPT bill/);
-  assert.match(await details().innerText(), /coverage unverified/);
+  assert.match(await details().innerText(), /API cost estimate/);
+  assert.match(await details().innerText(), /All local chats/);
+  assert.doesNotMatch(
+    await details().innerText(),
+    /CodexBar|coverage unverified|ChatGPT bill|Costs as of/,
+  );
   assert.ok(
     (await details().locator(".account-limit-group").boundingBox()).height <
       150,
@@ -151,11 +155,12 @@ try {
     path: join(root, "limits-desktop.png"),
     animations: "disabled",
   });
+  await page.clock.install();
   failLimits = true;
   const beforeQuotaFailure = await page.locator("#usage-footer").boundingBox();
   await details().getByRole("button", { name: "Refresh", exact: true }).click();
   await details()
-    .getByText("Update failed: Fixture quota refresh failed", { exact: true })
+    .getByText(/^Saved limits/)
     .waitFor();
   assert.match(
     await toggle().innerText(),
@@ -169,9 +174,9 @@ try {
     "refresh error cannot add a footer row",
   );
   failLimits = false;
-  await details().getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.clock.fastForward(30050);
   await details()
-    .getByText("Update failed: Fixture quota refresh failed", { exact: true })
+    .getByText(/^Saved limits/)
     .waitFor({ state: "hidden" });
 
   const resetCredit = {
@@ -426,13 +431,17 @@ try {
   await load();
   assert.match(await toggle().innerText(), /5h refresh needed/);
   assert.match(await toggle().innerText(), /7d 0% left/);
-  assert.match(await toggle().innerText(), /Update failed/);
+  assert.doesNotMatch(await toggle().innerText(), /Update failed/);
   await toggle().click();
   await details().waitFor();
   await details().getByText("Awaiting update", { exact: true }).waitFor();
   assert.equal(await details().getByRole("progressbar").count(), 1);
   assert.doesNotMatch(await details().innerText(), /58%/);
-  assert.match(await details().innerText(), /Account connection failed/);
+  assert.match(await details().innerText(), /Saved limits/);
+  assert.doesNotMatch(
+    await details().innerText(),
+    /Account connection failed|outcome unknown/,
+  );
 
   costs = {
     at: now,
@@ -454,7 +463,11 @@ try {
   assert.equal(await details().getByRole("progressbar").count(), 0);
   assert.match(await details().innerText(), /has not supplied/);
   assert.match(await details().innerText(), /Partial estimate/);
-  assert.match(await details().innerText(), /unknown-astra/);
+  assert.match(await details().innerText(), /Estimate unavailable/);
+  assert.doesNotMatch(
+    await details().innerText(),
+    /unknown-astra|Scanner unavailable/,
+  );
   assert.doesNotMatch(await details().innerText(), /\$0\.00/);
 
   limits = {

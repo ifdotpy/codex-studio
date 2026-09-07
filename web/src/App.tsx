@@ -183,13 +183,13 @@ export default function App() {
     window.addEventListener("desktop-error", onError);
     return () => window.removeEventListener("desktop-error", onError);
   }, [notify]);
-  const reloadLimits = useCallback(() => {
+  const reloadLimits = useCallback(async () => {
     const request = ++limitsRequest.current;
     const query =
       accountKey === "default"
         ? ""
         : `?account_key=${encodeURIComponent(accountKey)}`;
-    void api("/api/limits" + query)
+    await api("/api/limits" + query)
       .then((result) => {
         if (result.accountKey && result.accountKey !== accountKey)
           throw new Error("Codex returned limits for another account.");
@@ -214,6 +214,20 @@ export default function App() {
   useEffect(() => {
     if (data?.stateDir) reloadLimits();
   }, [data?.stateDir, reloadLimits]);
+  useEffect(() => {
+    if (!limits?.error || limits.accountKey !== accountKey) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const retry = async () => {
+      await reloadLimits();
+      if (active) timer = setTimeout(retry, 60000);
+    };
+    timer = setTimeout(retry, 30000);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [accountKey, limits?.accountKey, limits?.error, reloadLimits]);
   useEffect(() => {
     const result =
       data?.runtime.rateLimitsByAccount?.[accountKey] ||

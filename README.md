@@ -78,6 +78,7 @@ python3 -B tests/analytics-contract.py
 python3 -B tests/analytics-history-contract.py
 python3 -B tests/accounts-contract.py
 python3 -B tests/runtime-accounts-contract.py
+python3 -B tests/limits-refresh-contract.py
 python3 -B tests/canvas-contract.py
 python3 -B tests/install-cli-contract.py
 python3 -B tests/panel-contract.py
