@@ -95,3 +95,42 @@ advanced. `http-read.json` preserves the timings and result metadata.
 Connection recovery is verified at this time. The lead's old failed turn and the
 workers' interrupted turns were not replayed. The original backlog cause and a
 verified prevention fix remain open.
+
+## Project recovery and rejected instruction, 2026-09-07 19:29 UTC
+
+The owner reported a final answer that claimed continued development above a
+failed tool group. The project was stopped: the lead was failed, no worker was
+active, and eleven lead events retained uncertain delivery.
+
+The tool receipt for `exec-6ac06ff9-1508-4be2-a1a4-808308069309` records an
+`orchestration_send` to `lhs-emulator`, with `delivery=steer`. The request waited
+709,411 ms before execution. Native `turn/steer` rejected it with code `-32600`,
+`no active turn to steer`. The local worker transcript entry does not establish
+delivery. This receipt proves rejection of this instruction, not the cause of
+the queue delay or the outcome of other messages.
+
+A new recovery instruction used the stable message identity
+`studio-lumina-recovery-20260907-verified-offline`. Its receipt is delivered.
+The lead started turn `01a07d56-3b4c-7973-821e-47abb83325c4` and produced fresh
+source-reconciliation messages. It confirmed the rejected instruction and began
+checking remaining fixes. No uncertain message was replayed. The runtime and
+unrelated accounts were not restarted. Worker resumption and project completion
+were not yet verified at this snapshot.
+
+The historical dynamic-tool item still said `inProgress`, although the durable
+tool result contained the native error. The transcript fallback converted it to
+`interrupted` without its result. The source now recovers missing completions by
+the exact account, thread, and call identity, or an unambiguous agent-scoped alias.
+It preserves stored evidence and uncertainty in the response. Large results use
+a bounded excerpt. This source fix is not activated in the existing runtime.
+
+Checks: the message transcript contracts cover failed and successful receipts,
+account identity, aliases, missing or ambiguous receipts, native results, and
+large outputs. Request and preparation contracts pass. A read-only projection of
+the actual failed call returns `failed` and the exact native rejection above.
+The transcript latency check passes. The queue-delay incident remains open.
+
+A subsequent live check confirms active native turns for `lhs-core`, `lhs-native`,
+`lhs-ui`, `lhs-service`, `lhs-emulator`, and `lhs-rig`. Each records
+`status=running`, `inFlight=true`, and no error. The lead also remains active.
+This verifies team resumption, not task completion or a queue-delay fix.

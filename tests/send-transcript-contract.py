@@ -31,6 +31,68 @@ class SendTranscriptContract(unittest.TestCase):
                 result.append(item)
         return result
 
+    def tool_fixture(self, result, *, alias=False, native=None, account="default"):
+        a = self.start(self.lead())
+        payload = {"id": "receipt-tool", "type": "dynamicToolCall", "tool": "orchestration_send",
+                   "arguments": {"agent_id": "worker", "text": "Review"},
+                   "status": "inProgress", "success": None, "contentItems": None}
+        payload.update(native or {})
+        prefix = (account + ":" if account != "default" else "") + a["threadId"] + ":"
+        request_id = prefix + ("spawn:explicit-request" if alias else payload["id"])
+        with self.runtime.db() as db:
+            a.update(accountKey=account, status="failed", inFlight=False, turnId=None)
+            self.runtime.put(db, "agents", a)
+            self.runtime.item(db, a["id"], payload["id"], "output", json.dumps(payload),
+                              "dynamicToolCall", toolStatus="running", turnId="old-turn")
+            if result is not None:
+                db.execute("INSERT INTO runtime_tool_results VALUES (?,?)", (request_id, json.dumps(result)))
+            if alias:
+                db.execute("INSERT INTO runtime_tool_request_aliases VALUES (?,?,?)",
+                           (a["id"], payload["id"], request_id))
+        return a, request_id
+
+    def test_durable_tool_result_recovers_missing_native_completion(self):
+        for success, account, alias in ((False, "default", False), (True, "profile-fixture", True)):
+            with self.subTest(success=success, account=account):
+                result = {"success": success, "contentItems": [{"type": "inputText",
+                          "text": 'no active turn to steer' if not success else 'Recorded result'}]}
+                a, _ = self.tool_fixture(result, account=account, alias=alias)
+                item = self.runtime.transcript(a["id"])["items"][-1]
+                self.assertEqual(item["toolStatus"], "completed" if success else "failed")
+                payload = json.loads(item["text"])
+                self.assertEqual(payload["contentItems"], result["contentItems"])
+                self.assertEqual(payload["success"], success)
+                self.assertEqual(payload["arguments"]["text"], "Review")
+                with self.runtime.db() as db:
+                    stored = json.loads(db.execute("SELECT record FROM runtime_items WHERE id=?", (item["id"],)).fetchone()[0])
+                self.assertEqual(stored["toolStatus"], "running", "Read must not rewrite historical evidence")
+
+    def test_missing_or_ambiguous_tool_receipt_does_not_invent_completion(self):
+        a, _ = self.tool_fixture(None)
+        self.assertEqual(self.runtime.transcript(a["id"])["items"][-1]["toolStatus"], "interrupted")
+        a, receipt = self.tool_fixture({"success": True, "contentItems": []}, alias=True)
+        with self.runtime.db() as db:
+            db.execute("INSERT INTO runtime_tool_request_aliases VALUES (?,?,?)", (a["id"], "receipt-tool", receipt + ":ambiguous"))
+        self.assertEqual(self.runtime.transcript(a["id"])["items"][-1]["toolStatus"], "interrupted")
+
+    def test_large_receipt_keeps_transcript_bounded_and_valid_json(self):
+        a, _ = self.tool_fixture({"success": True, "contentItems": [{"type": "inputText", "text": "x" * 100000}]})
+        item = self.runtime.transcript(a["id"])["items"][-1]
+        self.assertEqual(item["toolStatus"], "completed")
+        self.assertTrue(item["truncated"])
+        self.assertLess(len(item["text"]), 14000)
+        self.assertIn("Result truncated", json.loads(item["text"])["contentItems"][0]["text"])
+
+    def test_native_completion_and_other_agents_receipts_are_not_overridden(self):
+        a, _ = self.tool_fixture({"success": True, "contentItems": []}, native={"status": "failed", "success": False})
+        item = self.runtime.transcript(a["id"])["items"][-1]
+        self.assertFalse(json.loads(item["text"])["success"])
+        a, receipt = self.tool_fixture(None)
+        with self.runtime.db() as db:
+            db.execute("INSERT INTO runtime_tool_results VALUES (?,?)", (receipt + ":other", json.dumps({"success": True})))
+            db.execute("INSERT INTO runtime_tool_request_aliases VALUES (?,?,?)", ("other-agent", "receipt-tool", receipt + ":other"))
+        self.assertEqual(self.runtime.transcript(a["id"])["items"][-1]["toolStatus"], "interrupted")
+
     def test_actual_dispatch_keeps_each_receipt_and_attachment_visible(self):
         key = self.lead()["id"]
         asset = self.runtime.upload_asset({"agent": key, "name": "note.txt",

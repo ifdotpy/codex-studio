@@ -116,6 +116,44 @@ class RequestMixin:
         row = db.execute("SELECT record FROM runtime_tool_requests WHERE id=?", (key,)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def transcript_tool_result(self, db, actor, item):
+        """Recover a missing native completion from the exact durable receipt."""
+        if item.get("title") != "dynamicToolCall":
+            return
+        try:
+            payload = json.loads(item["text"])
+        except (ValueError, TypeError):
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get("id"), str):
+            return
+        if payload.get("status") not in (None, "inProgress") or payload.get("success") is not None:
+            return
+        aliases = db.execute(
+            "SELECT request FROM runtime_tool_request_aliases WHERE agent=? AND alias=? LIMIT 2",
+            (actor["id"], payload["id"]),
+        ).fetchall()
+        if len(aliases) > 1:
+            return
+        receipt_id = aliases[0][0] if aliases else (
+            _prefix(actor.get("accountKey", "default"), actor.get("threadId")) + payload["id"])
+        row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (receipt_id,)).fetchone()
+        if row is None:
+            return
+        result = json.loads(row[0])
+        if type(result.get("success")) is not bool:
+            return
+        # Tool completion does not prove that a mutation was applied. Preserve
+        # its exact response, including any uncertainty and recovery instructions.
+        item["toolStatus"] = "completed" if result["success"] else "failed"
+        content = result.get("contentItems", [])
+        encoded = json.dumps(content, ensure_ascii=False)
+        if len(encoded) > 12000:
+            content = [{"type": "inputText", "text": encoded[:12000] + "\n[Result truncated]"}]
+            item["truncated"] = True
+        payload.update(status=item["toolStatus"], success=result["success"],
+                       contentItems=content)
+        item["text"] = json.dumps(payload, ensure_ascii=False)
+
     def reserve_tool_request(self, message, account_key="default", connection_id=None):
         params, args = _arguments(message)
         key = self.tool_request_key(message, account_key)

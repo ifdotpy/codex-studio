@@ -3722,6 +3722,8 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 raise ValueError("This conversation was deleted")
             live = a["status"] in {"running", "starting", "approval"} and a.get("autoWake")
             for item in items:
+                if item.get("toolStatus") in {"running", "interrupted"}:
+                    self.transcript_tool_result(db, a, item)
                 if item.get("streaming") and (not live or item.get("turnId") != a.get("turnId")):
                     item["streaming"] = False
                 if item.get("toolStatus") == "running" and (not live or item.get("turnId") != a.get("turnId")):
