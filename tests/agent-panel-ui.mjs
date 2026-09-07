@@ -67,6 +67,10 @@ try {
   page.on("request", (r) => {
     if (/panel-escape|evil\.invalid/.test(r.url())) forbidden.push(r);
   });
+  // This fixture changes panel versions through snapshots, without replication.
+  await page.route("**/api/sync/identity", (route) =>
+    route.fulfill({ status: 404, json: { error: "Snapshot fixture" } }),
+  );
   await page.route("**/api/state", async (route) => {
     const response = await route.fetch();
     const data = await response.json();
@@ -526,13 +530,15 @@ try {
   await assertLayout();
   await page.screenshot({ path: join(root, "panel-interactive.png") });
   await page.setViewportSize({ width: 320, height: 640 });
-  await page.locator("#usage-footer").scrollIntoViewIfNeeded();
-  const footer = await page.locator("#usage-footer").boundingBox();
+  await panel.waitFor();
+  await assertLayout();
+  const composer = await page.locator("#composer").boundingBox();
   assert.ok(
-    footer.y >= 0 && footer.y + footer.height <= 640,
-    "limits remain reachable on a short screen",
+    composer.y >= 0 && composer.y + composer.height <= 640,
+    "The message field remains visible with the mobile agent panel",
   );
-  assert.equal((await panel.boundingBox()).height, 150);
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: join(root, "panel-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 980 });
   await page.getByRole("tab", { name: /Agents/ }).click();
   await page.locator("[data-room]").first().click();

@@ -705,7 +705,7 @@ export default function Conversation(p: {
               )}
             </div>
           )}
-          {!mobileClient && managed && !p.legacy && agent && (
+          {managed && !p.legacy && agent && (
             <AgentPanel
               key={agent.id}
               agentId={agent.id}
