@@ -499,9 +499,9 @@ def make_server(canvas, port=0):
 
         def do_GET(self):
             path = urlparse(self.path)
-            # The opaque panel iframe can load only this public, stateless bridge
+            # The opaque panel iframe can load only these public, stateless scripts
             # across origins. APIs and all other assets retain the local-origin gate.
-            public_bridge = (path.path == "/assets/panel-bridge.js" and
+            public_bridge = (path.path in {"/assets/panel-bridge.js", "/assets/panel-ui.js"} and
                              self.headers.get("Host") in {f"{name}:{self.server.server_port}" for name in ("127.0.0.1", "localhost")})
             if not self.trusted() and not public_bridge:
                 return self.send({"error": "Local origin required"}, 403)

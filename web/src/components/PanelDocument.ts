@@ -54,3 +54,43 @@ export function panelDocument(
   doc.body.append(script);
   return "<!doctype html>" + doc.documentElement.outerHTML;
 }
+
+export interface PanelContent {
+  html: string;
+  css: string;
+  format?: string;
+  spec?: unknown;
+  callbacks?: PanelCallback[];
+}
+
+export function panelContentDocument(panel: PanelContent, channel: string) {
+  if (panel.format !== "json-render")
+    return panelDocument(panel.html, panel.css, panel.callbacks || [], channel);
+  const doc = document.implementation.createHTMLDocument("");
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const policy = doc.createElement("meta");
+  policy.httpEquiv = "Content-Security-Policy";
+  policy.content = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`;
+  doc.head.prepend(policy);
+  const root = doc.createElement("div");
+  root.id = "panel-root";
+  doc.body.append(root);
+  const script = doc.createElement("script");
+  script.setAttribute("nonce", nonce);
+  script.src = new URL("assets/panel-ui.js", document.baseURI).href;
+  script.setAttribute(
+    "data-config",
+    encodeURIComponent(
+      JSON.stringify({
+        channel,
+        spec: panel.spec,
+        callbacks: panel.callbacks || [],
+        background: getComputedStyle(document.documentElement)
+          .getPropertyValue("--surface")
+          .trim(),
+      }),
+    ),
+  );
+  doc.body.append(script);
+  return "<!doctype html>" + doc.documentElement.outerHTML;
+}

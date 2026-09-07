@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { errorText } from "../api";
-import { panelDocument, type PanelCallback } from "./PanelDocument";
+import { panelContentDocument, type PanelCallback } from "./PanelDocument";
 import "./agent-panel.css";
 
 interface Panel {
   agent: string;
   version: number;
+  format?: string;
+  spec?: unknown;
   html: string;
   css: string;
   callbacks?: PanelCallback[];
@@ -99,6 +101,7 @@ export default function AgentPanel({
 }) {
   const [panel, setPanel] = useState<Panel | null>(null);
   const [error, setError] = useState("");
+  const [localError, setLocalError] = useState("");
   const [loading, setLoading] = useState(false);
   const [retry, setRetry] = useState(0);
   const [, redraw] = useState(0);
@@ -113,6 +116,7 @@ export default function AgentPanel({
   useEffect(() => {
     const controller = new AbortController();
     setError("");
+    setLocalError("");
     if (!version) {
       setPanel(null);
       setLoading(false);
@@ -154,12 +158,7 @@ export default function AgentPanel({
     const channel = crypto.randomUUID();
     return {
       channel,
-      html: panelDocument(
-        current?.html || "",
-        current?.css || "",
-        current?.callbacks || [],
-        channel,
-      ),
+      html: panelContentDocument(current || { html: "", css: "" }, channel),
     };
   }, [current]);
   const enabled =
@@ -210,6 +209,14 @@ export default function AgentPanel({
         event.data?.channel !== live.channel
       )
         return;
+      if (event.data?.type === "panel-error") {
+        setError(String(event.data.error || "Cannot render panel"));
+        return;
+      }
+      if (event.data?.type === "panel-local-error") {
+        setLocalError(String(event.data.error || ""));
+        return;
+      }
       if (event.data?.type === "panel-ready") {
         sync();
         return;
@@ -275,10 +282,19 @@ export default function AgentPanel({
     return () => removeEventListener("message", receive);
   }, []);
   const feedback = state.latest;
-  const hasContent = !!(current?.html.trim() || current?.css.trim());
+  const hasContent = !!(
+    current?.spec ||
+    current?.html.trim() ||
+    current?.css.trim()
+  );
   if (!hasContent && !error) return null;
   return (
     <>
+      {localError && (
+        <div className="agent-panel-feedback error" role="alert">
+          {localError}
+        </div>
+      )}
       {!error && feedback && (
         <div
           className={`agent-panel-feedback ${feedback.status}`}

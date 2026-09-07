@@ -1,29 +1,35 @@
 # Codex Studio panel
 
-These rules apply to the persistent agent panel in Codex Studio. They do not apply to native Codex CLI sessions.
+These rules apply only to the persistent panel in Codex Studio, not native Codex CLI.
 
-## Purpose and layout
+## Compose a useful view
 
-Use `orchestration_panel` to show a visual state, result, or useful control between the chat and composer. Each agent owns one panel. Prefer a stage track, segmented bar, compact diagram, measured counters, or a small card composition. Shape, size, and position must communicate information. A paragraph or a row of labels with arrows is not a progress display.
+Use `orchestration_panel` for visual state, results, or controls between chat and composer. Each agent owns one panel. A worker cannot replace the lead's panel.
 
-Use short labels and explicit states such as running, waiting, failed, and complete. Distinguish a finished command from an accepted result. Show counts or percentages only when measurements support them. Use labels with color. Keep detailed evidence in chat or linked workspace files. Update the panel when its information changes. Do not poll or send repeated messages to refresh it.
+Use json-render `spec` mode by default. Call `action=catalog` for current components, properties, and expression syntax. Compose its layout primitives, stages, measured counters, charts, and controls. Do not invent component properties. Studio owns typography, colors, spacing, and control styles. Arbitrary CSS is not a structured property.
 
-The content viewport is exactly 150 CSS pixels high and fills the available width. `html` and `body` fill that viewport with zero margins. Include all padding and borders inside the 150 pixels with `box-sizing:border-box`. Put spacing inside the composition. Adapt the layout to widths of 320, 640, and 1000 pixels.
-
-The canvas always matches the chat background. A single full-viewport `div` or `main` wrapper becomes transparent. Style nested cards when useful. Use Studio typography and variables: `--studio-surface`, `--studio-text`, `--studio-muted`, `--studio-accent`, `--studio-border`, `--studio-radius`, and `--studio-font`. The theme supplies controls, not a layout.
+Shape and position should communicate information. Use short labels and explicit states. Distinguish a finished command from an accepted result. Never invent counts or percentages. Keep detailed evidence in chat or linked files. Update when information changes; do not poll to refresh the panel.
 
 ## Publish and inspect
 
-Use `action=set` with `html`, optional `css`, and declared `callbacks`. The server measures the layout at all three widths before saving it. It returns a PNG at 1000×150 pixels. Inspect the image for readability, contrast, visual structure, and fit.
+Call `action=set` with `spec: {root, elements, state?}` and optional top-level `callbacks`. Elements use catalog types, properties, and child identifiers. Do not combine `spec` with `html` or `css`. Adapt [the progress example](../assets/panel-progress.json), replacing sample values with verified data.
 
-Everything must fit, including forms, controls, hover states, and open details. Do not use scrolling, clipping, or ellipsis to conceal overflow. Simplify or rearrange the content. If measurement or rendering fails, the previous content and callbacks stay unchanged. Fix the reported problem and submit a new tool call. `action=get` can inspect a legacy panel; `action=clear` removes the content.
+The viewport is 150 CSS pixels high. The server validates schema and fit at widths 320, 640, and 1000px. Padding and borders belong inside that height. All selectable views must fit. Use Tabs when several detailed views need the same space. Do not conceal overflow with scrolling, clipping, or ellipsis.
 
-## Controls and events
+The tool returns a PNG at 1000×150px. Inspect readability, structure, and fit. Catalog components ensure consistent styles, not a good composition. Validation or render failure preserves the previous content, version, and callbacks. Fix the error and submit a new call. `action=get` reads and renders the current panel; `action=clear` removes it.
 
-Declare each callback with `id`, `label`, and `fields`, the exact input names. Use `<form data-callback="review">` with named inputs and a submit button. For a standalone button, use `type="button"`, `data-callback="refresh"`, and an empty `fields` list.
+## Local state and agent actions
 
-A `panel_callback` event contains `callback`, `label`, `panelVersion`, and `values`, whose values are arrays of strings. It wakes the agent after a final answer. Handle the action and submitted values. Each callback accepts one submission per panel version. Publish an updated panel to acknowledge it and enable another submission when needed. An interaction does not authorize unrelated actions.
+Bind controls to local state with the catalog's expression syntax. Tabs, choices, and field edits work without a model call. Use conditional visibility for alternate views. Keep every interactive state compact, including later text input.
 
-Scripts, external resources, navigation, and file uploads remain disabled. The host handles callbacks. For older managed threads, call `orchestration_send` with `agent_id="workspace"` and JSON in `text`: `{"tool":"orchestration_panel","arguments":{"action":"get"}}`. For updates, replace `arguments` with the complete panel action.
+Use `Button` or `Form` with `props.callback` when the agent must act. Declare that callback outside `spec`, with `id`, `label`, and exact input names in `fields`. Button callbacks have no fields. Form fields submit arrays of strings.
 
-Adapt [the progress example](../assets/panel-progress.json) when useful. Replace its sample counts and states with verified task data.
+The owner receives a `panel_callback` event with `callback`, `label`, `panelVersion`, and `values` after its current turn, including after a final answer. Stopped or deleted agents do not resume. Each callback accepts one submission per panel version. Handle it and publish an updated panel to acknowledge the result or enable another submission. An interaction does not authorize unrelated actions.
+
+## HTML fallback
+
+Use `html` and optional `css` when the catalog cannot express a needed visual, such as a custom scientific diagram. Keep the same fit checks and Studio theme. Use `--studio-*` theme variables. HTML/body have zero margins; include spacing inside the viewport. Scripts, external resources, navigation, and uploads remain disabled.
+
+Declare callbacks as above. Use `data-callback="id"` on a form with named inputs or a standalone `type="button"` button. The host handles submission.
+
+Older threads can use `orchestration_send`, `agent_id="workspace"`, and JSON text: `{"tool":"orchestration_panel","arguments":{"action":"catalog"}}`. Substitute the complete panel action for updates. If the installed server lacks the requested mode, report that limit.

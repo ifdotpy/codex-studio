@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import threading
 
+from codex_panel import validate_panel_spec
+
 
 _RENDERERS = threading.BoundedSemaphore(2)
 _ROOT = Path(__file__).resolve().parent.parent
@@ -73,17 +75,30 @@ def render_panel(panel, *, strict_layout=True):
     Strict mode rejects overflow before a caller commits its panel write.
     strict_layout=False can capture an old panel and return its failed metrics.
     """
-    if not isinstance(panel, dict) or not isinstance(panel.get("html"), str):
-        raise PanelRenderError("A panel with HTML is required.")
+    if not isinstance(panel, dict):
+        raise PanelRenderError("A panel with HTML or a structured spec is required.")
+    structured = panel.get("format") == "json-render" or "spec" in panel
+    if structured:
+        try:
+            validate_panel_spec(panel.get("spec"))
+        except ValueError as error:
+            raise PanelRenderError(str(error)) from error
+        if panel.get("html", "") or panel.get("css", ""):
+            raise PanelRenderError("A structured panel cannot also contain HTML or CSS.")
+    elif not isinstance(panel.get("html"), str):
+        raise PanelRenderError("A panel with HTML or a structured spec is required.")
     # Make the revision independent of subsequent caller mutations before wait.
     try:
         immutable = json.loads(json.dumps(panel, ensure_ascii=False))
     except (TypeError, ValueError) as error:
         raise PanelRenderError("The panel is not JSON serializable.") from error
+    immutable.setdefault("html", "")
     immutable.setdefault("css", "")
-    if not isinstance(immutable["css"], str):
-        raise PanelRenderError("Panel CSS must be a string.")
-    if len(immutable["html"]) > 131072 or len(immutable["css"]) > 32768:
+    if structured:
+        immutable["format"] = "json-render"
+    if not isinstance(immutable["html"], str) or not isinstance(immutable["css"], str):
+        raise PanelRenderError("Panel HTML and CSS must be strings.")
+    if len(immutable["html"].encode("utf-8")) > 131072 or len(immutable["css"].encode("utf-8")) > 32768:
         raise PanelRenderError("The panel exceeds the render size limit.")
     if not _RENDERERS.acquire(timeout=_QUEUE_TIMEOUT):
         raise PanelRenderError("Both panel renderers stayed busy for 30 seconds. No new panel was accepted. Try again after the queue clears.")

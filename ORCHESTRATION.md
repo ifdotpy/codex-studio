@@ -100,11 +100,16 @@ its examples. The application does not install it into vanilla Codex CLI profile
 
 Each managed conversation has a fixed 150px panel between the transcript and
 composer. The calling agent controls it through `orchestration_panel`:
-`set` replaces HTML and optional CSS, `get` reads the current document, and
-`clear` empties the display. A worker cannot overwrite its lead's panel.
+`catalog` returns the structured component contract. `set` replaces the panel
+with a json-render `spec`, or with HTML and optional CSS. `get` reads the current
+document, and `clear` empties the display. A worker cannot overwrite its lead's panel.
 Agent chat rooms and unmanaged conversations do not have this display.
-The agent instructions call for visual status: stage tracks, segmented bars,
-compact counters, CSS grids, and SVG diagrams with short labels. Chat paragraphs
+Structured specs are the default. Agents compose catalog components; Studio owns
+their typography, colors, spacing, and control styles. The live catalog defines
+the allowed component properties and interactions. Local state can update the
+view without a model call. Explicit callback buttons and forms notify the agent.
+The agent instructions call for visual status: stage tracks, measured counters,
+compact diagrams, and useful controls with short labels. Chat paragraphs
 and invented progress values do not belong in this panel. The composer uses one
 action row for attachments, delivery, and send. The text field grows with its draft;
 context, compactions, and account limits remain directly below it.
@@ -119,7 +124,15 @@ the background of a single full-size div/main wrapper; nested card colors remain
 HTML and body fill the 150px viewport with zero margins. Agent padding and borders
 belong inside that height. A 150px root plus external margins does not fit.
 
-The panel renders inline HTML/CSS/SVG and CSS animations in an opaque sandbox.
+The structured format uses `spec: {root, elements, state?}` with callbacks outside
+the spec. An update cannot combine `spec` with `html` or `css`. Components can use
+json-render state bindings, conditional visibility, and repeated elements. The
+application admits catalog components and local control state changes only;
+agent-supplied scripts and arbitrary action handlers do not run. The server checks
+the spec before rendering it. Schema and layout failures leave the prior panel intact.
+
+HTML remains available for visuals that the catalog cannot express. This mode
+renders inline HTML/CSS/SVG and CSS animations in an opaque sandbox.
 Agent scripts, external requests, navigation, and parent access are disabled.
 Only the fixed host bridge runs. It handles declared buttons and forms after
 trusted user input. HTML accepts up to 128 KiB of UTF-8 text; CSS accepts up to 32 KiB.
@@ -140,12 +153,16 @@ Overflow or renderer failure rejects the update and preserves the previous panel
 version, and callbacks. Validation holds no runtime or database lock.
 A concurrent panel update or caller change rejects the stale candidate.
 `get` can still capture an older panel without a write.
-Validation samples animation keyframes and intermediate positions at the three
-widths. It does not cover every viewport or later form state.
+HTML validation samples animation keyframes and intermediate positions at the
+three widths. It does not cover every viewport or later HTML form state.
+Structured validation measures up to 32 reachable choice states at all three
+widths, including choices introduced by another control. Later field edits pass
+schema and geometry checks. An edit that overflows restores the last valid state.
 Callback feedback appears above the panel and does not reduce its content height.
 
 `set` can declare up to 16 callbacks, each with `id`, `label`, and up to 32 `fields`.
-Use `data-callback="id"` on a button or form and named form inputs. Field values
+Use the catalog Button or Form in a structured spec. In HTML, use
+`data-callback="id"` on a button or form and named form inputs. Field values
 arrive as arrays of strings. The parent verifies the current iframe and channel,
 then posts to `/api/panel/callback` with the local CSRF token. The token never enters
 the iframe. The server checks panel version, declared action/fields, and owner.

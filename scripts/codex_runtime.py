@@ -2265,7 +2265,9 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 render_failed = False
                 if name == "orchestration_panel" and args.get("action") in {"set", "get"}:
                     # Render the accepted input, not a later revision another call may have published.
-                    exact_panel = ({**value, "html": args["html"], "css": args.get("css", ""),
+                    exact_panel = ({**value,
+                                    **({"format": "json-render", "spec": args["spec"], "html": "", "css": ""}
+                                       if "spec" in args else {"format": "html", "html": args["html"], "css": args.get("css", "")}),
                                     "callbacks": self.validate_callbacks(args.get("callbacks", []))}
                                    if args["action"] == "set" else value)
                     value = dict(value)

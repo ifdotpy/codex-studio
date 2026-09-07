@@ -1,0 +1,338 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#panel-root {
+  margin: 0;
+  width: 100%;
+  min-height: 100%;
+  background: var(--surface);
+  color: var(--text);
+}
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+}
+#panel-root {
+  padding: 10px 12px;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+}
+:focus-visible {
+  outline: 2px solid #a399ff;
+  outline-offset: 1px;
+}
+figure,
+ol,
+p {
+  margin: 0;
+}
+* {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sp-stack {
+  display: flex;
+}
+.sp-stack > *,
+.sp-grid > * {
+  min-width: 0;
+}
+.sp-stack[style*="row"] > * {
+  flex: 1;
+}
+.sp-grid {
+  display: grid;
+}
+.sp-surface-subtle {
+  background: #232329;
+  border-radius: 8px;
+}
+.sp-tone-neutral {
+  --sp-tone: #b4b4c0;
+}
+.sp-tone-accent {
+  --sp-tone: #b8afff;
+}
+.sp-tone-success {
+  --sp-tone: #a2c9b6;
+}
+.sp-tone-warning {
+  --sp-tone: #e4c582;
+}
+.sp-tone-danger {
+  --sp-tone: #f0a6ac;
+}
+.sp-text {
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.sp-text:not(.sp-tone-neutral) {
+  color: var(--sp-tone);
+}
+.sp-text-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.sp-text-label,
+.sp-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.sp-text-caption,
+.sp-caption {
+  font-size: 11px;
+  color: var(--muted);
+}
+.sp-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sp-metric strong {
+  font-size: 24px;
+  line-height: 1.15;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--sp-tone);
+}
+.sp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--sp-tone);
+}
+.sp-badge i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.sp-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.sp-progress-label span:last-child {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.sp-progress [role="progressbar"],
+.sp-bar-track {
+  height: 4px;
+  background: #ffffff12;
+  border-radius: 3px;
+}
+.sp-progress [role="progressbar"] i,
+.sp-bar-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--sp-tone);
+}
+.sp-steps {
+  display: flex;
+  padding: 0;
+  list-style: none;
+  gap: 0;
+}
+.sp-steps li {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 3px 8px 3px 0;
+}
+.sp-steps li > span:first-child {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 1px solid #ffffff24;
+  border-radius: 50%;
+  background: var(--surface);
+  font-size: 10px;
+}
+.sp-steps .sp-step-complete {
+  color: #a2c9b6;
+}
+.sp-steps .sp-step-active {
+  color: #b8afff;
+}
+.sp-steps .sp-step-failed {
+  color: #f0a6ac;
+}
+.sp-steps .sp-step-active > span:first-child {
+  border-color: currentColor;
+  background: #a399ff18;
+}
+.sp-steps li:not(:last-child):after {
+  content: "";
+  width: 8px;
+  height: 1px;
+  background: #ffffff20;
+  position: absolute;
+  right: 1px;
+  top: 12px;
+}
+.sp-divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0;
+}
+.sp-sparkline,
+.sp-bars {
+  font-size: 11px;
+  color: var(--muted);
+}
+.sp-sparkline svg {
+  display: block;
+  width: 100%;
+  height: 40px;
+  color: var(--sp-tone);
+  overflow: visible;
+  margin-top: 4px;
+}
+.sp-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+.sp-bar-track {
+  display: block;
+}
+.sp-button {
+  color: var(--sp-tone);
+  background: #ffffff08;
+}
+.sp-button .mantine-Button-label,
+.sp-submit .mantine-Button-label {
+  white-space: normal;
+  overflow: visible;
+}
+.sp-form fieldset {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.sp-form fieldset > :not(button) {
+  flex: 1;
+}
+.sp-form-column fieldset {
+  flex-direction: column;
+  align-items: stretch;
+}
+.sp-form .sp-submit {
+  flex-shrink: 0;
+  min-height: 30px;
+}
+.sp-tabs > [role="tablist"] {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+  gap: 4px;
+  margin-bottom: 9px;
+}
+.sp-tabs [role="tab"] {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 3px 10px 7px;
+  font-size: 12px;
+  border-bottom: 2px solid transparent;
+}
+.sp-tabs [role="tab"]:first-child {
+  padding-left: 0;
+}
+.sp-tabs [role="tab"][aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: #a399ff;
+}
+.sp-sr {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+.mantine-InputWrapper-label,
+.mantine-Checkbox-label {
+  font-size: 11px;
+}
+.mantine-SegmentedControl-root {
+  max-width: 100%;
+}
+.mantine-SegmentedControl-label {
+  white-space: normal;
+}
+.mantine-Input-input {
+  min-width: 0;
+}
+.mantine-Button-root {
+  height: auto;
+  min-height: 24px;
+}
+/* Panel callbacks use disabled buttons, not Mantine's animated loading overlay. */
+.sp-button::before,
+.sp-submit::before {
+  content: none;
+}
+.mantine-Input-input:disabled {
+  opacity: 0.6;
+}
+@media (max-width: 400px) {
+  #panel-root {
+    padding: 8px;
+  }
+  .sp-tabs [role="tab"] {
+    padding-inline: 6px;
+  }
+  .sp-steps li {
+    gap: 4px;
+    font-size: 10px;
+  }
+  .sp-text-title {
+    font-size: 13px;
+  }
+}

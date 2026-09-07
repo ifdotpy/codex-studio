@@ -100,9 +100,12 @@ Scripts and remote resources do not run in these previews.
 
 For a persistent visual display or interactive control, read
 [the panel guide](references/panel.md). It defines the 150px content viewport,
-responsive layout, visual design, strict measurement, and callback behavior.
-These panel rules apply only inside Codex Studio.
+component composition, local state, strict measurement, and callback behavior.
+Use the json-render `spec` mode by default. Read the live catalog with
+`orchestration_panel` and `action=catalog` before composing an unfamiliar panel.
+Studio controls component styles. Use HTML only when the catalog cannot express
+the required visual or interaction. These rules apply only inside Codex Studio.
 
 Use [the progress example](assets/panel-progress.json) for a complete starting
-composition. Its counts and states are sample data. Replace them with verified
+structured composition. Its counts and states are sample data. Replace them with verified
 values and adapt the composition to the task. The example is not a required layout.

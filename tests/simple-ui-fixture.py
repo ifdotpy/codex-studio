@@ -115,6 +115,13 @@ def fixture_events():
                               key=params['id'], epoch=agent['epoch'])
         elif message.get('method') == 'fixture/create-worker':
             c.runtime.create(message['params'], parent=message['parent'], defer=True)
+        elif message.get('method') == 'fixture/panel-action':
+            try:
+                result = c.runtime.panel_action(message['agent'], message['params'], key=message['id'])
+                reply = {'id': message['id'], 'ok': True, 'result': result}
+            except Exception as error:
+                reply = {'id': message['id'], 'ok': False, 'error': str(error)}
+            print(json.dumps(reply), flush=True)
         else:
             c.runtime.notification(message)
 threading.Thread(target=fixture_events, daemon=True).start()

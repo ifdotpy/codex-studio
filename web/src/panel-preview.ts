@@ -1,10 +1,10 @@
 import "./studio-theme.css";
-import { panelDocument, type PanelCallback } from "./components/PanelDocument";
+import {
+  panelContentDocument,
+  type PanelContent,
+} from "./components/PanelDocument";
 
-type PreviewPanel = {
-  html: string;
-  css: string;
-  callbacks?: PanelCallback[];
+type PreviewPanel = PanelContent & {
   submittedCallbacks?: string[];
 };
 
@@ -30,11 +30,15 @@ window.renderPanelPreview = (panel) =>
       if (
         event.source !== frame.contentWindow ||
         event.data?.channel !== channel ||
-        event.data?.type !== "panel-ready"
+        !["panel-ready", "panel-error"].includes(event.data?.type)
       )
         return;
       removeEventListener("message", ready);
       clearTimeout(timeout);
+      if (event.data.type === "panel-error") {
+        reject(new Error(event.data.error || "Invalid panel spec"));
+        return;
+      }
       // Match the available controls in the user panel. There is no callback
       // receiver here, so the screenshot cannot send an action to an agent.
       frame.contentWindow?.postMessage(
@@ -49,11 +53,6 @@ window.renderPanelPreview = (panel) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     }
     addEventListener("message", ready);
-    frame.srcdoc = panelDocument(
-      panel.html,
-      panel.css,
-      panel.callbacks || [],
-      channel,
-    );
+    frame.srcdoc = panelContentDocument(panel, channel);
     document.body.replaceChildren(frame);
   });

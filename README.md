@@ -12,7 +12,7 @@ agent skill, not this application skill.
 
 ## Setup
 
-Requirements: Python 3.11 or later, Node.js 22 or later, and the signed-in Codex CLI.
+Requirements: Python 3.11 or later, Node.js 22.15 or later, and the signed-in Codex CLI.
 The desktop package currently targets macOS on Apple silicon.
 
 From this repository:
@@ -80,6 +80,10 @@ python3 -B tests/accounts-contract.py
 python3 -B tests/runtime-accounts-contract.py
 python3 -B tests/canvas-contract.py
 python3 -B tests/install-cli-contract.py
+python3 -B tests/panel-contract.py
+python3 -B tests/panel-callback-contract.py
+python3 -B tests/panel-render-contract.py
+python3 -B tests/structured-panel-render-contract.py
 npm --prefix web test
 npm --prefix desktop test
 ```

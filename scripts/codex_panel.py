@@ -1,8 +1,9 @@
-"""Persistent, agent-owned HTML/CSS panels above the message composer."""
+"""Persistent, agent-owned structured and HTML panels above the composer."""
 
 import copy
 import json
 import re
+from pathlib import Path
 import time
 from codex_work import text_field
 
@@ -17,31 +18,31 @@ NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 def panel_tools(tool, text):
     return [tool(
         "orchestration_panel",
-        "Display HTML/CSS/SVG in your persistent 150px-high panel between the chat and composer. "
-        "Design a compact visual instrument, not another chat message: use CSS grids, segmented progress bars, "
-        "stage tracks, small SVG diagrams, or measured counters with short labels. Avoid paragraphs and repeated chat summaries. "
-        "Studio supplies colors and basic controls, not a layout. Build the layout with html and css. "
-        "The canvas has no outer margin and gives you the full width and 150px height; include your padding and borders inside that height. "
-        "The canvas shares the chat background. Full-size div/main wrappers stay transparent; style nested cards with Studio variables. "
-        "For progress, draw connected stage segments and separate measured counters; text with arrows alone is insufficient. "
-        "Show the current phase and one bottleneck at a glance. Use real counts only; never invent percentages or fake progress. "
-        "set replaces the whole panel; "
-        "get reads it; clear empties it. Supply html (fragment or document) and optional css. "
-        "Updates appear in place without a chat message. Each agent owns its own panel. "
-        "Codex Studio styles semantic HTML by default; override with css only when useful. "
-        "For buttons/forms, declare callbacks [{id,label,fields:[fieldNames]}] and use data-callback=id on the button or form. "
-        "Named form fields are sent to you as arrays of strings after a real user click/submit. "
-        "Each action is accepted once per panel version and wakes you after your final answer; publish a new panel to enable it again. "
-        "set and get return a rendered PNG of that panel revision at 1000x150 CSS pixels. Inspect it and fix clipped or unreadable content. "
-        "Also check whether shape, position or size communicates the state; if it is only rows of text, revise the composition. "
-        "set validates the rendered content at widths 320, 640, and 1000px before saving. "
-        "Overflow, clipping, or renderer failure rejects set and preserves the previous panel and callbacks. "
-        "Use the measured dimensions in the error to revise the layout. get can still read an older panel. "
-        "Use button type=button for standalone actions and form data-callback plus button type=submit for forms. "
-        "Your own scripts, navigation, and external resources are disabled; the trusted host handles callbacks. "
-        "Keep content responsive and readable within 150px. Update on meaningful changes, not by polling.",
+        "Display an interactive, persistent 150px-high panel between the chat and composer. "
+        "Prefer structured json-render UI: first call action=catalog for the supported components, props, state, and actions; "
+        "then action=set with spec={root,elements,state?}. Studio renders its own components and theme. "
+        "Compose compact visual progress, steps, measured counters, forms, and useful controls. "
+        "Show the current phase and one bottleneck; avoid paragraphs and repeated chat summaries. Never invent progress. "
+        "For a visualization the catalog cannot express, set html and optional css instead of spec. "
+        "Do not mix spec with html/css. The HTML canvas shares the chat background and has no outer margin; "
+        "include all padding and borders inside its 150px height. "
+        "set replaces the whole panel; get reads it; clear empties it. Each agent owns its own panel. "
+        "Declare callbacks [{id,label,fields:[fieldNames]}] for user actions. For structured UI, follow the catalog action contract. "
+        "For HTML, use data-callback=id on a button or form; use type=button for standalone buttons and type=submit inside forms. "
+        "Declared form values arrive as arrays of strings after a real user click or submit. "
+        "Each callback is accepted once per panel version and wakes you after your final answer; publish a new panel to enable it again. "
+        "set and get return a rendered PNG of the exact revision at 1000x150 CSS pixels. Inspect it and revise unreadable content. "
+        "set validates the components and layout at widths 320, 640, and 1000px before saving. "
+        "Invalid content, overflow, clipping, or renderer failure rejects set and preserves the previous panel and callbacks. "
+        "Use the error details to revise the content; get can still read an older panel. "
+        "Scripts, navigation, and external resources are disabled; the trusted host handles callbacks. "
+        "Keep the panel responsive within 150px. Update on meaningful changes, not by polling.",
         {
-            "action": {"type": "string", "enum": ["get", "set", "clear"]},
+            "action": {"type": "string", "enum": ["catalog", "get", "set", "clear"]},
+            "spec": {"type": "object", "properties": {
+                "root": {"type": "string"}, "elements": {"type": "object", "additionalProperties": True},
+                "state": {"type": "object", "additionalProperties": True},
+            }, "required": ["root", "elements"], "additionalProperties": False},
             "html": {**text, "maxLength": 131072},
             "css": {**text, "maxLength": 32768},
             "callbacks": {"type": "array", "maxItems": 16, "items": {
@@ -54,6 +55,35 @@ def panel_tools(tool, text):
         },
         ["action"],
     )]
+
+
+CATALOG_FILE = Path(__file__).resolve().parent.parent / "web/dist/panel-catalog.json"
+
+
+def validate_panel_spec(value):
+    """Check transport shape and size; the renderer validates the catalog contract."""
+    if (not isinstance(value, dict) or set(value) - {"root", "elements", "state"}
+        or not isinstance(value.get("root"), str) or not value["root"]
+        or not isinstance(value.get("elements"), dict) or not value["elements"]
+        or ("state" in value and not isinstance(value["state"], dict))):
+        raise ValueError("spec requires a nonempty root string, an elements object, and optional state object")
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise ValueError("spec must contain valid finite JSON values") from error
+    if len(encoded) > 131072:
+        raise ValueError("spec must contain at most 131072 UTF-8 bytes")
+    return value
+
+
+def panel_catalog():
+    try:
+        catalog = json.loads(CATALOG_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError("The panel catalog is unavailable. Build or update Codex Studio") from error
+    if not isinstance(catalog, dict) or not catalog:
+        raise ValueError("The panel catalog is invalid. Build or update Codex Studio")
+    return catalog
 
 
 class PanelMixin:
@@ -74,6 +104,7 @@ class PanelMixin:
             "id": agent_id, "agent": agent_id, "version": 0,
             "html": "", "css": "", "updated": None,
         }
+        panel.setdefault("format", "html")
         panel.setdefault("callbacks", [])
         panel["submittedCallbacks"] = [r[0] for r in db.execute(
             "SELECT callback FROM runtime_panel_callbacks WHERE agent=? AND version=?", (agent_id, panel["version"])
@@ -106,11 +137,15 @@ class PanelMixin:
             actor = self.checked_actor(db, actor_id, actor_id)
             if epoch is not None and actor["epoch"] != epoch:
                 raise ValueError("The caller was stopped")
-            if not isinstance(data, dict) or set(data) - {"action", "html", "css", "callbacks"}:
-                raise ValueError("Supply action, html, css, and callbacks only; the panel belongs to the calling agent")
+            if not isinstance(data, dict) or set(data) - {"action", "spec", "html", "css", "callbacks"}:
+                raise ValueError("Supply action, spec or html/css, and callbacks only; the panel belongs to the calling agent")
             action = data.get("action")
-            if action not in {"get", "set", "clear"}:
+            if action not in {"catalog", "get", "set", "clear"}:
                 raise ValueError("Unknown panel action")
+            if action == "catalog":
+                if set(data) != {"action"}:
+                    raise ValueError("catalog accepts no content")
+                return panel_catalog()
             signature, prior = self.operation_receipt(db, key, {"actor": actor_id, "panel": data})
             if prior is not None:
                 return prior
@@ -119,19 +154,30 @@ class PanelMixin:
                 return panel
             if action == "set":
                 callbacks = self.validate_callbacks(data.get("callbacks", []))
-                html, css = data.get("html"), data.get("css", "")
-                for name, value, maximum in [("html", html, 131072), ("css", css, 32768)]:
-                    if not isinstance(value, str) or len(value.encode("utf-8")) > maximum:
-                        raise ValueError(f"{name} must be text with at most {maximum} UTF-8 bytes")
+                spec = None
+                if "spec" in data:
+                    if "html" in data or "css" in data:
+                        raise ValueError("Supply spec or html/css, not both")
+                    spec = validate_panel_spec(data["spec"])
+                    html, css = "", ""
+                else:
+                    html, css = data.get("html"), data.get("css", "")
+                    for name, value, maximum in [("html", html, 131072), ("css", css, 32768)]:
+                        if not isinstance(value, str) or len(value.encode("utf-8")) > maximum:
+                            raise ValueError(f"{name} must be text with at most {maximum} UTF-8 bytes")
             else:
                 if set(data) != {"action"}:
                     raise ValueError("clear accepts no content")
-                html, css = "", ""
+                html, css, spec = "", "", None
                 callbacks = []
             base_version = panel["version"]
             identity = tuple(actor.get(k) for k in ("epoch", "threadId", "turnId", "accountKey"))
             panel.pop("submittedCallbacks", None)
-            panel.update(html=html, css=css, callbacks=callbacks, version=base_version + 1)
+            panel.update(html=html, css=css, callbacks=callbacks, version=base_version + 1,
+                         format="json-render" if spec is not None else "html")
+            panel.pop("spec", None)
+            if spec is not None:
+                panel["spec"] = spec
             if action == "clear":
                 return self.commit_panel(db, actor, panel, key, signature)
 

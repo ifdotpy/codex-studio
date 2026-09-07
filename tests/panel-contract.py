@@ -206,6 +206,128 @@ class PanelContract(unittest.TestCase):
         self.assertEqual(panel["version"], 1)
         self.assertEqual(panel["html"], "")
 
+    def structured_spec(self, text="Phase 1"):
+        return {"root": "summary", "elements": {
+            "summary": {"type": "Text", "props": {"text": text}},
+        }, "state": {"choice": "first"}}
+
+    def test_catalog_uses_built_catalog_without_panel_mutation_or_capture(self):
+        import codex_panel
+        a = self.lead()
+        catalog_path = self.state / "panel-catalog.json"
+        expected = {"components": {"Text": {"props": {"text": "string"}}}}
+        catalog_path.write_text(json.dumps(expected))
+        with patch.object(codex_panel, "CATALOG_FILE", catalog_path):
+            self.assertEqual(self.runtime.panel_action(a["id"], {"action": "catalog"}), expected)
+            result = self.tool(a, "orchestration_panel", {"action": "catalog"})
+            self.assertTrue(result["success"], result)
+            self.assertFalse(any(item["type"] == "inputImage" for item in result["contentItems"]))
+            with self.assertRaisesRegex(ValueError, "no content"):
+                self.runtime.panel_action(a["id"], {"action": "catalog", "html": "x"})
+            catalog_path.unlink()
+            with self.assertRaisesRegex(ValueError, "catalog is unavailable"):
+                self.runtime.panel_action(a["id"], {"action": "catalog"})
+        self.mock_capture.assert_not_called()
+        self.assertEqual(self.runtime.panel(a["id"])["version"], 0)
+
+    def test_structured_input_limits_and_mixed_payload_reject_before_render(self):
+        a = self.lead()
+        for invalid in [
+            {"spec": None}, {"spec": []}, {"spec": {}},
+            {"spec": {"root": "r", "elements": []}},
+            {"spec": {"root": "r", "elements": {}, "state": []}},
+            {"spec": {**self.structured_spec(), "other": True}},
+            {"spec": self.structured_spec(), "html": ""},
+            {"spec": self.structured_spec(), "css": ""},
+            {"spec": self.structured_spec("€" * 50000)},
+            {"spec": {**self.structured_spec(), "state": {"count": float("nan")}}},
+        ]:
+            with self.subTest(invalid=str(invalid)[:100]), self.assertRaises(ValueError):
+                self.runtime.panel_action(a["id"], {"action": "set", **invalid})
+        self.mock_capture.assert_not_called()
+        self.assertEqual(self.runtime.panel(a["id"])["version"], 0)
+
+    def test_structured_capture_persistence_replay_and_html_transition(self):
+        a = self.lead()
+        data = {"action": "set", "spec": self.structured_spec(),
+                "callbacks": [{"id": "go", "label": "Go"}]}
+        first = self.runtime.panel_action(a["id"], data, "structured-first")
+        panel = self.runtime.panel(a["id"])
+        self.assertEqual(panel["format"], "json-render")
+        self.assertEqual(panel["spec"], data["spec"])
+        self.assertEqual((panel["html"], panel["css"]), ("", ""))
+        captured = self.mock_capture.call_args.args[0]
+        self.assertEqual(captured["spec"], data["spec"])
+        self.assertEqual(captured["version"], first["version"])
+        self.runtime.panel_action(a["id"], {"action": "set", "spec": self.structured_spec("Phase 2")})
+        self.assertEqual(self.runtime.panel_action(a["id"], data, "structured-first"), first)
+        self.assertEqual(self.runtime.panel(a["id"])["spec"], self.structured_spec("Phase 2"))
+        with self.assertRaisesRegex(ValueError, "different content"):
+            self.runtime.panel_action(a["id"], {**data, "spec": self.structured_spec("Changed")}, "structured-first")
+        self.runtime.panel_action(a["id"], {"action": "set", "html": "Legacy"})
+        panel = self.runtime.panel(a["id"])
+        self.assertEqual(panel["format"], "html")
+        self.assertNotIn("spec", panel)
+        self.runtime.panel_action(a["id"], data)
+        self.runtime.panel_action(a["id"], {"action": "clear"})
+        panel = self.runtime.panel(a["id"])
+        self.assertNotIn("spec", panel)
+        self.assertEqual((panel["format"], panel["html"], panel["callbacks"]), ("html", "", []))
+
+    def test_structured_renderer_rejection_preserves_previous_panel(self):
+        a = self.lead()
+        self.runtime.panel_action(a["id"], {"action": "set", "html": "Previous",
+            "callbacks": [{"id": "go", "label": "Go"}]})
+        previous = self.runtime.panel(a["id"])
+        self.mock_capture.side_effect = RuntimeError("Unknown component in structured panel")
+        result = self.tool(a, "orchestration_panel", {"action": "set", "spec": self.structured_spec()})
+        self.assertFalse(result["success"], result)
+        self.assertIn("Unknown component", result["contentItems"][0]["text"])
+        self.assertEqual(self.runtime.panel(a["id"]), previous)
+
+    def test_structured_get_captures_exact_revision(self):
+        a = self.lead()
+        data = {"action": "set", "spec": self.structured_spec()}
+        result = self.tool(a, "orchestration_panel", data)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.mock_capture.call_args.args[0]["spec"], data["spec"])
+        self.assertEqual(self.mock_capture.call_count, 1)
+        result = self.tool(a, "orchestration_panel", {"action": "get"})
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.mock_capture.call_args.args[0]["spec"], data["spec"])
+        self.assertFalse(self.mock_capture.call_args.kwargs["strict_layout"])
+        self.assertTrue(any(item["type"] == "inputImage" for item in result["contentItems"]))
+
+    def test_structured_receipt_without_cached_tool_response_captures_original(self):
+        a = self.runtime.prepare(self.lead())
+        original = {"action": "set", "spec": self.structured_spec("Original")}
+        request_id = "structured-replay"
+        first = self.runtime.panel_action(a["id"], original, a["threadId"] + ":" + request_id)
+        self.runtime.panel_action(a["id"], {"action": "set", "spec": self.structured_spec("Newer")})
+        self.mock_capture.reset_mock()
+        self.runtime.dynamic({"id": request_id, "params": {
+            "threadId": a["threadId"], "callId": request_id,
+            "tool": "orchestration_panel", "arguments": original,
+        }})
+        result = self.runtime.server.responses[-1]["result"]
+        self.assertTrue(result["success"], result)
+        self.mock_capture.assert_called_once()
+        captured = self.mock_capture.call_args.args[0]
+        self.assertEqual(captured["spec"], original["spec"])
+        self.assertEqual(captured["version"], first["version"])
+        self.assertEqual(self.runtime.panel(a["id"])["spec"], self.structured_spec("Newer"))
+        self.assertFalse(self.mock_capture.call_args.kwargs["strict_layout"])
+
+    def test_structured_python_render_accepts_no_html_before_queue(self):
+        import codex_panel_render
+        # The real Chromium catalog is tested separately. Reaching its queue proves
+        # the Python transport accepts a structured panel without an HTML string.
+        with patch.object(codex_panel_render._RENDERERS, "acquire", return_value=False):
+            with self.assertRaisesRegex(codex_panel_render.PanelRenderError, "busy"):
+                codex_panel_render.render_panel({"spec": self.structured_spec(), "version": 1})
+        with self.assertRaisesRegex(codex_panel_render.PanelRenderError, "cannot also contain"):
+            codex_panel_render.render_panel({"spec": self.structured_spec(), "html": "Mixed"})
+
     def test_http_reads_committed_tool_content(self):
         from codex_canvas import Canvas, make_server
         canvas = Canvas(self.state)

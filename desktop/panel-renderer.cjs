@@ -11,7 +11,7 @@ let timer;
 function finish(error) {
   clearTimeout(timer);
   if (window && !window.isDestroyed()) window.destroy();
-  if (error) process.stderr.write(`Panel render failed: ${error.message}\n`);
+  if (error) process.stderr.write(`Panel render failed: ${error.message || String(error)}\n`);
   app.exit(error ? 1 : 0);
 }
 if (!inputPath || !path.isAbsolute(inputPath)) {
@@ -178,6 +178,9 @@ app
       window.__studioPanelAnimations = document.getAnimations();
       window.__studioPanelAnimations.forEach(animation => { animation.pause(); animation.currentTime = 0; });
     })()`);
+      if (request.panel.format === "json-render") {
+        await frame.executeJavaScript("window.__studioPanelValidate()");
+      }
       const phases = await frame.executeJavaScript(`(() => {
         const animations = window.__studioPanelAnimations;
         if (!animations.length) return [0];
