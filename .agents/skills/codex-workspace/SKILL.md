@@ -121,3 +121,7 @@ the required visual or interaction. These rules apply only inside Codex Studio.
 Use [the progress example](assets/panel-progress.json) for a complete starting
 structured composition. Its counts and states are sample data. Replace them with verified
 values and adapt the composition to the task. The example is not a required layout.
+
+For data that changes without agent work, use [a background panel feed](references/panel-feed.md).
+A script supplies state directly to the panel without model calls. Use the EC2
+example for explicit instance IDs and separate machine state from resource claims.

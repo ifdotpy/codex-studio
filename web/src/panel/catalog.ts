@@ -13,7 +13,33 @@ const option = z.strictObject({
 const options = z.array(option).min(1).max(12);
 const container = ["default"];
 
+export const iconNames = [
+  "server",
+  "cloud",
+  "cpu",
+  "database",
+  "activity",
+  "check",
+  "alert",
+  "clock",
+  "terminal",
+  "globe",
+  "hard-drive",
+  "network",
+  "box",
+] as const;
+
 export const definitions = {
+  Icon: {
+    props: z.strictObject({
+      name: z.enum(iconNames),
+      label: label.optional(),
+      tone: tone.optional(),
+      size: z.enum(["sm", "md", "lg"]).optional(),
+    }),
+    description:
+      "Studio line icon. Use server or cloud for infrastructure, with an accessible label when it carries meaning.",
+  },
   Stack: {
     props: z.strictObject({
       direction: z.enum(["row", "column"]).optional(),

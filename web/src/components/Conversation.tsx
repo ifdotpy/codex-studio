@@ -677,6 +677,10 @@ export default function Conversation(p: {
               key={agent.id}
               agentId={agent.id}
               token={p.data.token}
+              dataVersion={Math.max(
+                p.agent?.panelDataVersion || 0,
+                agent.panelDataVersion || 0,
+              )}
               version={Math.max(
                 p.agent?.panelVersion || 0,
                 agent.panelVersion || 0,

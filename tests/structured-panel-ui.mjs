@@ -207,7 +207,11 @@ try {
   );
   await page.screenshot({ path: join(root, "structured-desktop.png") });
   for (const width of [320, 1000]) {
-    await page.setViewportSize({ width, height: 1000 });
+    // The mobile shell intentionally omits the panel. Exercise the panel's
+    // narrow geometry without switching this desktop integration into mobile.
+    await panel.evaluate((element, width) => {
+      element.style.width = `${width}px`;
+    }, width);
     for (const [tab, label] of [
       ["SDK", "SDK checks"],
       ["Desktop", "Desktop checks"],
@@ -237,6 +241,16 @@ try {
   assert.equal(submissions[0].callback, "details_runtime");
   assert.deepEqual(submissions[0].values, {});
   await poll(() => details.isDisabled(), "Accepted button disabled");
+  // Force the persisted RxDB projection to win the race against fresh auth.
+  // Its cache must never persist credentials, and later HTTP must still update them.
+  let delayAuth = true;
+  await page.route("**/api/state", async (route) => {
+    if (delayAuth) {
+      delayAuth = false;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    await route.continue();
+  });
   await page.reload();
   await selectChat("Release lead");
   await frame.getByRole("progressbar", { name: "Runtime checks" }).waitFor();
@@ -419,7 +433,11 @@ try {
     "New version unlocks form",
   );
   for (const width of [320, 1000]) {
-    await page.setViewportSize({ width, height: 1000 });
+    // The mobile shell intentionally omits the panel. Exercise the panel's
+    // narrow geometry without switching this desktop integration into mobile.
+    await panel.evaluate((element, width) => {
+      element.style.width = `${width}px`;
+    }, width);
     await assertFits();
   }
   assert.equal(submissions.length, 2, "New panel versions do not auto-submit");
@@ -465,7 +483,9 @@ try {
       },
     },
   };
-  await page.setViewportSize({ width: 320, height: 1000 });
+  await panel.evaluate((element) => {
+    element.style.width = "320px";
+  });
   await publish(lead, editable);
   await frame.getByRole("textbox", { name: "First", exact: true }).waitFor();
   await assertFits();

@@ -11,6 +11,21 @@ import {
   type Components,
 } from "@json-render/react";
 import { createContext, useContext } from "react";
+import {
+  Server,
+  Cloud,
+  Cpu,
+  Database,
+  Activity,
+  Check,
+  AlertTriangle,
+  Clock,
+  Terminal,
+  Globe,
+  HardDrive,
+  Network,
+  Box,
+} from "lucide-react";
 import { panelCatalog } from "./catalog";
 
 export const PanelActions = createContext({
@@ -20,7 +35,35 @@ export const PanelActions = createContext({
 });
 const gap = { none: 0, xs: 4, sm: 8, md: 12 };
 const toneClass = (tone?: string) => `sp-tone-${tone || "neutral"}`;
+const icons = {
+  server: Server,
+  cloud: Cloud,
+  cpu: Cpu,
+  database: Database,
+  activity: Activity,
+  check: Check,
+  alert: AlertTriangle,
+  clock: Clock,
+  terminal: Terminal,
+  globe: Globe,
+  "hard-drive": HardDrive,
+  network: Network,
+  box: Box,
+};
 const controls: Components<typeof panelCatalog> = {
+  Icon: ({ props }) => {
+    const Glyph = icons[props.name];
+    return (
+      <Glyph
+        className={toneClass(props.tone)}
+        size={{ sm: 14, md: 18, lg: 24 }[props.size || "md"]}
+        style={{ flex: "0 0 auto", color: "var(--sp-tone)" }}
+        role={props.label ? "img" : undefined}
+        aria-label={props.label}
+        aria-hidden={props.label ? undefined : true}
+      />
+    );
+  },
   Stack: ({ props, children }) => (
     <div
       className="sp-stack"

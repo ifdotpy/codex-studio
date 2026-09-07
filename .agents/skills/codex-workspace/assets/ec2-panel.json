@@ -1,0 +1,235 @@
+{
+  "action": "set",
+  "spec": {
+    "root": "root",
+    "elements": {
+      "root": {
+        "type": "Stack",
+        "props": {
+          "gap": "xs"
+        },
+        "children": [
+          "heading",
+          "selector",
+          "instance-0",
+          "instance-1",
+          "updated"
+        ]
+      },
+      "heading": {
+        "type": "Stack",
+        "props": {
+          "direction": "row",
+          "align": "center",
+          "gap": "sm"
+        },
+        "children": [
+          "cloud",
+          "summary"
+        ]
+      },
+      "cloud": {
+        "type": "Icon",
+        "props": {
+          "name": "cloud",
+          "size": "sm",
+          "label": "EC2"
+        }
+      },
+      "summary": {
+        "type": "Text",
+        "props": {
+          "text": {
+            "$state": "/live/summary"
+          },
+          "kind": "label"
+        }
+      },
+      "selector": {
+        "type": "Select",
+        "props": {
+          "name": "instance",
+          "label": "Instance",
+          "value": {
+            "$bindState": "/selected"
+          },
+          "options": [
+            {
+              "label": "SDK primary",
+              "value": "0"
+            },
+            {
+              "label": "SDK secondary",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "updated": {
+        "type": "Text",
+        "props": {
+          "text": {
+            "$state": "/live/updatedLabel"
+          },
+          "kind": "caption"
+        }
+      },
+      "instance-0": {
+        "type": "Stack",
+        "props": {
+          "gap": "none"
+        },
+        "visible": {
+          "$state": "/selected",
+          "eq": "0"
+        },
+        "children": [
+          "instance-0-status",
+          "instance-0-id"
+        ]
+      },
+      "instance-0-status": {
+        "type": "Stack",
+        "props": {
+          "direction": "row",
+          "gap": "sm",
+          "align": "center"
+        },
+        "children": [
+          "instance-0-icon",
+          "instance-0-state",
+          "instance-0-lease"
+        ]
+      },
+      "instance-0-icon": {
+        "type": "Icon",
+        "props": {
+          "name": "server",
+          "size": "sm"
+        }
+      },
+      "instance-0-state": {
+        "type": "Badge",
+        "props": {
+          "label": {
+            "$state": "/live/instances/0/state"
+          },
+          "tone": {
+            "$state": "/live/instances/0/tone"
+          }
+        }
+      },
+      "instance-0-lease": {
+        "type": "Text",
+        "props": {
+          "text": {
+            "$state": "/live/instances/0/lease"
+          },
+          "kind": "caption"
+        }
+      },
+      "instance-0-id": {
+        "type": "Text",
+        "props": {
+          "text": {
+            "$state": "/live/instances/0/instanceId"
+          },
+          "kind": "caption"
+        }
+      },
+      "instance-1": {
+        "type": "Stack",
+        "props": {
+          "gap": "none"
+        },
+        "visible": {
+          "$state": "/selected",
+          "eq": "1"
+        },
+        "children": [
+          "instance-1-status",
+          "instance-1-id"
+        ]
+      },
+      "instance-1-status": {
+        "type": "Stack",
+        "props": {
+          "direction": "row",
+          "gap": "sm",
+          "align": "center"
+        },
+        "children": [
+          "instance-1-icon",
+          "instance-1-state",
+          "instance-1-lease"
+        ]
+      },
+      "instance-1-icon": {
+        "type": "Icon",
+        "props": {
+          "name": "server",
+          "size": "sm"
+        }
+      },
+      "instance-1-state": {
+        "type": "Badge",
+        "props": {
+          "label": {
+            "$state": "/live/instances/1/state"
+          },
+          "tone": {
+            "$state": "/live/instances/1/tone"
+          }
+        }
+      },
+      "instance-1-lease": {
+        "type": "Text",
+        "props": {
+          "text": {
+            "$state": "/live/instances/1/lease"
+          },
+          "kind": "caption"
+        }
+      },
+      "instance-1-id": {
+        "type": "Text",
+        "props": {
+          "text": {
+            "$state": "/live/instances/1/instanceId"
+          },
+          "kind": "caption"
+        }
+      }
+    },
+    "state": {
+      "selected": "0",
+      "live": {
+        "instances": {
+          "0": {
+            "instanceId": "i-0123456789abcdef0",
+            "label": "SDK primary",
+            "state": "Not checked",
+            "type": "",
+            "region": "eu-north-1",
+            "tone": "neutral",
+            "lease": "Lease unknown",
+            "owner": null
+          },
+          "1": {
+            "instanceId": "i-0fedcba9876543210",
+            "label": "SDK secondary",
+            "state": "Not checked",
+            "type": "",
+            "region": "eu-north-1",
+            "tone": "neutral",
+            "lease": "Lease unknown",
+            "owner": null
+          }
+        },
+        "summary": "Waiting for EC2",
+        "updatedAt": null,
+        "updatedLabel": "Waiting for first update"
+      }
+    }
+  }
+}

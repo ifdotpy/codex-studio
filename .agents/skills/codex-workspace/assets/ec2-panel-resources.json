@@ -1,0 +1,18 @@
+{
+  "resources": [
+    {
+      "label": "SDK primary",
+      "instanceId": "i-0123456789abcdef0",
+      "profile": "project-profile",
+      "region": "eu-north-1",
+      "resource": "aws-builder"
+    },
+    {
+      "label": "SDK secondary",
+      "instanceId": "i-0fedcba9876543210",
+      "profile": "project-profile",
+      "region": "eu-north-1",
+      "resource": "aws-builder-2"
+    }
+  ]
+}

@@ -26,6 +26,18 @@ Use `Button` or `Form` with `props.callback` when the agent must act. Declare th
 
 The owner receives a `panel_callback` event with `callback`, `label`, `panelVersion`, and `values` after its current turn, including after a final answer. Stopped or deleted agents do not resume. Each callback accepts one submission per panel version. Handle it and publish an updated panel to acknowledge the result or enable another submission. An interaction does not authorize unrelated actions.
 
+## Background data without model calls
+
+For periodic status, counters, or EC2 resources, use a script connected through
+`orchestration_panel_feed`. The agent publishes a structured panel and starts the
+producer once. Each later stdout JSON object updates its bound state directly,
+without a model call, conversation-history entry, or agent wake.
+
+Keep user selections outside the feed state path. Use Studio icons and local
+views instead of a scrolling list. The data must still fit the 150px viewport.
+Read [the panel feed guide](panel-feed.md) for the command API, process lifecycle,
+and an EC2 example with explicit instance IDs and separate resource reservations.
+
 ## HTML fallback
 
 Use `html` and optional `css` when the catalog cannot express a needed visual, such as a custom scientific diagram. Keep the same fit checks and Studio theme. Use `--studio-*` theme variables. HTML/body have zero margins; include spacing inside the viewport. Scripts, external resources, navigation, and uploads remain disabled.

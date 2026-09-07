@@ -9,7 +9,12 @@ import studioCSS from "../studio-theme.css?inline";
 import panelCSS from "./style.css?inline";
 import { theme } from "../theme";
 import { registry, PanelActions } from "./renderer";
-import { panelStates, validatePanelSpec, validateResolved } from "./validate";
+import {
+  panelStates,
+  validatePanelSpec,
+  validateResolved,
+  validateFeedBinding,
+} from "./validate";
 import type { PanelCallback } from "../components/PanelDocument";
 // Shared geometry implementation used by the native screenshot preflight.
 // @ts-expect-error The Electron helper is a plain CommonJS function.
@@ -30,6 +35,8 @@ const config = JSON.parse(
   callbacks: PanelCallback[];
   channel: string;
   background: string;
+  dataVersion?: number;
+  feed?: { statePath: string };
 };
 const send = (type: string, detail: Record<string, unknown> = {}) =>
   parent.postMessage({ type, channel: config.channel, ...detail }, "*");
@@ -59,18 +66,37 @@ const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 try {
   const spec = validatePanelSpec(config.spec, config.callbacks);
+  let feedPath = config.feed?.statePath;
+  if (feedPath) validateFeedBinding(spec, feedPath, config.callbacks);
   const choices = panelStates(spec, config.callbacks);
   const base = createStateStore(structuredClone(spec.state || {}));
   let checking = false;
   let revision = 0;
+  let dataVersion = config.dataVersion || 0;
   let verified = structuredClone(base.getSnapshot());
   const pendingPaths = new Set<string>();
-  const apply = (updates: Record<string, unknown>) => {
+  const apply = (updates: Record<string, unknown>, fromFeed = false) => {
+    if (
+      !fromFeed &&
+      feedPath &&
+      Object.keys(updates).some(
+        (path) => path === feedPath || path.startsWith(feedPath + "/"),
+      )
+    ) {
+      send("panel-local-error", { error: "Live data is read-only." });
+      return;
+    }
     const before = structuredClone(base.getSnapshot());
     const trial = createStateStore(structuredClone(before));
     trial.update(updates);
     try {
-      validateResolved(spec, trial.getSnapshot(), config.callbacks);
+      validateResolved(spec, trial.getSnapshot(), config.callbacks, feedPath);
+      if (fromFeed && feedPath)
+        validateFeedBinding(
+          { ...spec, state: trial.getSnapshot() },
+          feedPath,
+          config.callbacks,
+        );
     } catch (error) {
       send("panel-local-error", {
         error: error instanceof Error ? error.message : String(error),
@@ -118,12 +144,27 @@ try {
     const [state, setState] = useState(gate);
     useEffect(() => {
       const receive = (event: MessageEvent) => {
-        if (
-          event.source !== parent ||
-          event.data?.channel !== config.channel ||
-          event.data?.type !== "panel-state"
-        )
+        if (event.source !== parent || event.data?.channel !== config.channel)
           return;
+        if (event.data?.type === "panel-data") {
+          const next = event.data;
+          // Only the trusted parent can replace a feed subtree. Never dispatch callbacks.
+          if (
+            !Number.isSafeInteger(next.dataVersion) ||
+            next.dataVersion <= dataVersion ||
+            typeof next.statePath !== "string" ||
+            !/^\/[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(next.statePath) ||
+            ["__proto__", "prototype", "constructor"].includes(
+              next.statePath.slice(1),
+            )
+          )
+            return;
+          dataVersion = next.dataVersion;
+          feedPath = next.statePath;
+          apply({ [next.statePath]: next.value }, true);
+          return;
+        }
+        if (event.data?.type !== "panel-state") return;
         gate = {
           busy: event.data.busy !== false,
           locked: Array.isArray(event.data.locked) ? event.data.locked : [],

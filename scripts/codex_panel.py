@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 import time
+import uuid
 from codex_work import text_field
 
 
@@ -54,6 +55,24 @@ def panel_tools(tool, text):
             }},
         },
         ["action"],
+    ), tool(
+        "orchestration_panel_feed",
+        "Connect one background script to your structured Agent panel without model calls. "
+        "First set a panel with an initialized object at spec.state.live and state bindings into /live. "
+        "start runs command through the normal monitor environment and permissions. "
+        "Write one complete JSON object per stdout line, at most 64 KiB; each line replaces only statePath. "
+        "Use stderr for diagnostics. The host coalesces updates, validates the 150px layout, and retains the last valid snapshot. "
+        "Updates, command completion, and errors never wake the model or enter the conversation. "
+        "The script continues after your final answer; stop, panel replacement, or agent stop ends its lease. "
+        "No automatic restart or command replay. One feed per panel; starting another replaces the previous feed. "
+        "Keep local form/tab state outside the feed subtree. get reads status; stop stops only this panel's command. "
+        "For EC2, builds, metrics or service status, prefer this API over repeated tool calls.",
+        {
+            "action": {"type": "string", "enum": ["start", "get", "stop"]},
+            "command": {**text, "maxLength": 12000},
+            "statePath": {"type": "string", "default": "/live"},
+            "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 86400000, "default": 86400000},
+        }, ["action"],
     )]
 
 
@@ -93,6 +112,16 @@ class PanelMixin:
             agent TEXT NOT NULL, version INTEGER NOT NULL, callback TEXT NOT NULL,
             payload TEXT NOT NULL, result TEXT NOT NULL,
             PRIMARY KEY(agent,version,callback))""")
+        # A restart must not silently replay an arbitrary collector command.
+        for row in db.execute("SELECT record FROM runtime_panels").fetchall():
+            panel = json.loads(row[0])
+            if panel.get("feed", {}).get("status") in {"starting", "approval", "running", "stopping"}:
+                panel["feed"].update(status="lost", error="The server restarted. Start a new feed to refresh this snapshot.")
+                panel["dataVersion"] = panel.get("dataVersion", 0) + 1
+                self.put(db, "panels", panel)
+                actor = self.agent(panel["agent"], db)
+                actor["panelDataVersion"] = panel["dataVersion"]
+                self.put(db, "agents", actor)
 
     def panel(self, agent_id, db=None):
         if db is None:
@@ -173,6 +202,7 @@ class PanelMixin:
             base_version = panel["version"]
             identity = tuple(actor.get(k) for k in ("epoch", "threadId", "turnId", "accountKey"))
             panel.pop("submittedCallbacks", None)
+            panel.pop("feed", None)
             panel.update(html=html, css=css, callbacks=callbacks, version=base_version + 1,
                          format="json-render" if spec is not None else "html")
             panel.pop("spec", None)
@@ -198,6 +228,10 @@ class PanelMixin:
         return result
 
     def commit_panel(self, db, actor, panel, key, signature):
+        old_feed = self.panel(actor["id"], db).get("feed")
+        panel.pop("feed", None)
+        panel["dataVersion"] = 0
+        actor["panelDataVersion"] = 0
         panel["updated"] = time.time()
         self.put(db, "panels", panel)
         actor["panelVersion"] = panel["version"]
@@ -205,7 +239,180 @@ class PanelMixin:
         result = {k: panel[k] for k in ("agent", "version", "updated")}
         self.save_receipt(db, key, signature, result)
         self.touch_ui(actor["id"])
+        if old_feed:
+            # Cancellation runs outside this transaction. The changed template
+            # already fences every frame from the previous command.
+            self.pool.submit(self.cancel_panel_feed, actor["id"], old_feed)
         return result
+
+    def cancel_panel_feed(self, actor_id, feed):
+        with self.lock, self.db() as db:
+            row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (feed["monitorId"],)).fetchone()
+            if not row:
+                # The lease can be revoked before command registration. Runtime
+                # checks that lease before it creates or submits the command.
+                return {"id": feed["monitorId"], "status": "cancelled"}
+        return self.cancel_monitor(feed["monitorId"], owner=actor_id)
+
+    @staticmethod
+    def feed_slot(path):
+        if (not isinstance(path, str) or not path.startswith("/")
+                or not NAME.fullmatch(path[1:]) or path[1:] in {"constructor", "prototype"}):
+            raise ValueError("statePath must name one top-level object, for example /live")
+        return path[1:]
+
+    def write_panel_data(self, db, actor, panel):
+        panel["dataVersion"] = panel.get("dataVersion", 0) + 1
+        self.put(db, "panels", panel)
+        actor["panelDataVersion"] = panel["dataVersion"]
+        # Snapshot replication carries this counter. Do not wake transcript
+        # long-poll readers for data that never changed the conversation.
+        db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(actor), actor["id"]))
+
+    def panel_feed_action(self, actor_id, data, key=None, epoch=None):
+        if not isinstance(data, dict) or set(data) - {"action", "command", "statePath", "timeout_ms"}:
+            raise ValueError("Supply action and optional command, statePath, timeout_ms")
+        action = data.get("action")
+        if action not in {"start", "get", "stop"}:
+            raise ValueError("Choose start, get, or stop")
+        if action != "start" and set(data) != {"action"}:
+            raise ValueError("get and stop accept no command or settings")
+        request = key or str(uuid.uuid4())
+        monitor_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request))
+        with self.lock, self.db() as db:
+            actor = self.checked_actor(db, actor_id, actor_id)
+            if epoch is not None and actor["epoch"] != epoch:
+                raise PanelConflict("The caller was stopped")
+            signature, prior = self.operation_receipt(db, key, {"actor": actor_id, "panelFeed": data})
+            if prior is not None:
+                return prior
+            panel = self.panel(actor_id, db)
+            old_feed = panel.get("feed")
+            if action == "get":
+                return {"agent": actor_id, "version": panel["version"], "dataVersion": panel.get("dataVersion", 0), "feed": old_feed}
+            if action == "stop":
+                result = {"agent": actor_id, "monitorId": old_feed["monitorId"] if old_feed else None, "status": "stopping" if old_feed else "stopped"}
+                if old_feed:
+                    panel["feed"].update(status="stopping")
+                    self.write_panel_data(db, actor, panel)
+                self.save_receipt(db, key, signature, result)
+            else:
+                command = data.get("command")
+                timeout = data.get("timeout_ms", 86400000)
+                if not isinstance(command, str) or not 1 <= len(command.strip()) <= 12000:
+                    raise ValueError("Supply a command with 1 to 12000 characters")
+                if type(timeout) is not int or not 1000 <= timeout <= 86400000:
+                    raise ValueError("Command timeout must be 1 second to 24 hours")
+                if not actor["autoWake"]:
+                    raise ValueError("Resume the agent before starting a feed")
+                self.assert_workspace_available(db, actor)
+                state_path = data.get("statePath", "/live")
+                slot = self.feed_slot(state_path)
+                if panel.get("format") != "json-render" or not isinstance(panel.get("spec", {}).get("state", {}).get(slot), dict):
+                    raise ValueError("First set a structured panel with an initialized object at spec.state" + state_path)
+                candidate = copy.deepcopy(panel)
+                candidate["feed"] = {"monitorId": monitor_id, "statePath": state_path, "status": "starting",
+                                     "epoch": actor["epoch"], "sequence": 0, "updated": None, "error": None}
+                base_version, base_epoch = panel["version"], actor["epoch"]
+        if action == "stop":
+            if old_feed:
+                stopped = self.cancel_panel_feed(actor_id, old_feed)
+                if stopped["status"] in {"cancelled", "completed", "failed", "lost"}:
+                    self.panel_feed_status(actor_id, old_feed["monitorId"], panel["version"],
+                                           old_feed["statePath"], stopped["status"], old_feed.get("error"))
+            return result
+        # Validate the binding and all selectable layouts before command execution.
+        self.capture_panel(candidate, strict_layout=True)
+        with self.lock, self.db() as db:
+            actor = self.checked_actor(db, actor_id, actor_id)
+            panel = self.panel(actor_id, db)
+            signature, prior = self.operation_receipt(db, key, {"actor": actor_id, "panelFeed": data})
+            if prior is not None:
+                return prior
+            if (panel["version"] != base_version or actor["epoch"] != base_epoch or not actor["autoWake"]
+                    or panel.get("feed", {}).get("monitorId") != (old_feed or {}).get("monitorId")):
+                raise PanelConflict("The panel or its feed changed during validation")
+            panel["feed"] = candidate["feed"]
+            self.write_panel_data(db, actor, panel)
+            result = {"agent": actor_id, "monitorId": monitor_id, "version": base_version,
+                      "statePath": state_path, "status": "starting"}
+            self.save_receipt(db, key, signature, result)
+        try:
+            if old_feed:
+                self.cancel_panel_feed(actor_id, old_feed)
+            self.monitor(actor_id, {"command": command, "timeout_ms": timeout}, key=request,
+                                   approved=self.monitor_auto_approved(actor), epoch=base_epoch,
+                                   panel_feed={"panelVersion": base_version, "statePath": state_path, "intervalMs": 1000})
+            return result
+        except Exception as error:
+            self.panel_feed_status(actor_id, monitor_id, base_version, state_path, "failed", str(error))
+            raise
+
+    def panel_feed_status(self, actor_id, monitor_id, panel_version, state_path, status, error=None, sequence=None):
+        with self.lock, self.db() as db:
+            actor = self.agent(actor_id, db)
+            if actor.get("deletedAt"):
+                return False
+            panel = self.panel(actor_id, db)
+            feed = panel.get("feed", {})
+            if panel["version"] != panel_version or feed.get("monitorId") != monitor_id or feed.get("statePath") != state_path:
+                return False
+            # Late callbacks cannot reopen or overwrite a terminal lease.
+            terminal = {"cancelled", "lost", "failed", "completed"}
+            current = feed.get("status")
+            if current in terminal and status != current:
+                return False
+            if current == "stopping" and status not in terminal | {"stopping"}:
+                return False
+            if current == "running" and status in {"starting", "approval"}:
+                return False
+            if status in {"starting", "approval", "running"} and (not actor["autoWake"] or actor["epoch"] != feed.get("epoch")):
+                return False
+            next_error = str(error)[:1000] if error else None
+            if feed.get("status") == status and feed.get("error") == next_error:
+                return True
+            feed.update(status=status, error=next_error)
+            self.write_panel_data(db, actor, panel)
+            return True
+
+    def panel_feed_cancelled(self, db, monitor_id):
+        row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (monitor_id,)).fetchone()
+        monitor = json.loads(row[0]) if row else None
+        return not monitor or monitor.get("cancelRequested") or monitor["status"] in {"cancelled", "lost"}
+
+    def panel_feed_update(self, actor_id, monitor_id, panel_version, state_path, state, sequence):
+        slot = self.feed_slot(state_path)
+        if not isinstance(state, dict):
+            raise ValueError("Each panel feed line must contain one JSON object")
+        encoded = json.dumps(state, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > 65536:
+            raise ValueError("A panel feed frame must contain at most 64 KiB")
+        state = json.loads(encoded)
+        with self.lock, self.db() as db:
+            actor = self.agent(actor_id, db)
+            panel = self.panel(actor_id, db)
+            feed = panel.get("feed", {})
+            if (panel["version"] != panel_version or feed.get("monitorId") != monitor_id or feed.get("statePath") != state_path
+                    or not actor["autoWake"] or actor["epoch"] != feed.get("epoch") or self.panel_feed_cancelled(db, monitor_id)
+                    or feed.get("status") not in {"starting", "running"} or sequence <= feed.get("sequence", 0)):
+                return False
+            candidate = copy.deepcopy(panel)
+            candidate["spec"]["state"][slot] = state
+            changed = candidate["spec"]["state"][slot] != panel["spec"]["state"][slot]
+        if changed:
+            self.capture_panel(candidate, strict_layout=True)
+        with self.lock, self.db() as db:
+            actor = self.agent(actor_id, db)
+            panel = self.panel(actor_id, db)
+            feed = panel.get("feed", {})
+            if (panel["version"] != panel_version or feed.get("monitorId") != monitor_id or feed.get("statePath") != state_path
+                    or not actor["autoWake"] or actor["epoch"] != feed.get("epoch") or self.panel_feed_cancelled(db, monitor_id)
+                    or feed.get("status") not in {"starting", "running"} or sequence <= feed.get("sequence", 0)):
+                return False
+            panel["spec"]["state"][slot] = state
+            feed.update(status="running", error=None, sequence=sequence, updated=time.time())
+            self.write_panel_data(db, actor, panel)
+            return True
 
     def panel_callback(self, data):
         if not isinstance(data, dict) or set(data) != {"id", "agent", "version", "callback", "values"}:

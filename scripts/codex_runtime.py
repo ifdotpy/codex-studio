@@ -30,6 +30,7 @@ from codex_user_tasks import UserTasksMixin, user_task_tools
 from codex_questions import QuestionsMixin, is_question, answer_signature, record_answer
 from codex_panel import PanelMixin, panel_tools
 from codex_panel_render import render_panel
+from codex_panel_feed import PanelFeedConsumer
 
 def uid():
     return str(uuid.uuid4())
@@ -181,7 +182,11 @@ Without active voice the text is saved silently. Voice interruption does not sto
 Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
-orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task, orchestration_panel.
+orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task,
+orchestration_panel, orchestration_panel_feed.
+Use orchestration_panel_feed for live data from a background script, such as EC2 status or build counters.
+It updates structured panel state without model turns, including on command completion or error.
+Set the panel once, start the script, and finish your turn. Do not poll the feed through model calls.
 Use orchestration_user_task for things the user must do. Supply clear completion criteria.
 A user check wakes the requesting agent and awaits its review. Accept the result or return
 it with a concrete reason and next action. Do not treat the user check as your acceptance.
@@ -336,6 +341,7 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
         self.prepare_locks = {}
         self.preparations = {}
         self.monitor_threads = set()
+        self.panel_feed_consumers = {}
         self.offline = False
         self.changed = threading.Event()
         self.closed = False
@@ -452,6 +458,11 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             self.setup_panels(db)
             self.setup_workspace(db)
             self.setup_rules(db)
+        # Restart never replays a panel command. Surface its persisted lost state.
+        with self.db() as db:
+            lost_feeds = [m for m in self.records(db, "monitors") if m.get("panelFeed") and m["status"] == "lost"]
+        for monitor in lost_feeds:
+            self.panel_feed_monitor_status(monitor, "lost", monitor.get("error"))
         os.chmod(self.db_path, 0o600)
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
         self.scheduler.start()
@@ -580,10 +591,13 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 if task.get("agent") in ids and task["status"] == "running":
                     task.update(status="lost", finished=time.time(), error="Codex disconnected. Tool outcome unknown.")
                     self.put(db, "tasks", task)
+            lost_feeds = []
             for monitor in self.records(db, "monitors"):
                 if monitor.get("agent") in ids and monitor["status"] in {"running", "starting", "approval"}:
                     monitor.update(status="lost", finished=time.time(), error="Codex disconnected. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", monitor)
+                    if monitor.get("panelFeed"):
+                        lost_feeds.append(monitor)
             for r in self.records(db, "requests"):
                 if (r.get("agent") in ids or r.get("accountKey", "default") == account_key) and r["status"] == "pending":
                     # Local requests without account metadata are owned by their agent.
@@ -595,6 +609,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             for operation in self.preparations.values():
                 if operation["accountKey"] == account_key and not operation["future"].done():
                     operation["future"].set_exception(RuntimeError("Codex disconnected during thread preparation; outcome unknown"))
+        for monitor in lost_feeds:
+            self.panel_feed_consumer(monitor).finish("lost", monitor.get("error"), discard=True)
 
     def item(self, db, agent, key, role, text, title=None, inputs=None, **metadata):
         key = agent + ":" + key
@@ -2065,7 +2081,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                                "interrupted" if turn.get("status") == "interrupted" else "failed")
                 if not a["autoWake"]:
                     a["status"] = "paused"
-                watches = any(m["agent"] == a["id"] and m["status"] in {"running", "approval", "starting"}
+                watches = any(m["agent"] == a["id"] and not m.get("panelFeed")
+                              and m["status"] in {"running", "approval", "starting"}
                               for m in self.records(db, "monitors"))
                 children = any(c.get("parentId") == a["id"] and c["autoWake"]
                                and c["status"] in {"queued", "starting", "running", "waiting", "approval"}
@@ -2170,6 +2187,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 panel_capture = {}
                 if name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
+                elif name == "orchestration_panel_feed":
+                    value = self.panel_feed_action(a["id"], args, key=key, epoch=a["epoch"])
                 elif name == "orchestration_panel":
                     value = self.panel_action(a["id"], args, key, epoch=a["epoch"], capture=panel_capture)
                 elif name == "orchestration_user_task":
@@ -2706,19 +2725,39 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
             return {"id": key, "room": room["id"], "deliveries": deliveries}
 
-    def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None):
+    def assert_panel_feed_binding(self, db, agent_id, key, binding):
+        if binding is None:
+            return
+        panel = self.panel(agent_id, db)
+        feed = panel.get("feed", {})
+        actor = self.agent(agent_id, db)
+        if (panel["version"] != binding["panelVersion"] or feed.get("monitorId") != key
+                or feed.get("statePath") != binding["statePath"] or feed.get("epoch") != actor["epoch"]
+                or feed.get("status") not in {"starting", "approval", "running"}):
+            raise ValueError("The panel feed was stopped or replaced; command was not submitted")
+
+    def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None, *, panel_feed=None):
         command = data.get("command")
         timeout = data.get("timeout_ms", 3600000)
         if not isinstance(command, str) or not 1 <= len(command.strip()) <= 12000:
             raise ValueError("Supply a command with 1 to 12000 characters")
         if not isinstance(timeout, int) or not 1000 <= timeout <= 86400000:
             raise ValueError("Command timeout must be 1 second to 24 hours")
+        if panel_feed is not None:
+            if (not isinstance(panel_feed, dict) or set(panel_feed) != {"panelVersion", "statePath", "intervalMs"}
+                    or type(panel_feed["panelVersion"]) is not int or panel_feed["panelVersion"] < 1
+                    or not isinstance(panel_feed["statePath"], str) or not panel_feed["statePath"].startswith("/")
+                    or type(panel_feed["intervalMs"]) is not int or not 1000 <= panel_feed["intervalMs"] <= 60000):
+                raise ValueError("Invalid panel feed binding")
+            if data.get("interactive") or rule:
+                raise ValueError("Panel feeds require separate stdout and stderr without a rule")
+            panel_feed = dict(panel_feed)
         key = str(uuid.uuid5(uuid.NAMESPACE_URL, key)) if key else uid()
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if row:
                 previous = json.loads(row[0])
-                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive"))) != (agent_id, command, timeout, bool(data.get("interactive"))):
+                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("panelFeed")) != (agent_id, command, timeout, bool(data.get("interactive")), panel_feed):
                     raise ValueError("This monitor request id has different content")
                 return previous
             a = self.agent(agent_id, db)
@@ -2727,6 +2766,11 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             if epoch is not None and a["epoch"] != epoch:
                 raise ValueError("The agent turn was stopped")
             self.assert_workspace_available(db, a)
+            self.assert_panel_feed_binding(db, agent_id, key, panel_feed)
+            if panel_feed is not None:
+                # The user can change permissions while panel preflight or old
+                # collector cancellation runs outside this transaction.
+                approved = approved and self.monitor_auto_approved(a)
             if rule:
                 # A rule can race a user permission change between prepare and this lock.
                 approved = self.monitor_auto_approved(a)
@@ -2761,10 +2805,14 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 "ruleId": rule["id"] if rule else None,
                 "log": str(self.root / "monitor-logs" / (key + ".log")),
             }
+            if panel_feed is not None:
+                m["panelFeed"] = panel_feed
             self.put(db, "monitors", m)
             if not approved:
                 self.put(db, "requests", {"id": uid(), "method": "monitor/approve", "agent": agent_id,
                     "params": {"monitorId": key, "command": command, "cwd": a["cwd"]}, "status": "pending"})
+            if panel_feed is not None:
+                self.panel_feed_consumer(m).report(m["status"])
         if approved:
             self.launch_monitor(key)
         return m
@@ -2796,6 +2844,7 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                     return
                 if preflight and not self.operation_current(a, preflight):
                     return
+                self.assert_panel_feed_binding(db, a["id"], key, m.get("panelFeed"))
             a = self.prepare(a)
             server = self.connect(a.get("accountKey", "default"))
             if shell_config is None:
@@ -2810,6 +2859,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                         if current["status"] == "starting" and self.operation_current(self.agent(a["id"], db), preflight):
                             current.update(error=str(error), configurationPending=True)
                             self.put(db, "monitors", current)
+                            if current.get("panelFeed"):
+                                self.panel_feed_consumer(current).report("starting", str(error))
                     server.on_result(submitted_config, lambda future: self.pool.submit(
                         self.monitor_configuration_result, key, preflight, future) if not self.closed else None)
                     return
@@ -2828,6 +2879,7 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 if preflight and not self.operation_current(current, preflight):
                     return
                 self.assert_workspace_available(db, current)
+                self.assert_panel_feed_binding(db, current["id"], key, m.get("panelFeed"))
                 selected_policy = self.turn_permissions(current).get("sandboxPolicy")
                 if selected_policy is not None:
                     params["sandboxPolicy"] = selected_policy
@@ -2850,6 +2902,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 self.put(db, "monitors", current_monitor)
                 db.commit()
                 submitted = self.submit_reserved(server, "command/exec", params)
+                if m.get("panelFeed"):
+                    self.panel_feed_consumer(m).report("running")
             try:
                 result = server.wait(submitted, timeout=m["timeout_ms"] / 1000 + 60)
             except ResponseTimeout as error:
@@ -2890,6 +2944,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             if m["status"] == "running" and self.operation_current(a, operation, epoch=False):
                 m["error"] = error
                 self.put(db, "monitors", m)
+                if m.get("panelFeed"):
+                    self.panel_feed_consumer(m).report("running", error)
 
     def monitor_accepted(self, key, operation, result):
         code = result.get("exitCode")
@@ -2911,6 +2967,40 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 with self.lock:
                     if not self.closed and self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
                         self.finish_monitor(key, None, str(error))
+
+    def panel_feed_monitor_status(self, monitor, status, error=None, sequence=None):
+        binding = monitor["panelFeed"]
+        self.panel_feed_status(monitor["agent"], monitor["id"], binding["panelVersion"],
+                               binding["statePath"], status, error=error, sequence=sequence)
+
+    def panel_feed_consumer(self, monitor):
+        key = monitor["id"]
+        with self.lock:
+            consumer = self.panel_feed_consumers.get(key)
+            if consumer is not None:
+                return consumer
+            binding = monitor["panelFeed"]
+            def update(state, sequence):
+                with self.lock, self.db() as db:
+                    row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
+                    current = json.loads(row[0]) if row else None
+                    actor = self.agent(monitor["agent"], db)
+                    if (self.closed or not current or current.get("cancelRequested")
+                            or current["status"] not in {"running", "completed", "failed"}
+                            or not actor["autoWake"] or actor["epoch"] != monitor["epoch"]):
+                        return
+                self.panel_feed_update(monitor["agent"], key, binding["panelVersion"],
+                                       binding["statePath"], state, sequence)
+            def status(value, error, sequence):
+                if not self.closed:
+                    self.panel_feed_monitor_status(monitor, value, error, sequence)
+            def done():
+                with self.lock:
+                    if self.panel_feed_consumers.get(key) is consumer:
+                        self.panel_feed_consumers.pop(key, None)
+            consumer = PanelFeedConsumer(update, status, binding["intervalMs"], done)
+            self.panel_feed_consumers[key] = consumer
+            return consumer
 
     def output(self, p, account_key="default", connection_id=None):
         key = p.get("processId")
@@ -2934,6 +3024,9 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             m["bytes"] += len(chunk)
             m["tail"] = (m["tail"] + chunk.decode("utf-8", errors="replace"))[-12000:]
             self.put(db, "monitors", m)
+            if (m.get("panelFeed") and m["status"] == "running" and not m.get("cancelRequested")
+                    and p.get("stream") == "stdout"):
+                self.panel_feed_consumer(m).feed(chunk)
 
     def finish_monitor(self, key, code, error):
         with self.lock:
@@ -2952,9 +3045,12 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             a = self.agent(m["agent"], db)
             if m.get("ruleId"):
                 self.rule_finished(m["ruleId"], code, "Monitor cancelled" if cancelled else error, m["tail"], db)
-            elif not cancelled and a["epoch"] == m["epoch"]:
+            elif not m.get("panelFeed") and not cancelled and a["epoch"] == m["epoch"]:
                 self.enqueue(db, a, "monitor_exit", json.dumps({k: m.get(k) for k in
                     ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")}), "monitor:" + key)
+        if m.get("panelFeed"):
+            diagnostic = m.get("error") or (f"Command exited with code {code}" if code not in (None, 0) else None)
+            self.panel_feed_consumer(m).finish(m["status"], diagnostic, discard=cancelled)
 
     def cancel_monitor(self, key, owner=None):
         with self.lock, self.db() as db:
@@ -2982,6 +3078,17 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 if request["status"] == "pending" and request["method"] == "monitor/approve" and request.get("params", {}).get("monitorId") == key:
                     request["status"] = "expired"
                     self.put(db, "requests", request)
+        if m.get("panelFeed"):
+            with self.lock, self.db() as db:
+                current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
+                if current["status"] == "running":
+                    self.panel_feed_consumer(current).suspend()
+                else:
+                    # Completion can drain and remove the consumer after the
+                    # first transaction. Do not recreate a stopped consumer.
+                    consumer = self.panel_feed_consumers.get(key)
+                    if consumer is not None:
+                        consumer.finish(current["status"], current.get("error"), discard=True)
         server = self.servers.get(self.agent(m["agent"]).get("accountKey", "default"))
         if running and server:
             try:
@@ -2992,6 +3099,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                     if current["status"] == "running":
                         current["error"] = "Cancel requested. Process termination was not confirmed: " + str(error)
                         self.put(db, "monitors", current)
+                        if current.get("panelFeed"):
+                            self.panel_feed_consumer(current).report("stopping", current["error"])
                 return {"id": key, "status": current["status"], "cancelRequested": True, "error": current.get("error")}
         with self.lock, self.db() as db:
             current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
@@ -3090,7 +3199,10 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 if m["status"] == "starting":
                     self.launch_monitor(m["id"])
                 else:
-                    if m.get("ruleId"):
+                    if m.get("panelFeed"):
+                        db.commit()
+                        self.panel_feed_consumer(m).finish("cancelled", "User declined the command", discard=True)
+                    elif m.get("ruleId"):
                         self.rule_finished(
                             m["ruleId"],
                             None,
@@ -3464,6 +3576,12 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             self.ui_condition.notify_all()
         self.changed.set()
         self.scheduler.join()
+        with self.lock:
+            feed_consumers = list(self.panel_feed_consumers.values())
+        for consumer in feed_consumers:
+            consumer.close()
+        for consumer in feed_consumers:
+            consumer.worker.join()
         for server in list(self.servers.values()):
             server.close()
         with self.lock:

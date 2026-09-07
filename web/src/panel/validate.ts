@@ -151,6 +151,7 @@ export function validateResolved(
   spec: Spec,
   state: Record<string, unknown>,
   callbacks: PanelCallback[],
+  feedPath?: string,
 ) {
   let count = 0;
   const domains = new Map<string, (string | boolean)[]>();
@@ -195,6 +196,13 @@ export function validateResolved(
       const binding = bindings[prop];
       if (!binding?.startsWith("/"))
         fail(`${id}: ${prop} requires a state binding`);
+      if (
+        feedPath &&
+        (binding === feedPath || binding.startsWith(feedPath + "/"))
+      )
+        fail(
+          `${id}: live data is read-only; keep local controls outside ${feedPath}`,
+        );
       if (Object.keys(bindings).some((key) => key !== prop))
         fail(`${id}: only ${prop} may be writable`);
       if (getByPath(state, binding) === undefined)
@@ -294,4 +302,24 @@ export function panelStates(spec: Spec, callbacks: PanelCallback[]) {
       }
   }
   return states;
+}
+
+// Resolve bindings in every selectable and repeated view, including $bindItem.
+export function validateFeedBinding(
+  spec: Spec,
+  statePath: string,
+  callbacks: PanelCallback[],
+) {
+  if (
+    !/^\/[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(statePath) ||
+    forbidden.has(statePath.slice(1))
+  )
+    fail("feed statePath must name a non-reserved top-level state object");
+  if (!object(getByPath(spec.state || {}, statePath)))
+    fail("feed statePath must contain an initialized object");
+  for (const choice of panelStates(spec, callbacks)) {
+    const candidate = createStateStore(structuredClone(spec.state || {}));
+    candidate.update(choice);
+    validateResolved(spec, candidate.getSnapshot(), callbacks, statePath);
+  }
 }

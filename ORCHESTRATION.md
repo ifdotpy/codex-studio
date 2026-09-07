@@ -196,8 +196,21 @@ stale panel return HTTP 409. Publish a new panel version to enable the action ag
 Form submissions are limited to 16 KiB, 16 values per field, and 2000 characters
 per value. File fields are not uploaded by this bridge.
 
-Snapshots carry only `panelVersion`. The selected conversation fetches its
-document from `GET /api/panel?agent=<id>` when that version changes. Full documents
+For script-driven data, use `orchestration_panel_feed` with `start`, `get`, or `stop`.
+The command writes one JSON object per stdout line. Each object replaces one
+declared top-level state subtree, `/live` by default. Studio validates each changed
+snapshot and retains the last valid display on errors. Frames are limited to
+64 KiB and coalesced, with at most one validation per second.
+The command uses the monitor environment and permissions. It continues after a
+final answer. Data, failures, and completion never enqueue model work or chat
+history. Setup uses model tools once; periodic updates use no model tokens.
+Panel replacement or an explicit stop ends the feed. Restart marks it lost
+without replay. Local controls must bind outside the feed subtree.
+See the [feed API and EC2 example](.agents/skills/codex-workspace/references/panel-feed.md).
+
+Snapshots carry `panelVersion` and `panelDataVersion`. The selected conversation fetches its
+document from `GET /api/panel?agent=<id>` when either version changes. Data updates
+preserve the iframe, local form values, selections, and callback receipts. Full documents
 are excluded from shared snapshots so dozens of agents do not multiply transfer
 size. Older threads use the documented `orchestration_send` workspace fallback.
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.

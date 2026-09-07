@@ -8,13 +8,23 @@ export function useSnapshot() {
   const [syncError, setSyncError] = useState("");
   const generation = useRef(0);
   const replicated = useRef(false);
+  const sessionToken = useRef("");
   const refresh = useCallback(async () => {
     const request = ++generation.current;
     try {
       const next = await api<Snapshot>("/api/state");
       if (request !== generation.current) return;
+      sessionToken.current = next.token;
       setToken(next.token);
-      if (!replicated.current) setData(next);
+      // Cached projections can arrive before HTTP after a reload. Credentials
+      // stay in memory and must reach callers that use explicit request headers.
+      setData((old) =>
+        replicated.current && old
+          ? old.token === next.token
+            ? old
+            : { ...old, token: next.token }
+          : next,
+      );
       setError("");
     } catch (e) {
       if (request !== generation.current) return;
@@ -43,7 +53,7 @@ export function useSnapshot() {
         if (!stopped && next) {
           replicated.current = true;
           setSyncError("");
-          setData((old) => ({ ...next, token: old?.token || "" }));
+          setData({ ...next, token: sessionToken.current });
         }
       },
       (error) => {

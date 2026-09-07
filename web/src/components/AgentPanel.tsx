@@ -6,6 +6,15 @@ import "./agent-panel.css";
 interface Panel {
   agent: string;
   version: number;
+  dataVersion?: number;
+  feed?: {
+    monitorId: string;
+    statePath: string;
+    status: string;
+    error?: string;
+    updated?: number;
+    sequence?: number;
+  } | null;
   format?: string;
   spec?: unknown;
   html: string;
@@ -93,10 +102,12 @@ async function deliver(state: ActionState, attempt: Attempt, token: string) {
 export default function AgentPanel({
   agentId,
   version,
+  dataVersion = 0,
   token,
 }: {
   agentId: string;
   version: number;
+  dataVersion?: number;
   token: string;
 }) {
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -117,7 +128,6 @@ export default function AgentPanel({
   useEffect(() => {
     const controller = new AbortController();
     setError("");
-    setLocalError("");
     if (!version) {
       setPanel(null);
       setLoading(false);
@@ -137,6 +147,16 @@ export default function AgentPanel({
           next.agent !== agentId ||
           !Number.isInteger(next.version) ||
           next.version < version ||
+          (next.dataVersion !== undefined &&
+            (!Number.isSafeInteger(next.dataVersion) ||
+              next.dataVersion < 0)) ||
+          (next.feed != null &&
+            (next.format !== "json-render" ||
+              typeof next.feed !== "object" ||
+              typeof next.feed.monitorId !== "string" ||
+              typeof next.feed.status !== "string" ||
+              typeof next.feed.statePath !== "string" ||
+              !/^\/[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(next.feed.statePath))) ||
           typeof next.html !== "string" ||
           typeof next.css !== "string" ||
           (next.callbacks !== undefined && !Array.isArray(next.callbacks))
@@ -150,24 +170,32 @@ export default function AgentPanel({
       }
     })();
     return () => controller.abort();
-  }, [agentId, version, retry]);
+  }, [agentId, version, dataVersion, retry]);
+  useEffect(() => setLocalError(""), [agentId, version]);
   const current = version > 0 && panel?.agent === agentId ? panel : null;
   const callbacks = current?.callbacks || [];
   const key = JSON.stringify([agentId, current?.version || 0]);
   const state = actionState(key);
+  // A data refresh must not recreate the iframe or reset local inputs and tabs.
+  const template = useRef<Panel | null>(null);
+  if (
+    current?.agent !== template.current?.agent ||
+    current?.version !== template.current?.version
+  )
+    template.current = current;
+  const frameTemplate = template.current;
   const frameDocument = useMemo(() => {
     const channel = crypto.randomUUID();
     return {
       channel,
-      html: panelContentDocument(current || { html: "", css: "" }, channel),
+      html: panelContentDocument(
+        frameTemplate || { html: "", css: "" },
+        channel,
+      ),
     };
-  }, [current]);
+  }, [frameTemplate, retry]);
   const enabled =
-    !!current &&
-    current.version >= version &&
-    !loading &&
-    !error &&
-    !state.blocked;
+    !!current && current.version >= version && !error && !state.blocked;
   const latest = useRef({
     enabled,
     callbacks,
@@ -198,6 +226,28 @@ export default function AgentPanel({
       },
       "*",
     );
+    const panel = live.current;
+    if (
+      panel?.format === "json-render" &&
+      panel.feed &&
+      panel.spec &&
+      panel.dataVersion
+    ) {
+      const value = (panel.spec as { state?: Record<string, unknown> }).state?.[
+        panel.feed.statePath.slice(1)
+      ];
+      if (value !== undefined)
+        iframe.current?.contentWindow?.postMessage(
+          {
+            type: "panel-data",
+            channel: live.channel,
+            statePath: panel.feed.statePath,
+            value,
+            dataVersion: panel.dataVersion,
+          },
+          "*",
+        );
+    }
   };
   useEffect(() => {
     sync();
@@ -305,6 +355,7 @@ export default function AgentPanel({
         aria-busy={loading}
         data-agent={agentId}
         data-panel-version={current?.version || 0}
+        data-panel-data-version={current?.dataVersion || 0}
       >
         {hasContent && (
           <iframe
@@ -315,6 +366,35 @@ export default function AgentPanel({
             srcDoc={frameDocument.html}
           />
         )}
+        {current?.feed &&
+          (current.feed.error ||
+            [
+              "failed",
+              "error",
+              "stale",
+              "stopped",
+              "cancelled",
+              "completed",
+              "lost",
+            ].includes(current.feed.status)) &&
+          !noticeVisible &&
+          !error && (
+            <div
+              className={`agent-panel-feedback ${current.feed.error || ["failed", "error", "stale", "lost"].includes(current.feed.status) ? "error" : ""}`}
+              role="status"
+              title={
+                current.feed.error || "The last confirmed data remains visible."
+              }
+            >
+              <span>
+                {["stopped", "cancelled"].includes(current.feed.status)
+                  ? "Live data stopped"
+                  : current.feed.status === "completed"
+                    ? "Live data ended"
+                    : "Live data unavailable"}
+              </span>
+            </div>
+          )}
         {noticeVisible && (
           <div
             className={`agent-panel-feedback ${localError ? "error" : feedback?.status}`}

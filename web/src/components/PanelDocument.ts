@@ -56,6 +56,8 @@ export function panelDocument(
 }
 
 export interface PanelContent {
+  dataVersion?: number;
+  feed?: { statePath: string } | null;
   html: string;
   css: string;
   format?: string;
@@ -83,6 +85,8 @@ export function panelContentDocument(panel: PanelContent, channel: string) {
     encodeURIComponent(
       JSON.stringify({
         channel,
+        dataVersion: panel.dataVersion || 0,
+        feed: panel.feed,
         spec: panel.spec,
         callbacks: panel.callbacks || [],
         background: getComputedStyle(document.documentElement)

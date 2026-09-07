@@ -15,9 +15,12 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { validatePanelSpec, validateResolved, panelStates } = await import(
-  "../web/src/panel/validate.ts"
-);
+const {
+  validatePanelSpec,
+  validateResolved,
+  panelStates,
+  validateFeedBinding,
+} = await import("../web/src/panel/validate.ts");
 const { createStateStore } = await import(
   "../web/node_modules/@json-render/core/dist/index.js"
 );
@@ -296,4 +299,63 @@ check("allows 32 reachable states and rejects a larger state space", () => {
     /32.*states/i,
   );
 });
+
+check("accepts allowlisted icons and rejects arbitrary icon names", () => {
+  const spec = {
+    root: "icon",
+    elements: {
+      icon: { type: "Icon", props: { name: "server", label: "EC2" } },
+    },
+  };
+  validatePanelSpec(spec, []);
+  spec.elements.icon.props.name = "external-url";
+  rejects(spec, /invalid|option/i);
+});
+check("feed bindings cannot write the collector subtree", () => {
+  const spec = validatePanelSpec(
+    {
+      root: "input",
+      state: { live: { note: "seed" }, note: "local" },
+      elements: {
+        input: {
+          type: "TextInput",
+          props: {
+            name: "note",
+            label: "Note",
+            value: { $bindState: "/live/note" },
+          },
+        },
+      },
+    },
+    [],
+  );
+  assert.throws(() => validateFeedBinding(spec, "/live", []), /read-only/);
+  spec.elements.input.props.value = { $bindState: "/note" };
+  validateFeedBinding(spec, "/live", []);
+  for (const path of ["/", "/constructor", "/live/nested", "/missing"])
+    assert.throws(() => validateFeedBinding(spec, path, []), /feed statePath/);
+});
+check("feed binding validation resolves writable repeated item paths", () => {
+  const spec = validatePanelSpec(
+    {
+      root: "rows",
+      state: { live: { rows: [{ id: "one", note: "seed" }] } },
+      elements: {
+        rows: {
+          type: "Stack",
+          props: {},
+          repeat: { statePath: "/live/rows", key: "id" },
+          children: ["input"],
+        },
+        input: {
+          type: "TextInput",
+          props: { name: "note", label: "Note", value: { $bindItem: "note" } },
+        },
+      },
+    },
+    [],
+  );
+  assert.throws(() => validateFeedBinding(spec, "/live", []), /read-only/);
+});
+
 console.log(`Structured panel validation: ${passed} checks passed.`);
