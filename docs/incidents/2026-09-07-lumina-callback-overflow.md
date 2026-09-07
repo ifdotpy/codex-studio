@@ -1,6 +1,6 @@
 # Lumina callback queue overflow
 
-Status: OPEN. Live connection recovery is not verified.
+Status: OPEN. Fresh reads verify connection recovery. The original queue backlog cause remains unknown.
 
 ## Evidence
 
@@ -48,3 +48,50 @@ Resume with authorized administrator access for process inspection, or restart
 Studio after the other active work ends. First inspect the callback queue and
 preserve pending receipts. After recovery, verify a fresh native read and the
 lead's turn state. A cached quota response alone does not establish recovery.
+
+## Administrator inspection, 2026-09-07 18:56 UTC
+
+The owner authorized the macOS administrator prompt. Two read-only CPython
+snapshots executed in the existing runtime, PID 35212, at 18:56:39 and 18:56:42
+UTC. No worker command, monitor, or runtime was stopped. No uncertain operation
+was repeated.
+
+- The Lumina account maps to PID 76543. Its stderr file independently confirms the
+  account identity. This process started at 18:31:10 UTC, before this inspection.
+- Both snapshots show zero queued callbacks, zero pending native requests, and no
+  transport error for Lumina. Its dispatcher waits on the empty callback queue.
+  The reader remains active. `offline_accounts` is empty.
+- The other account's queue falls from five callbacks to zero between samples.
+  Its first stack is inside `codex_work.index_item`; its next stack is idle.
+  This does not establish the cause of the earlier overflow.
+- The lead still records its previous failed turn. `lhs-emulator` is also failed.
+  Six workers now record interruption on disconnect; their earlier running
+  labels were stale. `plan-auth-discovery` is completed.
+
+Private evidence is stored under
+`~/.local/state/codex-agents/diagnostics/lumina-20260907T185639Z/`.
+The snapshots contain stack locations and queue metadata, not frame locals or
+message contents. Snapshot line numbers refer to the loaded code; source files
+have changed since this runtime started.
+
+The backlog drained before administrator access became available. These snapshots
+cannot identify the callback or lock responsible for that backlog. Capture the
+queue and stacks during a recurrence, or use the callback latency instrumentation
+after its safe activation. Keep this incident open until evidence supports the
+cause and the corresponding fix. Connection recovery is not completion of the
+interrupted project work.
+
+## Fresh read verification, 2026-09-07 19:02 UTC
+
+A diagnostic thread sent `account/rateLimits/read` directly through the existing
+Lumina AppServer object. It bypassed the Studio cache and did not start a model
+turn. PID 76543 returned a native result in 1,653.8 ms. The private evidence file
+is `native-read.json` in the directory above.
+
+The normal Studio `/api/limits` endpoint then returned a successful update in
+1,284.0 ms. Its prior sample was 1,894 seconds old; the new response timestamp
+advanced. `http-read.json` preserves the timings and result metadata.
+
+Connection recovery is verified at this time. The lead's old failed turn and the
+workers' interrupted turns were not replayed. The original backlog cause and a
+verified prevention fix remain open.
