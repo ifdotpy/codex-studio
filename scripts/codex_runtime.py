@@ -1668,7 +1668,7 @@ class Runtime(EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMix
                 params.update(threadId=a["threadId"], excludeTurns=True)
             else:
                 method = "thread/start"
-                params["dynamicTools"] = TOOLS
+                params["dynamicTools"] = self.tool_definitions()
             self.check_account_project(a)
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)

@@ -58,3 +58,19 @@ These tests use isolated state and fake model providers. They do not prove live
 model token savings. Source installation does not activate an already-running
 Python server. The running process requires a separate, verified update or a restart
 after its active work finishes.
+
+## Guarded process update
+
+`scripts/codex_efficiency_update.py` supports the inspected Python 3.14.7 runtime.
+It compares exact method bytecode with the reviewed baseline before any change.
+It adds the model helpers and replaces entry methods under the normal writer lock.
+It preserves the live globals that own exception classes and connections. It does
+not replace the runtime, server instances, queues, or the search-index fix.
+Unknown or mixed code is rejected. Existing frames finish their old method;
+subsequent calls use the replacement.
+
+Three additional tests check rejection without mutation, repeat application, and
+an update during an active turn and command. The active command exits normally.
+A new native thread receives the current schemas through its actual `thread/start`
+parameters. The fixture uses separate baseline globals to expose stale tool catalogs.
+The focused deployment review reported no remaining findings.
