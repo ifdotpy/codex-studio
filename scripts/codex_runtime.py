@@ -19,6 +19,7 @@ import time
 import uuid
 
 from codex_accounts import AccountStore
+from codex_catalog import runtime_catalog
 from codex_analytics import AnalyticsMixin
 from codex_analytics_history import AnalyticsHistoryMixin
 from codex_shell import monitor_command
@@ -31,6 +32,7 @@ from codex_questions import QuestionsMixin, is_question, answer_signature, recor
 from codex_panel import PanelMixin, panel_tools
 from codex_panel_render import render_panel
 from codex_panel_feed import PanelFeedConsumer
+from codex_tool_requests import RequestMixin, request_tools
 
 def uid():
     return str(uuid.uuid4())
@@ -119,7 +121,7 @@ def voice_tools():
                  {"text": TEXT}, ["text"])]
 
 
-TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT)
+TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT) + request_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -132,12 +134,17 @@ for definition in TOOLS:
     if definition["name"] == "orchestration_monitor":
         definition["inputSchema"]["properties"]["interactive"] = {"type": "boolean"}
     if definition["name"] == "orchestration_spawn":
+        definition["inputSchema"]["properties"]["request_id"] = {"type": "string", "maxLength": 200}
+        definition["description"] += " Supply a stable request_id for recovery across turns. Reuse it only for the exact same batch; query orchestration_request before any retry."
         definition["inputSchema"]["properties"]["agents"]["items"]["properties"][
             "profile_id"
         ] = TEXT
 
 INSTRUCTIONS = """You work in Codex Studio. One lead agent coordinates a team.
 Use orchestration_spawn for delegation and orchestration_monitor for long commands.
+Give each spawn a stable request_id. After a lost response, use orchestration_request to read its saved result.
+A timeout is not proof of failure. Never replay an uncertain mutation with a new id.
+Request cancellation prevents queued work; already-running work must settle its receipt.
 The server owns the wait. Do not run repeated status or sleep tool calls to wait.
 After delegation, finish your turn when no independent work remains. Child results
 and command completion events automatically start a new turn, even after a final answer.
@@ -183,7 +190,7 @@ Older threads can call the workspace tools through orchestration_send with agent
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
 orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task,
-orchestration_panel, orchestration_panel_feed.
+orchestration_panel, orchestration_panel_feed, orchestration_request.
 Use orchestration_panel_feed for live data from a background script, such as EC2 status or build counters.
 It updates structured panel state without model turns, including on command completion or error.
 Set the panel once, start the script, and finish your turn. Do not poll the feed through model calls.
@@ -215,12 +222,23 @@ class SubmissionUnknown(ResponseTimeout):
 
 
 class AppServer:
+    CALLBACK_QUEUE_LIMIT = 4096
+    CLOCK_QUEUE_LIMIT = 128
+
     def __init__(self, root, notification, request, died, *, home=None, isolated=False):
+        import queue
         self.notification, self.request, self.died = notification, request, died
         self.lock = threading.RLock()
+        self.write_lock = threading.RLock()
         self.pending = {}
         self.sequence = 0
         self.closed = False
+        self.transport_error = None
+        self.callbacks = queue.Queue(maxsize=self.CALLBACK_QUEUE_LIMIT)
+        self.clock_replies = queue.Queue(maxsize=self.CLOCK_QUEUE_LIMIT)
+        self.callback_lock = threading.RLock()
+        self.dispatch_stopped = False
+        self.reader_done = threading.Event()
         self.log = (root / "app-server.log").open("ab")
         command = [os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
         env = os.environ.copy()
@@ -234,6 +252,10 @@ class AppServer:
             command, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
             text=True, encoding="utf-8", bufsize=1, start_new_session=True)
+        self.dispatcher = threading.Thread(target=self.dispatch, daemon=True)
+        self.dispatcher.start()
+        self.clock_writer = threading.Thread(target=self.write_clocks, daemon=True)
+        self.clock_writer.start()
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
         try:
@@ -245,8 +267,8 @@ class AppServer:
             raise
 
     def write(self, value):
-        with self.lock:
-            if self.closed or self.proc.poll() is not None:
+        with self.write_lock:
+            if self.closed or getattr(self, "transport_error", None) or self.proc.poll() is not None:
                 raise RuntimeError("Codex app-server is offline")
             self.proc.stdin.write(json.dumps(value) + "\n")
             self.proc.stdin.flush()
@@ -280,7 +302,113 @@ class AppServer:
             raise ResponseTimeout(f"{method} response timed out; outcome unknown") from error
 
     def on_result(self, submitted, callback):
-        submitted[2].add_done_callback(callback)
+        # Future completion runs callbacks on the completing thread. Keep all
+        # Runtime work off the pipe reader, including late preparation receipts.
+        submitted[2].add_done_callback(lambda future: self.enqueue(callback, future))
+
+    def after_events(self, callback):
+        """Run after callbacks already received from this connection."""
+        self.enqueue(lambda _: callback(), None)
+
+    def join_callbacks(self, timeout=10):
+        """Join only after the caller releases Runtime and database locks."""
+        deadline = time.monotonic() + timeout
+        workers = [self.dispatcher]
+        if getattr(self, "clock_writer", None) is not None:
+            workers.append(self.clock_writer)
+        for worker in workers:
+            if threading.current_thread() is worker:
+                return False
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+        return all(not worker.is_alive() for worker in workers)
+
+    def protocol_error(self, error):
+        try:
+            self.log.write((f"\nCanvas protocol error: {error}\n").encode())
+            self.log.flush()
+        except (OSError, ValueError):
+            pass
+
+    def fail_transport(self, error):
+        with self.lock:
+            self.transport_error = self.transport_error or str(error)
+        self.protocol_error(error)
+        if self.proc.poll() is None:
+            self.proc.terminate()
+
+    def enqueue_clock(self, message):
+        import queue
+        try:
+            self.clock_replies.put_nowait(message)
+        except queue.Full:
+            error = RuntimeError(f"Codex clock reply queue saturated; rejected id {json.dumps(message['id'])}; connection closed; outcome unknown")
+            self.fail_transport(error)
+            raise error
+
+    def write_clocks(self):
+        import queue
+        while True:
+            try:
+                message = self.clock_replies.get(timeout=0.05)
+            except queue.Empty:
+                if self.reader_done.is_set():
+                    return
+                continue
+            try:
+                # A blocked stdin writer must never prevent the pipe reader
+                # from settling unrelated responses. Compute time at send.
+                with self.write_lock:
+                    if self.closed or self.transport_error or self.proc.poll() is not None:
+                        return
+                    self.write({"id": message["id"], "result": {"currentTimeAt": int(time.time())}})
+            except Exception as error:
+                self.fail_transport(RuntimeError(f"Codex clock reply failed; outcome unknown: {error}"))
+                return
+            finally:
+                self.clock_replies.task_done()
+
+    def enqueue(self, callback, message):
+        import queue
+        try:
+            with self.callback_lock:
+                if not self.dispatch_stopped:
+                    self.callbacks.put_nowait((callback, message))
+                    return
+        except queue.Full:
+            # Do not block the response reader or silently drop a request.
+            # Accepted callbacks drain before disconnect; this connection cannot
+            # accept more work. The rejected request has no execution receipt.
+            identity = ({key: message[key] for key in ("id", "method") if key in message}
+                        if isinstance(message, dict) else {"callback": getattr(callback, "__name__", "receipt")})
+            error = RuntimeError(f"Codex callback queue saturated; rejected {json.dumps(identity)}; connection closed; outcome unknown")
+            self.fail_transport(error)
+            raise error
+        # A receipt callback may be registered after disconnect completed.
+        # The reader has ended and all preceding events have drained.
+        callback(message)
+
+    def dispatch(self):
+        import queue
+        try:
+            while True:
+                try:
+                    callback, message = self.callbacks.get(timeout=0.05)
+                except queue.Empty:
+                    with self.callback_lock:
+                        if self.reader_done.is_set() and self.callbacks.empty():
+                            self.dispatch_stopped = True
+                            break
+                    continue
+                try:
+                    callback(message)
+                except Exception as error:
+                    self.protocol_error(error)
+                finally:
+                    self.callbacks.task_done()
+            if not self.closed:
+                self.died()
+        finally:
+            self.log.close()
 
     def read(self):
         try:
@@ -288,13 +416,14 @@ class AppServer:
                 try:
                     message = json.loads(line)
                     if "method" in message:
+                        message["_studioReceivedAt"] = time.time()
                         if "id" in message:
                             if message["method"] == "currentTime/read":
-                                self.write({"id": message["id"], "result": {"currentTimeAt": int(time.time())}})
+                                self.enqueue_clock(message)
                             else:
-                                self.request(message)
+                                self.enqueue(self.request, message)
                         else:
-                            self.notification(message)
+                            self.enqueue(self.notification, message)
                     else:
                         with self.lock:
                             future = self.pending.pop(message.get("id"), None)
@@ -304,17 +433,17 @@ class AppServer:
                             else:
                                 future.set_result(message.get("result", {}))
                 except Exception as error:
-                    self.log.write((f"\nCanvas protocol error: {error}\n").encode())
-                    self.log.flush()
+                    self.protocol_error(error)
+                    if self.transport_error:
+                        break
         finally:
             with self.lock:
                 pending = list(self.pending.values())
                 self.pending.clear()
             for future in pending:
                 if not future.done():
-                    future.set_exception(RuntimeError("Codex app-server disconnected; outcome unknown"))
-            if not self.closed:
-                self.died()
+                    future.set_exception(RuntimeError(self.transport_error or "Codex app-server disconnected; outcome unknown"))
+            self.reader_done.set()
 
     def close(self):
         self.closed = True
@@ -325,11 +454,13 @@ class AppServer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(5)
-        self.reader.join()
-        self.log.close()
+        # The caller can hold a Runtime lock needed by queued callbacks. Never
+        # join their dispatcher here; it drains accepted work independently.
+        if threading.current_thread() is not self.reader:
+            self.reader.join(timeout=1)
 
 
-class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
+class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -355,12 +486,18 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
         self.limits_lock = threading.Lock()
         self.rate_limits = {"accountKey": "default", "data": None, "at": None, "error": None}
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=16)
+        self.tool_pool = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="studio-tool")
+        self.coordination_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="studio-coordinate")
+        self.recovery_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-recover")
         self.lease = (self.root / "runtime.lock").open("a+")
         try:
             fcntl.flock(self.lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             self.lease.close()
             self.pool.shutdown(wait=False)
+            self.tool_pool.shutdown(wait=False)
+            self.coordination_pool.shutdown(wait=False)
+            self.recovery_pool.shutdown(wait=False)
             raise RuntimeError("Another canvas runtime owns this state directory")
         try:
             self.accounts = AccountStore(self.root)
@@ -368,6 +505,9 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             fcntl.flock(self.lease, fcntl.LOCK_UN)
             self.lease.close()
             self.pool.shutdown(wait=False)
+            self.tool_pool.shutdown(wait=False)
+            self.coordination_pool.shutdown(wait=False)
+            self.recovery_pool.shutdown(wait=False)
             raise
         with self.db() as db:
             db.execute("PRAGMA journal_mode=WAL")
@@ -454,6 +594,7 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             self.analytics_init(db)
             self.analytics_history_init(db)
             self.setup_work(db)
+            self.setup_tool_requests(db)
             self.setup_user_tasks(db)
             self.setup_panels(db)
             self.setup_workspace(db)
@@ -2123,7 +2264,36 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
             self.reply({"id": message["id"], "result": {"currentTimeAt": int(time.time())}}, account_key, connection_id)
             return
         if message["method"] == "item/tool/call":
-            self.pool.submit(self.dynamic, message, account_key, connection_id)
+            try:
+                self.reserve_tool_request(message, account_key, connection_id)
+            except Exception as error:
+                if self.closed or not self.connection_current(account_key, connection_id):
+                    return
+                self.reply({"id": message["id"], "result": {"success": False,
+                    "contentItems": [{"type": "inputText", "text": str(error)}]}}, account_key, connection_id)
+                return
+            name = message.get("params", {}).get("tool")
+            if name == "orchestration_send":
+                # Older threads reach workspace tools through this envelope.
+                # Routing reads its shape only; dynamic keeps full validation.
+                try:
+                    args = message.get("params", {}).get("arguments", {})
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    if isinstance(args, dict) and args.get("agent_id") == "complaint":
+                        name = "orchestration_complaint"
+                    elif (isinstance(args, dict) and args.get("agent_id") == "workspace"
+                          and isinstance(args.get("text"), str)):
+                        payload = json.loads(args["text"])
+                        if (isinstance(payload, dict) and isinstance(payload.get("tool"), str)
+                                and isinstance(payload.get("arguments", {}), dict)):
+                            name = payload["tool"]
+                except (TypeError, ValueError):
+                    pass
+            executor = (self.recovery_pool if name in {"orchestration_request", "orchestration_status", "orchestration_peers"}
+                        else self.coordination_pool if name in {"orchestration_spawn", "orchestration_send", "orchestration_message", "orchestration_chat_read", "orchestration_title", "orchestration_complaint"}
+                        else self.tool_pool)
+            executor.submit(self.dynamic, message, account_key, connection_id)
             return
         with self.lock, self.db() as db:
             if not self.connection_current(account_key, connection_id):
@@ -2145,26 +2315,94 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 a["status"] = "approval"
                 self.put(db, "agents", a)
 
+    def spawn_agents(self, actor, args, key):
+        """Commit the entire batch, initial events, and receipt together."""
+        specs = args.get("agents")
+        if not isinstance(specs, list) or not 1 <= len(specs) <= 64:
+            raise ValueError("Supply 1 to 64 agents")
+        if actor["role"] == "reviewer":
+            raise ValueError("Reviewers cannot create agents")
+        for spec in specs:
+            if (not isinstance(spec, dict) or not isinstance(spec.get("name"), str)
+                    or not 1 <= len(spec["name"].strip()) <= 100
+                    or not isinstance(spec.get("prompt"), str)
+                    or not 1 <= len(spec["prompt"].strip()) <= 32000
+                    or spec.get("role", "implementer") not in {"implementer", "reviewer"}):
+                raise ValueError("Every worker needs a name, task and valid role")
+        catalog = self.catalog(actor.get("accountKey", "default"))
+        with self.lock, self.db() as db:
+            request = self.tool_request(key, db)
+            if request and request.get("cancelRequested"):
+                raise ValueError("Request cancelled before worker creation")
+            current = self.checked_actor(db, actor["id"], actor["id"])
+            if (self.closed or current["epoch"] != actor["epoch"]
+                    or current.get("accountKey", "default") != actor.get("accountKey", "default")
+                    or (request and not self.connection_current(request["accountKey"], request.get("connectionId")))):
+                raise ValueError("The parent or its account connection changed before worker creation")
+            roster = [a for a in self.records(db, "agents") if a["rootId"] == current["rootId"] and not a.get("deletedAt")]
+            existing = {a["id"] for a in roster}
+            planned = [{**spec, "id": str(uuid.uuid5(uuid.NAMESPACE_URL, key + ":" + str(index)))} for index, spec in enumerate(specs)]
+            if len(roster) + sum(s["id"] not in existing for s in planned) > self.agent(current["rootId"], db)["maxAgents"]:
+                raise ValueError("This batch exceeds the team size limit; no workers were created")
+            children = [self.create(spec, current["id"], parent_epoch=current["epoch"], _catalog=catalog, _validate_only=True)
+                        for spec in planned]
+            for child in children:
+                if child["id"] not in existing:
+                    self.put(db, "agents", child)
+                    self.enqueue(db, child, "user", child["prompt"], child["id"] + ":initial")
+            value = {"requestId": key, "agents": [{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode")} for c in children],
+                     "delivery": "Results wake you automatically. Finish your turn while waiting."}
+            result = stamp_tool_result({"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}, time.time())
+            db.execute("INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)", (key, json.dumps(result)))
+            if request:
+                self.finish_tool_request(key, result, outcome="applied", db=db)
+            return value
+
     def dynamic(self, message, account_key="default", connection_id=None):
         p = message.get("params", {})
         result = None
         a = None
+        claimed = False
+        name = p.get("tool")
         key = str(p.get("threadId")) + ":" + str(p.get("callId", message["id"]))
         if account_key != "default":
             key = account_key + ":" + key
         if not self.connection_current(account_key, connection_id):
+            # A queued call can outlive its original connection. It never
+            # entered execution, so do not leave its receipt pending forever.
+            with self.lock, self.db() as db:
+                try:
+                    key = self.tool_request_key(message, account_key)
+                except ValueError:
+                    return
+                record = self.tool_request(key, db)
+                if record and record.get("connectionId") == connection_id and record["stage"] == "queued":
+                    self.finish_tool_request(key, {"success": False, "contentItems": [{"type": "inputText", "text": "The caller connection ended before execution"}]},
+                                             outcome="not_applied", db=db)
             return
         try:
+            record = self.reserve_tool_request(message, account_key, connection_id)
+            key = record["id"]
+            with self.lock, self.db() as db:
+                a = self.agent(record["agent"], db)
+                result = record.get("result")
+            if result is None:
+                claimed = self.begin_tool_request(key)
+                if not claimed:
+                    receipt = self.tool_request(key)
+                    result = receipt.get("result") or {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps({
+                        "requestId": key, "outcome": receipt["outcome"], "stage": receipt["stage"],
+                        "recovery": "Read orchestration_request with this requestId. Do not repeat the mutation with a new id."})}]}
             with self.lock, self.db() as db:
                 if not self.connection_current(account_key, connection_id):
-                    return
+                    raise ValueError("The caller connection changed before execution")
                 previous = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
                 if previous:
                     result = json.loads(previous[0])
                 a = next((a for a in self.records(db, "agents") if p.get("threadId") and a.get("threadId") == p.get("threadId") and a.get("accountKey", "default") == account_key), None)
-            if a and p.get("turnId") and p["turnId"] != a.get("turnId"):
+            if result is None and a and p.get("turnId") and p["turnId"] != a.get("turnId"):
                 raise ValueError("This tool call belongs to an earlier turn")
-            if not a or not a["autoWake"]:
+            if result is None and (not a or not a["autoWake"]):
                 raise ValueError("Agent is stopped or unknown")
             if result is None:
                 args = p.get("arguments", {})
@@ -2182,10 +2420,13 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                         + user_task_tools(tool, TEXT)
                         + panel_tools(tool, TEXT)
                         + voice_tools()
+                        + request_tools(tool, TEXT)
                     }:
                         raise ValueError("Unknown workspace tool")
                 panel_capture = {}
-                if name == "orchestration_speak":
+                if name == "orchestration_request":
+                    value = self.request_action(a["id"], args)
+                elif name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
                 elif name == "orchestration_panel_feed":
                     value = self.panel_feed_action(a["id"], args, key=key, epoch=a["epoch"])
@@ -2246,32 +2487,7 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                         target["id"], True, sender=a["id"], sender_epoch=a["epoch"]
                     )
                 elif name == "orchestration_spawn":
-                    specs = args.get("agents")
-                    if not isinstance(specs, list) or not 1 <= len(specs) <= 64:
-                        raise ValueError("Supply 1 to 64 agents")
-                    if a["role"] == "reviewer":
-                        raise ValueError("Reviewers cannot create agents")
-                    for spec in specs:
-                        if (not isinstance(spec, dict) or not isinstance(spec.get("name"), str)
-                            or not 1 <= len(spec["name"].strip()) <= 100
-                            or not isinstance(spec.get("prompt"), str)
-                            or not 1 <= len(spec["prompt"].strip()) <= 32000
-                            or spec.get("role", "implementer") not in {"implementer", "reviewer"}):
-                            raise ValueError("Every worker needs a name, task and valid role")
-                    catalog = self.catalog(a.get("accountKey", "default"))
-                    children = []
-                    with self.lock:
-                        roster = self.team(a["rootId"])["agents"]
-                        planned = [{**spec, "id": str(uuid.uuid5(uuid.NAMESPACE_URL, key + ":" + str(index)))} for index, spec in enumerate(specs)]
-                        new_count = sum(s["id"] not in {r["id"] for r in roster} for s in planned)
-                        if len(roster) + new_count > self.agent(a["rootId"])["maxAgents"]:
-                            raise ValueError("This batch exceeds the team size limit; no workers were created")
-                        for spec in planned:
-                            self.create(spec, a["id"], parent_epoch=a["epoch"], _catalog=catalog, _validate_only=True)
-                        for spec in planned:
-                            child = self.create(spec, a["id"], parent_epoch=a["epoch"], _catalog=catalog)
-                            children.append({k: child[k] for k in ("id", "name", "status", "model", "effort", "fastMode")})
-                    value = {"agents": children, "delivery": "Results wake you automatically. Finish your turn while waiting."}
+                    value = self.spawn_agents(a, args, key)
                 elif name in {"orchestration_status", "orchestration_peers"}:
                     value = {
                         **self.team(a["rootId"]),
@@ -2281,7 +2497,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                         + rule_tools(tool, TEXT)
                         + user_task_tools(tool, TEXT)
                         + panel_tools(tool, TEXT)
-                        + voice_tools(),
+                        + voice_tools()
+                        + request_tools(tool, TEXT),
                     }
                     if name == "orchestration_status":
                         value["recentChats"] = [self.chat_read(r["id"], a["id"], limit=10)
@@ -2370,18 +2587,22 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 },
                 time.time(),
             )
-            with self.lock, self.db() as db:
-                db.execute(
-                    "INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
-                    (key, json.dumps(result)),
-                )
-                saved = json.loads(
+            if claimed:
+                with self.lock, self.db() as db:
                     db.execute(
-                        "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
-                    ).fetchone()[0]
-                )
-                if not saved.get("success"):
-                    result = saved
+                        "INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
+                        (key, json.dumps(result)),
+                    )
+                    saved = json.loads(
+                        db.execute(
+                            "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
+                        ).fetchone()[0]
+                    )
+                    if not saved.get("success"):
+                        result = saved
+        if claimed:
+            receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else None))
+            result = receipt.get("result") or result
         if a is not None:
             with self.lock, self.db() as db:
                 self.analytics_safe(db, self.analytics_dynamic, a, p, result)
@@ -2911,7 +3132,10 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 server.on_result(submitted, lambda future: self.pool.submit(
                     self.monitor_result, key, operation, future) if not self.closed else None)
                 return
-            self.monitor_accepted(key, operation, result)
+            if hasattr(server, "after_events"):
+                server.after_events(lambda: self.monitor_accepted(key, operation, result))
+            else:
+                self.monitor_accepted(key, operation, result)
         except PreparationPending as error:
             self.defer_preparation(error, lambda: self.launch_monitor(key, shell_config, preflight),
                 lambda cause: self.finish_monitor(key, None, str(cause)))
@@ -3430,7 +3654,7 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                     "agent": {k: a.get(k) for k in ("id", "status", "activity", "inFlight", "contextUsage", "compactions", "compactionsObservedOnly")}}
 
     def catalog(self, account_key="default"):
-        return self.connect(account_key).call("model/list", {"limit": 100})
+        return runtime_catalog(self, account_key)
 
     def configure(self, key, data):
         with self.lock, self.db() as db:
@@ -3589,6 +3813,11 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
         for worker in monitor_threads:
             worker.join()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        for executor in (self.tool_pool, self.coordination_pool, self.recovery_pool):
+            executor.shutdown(wait=True, cancel_futures=True)
+        for server in list(self.servers.values()):
+            if hasattr(server, "join_callbacks") and not server.join_callbacks(timeout=30):
+                raise RuntimeError("Codex callbacks did not drain; runtime lease retained")
         history_thread = getattr(self, "analytics_history_thread", None)
         if history_thread is not None:
             # A final import batch can still need self.lock and the database.

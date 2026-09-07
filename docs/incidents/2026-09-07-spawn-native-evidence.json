@@ -1,0 +1,27 @@
+{
+  "status": "passed",
+  "model": "gpt-5.6-sol",
+  "maxModelTurns": 2,
+  "codexVersion": "codex-cli 0.153.4",
+  "source": {
+    "scripts/codex_runtime.py": "459c07a12435929ab7d8b7e229c662ccbb48854f5c6eeb81e4000fb1d418073f",
+    "scripts/codex_catalog.py": "0a8f83631f6a1cb7fad0b3e4467e5d38b57b46ca417b5787e584feb5079ec71a",
+    "scripts/codex_tool_requests.py": "5122579d7aa684f1980c0bb405e0e096d98b83f044e05d6486aa966f70c42268"
+  },
+  "leadId": "80582c10-6a37-4ad9-82b9-2b8a64673fd7",
+  "leadThreadId": "01a07c5b-80b3-7cb1-b998-b660db060f36",
+  "childId": "47c3b81e-2134-5c3a-94e2-046b376e0884",
+  "receiptOutcome": "applied",
+  "lostReplyRecovered": true,
+  "childRunningObserved": true,
+  "childStatus": "completed",
+  "childTurnId": "01a07c5b-8158-7f51-b17f-9afbbf5713f9",
+  "childEventId": "child:47c3b81e-2134-5c3a-94e2-046b376e0884:01a07c5b-8158-7f51-b17f-9afbbf5713f9",
+  "childEventStatus": "delivered",
+  "parentTurnId": "01a07c5b-9a39-7a13-90a6-cbbf7a26b6b6",
+  "modelTurns": 2,
+  "monitorId": "f3f07b8a-b50d-56dd-bc8a-6ad81c1eabb6",
+  "monitorExitCode": 0,
+  "monitorBytes": 18,
+  "seconds": 11.421
+}

@@ -49,6 +49,9 @@ c.add_argument('--max-agents', type=int)
 c.add_argument('--token-budget', type=int)
 c = s.add_parser('transcript')
 c.add_argument('agent')
+c = s.add_parser('requests', help='Recover saved tool results without repeating their actions')
+c.add_argument('agent')
+c.add_argument('request_id', nargs='?')
 a = p.parse_args()
 
 def request(path, data=None, token=''):
@@ -61,13 +64,25 @@ def request(path, data=None, token=''):
 try:
     import uuid
     from urllib.parse import quote
-    state = request('/api/state')
-    token = state['token']
+    state = request('/api/state') if a.command != 'requests' else {}
+    token = state.get('token', '')
     if a.command == 'list':
         result = [{'id': t['id'], 'name': t['name'], 'parent': t.get('parentId'), 'status': t['status'],
                    'model': t.get('model'), 'accountKey': t.get('accountKey'), 'tokens': t.get('tokensUsed')} for t in state['threads']]
     elif a.command == 'accounts':
         result = request('/api/accounts')
+    elif a.command == 'requests':
+        query = '?agent=' + quote(a.agent)
+        if a.request_id:
+            query += '&request_id=' + quote(a.request_id)
+        try:
+            result = request('/api/tool-requests' + query)
+        except urllib.error.HTTPError as error:
+            from codex_request_recovery import is_loopback_url, recover_legacy_requests, same_origin
+            if error.code != 404 or not is_loopback_url(a.url) or not same_origin(a.url, error.url):
+                raise
+            error.close()
+            result = recover_legacy_requests(a.url, a.agent, a.request_id)
     elif a.command == 'account-rules':
         account = next((v for v in request('/api/accounts')['accounts'] if v['id'] == a.account), None)
         if account is None:

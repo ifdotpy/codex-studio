@@ -601,6 +601,10 @@ def make_server(canvas, port=0, public_origin=None):
                     runtime = canvas.runtime
                     q = {k: v[0] for k, v in parse_qs(path.query).items()}
                     agent = q.get("agent")
+                    if path.path == "/api/tool-requests":
+                        request_id = q.get("request_id")
+                        return self.send(runtime.request_action(agent,
+                            {"action": "get", "request_id": request_id} if request_id else {"action": "list"}))
                     if path.path == "/api/analytics":
                         return self.send(runtime.analytics(**q))
                     if path.path == "/api/accounts":
@@ -801,6 +805,11 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.restore_checkpoint(agent, body))
                     if self.path == "/api/user-tasks/complete":
                         return self.send(runtime.complete_user_task(body))
+                    if self.path == "/api/tool-requests/cancel":
+                        if set(body) != {"agent", "request_id"}:
+                            raise ValueError("Supply agent and request_id")
+                        return self.send(runtime.request_action(body["agent"],
+                            {"action": "cancel", "request_id": body["request_id"]}))
                     if self.path == "/api/panel/callback":
                         from codex_panel import PanelConflict
                         try:

@@ -26,9 +26,16 @@ application's managed capabilities are available.
 
 ## Managed delegation and completion
 
-Use `orchestration_spawn` for independent worker tasks. Supply bounded ownership,
+Use `orchestration_spawn` for independent worker tasks. Give each batch a stable
+`request_id`. Supply bounded ownership,
 a completion check, and explicit commit authority. Worktrees start from committed
 HEAD, so include or commit required inputs before delegation.
+After a lost reply, use `orchestration_request` to recover the saved result.
+`applied` confirms the operation receipt, not worker completion. Check current
+registry states before counting workers. Use a new spawn ID only after
+`not_applied` proves the earlier batch did not create workers.
+Queued cancellation prevents execution. Running cancellation requires receipt
+reconciliation; it does not authorize a second mutation.
 Omit model, effort, and `fast_mode` to use the user's team defaults.
 Override a field only for a specific worker. Use `effort: null` for the model's native default.
 Use `fast_mode: false` to disable Fast for that worker. Explicit profile values override team defaults.

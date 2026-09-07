@@ -17,6 +17,14 @@ canvas runtime. Run `scripts/codex-canvas`, open the local page, and create a le
 The lead uses `orchestration_spawn` and `orchestration_monitor`. The server owns
 queues, concurrency limits, command waits and automatic parent continuation.
 Use `scripts/codex-control` for terminal access to the same runtime.
+Recover an uncertain tool result with `codex-control requests AGENT_ID REQUEST_ID`.
+Omit `REQUEST_ID` to list recent requests. This command only reads receipts.
+An older local server can also use this command without a restart. If the route
+returns 404, the CLI reads saved results from that server's exact SQLite database
+in read-only mode. Missing results and failed legacy receipts remain `unknown`.
+This fallback is unavailable for remote servers and does not bypass HTTP errors.
+The equivalent route is `GET /api/tool-requests?agent=AGENT_ID&request_id=REQUEST_ID`.
+Authenticated `POST /api/tool-requests/cancel` accepts `agent` and `request_id`.
 See [Managed Codex teams](ORCHESTRATION.md) for limits, permissions and recovery.
 
 ## Mode

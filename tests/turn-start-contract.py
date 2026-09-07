@@ -5,6 +5,7 @@ import concurrent.futures
 import importlib.util
 import io
 import json
+import queue
 from pathlib import Path
 import sys
 import tempfile
@@ -268,11 +269,23 @@ class RpcWaitContract(unittest.TestCase):
     def server(self):
         server = AppServer.__new__(AppServer)
         server.lock = threading.RLock()
+        server.write_lock = threading.RLock()
         server.pending = {}
         server.closed = True
         server.log = io.BytesIO()
         server.notification = lambda _: None
         server.request = lambda _: None
+        server.transport_error = None
+        server.callbacks = queue.Queue(maxsize=AppServer.CALLBACK_QUEUE_LIMIT)
+        server.callback_lock = threading.RLock()
+        server.dispatch_stopped = False
+        server.reader_done = threading.Event()
+        server.dispatcher = threading.Thread(target=server.dispatch, daemon=True)
+        server.dispatcher.start()
+        def cleanup():
+            server.reader_done.set()
+            self.assertTrue(server.join_callbacks(2))
+        self.addCleanup(cleanup)
         return server
 
     def test_timeout_keeps_future_for_late_response_and_reader_cleans_it(self):
@@ -287,6 +300,7 @@ class RpcWaitContract(unittest.TestCase):
         server.on_result(submitted, lambda done: received.append(done.result()))
         server.proc = type("Process", (), {"stdout": io.StringIO(json.dumps({"id": 7, "result": {"turn": {"id": "accepted"}}}) + "\n")})()
         server.read()
+        self.assertTrue(server.join_callbacks(2))
         self.assertEqual(received, [{"turn": {"id": "accepted"}}])
         self.assertEqual(server.pending, {})
         self.assertEqual(server.wait(submitted, timeout=0), received[0])

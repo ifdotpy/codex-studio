@@ -121,6 +121,12 @@ python3 -B tests/turn-start-contract.py
 python3 -B tests/prepare-steer-contract.py
 python3 -B tests/monitor-lifecycle-contract.py
 python3 -B tests/harness-response-contract.py
+python3 -B tests/protocol-reader-contract.py
+python3 -B tests/catalog-recovery-contract.py
+python3 -B tests/tool-request-contract.py
+python3 -B tests/spawn-request-recovery-contract.py
+python3 -B tests/tool-request-http-contract.py
+python3 -B tests/request-recovery-legacy-contract.py
 python3 -B tests/analytics-contract.py
 python3 -B tests/analytics-history-contract.py
 python3 -B tests/accounts-contract.py

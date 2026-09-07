@@ -240,6 +240,7 @@ The lead receives these additional tools:
 | `orchestration_status` | Read team status and command watches for a decision. |
 | `orchestration_monitor` | Start a command watch. Deliver one result when the command exits. |
 | `orchestration_cancel_monitor` | Cancel a command watch. |
+| `orchestration_request` | List, recover, or cancel your own durable tool requests. |
 
 After delegation, the lead can finish its turn. The runtime queues each child
 result and starts the next lead turn, including after a final answer.
@@ -257,6 +258,36 @@ Unknown input is never replayed automatically.
 Completed managed tools retain their exact execution receipts even when the
 caller loses the response. Response write failures record request identities
 in `runtime-errors.log`, without tool input or output.
+
+Give every spawn batch a stable `request_id`. Studio commits the complete worker
+batch, initial messages, and result receipt in one SQLite transaction. Reusing
+the same ID and payload returns that receipt across calls and turns. Changed
+payloads are rejected. A model-catalog failure occurs before worker creation.
+Verified catalog data is cached for five minutes per account and connection.
+An uncached metadata response has a five-second wait; its late result can still
+fill the cache without another native request.
+
+Use `orchestration_request` with `action=get` and `request_id` after a lost reply.
+It accepts the stable spawn ID, native call ID, or returned request ID. `list`
+returns at most 50 recent request summaries. Outcomes have these meanings:
+
+| Outcome | Evidence |
+|---|---|
+| `pending` | The request is queued or executing. |
+| `applied` | The operation has a successful receipt. This does not prove worker completion. |
+| `not_applied` | Queued cancellation or atomic spawn failure proves no mutation. |
+| `unknown` | Evidence cannot yet determine whether the operation applied. |
+
+`action=cancel` prevents queued requests from executing. For running requests it
+records cancellation intent and returns promptly. It does not kill an operation
+that may have committed. Spawn checks this intent again before its transaction.
+Missing and old failed receipts remain unknown. Restart does not replay mutations.
+Tool intake, start, and completion timestamps remain available for diagnosis.
+
+Recovery reads and coordination use separate execution pools from model startup,
+slow tools, and monitor waits. Native response reads continue while ordered
+notification callbacks run. A command completion waits for its preceding output
+callbacks before the runtime records its final result.
 
 Thread preparation shares one pending request per agent. A preparation timeout
 retains the input reservation without submitting a turn. A late response resumes
