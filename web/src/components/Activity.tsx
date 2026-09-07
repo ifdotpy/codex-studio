@@ -162,7 +162,7 @@ function describe(item: Message, p: Json) {
           "Tool activity",
   };
 }
-function ToolCard({ item }: { item: Message }) {
+export function ToolCard({ item }: { item: Message }) {
   const p = payload(item),
     state = status(item, p),
     kind = p.type || item.title,
@@ -326,14 +326,54 @@ function ToolCard({ item }: { item: Message }) {
     </details>
   );
 }
+export function activitySummary(items: Message[]) {
+  const files = new Set<string>(),
+    skills = new Set<string>(),
+    changes = new Set<string>();
+  let commands = 0,
+    searches = 0,
+    other = 0,
+    running = 0,
+    failed = 0;
+  for (const item of items) {
+    const p = payload(item),
+      read = readActivity(p),
+      state = status(item, p);
+    if (state === "running") running++;
+    if (state === "failed") failed++;
+    for (const target of read.targets)
+      (target.skill ? skills : files).add(target.path || target.name);
+    if (read.onlyReads) continue;
+    const kind = p.type || item.title;
+    if (kind === "commandExecution") commands++;
+    else if (kind === "webSearch") searches++;
+    else if (kind === "fileChange" && Array.isArray(p.changes))
+      for (const change of p.changes) changes.add(change.path || item.id);
+    else other++;
+  }
+  const count = (n: number, singular: string) =>
+    `${n} ${singular}${n === 1 ? "" : "s"}`;
+  return {
+    running,
+    failed,
+    label: [
+      files.size && `Read ${count(files.size, "file")}`,
+      skills.size && `Read ${count(skills.size, "skill")}`,
+      changes.size && `Changed ${count(changes.size, "file")}`,
+      commands && `Ran ${count(commands, "command")}`,
+      searches &&
+        `${count(searches, "web search").replace("searchs", "searches")}`,
+      other && count(other, "tool call"),
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  };
+}
 export default function Activity({ items }: { items: Message[] }) {
-  const running = items.filter(
-    (item) => status(item, payload(item)) === "running",
-  ).length;
+  const summary = activitySummary(items);
+  const running = summary.running;
   const reads = items.flatMap((item) => readActivity(payload(item)).targets);
-  const failed = items.filter(
-    (item) => status(item, payload(item)) === "failed",
-  ).length;
+  const failed = summary.failed;
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
   return (
@@ -358,16 +398,14 @@ export default function Activity({ items }: { items: Message[] }) {
         <span>
           {items.length === 1
             ? describe(items[0], payload(items[0])).label
-            : `${items.length} tool calls`}
+            : summary.label}
         </span>
-        {reads.length > 0 && (
+        {items.length === 1 && reads.length > 0 && (
           <span
             className="activity-read-summary"
             title={reads.map((t) => t.path || t.name).join("\n")}
           >
-            {items.length === 1
-              ? reads.map((t) => t.name).join(", ")
-              : `Read ${readLabel(reads)}`}
+            {reads.map((t) => t.name).join(", ")}
           </span>
         )}
         <span className="activity-state">

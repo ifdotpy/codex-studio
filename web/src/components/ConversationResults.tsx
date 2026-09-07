@@ -20,7 +20,7 @@ export default function ConversationResults({
   onJump?: (messageId: string) => void;
 }) {
   const results = useMemo(() => conversationResults(messages), [messages]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [all, setAll] = useState(false);
   const [selection, setSelection] = useState<{ id: string; agent?: string }>();
   // Selection cannot carry an old conversation's result into another chat.
@@ -28,7 +28,7 @@ export default function ConversationResults({
     selection?.agent === agentId
       ? results.find((result) => result.id === selection?.id)
       : undefined;
-  const visible = all ? results : results.slice(0, 6);
+  const visible = all ? results : results.slice(0, 3);
   if (!results.length) return null;
   const icon = (result: ConversationResult) =>
     result.kind === "patch" ? (
@@ -78,13 +78,13 @@ export default function ConversationResults({
               {result.kind === "patch" && <small>Patch</small>}
             </button>
           ))}
-          {results.length > 6 && (
+          {results.length > 3 && (
             <button
               type="button"
               className="conversation-results-more"
               onClick={() => setAll(!all)}
             >
-              {all ? "Show fewer" : `Show ${results.length - 6} more`}
+              {all ? "Show fewer" : `Show ${results.length - 3} more`}
             </button>
           )}
         </div>

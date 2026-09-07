@@ -216,3 +216,10 @@
   color: var(--muted);
   font-size: 10px;
 }
+
+.team-button-count {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}

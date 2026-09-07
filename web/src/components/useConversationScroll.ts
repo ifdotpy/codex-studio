@@ -14,6 +14,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   const available = useRef(ready);
   available.current = ready;
   const lastTop = useRef(0);
+  const lastScrollInput = useRef(-Infinity);
   const anchor = useRef<{ element: HTMLElement; offset: number } | null>(null);
 
   const remember = () => {
@@ -73,6 +74,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   useLayoutEffect(() => {
     if (current.current !== id) {
       current.current = id;
+      lastScrollInput.current = -Infinity;
       anchor.current = null;
       const saved = positions.current.get(id);
       lastTop.current = saved?.top || 0;
@@ -86,17 +88,52 @@ export function useConversationScroll(id: string, ready: boolean) {
     const root = scroll.current;
     const body = content.current;
     if (!root || !body) return;
+    const input = (event: Event) => {
+      if (event instanceof KeyboardEvent) {
+        if (
+          ![
+            "ArrowUp",
+            "ArrowDown",
+            "PageUp",
+            "PageDown",
+            "Home",
+            "End",
+            " ",
+          ].includes(event.key)
+        )
+          return;
+        if (
+          (event.target as HTMLElement)?.closest(
+            "input, textarea, [contenteditable=true]",
+          )
+        )
+          return;
+      }
+      if (event.type === "pointerdown" && event.target !== root) return;
+      lastScrollInput.current = performance.now();
+    };
+    for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
+      root.addEventListener(type, input, { passive: true });
     const observer = new ResizeObserver(restore);
     observer.observe(root);
     observer.observe(body);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
+        root.removeEventListener(type, input);
+    };
   }, [id]);
 
   const onScroll = () => {
     const root = scroll.current;
     if (!root || !available.current || root.scrollTop === lastTop.current)
       return;
-    const value = root.scrollHeight - root.scrollTop - root.clientHeight < 32;
+    const atBottom =
+      root.scrollHeight - root.scrollTop - root.clientHeight < 32;
+    // A layout change can clamp scrollTop. Only user input or Latest resumes following.
+    const value =
+      atBottom &&
+      (following.current || performance.now() - lastScrollInput.current < 600);
     following.current = value;
     updateFollow(value);
     remember();

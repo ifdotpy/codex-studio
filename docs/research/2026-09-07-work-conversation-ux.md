@@ -126,12 +126,31 @@ Browser checks cover answering, defer and restore, retained receipts, reload,
 chat isolation, turn disclosure, result previews, and narrow layout.
 These are Studio fixture checks, not live checks of the reference application.
 
-## Recommended order after this change
+## Implemented follow-up
 
-1. Keep answers readable and consolidate preceding activity into one disclosure.
-2. Simplify navigation around Chat and Team.
-3. Show structured work summaries instead of repeated generic tool counters.
-4. Verify scroll and composer behavior across every expanding surface.
-5. Consolidate file and preview entry points around the resulting artifact.
+- Final answers remain outside the work disclosure, including streamed answers.
+  Legacy live turns without a final phase keep their existing message positions.
+- Each turn has one work log. Tools use closed detail rows within it.
+  Structured records produce file, skill, edit, command, and search counts.
+- A new final answer collapses untouched work only while the reader follows the
+  latest output. Failures prevent automatic collapse. Manual choices persist.
+- File, patch, HTML, and Mermaid result buttons appear below the answer.
+  The first three are visible; additional results use Show more.
+- Plan and Rules move to Chat actions. Work, Your tasks, Inbox, Changes, Search,
+  Background, and Canvas remain directly accessible.
+- Team shows active and total workers. Stop team appears for active or queued work.
+- Layout changes cannot resume automatic following without recent scroll input
+  or the Latest button. The composer retains its existing anchor controller.
 
-The desired outcome is fewer competing controls, not fewer agent capabilities.
+Verification uses the production renderer and isolated fixture state. No model
+calls or active user sessions are required. `work-log-ui.mjs` covers disclosure,
+streamed answers, manual choices, reload, reader position, menu access, and narrow
+layout. Existing checks cover file previews, read tools, send and composer
+geometry, long history, and chat scope. The long-history check renders 1,820
+records with fewer than 6,000 DOM elements; this is fixture evidence, not a live
+chat latency promise.
+
+Two broader checks also fail on unchanged main `568abb6`: Team navigation has
+conflicting fixture state sources, and Workspace navigation expects its drawer to
+stay open after switching to the phone layout. These failures are not passes.
+The focused conversation checks do not establish full application certification.

@@ -1,14 +1,16 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
-import { ChevronRight, CircleAlert, CircleStop, Layers } from "lucide-react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ChevronRight,
+  CircleAlert,
+  CircleStop,
+  LoaderCircle,
+  Wrench,
+} from "lucide-react";
 import { save, saved } from "../api";
 import type { Message } from "../types";
-import Activity from "./Activity";
+import Activity, { ToolCard, activitySummary } from "./Activity";
 import ConversationResults from "./ConversationResults";
-import {
-  historyGroups,
-  resultExcerpt,
-  type HistoryGroup,
-} from "./turnHistoryModel";
+import { historyGroups, type HistoryGroup } from "./turnHistoryModel";
 import "./turn-history.css";
 
 function messages(items: Message[], render: (message: Message) => ReactNode) {
@@ -31,134 +33,138 @@ function messages(items: Message[], render: (message: Message) => ReactNode) {
 
 function Turn({
   group,
-  latest,
   storageKey,
   render,
   agentId,
   onJump,
+  following,
 }: {
   group: HistoryGroup;
-  latest: boolean;
   storageKey: string;
   render: (message: Message) => ReactNode;
   agentId?: string;
   onJump: (id: string) => void;
+  following: boolean;
 }) {
-  const [open, setOpen] = useState(
-    () => saved<Record<string, boolean>>(storageKey, {})[group.id] ?? latest,
+  const key = `${storageKey}:work-v2`;
+  const [initialChoice] = useState(
+    () => saved<Record<string, boolean>>(key, {})[group.id],
   );
-  const [workOpen, setWorkOpen] = useState(false);
-  const updateOpen = (value: boolean) => {
+  const choice = useRef(initialChoice);
+  const allowLegacyResult = useRef(!!group.outcome);
+  const result =
+    group.result?.phase === "final_answer" || allowLegacyResult.current
+      ? group.result
+      : undefined;
+  const work = group.items.filter((item) => item.id !== result?.id);
+  const tools = work.filter((item) => ["tool", "output"].includes(item.role));
+  const summary = activitySummary(tools);
+  const problem =
+    group.outcome === "failed" ||
+    group.outcome === "interrupted" ||
+    summary.failed > 0;
+  const [open, setOpen] = useState(
+    () => choice.current ?? (!result || problem),
+  );
+  const hadResult = useRef(!!result);
+  useEffect(() => {
+    const appeared = !!result && !hadResult.current;
+    hadResult.current = !!result;
+    // Do not remove the paragraph someone is reading, or override their choice.
+    if (appeared && following && choice.current === undefined && !problem)
+      setOpen(false);
+  }, [result, following, problem]);
+  const update = (value: boolean) => {
+    choice.current = value;
     setOpen(value);
-    const prior = saved<Record<string, boolean>>(storageKey, {});
     save(
-      storageKey,
+      key,
       Object.fromEntries([
-        ...Object.entries(prior)
+        ...Object.entries(saved<Record<string, boolean>>(key, {}))
           .filter(([id]) => id !== group.id)
           .slice(-499),
         [group.id, value],
       ]),
     );
   };
-  const result = group.result;
-  const earlier = group.items.filter((item) => item.id !== result?.id);
-  const tools = group.items.filter((item) =>
-    ["tool", "output"].includes(item.role),
-  ).length;
-  const label =
-    group.outcome === "failed"
-      ? "Turn failed"
-      : group.outcome === "interrupted"
-        ? "Turn interrupted"
-        : group.outcome === "completed"
-          ? "Response"
-          : "Turn ended";
-  const Icon =
-    group.outcome === "failed"
-      ? CircleAlert
-      : group.outcome === "interrupted"
-        ? CircleStop
-        : Layers;
   return (
     <section
       className="turn-history"
       data-turn={group.items[0].turnId}
-      data-outcome={group.outcome}
+      data-outcome={group.outcome || "active"}
     >
-      <details
-        className="turn-result"
-        open={open}
-        onToggle={(event) => {
-          if (event.target !== event.currentTarget) return;
-          updateOpen(event.currentTarget.open);
-        }}
-      >
-        <summary
-          onClick={(event) => {
-            event.preventDefault();
-            updateOpen(!open);
+      {!!work.length && (
+        <details
+          className="turn-work"
+          data-running={summary.running}
+          data-failed={summary.failed}
+          open={open}
+          onToggle={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              event.currentTarget.open !== open
+            )
+              update(event.currentTarget.open);
           }}
-          aria-label={`${label}: ${result ? resultExcerpt(result.text) : "No final text"}`}
         >
-          {group.outcome !== "completed" && (
-            <Icon size={15} className="turn-outcome-icon" />
-          )}
-          <span className="turn-result-copy">
-            <span className="turn-result-label">
-              {group.outcome !== "completed" && label}
-              {tools > 0 && (
-                <span>
-                  {tools} tool {tools === 1 ? "call" : "calls"}
-                </span>
-              )}
+          <summary
+            aria-label={`Work log: ${summary.label || "Agent updates"}`}
+            onClick={(event) => {
+              event.preventDefault();
+              update(!open);
+            }}
+          >
+            {summary.running ? (
+              <LoaderCircle size={14} className="spin" />
+            ) : (
+              <Wrench size={14} />
+            )}
+            <span className="turn-work-label">
+              {summary.label || "Agent updates"}
             </span>
-            {!open && (
-              <span className="turn-result-excerpt">
-                {result
-                  ? resultExcerpt(result.text)
-                  : "No final text was recorded."}
+            {!!summary.running && (
+              <span className="activity-running">
+                {summary.running} running
               </span>
             )}
-          </span>
-          <ChevronRight size={15} className="turn-expand-icon" />
-        </summary>
-        <div className="turn-result-body">
-          {result ? (
-            open ? (
-              render(result)
-            ) : (
-              <span data-message={result.id} data-lazy-message hidden />
-            )
-          ) : (
-            <p className="notice">No final text was recorded.</p>
-          )}
-          {earlier.length > 0 && (
-            <details
-              className="turn-work"
-              open={workOpen}
-              onToggle={(event) => {
-                if (event.target === event.currentTarget)
-                  setWorkOpen(event.currentTarget.open);
-              }}
-            >
-              <summary>
-                Work before this result <span>{earlier.length} records</span>
-              </summary>
-              {open && workOpen
-                ? messages(earlier, render)
-                : earlier.map((item) => (
-                    <span
-                      key={item.id}
-                      data-message={item.id}
-                      data-lazy-message
-                      hidden
-                    />
-                  ))}
-            </details>
-          )}
-        </div>
-      </details>
+            {!!summary.failed && (
+              <span className="activity-failed">{summary.failed} failed</span>
+            )}
+            <ChevronRight size={14} className="turn-expand-icon" />
+          </summary>
+          <div className="turn-work-body">
+            {work.map((item) =>
+              open ? (
+                ["tool", "output"].includes(item.role) ? (
+                  <ToolCard key={item.id} item={item} />
+                ) : (
+                  <Fragment key={item.id}>{render(item)}</Fragment>
+                )
+              ) : (
+                <span
+                  key={item.id}
+                  data-message={item.id}
+                  data-lazy-message
+                  hidden
+                />
+              ),
+            )}
+          </div>
+        </details>
+      )}
+      {group.outcome === "failed" && (
+        <p className="turn-problem" role="status">
+          <CircleAlert size={14} />
+          Turn failed
+        </p>
+      )}
+      {group.outcome === "interrupted" && (
+        <p className="turn-problem">
+          <CircleStop size={14} />
+          Turn interrupted
+        </p>
+      )}
+      {result && <div className="turn-answer">{render(result)}</div>}
       <ConversationResults
         messages={group.items}
         agentId={agentId}
@@ -176,6 +182,7 @@ export default function TurnHistory({
   renderMessage,
   agentId,
   onJump,
+  following = true,
 }: {
   items: Message[];
   currentTurn?: string;
@@ -184,74 +191,27 @@ export default function TurnHistory({
   renderMessage: (message: Message) => ReactNode;
   agentId?: string;
   onJump: (id: string) => void;
+  following?: boolean;
 }) {
   if (!enabled) return <>{messages(items, renderMessage)}</>;
-  const groups = historyGroups(items, currentTurn);
-  const latest = groups.filter((group) => group.outcome).at(-1)?.id;
   return (
     <>
-      {groups.map((group) => (
-        <StableTurn
-          key={group.id}
-          group={group}
-          latest={group.id === latest}
-          storageKey={storageKey}
-          render={renderMessage}
-          agentId={agentId}
-          onJump={onJump}
-        />
-      ))}
-    </>
-  );
-}
-
-function StableTurn(props: Parameters<typeof Turn>[0]) {
-  // Historical turns start compact. A turn seen live keeps its message nodes
-  // and chronological order until the reader explicitly asks to collapse it.
-  const layoutKey = `${props.storageKey}:layout`;
-  const [compact, setCompact] = useState(
-    () =>
-      !!props.group.outcome &&
-      saved<Record<string, boolean>>(layoutKey, {})[props.group.id] !== false,
-  );
-  useEffect(() => {
-    if (!props.group.items[0].turnId || props.group.items[0].role === "user")
-      return;
-    const prior = saved<Record<string, boolean>>(layoutKey, {});
-    save(
-      layoutKey,
-      Object.fromEntries([
-        ...Object.entries(prior)
-          .filter(([id]) => id !== props.group.id)
-          .slice(-499),
-        [props.group.id, compact],
-      ]),
-    );
-  }, [layoutKey, props.group.id, compact]);
-  if (compact && props.group.outcome) return <Turn {...props} />;
-  return (
-    <>
-      {messages(props.group.items, props.render)}
-      {props.group.items[0].role !== "user" && (
-        <ConversationResults
-          messages={props.group.items}
-          agentId={props.agentId}
-          onJump={props.onJump}
-        />
-      )}
-      {props.group.outcome && (
-        <button
-          className="turn-collapse"
-          onClick={() => {
-            save(props.storageKey, {
-              ...saved(props.storageKey, {}),
-              [props.group.id]: false,
-            });
-            setCompact(true);
-          }}
-        >
-          <Layers size={14} /> Collapse this turn
-        </button>
+      {historyGroups(items, currentTurn).map((group) =>
+        group.items[0].role === "user" || !group.items[0].turnId ? (
+          <Fragment key={group.id}>
+            {messages(group.items, renderMessage)}
+          </Fragment>
+        ) : (
+          <Turn
+            key={group.id}
+            group={group}
+            storageKey={storageKey}
+            render={renderMessage}
+            agentId={agentId}
+            onJump={onJump}
+            following={following}
+          />
+        ),
       )}
     </>
   );

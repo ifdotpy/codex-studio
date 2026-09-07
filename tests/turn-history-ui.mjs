@@ -148,18 +148,22 @@ try {
   await first.waitFor();
   assert.equal(
     await page.locator('[data-turn="three"]').count(),
-    0,
-    "active turn never collapses",
+    1,
+    "active turn has one work log",
   );
-  assert.equal(await first.locator(".turn-result").getAttribute("open"), null);
+  assert.equal(await first.locator(".turn-work").getAttribute("open"), null);
   assert.match(await first.innerText(), /Build checks passed/);
   assert.equal(await page.locator('[data-message="note1"]').isVisible(), false);
   assert.match(
     await page.locator('[data-turn="two"]').innerText(),
     /Turn failed/,
   );
-  assert.equal(fileReads, 0, "result discovery does not load files");
-  await first.getByRole("button", { name: /Results/ }).click();
+  await first
+    .locator('.turn-answer [data-message="result1"]')
+    .waitFor({ state: "visible" });
+  const readsBeforeClick = fileReads;
+  const more = first.getByRole("button", { name: /Show .* more/ });
+  if (await more.count()) await more.click();
   await first
     .getByRole("button", { name: "Official build report", exact: true })
     .click();
@@ -167,7 +171,11 @@ try {
     .getByRole("dialog")
     .getByText(/Verified historical file preview/)
     .waitFor();
-  assert.equal(fileReads, 1);
+  assert.equal(
+    fileReads,
+    readsBeforeClick + 1,
+    "file preview loads on selection",
+  );
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await first.getByRole("button", { name: /Build image/ }).click();
   await page.getByRole("dialog").locator("img").waitFor();
@@ -182,19 +190,19 @@ try {
     .getByRole("button", { name: /Show message/ })
     .click();
   await page.locator('[data-message="patch1"]').waitFor({ state: "visible" });
-  assert.equal(await first.locator(".turn-result").getAttribute("open"), "");
+  assert.equal(await first.locator(".turn-work").getAttribute("open"), "");
   await first.getByRole("button", { name: /HTML preview/ }).click();
   await page.getByRole("dialog").locator("iframe").waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await first.getByRole("button", { name: /Mermaid diagram/ }).click();
   await page.getByRole("dialog").locator(".rich-preview-diagram").waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
-  await first.locator(".turn-result > summary").click();
+  await first.locator(".turn-work > summary").click();
   await page.reload();
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await first.waitFor();
   assert.equal(
-    await first.locator(".turn-result").getAttribute("open"),
+    await first.locator(".turn-work").getAttribute("open"),
     null,
     "collapse survives reload",
   );
@@ -209,7 +217,6 @@ try {
     "no viewport overflow",
   );
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await first.getByRole("button", { name: /Results/ }).click();
   await first
     .getByRole("button", { name: "Official build report", exact: true })
     .click();
@@ -234,6 +241,17 @@ try {
       evidence: directory,
     }),
   );
+} catch (error) {
+  console.error(
+    "Evidence:",
+    directory,
+    await page
+      ?.getByRole("dialog")
+      .innerText()
+      .catch(() => ""),
+  );
+  await page?.screenshot({ path: join(directory, "failure.png") });
+  throw error;
 } finally {
   if (page) await page.unrouteAll({ behavior: "wait" });
   if (browser) await browser.close();

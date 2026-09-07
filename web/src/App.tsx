@@ -1084,53 +1084,82 @@ export default function App() {
               onClick={() => setTeamOpen(!teamOpen)}
             >
               Team
+              {workers.length > 0 && (
+                <span className="team-button-count">
+                  {workers.filter((worker) => busy.has(worker.status)).length}/
+                  {workers.length}
+                </span>
+              )}
             </Button>
           )}
-          {!mobileClient &&
-            view === "chat" &&
-            agent?.source === "managed" &&
-            !agent.empty && (
-              <div
-                className="conversation-quick-actions"
-                aria-label="Agent actions"
-              >
-                <Menu position="bottom-end" withinPortal>
-                  <Menu.Target>
-                    <ActionIcon
-                      aria-label="Chat actions"
-                      title="Chat actions"
-                      variant="subtle"
+          {!mobileClient && view === "chat" && agent?.source === "managed" && (
+            <div
+              className="conversation-quick-actions"
+              aria-label="Agent actions"
+            >
+              <Menu position="bottom-end" withinPortal>
+                <Menu.Target>
+                  <ActionIcon
+                    aria-label="Chat actions"
+                    title="Chat actions"
+                    variant="subtle"
+                  >
+                    <MoreHorizontal size={18} />
+                  </ActionIcon>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  {(
+                    [
+                      ["plan", "Plan", BookOpen],
+                      ["rules", "Rules", Clock3],
+                    ] as const
+                  ).map(([section, label, Icon]) => (
+                    <Menu.Item
+                      key={section}
+                      data-workspace-section={section}
+                      leftSection={<Icon size={14} />}
+                      onClick={() => {
+                        setWorkspaceSection(section);
+                        setWorkspaceOpen(true);
+                      }}
                     >
-                      <MoreHorizontal size={18} />
-                    </ActionIcon>
-                  </Menu.Target>
-                  <Menu.Dropdown>
-                    {(
-                      [
-                        ["compact", "Compact", Minimize2],
-                        ["review", "Review", ShieldCheck],
-                      ] as const
-                    ).map(([action, label, Icon]) => (
-                      <Menu.Item
-                        key={action}
-                        data-action={action}
-                        disabled={
-                          busy.has(agent.status) ||
-                          !!agent.inFlight ||
-                          !agent.threadId
-                        }
-                        leftSection={<Icon size={14} />}
-                        onClick={() => {
-                          void run(() =>
-                            api("/api/action", { id: agent.id, action }),
-                          );
-                        }}
-                      >
-                        {label}
-                      </Menu.Item>
-                    ))}
-                  </Menu.Dropdown>
-                </Menu>
+                      {label}
+                    </Menu.Item>
+                  ))}
+                  <Menu.Divider />
+                  {(
+                    [
+                      ["compact", "Compact", Minimize2],
+                      ["review", "Review", ShieldCheck],
+                    ] as const
+                  ).map(([action, label, Icon]) => (
+                    <Menu.Item
+                      key={action}
+                      data-action={action}
+                      disabled={
+                        busy.has(agent.status) ||
+                        !!agent.inFlight ||
+                        !agent.threadId
+                      }
+                      leftSection={<Icon size={14} />}
+                      onClick={() => {
+                        void run(() =>
+                          api("/api/action", { id: agent.id, action }),
+                        );
+                      }}
+                    >
+                      {label}
+                    </Menu.Item>
+                  ))}
+                </Menu.Dropdown>
+              </Menu>
+              {(!!agent.inFlight ||
+                team.some(
+                  (member) =>
+                    busy.has(member.status) ||
+                    member.status === "queued" ||
+                    member.inFlight,
+                )) && (
                 <Button
                   data-action="stop-team"
                   size="compact-xs"
@@ -1145,8 +1174,9 @@ export default function App() {
                 >
                   Stop team
                 </Button>
-              </div>
-            )}
+              )}
+            </div>
+          )}
         </header>
         {!mobileClient && (
           <nav className="workspace-shortcuts" aria-label="Workspace shortcuts">
@@ -1170,8 +1200,6 @@ export default function App() {
                 ["inbox", "Inbox", Inbox],
                 ["changes", "Changes", FileDiff],
                 ["search", "Search", Search],
-                ["plan", "Plan", BookOpen],
-                ["rules", "Rules", Clock3],
               ] as const
             ).map(([section, label, Icon]) => (
               <Button

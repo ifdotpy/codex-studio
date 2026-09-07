@@ -28,6 +28,12 @@ export function historyGroups(
   }
   for (const group of groups) {
     const first = group.items[0];
+    // An explicit final answer can stream before the terminal event arrives.
+    group.result = group.items
+      .filter(
+        (item) => item.role === "assistant" && item.phase === "final_answer",
+      )
+      .at(-1);
     if (
       !first.turnId ||
       first.turnId === currentTurn ||
@@ -62,15 +68,4 @@ export function historyGroups(
       answers.at(-1);
   }
   return groups;
-}
-
-export function resultExcerpt(text: string) {
-  const paragraph = text.trim().split(/\n\s*\n/)[0] || "";
-  const plain = paragraph
-    .replace(/!?(?:\[([^\]]+)\])\([^)]*\)/g, "$1")
-    .replace(/^[#>*\s-]+/, "")
-    .replace(/[`*_]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return plain.length > 240 ? plain.slice(0, 240).trimEnd() + "…" : plain;
 }

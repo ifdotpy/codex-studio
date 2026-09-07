@@ -82,14 +82,14 @@ try {
   const fileCard = page
     .locator(".tool-card")
     .filter({ has: page.locator(".tool-title", { hasText: "config.ts" }) });
-  const group = page.locator(".tool-group").last();
+  const group = page.locator(".turn-work").last();
   await group.waitFor();
   assert.equal(
     await group.getAttribute("open"),
-    null,
-    "running calls start collapsed",
+    "",
+    "active work log shows compact tool rows",
   );
-  await group.locator(":scope > summary").click();
+
   await fileCard.locator(":scope > summary").click();
   await fileCard
     .locator(".tool-title")
@@ -259,7 +259,7 @@ try {
   );
   assert.equal(await group.getAttribute("open"), null);
   assert.ok(
-    (await group.boundingBox()).height <= 30,
+    (await group.boundingBox()).height <= 34,
     "collapsed group stays one line",
   );
   event("item/completed", {
@@ -281,6 +281,7 @@ try {
     type: "agentMessage",
     text: "I read another-file.ts and SKILL.md.",
   });
+  await group.locator(":scope > summary").click();
   await page
     .getByText("I read another-file.ts and SKILL.md.", { exact: true })
     .waitFor();
@@ -289,10 +290,10 @@ try {
     10,
     "assistant prose does not invent calls",
   );
-  await page.locator(".tool-group > summary").first().scrollIntoViewIfNeeded();
+  await page.locator(".turn-work > summary").first().scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(root, "read-activity-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator(".tool-group").first().scrollIntoViewIfNeeded();
+  await page.locator(".turn-work").first().scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(root, "read-activity-mobile.png") });
   assert.equal(
     await page.evaluate(() => document.body.scrollWidth),

@@ -55,8 +55,12 @@ try {
       process.env.CHROME_BIN ||
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   });
+  const initialItems = structuredClone(items);
+  const initialAgent = structuredClone(agent);
   const records = [];
   for (const width of [1440, 390]) {
+    items = structuredClone(initialItems);
+    agent = structuredClone(initialAgent);
     const page = await browser.newPage({ viewport: { width, height: 960 } });
     page.setDefaultTimeout(10000);
     const errors = [];
@@ -79,6 +83,10 @@ try {
             s.onmessage?.({ data: JSON.stringify(data) });
       };
     });
+    // These controlled snapshots use the HTTP path, not fixture replication.
+    await page.route("**/api/sync/**", (r) =>
+      r.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
+    );
     await page.route("**/api/state", (r) =>
       r.fulfill({
         json: {

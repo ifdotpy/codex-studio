@@ -129,14 +129,12 @@ try {
       measurement.responseToContent < 1800,
       "Large history becomes readable without a multi-second render",
     );
-    await page.locator('[data-turn="turn-0"] > details > summary').click();
-    await page.locator('[data-message="result-0"]').waitFor();
+    await page
+      .locator('[data-message="result-0"]')
+      .waitFor({ state: "visible" });
     await page.locator('[data-turn="turn-0"] .turn-work > summary').click();
     await page.locator('[data-message="text-0-0"]').waitFor();
-    await page
-      .locator('[data-turn="turn-0"] .tool-group > summary')
-      .first()
-      .click();
+
     await page.locator('[data-message="tool-0-0"] > summary').click();
     await page.locator('[data-message="tool-0-0"] .tool-output').waitFor();
     assert.match(
