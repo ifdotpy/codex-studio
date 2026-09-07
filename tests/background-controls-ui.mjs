@@ -117,7 +117,11 @@ try {
         mime: "text/plain",
         base64: Buffer.from("full saved log\n").toString("base64"),
       };
-    else if (path === "/api/monitor/input" && failInput) {
+    else if (path === "/api/monitor/cancel") {
+      monitor.cancelRequested = true;
+      monitor.error = "Stop requested; waiting for the command to exit";
+      value = monitor;
+    } else if (path === "/api/monitor/input" && failInput) {
       failInput = false;
       return route.fulfill({
         status: 409,
@@ -191,6 +195,24 @@ try {
     .waitFor();
   assert.equal(writes.at(-1).body.closeStdin, true);
   assert.equal(await input.isDisabled(), true);
+  await drawer
+    .getByRole("button", { name: "Cancel monitor", exact: true })
+    .click();
+  const stopRequested = drawer.getByRole("button", {
+    name: "Stop requested",
+    exact: true,
+  });
+  await stopRequested.waitFor();
+  assert.equal(await stopRequested.isDisabled(), true);
+  assert.equal(
+    await drawer.getByText("Waiting for exit", { exact: true }).count(),
+    2,
+  );
+  assert.equal(
+    monitor.status,
+    "running",
+    "Cancellation preserves the active process",
+  );
   await drawer.getByRole("button", { name: "Tasks", exact: true }).click();
   await drawer.locator('[data-task="native-task"]').click();
   await drawer
@@ -215,6 +237,35 @@ try {
     writes.some((w) => w.path === "/api/monitor/input" && w.body.id === "9042"),
     false,
   );
+  agent.status = "starting";
+  agent.startAttempt = {
+    prepareError: "Thread preparation acknowledgement pending",
+  };
+  agent.error = agent.startAttempt.prepareError;
+  const failedWorker = {
+    ...agent,
+    id: "pending-review",
+    parentId: agent.id,
+    isLead: false,
+    name: "pending-review",
+    role: "reviewer",
+    status: "failed",
+    error: "thread/resume response timed out; outcome unknown",
+  };
+  state.threads.push(failedWorker);
+  state.runtime.agents.push(failedWorker);
+  await page.setViewportSize({ width: 1440, height: 980 });
+  await page.reload();
+  await page.locator('[data-chat="lead"]').click();
+  await page.locator('.agent-phase[data-phase="acknowledgement"]').waitFor();
+  await page.locator('[data-worker="pending-review"] .worker-error').waitFor();
+  assert.equal(
+    await page
+      .locator('[data-worker="pending-review"] .worker-error')
+      .innerText(),
+    failedWorker.error,
+  );
+  await page.screenshot({ path: join(root, "harness-status.png") });
   assert.deepEqual(errors, []);
   console.log(`PASS background controls browser contract. Evidence: ${root}`);
 } finally {

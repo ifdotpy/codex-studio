@@ -69,6 +69,9 @@ export interface BackgroundTask {
   timeout_ms?: number;
   interactive?: boolean;
   stdinClosed?: boolean;
+  stdinCloseRequested?: string;
+  stdinError?: string;
+  cancelRequested?: boolean;
   exitCode?: number | null;
   arguments?: string;
   tail?: string;

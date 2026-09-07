@@ -243,7 +243,7 @@ class WorkspaceRaces(unittest.TestCase):
 
     def test_declined_rule_command_releases_check_and_allows_next_due_tick(self):
         t = self.case
-        lead = t.lead()
+        lead = t.agent_update(t.lead(), yoloMode=False)
         rule = t.runtime.rules(
             {"agent": lead["id"], "name": "Approval", "command": "fixture-rule-command"}
         )

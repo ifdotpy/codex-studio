@@ -198,6 +198,18 @@ class ResponseTimeout(RuntimeError):
     """The request was sent, but its acknowledgement has not arrived."""
 
 
+class PreparationPending(ResponseTimeout):
+    def __init__(self, future):
+        super().__init__("Thread preparation acknowledgement pending; no turn input has been submitted")
+        self.future = future
+
+
+class SubmissionUnknown(ResponseTimeout):
+    def __init__(self, submitted, error):
+        super().__init__(f"{submitted[1]} submission failed; outcome unknown: {error}")
+        self.submitted = submitted
+
+
 class AppServer:
     def __init__(self, root, notification, request, died, *, home=None, isolated=False):
         self.notification, self.request, self.died = notification, request, died
@@ -246,10 +258,14 @@ class AppServer:
             self.pending[key] = future
         try:
             self.write({"id": key, "method": method, "params": params})
-        except Exception:
-            with self.lock:
-                self.pending.pop(key, None)
-            raise
+        except Exception as error:
+            if isinstance(error, RuntimeError) and str(error) == "Codex app-server is offline":
+                with self.lock:
+                    self.pending.pop(key, None)
+                raise
+            # A pipe write can fail after sending the request. Keep its exact
+            # future so a late response or disconnect can settle the outcome.
+            raise SubmissionUnknown((key, method, future), error) from error
         return key, method, future
 
     def wait(self, submitted, timeout=60):
@@ -305,7 +321,7 @@ class AppServer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(5)
-        self.reader.join(2)
+        self.reader.join()
         self.log.close()
 
 
@@ -319,6 +335,8 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
         self.ui_revisions = {}
         self.start_lock = threading.Lock()
         self.prepare_locks = {}
+        self.preparations = {}
+        self.monitor_threads = set()
         self.offline = False
         self.changed = threading.Event()
         self.closed = False
@@ -563,6 +581,10 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                         continue
                     r["status"] = "expired"
                     self.put(db, "requests", r)
+
+            for operation in self.preparations.values():
+                if operation["accountKey"] == account_key and not operation["future"].done():
+                    operation["future"].set_exception(RuntimeError("Codex disconnected during thread preparation; outcome unknown"))
 
     def item(self, db, agent, key, role, text, title=None, inputs=None, **metadata):
         key = agent + ":" + key
@@ -962,6 +984,11 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         execution_fields = {"model", "effort", "fast_mode"}
+        with self.lock:
+            pending = self.preparations.get(key)
+            if pending and not pending["future"].done() and set(data).intersection(
+                    execution_fields | {"cwd", "yolo_mode", "dangerously_skip_account_rules"}):
+                raise ValueError("Wait for thread preparation before changing execution settings")
         defaults_only = set(data) <= {"id", "worker_defaults"} and "worker_defaults" in data
         with self.lock, self.db() as db:
             target = self.agent(key, db)
@@ -977,6 +1004,9 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             a = self.agent(key, db)
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")
+            pending = self.preparations.get(key)
+            if pending and not pending["future"].done() and not defaults_only:
+                raise ValueError("Wait for thread preparation before changing execution settings")
             if a.get("accountKey", "default") != target.get("accountKey", "default"):
                 raise ValueError("The account changed. Select the model again")
             if not defaults_only and (a.get("inFlight") or a["status"] in {"running", "starting", "approval"}):
@@ -1165,40 +1195,67 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             )
             # Submission under the epoch lock prevents stop from overtaking steer.
             server = self.connect(a.get("accountKey", "default"))
-            submitted = server.submit(
-                "turn/steer",
-                {
-                    "threadId": a["threadId"],
-                    "expectedTurnId": a["turnId"],
-                    "clientUserMessageId": message_id,
-                    "input": inputs,
-                },
-            )
+            operation = {"agent": key, "epoch": a["epoch"], "accountKey": a.get("accountKey", "default"),
+                         "connectionId": self.connection_ids[a.get("accountKey", "default")],
+                         "threadId": a["threadId"], "turnId": a["turnId"]}
+            meta["native"] = operation
+            db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?", (json.dumps(meta), message_id))
+            self.item(db, key, message_id, "user", text, turnId=a["turnId"], delivery="steer",
+                      assets=[self.asset_view(self.asset_record(v)) for v in assets])
+            # Keep the exact receipt even if writing the request loses its acknowledgement.
+            db.commit()
+            try:
+                submitted = self.submit_reserved(server,
+                    "turn/steer", {"threadId": a["threadId"], "expectedTurnId": a["turnId"],
+                                   "clientUserMessageId": message_id, "input": inputs})
+            except Exception as error:
+                db.execute("UPDATE runtime_events SET status='uncertain',error=? WHERE id=?",
+                           (str(error), message_id))
+                db.commit()
+                raise
         try:
-            server.wait(submitted)
-            with self.lock, self.db() as db:
-                db.execute(
-                    "UPDATE runtime_events SET status='delivered' WHERE id=?",
-                    (message_id,),
-                )
-                self.item(
-                    db,
-                    key,
-                    message_id,
-                    "user",
-                    text,
-                    turnId=a["turnId"],
-                    delivery="steer",
-                    assets=[self.asset_view(self.asset_record(v)) for v in assets],
-                )
-            return {"id": message_id, "status": "delivered"}
+            result = server.wait(submitted)
+            self.steer_accepted(message_id, operation, result)
+            return self.delivery_receipt(message_id)
+        except ResponseTimeout as error:
+            self.steer_error(message_id, operation, error, uncertain=True)
+            server.on_result(submitted, lambda future: self.pool.submit(
+                self.steer_result, message_id, operation, future) if not self.closed else None)
+            return self.delivery_receipt(message_id)
         except Exception as error:
-            with self.lock, self.db() as db:
-                db.execute(
-                    "UPDATE runtime_events SET status='uncertain',error=? WHERE id=?",
-                    (str(error), message_id),
-                )
+            self.steer_error(message_id, operation, error, uncertain="outcome unknown" in str(error))
             raise
+
+    def delivery_receipt(self, message_id):
+        with self.db() as db:
+            event = db.execute("SELECT status,error FROM runtime_events WHERE id=?", (message_id,)).fetchone()
+            return {"id": message_id, "status": event["status"], "error": event["error"]}
+
+    def steer_accepted(self, message_id, operation, result):
+        if result.get("turnId") != operation["turnId"]:
+            raise RuntimeError("Steer returned a different turn identity; outcome unknown")
+        with self.lock, self.db() as db:
+            a = self.agent(operation["agent"], db)
+            if not self.operation_current(a, operation, epoch=False) or a["threadId"] != operation["threadId"]:
+                return
+            db.execute("UPDATE runtime_events SET status='delivered',error=NULL WHERE id=? AND agent=? "
+                       "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
+                       (message_id, a["id"], operation["epoch"], operation["turnId"]))
+
+    def steer_error(self, message_id, operation, error, *, uncertain):
+        with self.lock, self.db() as db:
+            a = self.agent(operation["agent"], db)
+            if not self.operation_current(a, operation, epoch=False):
+                return
+            db.execute("UPDATE runtime_events SET status=?,error=? WHERE id=? AND agent=? AND epoch=? "
+                       "AND status IN ('dispatching','uncertain')",
+                       ("uncertain" if uncertain else "failed", str(error), message_id, a["id"], operation["epoch"]))
+
+    def steer_result(self, message_id, operation, future):
+        try:
+            self.steer_accepted(message_id, operation, future.result())
+        except Exception as error:
+            self.steer_error(message_id, operation, error, uncertain="outcome unknown" in str(error))
 
     @staticmethod
     def thread_config():
@@ -1274,11 +1331,52 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
         with self.lock:
             guard = self.prepare_locks.setdefault(a["id"], threading.Lock())
         with guard:
-            return self.prepare_locked(self.agent(a["id"]))
+            value = self.prepare_locked(self.agent(a["id"]))
+        if not isinstance(value, concurrent.futures.Future):
+            return value
+        try:
+            return value.result(getattr(self, "preparation_wait_seconds", 60))
+        except concurrent.futures.TimeoutError:
+            raise PreparationPending(value) from None
+
+    def defer_preparation(self, error, continuation, failure):
+        def ready(future):
+            def run():
+                try:
+                    future.result()
+                    continuation()
+                except Exception as cause:
+                    failure(cause)
+            if not self.closed:
+                self.pool.submit(run)
+        error.future.add_done_callback(ready)
+
+    @staticmethod
+    def submit_reserved(server, method, params):
+        try:
+            return server.submit(method, params)
+        except SubmissionUnknown as error:
+            return error.submitted
+        except OSError as error:
+            raise RuntimeError(f"{method} submission failed; outcome unknown: {error}") from error
+
+    def operation_current(self, a, operation, *, epoch=True):
+        return (not self.closed and not a.get("deletedAt")
+                and a.get("accountKey", "default") == operation["accountKey"]
+                and self.connection_current(operation["accountKey"], operation["connectionId"])
+                and (not epoch or a["epoch"] == operation["epoch"]))
+
+    @staticmethod
+    def preparation_settings(a):
+        return {key: a.get(key) for key in ("model", "effort", "nativeEffort", "fastMode", "yoloMode",
+                "profileInstructions", "role", "dangerouslySkipAccountRules")}
 
     def prepare_locked(self, a):
         self.check_account_project(a)
         server = self.connect(a.get("accountKey", "default"))
+        previous = self.preparations.get(a["id"])
+        if previous and not previous["future"].done():
+            return previous["future"]
         if a["worktree"] and not a["worktreeReady"]:
             repo = subprocess.check_output(["git", "-C", a["cwd"], "rev-parse", "--show-toplevel"], text=True).strip()
             relative_project = Path(a["cwd"]).resolve().relative_to(Path(repo).resolve())
@@ -1310,21 +1408,67 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 method = "thread/start"
                 params["dynamicTools"] = TOOLS
             self.check_account_project(a)
-            result = server.call(method, params)
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
-                latest.update(threadId=result["thread"]["id"], model=result.get("model", a["model"]),
-                              sandbox=result.get("sandbox"), approvalPolicy=result.get("approvalPolicy"),
-                              profile=result.get("activePermissionProfile"))
+                if latest["epoch"] != a["epoch"] or latest.get("deletedAt"):
+                    raise ValueError("Agent changed before thread preparation")
+                operation = {"id": uid(), "agent": a["id"], "epoch": a["epoch"],
+                             "accountKey": a.get("accountKey", "default"),
+                             "connectionId": self.connection_ids[a.get("accountKey", "default")],
+                             "threadId": a["threadId"], "cwd": a["cwd"], "method": method,
+                             "settings": self.preparation_settings(a),
+                             "future": concurrent.futures.Future()}
+                latest["prepareAttempt"] = operation["id"]
                 self.put(db, "agents", latest)
-                a = latest
-            self.loaded.add(a["id"])
+                self.preparations[a["id"]] = operation
+                db.commit()
+                try:
+                    submitted = self.submit_reserved(server, method, params)
+                except Exception as error:
+                    if "outcome unknown" in str(error):
+                        raise PreparationPending(operation["future"]) from error
+                    operation["future"].set_exception(error)
+                    raise
+            server.on_result(submitted, lambda future: self.prepared_result(operation, future))
+            return operation["future"]
         return a
+
+    def prepared_result(self, operation, future):
+        completion = operation["future"]
+        if completion.done():
+            return
+        try:
+            result = future.result()
+            thread_id = result.get("thread", {}).get("id")
+            if not isinstance(thread_id, str) or not thread_id:
+                raise RuntimeError("Thread preparation returned no thread identity; outcome unknown")
+            if operation["threadId"] and operation["threadId"] != thread_id:
+                raise RuntimeError("Thread resume returned a different thread identity; outcome unknown")
+            with self.lock, self.db() as db:
+                a = self.agent(operation["agent"], db)
+                if (not self.operation_current(a, operation) or a["cwd"] != operation["cwd"]
+                        or self.preparation_settings(a) != operation["settings"]
+                        or a.get("prepareAttempt") != operation["id"] or a["threadId"] != operation["threadId"]):
+                    raise ValueError("Thread preparation belongs to an earlier agent state")
+                a.update(threadId=thread_id, model=result.get("model", a["model"]),
+                         sandbox=result.get("sandbox"), approvalPolicy=result.get("approvalPolicy"),
+                         profile=result.get("activePermissionProfile"))
+                self.put(db, "agents", a)
+                self.loaded.add(a["id"])
+            with self.lock:
+                if not completion.done():
+                    completion.set_result(a)
+        except Exception as error:
+            with self.lock:
+                if not completion.done():
+                    completion.set_exception(error)
 
     def schedule(self):
         while not self.closed:
             self.changed.wait(1)
             self.changed.clear()
+            if self.closed:
+                break
             try:
                 self.rules_tick()
                 self.dispatch()
@@ -1384,6 +1528,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                     )
                 a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
                          startAttempt={"id": uid(), "epoch": a["epoch"],
+                                       "accountKey": a.get("accountKey", "default"),
                                        "events": [r["id"] for r in rows], "submitted": False})
                 self.put(db, "agents", a)
                 active.append(a)
@@ -1393,6 +1538,12 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
         epoch = a["epoch"]
         attempt_id = a["startAttempt"]["id"]
         try:
+            with self.lock:
+                current = self.agent(a["id"])
+                if ((current.get("startAttempt") or {}).get("id") != attempt_id
+                        or current["epoch"] != epoch or not current["autoWake"] or current.get("deletedAt")):
+                    self.start_error(a["id"], attempt_id, ValueError("Agent stopped before turn input submission"))
+                    return
             a = self.prepare(a)
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
@@ -1403,6 +1554,9 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                     self.put(db, "agents", current)
                     self.changed.set()
                     return
+                if current.get("error") == current["startAttempt"].get("prepareError"):
+                    current["error"] = None
+                    self.put(db, "agents", current)
                 for r in rows:
                     db.execute(
                         "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
@@ -1482,9 +1636,12 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                     return
                 self.assert_workspace_available(db, current)
                 current["startAttempt"]["submitted"] = True
+                current["startAttempt"].update(accountKey=a.get("accountKey", "default"),
+                    connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
                 self.put(db, "agents", current)
                 dispatch_attempt = dict(current["startAttempt"])
-                submitted = server.submit("turn/start", params)
+                db.commit()
+                submitted = self.submit_reserved(server, "turn/start", params)
             try:
                 result = server.wait(submitted)
             except ResponseTimeout as error:
@@ -1495,6 +1652,18 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 ) if not self.closed else None)
                 return
             self.start_accepted(a["id"], dispatch_attempt, result)
+        except PreparationPending as error:
+            with self.lock, self.db() as db:
+                current = self.agent(a["id"], db)
+                if (current.get("startAttempt") or {}).get("id") != attempt_id:
+                    return
+                current["startAttempt"]["prepareError"] = str(error)
+                if current["epoch"] == epoch and current["autoWake"]:
+                    current["error"] = str(error)
+                self.put(db, "agents", current)
+            self.defer_preparation(error, lambda: self.start(a, rows),
+                lambda cause: self.start_error(a["id"], attempt_id, cause,
+                                              unknown="outcome unknown" in str(cause)))
         except Exception as error:
             self.start_error(a["id"], attempt_id, error, unknown="outcome unknown" in str(error))
 
@@ -1518,6 +1687,8 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             db.execute("UPDATE runtime_events SET status='delivered', turn_id=?, error=NULL "
                        "WHERE id=? AND agent=? AND epoch=? AND status IN ('dispatching','uncertain')",
                        (turn, event_id, a["id"], attempt["epoch"]))
+        if not attempt["events"]:
+            return True
         item_id = a["id"] + ":" + attempt["events"][0]
         stored = db.execute("SELECT record FROM runtime_items WHERE id=?", (item_id,)).fetchone()
         if stored:
@@ -1529,6 +1700,8 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
     def start_accepted(self, agent_id, attempt, result):
         with self.lock, self.db() as db:
             a = self.agent(agent_id, db)
+            if not self.operation_current(a, attempt, epoch=False) or a["threadId"] != attempt["threadId"]:
+                return
             turn = result["turn"]["id"]
             if not self.bind_start(db, a, attempt["id"], turn, historical=attempt):
                 return
@@ -1557,10 +1730,13 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             if (attempt.get("id") != attempt_id or attempt.get("turnId")
                     or attempt.get("observedTurnId")):
                 return
+            if (attempt.get("accountKey", a.get("accountKey", "default")) != a.get("accountKey", "default")
+                    or (attempt.get("connectionId") and not self.connection_current(attempt["accountKey"], attempt["connectionId"]))):
+                return
             # Stop/disconnect owns its visible state. Unknown requests retain
             # their reservation until acceptance, rejection, or disconnection.
             current_epoch = a["epoch"] == attempt["epoch"]
-            if unknown and attempt.get("submitted"):
+            if unknown:
                 if current_epoch and a["autoWake"]:
                     attempt["responseError"] = str(error)
                     a.update(status="starting", inFlight=True, error=str(error))
@@ -1568,11 +1744,13 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 a["inFlight"] = False
                 if current_epoch and a["autoWake"]:
                     a.update(status="failed", error=str(error))
-                    self.parent_event(db, a, "start-failed:" + attempt["events"][0], str(error))
+                    self.parent_event(db, a, "start-failed:" + (attempt["events"][0] if attempt["events"] else attempt["id"]), str(error))
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
-                db.execute("UPDATE runtime_events SET status='uncertain', error=? WHERE id=? "
-                           "AND status IN ('pending','reserved','dispatching')", (str(error), event_id))
+                status = "uncertain" if attempt.get("submitted") else (
+                    "reserved" if unknown else "failed" if current_epoch else "cancelled")
+                db.execute("UPDATE runtime_events SET status=?, error=? WHERE id=? "
+                           "AND status IN ('pending','reserved','dispatching')", (status, str(error), event_id))
         self.changed.set()
 
     def parent_event(self, db, a, event_id, text):
@@ -1681,6 +1859,16 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 return
             if a.get("deletedAt"):
                 return
+            item = p.get("item") or {}
+            if method in {"item/started", "item/completed"} and item.get("type") == "userMessage" and item.get("clientId"):
+                receipt = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (item["clientId"],)).fetchone()
+                operation = json.loads(receipt[0]).get("native") if receipt else None
+                if (operation and operation["agent"] == a["id"]
+                        and self.operation_current(a, operation, epoch=False)
+                        and operation["threadId"] == tid and operation["turnId"] == p.get("turnId")):
+                    db.execute("UPDATE runtime_events SET status='delivered',error=NULL WHERE id=? AND agent=? "
+                               "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
+                               (item["clientId"], a["id"], operation["epoch"], operation["turnId"]))
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
             self.analytics_safe(db, self.analytics_event, a, method, p)
             self.record_task(db, a, method, p, stale)
@@ -1731,7 +1919,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 kind = item.get("type")
                 started = method == "item/started"
                 attempt = a.get("startAttempt") or {}
-                if (kind == "userMessage" and attempt.get("submitted")
+                if (kind == "userMessage" and attempt.get("submitted") and attempt.get("events")
                         and item.get("clientId") == attempt["events"][0]
                         and (p.get("turnId") or a.get("turnId"))):
                     self.bind_start(db, a, attempt["id"], p.get("turnId") or a["turnId"])
@@ -2446,7 +2634,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if row:
                 previous = json.loads(row[0])
-                if (previous["agent"], previous["command"], previous["timeout_ms"]) != (agent_id, command, timeout):
+                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive"))) != (agent_id, command, timeout, bool(data.get("interactive"))):
                     raise ValueError("This monitor request id has different content")
                 return previous
             a = self.agent(agent_id, db)
@@ -2494,10 +2682,25 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 self.put(db, "requests", {"id": uid(), "method": "monitor/approve", "agent": agent_id,
                     "params": {"monitorId": key, "command": command, "cwd": a["cwd"]}, "status": "pending"})
         if approved:
-            threading.Thread(target=self.run_monitor, args=(key,), daemon=True).start()
+            self.launch_monitor(key)
         return m
 
+    def launch_monitor(self, key):
+        def run():
+            try:
+                self.run_monitor(key)
+            finally:
+                with self.lock:
+                    self.monitor_threads.discard(threading.current_thread())
+        with self.lock:
+            if self.closed:
+                return
+            worker = threading.Thread(target=run, daemon=True)
+            self.monitor_threads.add(worker)
+            worker.start()
+
     def run_monitor(self, key):
+        operation = None
         try:
             with self.lock, self.db() as db:
                 m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
@@ -2532,13 +2735,59 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                     if not row or json.loads(row[0])["status"] != "active":
                         raise ValueError("This rule was paused or deleted")
                 # Stop cannot overtake command submission on the same connection.
-                submitted = server.submit("command/exec", params)
-                current_monitor.update(status="running", cwd=a["cwd"])
+                operation = {"agent": a["id"], "epoch": m["epoch"], "accountKey": a.get("accountKey", "default"),
+                             "connectionId": self.connection_ids[a.get("accountKey", "default")]}
+                current_monitor.update(status="running", cwd=a["cwd"], error=None, operation=operation)
                 self.put(db, "monitors", current_monitor)
-            result = server.wait(submitted, timeout=m["timeout_ms"] / 1000 + 60)
-            self.finish_monitor(key, result.get("exitCode"), None)
+                db.commit()
+                submitted = self.submit_reserved(server, "command/exec", params)
+            try:
+                result = server.wait(submitted, timeout=m["timeout_ms"] / 1000 + 60)
+            except ResponseTimeout as error:
+                self.monitor_unknown(key, operation, str(error))
+                server.on_result(submitted, lambda future: self.pool.submit(
+                    self.monitor_result, key, operation, future) if not self.closed else None)
+                return
+            self.monitor_accepted(key, operation, result)
+        except PreparationPending as error:
+            self.defer_preparation(error, lambda: self.run_monitor(key),
+                lambda cause: self.finish_monitor(key, None, str(cause)))
         except Exception as error:
-            self.finish_monitor(key, None, str(error))
+            if operation and "outcome unknown" in str(error):
+                self.monitor_unknown(key, operation, str(error))
+            else:
+                self.finish_monitor(key, None, str(error))
+
+    def monitor_unknown(self, key, operation, error):
+        with self.lock, self.db() as db:
+            if self.closed:
+                return
+            m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
+            a = self.agent(m["agent"], db)
+            if m["status"] == "running" and self.operation_current(a, operation, epoch=False):
+                m["error"] = error
+                self.put(db, "monitors", m)
+
+    def monitor_accepted(self, key, operation, result):
+        code = result.get("exitCode")
+        if not isinstance(code, int) or isinstance(code, bool):
+            self.monitor_unknown(key, operation, "Command returned no exit code; outcome unknown")
+            return
+        with self.lock:
+            if self.closed or not self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
+                return
+            self.finish_monitor(key, code, None)
+
+    def monitor_result(self, key, operation, future):
+        try:
+            self.monitor_accepted(key, operation, future.result())
+        except Exception as error:
+            if "outcome unknown" in str(error):
+                self.monitor_unknown(key, operation, str(error))
+            else:
+                with self.lock:
+                    if not self.closed and self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
+                        self.finish_monitor(key, None, str(error))
 
     def output(self, p, account_key="default", connection_id=None):
         key = p.get("processId")
@@ -2564,16 +2813,23 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             self.put(db, "monitors", m)
 
     def finish_monitor(self, key, code, error):
-        with self.lock, self.db() as db:
+        with self.lock:
+            if self.closed:
+                return
+            self._finish_monitor(key, code, error)
+
+    def _finish_monitor(self, key, code, error):
+        with self.db() as db:
             m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
             if m["status"] in {"cancelled", "lost", "completed", "failed"}:
                 return
-            m.update(status="failed" if error or code != 0 else "completed", exitCode=code, error=error, finished=time.time())
+            cancelled = bool(m.get("cancelRequested"))
+            m.update(status="cancelled" if cancelled else "failed" if error or code != 0 else "completed", exitCode=code, error=error, finished=time.time())
             self.put(db, "monitors", m)
             a = self.agent(m["agent"], db)
             if m.get("ruleId"):
-                self.rule_finished(m["ruleId"], code, error, m["tail"], db)
-            elif a["epoch"] == m["epoch"]:
+                self.rule_finished(m["ruleId"], code, "Monitor cancelled" if cancelled else error, m["tail"], db)
+            elif not cancelled and a["epoch"] == m["epoch"]:
                 self.enqueue(db, a, "monitor_exit", json.dumps({k: m.get(k) for k in
                     ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")}), "monitor:" + key)
 
@@ -2588,8 +2844,13 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             running = m["status"] == "running"
             if m["status"] not in {"running", "starting", "approval"}:
                 return {"id": key, "status": m["status"]}
-            m.update(status="cancelled", finished=time.time())
-            if m.get("ruleId"):
+            if running and m.get("cancelRequested"):
+                return {"id": key, "status": "running", "cancelRequested": True}
+            if running:
+                m.update(cancelRequested=True)
+            else:
+                m.update(status="cancelled", finished=time.time())
+            if not running and m.get("ruleId"):
                 self.rule_finished(
                     m["ruleId"], None, "Monitor cancelled", m["tail"], db
                 )
@@ -2605,10 +2866,13 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             except Exception as error:
                 with self.lock, self.db() as db:
                     current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
-                    current["error"] = "Cancel requested. Process termination was not confirmed: " + str(error)
-                    self.put(db, "monitors", current)
-                return {"id": key, "status": "cancelled", "error": current["error"]}
-        return {"id": key, "status": "cancelled"}
+                    if current["status"] == "running":
+                        current["error"] = "Cancel requested. Process termination was not confirmed: " + str(error)
+                        self.put(db, "monitors", current)
+                return {"id": key, "status": current["status"], "cancelRequested": True, "error": current.get("error")}
+        with self.lock, self.db() as db:
+            current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
+            return {"id": key, "status": current["status"], "cancelRequested": running}
 
     def interrupt(self, a):
         server = self.servers.get(a.get("accountKey", "default"))
@@ -2694,7 +2958,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 r["status"] = "answered"
                 self.put(db, "requests", r)
                 if m["status"] == "starting":
-                    threading.Thread(target=self.run_monitor, args=(m["id"],), daemon=True).start()
+                    self.launch_monitor(m["id"])
                 else:
                     if m.get("ruleId"):
                         self.rule_finished(
@@ -2885,21 +3149,67 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 raise ValueError("Wait for this agent's current turn before this action")
             if not a["autoWake"]:
                 raise ValueError("Send a new instruction to resume this agent first")
-            a.update(status="starting", inFlight=True, turnEpoch=a["epoch"])
+            a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
+                     startAttempt={"id": uid(), "epoch": a["epoch"], "events": [], "action": action, "submitted": False})
             self.put(db, "agents", a)
+        return self.run_native_action(key, dict(a["startAttempt"]))
+
+    def run_native_action(self, key, attempt):
         try:
-            a = self.prepare(a)
+            a = self.prepare(self.agent(key))
             self.check_account_project(a)
-            if action == "compact":
-                return self.connect(a.get("accountKey", "default")).call("thread/compact/start", {"threadId": a["threadId"]})
-            return self.connect(a.get("accountKey", "default")).call("review/start", {"threadId": a["threadId"],
-                "target": {"type": "uncommittedChanges"}, "delivery": "inline"})
-        except Exception as error:
+            server = self.connect(a.get("accountKey", "default"))
             with self.lock, self.db() as db:
-                latest = self.agent(key, db)
-                latest.update(status="failed", inFlight=False, error=str(error))
-                self.put(db, "agents", latest)
+                a = self.agent(key, db)
+                if ((a.get("startAttempt") or {}).get("id") != attempt["id"]
+                        or a["epoch"] != attempt["epoch"] or not a["autoWake"] or a.get("deletedAt")):
+                    raise ValueError("Native action belongs to an earlier agent state")
+                self.assert_workspace_available(db, a)
+                attempt.update(submitted=True, accountKey=a.get("accountKey", "default"),
+                               connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
+                a["startAttempt"] = dict(attempt)
+                self.put(db, "agents", a)
+                method = "thread/compact/start" if attempt["action"] == "compact" else "review/start"
+                params = {"threadId": a["threadId"]}
+                if attempt["action"] == "review":
+                    params.update(target={"type": "uncommittedChanges"}, delivery="inline")
+                db.commit()
+                submitted = self.submit_reserved(server, method, params)
+            try:
+                result = server.wait(submitted)
+            except ResponseTimeout as error:
+                self.start_error(key, attempt["id"], error, unknown=True)
+                server.on_result(submitted, lambda future: self.pool.submit(
+                    self.native_action_result, key, attempt, future) if not self.closed else None)
+                return {"status": "starting", "pending": True, "error": str(error)}
+            self.native_action_accepted(key, attempt, result)
+            return result
+        except PreparationPending as error:
+            self.start_error(key, attempt["id"], error, unknown=True)
+            self.defer_preparation(error, lambda: self.run_native_action(key, attempt),
+                lambda cause: self.start_error(key, attempt["id"], cause, unknown="outcome unknown" in str(cause)))
+            return {"status": "starting", "pending": True, "error": str(error)}
+        except Exception as error:
+            self.start_error(key, attempt["id"], error, unknown="outcome unknown" in str(error))
             raise
+
+    def native_action_accepted(self, key, attempt, result):
+        if attempt["action"] == "review":
+            self.start_accepted(key, attempt, result)
+        else:
+            with self.lock, self.db() as db:
+                a = self.agent(key, db)
+                if (not self.operation_current(a, attempt) or (a.get("startAttempt") or {}).get("id") != attempt["id"]):
+                    return
+                if a.get("error") == a["startAttempt"].get("responseError"):
+                    a["error"] = None
+                    self.put(db, "agents", a)
+
+    def native_action_result(self, key, attempt, future):
+        try:
+            self.native_action_accepted(key, attempt, future.result())
+        except Exception as error:
+            self.start_error(key, attempt["id"], error, unknown="outcome unknown" in str(error))
 
     def import_list(self, cursor=None, account_key="default"):
         return self.connect(account_key).call("thread/list", {"limit": 50, "cursor": cursor})
@@ -2946,15 +3256,20 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
         return a
 
     def close(self):
-        if self.closed:
-            return
-        self.closed = True
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
         with self.ui_condition:
             self.ui_condition.notify_all()
         self.changed.set()
-        self.scheduler.join(2)
+        self.scheduler.join()
         for server in list(self.servers.values()):
             server.close()
+        with self.lock:
+            monitor_threads = list(self.monitor_threads)
+        for worker in monitor_threads:
+            worker.join()
         self.pool.shutdown(wait=True, cancel_futures=True)
         history_thread = getattr(self, "analytics_history_thread", None)
         if history_thread is not None:

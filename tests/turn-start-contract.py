@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from codex_runtime import AppServer, ResponseTimeout, Runtime
+from codex_runtime import AppServer, ResponseTimeout, Runtime, SubmissionUnknown
 
 spec = importlib.util.spec_from_file_location("runtime_fixture", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
@@ -60,7 +60,9 @@ class DeferredServer(fixture.FakeServer):
         return super().wait(future, timeout)
 
     def on_result(self, future, callback):
-        entry = next(e for e in self.deferred if e["future"] is future)
+        entry = next((e for e in self.deferred if e["future"] is future), None)
+        if entry is None:
+            return super().on_result(future, callback)
         def handle(done):
             work = callback(done)
             work.add_done_callback(lambda _: entry["handled"].set())
@@ -254,7 +256,8 @@ class TurnStartContract(unittest.TestCase):
         key = self.start("silent")
         self.runtime.disconnected()
         self.accept()
-        eventually(lambda: self.events()[0]["status"] == "delivered")
+        self.assertTrue(self.server.deferred[0]["handled"].wait(3))
+        self.assertEqual(self.events()[0]["status"], "uncertain")
         a = self.runtime.agent(key)
         self.assertEqual(a["status"], "interrupted")
         self.assertFalse(a["inFlight"])
@@ -297,6 +300,26 @@ class RpcWaitContract(unittest.TestCase):
         self.assertEqual(server.pending, {})
         with self.assertRaisesRegex(RuntimeError, "disconnected; outcome unknown"):
             future.result()
+
+    def test_partial_write_keeps_exact_future_for_late_reply(self):
+        server = self.server()
+        server.sequence = 0
+        written = []
+        def partial_write(message):
+            written.append(message)
+            raise OSError("flush failed after request write")
+        server.write = partial_write
+        with self.assertRaises(SubmissionUnknown) as caught:
+            server.submit("turn/start", {"threadId": "thread"})
+        submitted = caught.exception.submitted
+        self.assertIs(server.pending[written[0]["id"]], submitted[2])
+        with patch.object(server, "submit", side_effect=caught.exception):
+            self.assertIs(Runtime.submit_reserved(server, "turn/start", {}), submitted)
+        server.proc = type("Process", (), {"stdout": io.StringIO(json.dumps({
+            "id": written[0]["id"], "result": {"turn": {"id": "accepted-after-write"}}}) + "\n")})()
+        server.read()
+        self.assertEqual(server.wait(submitted, 0)["turn"]["id"], "accepted-after-write")
+        self.assertEqual(server.pending, {})
 
 
 if __name__ == "__main__":

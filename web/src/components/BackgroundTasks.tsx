@@ -82,7 +82,9 @@ function TaskStatus({ task }: { task: BackgroundTask }) {
               : "gray"
       }
     >
-      {labels[task.status] || task.status}
+      {activeTask(task) && task.cancelRequested
+        ? "Waiting for exit"
+        : labels[task.status] || task.status}
     </Badge>
   );
 }
@@ -395,8 +397,8 @@ function TaskDetail({
     setPending(true);
     try {
       const result = await api(path, body);
-      if (result?.error) throw new Error(result.error);
       await refresh();
+      if (result?.error) throw new Error(result.error);
       return true;
     } catch (error) {
       notify(errorText(error));
@@ -486,6 +488,11 @@ function TaskDetail({
         {task.error && (
           <p role="alert" className="task-error">
             {task.error}
+          </p>
+        )}
+        {task.stdinError && (
+          <p role="alert" className="task-error">
+            {task.stdinError}
           </p>
         )}
         <div className="task-terminal">
@@ -597,9 +604,10 @@ function TaskDetail({
             color="red"
             leftSection={<Square size={12} />}
             loading={pending}
+            disabled={task.cancelRequested}
             onClick={() => void act("/api/monitor/cancel", { id: task.id })}
           >
-            Cancel monitor
+            {task.cancelRequested ? "Stop requested" : "Cancel monitor"}
           </Button>
         )}
         <Button
@@ -628,6 +636,8 @@ function ProcessInput({
   const [cols, setCols] = useState<string | number>(80);
   const [inputClosed, setStdinClosed] = useState(false);
   const stdinClosed = inputClosed || !!task.stdinClosed;
+  const stdinUnavailable =
+    stdinClosed || !!task.stdinCloseRequested || !!task.cancelRequested;
   const native = task.kind === "command";
   const send = async () => {
     const sent = input;
@@ -660,10 +670,10 @@ function ProcessInput({
           placeholder="Type terminal input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          disabled={pending || stdinClosed}
+          disabled={pending || stdinUnavailable}
           maxLength={16000}
         />
-        <Button size="sm" type="submit" disabled={pending || stdinClosed}>
+        <Button size="sm" type="submit" disabled={pending || stdinUnavailable}>
           {native ? "Send via agent" : "Send line"}
         </Button>
       </form>
@@ -683,7 +693,7 @@ function ProcessInput({
           <>
             <Button
               size="compact-xs"
-              disabled={pending || stdinClosed}
+              disabled={pending || stdinUnavailable}
               onClick={() =>
                 void act("/api/monitor/input", { id: task.id, text: "\u0003" })
               }
@@ -692,7 +702,7 @@ function ProcessInput({
             </Button>
             <Button
               size="compact-xs"
-              disabled={pending || stdinClosed}
+              disabled={pending || stdinUnavailable}
               onClick={() => {
                 void act("/api/monitor/input", {
                   id: task.id,
@@ -702,7 +712,11 @@ function ProcessInput({
                 });
               }}
             >
-              {stdinClosed ? "Input closed" : "Close input (EOF)"}
+              {stdinClosed
+                ? "Input closed"
+                : task.stdinCloseRequested
+                  ? "Closing input…"
+                  : "Close input (EOF)"}
             </Button>
             <details className="process-resize">
               <summary>Terminal size</summary>
@@ -727,7 +741,12 @@ function ProcessInput({
                 />
                 <Button
                   size="xs"
-                  disabled={pending || !Number(rows) || !Number(cols)}
+                  disabled={
+                    pending ||
+                    !!task.cancelRequested ||
+                    !Number(rows) ||
+                    !Number(cols)
+                  }
                   onClick={() =>
                     void act("/api/monitor/input", {
                       id: task.id,

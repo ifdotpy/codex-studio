@@ -165,6 +165,12 @@ Delivery requires the start response or a user-message event with the matching c
 A late response can acknowledge its original input batch but cannot replace a newer turn's state.
 Unknown input is never replayed automatically.
 
+Thread preparation shares one pending request per agent. A preparation timeout
+retains the input reservation without submitting a turn. A late response resumes
+that exact batch only while its agent, account, connection and settings still match.
+Steer, Compact and Review also retain unknown outcomes after response timeouts.
+Late acknowledgements cannot resume a stopped agent or replace a newer turn.
+
 ## Agent chat
 
 Select the **Agents** tab in the sidebar to read private conversations and broadcasts.
@@ -199,6 +205,10 @@ profile or sandbox. The runtime drains output without model calls. It stores at
 most 20 MiB per log and retains a 12,000-character tail. The final event includes
 exit code, command status, output tail, log path and total output bytes.
 The default command timeout is one hour; the maximum is 24 hours.
+An acknowledgement timeout does not finish a command. Cancellation retains the
+active workspace reservation until the command exits. The interface shows
+**Waiting for exit** during this interval. Closing terminal input blocks further
+input while its acknowledgement is pending. An unknown close is not retried.
 
 The inherited `never` approval policy does not add an approval step. Other policies
 require approval for a model-created Monitor command in the conversation.
@@ -373,6 +383,8 @@ npm run format:check
 cd ..
 python3 tests/runtime-contract.py
 python3 tests/turn-start-contract.py
+python3 tests/prepare-steer-contract.py
+python3 tests/monitor-lifecycle-contract.py
 python3 tests/canvas-contract.py
 node tests/portable-smoke.mjs
 ```

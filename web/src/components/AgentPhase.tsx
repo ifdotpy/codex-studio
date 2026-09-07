@@ -20,13 +20,21 @@ export default function AgentPhase({
 }) {
   if (!agent) return null;
   const active = ["running", "starting"].includes(agent.status);
-  const phase = active ? agent.activity?.phase || agent.status : agent.status;
+  const awaitingResponse =
+    active &&
+    (agent.startAttempt?.prepareError || agent.startAttempt?.responseError);
+  const phase = awaitingResponse
+    ? "acknowledgement"
+    : active
+      ? agent.activity?.phase || agent.status
+      : agent.status;
   const names: Record<string, string> = {
     thinking: "Thinking",
     writing: "Writing",
     tool: "Using tools",
     running: "Working",
     starting: "Starting",
+    acknowledgement: "Waiting for Codex",
     queued: "Queued",
     waiting: "Waiting for agents or commands",
     approval: "Waiting for your answer",
@@ -46,6 +54,7 @@ export default function AgentPhase({
     running: LoaderCircle,
     queued: Clock3,
     waiting: Clock3,
+    acknowledgement: Clock3,
     approval: Clock3,
     failed: CircleAlert,
     interrupted: CircleAlert,

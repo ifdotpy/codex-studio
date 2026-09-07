@@ -249,7 +249,7 @@ class RulesMixin:
                     launch.append(r.copy())
                 self.put(db, "rules", r)
         for r in launch:
-            threading.Thread(target=self.run_rule, args=(r,), daemon=True).start()
+            self.pool.submit(self.run_rule, r)
 
     def rule_event(self, db, a, kind, text, event_key):
         # Rules are same-agent subscriptions. Rule wakes never re-enter this hook.
@@ -314,6 +314,11 @@ class RulesMixin:
             else:
                 self.rule_finished(r["id"], 0, None, r.get("eventText", ""))
         except Exception as error:
+            from codex_runtime import PreparationPending
+            if isinstance(error, PreparationPending):
+                self.defer_preparation(error, lambda: self.run_rule(r),
+                    lambda cause: self.rule_finished(r["id"], None, str(cause), ""))
+                return
             self.rule_finished(r["id"], None, str(error), "")
 
     def rule_finished(self, key, code, error, output, db=None):
@@ -367,6 +372,7 @@ class RulesMixin:
         self.put(db, "rules", r)
 
     def monitor_input(self, key, data, owner=None, epoch=None):
+        close_operation = None
         with self.lock, self.db() as db:
             row = db.execute(
                 "SELECT record FROM runtime_monitors WHERE id=?", (key,)
@@ -381,6 +387,7 @@ class RulesMixin:
                 raise ValueError("The caller was stopped")
             if (
                 m["status"] != "running"
+                or m.get("cancelRequested")
                 or not m.get("interactive")
                 or not a["autoWake"]
                 or a["epoch"] != m["epoch"]
@@ -401,10 +408,19 @@ class RulesMixin:
                 text = data.get("text", "")
                 if not isinstance(text, str) or len(text) > 32000:
                     raise ValueError("Input must have at most 32000 characters")
-                if m.get("stdinClosed"):
-                    raise ValueError("This monitor stdin is closed")
+                if m.get("stdinClosed") or m.get("stdinCloseRequested"):
+                    raise ValueError("This monitor stdin is closed or its close acknowledgement is pending")
                 close = bool(data.get("closeStdin", False))
-                submitted = server.submit(
+                if close:
+                    close_operation = str(uuid.uuid4())
+                    account_key = a.get("accountKey", "default")
+                    connection_id = self.connection_ids[account_key]
+                    m.update(stdinCloseRequested=close_operation)
+                    m.pop("stdinError", None)
+                    self.put(db, "monitors", m)
+                    # A write failure does not prove that the server received no bytes.
+                    db.commit()
+                submitted = self.submit_reserved(server,
                     "command/exec/write",
                     {
                         "processId": key,
@@ -412,18 +428,34 @@ class RulesMixin:
                         "closeStdin": close,
                     },
                 )
+        if close_operation:
+            def reconcile(future):
+                try:
+                    future.result()
+                    error = None
+                except Exception as cause:
+                    error = str(cause)
+                with self.lock:
+                    if self.closed or not self.connection_current(account_key, connection_id):
+                        return
+                    with self.db() as db:
+                        row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
+                        if not row:
+                            return
+                        latest = json.loads(row[0])
+                        if latest.get("stdinCloseRequested") != close_operation:
+                            return
+                        if not error or "outcome unknown" not in error:
+                            latest.pop("stdinCloseRequested", None)
+                        if error:
+                            latest["stdinError"] = error
+                        else:
+                            latest["stdinClosed"] = True
+                            latest.pop("stdinError", None)
+                        self.put(db, "monitors", latest)
+            server.on_result(submitted, reconcile)
         # The app-server reader must stay free to deliver output before the acknowledgement.
-        result = server.wait(submitted)
-        if close:
-            with self.lock, self.db() as db:
-                latest = json.loads(
-                    db.execute(
-                        "SELECT record FROM runtime_monitors WHERE id=?", (key,)
-                    ).fetchone()[0]
-                )
-                latest["stdinClosed"] = True
-                self.put(db, "monitors", latest)
-        return result
+        return server.wait(submitted)
 
     def resource_action(self, data=None, actor=None, epoch=None):
         with self.lock:

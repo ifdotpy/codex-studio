@@ -451,7 +451,12 @@ export default function App() {
         <span className="worker-text">
           <strong>{a.name}</strong>
           <span className="worker-meta">
-            <small>{statusLabel(a.status)}</small>
+            <small>
+              {a.status === "starting" &&
+              (a.startAttempt?.prepareError || a.startAttempt?.responseError)
+                ? "Waiting for Codex"
+                : statusLabel(a.status)}
+            </small>
             <span
               className="worker-model-summary"
               title={[
@@ -464,6 +469,7 @@ export default function App() {
               {a.fastMode ? " · Fast" : ""}
             </span>
           </span>
+          {a.error && <span className="worker-error">{String(a.error)}</span>}
         </span>
       </UnstyledButton>
     </div>

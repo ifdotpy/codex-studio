@@ -976,6 +976,10 @@ class WorkspaceContract(unittest.TestCase):
             )
         )
         self.runtime.rules({"action": "pause", "agent": lead["id"], "id": rule["id"]})
+        eventually(lambda: any(
+            m.get("ruleId") == rule["id"] and m["status"] == "cancelled"
+            for m in self.runtime.snapshot()["monitors"]
+        ))
         monitor = next(
             m
             for m in self.runtime.snapshot()["monitors"]
