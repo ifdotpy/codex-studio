@@ -838,7 +838,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
 
     @staticmethod
     def worker_defaults(root):
-        return {"model": None, "effort": None, "fastMode": False,
+        return {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False,
                 **root.get("workerDefaults", {})}
 
     @staticmethod
@@ -940,7 +940,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 raise ValueError("A worker must use its parent account")
             self.accounts.get(account_key)
             is_lead = p is None and role == "orchestrator"
-            defaults = self.worker_defaults(root) if root else {"model": None, "effort": None, "fastMode": False}
+            defaults = self.worker_defaults(root or {})
             model = data.get("model") or ((defaults["model"] or root["model"]) if root else LEAD_MODELS[0])
             if is_lead and model not in LEAD_MODELS:
                 raise ValueError("A lead must use Astra or Sol")

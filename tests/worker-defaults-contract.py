@@ -30,6 +30,7 @@ CATALOG = {
     "data": [
         model("gpt-6-astra"),
         model("gpt-5.6-sol"),
+        model("gpt-5.6-luna", ("low", "high", "max")),
         model("worker"),
         model("small", ("medium",), "medium", False),
     ]
@@ -81,7 +82,7 @@ class WorkerDefaults(unittest.TestCase):
         child = self.worker(parent=worker["id"])
         self.assertEqual(
             (child["model"], child["effort"], child["fastMode"]),
-            ("gpt-6-astra", None, False),
+            ("gpt-5.6-luna", "max", False),
         )
         self.defaults("worker", "high", True)
         next_child = self.worker(parent=worker["id"])
@@ -89,7 +90,19 @@ class WorkerDefaults(unittest.TestCase):
             (next_child["model"], next_child["effort"], next_child["fastMode"]),
             ("worker", "high", True),
         )
-        self.assertEqual(self.runtime.agent(child["id"])["model"], "gpt-6-astra")
+        self.assertEqual(self.runtime.agent(child["id"])["model"], "gpt-5.6-luna")
+
+    def test_luna_max_default_preserves_explicit_choices(self):
+        expected = {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False}
+        self.assertEqual(self.lead["workerDefaults"], expected)
+        self.assertEqual(self.runtime.worker_defaults({}), expected)
+        child = self.worker()
+        self.assertEqual((child["model"], child["effort"], child["nativeEffort"]),
+                         ("gpt-5.6-luna", "max", "max"))
+        self.defaults()
+        inherited = self.worker()
+        self.assertEqual((inherited["model"], inherited["effort"]),
+                         (self.lead["model"], None))
 
     def test_explicit_false_null_and_model_fallback(self):
         self.defaults("worker", "high", True)

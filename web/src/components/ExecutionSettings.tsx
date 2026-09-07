@@ -73,8 +73,14 @@ export function ExecutionSettings({
       : "Subagent";
   const stored = teamDefaults
     ? {
-        model: agent.workerDefaults?.model ?? null,
-        effort: agent.workerDefaults?.effort ?? null,
+        model:
+          agent.workerDefaults?.model === undefined
+            ? "gpt-5.6-luna"
+            : agent.workerDefaults.model,
+        effort:
+          agent.workerDefaults?.effort === undefined
+            ? "max"
+            : agent.workerDefaults.effort,
         fast_mode: !!agent.workerDefaults?.fastMode,
       }
     : {
