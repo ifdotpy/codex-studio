@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Textarea, Tooltip } from "@mantine/core";
+import { ActionIcon, Button, Loader, Textarea, Tooltip } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   ArrowDown,
@@ -16,6 +16,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import { useMessages } from "../hooks";
+import { useConversationScroll } from "./useConversationScroll";
 import {
   statusLabel,
   type Agent,
@@ -64,14 +65,11 @@ export default function Conversation(p: {
     "(max-width: 760px) and (max-height: 750px)",
   );
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
-  const { items, notice, before, older, liveAgent, connection } = useMessages(
-      p.id,
-      kind,
-      p.agent?.source === "managed",
-    ),
-    [follow, setFollow] = useState(true),
-    scroll = useRef<HTMLDivElement>(null),
-    input = useRef<HTMLTextAreaElement>(null);
+  const { items, notice, before, older, liveAgent, connection, loaded } =
+    useMessages(p.id, kind, p.agent?.source === "managed");
+  const { scroll, content, follow, setFollow, onScroll, remember } =
+    useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  const input = useRef<HTMLTextAreaElement>(null);
   const jumpToPrompt = (id: string) => {
     const root = scroll.current;
     const message =
@@ -90,6 +88,7 @@ export default function Conversation(p: {
       message.getBoundingClientRect().top -
       root.getBoundingClientRect().top -
       16;
+    remember();
   };
   const attachmentKey = `codex-agent-attachments:${p.data.stateDir}`;
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>(
@@ -118,6 +117,12 @@ export default function Conversation(p: {
   const branchLock = useRef(false);
   const branchRequests = useRef<Record<string, string>>({});
   const [dragging, setDragging] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const stopAttempt = useRef(0);
+  useEffect(() => {
+    stopAttempt.current += 1;
+    setStopping(false);
+  }, [p.id]);
   const uploadLock = useRef(false);
   const activeId = useRef(p.id);
   activeId.current = p.id;
@@ -135,7 +140,6 @@ export default function Conversation(p: {
     );
   }, [p.id, agent?.status, agent?.activity?.phase, connection, p.onPhase]);
   useEffect(() => {
-    setFollow(true);
     setDelivery("queue");
     setEditing(null);
     setQueueOpen(false);
@@ -253,10 +257,6 @@ export default function Conversation(p: {
       branchLock.current = false;
     }
   };
-  useEffect(() => {
-    if (follow && scroll.current)
-      scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [items, follow]);
   const copy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -394,54 +394,52 @@ export default function Conversation(p: {
           />
         )}
       </div>
-      <div
-        id="messages"
-        ref={scroll}
-        onScroll={(e) => {
-          const t = e.currentTarget;
-          setFollow(t.scrollHeight - t.scrollTop - t.clientHeight < 80);
-        }}
-      >
-        {notice && <p className="notice">{notice}</p>}
-        {before && (
-          <Button
-            id="earlier-messages"
-            onClick={() => {
-              setFollow(false);
-              void older().catch((e) => p.notify(errorText(e)));
-            }}
-          >
-            Earlier messages
-          </Button>
-        )}
-        {!items.length &&
-          !notice &&
-          !["running", "starting"].includes(agent?.status || "") && (
-            <div className="empty-chat">
-              {!p.room && (
-                <span className="empty-mark">
-                  <Terminal size={28} />
-                </span>
-              )}
-              <h2>{p.room ? "No messages yet" : "What should we work on?"}</h2>
-              <p>
-                {p.room
-                  ? "Agent messages will appear here."
-                  : "Give your lead a task. It can delegate work and report the results here."}
-              </p>
-            </div>
+      <div id="messages" ref={scroll} onScroll={onScroll}>
+        <div ref={content} className="message-content">
+          {notice && <p className="notice">{notice}</p>}
+          {before && (
+            <Button
+              id="earlier-messages"
+              onClick={() => {
+                setFollow(false);
+                void older().catch((e) => p.notify(errorText(e)));
+              }}
+            >
+              Earlier messages
+            </Button>
           )}
-        <TurnHistory
-          key={`${p.data.stateDir}:${p.id}`}
-          items={items}
-          currentTurn={agent?.turnId}
-          enabled={managed && !p.room}
-          storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
-          renderMessage={renderMessage}
-          agentId={managed ? agent?.id : undefined}
-          onJump={jumpToPrompt}
-        />
-        {!p.room && <AgentPhase agent={agent} connection={connection} />}
+          {loaded &&
+            !items.length &&
+            !notice &&
+            !["running", "starting"].includes(agent?.status || "") && (
+              <div className="empty-chat">
+                {!p.room && (
+                  <span className="empty-mark">
+                    <Terminal size={28} />
+                  </span>
+                )}
+                <h2>
+                  {p.room ? "No messages yet" : "What should we work on?"}
+                </h2>
+                <p>
+                  {p.room
+                    ? "Agent messages will appear here."
+                    : "Give your lead a task. It can delegate work and report the results here."}
+                </p>
+              </div>
+            )}
+          <TurnHistory
+            key={`${p.data.stateDir}:${p.id}`}
+            items={items}
+            currentTurn={agent?.turnId}
+            enabled={managed && !p.room}
+            storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
+            renderMessage={renderMessage}
+            agentId={managed ? agent?.id : undefined}
+            onJump={jumpToPrompt}
+          />
+          {!p.room && <AgentPhase agent={agent} connection={connection} />}
+        </div>
       </div>
       {!p.room && (
         <SelectionQuote
@@ -683,7 +681,7 @@ export default function Conversation(p: {
                   }}
                 />
               )}
-              {managed && canSteer && (
+              {managed && (
                 <div
                   className="message-delivery"
                   role="group"
@@ -726,46 +724,76 @@ export default function Conversation(p: {
                   ))}
                 </div>
               )}
-              <span id="send-state">{p.sending ? "Sending…" : ""}</span>
-              {agent &&
-                ["running", "starting", "approval"].includes(agent.status) && (
+              <span id="send-state" role="status" aria-live="polite">
+                {p.sending ? "Sending…" : ""}
+              </span>
+              <div className="composer-submit-actions">
+                {agent && (
                   <ActionIcon
                     type="button"
                     id="stop"
                     aria-label="Stop agent"
-                    onClick={() =>
+                    title={
+                      ["running", "starting", "approval"].includes(agent.status)
+                        ? "Stop agent"
+                        : "No active turn to stop"
+                    }
+                    disabled={
+                      stopping ||
+                      !["running", "starting", "approval"].includes(
+                        agent.status,
+                      )
+                    }
+                    aria-busy={stopping}
+                    onClick={() => {
+                      if (stopping) return;
+                      const attempt = ++stopAttempt.current;
+                      setStopping(true);
                       void api("/api/stop", { id: p.id, descendants: false })
                         .then(p.refresh)
                         .catch((e) => p.notify(errorText(e)))
-                    }
+                        .finally(() => {
+                          if (stopAttempt.current === attempt)
+                            setStopping(false);
+                        });
+                    }}
                   >
-                    <Square size={14} fill="currentColor" />
+                    {stopping ? (
+                      <Loader size={14} color="currentColor" />
+                    ) : (
+                      <Square size={14} fill="currentColor" />
+                    )}
                   </ActionIcon>
                 )}
-              <ActionIcon
-                type="submit"
-                variant="filled"
-                color="gray"
-                radius="xl"
-                id="send"
-                className="send"
-                disabled={
-                  !canSend ||
-                  p.sending ||
-                  uploading ||
-                  (!p.draft.trim() && !assets.length)
-                }
-                aria-label="Send message"
-                title={
-                  canSteer
-                    ? delivery === "steer"
-                      ? "Send after active tool calls"
-                      : "Send after the current turn"
-                    : "Send message"
-                }
-              >
-                <ArrowUp size={19} />
-              </ActionIcon>
+                <ActionIcon
+                  type="submit"
+                  variant="filled"
+                  color="gray"
+                  radius="xl"
+                  id="send"
+                  className="send"
+                  disabled={
+                    !canSend ||
+                    p.sending ||
+                    uploading ||
+                    (!p.draft.trim() && !assets.length)
+                  }
+                  aria-label="Send message"
+                  title={
+                    canSteer
+                      ? delivery === "steer"
+                        ? "Send after active tool calls"
+                        : "Send after the current turn"
+                      : "Send message"
+                  }
+                >
+                  {p.sending ? (
+                    <Loader size={19} color="currentColor" />
+                  ) : (
+                    <ArrowUp size={19} />
+                  )}
+                </ActionIcon>
+              </div>
             </div>
           </form>
           {agent?.source === "managed" && (

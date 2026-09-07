@@ -2,6 +2,15 @@
   margin: 0 0 26px;
   min-width: 0;
 }
+.turn-collapse {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 20px;
+  padding: 5px 0;
+}
 .turn-result > summary {
   display: flex;
   align-items: flex-start;

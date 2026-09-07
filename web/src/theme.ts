@@ -38,6 +38,9 @@ export const theme = createTheme({
   },
   components: {
     Button: Button.extend({
+      styles: {
+        inner: { transform: "none", transition: "opacity 100ms ease" },
+      },
       defaultProps: { size: "sm", variant: "subtle", color: "gray", fw: 500 },
     }),
     ActionIcon: ActionIcon.extend({

@@ -1,5 +1,7 @@
 import { Button, UnstyledButton } from "@mantine/core";
 import { ChevronRight } from "lucide-react";
+import { useState } from "react";
+import { save, saved } from "../api";
 import { shortModel } from "./ExecutionSettings";
 import { statusLabel, type Agent, type Json } from "../types";
 
@@ -59,33 +61,56 @@ export function TeamSummary({
           </div>
         ))}
       </dl>
-      {(count("waiting") > 0 || count("attention") > 0) && (
-        <p>
-          {[
-            count("waiting") > 0 && `${count("waiting")} waiting`,
-            count("attention") > 0 && `${count("attention")} need attention`,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </p>
-      )}
+      <p aria-hidden={count("waiting") === 0 && count("attention") === 0}>
+        {[
+          count("waiting") > 0 && `${count("waiting")} waiting`,
+          count("attention") > 0 && `${count("attention")} need attention`,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </p>
     </div>
   );
 }
 
 function WorkerExcerpt({
+  agentId,
   label,
   text,
   truncated,
   open,
 }: {
+  agentId: string;
   label: string;
   text: string;
   truncated?: boolean;
   open: () => void;
 }) {
+  const storageKey = "codex-worker-disclosures";
+  const key = `${agentId}:${label}`;
+  const [expanded, setExpanded] = useState(
+    () => saved<Record<string, boolean>>(storageKey, {})[key] || false,
+  );
   return (
-    <details className="worker-excerpt">
+    <details
+      className="worker-excerpt"
+      open={expanded}
+      onToggle={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const value = event.currentTarget.open;
+        setExpanded(value);
+        const prior = saved<Record<string, boolean>>(storageKey, {});
+        save(
+          storageKey,
+          Object.fromEntries([
+            ...Object.entries(prior)
+              .filter(([id]) => id !== key)
+              .slice(-499),
+            [key, value],
+          ]),
+        );
+      }}
+    >
       <summary>
         <span className="worker-excerpt-label">
           {label}
@@ -163,6 +188,7 @@ export default function WorkerCard({
       </UnstyledButton>
       {overview?.task ? (
         <WorkerExcerpt
+          agentId={agent.id}
           label="Task"
           text={overview.task}
           truncated={overview.taskTruncated}
@@ -173,6 +199,7 @@ export default function WorkerCard({
       )}
       {overview?.result ? (
         <WorkerExcerpt
+          agentId={agent.id}
           label="Last report"
           text={overview.result}
           truncated={overview.resultTruncated}

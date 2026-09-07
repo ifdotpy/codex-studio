@@ -4,13 +4,17 @@ import type { Snapshot, Message, Agent, Json } from "./types";
 export function useSnapshot() {
   const [data, setData] = useState<Snapshot | null>(null),
     [error, setError] = useState("");
+  const generation = useRef(0);
   const refresh = useCallback(async () => {
+    const request = ++generation.current;
     try {
       const next = await api<Snapshot>("/api/state");
+      if (request !== generation.current) return;
       setToken(next.token);
       setData(next);
       setError("");
     } catch (e) {
+      if (request !== generation.current) return;
       setError(errorText(e));
     }
   }, []);
@@ -40,10 +44,12 @@ export function useMessages(
     [before, setBefore] = useState<number | null>(null),
     [liveAgent, setLiveAgent] = useState<Partial<Agent> | null>(null),
     [connection, setConnection] = useState("");
+  const revision = useRef(0);
   const active = useRef(id),
     expanded = useRef(false);
   active.current = id;
   const accept = useCallback((d: Json) => {
+    revision.current++;
     setLoadedId(active.current);
     setLiveAgent(d.agent || null);
     setItems(
@@ -90,10 +96,13 @@ export function useMessages(
   const load = useCallback(
     async (allowed: () => boolean = () => true) => {
       if (!id) return;
+      const request = ++revision.current;
+      const current = () =>
+        active.current === id && request === revision.current && allowed();
       try {
         if (kind === "room") {
           const d = await api(`/api/agent-chat?room=${encodeURIComponent(id)}`);
-          if (active.current !== id || !allowed()) return;
+          if (!current()) return;
           setLoadedId(id);
           setItems((old) =>
             [
@@ -111,7 +120,7 @@ export function useMessages(
           if (!expanded.current) setBefore(d.nextBefore);
         } else if (kind === "legacy") {
           const d = await api(`/api/messages?room=${encodeURIComponent(id)}`);
-          if (active.current !== id || !allowed()) return;
+          if (!current()) return;
           setLoadedId(id);
           setItems(
             d.map((m: Message) => ({
@@ -121,11 +130,11 @@ export function useMessages(
           );
         } else {
           const d = await api(`/api/transcript?id=${encodeURIComponent(id)}`);
-          if (active.current !== id || !allowed()) return;
+          if (!current()) return;
           accept(d);
         }
       } catch (e) {
-        if (active.current === id && allowed()) {
+        if (current()) {
           setLoadedId(id);
           setNotice(errorText(e));
         }
@@ -244,6 +253,7 @@ export function useMessages(
     );
   };
   return {
+    loaded: loadedId === id,
     items: loadedId === id ? items : [],
     notice: loadedId === id ? notice : "",
     before: loadedId === id ? before : null,

@@ -88,15 +88,19 @@
 }
 
 .agent-panel-feedback {
-  flex: 0 0 auto;
-  min-height: 20px;
-  max-width: 100%;
+  position: absolute;
+  z-index: 1;
+  inset: auto 12px 8px auto;
+  max-width: calc(100% - 24px);
+  min-height: 26px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  border-top: 1px solid #ffffff0a;
+  padding: 3px 6px 3px 10px;
+  border: 1px solid var(--line, #ffffff20);
+  border-radius: 7px;
   background: var(--surface);
+  box-shadow: 0 3px 12px #00000030;
   color: var(--muted);
   font-size: 11px;
 }
@@ -112,6 +116,9 @@
   color: #f3b4b4;
 }
 .agent-panel-feedback button {
+  flex: 0 0 auto;
+  min-width: 22px;
+  min-height: 22px;
   color: inherit;
   background: transparent;
   border: 1px solid #ffffff25;

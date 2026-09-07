@@ -104,6 +104,7 @@ export default function AgentPanel({
   const [localError, setLocalError] = useState("");
   const [loading, setLoading] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [dismissedNotice, setDismissedNotice] = useState("");
   const [, redraw] = useState(0);
   const iframe = useRef<HTMLIFrameElement>(null);
   useEffect(() => {
@@ -150,7 +151,7 @@ export default function AgentPanel({
     })();
     return () => controller.abort();
   }, [agentId, version, retry]);
-  const current = panel?.agent === agentId ? panel : null;
+  const current = version > 0 && panel?.agent === agentId ? panel : null;
   const callbacks = current?.callbacks || [];
   const key = JSON.stringify([agentId, current?.version || 0]);
   const state = actionState(key);
@@ -287,34 +288,17 @@ export default function AgentPanel({
     current?.html.trim() ||
     current?.css.trim()
   );
-  if (!hasContent && !error) return null;
+  if (!version || (!hasContent && !error)) return null;
+  const noticeKey = JSON.stringify([
+    key,
+    localError,
+    feedback?.body.id,
+    feedback?.status,
+  ]);
+  const noticeVisible =
+    !error && (localError || feedback) && dismissedNotice !== noticeKey;
   return (
     <>
-      {localError && (
-        <div className="agent-panel-feedback error" role="alert">
-          {localError}
-        </div>
-      )}
-      {!error && feedback && (
-        <div
-          className={`agent-panel-feedback ${feedback.status}`}
-          role={
-            feedback.status === "error" || feedback.status === "rejected"
-              ? "alert"
-              : "status"
-          }
-        >
-          <span>{feedback.message}</span>
-          {feedback.status === "error" && enabled && (
-            <button
-              type="button"
-              onClick={() => void deliver(state, feedback, token)}
-            >
-              Retry
-            </button>
-          )}
-        </div>
-      )}
       <section
         className={hasContent ? "agent-panel" : "agent-panel-notice"}
         aria-label="Agent panel"
@@ -330,6 +314,39 @@ export default function AgentPanel({
             referrerPolicy="no-referrer"
             srcDoc={frameDocument.html}
           />
+        )}
+        {noticeVisible && (
+          <div
+            className={`agent-panel-feedback ${localError ? "error" : feedback?.status}`}
+            role={
+              localError ||
+              feedback?.status === "error" ||
+              feedback?.status === "rejected"
+                ? "alert"
+                : "status"
+            }
+          >
+            <span title={localError || feedback?.message}>
+              {localError || feedback?.message}
+            </span>
+            {!localError && feedback?.status === "error" && enabled && (
+              <button
+                type="button"
+                onClick={() => void deliver(state, feedback, token)}
+              >
+                Retry
+              </button>
+            )}
+            {(localError || feedback?.status !== "error") && (
+              <button
+                type="button"
+                aria-label="Dismiss panel notice"
+                onClick={() => setDismissedNotice(noticeKey)}
+              >
+                ×
+              </button>
+            )}
+          </div>
         )}
         {error && (
           <p className="agent-panel-error" role="alert">

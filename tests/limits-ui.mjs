@@ -65,7 +65,15 @@ try {
   page.setDefaultTimeout(12000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.route("**/api/limits", (route) => route.fulfill({ json: limits }));
+  let failLimits = false;
+  await page.route("**/api/limits", (route) =>
+    failLimits
+      ? route.fulfill({
+          status: 503,
+          json: { error: "Fixture quota refresh failed" },
+        })
+      : route.fulfill({ json: limits }),
+  );
   let costs = {
     at: now,
     stale: false,
@@ -78,7 +86,15 @@ try {
       unknownModels: [],
     },
   };
-  await page.route("**/api/costs", (route) => route.fulfill({ json: costs }));
+  let deferCosts = false,
+    pendingCosts;
+  await page.route("**/api/costs", (route) => {
+    if (deferCosts) {
+      pendingCosts = route;
+      return;
+    }
+    return route.fulfill({ json: costs });
+  });
   await page.route("**/api/state", async (route) => {
     const response = await route.fetch();
     const state = await response.json();
@@ -135,6 +151,28 @@ try {
     path: join(root, "limits-desktop.png"),
     animations: "disabled",
   });
+  failLimits = true;
+  const beforeQuotaFailure = await page.locator("#usage-footer").boundingBox();
+  await details().getByRole("button", { name: "Refresh", exact: true }).click();
+  await details()
+    .getByText("Update failed: Fixture quota refresh failed", { exact: true })
+    .waitFor();
+  assert.match(
+    await toggle().innerText(),
+    /5h 58% left · 7d 79% left/,
+    "a failed refresh retains confirmed quota values for this account",
+  );
+  assert.equal(await details().getByRole("progressbar").count(), 2);
+  assert.deepEqual(
+    await page.locator("#usage-footer").boundingBox(),
+    beforeQuotaFailure,
+    "refresh error cannot add a footer row",
+  );
+  failLimits = false;
+  await details().getByRole("button", { name: "Refresh", exact: true }).click();
+  await details()
+    .getByText("Update failed: Fixture quota refresh failed", { exact: true })
+    .waitFor({ state: "hidden" });
 
   const resetCredit = {
     id: "credit-test",
@@ -470,6 +508,40 @@ try {
     false,
     "mobile limits have no horizontal overflow",
   );
+  // Late cost data must not add a footer row or lift the composer.
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    deferCosts = true;
+    pendingCosts = undefined;
+    await load();
+    await page.waitForTimeout(150);
+    const before = await page.locator("#usage-footer").boundingBox();
+    const composerBefore = await page.locator("#composer").boundingBox();
+    for (let n = 0; n < 100 && !pendingCosts; n++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(pendingCosts, "cost request is delayed");
+    await pendingCosts.fulfill({
+      json: {
+        ...costs,
+        error: null,
+        data: { ...costs.data, todayUSD: 123456.78 },
+      },
+    });
+    await page.locator(".account-cost-summary").waitFor();
+    assert.deepEqual(
+      await page.locator("#usage-footer").boundingBox(),
+      before,
+      `cost response preserves footer geometry at ${width}px`,
+    );
+    assert.deepEqual(
+      await page.locator("#composer").boundingBox(),
+      composerBefore,
+      `cost response preserves composer geometry at ${width}px`,
+    );
+    const summaryBox = await toggle().boundingBox();
+    assert.equal(summaryBox.height, 26, "quota trigger remains a single line");
+    deferCosts = false;
+  }
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -499,6 +571,8 @@ try {
         "reset duplicate click lock",
         "server credit count",
         "all reset outcomes",
+        "delayed cost geometry at 390/1280px",
+        "failed quota refresh preserves account values and geometry",
       ],
     }),
   );

@@ -1,5 +1,7 @@
 .usage-footer .account-limits-toggle {
-  height: auto;
+  flex: 1 1 180px;
+  min-width: 0;
+  height: 26px;
   min-height: 26px;
   padding: 4px 6px;
   max-width: 100%;
@@ -7,16 +9,26 @@
   font-size: 11px;
   font-weight: 500;
 }
+.account-limits-toggle .mantine-Button-inner {
+  min-width: 0;
+  justify-content: flex-end;
+}
 .account-limits-toggle .mantine-Button-label {
-  white-space: normal;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .account-limits-summary {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 7px;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-align: left;
   font-variant-numeric: tabular-nums;
+}
+.account-limits-summary > span + span {
+  margin-left: 7px;
 }
 .account-limits-label {
   color: var(--muted);

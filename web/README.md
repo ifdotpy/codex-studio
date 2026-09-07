@@ -68,6 +68,19 @@ The browser checks use 40 workers and more than 60 rooms. They cover widths from
 320 to 1920 pixels, long drafts, table overflow, focus return, and menu placement.
 Screenshots use an isolated database. They do not represent live model results.
 
+`useConversationScroll.ts` owns transcript position. Keep browser scroll anchoring
+disabled on that viewport. Follow new content only while the reader stays at the
+bottom. Preserve the visible paragraph during content and composer size changes.
+Explicit navigation must record its new position before the next React render.
+
+Keep live message nodes and their order when a turn ends. Collapse that turn only
+on user action. Keep delivery controls and button geometry stable during requests.
+Retain confirmed same-chat data during refresh. Discard older responses after a
+newer request or stream update. Never retain data across a different chat or account.
+
+The conversation-motion, composer-stability, snapshot-order, and team-motion
+browser checks measure these transitions against the production bundle.
+
 ## Live conversation
 
 Managed conversations use `/api/transcript/stream`, a server-sent event stream.

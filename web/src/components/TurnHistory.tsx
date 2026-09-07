@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import {
   Check,
   ChevronRight,
@@ -53,6 +53,19 @@ function Turn({
   const [open, setOpen] = useState(
     () => saved<Record<string, boolean>>(storageKey, {})[group.id] ?? latest,
   );
+  const updateOpen = (value: boolean) => {
+    setOpen(value);
+    const prior = saved<Record<string, boolean>>(storageKey, {});
+    save(
+      storageKey,
+      Object.fromEntries([
+        ...Object.entries(prior)
+          .filter(([id]) => id !== group.id)
+          .slice(-499),
+        [group.id, value],
+      ]),
+    );
+  };
   const result = group.result;
   const earlier = group.items.filter((item) => item.id !== result?.id);
   const tools = group.items.filter((item) =>
@@ -85,19 +98,14 @@ function Turn({
         open={open}
         onToggle={(event) => {
           if (event.target !== event.currentTarget) return;
-          const value = event.currentTarget.open;
-          setOpen(value);
-          const prior = saved<Record<string, boolean>>(storageKey, {});
-          const next = Object.fromEntries([
-            ...Object.entries(prior)
-              .filter(([id]) => id !== group.id)
-              .slice(-499),
-            [group.id, value],
-          ]);
-          save(storageKey, next);
+          updateOpen(event.currentTarget.open);
         }}
       >
         <summary
+          onClick={(event) => {
+            event.preventDefault();
+            updateOpen(!open);
+          }}
           aria-label={`${label}: ${result ? resultExcerpt(result.text) : "No final text"}`}
         >
           <Icon size={15} className="turn-outcome-icon" />
@@ -167,29 +175,68 @@ export default function TurnHistory({
   const latest = groups.filter((group) => group.outcome).at(-1)?.id;
   return (
     <>
-      {groups.map((group) =>
-        group.outcome ? (
-          <Turn
-            key={group.id}
-            group={group}
-            latest={group.id === latest}
-            storageKey={storageKey}
-            render={renderMessage}
-            agentId={agentId}
-            onJump={onJump}
-          />
-        ) : (
-          <Fragment key={group.id}>
-            {messages(group.items, renderMessage)}
-            {group.items[0].role !== "user" && (
-              <ConversationResults
-                messages={group.items}
-                agentId={agentId}
-                onJump={onJump}
-              />
-            )}
-          </Fragment>
-        ),
+      {groups.map((group) => (
+        <StableTurn
+          key={group.id}
+          group={group}
+          latest={group.id === latest}
+          storageKey={storageKey}
+          render={renderMessage}
+          agentId={agentId}
+          onJump={onJump}
+        />
+      ))}
+    </>
+  );
+}
+
+function StableTurn(props: Parameters<typeof Turn>[0]) {
+  // Historical turns start compact. A turn seen live keeps its message nodes
+  // and chronological order until the reader explicitly asks to collapse it.
+  const layoutKey = `${props.storageKey}:layout`;
+  const [compact, setCompact] = useState(
+    () =>
+      !!props.group.outcome &&
+      saved<Record<string, boolean>>(layoutKey, {})[props.group.id] !== false,
+  );
+  useEffect(() => {
+    if (!props.group.items[0].turnId || props.group.items[0].role === "user")
+      return;
+    const prior = saved<Record<string, boolean>>(layoutKey, {});
+    save(
+      layoutKey,
+      Object.fromEntries([
+        ...Object.entries(prior)
+          .filter(([id]) => id !== props.group.id)
+          .slice(-499),
+        [props.group.id, compact],
+      ]),
+    );
+  }, [layoutKey, props.group.id, compact]);
+  if (compact && props.group.outcome) return <Turn {...props} />;
+  return (
+    <>
+      {messages(props.group.items, props.render)}
+      {props.group.items[0].role !== "user" && (
+        <ConversationResults
+          messages={props.group.items}
+          agentId={props.agentId}
+          onJump={props.onJump}
+        />
+      )}
+      {props.group.outcome && (
+        <button
+          className="turn-collapse"
+          onClick={() => {
+            save(props.storageKey, {
+              ...saved(props.storageKey, {}),
+              [props.group.id]: false,
+            });
+            setCompact(true);
+          }}
+        >
+          <Layers size={14} /> Collapse this turn
+        </button>
       )}
     </>
   );

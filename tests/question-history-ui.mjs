@@ -97,6 +97,57 @@ try {
   );
   assert.equal(history.items[0].answeredBy, "user");
   assert.equal(history.items[0].deferred, false);
+  // A slow refresh must not replace confirmed answers with a loading row.
+  const answer = historyDisclosure.locator(".request-history-answer");
+  const historyHeight = (await historyDisclosure.boundingBox()).height;
+  let delayedHistory;
+  await page.route("**/api/questions?*", (route) => {
+    delayedHistory = route;
+  });
+  await historyDisclosure.locator("summary").click();
+  await historyDisclosure.locator("summary").click();
+  await page.waitForFunction(() =>
+    document.querySelector('.request-history-items[aria-busy="true"]'),
+  );
+  assert.equal(await answer.textContent(), "Only the runtime folder");
+  assert.equal(
+    (await historyDisclosure.boundingBox()).height,
+    historyHeight,
+    "a pending refresh preserves history height",
+  );
+  assert.equal(
+    await historyDisclosure.getByText("Loading decisions…").count(),
+    0,
+  );
+  for (let attempt = 0; attempt < 100 && !delayedHistory; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(delayedHistory, "history request is delayed");
+  await delayedHistory.fulfill({
+    status: 503,
+    json: { error: "Fixture history unavailable" },
+  });
+  await historyDisclosure.getByRole("alert").waitFor();
+  assert.equal(
+    await answer.textContent(),
+    "Only the runtime folder",
+    "failed refresh preserves decisions",
+  );
+  delayedHistory = undefined;
+  await historyDisclosure.locator("summary").click();
+  await historyDisclosure.locator("summary").click();
+  await page.waitForFunction(() =>
+    document.querySelector('.request-history-items[aria-busy="true"]'),
+  );
+  assert.equal(await answer.textContent(), "Only the runtime folder");
+  for (let attempt = 0; attempt < 100 && !delayedHistory; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(delayedHistory, "history request is delayed");
+  await delayedHistory.fulfill({ json: history });
+  await page.unroute("**/api/questions?*");
+  await page.waitForFunction(() =>
+    document.querySelector('.request-history-items[aria-busy="false"]'),
+  );
+  assert.equal(await historyDisclosure.getByRole("alert").count(), 0);
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await page.screenshot({ path: join(root, `history-${width}.png`) });
@@ -135,7 +186,7 @@ try {
     .waitFor();
   assert.deepEqual(errors, []);
   console.log(
-    "Question history UI: PASS (durable defer, restore, answer history, reload, chat isolation, 390/1280px)",
+    "Question history UI: PASS (durable defer, restore, answer history, reload, chat isolation, delayed refresh height, failure retention, 390/1280px)",
   );
   console.log("Evidence:", root);
 } catch (error) {

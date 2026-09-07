@@ -5,6 +5,36 @@
 .composer-bar {
   flex-wrap: wrap;
 }
+#composer {
+  container-type: inline-size;
+}
+.composer-submit-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 8px;
+  margin-left: auto;
+}
+.composer-submit-actions > button {
+  flex: none;
+}
+/* Sending changes the icon, never the space between the controls. */
+.composer-bar #send-state {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.composer-bar .dictation-trigger {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.composer-bar:has(.message-delivery) .composer-submit-actions {
+  margin-left: 0;
+}
 .attachment-list {
   display: flex;
   flex: 0 0 100%;
@@ -160,6 +190,7 @@
 .message-delivery {
   display: flex;
   flex: none;
+  margin-left: auto;
   align-items: center;
   gap: 2px;
   padding: 2px;
@@ -174,4 +205,23 @@
 }
 .message-delivery button[aria-pressed="false"] {
   color: var(--muted);
+}
+
+/* The delivery choice has its own row before controls become crowded.
+   This depends on the conversation width, including an open team sidebar. */
+@container (max-width: 430px) {
+  .composer-bar .message-delivery {
+    flex: 0 0 100%;
+    order: -1;
+    margin-left: 0;
+  }
+  .composer-bar .message-delivery button {
+    flex: 1;
+  }
+  .composer-bar .attachment-list {
+    order: -2;
+  }
+  .composer-bar:has(.message-delivery) .composer-submit-actions {
+    margin-left: auto;
+  }
 }

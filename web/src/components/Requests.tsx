@@ -398,10 +398,13 @@ function QuestionHistory({
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<Json[] | null>(null);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   useEffect(() => {
     if (!open) return;
     let active = true;
-    setItems(null);
+    // Keep confirmed decisions visible while this chat refreshes. The parent
+    // keys this component by agentId, so another chat starts with no history.
+    setLoading(true);
     setError("");
     void api("/api/questions?agent=" + encodeURIComponent(agentId))
       .then((result) => {
@@ -412,6 +415,9 @@ function QuestionHistory({
       })
       .catch((error) => {
         if (active) setError(errorText(error));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
       });
     return () => {
       active = false;
@@ -425,11 +431,14 @@ function QuestionHistory({
     >
       <summary>Question history</summary>
       {open && (
-        <div className="request-history-items">
-          {error ? (
-            <p role="alert">{error}</p>
-          ) : items === null ? (
-            <p>Loading decisions…</p>
+        <div className="request-history-items" aria-busy={loading}>
+          {error && (
+            <p className="request-history-error" role="alert">
+              Could not update question history: {error}
+            </p>
+          )}
+          {items === null ? (
+            !error && <p>Loading decisions…</p>
           ) : !items.length ? (
             <p>No past answers in this chat.</p>
           ) : (

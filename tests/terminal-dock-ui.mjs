@@ -131,7 +131,7 @@ try {
         status: "running",
         created: Date.now() / 1000,
       };
-      shells.push(value);
+      shells.unshift(value);
       outputs.set(value.id, "Direct shell ready\r\n$ ");
     } else if (path === "/api/terminals/output") {
       if (failOutput) {

@@ -178,7 +178,14 @@ try {
   assert.equal(await frame.getByText("Review 12 of 40").count(), 0);
   deferLead = true;
   put(lead, 3, "<p>Late lead result</p>");
+  const beforeRefresh = await page.locator("#composer").boundingBox();
   await poll(() => !!deferred, "lead refresh starts");
+  assert.equal(await frame.getByText("Review 28 of 40").count(), 1);
+  assert.deepEqual(
+    await page.locator("#composer").boundingBox(),
+    beforeRefresh,
+    "a delayed panel revision does not move the composer",
+  );
   await select("Other project");
   await frame.getByText("Other agent panel").waitFor();
   await deferred.fulfill({ json: panels.get(lead.id) }).catch(() => {});
@@ -358,6 +365,8 @@ try {
     "synthetic click and source spoof cannot callback",
   );
   callbackMode = "defer";
+  const beforeCallback = await page.locator("#messages").boundingBox();
+  const composerBeforeCallback = await page.locator("#composer").boundingBox();
   await frame.getByRole("button", { name: "Approve release" }).click();
   await poll(() => submissions.length === 1, "trusted button callback");
   assert.equal(
@@ -379,8 +388,27 @@ try {
   const feedbackBounds = await page
     .locator(".agent-panel-feedback")
     .boundingBox();
+  const panelBounds = await panel.boundingBox();
+  assert.ok(feedbackBounds.y >= panelBounds.y);
   assert.ok(
-    feedbackBounds.y + feedbackBounds.height <= (await panel.boundingBox()).y,
+    feedbackBounds.y + feedbackBounds.height <=
+      panelBounds.y + panelBounds.height,
+  );
+  assert.deepEqual(
+    await page.locator("#messages").boundingBox(),
+    beforeCallback,
+    "callback feedback does not shrink or move the transcript",
+  );
+  assert.deepEqual(
+    await page.locator("#composer").boundingBox(),
+    composerBeforeCallback,
+    "callback feedback does not move the composer",
+  );
+  await page.getByRole("button", { name: "Dismiss panel notice" }).click();
+  assert.equal(await page.locator(".agent-panel-feedback").count(), 0);
+  assert.deepEqual(
+    await page.locator("#messages").boundingBox(),
+    beforeCallback,
   );
   callbackMode = "lost";
   await frame.getByRole("button", { name: "Send choice" }).click();

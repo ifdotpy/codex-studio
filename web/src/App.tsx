@@ -204,7 +204,11 @@ export default function App() {
           request === limitsRequest.current &&
           currentAccountKey.current === accountKey
         )
-          setLimits({ data: null, error: errorText(e), accountKey });
+          setLimits((old) => ({
+            ...(old?.accountKey === accountKey ? old : { data: null }),
+            error: errorText(e),
+            accountKey,
+          }));
       });
   }, [accountKey]);
   useEffect(() => {

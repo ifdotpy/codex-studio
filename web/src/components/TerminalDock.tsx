@@ -64,23 +64,27 @@ export default function TerminalDock({
   const [title, setTitle] = useState("");
   const [pending, setPending] = useState(false);
   const list = useRef<HTMLDivElement>(null);
+  const listingRevision = useRef(0);
   const notifyRef = useRef(notify);
   notifyRef.current = notify;
-  const load = useCallback(async () => {
-    const value = await api<{ items: Shell[] }>("/api/terminals");
-    setShells(value.items || []);
-    setError("");
+  const load = useCallback(async (allowed: () => boolean = () => true) => {
+    const request = ++listingRevision.current;
+    const current = () => request === listingRevision.current && allowed();
+    try {
+      const value = await api<{ items: Shell[] }>("/api/terminals");
+      if (!current()) return;
+      setShells(value.items || []);
+      setError("");
+    } catch (error) {
+      if (current()) throw error;
+    }
   }, []);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const value = await api<{ items: Shell[] }>("/api/terminals");
-        if (!stopped) {
-          setShells(value.items || []);
-          setError("");
-        }
+        await load(() => !stopped);
       } catch (e) {
         if (!stopped) setError(errorText(e));
       }
@@ -91,7 +95,7 @@ export default function TerminalDock({
       stopped = true;
       clearTimeout(timer);
     };
-  }, [opened]);
+  }, [opened, load]);
   useEffect(() => {
     const update = () =>
       document.documentElement.style.setProperty(
@@ -153,11 +157,13 @@ export default function TerminalDock({
         rows: 24,
       });
       setShells((items) => [
-        ...items.filter((item) => item.id !== shell.id),
         shell,
+        ...items.filter((item) => item.id !== shell.id),
       ]);
       setSelected(`shell:${shell.id}`);
       setQuery("");
+      setScrollTop(0);
+      if (list.current) list.current.scrollTop = 0;
       await load();
     } catch (e) {
       notifyRef.current(errorText(e));

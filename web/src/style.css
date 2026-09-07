@@ -1263,7 +1263,6 @@ p {
 @keyframes paragraph-enter {
   from {
     opacity: 0.35;
-    transform: translateY(3px);
   }
   to {
     opacity: 1;
@@ -2018,4 +2017,14 @@ html body #root {
 .worker-entry > .worker {
   padding: 2px 0;
   gap: 6px;
+}
+
+/* Keep message width stable when history starts to scroll. */
+#messages {
+  scrollbar-gutter: stable;
+  overflow-anchor: none;
+}
+.message-content {
+  display: flow-root;
+  min-width: 0;
 }
