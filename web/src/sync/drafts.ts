@@ -12,6 +12,8 @@ import {
   UnsupportedSyncError,
 } from "./client";
 
+import { encodeDraftPayload } from "./draftPayload";
+
 type Drafts = Record<string, string>;
 export type DraftVersion = {
   id: string;
@@ -72,7 +74,7 @@ export function useSyncedDrafts() {
           const alternatives = old ? JSON.parse(old.payload).alternatives : [];
           await db.drafts.incrementalUpsert({
             id: item.id,
-            payload: JSON.stringify({ ...item, alternatives }),
+            payload: encodeDraftPayload({ ...item, alternatives }),
             seq: 0,
           });
           if (pendingEdits.current.get(item.session) === sequence)
@@ -118,7 +120,7 @@ export function useSyncedDrafts() {
             await db.drafts.insert({
               id,
               seq: 0,
-              payload: JSON.stringify({
+              payload: encodeDraftPayload({
                 id,
                 session,
                 device,

@@ -94,8 +94,14 @@ class SyncStore:
                 if not isinstance(value, dict) or not isinstance(new.get('_deleted', False), bool):
                     raise ValueError('Invalid draft')
                 assumed = row.get('assumedMasterState')
-                if assumed is not None and not isinstance(assumed, dict):
-                    raise ValueError('Invalid assumed draft state')
+                assumed_payload = None
+                if assumed is not None:
+                    if (not isinstance(assumed, dict) or not isinstance(assumed.get('payload'), str)
+                            or not isinstance(assumed.get('_deleted', False), bool)):
+                        raise ValueError('Invalid assumed draft state')
+                    assumed_payload = json.dumps(json.loads(assumed['payload']), sort_keys=True,
+                                                 separators=(',', ':'), ensure_ascii=False)
+                encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
                 alternatives = value.get('alternatives', [])
                 if not isinstance(alternatives, list) or not all(isinstance(text, str) for text in alternatives):
                     raise ValueError('Invalid draft alternatives')
@@ -103,9 +109,9 @@ class SyncStore:
                 if not isinstance(value.get('text'), str) or len(value['text']) > 2_000_000:
                     raise ValueError('Invalid draft text')
                 old = db.execute('SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND id=?', ('drafts', key)).fetchone()
-                if old and (not assumed or assumed.get('payload') != old[2]
+                if old and (not assumed or assumed_payload != old[2]
                             or assumed.get('_deleted', False) != bool(old[3])):
-                    if new['payload'] != old[2] or new.get('_deleted', False) != bool(old[3]):
+                    if encoded != old[2] or new.get('_deleted', False) != bool(old[3]):
                         conflicts.append(self.document(old))
                         continue
                 self._put(db, 'drafts', key, value, bool(new.get('_deleted')))

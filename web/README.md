@@ -74,7 +74,7 @@ bottom. Preserve the visible paragraph during content and composer size changes.
 Explicit navigation must record its new position before the next React render.
 
 Keep live message nodes and their order when a turn ends. Collapse that turn only
-on user action. Keep delivery controls and button geometry stable during requests.
+on user action. Keep button geometry stable during requests.
 Retain confirmed same-chat data during refresh. Discard older responses after a
 newer request or stream update. Never retain data across a different chat or account.
 
@@ -83,11 +83,19 @@ browser checks measure these transitions against the production bundle.
 
 ## Live conversation
 
+Send delivers after active tool calls. Desktop Enter does the same. Tab in a nonempty composer queues
+the message after the current turn. Shift+Enter adds a line. Empty Tab and Shift+Tab
+keep normal focus navigation. An idle agent starts a new turn with either action.
+
 Managed conversations use `/api/transcript/stream`, a server-sent event stream.
 The server sends a snapshot on connection and changed records after that.
 It waits on a condition while idle and sends a heartbeat every 15 seconds.
 Fast notifications are coalesced with an 80 ms delay between frames.
 These UI updates do not call the model.
+
+The client shows bounded cached history when a managed chat is reopened.
+Fresh events replace it. A delayed initial stream falls back to HTTP after 200 ms.
+Cached history never supplies the current agent status.
 
 The client reconnects with a fresh snapshot. It uses the transcript GET endpoint
 as a fallback during connection loss. Agent rooms and the team list retain their
@@ -118,9 +126,10 @@ the changes and checks before acceptance. Only acceptance unblocks dependencies.
 The composer supports file upload, paste, and drop. Each message accepts eight
 files, up to 20 MiB per file. Images enter Codex as local images. Other files enter
 as explicit file references. HTML previews cannot run scripts or load remote files.
-Attachment drafts survive reloads. Failed sends retain the draft and attachments.
+Attachment drafts survive reloads. Rejected sends retain the draft and attachments.
+Offline messages remain in the device outbox.
 
-Choose **Queue** for the next turn or **Steer** for the current turn. Queue entries
+Use Tab for the next turn or Send for the current turn. Queue entries
 can be edited, moved first, or cancelled. Uncertain delivery never silently retries
 as a new turn. Conversation branches include the complete selected native turn.
 

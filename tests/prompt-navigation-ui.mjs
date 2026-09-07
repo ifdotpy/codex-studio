@@ -78,6 +78,10 @@ try {
       });
     await route.fulfill({ json: transcript });
   });
+  // This suite verifies the native transcript transport without optional sync.
+  await page.route("**/api/sync/identity", (r) =>
+    r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+  );
   await page.goto(url);
   const openLead = async () => {
     await page

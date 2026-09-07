@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Loader, Textarea, Tooltip } from "@mantine/core";
+import { ActionIcon, Button, Loader, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   ArrowDown,
@@ -68,7 +68,7 @@ export default function Conversation(p: {
   );
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const { items, notice, before, older, liveAgent, connection, loaded } =
-    useMessages(p.id, kind, p.agent?.source === "managed");
+    useMessages(p.id, kind, p.agent?.source === "managed", p.data.stateDir);
   const { scroll, content, follow, setFollow, onScroll, remember } =
     useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -108,7 +108,6 @@ export default function Conversation(p: {
     );
   }, [attachments, attachmentKey]);
   const [uploading, setUploading] = useState(false);
-  const [delivery, setDelivery] = useState<"queue" | "steer">("queue");
   const [queue, setQueue] = useState<Json[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -142,7 +141,6 @@ export default function Conversation(p: {
     );
   }, [p.id, agent?.status, agent?.activity?.phase, connection, p.onPhase]);
   useEffect(() => {
-    setDelivery("queue");
     setEditing(null);
     setQueueOpen(false);
   }, [p.id]);
@@ -199,7 +197,7 @@ export default function Conversation(p: {
       setUploading(false);
     }
   };
-  const submit = async () => {
+  const submit = async (delivery: "queue" | "steer" = "steer") => {
     if (
       sendLock.current ||
       p.sending ||
@@ -643,7 +641,9 @@ export default function Conversation(p: {
               aria-description={
                 mobileClient
                   ? "Use the send button to send."
-                  : "Enter to send. Shift + Enter for a new line."
+                  : managed
+                    ? "Enter sends after tool calls. Tab queues after the turn. Shift + Enter adds a new line."
+                    : "Enter to send. Shift + Enter for a new line."
               }
               placeholder={
                 canSend
@@ -656,6 +656,21 @@ export default function Conversation(p: {
               maxLength={12000}
               rows={1}
               onKeyDown={(e) => {
+                if (
+                  managed &&
+                  canSend &&
+                  e.key === "Tab" &&
+                  !e.shiftKey &&
+                  !e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.altKey &&
+                  !e.nativeEvent.isComposing &&
+                  (p.draft.trim() || assets.length)
+                ) {
+                  e.preventDefault();
+                  void submit("queue");
+                  return;
+                }
                 if (
                   !mobileClient &&
                   e.key === "Enter" &&
@@ -705,49 +720,6 @@ export default function Conversation(p: {
               )}
               {managed && agent?.isLead && p.id && (
                 <RealtimeVoice key={p.id} agentId={p.id} notify={p.notify} />
-              )}
-              {managed && (
-                <div
-                  className="message-delivery"
-                  role="group"
-                  aria-label="Message delivery"
-                >
-                  {(
-                    [
-                      [
-                        "steer",
-                        "After tool call",
-                        "Add to the current turn at the next model step. Active tool calls finish first; compaction can delay delivery.",
-                      ],
-                      [
-                        "queue",
-                        "After turn",
-                        "Start a new turn after the current turn ends.",
-                      ],
-                    ] as const
-                  ).map(([mode, label, description]) => (
-                    <Tooltip
-                      key={mode}
-                      label={description}
-                      position="top"
-                      multiline
-                      w={260}
-                      withArrow
-                    >
-                      <Button
-                        type="button"
-                        size="compact-xs"
-                        variant={delivery === mode ? "light" : "subtle"}
-                        aria-pressed={delivery === mode}
-                        aria-description={description}
-                        disabled={p.sending}
-                        onClick={() => setDelivery(mode)}
-                      >
-                        {label}
-                      </Button>
-                    </Tooltip>
-                  ))}
-                </div>
               )}
               <span id="send-state" role="status" aria-live="polite">
                 {p.sending ? "Sending…" : ""}
@@ -805,10 +777,8 @@ export default function Conversation(p: {
                   }
                   aria-label="Send message"
                   title={
-                    canSteer
-                      ? delivery === "steer"
-                        ? "Send after active tool calls"
-                        : "Send after the current turn"
+                    managed
+                      ? "Send after tool calls (Enter). Queue after turn (Tab)."
                       : "Send message"
                   }
                 >

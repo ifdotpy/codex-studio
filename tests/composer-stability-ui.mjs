@@ -88,6 +88,10 @@ try {
     await page.route("**/api/stop", (route) => {
       pendingStop = route;
     });
+    // Exercise direct delivery against servers without the optional sync protocol.
+    await page.route("**/api/sync/identity", (r) =>
+      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+    );
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await page.setViewportSize({ width, height: 960 });
@@ -101,7 +105,6 @@ try {
           "#composer",
           "#message",
           ".composer-bar",
-          ".message-delivery",
           ".attach-button",
           ...(mobile ? [] : [".dictation-trigger"]),
           "#stop",
@@ -135,7 +138,6 @@ try {
       );
       const form = current["#composer"];
       for (const selector of [
-        ".message-delivery",
         ".attach-button",
         ...(width <= 760 ? [] : [".dictation-trigger"]),
         "#stop",
@@ -157,10 +159,6 @@ try {
       );
       await page.waitForTimeout(80);
     };
-    await page
-      .getByRole("button", { name: "After tool call", exact: true })
-      .click();
-    await stable("idle preference selected");
     await page.locator("#send").click();
     await page.waitForFunction(() =>
       document.querySelector("#send-state").textContent.includes("Sending"),
@@ -176,8 +174,11 @@ try {
       await stable(next);
     }
     await page.locator("#message").fill("Additional instruction");
-    await page.getByRole("button", { name: "After turn", exact: true }).click();
-    await page.locator("#send").click();
+    pendingSend = null;
+    await page.locator("#message").press("Tab");
+    for (let i = 0; !pendingSend && i < 100; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.equal(pendingSend.request().postDataJSON().delivery, "queue");
     await page.waitForFunction(() =>
       document.querySelector("#send-state").textContent.includes("Sending"),
     );

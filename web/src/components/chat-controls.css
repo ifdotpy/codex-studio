@@ -5,9 +5,6 @@
 .composer-bar {
   flex-wrap: wrap;
 }
-#composer {
-  container-type: inline-size;
-}
 .composer-submit-actions {
   display: flex;
   align-items: center;
@@ -31,9 +28,6 @@
 .composer-bar .dictation-trigger {
   flex: none;
   font-variant-numeric: tabular-nums;
-}
-.composer-bar:has(.message-delivery) .composer-submit-actions {
-  margin-left: 0;
 }
 .attachment-list {
   display: flex;
@@ -184,44 +178,5 @@
   }
   .composer-bar #project {
     max-width: 42%;
-  }
-}
-
-.message-delivery {
-  display: flex;
-  flex: none;
-  margin-left: auto;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--mantine-color-default-border);
-  border-radius: 7px;
-}
-.message-delivery button {
-  height: 25px;
-  padding-inline: 8px;
-  border-radius: 4px;
-  font-size: 11px;
-}
-.message-delivery button[aria-pressed="false"] {
-  color: var(--muted);
-}
-
-/* The delivery choice has its own row before controls become crowded.
-   This depends on the conversation width, including an open team sidebar. */
-@container (max-width: 430px) {
-  .composer-bar .message-delivery {
-    flex: 0 0 100%;
-    order: -1;
-    margin-left: 0;
-  }
-  .composer-bar .message-delivery button {
-    flex: 1;
-  }
-  .composer-bar .attachment-list {
-    order: -2;
-  }
-  .composer-bar:has(.message-delivery) .composer-submit-actions {
-    margin-left: auto;
   }
 }

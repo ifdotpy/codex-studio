@@ -47,6 +47,10 @@ try {
   page.setDefaultTimeout(12000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  // Exercise direct delivery against servers without the optional sync protocol.
+  await page.route("**/api/sync/identity", (r) =>
+    r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+  );
   await page.goto(origin);
   await page.locator("[data-chat]").first().waitFor();
   const initial = await state();
@@ -238,7 +242,7 @@ try {
     "Second queued instruction",
   ]) {
     await page.locator("#message").fill(text);
-    await page.locator("#send").click();
+    await page.locator("#message").press("Tab");
     await poll(
       async () => (await queue()).items.some((item) => item.text === text),
       "message enters durable queue",
@@ -288,41 +292,38 @@ try {
     async () => (await queue()).items.length === 1,
     "queue cancellation is persisted",
   );
-  const delivery = page.getByRole("group", {
-    name: "Message delivery",
-    exact: true,
-  });
-  const afterTool = delivery.getByRole("button", {
-    name: "After tool call",
-    exact: true,
-  });
-  const afterTurn = delivery.getByRole("button", {
-    name: "After turn",
-    exact: true,
-  });
-  assert.equal(await afterTurn.getAttribute("aria-pressed"), "true");
-  assert.equal(await afterTool.getAttribute("aria-pressed"), "false");
-  await afterTool.click();
-  assert.equal(await afterTool.getAttribute("aria-pressed"), "true");
-  assert.equal(await afterTurn.getAttribute("aria-pressed"), "false");
-  assert.match(
-    await afterTool.getAttribute("aria-description"),
-    /Active tool calls finish first/,
+  assert.equal(
+    await page
+      .getByRole("group", { name: "Message delivery", exact: true })
+      .count(),
+    0,
   );
-  await afterTurn.click();
-  assert.equal(await afterTurn.getAttribute("aria-pressed"), "true");
-  await afterTool.click();
-  await page.screenshot({ path: join(root, "message-delivery-desktop.png") });
+  await page.locator("#message").fill("");
+  await page.locator("#message").press("Tab");
+  assert.equal(
+    await page
+      .locator("#message")
+      .evaluate((e) => e === document.activeElement),
+    false,
+    "empty Tab retains keyboard navigation",
+  );
+  await page.locator("#message").fill("Keyboard check");
+  await page.locator("#message").press("Shift+Tab");
+  assert.equal(
+    await page
+      .locator("#message")
+      .evaluate((e) => e === document.activeElement),
+    false,
+    "Shift+Tab retains keyboard navigation",
+  );
+  await page.locator("#message").fill("");
   await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await afterTool.isVisible(), true);
-  assert.equal(await afterTurn.isVisible(), true);
   assert.ok(
     await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
     ),
-    "delivery modes fit mobile",
   );
-  await page.screenshot({ path: join(root, "message-delivery-mobile.png") });
+  await page.screenshot({ path: join(root, "message-shortcuts-mobile.png") });
   await page.setViewportSize({ width: 1440, height: 960 });
   await page
     .locator("#message")
@@ -340,6 +341,27 @@ try {
     (await queue()).items.length,
     1,
     "steer failure does not silently queue",
+  );
+
+  await page.locator("#message").fill("Keyboard instruction");
+  await page.route(
+    "**/api/messages",
+    (r) =>
+      r.fulfill({ status: 503, json: { error: "Keyboard transport failure" } }),
+    { times: 1 },
+  );
+  const entered = page.waitForRequest(
+    (r) => r.url().endsWith("/api/messages") && r.method() === "POST",
+  );
+  await page.locator("#message").press("Enter");
+  assert.equal(
+    (await entered).postDataJSON().delivery,
+    "steer",
+    "Enter uses after-tool-call delivery",
+  );
+  await poll(
+    async () => !(await page.locator("#send").isDisabled()),
+    "Enter failure returns control",
   );
 
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();

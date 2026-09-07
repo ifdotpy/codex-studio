@@ -1,5 +1,6 @@
 import type { RxConflictHandler } from "rxdb";
 import type { SyncDocument } from "./client";
+import { encodeDraftPayload } from "./draftPayload";
 // Keep every concurrent text, including two tabs that share the same device branch.
 export const draftConflictHandler: RxConflictHandler<SyncDocument> = {
   isEqual: (a, b) => a.payload === b.payload && a._deleted === b._deleted,
@@ -17,7 +18,7 @@ export const draftConflictHandler: RxConflictHandler<SyncDocument> = {
       .sort();
     return {
       ...realMasterState,
-      payload: JSON.stringify({ ...master, alternatives }),
+      payload: encodeDraftPayload({ ...master, alternatives }),
     };
   },
 };

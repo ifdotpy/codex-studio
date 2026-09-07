@@ -48,6 +48,10 @@ try {
   page.on("request", (r) => {
     if (r.url().includes("/api/transcript?id=")) transcriptPolls++;
   });
+  // This suite verifies the native transcript transport without optional sync.
+  await page.route("**/api/sync/identity", (r) =>
+    r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+  );
   await page.goto(origin);
   await page
     .locator("[data-chat]")

@@ -60,6 +60,19 @@ with tempfile.TemporaryDirectory() as directory:
     except ValueError:
         pass
     assert len(store.pull('drafts')['documents']) == 2
+    # JavaScript key order and JSON whitespace do not create a concurrent edit.
+    original = row('phone', 'first')['newDocumentState']
+    assert original['payload'] != next(d for d in drafts if d['id'] == 'phone:one')['payload']
+    assert store.push_drafts([{'newDocumentState': original}]) == []
+    cleared = row('phone', '')['newDocumentState']
+    assert store.push_drafts([{'newDocumentState': cleared, 'assumedMasterState': original}]) == []
+    current_phone = next(d for d in store.pull('drafts')['documents'] if d['id'] == 'phone:one')
+    assert json.loads(current_phone['payload'])['text'] == ''
+    assert store.push_drafts([{'newDocumentState': cleared, 'assumedMasterState': original}]) == []
+    # A real intervening edit remains a conflict, even when its keys are reordered.
+    stale = store.push_drafts([{'newDocumentState': row('phone', 'stale')['newDocumentState'],
+                               'assumedMasterState': original}])
+    assert len(stale) == 1 and json.loads(stale[0]['payload'])['text'] == ''
     phone = next(d for d in store.pull('drafts')['documents'] if d['id'] == 'phone:one')
     deleted = {**phone, '_deleted': True}
     assert store.push_drafts([{'newDocumentState': deleted, 'assumedMasterState': phone}]) == []
