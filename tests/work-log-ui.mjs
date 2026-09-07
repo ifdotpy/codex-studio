@@ -109,7 +109,9 @@ try {
     r.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
   );
   await page.route("**/api/transcript?*", (r) =>
-    r.fulfill({ json: transcript() }),
+    new URL(r.request().url()).searchParams.get("id") === lead.id
+      ? r.fulfill({ json: transcript() })
+      : r.fallback(),
   );
   const emit = async () => {
     await page.evaluate(
@@ -225,6 +227,18 @@ try {
   assert.ok(
     Math.abs((await anchor.boundingBox()).y - top) < 2,
     "answer arrival preserves the reader's paragraph",
+  );
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.locator(`[data-chat="${lead.id}"]`).click();
+  await emit();
+  assert.notEqual(
+    await work().getAttribute("open"),
+    null,
+    "chat switch retains automatic expansion for the reader",
+  );
+  assert.ok(
+    Math.abs((await anchor.boundingBox()).y - top) < 2,
+    "chat switch restores the paragraph beside a final answer",
   );
   await page.locator("#jump-latest").click();
   await work().locator(":scope > summary").click();

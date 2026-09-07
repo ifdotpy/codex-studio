@@ -13,6 +13,10 @@ import ConversationResults from "./ConversationResults";
 import { historyGroups, type HistoryGroup } from "./turnHistoryModel";
 import "./turn-history.css";
 
+// Retain the displayed layout when a chat unmounts, without treating automatic
+// expansion as a manual preference. Explicit preferences also survive reload.
+const layouts = new Map<string, { open: boolean; legacyResult: boolean }>();
+
 function messages(items: Message[], render: (message: Message) => ReactNode) {
   const groups: (Message | Message[])[] = [];
   for (const item of items) {
@@ -47,11 +51,15 @@ function Turn({
   following: boolean;
 }) {
   const key = `${storageKey}:work-v2`;
-  const [initialChoice] = useState(
-    () => saved<Record<string, boolean>>(key, {})[group.id],
+  const layoutKey = `${key}:${group.id}`;
+  const [initial] = useState(() => ({
+    choice: saved<Record<string, boolean>>(key, {})[group.id],
+    layout: layouts.get(layoutKey),
+  }));
+  const choice = useRef(initial.choice);
+  const allowLegacyResult = useRef(
+    initial.layout?.legacyResult ?? !!group.outcome,
   );
-  const choice = useRef(initialChoice);
-  const allowLegacyResult = useRef(!!group.outcome);
   const result =
     group.result?.phase === "final_answer" || allowLegacyResult.current
       ? group.result
@@ -64,8 +72,13 @@ function Turn({
     group.outcome === "interrupted" ||
     summary.failed > 0;
   const [open, setOpen] = useState(
-    () => choice.current ?? (!result || problem),
+    () => choice.current ?? initial.layout?.open ?? (!result || problem),
   );
+  useEffect(() => {
+    layouts.delete(layoutKey);
+    layouts.set(layoutKey, { open, legacyResult: allowLegacyResult.current });
+    if (layouts.size > 500) layouts.delete(layouts.keys().next().value!);
+  }, [layoutKey, open]);
   const hadResult = useRef(!!result);
   useEffect(() => {
     const appeared = !!result && !hadResult.current;
