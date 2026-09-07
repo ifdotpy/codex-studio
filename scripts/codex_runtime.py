@@ -2087,7 +2087,19 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 if not self.connection_current(account_key, connection_id):
                     return
                 bucket = p.get("rateLimits", {})
-                data = self.rate_limits_for(account_key).get("data") or {}
+                processed_at = time.time()
+                received_at = message.get("_studioReceivedAt")
+                received_at = min(processed_at, received_at) if type(received_at) in (int, float) and received_at >= 0 else processed_at
+                current = self.rate_limits_for(account_key)
+                if received_at < (current.get("at") or 0):
+                    # Retain telemetry without replacing a newer account read.
+                    with self.db() as db:
+                        self.analytics_safe(db, self.analytics_limit, account_key, {
+                            "data": {"rateLimits": bucket}, "at": received_at,
+                            "processedAt": processed_at, "ignoredAsStale": True,
+                        })
+                    return
+                data = current.get("data") or {}
                 buckets = dict(data.get("rateLimitsByLimitId") or {})
                 buckets[bucket.get("limitId") or "codex"] = bucket
                 self.set_rate_limits(account_key, {
@@ -2096,7 +2108,8 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                         "rateLimits": bucket,
                         "rateLimitsByLimitId": buckets,
                     },
-                    "at": time.time(),
+                    "at": received_at,
+                    "processedAt": processed_at,
                     "error": None,
                 })
             return

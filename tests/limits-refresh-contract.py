@@ -36,6 +36,29 @@ class LimitsRefreshContracts(unittest.TestCase):
     def timeout(self):
         return ResponseTimeout("account/rateLimits/read response timed out; outcome unknown")
 
+    def test_delayed_notification_uses_receive_time_not_dispatch_time(self):
+        received = time.time() - 180
+        self.runtime.notification({"method": "account/rateLimits/updated",
+            "_studioReceivedAt": received,
+            "params": {"rateLimits": {"primary": {"usedPercent": 17}}}})
+        self.assertEqual(self.runtime.rate_limits_for()["at"], received)
+        server = self.runtime.connect()
+        with patch.object(server, "call", return_value={"accountId": "fresh"}) as call:
+            result = self.runtime.limits()
+        call.assert_called_once()
+        self.assertEqual(result["data"]["accountId"], "fresh")
+
+    def test_delayed_notification_does_not_replace_newer_read(self):
+        cached = self.cache()
+        self.runtime.notification({"method": "account/rateLimits/updated",
+            "_studioReceivedAt": cached["at"] - 180,
+            "params": {"rateLimits": {"primary": {"usedPercent": 99}}}})
+        self.assertIs(self.runtime.rate_limits_for(), cached)
+        with self.runtime.db() as db:
+            row = db.execute("SELECT record FROM analytics_limits ORDER BY rowid DESC LIMIT 1").fetchone()
+        import json
+        self.assertTrue(json.loads(row[0])["ignoredAsStale"])
+
     def test_slow_account_does_not_block_other_account(self):
         slow = self.runtime.connect()
         started, release = threading.Event(), threading.Event()
