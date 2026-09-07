@@ -175,7 +175,7 @@ try {
   assert.equal(
     await work().getAttribute("open"),
     null,
-    "final answer collapses untouched work while following",
+    "tools start closed and stay closed when the final arrives",
   );
   assert.equal(await page.locator(".turn-answer").isVisible(), true);
   await work().locator(":scope > summary").click();
@@ -219,10 +219,11 @@ try {
   const anchor = page.locator('[data-message="note-reader-4"]');
   const top = (await anchor.boundingBox()).y;
   await finish();
-  assert.notEqual(
-    await work().getAttribute("open"),
-    null,
-    "answer does not hide the work someone is reading",
+  assert.equal(await work().getAttribute("open"), null);
+  assert.equal(
+    await anchor.isVisible(),
+    true,
+    "commentary stays visible outside closed tools",
   );
   assert.ok(
     Math.abs((await anchor.boundingBox()).y - top) < 2,
@@ -231,10 +232,10 @@ try {
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await emit();
-  assert.notEqual(
+  assert.equal(
     await work().getAttribute("open"),
     null,
-    "chat switch retains automatic expansion for the reader",
+    "chat switch retains closed tools",
   );
   assert.ok(
     Math.abs((await anchor.boundingBox()).y - top) < 2,
@@ -251,6 +252,83 @@ try {
     ),
     "narrow layout has no horizontal overflow",
   );
+  // Reproduce the owner's screenshot: notifications, commentary, then command.
+  turn = "interleaved";
+  const tool = (id, label) => ({
+    ...shared(),
+    id,
+    role: "output",
+    toolStatus: "completed",
+    text: JSON.stringify({
+      type: "dynamicToolCall",
+      tool: label,
+      status: "completed",
+      success: true,
+    }),
+  });
+  items = [
+    tool("worker-result", "Worker result received"),
+    tool("agent-message", "Agent message received"),
+    {
+      ...shared(),
+      id: "between-tools",
+      role: "assistant",
+      phase: "commentary",
+      text: "Получены усиленные нативные тесты и исправление проверки seal.\n\nПроверяю их diff и журналы.",
+    },
+    tool("next-command", "Run command"),
+  ];
+  await emit();
+  const middle = page.locator('[data-message="between-tools"]');
+  await middle.waitFor();
+  const blocks = page.locator('[data-turn="interleaved"] .turn-work');
+  assert.equal(
+    await blocks.count(),
+    2,
+    "commentary splits consecutive tool groups",
+  );
+  assert.equal(
+    await middle.locator("xpath=ancestor::details").count(),
+    0,
+    "text is never inside a tool disclosure",
+  );
+  assert.equal(await blocks.locator(".message").count(), 0);
+  await blocks.first().locator(":scope > summary").click();
+  assert.equal(await blocks.first().locator(".tool-card").count(), 2);
+  assert.equal(await middle.isVisible(), true);
+  assert.equal(
+    await page.evaluate(() => {
+      const text = document.querySelector('[data-message="between-tools"]');
+      const blocks = document.querySelectorAll(
+        '[data-turn="interleaved"] .turn-work',
+      );
+      return (
+        !!(
+          blocks[0].compareDocumentPosition(text) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+        ) &&
+        !!(
+          text.compareDocumentPosition(blocks[1]) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+        )
+      );
+    }),
+    true,
+    "timeline order is preserved",
+  );
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await middle.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: join(directory, "commentary-between-tools.png"),
+  });
+  await blocks.first().locator(":scope > summary").click();
+  assert.equal(
+    await middle.isVisible(),
+    true,
+    "closing tools cannot hide commentary",
+  );
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.screenshot({ path: join(directory, "commentary-mobile.png") });
   await page.setViewportSize({ width: 1100, height: 900 });
   await page.unroute("**/api/transcript?*");
   await page.reload();

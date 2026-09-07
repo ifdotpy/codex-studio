@@ -48,13 +48,6 @@
   margin: 8px 0 18px 6px;
   padding-left: 16px;
 }
-.turn-work-body .message {
-  margin-bottom: 16px;
-}
-.turn-work-body .prose {
-  color: var(--muted);
-  font-size: 13px;
-}
 .turn-work-body .tool-card {
   margin: 4px 0;
 }

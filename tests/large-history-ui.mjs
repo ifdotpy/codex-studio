@@ -121,9 +121,21 @@ try {
   console.log(JSON.stringify(measurement));
   await page.screenshot({ path: join(dir, "large-history.png") });
   if (process.env.HISTORY_BASELINE !== "1") {
-    assert.ok(
-      measurement.elements < 6000,
-      "Collapsed history does not mount every hidden message and tool body",
+    // Commentary is now visible by contract. Only tool bodies are deferred.
+    assert.equal(
+      await page.locator(".tool-card").count(),
+      0,
+      "Closed tool groups do not mount tool bodies",
+    );
+    assert.equal(
+      await page.locator('[data-message^="text-"]').count(),
+      turns * steps,
+      "All commentary remains in the conversation",
+    );
+    assert.equal(
+      await page.locator('.turn-work [data-message^="text-"]').count(),
+      0,
+      "No commentary is hidden inside tools",
     );
     assert.ok(
       measurement.responseToContent < 1800,
@@ -132,7 +144,10 @@ try {
     await page
       .locator('[data-message="result-0"]')
       .waitFor({ state: "visible" });
-    await page.locator('[data-turn="turn-0"] .turn-work > summary').click();
+    await page
+      .locator('[data-turn="turn-0"] .turn-work > summary')
+      .first()
+      .click();
     await page.locator('[data-message="text-0-0"]').waitFor();
 
     await page.locator('[data-message="tool-0-0"] > summary').click();

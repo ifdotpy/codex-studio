@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import {
   ChevronRight,
   CircleAlert,
@@ -13,11 +13,7 @@ import ConversationResults from "./ConversationResults";
 import { historyGroups, type HistoryGroup } from "./turnHistoryModel";
 import "./turn-history.css";
 
-// Retain the displayed layout when a chat unmounts, without treating automatic
-// expansion as a manual preference. Explicit preferences also survive reload.
-const layouts = new Map<string, { open: boolean; legacyResult: boolean }>();
-
-function messages(items: Message[], render: (message: Message) => ReactNode) {
+function messageGroups(items: Message[]) {
   const groups: (Message | Message[])[] = [];
   for (const item of items) {
     if (["tool", "output"].includes(item.role)) {
@@ -26,12 +22,96 @@ function messages(items: Message[], render: (message: Message) => ReactNode) {
       else groups.push([item]);
     } else groups.push(item);
   }
-  return groups.map((item) =>
+  return groups;
+}
+
+function messages(items: Message[], render: (message: Message) => ReactNode) {
+  return messageGroups(items).map((item) =>
     Array.isArray(item) ? (
       <Activity key={item[0].id} items={item} />
     ) : (
       <Fragment key={item.id}>{render(item)}</Fragment>
     ),
+  );
+}
+
+function WorkBlock({
+  items,
+  storageKey,
+}: {
+  items: Message[];
+  storageKey: string;
+}) {
+  const key = `${storageKey}:tools-v3`;
+  const id = items[0].id;
+  const [open, setOpen] = useState(
+    () => saved<Record<string, boolean>>(key, {})[id] ?? false,
+  );
+  const summary = activitySummary(items);
+  const update = (value: boolean) => {
+    setOpen(value);
+    save(
+      key,
+      Object.fromEntries([
+        ...Object.entries(saved<Record<string, boolean>>(key, {}))
+          .filter(([entry]) => entry !== id)
+          .slice(-499),
+        [id, value],
+      ]),
+    );
+  };
+  return (
+    <details
+      className="turn-work"
+      data-running={summary.running}
+      data-failed={summary.failed}
+      open={open}
+      onToggle={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          event.currentTarget.open !== open
+        )
+          update(event.currentTarget.open);
+      }}
+    >
+      <summary
+        aria-label={`Work log: ${summary.label || "Agent updates"}`}
+        onClick={(event) => {
+          event.preventDefault();
+          update(!open);
+        }}
+      >
+        {summary.running ? (
+          <LoaderCircle size={14} className="spin" />
+        ) : (
+          <Wrench size={14} />
+        )}
+        <span className="turn-work-label">
+          {summary.label || "Agent updates"}
+        </span>
+        {!!summary.running && (
+          <span className="activity-running">{summary.running} running</span>
+        )}
+        {!!summary.failed && (
+          <span className="activity-failed">{summary.failed} failed</span>
+        )}
+        <ChevronRight size={14} className="turn-expand-icon" />
+      </summary>
+      <div className="turn-work-body">
+        {items.map((item) =>
+          open ? (
+            <ToolCard key={item.id} item={item} />
+          ) : (
+            <span
+              key={item.id}
+              data-message={item.id}
+              data-lazy-message
+              hidden
+            />
+          ),
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -41,129 +121,31 @@ function Turn({
   render,
   agentId,
   onJump,
-  following,
 }: {
   group: HistoryGroup;
   storageKey: string;
   render: (message: Message) => ReactNode;
   agentId?: string;
   onJump: (id: string) => void;
-  following: boolean;
 }) {
-  const key = `${storageKey}:work-v2`;
-  const layoutKey = `${key}:${group.id}`;
-  const [initial] = useState(() => ({
-    choice: saved<Record<string, boolean>>(key, {})[group.id],
-    layout: layouts.get(layoutKey),
-  }));
-  const choice = useRef(initial.choice);
-  const allowLegacyResult = useRef(
-    initial.layout?.legacyResult ?? !!group.outcome,
-  );
-  const result =
-    group.result?.phase === "final_answer" || allowLegacyResult.current
-      ? group.result
-      : undefined;
-  const work = group.items.filter((item) => item.id !== result?.id);
-  const tools = work.filter((item) => ["tool", "output"].includes(item.role));
-  const summary = activitySummary(tools);
-  const problem =
-    group.outcome === "failed" ||
-    group.outcome === "interrupted" ||
-    summary.failed > 0;
-  const [open, setOpen] = useState(
-    () => choice.current ?? initial.layout?.open ?? (!result || problem),
-  );
-  useEffect(() => {
-    layouts.delete(layoutKey);
-    layouts.set(layoutKey, { open, legacyResult: allowLegacyResult.current });
-    if (layouts.size > 500) layouts.delete(layouts.keys().next().value!);
-  }, [layoutKey, open]);
-  const hadResult = useRef(!!result);
-  useEffect(() => {
-    const appeared = !!result && !hadResult.current;
-    hadResult.current = !!result;
-    // Do not remove the paragraph someone is reading, or override their choice.
-    if (appeared && following && choice.current === undefined && !problem)
-      setOpen(false);
-  }, [result, following, problem]);
-  const update = (value: boolean) => {
-    choice.current = value;
-    setOpen(value);
-    save(
-      key,
-      Object.fromEntries([
-        ...Object.entries(saved<Record<string, boolean>>(key, {}))
-          .filter(([id]) => id !== group.id)
-          .slice(-499),
-        [group.id, value],
-      ]),
-    );
-  };
+  const result = group.result;
   return (
     <section
       className="turn-history"
       data-turn={group.items[0].turnId}
       data-outcome={group.outcome || "active"}
     >
-      {!!work.length && (
-        <details
-          className="turn-work"
-          data-running={summary.running}
-          data-failed={summary.failed}
-          open={open}
-          onToggle={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              event.currentTarget.open !== open
-            )
-              update(event.currentTarget.open);
-          }}
-        >
-          <summary
-            aria-label={`Work log: ${summary.label || "Agent updates"}`}
-            onClick={(event) => {
-              event.preventDefault();
-              update(!open);
-            }}
+      {messageGroups(group.items).map((item) =>
+        Array.isArray(item) ? (
+          <WorkBlock key={item[0].id} items={item} storageKey={storageKey} />
+        ) : (
+          <div
+            key={item.id}
+            className={item.id === result?.id ? "turn-answer" : undefined}
           >
-            {summary.running ? (
-              <LoaderCircle size={14} className="spin" />
-            ) : (
-              <Wrench size={14} />
-            )}
-            <span className="turn-work-label">
-              {summary.label || "Agent updates"}
-            </span>
-            {!!summary.running && (
-              <span className="activity-running">
-                {summary.running} running
-              </span>
-            )}
-            {!!summary.failed && (
-              <span className="activity-failed">{summary.failed} failed</span>
-            )}
-            <ChevronRight size={14} className="turn-expand-icon" />
-          </summary>
-          <div className="turn-work-body">
-            {work.map((item) =>
-              open ? (
-                ["tool", "output"].includes(item.role) ? (
-                  <ToolCard key={item.id} item={item} />
-                ) : (
-                  <Fragment key={item.id}>{render(item)}</Fragment>
-                )
-              ) : (
-                <span
-                  key={item.id}
-                  data-message={item.id}
-                  data-lazy-message
-                  hidden
-                />
-              ),
-            )}
+            {render(item)}
           </div>
-        </details>
+        ),
       )}
       {group.outcome === "failed" && (
         <p className="turn-problem" role="status">
@@ -177,7 +159,6 @@ function Turn({
           Turn interrupted
         </p>
       )}
-      {result && <div className="turn-answer">{render(result)}</div>}
       <ConversationResults
         messages={group.items}
         agentId={agentId}
@@ -195,7 +176,6 @@ export default function TurnHistory({
   renderMessage,
   agentId,
   onJump,
-  following = true,
 }: {
   items: Message[];
   currentTurn?: string;
@@ -204,7 +184,6 @@ export default function TurnHistory({
   renderMessage: (message: Message) => ReactNode;
   agentId?: string;
   onJump: (id: string) => void;
-  following?: boolean;
 }) {
   if (!enabled) return <>{messages(items, renderMessage)}</>;
   return (
@@ -222,7 +201,6 @@ export default function TurnHistory({
             render={renderMessage}
             agentId={agentId}
             onJump={onJump}
-            following={following}
           />
         ),
       )}

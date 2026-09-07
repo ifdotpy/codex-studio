@@ -50,9 +50,11 @@ turn. Open each excerpt to read more. Reports do not imply acceptance by the lea
 The team summary counts workers who are active, need your answer, or have finished.
 Deferred questions remain unanswered and leave the attention count.
 
-Completed transcript turns have collapsible results. The active turn stays open.
-Failed and interrupted turns retain their outcomes. Older records that lack an
-outcome say **Turn ended**, without claiming success. **Results** opens linked
+Assistant text stays visible in chronological order, outside tool disclosures.
+Only consecutive tool calls share a group. Groups start closed and retain the
+user's choice across chat switches and reloads. A new paragraph splits a group.
+Failed and interrupted turns retain their outcomes. Missing outcomes do not
+imply success. **Results** opens linked
 files, images, previews, and recorded patches from the loaded history. New turns
 retain separate patch records; a patch preview does not fetch the current Git diff.
 

@@ -555,7 +555,6 @@ export default function Conversation(p: {
             renderMessage={renderMessage}
             agentId={managed ? agent?.id : undefined}
             onJump={jumpToPrompt}
-            following={follow}
           />
           {!p.room && <AgentPhase agent={agent} connection={connection} />}
         </div>

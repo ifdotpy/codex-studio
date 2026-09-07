@@ -86,9 +86,10 @@ try {
   await group.waitFor();
   assert.equal(
     await group.getAttribute("open"),
-    "",
-    "active work log shows compact tool rows",
+    null,
+    "active tools start as a compact summary",
   );
+  await group.locator(":scope > summary").click();
 
   await fileCard.locator(":scope > summary").click();
   await fileCard

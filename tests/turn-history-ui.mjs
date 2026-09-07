@@ -153,7 +153,7 @@ try {
   );
   assert.equal(await first.locator(".turn-work").getAttribute("open"), null);
   assert.match(await first.innerText(), /Build checks passed/);
-  assert.equal(await page.locator('[data-message="note1"]').isVisible(), false);
+  assert.equal(await page.locator('[data-message="note1"]').isVisible(), true);
   assert.match(
     await page.locator('[data-turn="two"]').innerText(),
     /Turn failed/,
