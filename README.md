@@ -127,6 +127,7 @@ python3 -B tests/tool-request-contract.py
 python3 -B tests/spawn-request-recovery-contract.py
 python3 -B tests/tool-request-http-contract.py
 python3 -B tests/request-recovery-legacy-contract.py
+python3 -B tests/task-completion-recovery-contract.py
 python3 -B tests/analytics-contract.py
 python3 -B tests/analytics-history-contract.py
 python3 -B tests/accounts-contract.py

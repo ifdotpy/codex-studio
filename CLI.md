@@ -23,6 +23,9 @@ An older local server can also use this command without a restart. If the route
 returns 404, the CLI reads saved results from that server's exact SQLite database
 in read-only mode. Missing results and failed legacy receipts remain `unknown`.
 This fallback is unavailable for remote servers and does not bypass HTTP errors.
+An operation-only receipt exposes `operationApplied` and `operationResult` while
+the enclosing tool outcome remains unknown. It does not prove that a subsequent
+statement in the caller's script executed.
 The equivalent route is `GET /api/tool-requests?agent=AGENT_ID&request_id=REQUEST_ID`.
 Authenticated `POST /api/tool-requests/cancel` accepts `agent` and `request_id`.
 See [Managed Codex teams](ORCHESTRATION.md) for limits, permissions and recovery.

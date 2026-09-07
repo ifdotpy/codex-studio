@@ -283,11 +283,17 @@ records cancellation intent and returns promptly. It does not kill an operation
 that may have committed. Spawn checks this intent again before its transaction.
 Missing and old failed receipts remain unknown. Restart does not replay mutations.
 Tool intake, start, and completion timestamps remain available for diagnosis.
+If the operation committed before its final tool reply, recovery also returns
+`operationApplied`, `operationResult`, and `evidenceSource=operation_receipt`.
+These fields prove the saved operation, not completion of the enclosing tool or
+the next command in a sequential script. The tool can still remain `pending`.
 
 Recovery reads and coordination use separate execution pools from model startup,
 slow tools, and monitor waits. Native response reads continue while ordered
 notification callbacks run. A command completion waits for its preceding output
 callbacks before the runtime records its final result.
+Work-board actions and result submissions use the coordination pool, including
+the workspace fallback for older threads.
 
 Thread preparation shares one pending request per agent. A preparation timeout
 retains the input reservation without submitting a turn. A late response resumes

@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from codex_tool_requests import _spawned_ids
+from codex_tool_requests import _spawned_ids, operation_receipt_evidence
 
 
 def _origin(url):
@@ -109,6 +109,12 @@ def recover_legacy_requests(url, agent_id, request_id=None):
             key = request_id if request_id.startswith(prefix) else prefix + request_id
             row = db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (key,)).fetchone()
             if not row:
+                evidence = operation_receipt_evidence(db, key)
+                if evidence is not None:
+                    return {'id': key, 'agent': agent_id, 'threadId': actor['threadId'],
+                            'callId': key[len(prefix):], 'legacy': True, 'stage': 'unknown', 'outcome': 'unknown',
+                            **evidence,
+                            'message': 'The operation receipt is committed. The final tool result is unavailable; do not repeat the operation.'}
                 return {'id': request_id, 'agent': agent_id, 'legacy': True, 'stage': 'not_found', 'outcome': 'unknown',
                         'message': 'No receipt found. This does not prove that the operation did not execute.'}
             result = json.loads(row[0])

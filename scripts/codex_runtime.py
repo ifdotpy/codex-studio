@@ -2291,7 +2291,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 except (TypeError, ValueError):
                     pass
             executor = (self.recovery_pool if name in {"orchestration_request", "orchestration_status", "orchestration_peers"}
-                        else self.coordination_pool if name in {"orchestration_spawn", "orchestration_send", "orchestration_message", "orchestration_chat_read", "orchestration_title", "orchestration_complaint"}
+                        else self.coordination_pool if name in {"orchestration_spawn", "orchestration_send", "orchestration_message", "orchestration_chat_read", "orchestration_title", "orchestration_complaint", "orchestration_task", "orchestration_result"}
                         else self.tool_pool)
             executor.submit(self.dynamic, message, account_key, connection_id)
             return

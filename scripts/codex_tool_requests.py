@@ -61,6 +61,17 @@ def _spawned_ids(result):
     return list(dict.fromkeys(ids))
 
 
+def operation_receipt_evidence(db, key):
+    """Read committed operation evidence without asserting tool completion."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_operation_receipts'").fetchone():
+        return None
+    row = db.execute("SELECT result FROM runtime_operation_receipts WHERE id=?", (key,)).fetchone()
+    if row is None:
+        return None
+    return {"evidenceSource": "operation_receipt", "operationApplied": True,
+            "operationResult": json.loads(row[0])}
+
+
 class RequestMixin:
     def setup_tool_requests(self, db):
         db.executescript("""
@@ -193,7 +204,13 @@ class RequestMixin:
         key = request_id if request_id.startswith(prefix) else prefix + request_id
         row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
         if not row:
-            return None
+            evidence = operation_receipt_evidence(db, key)
+            if evidence is None:
+                return None
+            return {"id": key, "agent": actor["id"], "threadId": actor.get("threadId"),
+                    "callId": key[len(prefix):], "stage": "unknown", "outcome": "unknown",
+                    "cancelRequested": False, "legacy": True, **evidence,
+                    "message": "The operation receipt is committed. The final tool result is unavailable; do not repeat the operation."}
         result = json.loads(row[0])
         return {"id": key, "agent": actor["id"], "threadId": actor.get("threadId"),
                 "callId": key[len(prefix):], "stage": "completed" if result.get("success") is True else "failed",
@@ -261,6 +278,8 @@ class RequestMixin:
                     record["result"] = _cancel_result(record, "Cancelled before execution")
                 self.put(db, "tool_requests", record)
             result = {k: v for k, v in record.items() if k != "signature"}
+            if action == "get" and "result" not in record and "operationResult" not in record:
+                result.update(operation_receipt_evidence(db, record["id"]) or {})
             if action == "get" and (record.get("tool") == "orchestration_spawn"
                                     or (record.get("legacy") and record.get("agentIds"))):
                 # The receipt remains immutable. These observations show the

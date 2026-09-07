@@ -213,6 +213,51 @@ class LegacyRecovery(unittest.TestCase):
         finally:
             db.close()
 
+    def test_operation_only_receipt_is_scoped_evidence_without_final_tool_result(self):
+        operation = {'id': 'work-accept', 'status': 'accepted', 'version': 5, 'decisions': [{'decision': 'accept'}]}
+        with sqlite3.connect(self.database) as db:
+            db.execute('CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT)')
+            db.execute('INSERT INTO runtime_operation_receipts VALUES (?,?,?)',
+                       ('thread-main:accept-call', 'fixture-signature', json.dumps(operation)))
+            db.execute('INSERT INTO runtime_operation_receipts VALUES (?,?,?)',
+                       ('account-other:thread-main:private-operation', 'fixture-signature', json.dumps({'private': True})))
+        before = self.database.read_bytes()
+        output = self.cli('lead', 'accept-call')
+        self.assertEqual(output.returncode, 0, output.stderr)
+        found = json.loads(output.stdout)
+        self.assertEqual((found['stage'], found['outcome']), ('unknown', 'unknown'))
+        self.assertEqual(found['evidenceSource'], 'operation_receipt')
+        self.assertTrue(found['operationApplied'])
+        self.assertTrue(found['legacy'])
+        self.assertEqual(found['operationResult'], operation)
+        self.assertNotIn('result', found)
+        canonical = recover_legacy_requests(self.url, 'lead', 'thread-main:accept-call')
+        self.assertEqual(canonical, found)
+        for actor, request_id in [('other', 'thread-main:accept-call'), ('separate', 'thread-main:accept-call'),
+                                  ('lead', 'account-other:thread-main:private-operation')]:
+            hidden = recover_legacy_requests(self.url, actor, request_id)
+            self.assertEqual(hidden['stage'], 'not_found')
+            self.assertNotIn('operationResult', hidden)
+        self.assertEqual(self.database.read_bytes(), before)
+        with sqlite3.connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_tool_results WHERE id='thread-main:accept-call'").fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_operation_receipts').fetchone()[0], 2)
+            db.execute('INSERT INTO runtime_tool_results VALUES (?,?)', ('thread-main:accept-call', json.dumps(self.result(True))))
+        final = recover_legacy_requests(self.url, 'lead', 'accept-call')
+        self.assertEqual(final['result'], self.result(True))
+        self.assertEqual(final['outcome'], 'applied')
+        self.assertNotIn('operationResult', final)
+
+    def test_absent_operation_table_and_absent_receipt_both_remain_unknown(self):
+        found = recover_legacy_requests(self.url, 'lead', 'not-applied-or-pending')
+        self.assertEqual((found['stage'], found['outcome']), ('not_found', 'unknown'))
+        with sqlite3.connect(self.database) as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_operation_receipts'").fetchone())
+            db.execute('CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT)')
+        found = recover_legacy_requests(self.url, 'lead', 'not-applied-or-pending')
+        self.assertEqual((found['stage'], found['outcome']), ('not_found', 'unknown'))
+        self.assertNotIn('operationApplied', found)
+
 
 if __name__ == '__main__':
     unittest.main()

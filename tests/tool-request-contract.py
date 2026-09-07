@@ -265,6 +265,57 @@ class RequestContract(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_requests').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_request_aliases').fetchone()[0], 0)
 
+    def save_operation_receipt(self, key, value):
+        with self.runtime.db() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS runtime_operation_receipts(id TEXT PRIMARY KEY, signature TEXT, result TEXT)')
+            db.execute('INSERT INTO runtime_operation_receipts VALUES (?,?,?)', (key, 'fixture-signature', json.dumps(value)))
+
+    def test_running_request_exposes_committed_operation_without_claiming_tool_completion(self):
+        record = self.reserve(tool='orchestration_task', args={'action': 'accept', 'task_id': 'work-1', 'result': 'Verified'})
+        self.runtime.begin_tool_request(record['id'])
+        operation = {'id': 'work-1', 'status': 'accepted', 'version': 3, 'decisions': [{'decision': 'accept'}]}
+        self.save_operation_receipt(record['id'], operation)
+        before = self.runtime.tool_request(record['id'])
+        for _ in range(3):
+            result = self.runtime.request_action('lead', {'action': 'get', 'request_id': 'call-1'})
+            self.assertEqual((result['stage'], result['outcome']), ('running', 'pending'))
+            self.assertEqual(result['operationResult'], operation)
+            self.assertTrue(result['operationApplied'])
+            self.assertEqual(result['evidenceSource'], 'operation_receipt')
+            self.assertNotIn('result', result)
+        self.assertFalse(self.runtime.begin_tool_request(record['id']))
+        self.assertEqual(self.runtime.tool_request(record['id']), before)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_results').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_operation_receipts').fetchone()[0], 1)
+        final = self.result()
+        self.runtime.finish_tool_request(record['id'], final)
+        found = self.runtime.request_action('lead', {'action': 'get', 'request_id': record['id']})
+        self.assertEqual(found['result'], final)
+        self.assertEqual(found['outcome'], 'applied')
+        self.assertNotIn('operationResult', found)
+
+    def test_operation_only_legacy_receipt_is_unknown_and_scoped(self):
+        operation = {'id': 'work-legacy', 'status': 'accepted', 'version': 7}
+        self.save_operation_receipt('thread:legacy-accept', operation)
+        for request_id in ['legacy-accept', 'thread:legacy-accept']:
+            found = self.runtime.request_action('lead', {'action': 'get', 'request_id': request_id})
+            self.assertEqual((found['stage'], found['outcome']), ('unknown', 'unknown'))
+            self.assertTrue(found['legacy'])
+            self.assertTrue(found['operationApplied'])
+            self.assertEqual(found['operationResult'], operation)
+            self.assertNotIn('result', found)
+        for actor in ['worker', 'other']:
+            found = self.runtime.request_action(actor, {'action': 'get', 'request_id': 'thread:legacy-accept'})
+            self.assertEqual(found['stage'], 'not_found')
+            self.assertNotIn('operationResult', found)
+        missing = self.runtime.request_action('lead', {'action': 'get', 'request_id': 'no-operation'})
+        self.assertEqual(missing['outcome'], 'unknown')
+        self.assertNotIn('operationApplied', missing)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_requests').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_results').fetchone()[0], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
