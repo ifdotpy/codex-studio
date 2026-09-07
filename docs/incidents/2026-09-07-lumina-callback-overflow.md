@@ -167,3 +167,24 @@ uses the existing runtime writer lock, commits the row-address map, then replace
 only that runtime instance's index method. It does not reload modules, replace
 connections, stop commands, or replay messages. The activation result and follow-up
 observations are required before claiming deployment or incident resolution.
+
+## Live index activation and team recovery
+
+The guarded update executed in PID 35212 at 20:50:34 UTC. Its receipt reports
+`applied`, 34,213 mapped records, and 204.85 ms total duration. The next read-only
+consistency check found zero missing or incorrect document mappings and zero
+orphan mappings. The matching source files are also installed in the application
+package. No runtime, account connection, command, or monitor was restarted.
+
+A fresh Lumina limits request succeeded in 1,023 ms. The new message
+`studio-lumina-recovery-20260907-index-fix` is delivered. The lead produced a fresh
+source-reconciliation response. A subsequent registry check confirms six active
+workers: `lhs-core`, `lhs-native`, `lhs-service`, `lhs-rig`, `lhs-ui-review`, and
+`lhs-emulator-review`. These have active native turn identities. Older uncertain
+messages were not replayed. Existing stopped worker records retain their errors.
+
+Private evidence is retained in
+`~/.local/state/codex-agents/diagnostics/lumina-index-20260907T205034Z/`.
+The search-index bottleneck is fixed and activated. The broader overflow incident
+remains open until sustained operation or a recurrence provides enough evidence.
+No claim is made that all earlier coordination delays share this cause.
