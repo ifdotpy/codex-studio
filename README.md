@@ -73,6 +73,7 @@ python3 -B tests/runtime-contract.py
 python3 -B tests/turn-start-contract.py
 python3 -B tests/prepare-steer-contract.py
 python3 -B tests/monitor-lifecycle-contract.py
+python3 -B tests/harness-response-contract.py
 python3 -B tests/analytics-contract.py
 python3 -B tests/analytics-history-contract.py
 python3 -B tests/accounts-contract.py

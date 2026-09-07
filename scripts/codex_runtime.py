@@ -1955,6 +1955,10 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                     a["tail"] = text[-300:]
                     a["lastAnswer"] = text[-16000:]
                 elif kind not in {"reasoning", "userMessage", "agentMessage"}:
+                    if kind == "commandExecution" and not started and item.get("aggregatedOutput") is None:
+                        saved = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (a["id"] + ":" + item["id"],)).fetchone()
+                        if saved:
+                            item = {**item, "aggregatedOutput": json.loads(saved[0]).get("tail", "")}
                     self.item(db, a["id"], item.get("id", uid()), "output", json.dumps(item, ensure_ascii=False), kind,
                               toolStatus="running" if started else "failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed",
                               turnId=p.get("turnId") or a.get("turnId"))
@@ -1966,7 +1970,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                         item = json.loads(record["text"])
                     except ValueError:
                         item = {"type": "commandExecution", "id": p["itemId"]}
-                    item["aggregatedOutput"] = (item.get("aggregatedOutput", "") + p.get("delta", ""))[-12000:]
+                    item["aggregatedOutput"] = ((item.get("aggregatedOutput") or "") + p.get("delta", ""))[-12000:]
                     self.item(db, a["id"], p["itemId"], "output", json.dumps(item, ensure_ascii=False), "commandExecution",
                               toolStatus="running", turnId=p.get("turnId") or a.get("turnId"))
             elif method in {"turn/plan/updated", "turn/diff/updated"}:
@@ -2306,8 +2310,18 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 self.analytics_safe(db, self.analytics_dynamic, a, p, result)
         try:
             self.reply({"id": message["id"], "result": result}, account_key, connection_id)
-        except Exception:
-            pass
+        except Exception as error:
+            # Execution receipts remain authoritative. Never replay a mutation
+            # because its response write failed. Record identities, not content.
+            diagnostic = {"event": "tool_response_delivery_failed", "at": time.time(),
+                          "callId": p.get("callId"), "requestId": message.get("id"),
+                          "threadId": p.get("threadId"), "accountKey": account_key,
+                          "connectionId": connection_id, "errorType": type(error).__name__,
+                          "errno": getattr(error, "errno", None)}
+            path = self.root / "runtime-errors.log"
+            with path.open("a", encoding="utf-8") as log:
+                log.write(json.dumps(diagnostic) + "\n")
+            path.chmod(0o600)
 
     @staticmethod
     def unanswered_complaints(db, lead_id):
@@ -2685,10 +2699,13 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             self.launch_monitor(key)
         return m
 
-    def launch_monitor(self, key):
+    def launch_monitor(self, key, shell_config=None, preflight=None):
         def run():
             try:
-                self.run_monitor(key)
+                if shell_config is None and preflight is None:
+                    self.run_monitor(key)
+                else:
+                    self.run_monitor(key, shell_config, preflight)
             finally:
                 with self.lock:
                     self.monitor_threads.discard(threading.current_thread())
@@ -2699,7 +2716,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             self.monitor_threads.add(worker)
             worker.start()
 
-    def run_monitor(self, key):
+    def run_monitor(self, key, shell_config=None, preflight=None):
         operation = None
         try:
             with self.lock, self.db() as db:
@@ -2707,27 +2724,49 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 a = self.agent(m["agent"], db)
                 if m["status"] != "starting" or not a["autoWake"] or m["epoch"] != a["epoch"]:
                     return
+                if preflight and not self.operation_current(a, preflight):
+                    return
             a = self.prepare(a)
             server = self.connect(a.get("accountKey", "default"))
-            params = {"command": monitor_command(server, m["command"], a["cwd"]), "cwd": a["cwd"],
+            if shell_config is None:
+                preflight = {"agent": a["id"], "epoch": m["epoch"], "accountKey": a.get("accountKey", "default"),
+                             "connectionId": self.connection_ids[a.get("accountKey", "default")]}
+                submitted_config = self.submit_reserved(server, "config/read", {"cwd": a["cwd"], "includeLayers": False})
+                try:
+                    configuration = server.wait(submitted_config)
+                except ResponseTimeout as error:
+                    with self.lock, self.db() as db:
+                        current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
+                        if current["status"] == "starting" and self.operation_current(self.agent(a["id"], db), preflight):
+                            current.update(error=str(error), configurationPending=True)
+                            self.put(db, "monitors", current)
+                    server.on_result(submitted_config, lambda future: self.pool.submit(
+                        self.monitor_configuration_result, key, preflight, future) if not self.closed else None)
+                    return
+                shell_config = configuration["config"]
+            if not isinstance(shell_config, dict):
+                raise ValueError("Monitor configuration is invalid; command was not submitted")
+            params = {"command": monitor_command(server, m["command"], a["cwd"], config=shell_config), "cwd": a["cwd"],
                       "processId": key, "streamStdoutStderr": True, "timeoutMs": m["timeout_ms"]}
             if m.get("interactive"):
                 params.update(tty=True, streamStdin=True)
-            selected_policy = self.turn_permissions(a).get("sandboxPolicy")
-            if selected_policy is not None:
-                params["sandboxPolicy"] = selected_policy
-            elif not a.get("sandbox"):
-                raise ValueError("Thread sandbox is unknown; refusing to run the command")
-            elif (a.get("profile") or {}).get("id"):
-                params["permissionProfile"] = a["profile"]["id"]
-            else:
-                params["sandboxPolicy"] = a["sandbox"]
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
                 current_monitor = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
                 if not current["autoWake"] or current["epoch"] != m["epoch"] or current_monitor["status"] != "starting":
                     return
+                if preflight and not self.operation_current(current, preflight):
+                    return
                 self.assert_workspace_available(db, current)
+                selected_policy = self.turn_permissions(current).get("sandboxPolicy")
+                if selected_policy is not None:
+                    params["sandboxPolicy"] = selected_policy
+                elif not current.get("sandbox"):
+                    raise ValueError("Thread sandbox is unknown; refusing to run the command")
+                elif (current.get("profile") or {}).get("id"):
+                    params["permissionProfile"] = current["profile"]["id"]
+                else:
+                    params["sandboxPolicy"] = current["sandbox"]
                 if m.get("ruleId"):
                     row = db.execute(
                         "SELECT record FROM runtime_rules WHERE id=?", (m["ruleId"],)
@@ -2737,7 +2776,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 # Stop cannot overtake command submission on the same connection.
                 operation = {"agent": a["id"], "epoch": m["epoch"], "accountKey": a.get("accountKey", "default"),
                              "connectionId": self.connection_ids[a.get("accountKey", "default")]}
-                current_monitor.update(status="running", cwd=a["cwd"], error=None, operation=operation)
+                current_monitor.update(status="running", cwd=a["cwd"], error=None, operation=operation, configurationPending=False)
                 self.put(db, "monitors", current_monitor)
                 db.commit()
                 submitted = self.submit_reserved(server, "command/exec", params)
@@ -2750,13 +2789,27 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 return
             self.monitor_accepted(key, operation, result)
         except PreparationPending as error:
-            self.defer_preparation(error, lambda: self.run_monitor(key),
+            self.defer_preparation(error, lambda: self.launch_monitor(key, shell_config, preflight),
                 lambda cause: self.finish_monitor(key, None, str(cause)))
         except Exception as error:
             if operation and "outcome unknown" in str(error):
                 self.monitor_unknown(key, operation, str(error))
             else:
                 self.finish_monitor(key, None, str(error))
+
+    def monitor_configuration_result(self, key, preflight, future):
+        with self.lock:
+            if self.closed or not self.operation_current(self.agent(preflight["agent"]), preflight):
+                return
+        try:
+            config = future.result()["config"]
+            if not isinstance(config, dict):
+                raise ValueError("Monitor configuration is invalid; command was not submitted")
+            self.launch_monitor(key, config, preflight)
+        except Exception as error:
+            with self.lock:
+                if not self.closed and self.operation_current(self.agent(preflight["agent"]), preflight):
+                    self.finish_monitor(key, None, "Configuration failed before command submission: " + str(error))
 
     def monitor_unknown(self, key, operation, error):
         with self.lock, self.db() as db:
@@ -2824,7 +2877,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             if m["status"] in {"cancelled", "lost", "completed", "failed"}:
                 return
             cancelled = bool(m.get("cancelRequested"))
-            m.update(status="cancelled" if cancelled else "failed" if error or code != 0 else "completed", exitCode=code, error=error, finished=time.time())
+            m.update(status="cancelled" if cancelled else "failed" if error or code != 0 else "completed", exitCode=code, error=error, finished=time.time(), configurationPending=False)
             self.put(db, "monitors", m)
             a = self.agent(m["agent"], db)
             if m.get("ruleId"):
@@ -2849,7 +2902,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             if running:
                 m.update(cancelRequested=True)
             else:
-                m.update(status="cancelled", finished=time.time())
+                m.update(status="cancelled", finished=time.time(), configurationPending=False)
             if not running and m.get("ruleId"):
                 self.rule_finished(
                     m["ruleId"], None, "Monitor cancelled", m["tail"], db

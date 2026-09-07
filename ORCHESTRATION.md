@@ -164,6 +164,9 @@ New input cannot start another turn while that outcome is unknown.
 Delivery requires the start response or a user-message event with the matching client ID.
 A late response can acknowledge its original input batch but cannot replace a newer turn's state.
 Unknown input is never replayed automatically.
+Completed managed tools retain their exact execution receipts even when the
+caller loses the response. Response write failures record request identities
+in `runtime-errors.log`, without tool input or output.
 
 Thread preparation shares one pending request per agent. A preparation timeout
 retains the input reservation without submitting a turn. A late response resumes
@@ -209,6 +212,9 @@ An acknowledgement timeout does not finish a command. Cancellation retains the
 active workspace reservation until the command exits. The interface shows
 **Waiting for exit** during this interval. Closing terminal input blocks further
 input while its acknowledgement is pending. An unknown close is not retried.
+Shell configuration reads also retain late responses before command submission.
+Monitor waits use separate owned threads, so they do not occupy the shared
+queue for agent tools and messages.
 
 The inherited `never` approval policy does not add an approval step. Other policies
 require approval for a model-created Monitor command in the conversation.
@@ -385,6 +391,7 @@ python3 tests/runtime-contract.py
 python3 tests/turn-start-contract.py
 python3 tests/prepare-steer-contract.py
 python3 tests/monitor-lifecycle-contract.py
+python3 tests/harness-response-contract.py
 python3 tests/canvas-contract.py
 node tests/portable-smoke.mjs
 ```

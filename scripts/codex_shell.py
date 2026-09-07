@@ -30,14 +30,15 @@ def default_shell():
     raise ValueError("No supported shell is available for the command")
 
 
-def monitor_command(server, command, cwd):
+def monitor_command(server, command, cwd, *, config=None):
     """Use native config and the rc setup used by Codex shell snapshots.
 
     command/exec already applies the account's shell_environment_policy. Its
     argv API does not perform the shell startup added by native exec_command.
     Run that startup inside the command sandbox, without copying ambient PATH.
     """
-    config = server.call("config/read", {"cwd": cwd, "includeLayers": False})["config"]
+    if config is None:
+        config = server.call("config/read", {"cwd": cwd, "includeLayers": False})["config"]
     shell = default_shell()
     name = Path(shell).name
     login = config.get("allow_login_shell", True)
