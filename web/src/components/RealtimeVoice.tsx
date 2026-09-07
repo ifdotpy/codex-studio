@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { ActionIcon, Popover } from "@mantine/core";
+import { AudioLines, X } from "lucide-react";
 import { api, errorText, saved, save } from "../api";
 import "./realtime-voice.css";
 
@@ -11,6 +13,7 @@ function orderedVoiceRecords(records: RecordRow[]) {
   return [...records].sort((a, b) => sessions.get(a.session)! - sessions.get(b.session)! || position(a) - position(b) || a.seq - b.seq);
 }
 export default function RealtimeVoice({ agentId, notify }: { agentId: string; notify: (text: string) => void }) {
+  const [opened, setOpened] = useState(false);
   const editIds = useRef<string[] | null>(null);
   const [editedText, setEditedText] = useState<string | null>(null);
   const [active, setActive] = useState(false);
@@ -222,9 +225,21 @@ export default function RealtimeVoice({ agentId, notify }: { agentId: string; no
       live.current = true; setActive(true); setStatus("Listening. Send with the button or an explicit voice command.");
     } catch (e) { close(); setStatus(errorText(e)); notify(errorText(e)); } finally { setBusy(false); }
   };
-  return <section className="realtime-voice" aria-label="Voice courier">
+  return <Popover opened={opened} onChange={setOpened} position="top-start" width={360} withinPortal>
+    <Popover.Target>
+      <ActionIcon type="button" size="lg" variant="subtle" color={active ? "blue" : "gray"}
+        aria-label="Voice conversation" title="Voice conversation" aria-pressed={active}
+        onClick={() => setOpened(!opened)}>
+        <AudioLines size={18} />
+      </ActionIcon>
+    </Popover.Target>
+    <Popover.Dropdown className="realtime-voice">
+    <header className="realtime-voice-heading"><strong>Voice conversation</strong>
+      <ActionIcon type="button" variant="subtle" color="gray" size="sm" aria-label="Close voice panel" onClick={() => setOpened(false)}><X size={16} /></ActionIcon>
+    </header>
+    {!active && !status && <p className="realtime-voice-note">Talk through your request. Send the transcript when it is ready.</p>}
     <div className="realtime-voice-actions">
-      <button type="button" disabled={busy} onClick={() => active ? close() : void start()}>{active ? "End voice" : "Voice"}</button>
+      <button type="button" disabled={busy} onClick={() => active ? close() : void start()}>{active ? "End voice" : "Start voice"}</button>
       {active && <><button type="button" onClick={() => { const next = !muted; stream.current?.getAudioTracks().forEach(t => { t.enabled = !next; }); setMuted(next); }}>{muted ? "Enable microphone" : "Mute"}</button><button type="button" onClick={() => void remote.current?.play()}>Resume audio</button></>}
       {(active || rows.some(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id))) && <button type="button" disabled={busy || !rows.some(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id))} onClick={() => { voiceSend.current = false; void send(); }}>Send transcript</button>}
     </div>
@@ -234,5 +249,6 @@ export default function RealtimeVoice({ agentId, notify }: { agentId: string; no
     {!!pendingRecords.current.length && <button type="button" onClick={() => { void (async () => { for (const body of [...pendingRecords.current]) { const row = await post("record", body); if (["user", "courier"].includes(row.kind) && !all.current.some(r => r.id === row.id)) { all.current.push(row); setRows([...all.current]); } pendingRecords.current = pendingRecords.current.filter(r => r.event_id !== body.event_id); save(`voice-pending:${agentId}`, pendingRecords.current); } setStatus("Transcript sync restored."); })().catch(e => setStatus(errorText(e))); }}>Retry transcript sync</button>}
     {active && <small>AI-generated voice. Audio goes to OpenAI. Transcripts remain on your Mac.</small>}
     {!!rows.length && <details><summary>Voice transcript and speech</summary><div className="realtime-voice-transcript">{orderedVoiceRecords(rows).filter(r => r.text && ["user", "courier", "orchestrator"].includes(r.kind)).map(r => <div key={r.id}><strong>{r.kind === "user" ? "You" : r.kind === "courier" ? "Voice courier" : "Orchestrator"}</strong><p>{r.text}</p>{r.kind === "orchestrator" && active && <button type="button" onClick={() => { queue.current.push(r); void pump(); }}>Repeat</button>}</div>)}</div></details>}
-  </section>;
+  </Popover.Dropdown>
+  </Popover>;
 }

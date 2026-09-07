@@ -602,9 +602,6 @@ export default function Conversation(p: {
               )}
             />
           )}
-          {managed && agent?.isLead && p.id && (
-            <RealtimeVoice key={p.id} agentId={p.id} notify={p.notify} />
-          )}
           <form
             id="composer"
             className={dragging ? "attachment-drop" : ""}
@@ -705,6 +702,9 @@ export default function Conversation(p: {
                     p.setDraft(next);
                   }}
                 />
+              )}
+              {managed && agent?.isLead && p.id && (
+                <RealtimeVoice key={p.id} agentId={p.id} notify={p.notify} />
               )}
               {managed && (
                 <div
