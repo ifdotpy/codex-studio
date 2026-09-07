@@ -54,11 +54,7 @@ class VoiceStore:
         return row
 
     def _check_project(self, row):
-        # Lightweight voice fixtures do not have account policy state. The real
-        # Runtime always exposes this check before an external voice request.
-        checker = getattr(self.runtime, "check_account_project", None)
-        if checker is not None:
-            checker(row)
+        self.runtime.check_account_project(row)
 
     def _key(self):
         key = os.environ.get("OPENAI_API_KEY", "")

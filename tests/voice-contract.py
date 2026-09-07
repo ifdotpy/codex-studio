@@ -24,6 +24,8 @@ class Runtime:
         return db
     def agent(self, key):
         return self.actors[key]
+    def check_account_project(self, row):
+        return None
     def send(self, agent, text, message_id, delivery):
         with self.db() as db:
             if not db.execute("SELECT 1 FROM runtime_events WHERE id=?", (message_id,)).fetchone():
