@@ -317,7 +317,7 @@ p {
 }
 .desktop-mac .sidebar-header {
   height: 60px;
-  padding: 28px 0 0;
+  padding: 20px 12px 8px;
 }
 .desktop-mac #sidebar {
   padding-top: 0;
