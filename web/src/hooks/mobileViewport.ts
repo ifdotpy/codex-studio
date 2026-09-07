@@ -31,7 +31,9 @@ export function useMobileViewport(enabled: boolean) {
       );
       root.style.setProperty(
         "--mobile-safe-area-top",
-        top > 0 ? "0px" : "env(safe-area-inset-top)",
+        top > 0
+          ? `max(0px, calc(env(safe-area-inset-top) - ${top}px))`
+          : "env(safe-area-inset-top)",
       );
       // Safari can retain a document scroll offset after it reveals a focused input.
       if (window.scrollX || window.scrollY) window.scrollTo(0, 0);

@@ -115,6 +115,30 @@ try {
     return box;
   };
   await settle(844, 0);
+  assert.equal(
+    await page
+      .locator('meta[name="apple-mobile-web-app-status-bar-style"]')
+      .getAttribute("content"),
+    "black",
+  );
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+    insets: { top: 59, bottom: 0, left: 0, right: 0 },
+  });
+  await page.evaluate(() =>
+    window.setTestViewport({ height: 790, offsetTop: 12 }),
+  );
+  await settle(790, 12);
+  assert.equal(
+    await page
+      .locator("#root")
+      .evaluate((node) => getComputedStyle(node).paddingTop),
+    "47px",
+  );
+  assert.ok(
+    (await page.locator(".workspace-header").boundingBox()).y >= 59,
+    "A partial viewport shift must not move the header under the status bar",
+  );
   await page.locator("#message").fill("Keyboard geometry fixture");
   await page.evaluate(() =>
     window.setTestViewport({ height: 390, offsetTop: 54 }),
