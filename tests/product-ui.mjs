@@ -99,10 +99,12 @@ try {
   );
   await activity.locator(":scope > summary").click();
   await page.locator("#requests [data-answer]").click();
-  const answerDialog = page.getByRole("dialog", { name: "Reply to the agent" });
+  const answerDialog = page.getByRole("form", { name: "Reply to the agent" });
   await visibleInViewport(answerDialog);
   await shot("question");
-  await page.keyboard.press("Escape");
+  await answerDialog
+    .getByRole("textbox", { name: "Which scope?" })
+    .press("Escape");
   await answerDialog.waitFor({ state: "hidden" });
   await poll(
     () =>
@@ -112,13 +114,15 @@ try {
     "focus returns to Answer",
   );
   await page.locator("[data-answer]").click();
-  await page.locator("#answer-fields select").selectOption("One file");
+  await answerDialog
+    .getByRole("button", { name: "One file", exact: true })
+    .click();
   await page
-    .locator("#answer-form")
+    .locator(".request-answer-form")
     .getByRole("button", { name: "Send answer" })
     .click();
   await poll(
-    async () => (await page.locator("#answer-form").count()) === 0,
+    async () => (await page.locator(".request-answer-form").count()) === 0,
     "answer submitted",
   );
   assert.match(
@@ -353,7 +357,10 @@ try {
   await visibleInViewport(page.getByRole("dialog"));
   await shot("limits");
   await page.locator(".limits-toggle").click();
-  await page.getByText("First task", { exact: true }).waitFor();
+  await page
+    .locator("#messages")
+    .getByText("First task", { exact: true })
+    .waitFor();
   await page.waitForTimeout(5200);
   await page.screenshot({ path: join(root, "lead-chat.png") });
   await page.setViewportSize({ width: 390, height: 844 });

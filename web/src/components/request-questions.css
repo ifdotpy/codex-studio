@@ -1,0 +1,99 @@
+#requests .request-card {
+  display: block;
+}
+.request-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.request-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.request-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+.request-async .request-status {
+  color: #b9b6ed;
+}
+.request-card .request-copy .request-prompt {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.request-card pre {
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.request-inline-answer {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #ffffff16;
+}
+.request-answer-fields {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.request-question-label {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.request-answer-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.request-answer-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+  border: 1px solid #ffffff24;
+  border-radius: 8px;
+  padding: 8px 11px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.request-answer-option small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.request-answer-option:hover {
+  background: #ffffff08;
+}
+.request-answer-option[aria-pressed="true"] {
+  background: #8075ff25;
+  border-color: #a29bf0;
+}
+.request-answer-option:focus-visible {
+  outline: 2px solid #b9b6ed;
+  outline-offset: 2px;
+}
+.request-answer-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+@media (max-width: 560px) {
+  .request-summary {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .request-summary .request-copy {
+    flex-basis: 65%;
+  }
+  .request-answer-option {
+    flex: 1 1 140px;
+  }
+}

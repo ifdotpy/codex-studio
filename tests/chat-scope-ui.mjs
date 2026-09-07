@@ -199,7 +199,7 @@ try {
     .waitFor();
   assert.equal(await drawer.locator(".workspace-count").innerText(), "2");
   await drawer.locator('[data-answer="async-question"]').click();
-  const answer = page.getByRole("dialog", {
+  const answer = drawer.getByRole("form", {
     name: "Reply to the agent",
     exact: true,
   });

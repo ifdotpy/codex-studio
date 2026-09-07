@@ -1,0 +1,109 @@
+.prompt-navigation-slot {
+  flex-shrink: 0;
+  min-width: 0;
+}
+.prompt-navigation {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  min-width: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--surface);
+}
+.prompt-history-toggle {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.current-prompt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+  color: var(--muted);
+  font-size: 11px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.current-prompt:hover {
+  color: var(--text);
+}
+.prompt-history {
+  max-width: calc(100vw - 24px);
+  padding: 12px;
+}
+.prompt-history-heading,
+.prompt-history-search,
+.prompt-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.prompt-history-heading {
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.prompt-history-heading > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.prompt-history-search > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.prompt-history-list {
+  max-height: min(340px, 50dvh);
+  overflow: auto;
+  margin-top: 8px;
+}
+.prompt-history-row {
+  align-items: flex-start;
+  border-radius: 7px;
+  padding: 4px;
+}
+.prompt-history-row:hover {
+  background: #ffffff06;
+}
+.prompt-history-entry {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.prompt-history-entry > :first-child {
+  color: var(--muted);
+  min-width: 18px;
+  font-size: 11px;
+}
+.prompt-history-entry > :last-child {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.prompt-history-entry[aria-current] > :first-child {
+  color: #b5a8ff;
+}
+.prompt-history-empty {
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+  padding: 16px 8px;
+}
+@media (max-width: 760px) {
+  .prompt-navigation {
+    padding: 0 12px;
+  }
+}

@@ -25,6 +25,7 @@ import {
   type Snapshot,
 } from "../types";
 import Usage from "./Usage";
+import PromptNavigator from "./PromptNavigator";
 import Requests from "./Requests";
 import UserTasks from "./UserTasks";
 import Activity from "./Activity";
@@ -70,6 +71,20 @@ export default function Conversation(p: {
     [follow, setFollow] = useState(true),
     scroll = useRef<HTMLDivElement>(null),
     input = useRef<HTMLTextAreaElement>(null);
+  const jumpToPrompt = (id: string) => {
+    const root = scroll.current;
+    const message =
+      root &&
+      Array.from(root.querySelectorAll<HTMLElement>("[data-message]")).find(
+        (element) => element.dataset.message === id,
+      );
+    if (!root || !message) return;
+    setFollow(false);
+    root.scrollTop +=
+      message.getBoundingClientRect().top -
+      root.getBoundingClientRect().top -
+      16;
+  };
   const attachmentKey = `codex-agent-attachments:${p.data.stateDir}`;
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>(
     () => saved(attachmentKey, {}),
@@ -286,6 +301,17 @@ export default function Conversation(p: {
             : JSON.stringify(agent.error)}
         </p>
       )}
+      <div className="prompt-navigation-slot">
+        {!p.room && p.id && (
+          <PromptNavigator
+            key={p.id}
+            messages={items}
+            container={scroll}
+            storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+            jump={jumpToPrompt}
+          />
+        )}
+      </div>
       <div
         id="messages"
         ref={scroll}

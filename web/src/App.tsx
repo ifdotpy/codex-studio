@@ -54,6 +54,7 @@ import Conversation from "./components/Conversation";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import TerminalDock from "./components/TerminalDock";
 import "./desktop";
+import "./components/team-navigation.css";
 import Workspace from "./components/Workspace";
 import Canvas from "./components/Canvas";
 import ComplaintBook from "./components/ComplaintBook";
@@ -83,6 +84,8 @@ export default function App() {
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [workspaceSection, setWorkspaceSection] = useState("work"),
     [workerQuery, setWorkerQuery] = useState(""),
+    [workerFilter, setWorkerFilter] = useState("all"),
+    [completedOpen, setCompletedOpen] = useState(false),
     [creating, setCreating] = useState(false),
     [sending, setSending] = useState(false),
     [toast, setToast] = useState(""),
@@ -117,6 +120,15 @@ export default function App() {
     ),
     team = agents.filter((a) => a.rootId === lead?.id),
     workers = team.filter((a) => !a.isLead);
+  useEffect(() => {
+    setWorkerQuery("");
+    setWorkerFilter("all");
+    setCompletedOpen(false);
+  }, [lead?.id]);
+  useEffect(() => {
+    if (agent && !agent.isLead && agent.status === "completed")
+      setCompletedOpen(true);
+  }, [agent?.id, agent?.status]);
   const accounts = useAccounts(data?.stateDir);
   const accountKey =
     agent?.accountKey ||
@@ -456,6 +468,7 @@ export default function App() {
       <UnstyledButton
         className="worker"
         data-worker={a.id}
+        aria-current={opened === a.id ? "page" : undefined}
         onClick={() => open(a.id)}
       >
         <span className={`dot ${a.status}`} />
@@ -485,11 +498,33 @@ export default function App() {
       </UnstyledButton>
     </div>
   );
+  const needsAttention = (a: Agent) =>
+    ["failed", "interrupted", "approval"].includes(a.status);
+  const query = workerQuery.trim().toLowerCase();
   const shown = workers.filter((a) =>
-    `${a.name} ${a.status} ${a.role}`
-      .toLowerCase()
-      .includes(workerQuery.toLowerCase()),
+    query
+      ? `${a.name} ${a.status} ${a.role || ""}`.toLowerCase().includes(query)
+      : workerFilter === "attention"
+        ? needsAttention(a)
+        : workerFilter === "active"
+          ? busy.has(a.status)
+          : true,
   );
+  const groups = [
+    { name: "Attention", workers: shown.filter(needsAttention) },
+    {
+      name: "Working",
+      workers: shown.filter((a) => ["running", "starting"].includes(a.status)),
+    },
+    {
+      name: "Waiting",
+      workers: shown.filter(
+        (a) =>
+          !needsAttention(a) && !busy.has(a.status) && a.status !== "completed",
+      ),
+    },
+  ];
+  const completed = shown.filter((a) => a.status === "completed");
   const teamPanel = (
     <aside id="team" aria-label="Team">
       <div className="team-heading">
@@ -502,33 +537,86 @@ export default function App() {
           <X size={16} />
         </ActionIcon>
         <span>
-          {workers.filter((a) => busy.has(a.status)).length} active /{" "}
-          {workers.length}
+          {workers.filter((a) => busy.has(a.status)).length} active ·{" "}
+          {workers.length} workers
         </span>
       </div>
-      <Button id="lead-row" onClick={() => lead && open(lead.id)}>
+      <Button
+        id="lead-row"
+        aria-current={opened === lead?.id ? "page" : undefined}
+        leftSection={<ArrowLeft size={13} />}
+        onClick={() => lead && open(lead.id)}
+      >
         {lead?.name || "Lead"}
       </Button>
-      {workers.length >= 8 && (
-        <TextInput
-          leftSection={<Search size={14} />}
-          id="worker-search"
-          type="search"
-          aria-label="Find a worker"
-          placeholder="Find a worker"
-          value={workerQuery}
-          onChange={(e) => setWorkerQuery(e.target.value)}
-        />
+      <TextInput
+        leftSection={<Search size={14} />}
+        id="worker-search"
+        type="search"
+        aria-label="Find a worker"
+        placeholder="Find a worker"
+        value={workerQuery}
+        onChange={(e) => setWorkerQuery(e.target.value)}
+      />
+      {query ? (
+        <p className="team-search-count" role="status">
+          {shown.length} {shown.length === 1 ? "match" : "matches"} in this team
+        </p>
+      ) : (
+        <div className="team-filters" role="group" aria-label="Filter workers">
+          {[
+            ["all", "All", workers.length],
+            [
+              "active",
+              "Active",
+              workers.filter((a) => busy.has(a.status)).length,
+            ],
+            ["attention", "Attention", workers.filter(needsAttention).length],
+          ].map(([value, label, count]) => (
+            <UnstyledButton
+              key={value}
+              aria-pressed={workerFilter === value}
+              onClick={() => setWorkerFilter(String(value))}
+            >
+              {label} <span>{count}</span>
+            </UnstyledButton>
+          ))}
+        </div>
       )}
       <div id="workers">
-        {shown.filter((a) => a.status !== "completed").map(worker)}
-        {shown.some((a) => a.status === "completed") && (
-          <details className="worker-group">
-            <summary>
-              Completed · {shown.filter((a) => a.status === "completed").length}
-            </summary>
-            {shown.filter((a) => a.status === "completed").map(worker)}
+        {groups.map((group) =>
+          group.workers.length ? (
+            <section
+              className="team-status-group"
+              aria-label={group.name}
+              key={group.name}
+            >
+              <h3>
+                {group.name}
+                <span>{group.workers.length}</span>
+              </h3>
+              {group.workers.map(worker)}
+            </section>
+          ) : null,
+        )}
+        {!!completed.length && (
+          <details
+            className="worker-group"
+            open={!!query || completedOpen}
+            onToggle={(event) => {
+              if (!query) setCompletedOpen(event.currentTarget.open);
+            }}
+          >
+            <summary>Completed · {completed.length}</summary>
+            {completed.map(worker)}
           </details>
+        )}
+        {!shown.length && (
+          <p className="team-empty" role="status">
+            {query
+              ? "No workers match your search."
+              : "No workers in this group."}
+          </p>
         )}
       </div>
     </aside>
@@ -586,7 +674,7 @@ export default function App() {
                 id="back-lead"
                 onClick={() => open(lead.id)}
               >
-                Lead
+                Back to lead
               </Button>
             )}
             <h1 id="conversation-title">{title}</h1>
