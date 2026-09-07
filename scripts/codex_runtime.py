@@ -41,6 +41,7 @@ def tool(name, description, properties, required=()):
 
 
 THREAD_CONFIG = {
+    "features.context_management.experimental_mode": True,
     "features.multi_agent": False,
     "features.multi_agent_v2": False,
     "agents.enabled": False,
@@ -126,7 +127,7 @@ for definition in TOOLS:
             "profile_id"
         ] = TEXT
 
-INSTRUCTIONS = """You work in Codex Canvas. One lead agent coordinates a team.
+INSTRUCTIONS = """You work in Codex Studio. One lead agent coordinates a team.
 Use orchestration_spawn for delegation and orchestration_monitor for long commands.
 The server owns the wait. Do not run repeated status or sleep tool calls to wait.
 After delegation, finish your turn when no independent work remains. Child results
@@ -171,18 +172,6 @@ Older threads can call the workspace tools through orchestration_send with agent
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_task, orchestration_result, orchestration_search,
 orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task, orchestration_panel.
-Use orchestration_panel action=set with html and optional css for your persistent 150px panel above the composer.
-Update it in place for meaningful progress or diagrams. Each agent owns their own panel.
-Design it as a visual instrument: stage tracks, segmented bars, CSS grids, compact counters or SVG diagrams.
-Use short labels, measured values and one clear bottleneck. Do not repeat chat paragraphs or invent progress percentages.
-Studio supplies colors and basic controls, not a layout. Build the composition with HTML/CSS.
-For progress, use connected stage segments and separate measured counters. Text arrows alone are insufficient.
-Inspect the returned PNG for visual structure as well as clipping. Revise a panel that is only rows of text.
-Custom css can override Studio defaults. Agent scripts and external resources are disabled.
-Declare callbacks [{id,label,fields:[names]}] and use data-callback=id on buttons/forms for user actions.
-Named field values arrive as arrays in panel_callback events, including after your final answer. Do not poll.
-Each callback accepts one submission per panel version; publish an update to enable it again.
-set/get return a rendered PNG at 1000x150 CSS pixels. Inspect it; use get to retry a failed render without repeating the write.
 Use orchestration_user_task for things the user must do. Supply clear completion criteria.
 A user check wakes the requesting agent and awaits its review. Accept the result or return
 it with a concrete reason and next action. Do not treat the user check as your acceptance.
@@ -1281,12 +1270,24 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             return a["yoloMode"]
         return a.get("approvalPolicy") == "never"
 
+    @staticmethod
+    def panel_guidance():
+        guide = Path(__file__).resolve().parent.parent / ".agents/skills/codex-workspace/references/panel.md"
+        try:
+            content = guide.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise ValueError("Studio panel guidance is missing. Update the installed Studio workspace") from error
+        if not content:
+            raise ValueError("Studio panel guidance is empty. Update the installed Studio workspace")
+        return f"[Studio panel guidance: {guide}]\n{content}"
+
     def new_thread_params(self, a, *, inherit_account_rule_override=True):
         params = {
             "cwd": a["cwd"],
             "config": THREAD_CONFIG.copy(),
             "serviceTier": "priority" if a.get("fastMode", False) else "default",
             "developerInstructions": INSTRUCTIONS
+            + "\n" + self.panel_guidance()
             + "\nUse orchestration_task for assignments and explicit result acceptance. A final answer does not accept work. Read the shared plan supplied with each turn. Worker profiles set instructions, model, and role; they do not add permissions.\n"
             + a.get("profileInstructions", ""),
         }

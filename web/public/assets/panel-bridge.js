@@ -1,6 +1,35 @@
 // Only this trusted function runs in the opaque iframe. Agent scripts and event
 // attributes are removed before its CSP nonce is created.
 function bridge(config) {
+  // A full-size outer wrapper is the panel canvas, not a separate card.
+  // Keep its backdrop continuous with the host while preserving nested surfaces.
+  const roots = Array.from(document.body.children).filter(
+    (node) => !node.matches("script,style"),
+  );
+  const canvas =
+    roots.length === 1 && roots[0].matches("div,main") ? roots[0] : null;
+  if (canvas) {
+    const originalStyle = canvas.getAttribute("style");
+    let normalized = false;
+    const syncCanvas = () => {
+      const rect = canvas.getBoundingClientRect();
+      const fills =
+        Math.abs(rect.left) < 0.5 &&
+        Math.abs(rect.top) < 0.5 &&
+        rect.width >= innerWidth - 0.5 &&
+        rect.height >= innerHeight - 0.5;
+      if (fills === normalized) return;
+      normalized = fills;
+      if (fills)
+        canvas.style.setProperty("background", "transparent", "important");
+      else if (originalStyle === null) canvas.removeAttribute("style");
+      else canvas.setAttribute("style", originalStyle);
+    };
+    syncCanvas();
+    const resize = new ResizeObserver(syncCanvas);
+    resize.observe(document.documentElement);
+    resize.observe(canvas);
+  }
   const callbacks = new Map(config.callbacks.map((item) => [item.id, item]));
   let busy = true;
   let locked = [];

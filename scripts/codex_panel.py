@@ -21,6 +21,8 @@ def panel_tools(tool, text):
         "Design a compact visual instrument, not another chat message: use CSS grids, segmented progress bars, "
         "stage tracks, small SVG diagrams, or measured counters with short labels. Avoid paragraphs and repeated chat summaries. "
         "Studio supplies colors and basic controls, not a layout. Build the layout with html and css. "
+        "The canvas has no outer margin and gives you the full width and 150px height; include your padding and borders inside that height. "
+        "The canvas shares the chat background. Full-size div/main wrappers stay transparent; style nested cards with Studio variables. "
         "For progress, draw connected stage segments and separate measured counters; text with arrows alone is insufficient. "
         "Show the current phase and one bottleneck at a glance. Use real counts only; never invent percentages or fake progress. "
         "set replaces the whole panel; "

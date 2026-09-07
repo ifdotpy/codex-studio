@@ -27,6 +27,28 @@ class PanelContract(unittest.TestCase):
     agent_update = f.WorkspaceContract.agent_update
     tool = f.WorkspaceContract.tool
 
+    def test_new_lead_and_worker_receive_bundled_guidance_outside_studio(self):
+        guide = Path(__file__).resolve().parents[1] / ".agents/skills/codex-workspace/references/panel.md"
+        content = guide.read_text().strip()
+        lead = self.lead(cwd=str(self.state))
+        worker = self.worker(lead)
+        for actor in (lead, worker):
+            f.WorkspaceContract.start(self, actor)
+        calls = [params for method, params in self.runtime.server.calls if method == "thread/start"]
+        self.assertEqual(len(calls), 2)
+        for params in calls:
+            self.assertEqual(Path(params["cwd"]).resolve(), self.state.resolve())
+            self.assertTrue(params["config"]["features.context_management.experimental_mode"])
+            self.assertIn(content, params["developerInstructions"])
+            self.assertEqual(params["developerInstructions"].count(content), 1)
+            self.assertIn(str(guide), params["developerInstructions"])
+
+    def test_missing_bundled_guidance_fails_visibly(self):
+        lead = self.lead()
+        with patch("codex_runtime.Path.read_text", side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(ValueError, "panel guidance is missing"):
+                self.runtime.new_thread_params(lead)
+
     def test_replace_clear_restart_and_small_snapshot(self):
         a = self.lead()
         self.assertEqual(self.runtime.panel(a["id"])["version"], 0)

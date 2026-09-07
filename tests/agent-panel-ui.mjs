@@ -11,6 +11,9 @@ const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const { chromium } = createRequire(join(repo, "web/package.json"))(
   "playwright-core",
 );
+const measurePanelLayout = createRequire(import.meta.url)(
+  "../desktop/panel-layout.cjs",
+);
 const root = await mkdtemp(join(tmpdir(), "codex-agent-panel-"));
 const proc = spawn(
   "python3",
@@ -242,10 +245,17 @@ try {
         })),
       ),
   );
+  // The fixed-height document root can hide overflow in its body. Validate the
+  // same rendered geometry used by native preflight, not the root's scroll box.
+  const overflow = await frame.locator("body").evaluate(measurePanelLayout);
+  assert.equal(overflow.fits, false);
+  assert.equal(overflow.height, 150);
+  assert.ok(overflow.contentHeight > overflow.height);
+  assert.ok(overflow.contentWidth > overflow.width);
   assert.ok(
-    await frame
-      .locator("body")
-      .evaluate(() => document.documentElement.scrollHeight > innerHeight),
+    overflow.violations.some((item) =>
+      ["outside-panel", "clipped-content"].includes(item.kind),
+    ),
   );
   await page.setViewportSize({ width: 390, height: 844 });
   await assertLayout();

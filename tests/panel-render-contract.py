@@ -66,6 +66,40 @@ def png_pixel(data, x, y):
 
 
 class RenderContract(unittest.TestCase):
+    def test_full_height_three_card_canvas_and_small_surface(self):
+        panel = {
+            "version": 1,
+            "html": """<main class="canvas">
+              <section class="card"><strong>Plan</strong><span class="bottom"></span></section>
+              <section class="card"><strong>Build</strong><span class="bottom"></span></section>
+              <section class="card"><strong>Check</strong><span class="bottom"></span></section>
+            </main>""",
+            "css": """.canvas{height:150px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:10px;background:#050505}
+              .card{position:relative;min-width:0;background:#404040;border-radius:6px;padding:8px}
+              .bottom{position:absolute;bottom:0;left:8px;right:8px;height:3px;background:#b0b0b0}""",
+        }
+        result = render.render_panel(panel)
+        self.assertTrue(result["layout"]["fits"])
+        self.assertEqual([view["width"] for view in result["layout"]["viewports"]], [320, 640, 1000])
+        self.assertTrue(all(view["contentHeight"] == 150 for view in result["layout"]["viewports"]))
+        pixels = base64.b64decode(result["data_url"].split(",", 1)[1])
+        self.assertEqual(struct.unpack(">II", pixels[16:24]), (1000, 150))
+        self.assertEqual(png_pixel(pixels, 5, 145), (27, 27, 32))
+        self.assertEqual(png_pixel(pixels, 5, 5), (27, 27, 32))
+        for center in (170, 500, 830):
+            self.assertEqual(png_pixel(pixels, center, 100), (64, 64, 64))
+            # Tagged macOS PNGs can adjust light gray through the display profile.
+            # A bright marker at the final card rows proves those rows were not cut.
+            marker = png_pixel(pixels, center, 138)
+            self.assertGreater(min(marker), 160)
+            self.assertLessEqual(max(marker) - min(marker), 1)
+        small = render.render_panel({
+            "version": 2, "html": "<div style='width:100px;height:70px;background:#404040'>Small card</div>", "css": "",
+        })
+        small_pixels = base64.b64decode(small["data_url"].split(",", 1)[1])
+        self.assertEqual(png_pixel(small_pixels, 50, 50), (64, 64, 64))
+        self.assertEqual(png_pixel(small_pixels, 900, 100), (27, 27, 32))
+
     def test_legacy_request_and_finite_animation_lifecycle(self):
         with tempfile.TemporaryDirectory(prefix="codex-panel-legacy-") as folder:
             request = Path(folder) / "request.json"
@@ -133,7 +167,7 @@ class RenderContract(unittest.TestCase):
         original_command = render._electron_command
 
         def mutate_after_snapshot():
-            panel.update(version=18, html="<h1>Changed later</h1>", css="html{background:red}")
+            panel.update(version=18, html="<div class='tile'>Changed later</div>", css=".tile{width:100px;height:80px;background:red}")
             return original_command()
 
         with tempfile.TemporaryDirectory(prefix="codex-panel-profile-test-") as folder:
@@ -150,13 +184,13 @@ class RenderContract(unittest.TestCase):
             self.assertEqual((profile / "sentinel").read_text(), "Existing user profile")
         self.assertEqual((result["version"], result["width"], result["height"]), (17, 1000, 150))
         image = base64.b64decode(result["data_url"].split(",", 1)[1])
-        self.assertEqual(png_pixel(image, 900, 100), (24, 25, 28))
-        self.assertNotEqual(png_pixel(image, 25, 58), (24, 25, 28))
+        self.assertEqual(png_pixel(image, 900, 100), (27, 27, 32))
+        self.assertNotEqual(png_pixel(image, 15, 40), (27, 27, 32))
         second = render.render_panel(panel)
         self.assertEqual(second["version"], 18)
         # macOS can encode display-profile RGB values in its tagged PNG.
         # Assert the rendered color, rather than an unconverted sRGB byte value.
-        red, green, blue = png_pixel(base64.b64decode(second["data_url"].split(",", 1)[1]), 900, 100)
+        red, green, blue = png_pixel(base64.b64decode(second["data_url"].split(",", 1)[1]), 50, 60)
         self.assertGreater(red, 200)
         self.assertLess(green, 70)
         self.assertLess(blue, 70)
@@ -182,19 +216,21 @@ class RenderContract(unittest.TestCase):
         try:
             result = render.render_panel({
                 "version": 2,
-                "html": f'''<script src="{url}"></script><script>document.body.style.background='red'</script>
+                "html": f'''<section class="proof">Surface</section>
+                    <script src="{url}"></script><script>document.querySelector('.proof').style.background='red'</script>
                     <img src="{url}" onerror="document.body.style.background='red'">
                     <iframe src="{url}"></iframe><form action="{url}"><button data-callback="retry">Retry</button></form>''',
-                "css": f'''html,body{{background:rgb(20,90,180);margin:0;height:100%}}body{{background-image:url({url})}}
+                "css": f'''.proof{{background:rgb(20,90,180);width:200px;height:80px}}body{{background-image:url({url})}}
                     </style><script>document.body.style.background='red'</script>''',
                 "callbacks": [{"id": "retry", "label": "</script><script>alert(1)</script>"}],
             })
             image = base64.b64decode(result["data_url"].split(",", 1)[1])
-            red, green, blue = png_pixel(image, 900, 100)
+            red, green, blue = png_pixel(image, 100, 60)
             self.assertLess(red, 80)
             self.assertGreater(green, 60)
             self.assertLess(green, 120)
             self.assertGreater(blue, 150)
+            self.assertEqual(png_pixel(image, 900, 140), (27, 27, 32))
             self.assertEqual(requests, [])
         finally:
             server.shutdown()
@@ -271,7 +307,7 @@ class DynamicRenderContract(unittest.TestCase):
             "threadId": agent["threadId"], "callId": "real-render",
             "tool": "orchestration_panel", "arguments": {
                 "action": "set", "html": "<h1>Official build</h1><progress max=8 value=3></progress>",
-                "css": "html{background:#18191c}",
+                "css": "html{background:#1b1b20}",
             },
         }}
         self.runtime.dynamic(request)
@@ -282,7 +318,7 @@ class DynamicRenderContract(unittest.TestCase):
         self.assertEqual(metadata["render"], {"width": 1000, "height": 150, "version": 1})
         raw = base64.b64decode(image["imageUrl"].split(",", 1)[1])
         self.assertEqual(raw[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertEqual(png_pixel(raw, 900, 100), (24, 25, 28))
+        self.assertEqual(png_pixel(raw, 900, 100), (27, 27, 32))
         self.assertEqual(self.runtime.panel(agent["id"])["version"], 1)
         self.runtime.panel_action(agent["id"], {"action": "set", "html": "New revision"})
         # A retry receives the exact original image bytes after a newer write.

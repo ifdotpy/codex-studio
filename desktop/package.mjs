@@ -17,6 +17,14 @@ try {
   await cp(path.join(root, "../web/dist"), path.join(resources, "web/dist"), {
     recursive: true,
   });
+  await cp(
+    path.join(root, "../.agents/skills/codex-workspace"),
+    path.join(resources, ".agents/skills/codex-workspace"),
+    { recursive: true },
+  );
+  for (const document of ["README.md", "CLI.md", "ORCHESTRATION.md"]) {
+    await cp(path.join(root, "..", document), path.join(resources, document));
+  }
   const output = await packager({
     dir: root,
     name: "Codex Studio",

@@ -1,0 +1,10 @@
+:root {
+  color-scheme: dark;
+  --surface: #1b1b20;
+  --sidebar: #141418;
+  --line: #ffffff0d;
+  --muted: #9696a5;
+  --text: #e9e9ee;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}

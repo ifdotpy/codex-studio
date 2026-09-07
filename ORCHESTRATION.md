@@ -1,7 +1,7 @@
 # Managed Codex teams
 
 Use the [Electron desktop app](desktop/README.md), or build the [React interface](web/README.md), start `scripts/codex-canvas`, and open <http://127.0.0.1:4620>.
-Select **New chat**. The server creates an empty lead conversation immediately.
+Use the new-chat action inside a project. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
 Creation itself does not call the model. A repeated creation request returns the same chat.
@@ -29,6 +29,10 @@ Only the user can change team defaults, including during a running turn.
 Existing workers retain their settings. A new chat in the same account copies the previous team's defaults.
 Fast uses native `serviceTier=priority`; off sends `serviceTier=default`.
 Reasoning and service tier apply on thread start, resume, and each turn.
+
+Studio enables `features.context_management.experimental_mode` in native thread
+configuration. This keeps the opt-in out of the shared user configuration, where
+older ChatGPT builds reject nested feature tables. Account eligibility still applies.
 
 Codex 0.153.4 accepts dynamic tool definitions only when a native thread starts.
 Existing threads still use user defaults, but their old spawn schema lacks the per-worker `fast_mode` override.
@@ -71,6 +75,11 @@ The bottom terminal panel shows only user shells. **Background** lists agent com
 
 ### Agent display panel
 
+New leads and workers receive the bundled
+`.agents/skills/codex-workspace/references/panel.md` in their developer instructions,
+regardless of the project directory. The desktop package includes this skill and
+its examples. The application does not install it into vanilla Codex CLI profiles.
+
 Each managed conversation has a fixed 150px panel between the transcript and
 composer. The calling agent controls it through `orchestration_panel`:
 `set` replaces HTML and optional CSS, `get` reads the current document, and
@@ -83,9 +92,14 @@ action row for attachments, delivery, and send. The text field grows with its dr
 context, compactions, and account limits remain directly below it.
 
 The panel and composer are adjacent siblings. Queued messages, errors, approvals,
-and user tasks appear above the panel. Callback feedback stays inside the panel.
+and user tasks appear above the panel. Callback feedback also appears above it.
 Semantic HTML inherits Studio colors, typography, buttons, and form controls.
-Agent CSS can override those defaults, including the `--studio-*` variables.
+Agent CSS can style cards and controls through the `--studio-*` variables.
+The chat and panel share one theme source, `web/src/studio-theme.css`.
+The canvas background stays continuous with the chat. The trusted bridge removes
+the background of a single full-size div/main wrapper; nested card colors remain.
+HTML and body fill the 150px viewport with zero margins. Agent padding and borders
+belong inside that height. A 150px root plus external margins does not fit.
 
 The panel renders inline HTML/CSS/SVG and CSS animations in an opaque sandbox.
 Agent scripts, external requests, navigation, and parent access are disabled.

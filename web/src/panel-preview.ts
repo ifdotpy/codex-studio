@@ -1,3 +1,4 @@
+import "./studio-theme.css";
 import { panelDocument, type PanelCallback } from "./components/PanelDocument";
 
 type PreviewPanel = {
