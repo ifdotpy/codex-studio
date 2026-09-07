@@ -53,6 +53,13 @@ class VoiceStore:
             raise ValueError("Voice is available in an orchestrator chat only")
         return row
 
+    def _check_project(self, row):
+        # Lightweight voice fixtures do not have account policy state. The real
+        # Runtime always exposes this check before an external voice request.
+        checker = getattr(self.runtime, "check_account_project", None)
+        if checker is not None:
+            checker(row)
+
     def _key(self):
         key = os.environ.get("OPENAI_API_KEY", "")
         if key:
@@ -84,7 +91,8 @@ class VoiceStore:
             raise ValueError("OpenAI voice request failed (HTTP %s). Check the API key, billing and model access." % exc.code) from None
 
     def start(self, agent, session_id, sdp):
-        self._agent(agent)
+        row = self._agent(agent)
+        self._check_project(row)
         if not isinstance(session_id, str) or not session_id or len(session_id) > 120:
             raise ValueError("Invalid voice session identity")
         if not isinstance(sdp, str) or not sdp.startswith("v=0") or len(sdp) > 100000:
@@ -175,7 +183,8 @@ class VoiceStore:
         return {"record": row, "status": "saved", "playback": "not confirmed"}
 
     def speech(self, agent, record_id, session_id):
-        self._agent(agent)
+        row = self._agent(agent)
+        self._check_project(row)
         with self.runtime.db() as db:
             if not db.execute("SELECT 1 FROM voice_sessions WHERE id=? AND agent=? AND ended IS NULL", (session_id,agent)).fetchone():
                 raise ValueError("Start voice before audio playback")
