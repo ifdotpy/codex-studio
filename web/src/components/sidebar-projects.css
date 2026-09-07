@@ -69,7 +69,25 @@
 }
 .project-chats .chat-row {
   min-height: 34px;
-  padding: 7px 8px;
+  padding: 7px 44px 7px 8px;
+}
+.project-chats .row-actions {
+  right: 4px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+}
+.lead-row .row-meta {
+  flex-shrink: 0;
+}
+.lead-row .row-meta .dot {
+  margin-top: 0;
+  box-shadow: none;
+}
+@media (max-width: 760px) {
+  .project-chats .chat-row {
+    padding-right: 56px;
+  }
 }
 .project-chats .row-copy strong {
   font-weight: 400;
