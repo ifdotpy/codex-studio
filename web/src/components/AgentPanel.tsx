@@ -118,6 +118,12 @@ export default function AgentPanel({
   const [dismissedNotice, setDismissedNotice] = useState("");
   const [, redraw] = useState(0);
   const iframe = useRef<HTMLIFrameElement>(null);
+  const [presentation, setPresentation] = useState({
+    channel: "",
+    // A nonzero area lets the browser paint and measure the hidden frame.
+    height: 1,
+    ready: false,
+  });
   useEffect(() => {
     const listener = () => redraw((n) => n + 1);
     listeners.add(listener);
@@ -268,7 +274,26 @@ export default function AgentPanel({
         setLocalError(String(event.data.error || ""));
         return;
       }
+      if (event.data?.type === "panel-size") {
+        const height = event.data.height;
+        if (
+          typeof height === "number" &&
+          Number.isFinite(height) &&
+          height >= 0
+        )
+          setPresentation((old) => ({
+            channel: live.channel,
+            height: Math.min(150, height),
+            ready: old.channel === live.channel && old.ready,
+          }));
+        return;
+      }
       if (event.data?.type === "panel-ready") {
+        setPresentation((old) => ({
+          ...old,
+          channel: live.channel,
+          ready: true,
+        }));
         sync();
         return;
       }
@@ -347,10 +372,38 @@ export default function AgentPanel({
   ]);
   const noticeVisible =
     !error && (localError || feedback) && dismissedNotice !== noticeKey;
+  const feedNoticeVisible =
+    current?.feed &&
+    (current.feed.error ||
+      [
+        "failed",
+        "error",
+        "stale",
+        "stopped",
+        "cancelled",
+        "completed",
+        "lost",
+      ].includes(current.feed.status)) &&
+    !noticeVisible &&
+    !error;
   return (
     <>
       <section
         className={hasContent ? "agent-panel" : "agent-panel-notice"}
+        style={
+          hasContent
+            ? {
+                height: Math.max(
+                  error ? 48 : 0,
+                  noticeVisible || feedNoticeVisible ? 40 : 0,
+                  presentation.height,
+                ),
+              }
+            : undefined
+        }
+        data-ready={
+          presentation.channel === frameDocument.channel && presentation.ready
+        }
         aria-label="Agent panel"
         aria-busy={loading}
         data-agent={agentId}
@@ -359,6 +412,7 @@ export default function AgentPanel({
       >
         {hasContent && (
           <iframe
+            key={frameDocument.channel}
             ref={iframe}
             title="Agent panel content"
             sandbox="allow-scripts allow-forms"
@@ -366,35 +420,23 @@ export default function AgentPanel({
             srcDoc={frameDocument.html}
           />
         )}
-        {current?.feed &&
-          (current.feed.error ||
-            [
-              "failed",
-              "error",
-              "stale",
-              "stopped",
-              "cancelled",
-              "completed",
-              "lost",
-            ].includes(current.feed.status)) &&
-          !noticeVisible &&
-          !error && (
-            <div
-              className={`agent-panel-feedback ${current.feed.error || ["failed", "error", "stale", "lost"].includes(current.feed.status) ? "error" : ""}`}
-              role="status"
-              title={
-                current.feed.error || "The last confirmed data remains visible."
-              }
-            >
-              <span>
-                {["stopped", "cancelled"].includes(current.feed.status)
-                  ? "Live data stopped"
-                  : current.feed.status === "completed"
-                    ? "Live data ended"
-                    : "Live data unavailable"}
-              </span>
-            </div>
-          )}
+        {current?.feed && feedNoticeVisible && (
+          <div
+            className={`agent-panel-feedback ${current.feed.error || ["failed", "error", "stale", "lost"].includes(current.feed.status) ? "error" : ""}`}
+            role="status"
+            title={
+              current.feed.error || "The last confirmed data remains visible."
+            }
+          >
+            <span>
+              {["stopped", "cancelled"].includes(current.feed.status)
+                ? "Live data stopped"
+                : current.feed.status === "completed"
+                  ? "Live data ended"
+                  : "Live data unavailable"}
+            </span>
+          </div>
+        )}
         {noticeVisible && (
           <div
             className={`agent-panel-feedback ${localError ? "error" : feedback?.status}`}

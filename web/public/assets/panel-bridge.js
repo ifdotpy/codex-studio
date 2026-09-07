@@ -1,3 +1,66 @@
+// Runs inside the opaque frame. The frame retains its 150px validation viewport;
+// only the host's visible area changes with the measured content.
+function observePanelContent(channel) {
+  let frame = 0;
+  let previous = -1;
+  const measure = () => {
+    frame = 0;
+    const root = document.getElementById("panel-root") || document.body;
+    let bottom = 0;
+    for (const node of root.querySelectorAll("*")) {
+      if (
+        node.matches("script,style,meta,link") ||
+        !node.getClientRects().length
+      )
+        continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width || rect.height) bottom = Math.max(bottom, rect.bottom);
+    }
+    // HTML panels can contain text without an enclosing element.
+    for (const node of root.childNodes) {
+      if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim())
+        continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      bottom = Math.max(bottom, range.getBoundingClientRect().bottom);
+    }
+    const height = Math.min(
+      150,
+      Math.max(
+        0,
+        Math.ceil(
+          bottom +
+            (Number.parseFloat(getComputedStyle(root).paddingBottom) || 0),
+        ),
+      ),
+    );
+    if (height === 0 || height === previous) return;
+    previous = height;
+    parent.postMessage({ type: "panel-size", channel, height }, "*");
+  };
+  const schedule = () => {
+    if (!frame) frame = requestAnimationFrame(measure);
+  };
+  const resize = new ResizeObserver(schedule);
+  const observe = () => {
+    resize.observe(document.body);
+    document.body.querySelectorAll("*").forEach((node) => {
+      if (!node.matches("script,style")) resize.observe(node);
+    });
+    schedule();
+  };
+  new MutationObserver(observe).observe(document.body, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+  });
+  addEventListener("resize", schedule);
+  document.addEventListener("load", schedule, true);
+  void document.fonts.ready.then(schedule);
+  observe();
+}
+
 // Only this trusted function runs in the opaque iframe. Agent scripts and event
 // attributes are removed before its CSP nonce is created.
 function bridge(config) {
@@ -119,10 +182,10 @@ function bridge(config) {
   });
   parent.postMessage({ type: "panel-ready", channel: config.channel }, "*");
 }
-bridge(
-  JSON.parse(
-    decodeURIComponent(
-      document.currentScript?.getAttribute("data-config") || "%7B%7D",
-    ),
+const config = JSON.parse(
+  decodeURIComponent(
+    document.currentScript?.getAttribute("data-config") || "%7B%7D",
   ),
 );
+observePanelContent(config.channel);
+if (!config.layoutOnly) bridge(config);

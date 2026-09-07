@@ -7,6 +7,31 @@ export interface PanelCallback {
   fields?: string[];
 }
 
+function preparePanelFrame(
+  doc: Document,
+  nonce: string,
+  channel: string,
+  layoutOnly = false,
+) {
+  const background =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--surface")
+      .trim() || "#1b1b20";
+  for (const root of [doc.documentElement, doc.body]) {
+    root.style.setProperty("background", background, "important");
+    root.style.setProperty("color-scheme", "dark");
+  }
+  const script = doc.createElement("script");
+  script.setAttribute("nonce", nonce);
+  if (!layoutOnly) return;
+  script.src = new URL("assets/panel-bridge.js", document.baseURI).href;
+  script.setAttribute(
+    "data-config",
+    encodeURIComponent(JSON.stringify({ channel, layoutOnly: true })),
+  );
+  doc.body.append(script);
+}
+
 export function panelDocument(
   source: string,
   css: string,
@@ -44,6 +69,7 @@ export function panelDocument(
     root.style.setProperty("overflow", "hidden", "important");
     root.style.setProperty("overscroll-behavior", "none", "important");
   }
+  preparePanelFrame(doc, nonce, channel);
   const script = doc.createElement("script");
   script.setAttribute("nonce", nonce);
   script.src = new URL("assets/panel-bridge.js", document.baseURI).href;
@@ -77,6 +103,7 @@ export function panelContentDocument(panel: PanelContent, channel: string) {
   const root = doc.createElement("div");
   root.id = "panel-root";
   doc.body.append(root);
+  preparePanelFrame(doc, nonce, channel, true);
   const script = doc.createElement("script");
   script.setAttribute("nonce", nonce);
   script.src = new URL("assets/panel-ui.js", document.baseURI).href;
