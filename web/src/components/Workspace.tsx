@@ -362,11 +362,18 @@ export function Workspace(props: Props) {
             >
               <Icon size={17} />
               <span>{label}</span>
-              {id === "inbox" && !!props.data.runtime.requests.length && (
-                <span className="workspace-count">
-                  {props.data.runtime.requests.length}
-                </span>
-              )}
+              {id === "inbox" &&
+                !!props.data.runtime.requests.filter(
+                  (request) => !request.deferred,
+                ).length && (
+                  <span className="workspace-count">
+                    {
+                      props.data.runtime.requests.filter(
+                        (request) => !request.deferred,
+                      ).length
+                    }
+                  </span>
+                )}
             </UnstyledButton>
           ))}
         </nav>
@@ -1157,6 +1164,7 @@ function Attention(c: Context) {
       </div>
       <Requests
         requests={c.data.runtime.requests}
+        scopeAgentId={c.agent?.id}
         agents={c.data.threads}
         refresh={c.refresh}
         notify={c.notify}

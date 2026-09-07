@@ -28,7 +28,8 @@ import Usage from "./Usage";
 import PromptNavigator from "./PromptNavigator";
 import Requests from "./Requests";
 import UserTasks from "./UserTasks";
-import Activity from "./Activity";
+import TurnHistory from "./TurnHistory";
+import { Dictation } from "./Dictation";
 import StreamingText from "./StreamingText";
 import SelectionQuote, { selectedExcerpt } from "./SelectionQuote";
 import AgentPhase from "./AgentPhase";
@@ -80,6 +81,11 @@ export default function Conversation(p: {
       );
     if (!root || !message) return;
     setFollow(false);
+    let container: HTMLElement | null = message.parentElement;
+    while (container && container !== root) {
+      if (container instanceof HTMLDetailsElement) container.open = true;
+      container = container.parentElement;
+    }
     root.scrollTop +=
       message.getBoundingClientRect().top -
       root.getBoundingClientRect().top -
@@ -281,14 +287,90 @@ export default function Conversation(p: {
   );
   const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
   const canSend = !!agent?.canSend || !!p.legacy || !p.id;
-  const groups: (Message | Message[])[] = [];
-  for (const item of items) {
-    if (["output", "tool"].includes(item.role)) {
-      const last = groups.at(-1);
-      if (Array.isArray(last)) last.push(item);
-      else groups.push([item]);
-    } else groups.push(item);
-  }
+  const renderMessage = (m: Message) => (
+    <article
+      key={m.id}
+      data-message={m.id}
+      className={`message ${m.role === "user" ? "user" : "assistant"} ${p.room ? "bubble " + (m.sender !== first ? "outgoing" : "incoming") : ""}`}
+    >
+      {p.room && m.senderName && (
+        <span className="message-label">{m.senderName}</span>
+      )}
+      {m.pending && <span className="message-label">Queued · after turn</span>}
+      {m.role === "user" ? (
+        <div className="prose plain">{m.text}</div>
+      ) : (
+        <StreamingText
+          text={m.text}
+          streaming={!!m.streaming}
+          agentId={
+            p.room
+              ? p.data.threads.find((item) => item.id === m.sender)?.id
+              : managed
+                ? agent?.id
+                : undefined
+          }
+        />
+      )}
+      {Array.isArray(m.assets) && (
+        <MessageAttachments assets={m.assets} notify={p.notify} />
+      )}
+      {m.truncated && <p className="notice">This message is clipped.</p>}
+      <div className="message-bottom" hidden={!!m.streaming}>
+        {p.room && m.created && (
+          <time>
+            {new Date(m.created * 1000).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </time>
+        )}
+        <ActionIcon
+          size="sm"
+          className="copy-message"
+          aria-label="Copy message"
+          onClick={() => void copy(m.text)}
+        >
+          <Copy size={14} />
+        </ActionIcon>
+        {!p.room && !m.pending && (
+          <>
+            <ActionIcon
+              size="sm"
+              aria-label="Quote message"
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => {
+                const excerpt = selectedExcerpt(scroll.current);
+                quote(excerpt?.messageId === m.id ? excerpt.text : m.text);
+                window.getSelection()?.removeAllRanges();
+              }}
+            >
+              <Quote size={14} />
+            </ActionIcon>
+            {managed &&
+              m.role === "assistant" &&
+              m.turnId &&
+              m.turnId !== agent?.turnId &&
+              items
+                .filter(
+                  (item) =>
+                    item.role === "assistant" && item.turnId === m.turnId,
+                )
+                .at(-1)?.id === m.id && (
+                <ActionIcon
+                  size="sm"
+                  aria-label="Branch after this turn"
+                  disabled={m.turnId === agent?.turnId && !!agent?.inFlight}
+                  onClick={() => void branch(m)}
+                >
+                  <GitBranch size={14} />
+                </ActionIcon>
+              )}
+          </>
+        )}
+      </div>
+    </article>
+  );
   return (
     <section
       id="conversation"
@@ -349,103 +431,16 @@ export default function Conversation(p: {
               </p>
             </div>
           )}
-        {groups.map((m) =>
-          Array.isArray(m) ? (
-            <Activity key={m[0].id} items={m} />
-          ) : (
-            <article
-              key={m.id}
-              data-message={m.id}
-              className={`message ${m.role === "user" ? "user" : "assistant"} ${p.room ? "bubble " + (m.sender !== first ? "outgoing" : "incoming") : ""}`}
-            >
-              {p.room && m.senderName && (
-                <span className="message-label">{m.senderName}</span>
-              )}
-              {m.pending && (
-                <span className="message-label">Queued · after turn</span>
-              )}
-              {m.role === "user" ? (
-                <div className="prose plain">{m.text}</div>
-              ) : (
-                <StreamingText
-                  text={m.text}
-                  streaming={!!m.streaming}
-                  agentId={
-                    p.room
-                      ? p.data.threads.find((item) => item.id === m.sender)?.id
-                      : managed
-                        ? agent?.id
-                        : undefined
-                  }
-                />
-              )}
-              {Array.isArray(m.assets) && (
-                <MessageAttachments assets={m.assets} notify={p.notify} />
-              )}
-              {m.truncated && (
-                <p className="notice">This message is clipped.</p>
-              )}
-              <div className="message-bottom" hidden={!!m.streaming}>
-                {p.room && m.created && (
-                  <time>
-                    {new Date(m.created * 1000).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </time>
-                )}
-                <ActionIcon
-                  size="sm"
-                  className="copy-message"
-                  aria-label="Copy message"
-                  onClick={() => void copy(m.text)}
-                >
-                  <Copy size={14} />
-                </ActionIcon>
-                {!p.room && !m.pending && (
-                  <>
-                    <ActionIcon
-                      size="sm"
-                      aria-label="Quote message"
-                      onPointerDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        const excerpt = selectedExcerpt(scroll.current);
-                        quote(
-                          excerpt?.messageId === m.id ? excerpt.text : m.text,
-                        );
-                        window.getSelection()?.removeAllRanges();
-                      }}
-                    >
-                      <Quote size={14} />
-                    </ActionIcon>
-                    {managed &&
-                      m.role === "assistant" &&
-                      m.turnId &&
-                      m.turnId !== agent?.turnId &&
-                      items
-                        .filter(
-                          (item) =>
-                            item.role === "assistant" &&
-                            item.turnId === m.turnId,
-                        )
-                        .at(-1)?.id === m.id && (
-                        <ActionIcon
-                          size="sm"
-                          aria-label="Branch after this turn"
-                          disabled={
-                            m.turnId === agent?.turnId && !!agent?.inFlight
-                          }
-                          onClick={() => void branch(m)}
-                        >
-                          <GitBranch size={14} />
-                        </ActionIcon>
-                      )}
-                  </>
-                )}
-              </div>
-            </article>
-          ),
-        )}
+        <TurnHistory
+          key={`${p.data.stateDir}:${p.id}`}
+          items={items}
+          currentTurn={agent?.turnId}
+          enabled={managed && !p.room}
+          storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
+          renderMessage={renderMessage}
+          agentId={managed ? agent?.id : undefined}
+          onJump={jumpToPrompt}
+        />
         {!p.room && <AgentPhase agent={agent} connection={connection} />}
       </div>
       {!p.room && (
@@ -482,6 +477,7 @@ export default function Conversation(p: {
         />
       )}
       <Requests
+        scopeAgentId={managed && !p.room ? agent?.id : undefined}
         requests={requests}
         agents={p.data.threads}
         refresh={p.refresh}
@@ -665,6 +661,26 @@ export default function Conversation(p: {
                       [p.id || ""]: assets.filter((asset) => asset.id !== id),
                     }))
                   }
+                />
+              )}
+              {managed && p.id && (
+                <Dictation
+                  key={`${p.data.stateDir}:${p.id}`}
+                  chatId={`${p.data.stateDir}:${p.id}`}
+                  disabled={!canSend || p.sending}
+                  onInsert={(text) => {
+                    const next =
+                      p.draft +
+                      (p.draft && !p.draft.endsWith("\n") ? "\n" : "") +
+                      text;
+                    if (next.length > 12000) {
+                      p.notify(
+                        "The message exceeds 12,000 characters. Your transcript remains in Dictation.",
+                      );
+                      return;
+                    }
+                    p.setDraft(next);
+                  }}
                 />
               )}
               {managed && canSteer && (

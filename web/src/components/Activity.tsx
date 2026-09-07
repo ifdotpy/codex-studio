@@ -182,10 +182,13 @@ function ToolCard({ item }: { item: Message }) {
   return (
     <details
       className="tool-card"
+      data-message={item.id}
       data-tool-status={state}
       data-read-count={read.targets.length || undefined}
       open={open}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
+      onToggle={(e) => {
+        if (e.target === e.currentTarget) setOpen(e.currentTarget.open);
+      }}
     >
       <summary>
         <span className="tool-icon">

@@ -13,6 +13,7 @@ import "./request-questions.css";
 
 type Props = {
   requests: Json[];
+  scopeAgentId?: string;
   agents: Agent[];
   refresh: () => Promise<void>;
   notify: (s: string) => void;
@@ -26,6 +27,10 @@ function requestQuestions(request: Json): Json[] {
         id,
         question: (p as Json).title || id,
         options: (p as Json).enum?.map((label: string) => ({ label })),
+        isSecret:
+          (p as Json).isSecret ||
+          (p as Json).writeOnly ||
+          (p as Json).format === "password",
       }),
     )
   );
@@ -220,6 +225,21 @@ function RequestCard({
       if (mounted.current) setSending(false);
     }
   };
+  const defer = async () => {
+    if (pending.current) return;
+    pending.current = true;
+    setSending(true);
+    try {
+      await api("/api/questions/defer", { id: r.id, deferred: !r.deferred });
+      if (mounted.current) setOpen(false);
+      await refresh();
+    } catch (error) {
+      if (mounted.current) notify(errorText(error));
+    } finally {
+      pending.current = false;
+      if (mounted.current) setSending(false);
+    }
+  };
   const p = r.params || {},
     asynchronous = r.method === "agent/asyncQuestion",
     question =
@@ -252,13 +272,17 @@ function RequestCard({
               {agents.find((a) => a.id === r.agent)?.name || "Codex"}
             </strong>
             <span className="request-status">
-              {asynchronous
-                ? "Agent can continue"
-                : question
-                  ? "Answer required"
-                  : approval
-                    ? "Approval required"
-                    : "Request"}
+              {r.deferred
+                ? asynchronous
+                  ? "Deferred · Agent can continue"
+                  : "Deferred · Agent still waits"
+                : asynchronous
+                  ? "Agent can continue"
+                  : question
+                    ? "Answer required"
+                    : approval
+                      ? "Approval required"
+                      : "Request"}
             </span>
           </div>
           <p className="request-prompt">
@@ -288,16 +312,25 @@ function RequestCard({
         </div>
         <div className="request-actions">
           {question ? (
-            <Button
-              ref={trigger}
-              data-answer={r.id}
-              disabled={sending}
-              aria-expanded={asynchronous ? open : undefined}
-              aria-controls={asynchronous ? `answer-${r.id}` : undefined}
-              onClick={() => setOpen(!open)}
-            >
-              {open && asynchronous ? "Hide" : "Answer"}
-            </Button>
+            <>
+              <Button
+                variant="subtle"
+                disabled={sending}
+                onClick={() => void defer()}
+              >
+                {r.deferred ? "Restore" : "Defer"}
+              </Button>
+              <Button
+                ref={trigger}
+                data-answer={r.id}
+                disabled={sending}
+                aria-expanded={asynchronous ? open : undefined}
+                aria-controls={asynchronous ? `answer-${r.id}` : undefined}
+                onClick={() => setOpen(!open)}
+              >
+                {open && asynchronous ? "Hide" : "Answer"}
+              </Button>
+            </>
           ) : approval ? (
             <>
               <Button
@@ -353,12 +386,154 @@ function RequestCard({
   );
 }
 
-export default function Requests({ requests, ...props }: Props) {
+function QuestionHistory({
+  agentId,
+  revision,
+  agents,
+}: {
+  agentId: string;
+  revision: string;
+  agents: Agent[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<Json[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setItems(null);
+    setError("");
+    void api("/api/questions?agent=" + encodeURIComponent(agentId))
+      .then((result) => {
+        if (active)
+          setItems(
+            result.items.filter((item: Json) => item.status !== "pending"),
+          );
+      })
+      .catch((error) => {
+        if (active) setError(errorText(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [agentId, open, revision]);
+  return (
+    <details
+      className="request-history"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>Question history</summary>
+      {open && (
+        <div className="request-history-items">
+          {error ? (
+            <p role="alert">{error}</p>
+          ) : items === null ? (
+            <p>Loading decisions…</p>
+          ) : !items.length ? (
+            <p>No past answers in this chat.</p>
+          ) : (
+            items.map((item) => (
+              <article
+                key={item.id}
+                className="request-history-item"
+                data-question-history={item.id}
+              >
+                <div className="request-history-meta">
+                  <strong>
+                    {agents.find((agent) => agent.id === item.agent)?.name ||
+                      "Agent"}
+                  </strong>
+                  <span>
+                    {item.status === "answered"
+                      ? "Answered by you"
+                      : item.status === "uncertain" ||
+                          item.status === "answering"
+                        ? "Delivery uncertain"
+                        : "Expired"}
+                  </span>
+                  {(item.answeredAt || item.createdAt) && (
+                    <time
+                      dateTime={new Date(
+                        (item.answeredAt || item.createdAt) * 1000,
+                      ).toISOString()}
+                    >
+                      {new Date(
+                        (item.answeredAt || item.createdAt) * 1000,
+                      ).toLocaleString()}
+                    </time>
+                  )}
+                </div>
+                {(item.answerHistory || item.questions).map((answer: Json) => (
+                  <div key={answer.id}>
+                    <p className="request-history-question">
+                      {answer.question}
+                    </p>
+                    {"answer" in answer && (
+                      <p className="request-history-answer">
+                        {answer.isSecret
+                          ? "Private answer hidden"
+                          : Array.isArray(answer.answer)
+                            ? answer.answer.join(" · ")
+                            : typeof answer.answer === "object"
+                              ? JSON.stringify(answer.answer)
+                              : String(answer.answer ?? "No answer")}
+                      </p>
+                    )}
+                  </div>
+                ))}
+                {item.decision &&
+                  !["answer", "accept"].includes(item.decision) && (
+                    <p>
+                      {item.decision === "decline" ? "Declined" : "Cancelled"}
+                    </p>
+                  )}
+                {item.answerError && (
+                  <p className="request-history-error">{item.answerError}</p>
+                )}
+              </article>
+            ))
+          )}
+        </div>
+      )}
+    </details>
+  );
+}
+
+export default function Requests({ requests, scopeAgentId, ...props }: Props) {
+  const deferred = requests.filter((r) => r.deferred);
+  const revision = requests
+    .map((r) => `${r.id}:${r.status}:${r.deferred}`)
+    .join("|");
   return (
     <div id="requests">
-      {requests.map((r) => (
-        <RequestCard key={`${r.agent}:${r.id}`} request={r} {...props} />
-      ))}
+      {requests
+        .filter((r) => !r.deferred)
+        .map((r) => (
+          <RequestCard key={`${r.agent}:${r.id}`} request={r} {...props} />
+        ))}
+      {deferred.length > 0 && (
+        <details className="request-history request-deferred">
+          <summary>
+            Deferred questions <span>{deferred.length}</span>
+          </summary>
+          <p className="request-deferred-note">
+            Deferred questions stay unanswered. Required answers still pause the
+            agent.
+          </p>
+          {deferred.map((r) => (
+            <RequestCard key={`${r.agent}:${r.id}`} request={r} {...props} />
+          ))}
+        </details>
+      )}
+      {scopeAgentId && (
+        <QuestionHistory
+          key={scopeAgentId}
+          agentId={scopeAgentId}
+          revision={revision}
+          agents={props.agents}
+        />
+      )}
     </div>
   );
 }

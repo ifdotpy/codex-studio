@@ -21,6 +21,9 @@ if (process.isMainFrame) {
     "codexDesktop",
     Object.freeze({
       platform: process.platform,
+      requestMicrophone: () => invoke("requestMicrophone"),
+      prepareTranscription: () => invoke("prepareTranscription"),
+      transcribeAudio: (value) => invoke("transcribeAudio", value, false),
       pickDirectory: () => invoke("pickDirectory"),
       pickFiles: () => invoke("pickFiles"),
       revealPath: (value) => invoke("revealPath", value),

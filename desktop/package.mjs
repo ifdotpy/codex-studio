@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { packager } from "@electron/packager";
 import { cp, mkdir, mkdtemp, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,23 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 await access(path.join(root, "../web/dist/index.html"));
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
 try {
+  const speech = path.join(stage, "studio-speech");
+  execFileSync("xcrun", [
+    "swiftc",
+    path.join(root, "native/speech.swift"),
+    "-O",
+    "-o",
+    speech,
+    "-Xlinker",
+    "-sectcreate",
+    "-Xlinker",
+    "__TEXT",
+    "-Xlinker",
+    "__info_plist",
+    "-Xlinker",
+    path.join(root, "native/speech-info.plist"),
+  ]);
+  execFileSync("codesign", ["--force", "--sign", "-", speech]);
   const resources = path.join(stage, "workspace");
   await mkdir(path.join(resources, "web"), { recursive: true });
   await cp(path.join(root, "../scripts"), path.join(resources, "scripts"), {
@@ -39,7 +57,13 @@ try {
     overwrite: true,
     asar: true,
     prune: true,
-    extraResource: [resources],
+    extraResource: [resources, speech],
+    extendInfo: {
+      NSMicrophoneUsageDescription:
+        "Record dictation that you can review and convert to text.",
+      NSSpeechRecognitionUsageDescription:
+        "Convert your saved dictation to text on this Mac.",
+    },
     ignore: [
       /^\/assets($|\/)/,
       /^\/dist($|\/)/,

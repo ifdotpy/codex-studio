@@ -84,6 +84,9 @@ python3 -B tests/panel-contract.py
 python3 -B tests/panel-callback-contract.py
 python3 -B tests/panel-render-contract.py
 python3 -B tests/structured-panel-render-contract.py
+python3 -B tests/worker-overview-contract.py
+python3 -B tests/turn-history-contract.py
+python3 -B tests/question-history-contract.py
 npm --prefix web test
 npm --prefix desktop test
 ```

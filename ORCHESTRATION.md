@@ -45,6 +45,26 @@ New calls and output updates do not reopen a group that the user closed.
 Enter sends a message. Shift + Enter inserts a new line.
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.
+Worker cards show the original assignment and the last report from a completed
+turn. Open each excerpt to read more. Reports do not imply acceptance by the lead.
+The team summary counts workers who are active, need your answer, or have finished.
+Deferred questions remain unanswered and leave the attention count.
+
+Completed transcript turns have collapsible results. The active turn stays open.
+Failed and interrupted turns retain their outcomes. Older records that lack an
+outcome say **Turn ended**, without claiming success. **Results** opens linked
+files, images, previews, and recorded patches from the loaded history. New turns
+retain separate patch records; a patch preview does not fetch the current Git diff.
+
+Use **Defer** to keep a question without its active card or reminder. A required
+answer still blocks its agent. **Deferred questions** restores the card.
+**Question history** shows past answers and delivery status for the current team.
+Secret values remain hidden there. An uncertain native reply cannot be sent again
+under the same request identity.
+
+The microphone button opens [recoverable dictation](desktop/README.md#recoverable-dictation).
+Audio stays in this browser profile and chat. Transcription runs through macOS Speech;
+**Insert into message** adds the text to the draft without sending it.
 Select **Canvas** for all orchestrators, workers and registered sessions. Drag nodes to move them, drag the background to pan, and scroll to zoom.
 The canvas has one control, **Fit**. Parent links come from the runtime.
 The browser keeps existing canvas positions and message drafts when views change.

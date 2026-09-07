@@ -48,13 +48,18 @@ import {
 } from "./types";
 import Sidebar from "./components/Sidebar";
 import { useWorkerModels } from "./components/WorkerModelPicker";
-import { ExecutionSettings, shortModel } from "./components/ExecutionSettings";
+import { ExecutionSettings } from "./components/ExecutionSettings";
 import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import TerminalDock from "./components/TerminalDock";
 import "./desktop";
 import "./components/team-navigation.css";
+import WorkerCard, {
+  awaitingAnswerIds,
+  TeamSummary,
+  workerState,
+} from "./components/WorkerOverview";
 import Workspace from "./components/Workspace";
 import Canvas from "./components/Canvas";
 import ComplaintBook from "./components/ComplaintBook";
@@ -144,7 +149,8 @@ export default function App() {
   const visibleLimits = limits?.accountKey === accountKey ? limits : null;
   const chatData = chatSnapshot(data, lead?.id);
   const attentionCount =
-    (chatData?.runtime.requests.length || 0) +
+    (chatData?.runtime.requests.filter((request) => !request.deferred).length ||
+      0) +
     (chatData?.runtime.userTasks?.filter((task) => task.status === "open")
       .length || 0) +
     (chatData?.runtime.complaints.filter(complaintNeedsUserResponse).length ||
@@ -460,50 +466,30 @@ export default function App() {
       : view === "complaints"
         ? "Complaint book"
         : agent?.name || room?.name || legacy?.name || "New conversation";
+  const answerIds = awaitingAnswerIds(chatData?.runtime.requests || []);
+  const deferredIds = new Set<string>(
+    (chatData?.runtime.requests || [])
+      .filter((request) => request.deferred && request.status === "pending")
+      .map((request) => request.agent),
+  );
   const worker = (a: Agent) => (
-    <div
-      className={`worker-entry ${opened === a.id ? "selected" : ""}`}
+    <WorkerCard
       key={a.id}
-    >
-      <UnstyledButton
-        className="worker"
-        data-worker={a.id}
-        aria-current={opened === a.id ? "page" : undefined}
-        onClick={() => open(a.id)}
-      >
-        <span className={`dot ${a.status}`} />
-        <span className="worker-text">
-          <strong>{a.name}</strong>
-          <span className="worker-meta">
-            <small>
-              {a.status === "starting" &&
-              (a.startAttempt?.prepareError || a.startAttempt?.responseError)
-                ? "Waiting for Codex"
-                : statusLabel(a.status)}
-            </small>
-            <span
-              className="worker-model-summary"
-              title={[
-                a.model,
-                a.effort || "default reasoning",
-                a.fastMode ? "Fast" : "Standard",
-              ].join(" · ")}
-            >
-              {shortModel(a.model)}
-              {a.fastMode ? " · Fast" : ""}
-            </span>
-          </span>
-          {a.error && <span className="worker-error">{String(a.error)}</span>}
-        </span>
-      </UnstyledButton>
-    </div>
+      agent={a}
+      selected={opened === a.id}
+      awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
+      deferred={deferredIds.has(a.id)}
+      open={() => open(a.id)}
+    />
   );
   const needsAttention = (a: Agent) =>
-    ["failed", "interrupted", "approval"].includes(a.status);
+    ["attention", "answer"].includes(workerState(a, answerIds, deferredIds));
   const query = workerQuery.trim().toLowerCase();
   const shown = workers.filter((a) =>
     query
-      ? `${a.name} ${a.status} ${a.role || ""}`.toLowerCase().includes(query)
+      ? `${a.name} ${a.status} ${a.role || ""} ${a.overview?.task || ""} ${a.overview?.result || ""}`
+          .toLowerCase()
+          .includes(query)
       : workerFilter === "attention"
         ? needsAttention(a)
         : workerFilter === "active"
@@ -514,17 +500,20 @@ export default function App() {
     { name: "Attention", workers: shown.filter(needsAttention) },
     {
       name: "Working",
-      workers: shown.filter((a) => ["running", "starting"].includes(a.status)),
+      workers: shown.filter(
+        (a) => workerState(a, answerIds, deferredIds) === "working",
+      ),
     },
     {
       name: "Waiting",
       workers: shown.filter(
-        (a) =>
-          !needsAttention(a) && !busy.has(a.status) && a.status !== "completed",
+        (a) => workerState(a, answerIds, deferredIds) === "waiting",
       ),
     },
   ];
-  const completed = shown.filter((a) => a.status === "completed");
+  const completed = shown.filter(
+    (a) => workerState(a, answerIds, deferredIds) === "completed",
+  );
   const teamPanel = (
     <aside id="team" aria-label="Team">
       <div className="team-heading">
@@ -536,11 +525,13 @@ export default function App() {
         >
           <X size={16} />
         </ActionIcon>
-        <span>
-          {workers.filter((a) => busy.has(a.status)).length} active ·{" "}
-          {workers.length} workers
-        </span>
+        <span>{workers.length} workers</span>
       </div>
+      <TeamSummary
+        workers={workers}
+        answers={answerIds}
+        deferred={deferredIds}
+      />
       <Button
         id="lead-row"
         aria-current={opened === lead?.id ? "page" : undefined}

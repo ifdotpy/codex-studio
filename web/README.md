@@ -36,6 +36,11 @@ Set `CHROME_BIN` if Chrome uses another executable path.
 - `src/App.tsx`: screen selection, drafts, conversation actions, imports, and team panel.
 - `src/components/Sidebar.tsx`: lead and agent tabs, search, previews, unread state, inline names, and deletion.
 - `src/components/Conversation.tsx`: Markdown messages, agent bubbles, composer, and questions.
+- `src/components/TurnHistory.tsx`: collapsible results with recorded terminal outcomes.
+- `src/components/ConversationResults.tsx`: linked files, images, saved patches, and previews.
+- `src/components/WorkerOverview.tsx`: worker assignments, reports, and team counts.
+- `src/components/Requests.tsx`: active questions, deferral, and answer history.
+- `src/components/Dictation.tsx`: saved recordings and explicit transcript insertion.
 - `src/components/Canvas.tsx`: the shared agent graph and stored positions.
 - `src/components/ComplaintBook.tsx`: complaints, lead decisions, and user submissions.
 - `src/components/Usage.tsx`: context usage, compaction count, and account limits.

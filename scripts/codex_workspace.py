@@ -254,8 +254,8 @@ class WorkspaceMixin:
         with self.lock, self.db() as db:
             self.checked_actor(db, agent_id)
             row = db.execute(
-                "SELECT record FROM runtime_items WHERE id=? AND agent=?",
-                (agent_id + ":turn/diff/updated", agent_id),
+                "SELECT record FROM runtime_items WHERE agent=? AND (id=? OR id LIKE ?) ORDER BY created DESC LIMIT 1",
+                (agent_id, agent_id + ":turn/diff/updated", agent_id + ":turn/diff/updated:%"),
             ).fetchone()
             record = json.loads(row[0]) if row else None
             result = {
@@ -776,7 +776,7 @@ class WorkspaceMixin:
             monitors = self.recent_monitors(db, root)
             inbox = []
             for r in self.records(db, "requests"):
-                if r["status"] == "pending" and r["agent"] in ids:
+                if r["status"] == "pending" and not r.get("deferred") and r["agent"] in ids:
                     inbox.append(
                         {
                             "id": r["id"],

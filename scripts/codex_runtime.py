@@ -27,6 +27,7 @@ from codex_work import WorkMixin, work_tools
 from codex_workspace import WorkspaceMixin
 from codex_rules import RulesMixin, rule_tools
 from codex_user_tasks import UserTasksMixin, user_task_tools
+from codex_questions import QuestionsMixin, is_question, answer_signature, record_answer
 from codex_panel import PanelMixin, panel_tools
 from codex_panel_render import render_panel
 
@@ -314,7 +315,7 @@ class AppServer:
         self.log.close()
 
 
-class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
+class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -428,6 +429,9 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                     m.update(status="lost", error="Server restarted. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", m)
             for r in self.records(db, "requests"):
+                if r["status"] == "answering":
+                    r.update(status="uncertain", answerError="Server restarted before answer delivery completed")
+                    self.put(db, "requests", r)
                 if r["status"] == "pending":
                     r["status"] = "expired"
                     self.put(db, "requests", r)
@@ -1912,7 +1916,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 previous = json.loads(row[0]) if row else {}
                 text = previous.get("text", "") + p.get("delta", "")
                 self.item(db, a["id"], p.get("itemId", "message"), "assistant", text,
-                          streaming=True, turnId=p.get("turnId") or a.get("turnId"))
+                          streaming=True, turnId=p.get("turnId") or a.get("turnId"), phase=previous.get("phase"))
                 a["activity"] = {"phase": "writing", "at": time.time()}
                 a["tail"] = text[-300:]
             elif method in {"item/started", "item/completed"}:
@@ -1930,7 +1934,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                     a["activity"] = {"phase": "writing" if started else "thinking", "at": time.time()}
                     if started:
                         self.item(db, a["id"], item["id"], "assistant", item.get("text", ""),
-                                  streaming=True, turnId=p.get("turnId") or a.get("turnId"))
+                                  streaming=True, turnId=p.get("turnId") or a.get("turnId"), phase=item.get("phase"))
                 elif kind != "userMessage":
                     active = [t for t in a.get("activeTools", []) if t["id"] != item.get("id")]
                     if started:
@@ -1944,15 +1948,16 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                         a["contextUsage"] = None
                 if kind == "agentMessage" and method == "item/completed":
                     text = item.get("text", "")
-                    self.item(db, a["id"], item["id"], "assistant", text, streaming=False, turnId=p.get("turnId") or a.get("turnId"))
+                    self.item(db, a["id"], item["id"], "assistant", text, streaming=False,
+                              turnId=p.get("turnId") or a.get("turnId"), phase=item.get("phase"))
                     if item.get("questions"):
                         request_id = a["id"] + ":question:" + item["id"]
                         if not db.execute("SELECT 1 FROM runtime_requests WHERE id=?", (request_id,)).fetchone():
                             questions = [{"id": str(i), "question": q["title"],
-                                          "options": [{"label": o} for o in q.get("options") or []]}
+                                          "options": [{"label": o} for o in q.get("options") or []], "isSecret": bool(q.get("isSecret"))}
                                          for i, q in enumerate(item["questions"])]
                             self.put(db, "requests", {"id": request_id, "method": "agent/asyncQuestion",
-                                "agent": a["id"], "epoch": a["epoch"], "params": {"questions": questions}, "status": "pending"})
+                                "agent": a["id"], "epoch": a["epoch"], "params": {"questions": questions}, "status": "pending", "createdAt": time.time()})
                     a["tail"] = text[-300:]
                     a["lastAnswer"] = text[-16000:]
                 elif kind not in {"reasoning", "userMessage", "agentMessage"}:
@@ -1991,8 +1996,9 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                     )
                     plan.update(native=p, steps=p.get("plan", []), updated=time.time())
                     self.put(db, "plans", plan)
-                self.item(db, a["id"], method, "output", json.dumps(p, ensure_ascii=False),
-                          "Plan" if method == "turn/plan/updated" else "Changes")
+                self.item(db, a["id"], method + ":" + str(p.get("turnId") or a.get("turnId") or "unknown"),
+                          "output", json.dumps(p, ensure_ascii=False),
+                          "Plan" if method == "turn/plan/updated" else "Changes", turnId=p.get("turnId") or a.get("turnId"))
             elif method == "thread/tokenUsage/updated":
                 usage = p.get("tokenUsage", {})
                 a["tokensUsed"] = usage.get("total", {}).get("totalTokens", a["tokensUsed"])
@@ -2006,6 +2012,11 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
                     return
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
+                # Preserve the terminal outcome with the messages. Failed and interrupted
+                # work must never acquire a successful summary label in chat history.
+                db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
+                           "WHERE agent=? AND json_extract(record,'$.turnId')=?",
+                           (turn.get("status") or "ended", a["id"], turn.get("id")))
                 for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status')='running'", (a["id"],)).fetchall():
                     task = json.loads(row[0])
                     if task.get("turnId") == a.get("turnId") and not (task["kind"] == "command" and task.get("processId")):
@@ -2071,7 +2082,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             a = next((a for a in self.records(db, "agents") if p.get("threadId") and a.get("threadId") == p.get("threadId") and a.get("accountKey", "default") == account_key), None)
             r = {"id": uid(), "rpcId": message["id"], "method": message["method"],
                  "params": p, "agent": a["id"] if a else None, "status": "pending",
-                 "accountKey": account_key, "connectionId": connection_id}
+                 "accountKey": account_key, "connectionId": connection_id, "createdAt": time.time()}
             if a and p.get("itemId"):
                 row = db.execute("SELECT record FROM runtime_items WHERE id=?", (a["id"] + ":" + p["itemId"],)).fetchone()
                 if row:
@@ -2995,6 +3006,12 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             if not row:
                 raise ValueError("Unknown request")
             r = json.loads(row[0])
+            if is_question(r) and r.get("answerSignature"):
+                if r["answerSignature"] != answer_signature(data):
+                    raise ValueError("This question already has a different answer")
+                if r["status"] == "answered":
+                    return {"status": "answered", "replayed": True}
+                raise ValueError("Answer delivery is uncertain. Do not resend; inspect the agent conversation")
             if r["status"] != "pending":
                 raise ValueError("Request is no longer pending")
             if r["method"] == "agent/asyncQuestion":
@@ -3007,6 +3024,7 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 text = "\n".join(q["question"] + "\n" + "\n".join(answers.get(q["id"], {}).get("answers", [])) for q in r["params"]["questions"])
                 self.enqueue(db, a, "user", text, key + ":answer")
                 r["status"] = "answered"
+                record_answer(r, data)
                 self.put(db, "requests", r)
                 return {"status": "answered"}
             if r["method"] == "monitor/approve":
@@ -3069,7 +3087,19 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 result = {"action": decision, "content": data.get("content") if decision == "accept" else None}
             else:
                 raise ValueError("Unsupported request type; stop the agent and use a supported Codex client")
-            self.reply({"id": r["rpcId"], "result": result}, r.get("accountKey", "default"), r.get("connectionId"))
+            if is_question(r):
+                record_answer(r, data)
+                r["status"] = "answering"
+                self.put(db, "requests", r)
+                db.commit()  # A lost pipe write cannot turn this back into a retryable question.
+            try:
+                self.reply({"id": r["rpcId"], "result": result}, r.get("accountKey", "default"), r.get("connectionId"))
+            except Exception:
+                if is_question(r):
+                    r.update(status="uncertain", answerError="Answer delivery could not be confirmed. Inspect the agent conversation before taking further action.")
+                    self.put(db, "requests", r)
+                    db.commit()
+                raise
             r["status"] = "answered"
             self.put(db, "requests", r)
             if r.get("agent"):
@@ -3094,6 +3124,19 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
             for a in agents:
                 a["empty"] = self.empty_lead(db, a)
+                if not a.get("isLead"):
+                    task = str(a.get("prompt") or "")
+                    # A completed message can be commentary. Publish the last report
+                    # only once the current turn has completed successfully.
+                    result = str(a.get("lastAnswer") or "") if (
+                        a.get("lastCompletedTurn") and not a.get("turnId")
+                        and not a.get("inFlight") and a.get("status") == "completed"
+                    ) else ""
+                    a["overview"] = {
+                        "task": task[:4000], "taskTruncated": len(task) > 4000,
+                        "result": result[:4000], "resultTruncated": len(result) > 4000,
+                        "resultTurnId": a.get("lastCompletedTurn") if result else None,
+                    }
                 for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy"):
                     a.pop(private, None)
                 a.update(kind="agent", source="managed", canSend=True, launcherAlive=not self.closed,
@@ -3149,6 +3192,15 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 (key,),
             ).fetchall()
             items = list(reversed([json.loads(r[0]) for r in rows[:120]]))
+            turn_keys = {key + ":" + item["turnId"] for item in items if item.get("turnId")}
+            ended = {row[0] for row in db.execute(
+                "SELECT id FROM runtime_completed_turns WHERE id IN (" + ",".join("?" for _ in turn_keys) + ")",
+                tuple(turn_keys),
+            )} if turn_keys else set()
+            for item in items:
+                if item.get("turnId") and key + ":" + item["turnId"] in ended:
+                    # Older records prove that a turn ended, but not that it succeeded.
+                    item.setdefault("turnStatus", "ended")
             pending = db.execute("SELECT * FROM runtime_events WHERE agent=? AND kind='user' AND status='pending' ORDER BY created LIMIT 32", (key,)).fetchall()
             for event in pending:
                 if not any(item["id"] == key + ":" + event["id"] for item in items):

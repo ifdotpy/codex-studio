@@ -444,7 +444,7 @@ def make_server(canvas, port=0):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
             )
             self.end_headers()
             self.wfile.write(data)
@@ -551,6 +551,8 @@ def make_server(canvas, port=0):
                         return self.send(runtime.accounts.snapshot())
                     if path.path == "/api/projects":
                         return self.send(runtime.projects())
+                    if path.path == "/api/questions":
+                        return self.send(runtime.question_history(agent))
                     if path.path == "/api/workspace":
                         return self.send(runtime.workspace_snapshot(agent))
                     if path.path == "/api/work":
@@ -783,6 +785,8 @@ def make_server(canvas, port=0):
                         return self.send(canvas.runtime.stop(body.get("id"), body.get("descendants", True)))
                     if self.path == "/api/monitor/cancel":
                         return self.send(canvas.runtime.cancel_monitor(body.get("id")))
+                    if self.path == "/api/questions/defer":
+                        return self.send(canvas.runtime.defer_question(body.get("id"), body.get("deferred", True)))
                     if self.path == "/api/answer":
                         return self.send(canvas.runtime.answer(body.get("id"), body))
                 if self.path == "/api/chats":

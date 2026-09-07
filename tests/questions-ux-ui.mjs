@@ -309,6 +309,7 @@ try {
   throw error;
 } finally {
   releaseResponse?.();
+  await page?.unrouteAll({ behavior: "wait" });
   await browser?.close();
   proc.kill("SIGTERM");
   if (proc.exitCode === null)

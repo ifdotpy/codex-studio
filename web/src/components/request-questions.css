@@ -97,3 +97,56 @@
     flex: 1 1 140px;
   }
 }
+
+.request-history {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0;
+}
+.request-history > summary {
+  cursor: pointer;
+  padding: 7px 0;
+  width: fit-content;
+}
+.request-history > summary:hover {
+  color: var(--text);
+}
+.request-history > summary span {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.request-history-items {
+  display: grid;
+  gap: 14px;
+  padding: 10px 0;
+}
+.request-history-item {
+  min-width: 0;
+  border-left: 2px solid var(--border, #ffffff16);
+  padding: 2px 12px;
+  overflow-wrap: anywhere;
+}
+.request-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  font-size: 11px;
+}
+.request-history-meta strong,
+.request-history-question {
+  color: var(--text);
+}
+.request-history-question {
+  margin: 8px 0 3px;
+}
+.request-history-answer {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.request-deferred-note {
+  margin: 8px 0;
+  font-size: 11px;
+}
+.request-history-error {
+  color: var(--warning, #e3b761);
+}

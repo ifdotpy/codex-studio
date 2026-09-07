@@ -62,3 +62,48 @@ npm run test:package
 `test:package` requires a current package. It starts that exact `.app`, verifies its bundled backend path, and checks backend survival after app exit.
 
 The source suite starts the real Python backend with an isolated database. It races two launchers, checks attachment and state ownership, runs hidden Electron windows, checks native access and navigation boundaries, and confirms that the backend survives app exit. It does not start a model request. Test windows remain hidden; input uses the renderer protocol, not operating-system input.
+
+## Recoverable dictation
+
+The composer microphone opens saved recordings for the selected chat. Record up to
+30 minutes. Choose the language, stop, then select **Transcribe**. Select **Insert
+into message** to append the result to the draft. This action never sends a message.
+Audio remains available for playback, download, retry, and deletion after a reload.
+Audio chunks use IndexedDB in the desktop profile; they do not enter agent context.
+
+The native provider uses macOS Speech and requires on-device recognition. It splits
+long recordings into 50-second files. It does not upload audio or use account API
+keys. Enable the selected Dictation language in macOS settings. Microphone and
+Speech permission remain explicit. An unavailable language or denied permission
+leaves the audio saved for a retry. Browser mode can record and download audio;
+transcription requires the updated macOS desktop host. Restart the desktop app
+after its package update to load the new bridge. This restart does not stop agents.
+
+Packaging requires Xcode command-line tools. `npm run package` compiles and embeds
+the native helper and usage descriptions. To prepare a development launch:
+
+```sh
+xcrun swiftc native/speech.swift -o native/studio-speech \
+  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+  -Xlinker "$PWD/native/speech-info.plist"
+```
+
+The `requestMicrophone()` and `prepareTranscription()` bridge methods require a
+trusted user action. Only the workspace main frame can request audio access.
+`transcribeAudio()` consumes a short-lived permit and accepts validated WAV bytes,
+not a filesystem path. Temporary native files are removed after each attempt.
+
+Targeted checks from the repository root:
+
+```sh
+node tests/dictation-ui.mjs
+node --experimental-strip-types tests/speech-native.mjs
+```
+
+These checks mock capture and recognition. They do not request microphone or Speech
+permission, and do not prove recognition accuracy. The helper's `--check` flag
+checks that its frameworks load without requesting either permission.
+
+API references: [Apple Speech file requests](https://developer.apple.com/documentation/speech/sfspeechurlrecognitionrequest),
+[on-device recognition](https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/requiresondevicerecognition),
+and [Electron permissions](https://www.electronjs.org/docs/latest/api/session).

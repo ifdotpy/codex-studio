@@ -527,6 +527,9 @@ class RuntimeContract(unittest.TestCase):
 
     def test_transcript_wait_wakes_on_committed_change_and_closes(self):
         a = self.lead()
+        # turn/started can arrive before the start response binds the input batch.
+        # Wait for that write before asserting that an idle wait has no revision.
+        eventually(lambda: (self.runtime.agent(a['id']).get('startAttempt') or {}).get('turnId') == a['turnId'])
         revision, initial = self.runtime.wait_transcript(a['id'], -1)
         self.assertEqual(initial['agent']['id'], a['id'])
         self.assertEqual(self.runtime.wait_transcript(a['id'], revision, .01), (revision, None))

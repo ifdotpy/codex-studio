@@ -10,6 +10,7 @@ const {
   shell,
   Notification,
   Menu,
+  systemPreferences,
 } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -26,6 +27,9 @@ app.enableSandbox();
 let win;
 let backend;
 let notifications = false;
+let microphoneUntil = 0;
+const transcriptionPermits = new Map();
+let transcriptionRunning = false;
 function trusted(event) {
   if (
     !win ||
@@ -77,6 +81,46 @@ async function nativeAction(event, request) {
   if (!request || typeof request !== "object")
     throw new Error("Invalid native action.");
   switch (request.method) {
+    case "requestMicrophone": {
+      if (
+        process.platform === "darwin" &&
+        !(await systemPreferences.askForMediaAccess("microphone"))
+      )
+        throw new Error(
+          "Microphone access was denied. Allow Codex Studio in macOS Privacy & Security.",
+        );
+      microphoneUntil = Date.now() + 15000;
+      return true;
+    }
+    case "prepareTranscription": {
+      if (process.platform !== "darwin")
+        throw new Error("Local transcription currently requires macOS.");
+      for (const [token, expiry] of transcriptionPermits)
+        if (expiry < Date.now()) transcriptionPermits.delete(token);
+      const token = require("node:crypto").randomUUID();
+      transcriptionPermits.set(token, Date.now() + 60000);
+      return token;
+    }
+    case "transcribeAudio": {
+      const token = request.value?.permit;
+      const expiry = transcriptionPermits.get(token);
+      transcriptionPermits.delete(token);
+      if (!expiry || expiry < Date.now())
+        throw new Error("Use the Transcribe button again.");
+      if (transcriptionRunning)
+        throw new Error(
+          "Another recording is being transcribed. Retry when it finishes.",
+        );
+      transcriptionRunning = true;
+      try {
+        const helper = app.isPackaged
+          ? path.join(process.resourcesPath, "studio-speech")
+          : path.join(__dirname, "native", "studio-speech");
+        return await require("./speech.cjs").transcribe(request.value, helper);
+      } finally {
+        transcriptionRunning = false;
+      }
+    }
     case "pickDirectory": {
       const result = await dialog.showOpenDialog(win, {
         properties: ["openDirectory", "createDirectory"],
@@ -166,9 +210,27 @@ async function start() {
     },
   });
   win.webContents.session.setPermissionRequestHandler(
-    (_contents, _permission, callback) => callback(false),
+    (contents, permission, callback, details) =>
+      callback(
+        contents === win.webContents &&
+          permission === "media" &&
+          details.isMainFrame === true &&
+          details.requestingUrl === `${backend.origin}/` &&
+          microphoneUntil > Date.now() &&
+          Array.isArray(details.mediaTypes) &&
+          details.mediaTypes.length === 1 &&
+          details.mediaTypes[0] === "audio",
+      ),
   );
-  win.webContents.session.setPermissionCheckHandler(() => false);
+  win.webContents.session.setPermissionCheckHandler(
+    (contents, permission, origin, details) =>
+      contents === win.webContents &&
+      permission === "media" &&
+      origin === backend.origin &&
+      details.isMainFrame === true &&
+      details.mediaType === "audio" &&
+      microphoneUntil > Date.now(),
+  );
   win.webContents.on("will-attach-webview", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());

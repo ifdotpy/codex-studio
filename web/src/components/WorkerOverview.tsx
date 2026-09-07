@@ -1,0 +1,186 @@
+import { Button, UnstyledButton } from "@mantine/core";
+import { ChevronRight } from "lucide-react";
+import { shortModel } from "./ExecutionSettings";
+import { statusLabel, type Agent, type Json } from "../types";
+
+export function awaitingAnswerIds(requests: Json[]) {
+  return new Set(
+    requests
+      .filter(
+        (request) =>
+          !request.deferred &&
+          (request.status === "pending" || !request.status),
+      )
+      .map((request) => request.agent as string),
+  );
+}
+
+export function workerState(
+  agent: Agent,
+  answers: Set<string>,
+  deferred?: Set<string>,
+) {
+  if (answers.has(agent.id)) return "answer";
+  if (agent.status === "approval")
+    return deferred?.has(agent.id) ? "waiting" : "answer";
+  if (["failed", "interrupted"].includes(agent.status)) return "attention";
+  if (["running", "starting"].includes(agent.status)) return "working";
+  if (agent.status === "completed") return "completed";
+  return "waiting";
+}
+
+export function TeamSummary({
+  workers,
+  answers,
+  deferred,
+}: {
+  workers: Agent[];
+  answers: Set<string>;
+  deferred: Set<string>;
+}) {
+  const count = (state: string) =>
+    workers.filter((agent) => workerState(agent, answers, deferred) === state)
+      .length;
+  return (
+    <div className="team-overview" aria-label="Team status summary">
+      <dl>
+        {[
+          ["working", "Working"],
+          ["answer", "Need you"],
+          ["completed", "Finished"],
+        ].map(([state, label]) => (
+          <div
+            key={state}
+            data-team-count={state}
+            data-active={count(state) > 0}
+          >
+            <dt>{label}</dt>
+            <dd>{count(state)}</dd>
+          </div>
+        ))}
+      </dl>
+      {(count("waiting") > 0 || count("attention") > 0) && (
+        <p>
+          {[
+            count("waiting") > 0 && `${count("waiting")} waiting`,
+            count("attention") > 0 && `${count("attention")} need attention`,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function WorkerExcerpt({
+  label,
+  text,
+  truncated,
+  open,
+}: {
+  label: string;
+  text: string;
+  truncated?: boolean;
+  open: () => void;
+}) {
+  return (
+    <details className="worker-excerpt">
+      <summary>
+        <span className="worker-excerpt-label">
+          {label}
+          <ChevronRight size={11} aria-hidden="true" />
+        </span>
+        <span className="worker-excerpt-preview">{text}</span>
+      </summary>
+      <div className="worker-excerpt-full">
+        <p>{text}</p>
+        {truncated && (
+          <Button variant="subtle" size="compact-xs" onClick={open}>
+            Continue in chat
+          </Button>
+        )}
+      </div>
+    </details>
+  );
+}
+
+export default function WorkerCard({
+  agent,
+  selected,
+  awaitingAnswer,
+  deferred,
+  open,
+}: {
+  agent: Agent;
+  selected: boolean;
+  awaitingAnswer: boolean;
+  deferred: boolean;
+  open: () => void;
+}) {
+  const overview = agent.overview;
+  return (
+    <div className={`worker-entry ${selected ? "selected" : ""}`}>
+      <UnstyledButton
+        className="worker"
+        data-worker={agent.id}
+        aria-current={selected ? "page" : undefined}
+        onClick={open}
+      >
+        <span
+          className={`dot ${awaitingAnswer ? "approval" : deferred && agent.status === "approval" ? "waiting" : agent.status}`}
+        />
+        <span className="worker-text">
+          <strong>{agent.name}</strong>
+          <span className="worker-meta">
+            <small>
+              {awaitingAnswer
+                ? "Needs your answer"
+                : deferred && agent.status === "approval"
+                  ? "Question deferred"
+                  : agent.status === "starting" &&
+                      (agent.startAttempt?.prepareError ||
+                        agent.startAttempt?.responseError)
+                    ? "Waiting for Codex"
+                    : statusLabel(agent.status)}
+            </small>
+            <span
+              className="worker-model-summary"
+              title={[
+                agent.model,
+                agent.effort || "default reasoning",
+                agent.fastMode ? "Fast" : "Standard",
+              ].join(" · ")}
+            >
+              {shortModel(agent.model)}
+              {agent.fastMode ? " · Fast" : ""}
+            </span>
+          </span>
+          {agent.error && (
+            <span className="worker-error">{String(agent.error)}</span>
+          )}
+        </span>
+      </UnstyledButton>
+      {overview?.task ? (
+        <WorkerExcerpt
+          label="Task"
+          text={overview.task}
+          truncated={overview.taskTruncated}
+          open={open}
+        />
+      ) : (
+        <p className="worker-missing">Task details unavailable</p>
+      )}
+      {overview?.result ? (
+        <WorkerExcerpt
+          label="Last report"
+          text={overview.result}
+          truncated={overview.resultTruncated}
+          open={open}
+        />
+      ) : agent.status === "completed" ? (
+        <p className="worker-missing">No final report available</p>
+      ) : null}
+    </div>
+  );
+}

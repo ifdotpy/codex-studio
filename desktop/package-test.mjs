@@ -16,10 +16,12 @@ const port = await new Promise((resolve) => {
     server.close(() => resolve(port));
   });
 });
-const executable = path.join(
-  root,
-  "dist/Codex Studio-darwin-arm64/Codex Studio.app/Contents/MacOS/Codex Studio",
-);
+const executable =
+  process.env.CODEX_STUDIO_ELECTRON ||
+  path.join(
+    root,
+    "dist/Codex Studio-darwin-arm64/Codex Studio.app/Contents/MacOS/Codex Studio",
+  );
 const origin = `http://127.0.0.1:${port}`;
 let desktop;
 let pid;
@@ -39,6 +41,23 @@ try {
   await page.waitForFunction(
     () => !!window.codexDesktop && !!document.querySelector("textarea"),
   );
+  assert.equal(
+    await page.evaluate(() =>
+      ["requestMicrophone", "prepareTranscription", "transcribeAudio"].every(
+        (method) => typeof window.codexDesktop[method] === "function",
+      ),
+    ),
+    true,
+  );
+  const speech = JSON.parse(
+    execFileSync(
+      path.join(path.dirname(executable), "../Resources/studio-speech"),
+      ["--check"],
+      { encoding: "utf8" },
+    ),
+  );
+  assert.equal(speech.helperReady, true);
+  assert.equal(speech.onDeviceOnly, true);
   const identity = await (await fetch(`${origin}/api/desktop`)).json();
   pid = identity.pid;
   assert.equal(identity.stateDir, await realpath(state));
