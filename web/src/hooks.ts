@@ -97,34 +97,37 @@ export function useMessages(
       setLiveAgent(d.agent || null);
       const nextItems: Message[] = (d.items || []).flatMap((m: Message) =>
         m.inputs
-          ? m.inputs.map(
-              (
-                r: { kind: string; text: string; truncated: boolean },
-                i: number,
-              ) => ({
-                ...m,
-                id: `${m.id}:${i}`,
-                sourceId: m.id,
-                assets: (r as Json).assets || (i === 0 ? m.assets : []),
-                role: r.kind === "user" ? "user" : "tool",
-                text: r.text,
-                truncated: r.truncated,
-                title:
-                  r.kind === "user"
-                    ? "You"
-                    : (
-                        {
-                          agent_message: "Agent message received",
-                          child_result: "Worker result received",
-                          monitor_exit: "Command finished",
-                          monitor_cancelled: "Command cancelled",
-                          complaint_response: "Complaint response received",
-                          followup: "Agent follow-up",
-                          complaint: "Complaint requires a response",
-                        } as Record<string, string>
-                      )[r.kind] || "Team activity",
-              }),
-            )
+          ? m.inputs.map((r: Json, i: number) => ({
+              ...m,
+              id: r.id ? `${id}:${r.id}` : `${m.id}:${i}`,
+              sourceId: m.id,
+              clientMessageId:
+                r.clientMessageId ||
+                r.id ||
+                (i === 0 ? m.clientMessageId : undefined),
+              deliveryStatus: r.deliveryStatus,
+              deliveryError: r.deliveryError,
+              materialized: r.materialized ?? m.materialized,
+              pending: r.pending,
+              assets: (r as Json).assets || (i === 0 ? m.assets : []),
+              role: r.kind === "user" ? "user" : "tool",
+              text: r.text,
+              truncated: r.truncated,
+              title:
+                r.kind === "user"
+                  ? "You"
+                  : (
+                      {
+                        agent_message: "Agent message received",
+                        child_result: "Worker result received",
+                        monitor_exit: "Command finished",
+                        monitor_cancelled: "Command cancelled",
+                        complaint_response: "Complaint response received",
+                        followup: "Agent follow-up",
+                        complaint: "Complaint requires a response",
+                      } as Record<string, string>
+                    )[r.kind] || "Team activity",
+            }))
           : [m],
       );
       const nextNotice =
@@ -177,7 +180,7 @@ export function useMessages(
         }
       }
     },
-    [scope, managed, kind],
+    [scope, managed, kind, id],
   );
   const load = useCallback(
     async (allowed: () => boolean = () => true) => {

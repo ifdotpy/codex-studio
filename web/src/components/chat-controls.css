@@ -146,6 +146,21 @@
 .queue-editor button {
   margin: 5px 5px 0 0;
 }
+.message-delivery-status {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.message-delivery-error {
+  margin-top: 8px;
+  color: var(--danger, #e7a0a6);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.message-delivery-error p {
+  margin: 0 0 4px;
+}
 .sidebar-filters {
   display: flex;
   align-items: center;

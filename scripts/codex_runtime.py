@@ -608,6 +608,8 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 excerpt = r["text"][:remaining]
                 record["inputs"].append(
                     {
+                        "id": r.get("id"),
+                        "at": r.get("created", r.get("at")),
                         "kind": r["kind"],
                         "text": excerpt,
                         "truncated": len(excerpt) < len(r["text"]),
@@ -617,6 +619,17 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 remaining -= len(excerpt)
         db.execute("INSERT INTO runtime_items VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (key, agent, json.dumps(record), time.time()))
+        # Store the batch location beside each receipt. Transcript reads can
+        # resolve it by primary key without scanning historical JSON payloads.
+        receipt_ids = [r.get("id") for r in inputs] if inputs is not None else (
+            [key.removeprefix(agent + ":")] if role == "user" else [])
+        for receipt_id in receipt_ids:
+            if receipt_id:
+                db.execute(
+                    "UPDATE runtime_event_meta SET record=json_set(record,'$.transcriptItemId',?) "
+                    "WHERE id=? AND EXISTS (SELECT 1 FROM runtime_events WHERE id=? AND agent=?)",
+                    (key, receipt_id, receipt_id, agent),
+                )
         self.index_item(db, key, agent, title or role, text)
         self.touch_ui(agent)
 
@@ -3237,11 +3250,60 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 if item.get("turnId") and key + ":" + item["turnId"] in ended:
                     # Older records prove that a turn ended, but not that it succeeded.
                     item.setdefault("turnStatus", "ended")
-            pending = db.execute("SELECT * FROM runtime_events WHERE agent=? AND kind='user' AND status='pending' ORDER BY created LIMIT 32", (key,)).fetchall()
-            for event in pending:
-                if not any(item["id"] == key + ":" + event["id"] for item in items):
-                    items.append({"id": key + ":" + event["id"], "role": "user", "title": "You",
-                                  "text": event["text"], "pending": True, "at": event["created"]})
+            # A receipt remains visible while preparation and native dispatch run.
+            # The queue and the native input batch share exact event identities.
+            represented = {}
+            for item in items:
+                if item.get("inputs"):
+                    for index, entry in enumerate(item["inputs"]):
+                        event_id = entry.get("id")
+                        if not event_id and index == 0:
+                            event_id = item["id"].removeprefix(key + ":")
+                        if event_id and entry.get("kind") == "user":
+                            represented[event_id] = entry
+                elif item.get("role") == "user":
+                    represented[item["id"].removeprefix(key + ":")] = item
+            outstanding = db.execute(
+                "SELECT e.*,m.record AS metadata FROM runtime_events e "
+                "LEFT JOIN runtime_event_meta m ON m.id=e.id "
+                "WHERE e.agent=? AND e.kind='user' "
+                "AND (e.status IN ('pending','reserved','dispatching','uncertain') "
+                "OR (e.status='failed' AND e.created>=?)) ORDER BY e.created",
+                (key, items[0].get("at", 0) if items else 0),
+            ).fetchall()
+            for event in outstanding:
+                if event["id"] in represented:
+                    continue
+                meta = json.loads(event["metadata"]) if event["metadata"] else {}
+                # Resolve materialized receipts by primary key. Older records
+                # can resolve the first input through its existing item identity.
+                stored = db.execute(
+                    "SELECT 1 FROM runtime_items WHERE id=? AND agent=?",
+                    (meta.get("transcriptItemId", key + ":" + event["id"]), key),
+                ).fetchone()
+                if stored:
+                    continue
+                if (event["status"] == "uncertain" and not meta.get("transcriptItemId")
+                        and items and event["created"] < items[0].get("at", 0)):
+                    # Legacy batches did not retain secondary receipt identities.
+                    # Keep their history bounded instead of scanning all payloads.
+                    continue
+                item = {"id": key + ":" + event["id"], "role": "user", "title": "You",
+                        "text": event["text"], "at": event["created"], "materialized": False,
+                        "assets": [self.asset_view(self.asset_record(v)) for v in meta.get("assets", [])]}
+                items.append(item)
+                represented[event["id"]] = item
+            if represented:
+                events = db.execute(
+                    "SELECT id,status,error FROM runtime_events WHERE agent=? AND kind='user' "
+                    "AND id IN (" + ",".join("?" for _ in represented) + ")",
+                    (key, *represented),
+                ).fetchall()
+                for event in events:
+                    represented[event["id"]].update(
+                        clientMessageId=event["id"], deliveryStatus=event["status"],
+                        materialized=represented[event["id"]].get("materialized", True),
+                        deliveryError=event["error"], pending=event["status"] == "pending")
             a = self.agent(key, db)
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")

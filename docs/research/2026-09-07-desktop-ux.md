@@ -91,3 +91,24 @@ This evidence confirms the fix in the fixture, not a claim about the underlying 
 
 The five principal opportunities are prompt navigation, bookmarks, clearer Team groups, direct question controls, and expandable turn recaps.
 Worker task/result previews remain a further option.
+
+## Message delivery follow-up
+
+The same local archive contains these frequent chat interactions in `webview/assets/app-initial-DwVrCWuo.js`:
+
+- `rBn` adds a pending user message with `clientUserMessageId` before the network request. `iBn` updates its accepted state.
+- `_el` clears composer content after successful submission. Its error path preserves the content.
+- `_el` restores composer focus when `focusComposerAfterSubmit` is set.
+- Queue helpers support edit, removal, restoration, and attachment restoration. These source paths do not prove a live Undo interaction.
+
+Studio now keeps a local message visible until the transcript contains its exact receipt.
+The renderer shows delivery errors beside the message and preserves failed drafts and attachments.
+Send returns focus to the composer and moves to the latest message.
+A later manual scroll stops automatic movement.
+Pending request identities survive reloads, including a turn ending before retry.
+These are independent Studio implementations. No application source or assets were copied.
+
+The browser contract `tests/message-delivery-ui.mjs` covers delayed responses, stale history,
+exact receipt matching, failed sends, attachments, focus, scroll, and chat isolation.
+It runs against both direct HTTP and real RxDB storage.
+Backend delivery state and bounded query work are covered by `tests/send-transcript-contract.py`.

@@ -8,9 +8,20 @@ type Intention = {
   error?: string;
   receipt?: any;
   created: number;
+  displayPending?: boolean;
+  attachments?: any[];
+  displayText?: string;
 };
 export type OutboxEntry = Intention & { id: string };
+export type OutgoingMessage = Omit<OutboxEntry, "status"> & {
+  status: OutboxEntry["status"] | "sending";
+};
 const active = new Map<string, Promise<any>>();
+const updateIntention = (doc: any, change: Partial<Intention>) =>
+  doc.incrementalModify((record: any) => ({
+    ...record,
+    payload: JSON.stringify({ ...JSON.parse(record.payload), ...change }),
+  }));
 async function deliver(doc: any) {
   const value: Intention = JSON.parse(doc.payload);
   if (value.status !== "queued")
@@ -26,12 +37,18 @@ async function deliver(doc: any) {
     const state = await api("/api/state");
     setToken(state.token);
     const result = await api<any>("/api/messages", value.body);
-    await doc.incrementalPatch({
-      payload: JSON.stringify({
-        ...value,
-        status: result.status === "uncertain" ? "uncertain" : "accepted",
-        receipt: result,
-      }),
+    if (result.status === "failed" || result.status === "cancelled")
+      throw new ApiError(
+        result.error ||
+          (result.status === "cancelled"
+            ? "This message was cancelled."
+            : "The message was not sent."),
+        400,
+      );
+    await updateIntention(doc, {
+      status: result.status === "uncertain" ? "uncertain" : "accepted",
+      receipt: result,
+      error: result.error,
     });
     return result;
   } catch (error) {
@@ -42,17 +59,12 @@ async function deliver(doc: any) {
       error.status === 408 ||
       error.status === 429
     ) {
-      await doc.incrementalPatch({
-        payload: JSON.stringify({ ...value, error: errorText(error) }),
-      });
+      await updateIntention(doc, { error: errorText(error) });
       return { queued: true, status: "queued" };
     }
-    await doc.incrementalPatch({
-      payload: JSON.stringify({
-        ...value,
-        status: "failed",
-        error: errorText(error),
-      }),
+    await updateIntention(doc, {
+      status: "failed",
+      error: errorText(error),
     });
     throw error;
   }
@@ -65,7 +77,10 @@ function once(doc: any) {
   }
   return task;
 }
-export async function durableSend(body: Record<string, any>) {
+export async function durableSend(
+  body: Record<string, any>,
+  attachments: any[] = [],
+) {
   if (typeof body.id !== "string" || !body.id)
     throw new Error("A message identity is required");
   const storage = await syncDatabase().catch((error) => {
@@ -88,10 +103,24 @@ export async function durableSend(body: Record<string, any>) {
         body,
         status: "queued",
         created: Date.now(),
+        displayPending: true,
+        attachments,
       } satisfies Intention),
     });
   }
   return once(doc);
+}
+export async function acknowledgeOutbox(ids: string[]) {
+  const { db } = await syncDatabase();
+  for (const id of ids) {
+    const doc = await db.outbox.findOne(id).exec();
+    if (doc) await updateIntention(doc, { displayPending: false });
+  }
+}
+export async function editOutboxDisplay(id: string, text: string) {
+  const { db } = await syncDatabase();
+  const doc = await db.outbox.findOne(id).exec();
+  if (doc) await updateIntention(doc, { displayText: text });
 }
 export function useOutbox() {
   const [entries, setEntries] = useState<OutboxEntry[]>([]);
@@ -114,7 +143,10 @@ export function useOutbox() {
           setToken(state.token);
           for (const doc of queued) {
             if (stop) break;
-            await once(doc).catch((e) => setError(errorText(e)));
+            await once(doc).catch((e) => {
+              // Per-message rejection is already stored beside that message.
+              if (!(e instanceof ApiError)) setError(errorText(e));
+            });
           }
         }
       } catch (e) {

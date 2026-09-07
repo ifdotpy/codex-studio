@@ -16,6 +16,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import { useMessages } from "../hooks";
+import type { OutgoingMessage } from "../sync/send";
+import { outgoingTranscript, deliveryLabel } from "./messageDelivery";
 import { useConversationScroll } from "./useConversationScroll";
 import {
   statusLabel,
@@ -53,7 +55,11 @@ export default function Conversation(p: {
   send: (options?: {
     assets?: string[];
     delivery?: "queue" | "steer";
+    attachments?: Attachment[];
   }) => Promise<void>;
+  outgoing?: OutgoingMessage[];
+  onObserved?: (ids: string[]) => void;
+  onOutgoingEdit?: (id: string, text: string) => void;
   onSelect?: (id: string) => void;
   sending: boolean;
   refresh: () => Promise<void>;
@@ -67,8 +73,24 @@ export default function Conversation(p: {
     "(max-width: 760px) and (max-height: 750px)",
   );
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
-  const { items, notice, before, older, liveAgent, connection, loaded } =
-    useMessages(p.id, kind, p.agent?.source === "managed", p.data.stateDir);
+  const {
+    items: history,
+    notice,
+    before,
+    older,
+    liveAgent,
+    connection,
+    loaded,
+  } = useMessages(p.id, kind, p.agent?.source === "managed", p.data.stateDir);
+  const delivery = outgoingTranscript(
+    history,
+    (p.outgoing || []).filter((entry) => entry.body.room === p.id),
+  );
+  const items = delivery.items;
+  const observed = delivery.observed.join(",");
+  useEffect(() => {
+    if (observed) p.onObserved?.(observed.split(","));
+  }, [observed, p.onObserved]);
   const { scroll, content, follow, setFollow, onScroll, remember } =
     useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -217,15 +239,25 @@ export default function Conversation(p: {
       return;
     sendLock.current = true;
     const id = p.id || "";
+    // Sending expresses a new scroll intent. Streaming still respects a later
+    // manual scroll away from the bottom.
+    setFollow(true);
+    input.current?.focus({ preventScroll: true });
     try {
       await p.send({
         assets: assets.map((asset) => asset.id),
+        attachments: assets.map(({ preview: _preview, ...asset }) => asset),
         delivery: canSteer ? delivery : "queue",
       });
-      setAttachments((current) => ({ ...current, [id]: [] }));
-      if (p.id && managed) await loadQueue(p.id);
-    } catch (error) {
-      p.notify(errorText(error));
+      const sent = new Set(assets.map((asset) => asset.id));
+      setAttachments((current) => ({
+        ...current,
+        [id]: (current[id] || []).filter((asset) => !sent.has(asset.id)),
+      }));
+      if (p.id && managed)
+        void loadQueue(p.id).catch((error) => p.notify(errorText(error)));
+    } catch {
+      // The send owner keeps the draft and renders its delivery error.
     } finally {
       sendLock.current = false;
     }
@@ -239,6 +271,8 @@ export default function Conversation(p: {
         text: queuedText,
         expectedText: action === "edit" ? queueOriginal : event.text,
       });
+      if (action === "cancel") p.onObserved?.([event.id]);
+      if (action === "edit") p.onOutgoingEdit?.(event.id, queuedText);
       setEditing(null);
       if (p.id) await loadQueue(p.id);
       await p.refresh();
@@ -316,7 +350,11 @@ export default function Conversation(p: {
       {p.room && m.senderName && (
         <span className="message-label">{m.senderName}</span>
       )}
-      {m.pending && <span className="message-label">Queued · after turn</span>}
+      {deliveryLabel(m) && (
+        <span className="message-label message-delivery-status" role="status">
+          {deliveryLabel(m)}
+        </span>
+      )}
       {m.role === "user" ? (
         <div className="prose plain">{m.text}</div>
       ) : (
@@ -335,6 +373,39 @@ export default function Conversation(p: {
       {Array.isArray(m.assets) && (
         <MessageAttachments assets={m.assets} notify={p.notify} />
       )}
+      {m.deliveryError &&
+        ["failed", "uncertain", "queued"].includes(m.deliveryStatus) && (
+          <div className="message-delivery-error">
+            <p>{m.deliveryError}</p>
+            {m.deliveryStatus === "failed" && (
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                onClick={() => {
+                  const separator =
+                    p.draft.trim() && p.draft.trim() !== m.text.trim()
+                      ? "\n\n"
+                      : "";
+                  p.setDraft(separator ? p.draft + separator + m.text : m.text);
+                  setAttachments((current) => ({
+                    ...current,
+                    [p.id || ""]: [
+                      ...new Map(
+                        [
+                          ...(current[p.id || ""] || []),
+                          ...(m.assets || []),
+                        ].map((asset: Attachment) => [asset.id, asset]),
+                      ).values(),
+                    ],
+                  }));
+                  input.current?.focus({ preventScroll: true });
+                }}
+              >
+                Restore draft
+              </Button>
+            )}
+          </div>
+        )}
       {m.truncated && <p className="notice">This message is clipped.</p>}
       <div className="message-bottom" hidden={!!m.streaming}>
         {p.room && m.created && (

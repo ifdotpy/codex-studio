@@ -97,6 +97,7 @@ export interface Snapshot {
     rules?: Json[];
     tasksHistoryLimit?: number;
     requests: Json[];
+    events?: Json[];
     rateLimits?: Json;
     rateLimitsByAccount?: Record<string, Json>;
   };

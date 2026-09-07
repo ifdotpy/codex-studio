@@ -39,9 +39,15 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, errorText, save, saved } from "./api";
+import { api, ApiError, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
-import { durableSend, useOutbox } from "./sync/send";
+import {
+  acknowledgeOutbox,
+  editOutboxDisplay,
+  durableSend,
+  useOutbox,
+  type OutgoingMessage,
+} from "./sync/send";
 import { useSyncedDrafts } from "./sync/drafts";
 import {
   busy,
@@ -73,6 +79,38 @@ import BackgroundTasks, {
 } from "./components/BackgroundTasks";
 export default function App() {
   const outbox = useOutbox();
+  const [outgoing, setOutgoing] = useState<Record<string, OutgoingMessage>>({});
+  const observedSends = useRef(new Set<string>());
+  const observeSends = useCallback((ids: string[]) => {
+    ids.forEach((id) => observedSends.current.add(id));
+    setOutgoing((old) =>
+      Object.fromEntries(
+        Object.entries(old).filter(([id]) => !observedSends.current.has(id)),
+      ),
+    );
+    void acknowledgeOutbox(ids).catch(() => {});
+  }, []);
+  const editSend = useCallback((id: string, text: string) => {
+    setOutgoing((old) =>
+      old[id] ? { ...old, [id]: { ...old[id], displayText: text } } : old,
+    );
+    void editOutboxDisplay(id, text).catch(() => {});
+  }, []);
+  const visibleSends = new Map(
+    outbox.entries
+      .filter(
+        (entry) =>
+          entry.displayPending === true ||
+          (entry.displayPending !== false && entry.status !== "accepted"),
+      )
+      .map((entry) => [entry.id, entry as OutgoingMessage]),
+  );
+  for (const entry of Object.values(outgoing))
+    if (entry.status === "sending" || !visibleSends.has(entry.id))
+      visibleSends.set(entry.id, entry);
+  const outgoingMessages = [...visibleSends.values()].filter(
+    (entry) => !observedSends.current.has(entry.id),
+  );
   const [livePhase, setLivePhase] = useState<{
     id: string | null;
     label: string;
@@ -125,6 +163,24 @@ export default function App() {
       null,
     ),
     [limits, setLimits] = useState<Json | null>(null);
+  const receipts = new Map(
+    (data?.runtime.events || []).map((event) => [event.id, event]),
+  );
+  const cancelledSends = outgoingMessages
+    .filter((entry) => receipts.get(entry.id)?.status === "cancelled")
+    .map((entry) => entry.id)
+    .join(",");
+  useEffect(() => {
+    if (cancelledSends) observeSends(cancelledSends.split(","));
+  }, [cancelledSends, observeSends]);
+  const visibleOutgoing = outgoingMessages
+    .filter((entry) => receipts.get(entry.id)?.status !== "cancelled")
+    .map((entry) => {
+      const receipt = receipts.get(entry.id);
+      return receipt && ["failed", "uncertain"].includes(receipt.status)
+        ? { ...entry, status: receipt.status, error: receipt.error }
+        : entry;
+    });
   const {
     drafts,
     setDrafts,
@@ -138,6 +194,11 @@ export default function App() {
     sendingLock = useRef(false),
     creationLock = useRef(false),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSendKey = `studio-pending-sends:${data?.stateDir || ""}`;
+  useEffect(() => {
+    if (data?.stateDir) sends.current = saved(pendingSendKey, {});
+  }, [pendingSendKey, data?.stateDir]);
+  const persistSends = () => save(pendingSendKey, sends.current);
   useEffect(() => {
     if (!data?.stateDir) return;
     const pending = saved<Json | null>(creationKey, null);
@@ -402,12 +463,14 @@ export default function App() {
   const send = async (options?: {
     assets?: string[];
     delivery?: "queue" | "steer";
+    attachments?: Json[];
   }) => {
     const draftKey = opened || "new",
       text = (drafts[draftKey] || "").trim();
     if ((!text && !options?.assets?.length) || sendingLock.current) return;
     sendingLock.current = true;
     setSending(true);
+    let request: Json | undefined;
     try {
       const id = opened || (await newChat());
       if (!id) return;
@@ -426,8 +489,7 @@ export default function App() {
         if (
           sends.current[id]?.text !== text ||
           JSON.stringify(sends.current[id]?.assets || []) !==
-            JSON.stringify(options?.assets || []) ||
-          sends.current[id]?.delivery !== (options?.delivery || "queue")
+            JSON.stringify(options?.assets || [])
         )
           sends.current[id] = {
             id: crypto.randomUUID(),
@@ -436,23 +498,49 @@ export default function App() {
             assets: options?.assets || [],
             delivery: options?.delivery || "queue",
           };
-        const result = await durableSend(sends.current[id]);
-        if (result.queued)
-          notify(
-            "Message saved on this device. It will send when the connection returns.",
-          );
+        // Retain the exact request across reloads until acceptance is known.
+        // A turn ending can change the default delivery mode, not this receipt.
+        persistSends();
+        request = sends.current[id];
+        const entry: OutgoingMessage = {
+          id: request.id,
+          body: request,
+          status: "sending",
+          created: Date.now(),
+          attachments: options?.attachments || [],
+          displayPending: true,
+        };
+        setOutgoing((old) => ({ ...old, [entry.id]: entry }));
+        const result = await durableSend(request, entry.attachments);
+        setOutgoing((old) => ({
+          ...old,
+          [entry.id]: {
+            ...entry,
+            status: result.queued
+              ? "queued"
+              : result.status === "uncertain"
+                ? "uncertain"
+                : "accepted",
+            receipt: result,
+            error: result.error,
+          },
+        }));
         if (result.status === "cancelled") {
           delete sends.current[id];
-          throw new Error(
+          throw new ApiError(
             "This message was cancelled. Send it again to resume.",
+            400,
           );
         }
+        if (result.status === "failed")
+          throw new ApiError(result.error || "The message was not sent.", 400);
         if (result.status === "uncertain")
           throw new Error(
             result.error ||
               "Delivery is uncertain. Inspect the conversation before sending again.",
           );
         delete sends.current[id];
+        persistSends();
         if (Object.values(result.deliveries || {}).some((v) => v !== "queued"))
           notify("Message saved. Some deliveries are not confirmed.");
       }
@@ -463,9 +551,31 @@ export default function App() {
         save("codex-agent-drafts", next);
         return next;
       });
-      await refresh();
+      void refresh().catch((error) => notify(errorText(error)));
     } catch (e) {
-      notify(errorText(e));
+      if (request) {
+        const key = request.id;
+        const rejected =
+          e instanceof ApiError &&
+          e.status < 500 &&
+          ![408, 429].includes(e.status);
+        if (rejected && sends.current[request.room]?.id === key)
+          delete sends.current[request.room];
+        persistSends();
+        setOutgoing((old) =>
+          old[key]
+            ? {
+                ...old,
+                [key]: {
+                  ...old[key],
+                  status: rejected ? "failed" : "uncertain",
+                  error: errorText(e),
+                },
+              }
+            : old,
+        );
+      }
+      if (!request) notify(errorText(e));
       throw e;
     } finally {
       sendingLock.current = false;
@@ -1140,24 +1250,6 @@ export default function App() {
               {outbox.error}
             </p>
           )}
-          {outbox.entries
-            .filter(
-              (entry) =>
-                entry.body.room === opened && entry.status !== "accepted",
-            )
-            .map((entry) => (
-              <details className="sync-status" key={entry.id}>
-                <summary>
-                  {entry.status === "queued"
-                    ? "Message awaits connection"
-                    : entry.status === "uncertain"
-                      ? "Message delivery is uncertain"
-                      : "Message could not be sent"}
-                </summary>
-                <p>{entry.body.text}</p>
-                {entry.error && <p>{entry.error}</p>}
-              </details>
-            ))}
         </div>
         {view === "chat" && (
           <Conversation
@@ -1170,6 +1262,9 @@ export default function App() {
             setDraft={setDraft}
             send={send}
             sending={sending}
+            outgoing={visibleOutgoing}
+            onObserved={observeSends}
+            onOutgoingEdit={editSend}
             refresh={refresh}
             notify={notify}
             limits={visibleLimits}
