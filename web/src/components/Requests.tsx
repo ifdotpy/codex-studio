@@ -13,7 +13,6 @@ import "./request-questions.css";
 
 type Props = {
   requests: Json[];
-  scopeAgentId?: string;
   agents: Agent[];
   refresh: () => Promise<void>;
   notify: (s: string) => void;
@@ -386,134 +385,8 @@ function RequestCard({
   );
 }
 
-function QuestionHistory({
-  agentId,
-  revision,
-  agents,
-}: {
-  agentId: string;
-  revision: string;
-  agents: Agent[];
-}) {
-  const [open, setOpen] = useState(false);
-  const [items, setItems] = useState<Json[] | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    // Keep confirmed decisions visible while this chat refreshes. The parent
-    // keys this component by agentId, so another chat starts with no history.
-    setLoading(true);
-    setError("");
-    void api("/api/questions?agent=" + encodeURIComponent(agentId))
-      .then((result) => {
-        if (active)
-          setItems(
-            result.items.filter((item: Json) => item.status !== "pending"),
-          );
-      })
-      .catch((error) => {
-        if (active) setError(errorText(error));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [agentId, open, revision]);
-  return (
-    <details
-      className="request-history"
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary>Question history</summary>
-      {open && (
-        <div className="request-history-items" aria-busy={loading}>
-          {error && (
-            <p className="request-history-error" role="alert">
-              Could not update question history: {error}
-            </p>
-          )}
-          {items === null ? (
-            !error && <p>Loading decisions…</p>
-          ) : !items.length ? (
-            <p>No past answers in this chat.</p>
-          ) : (
-            items.map((item) => (
-              <article
-                key={item.id}
-                className="request-history-item"
-                data-question-history={item.id}
-              >
-                <div className="request-history-meta">
-                  <strong>
-                    {agents.find((agent) => agent.id === item.agent)?.name ||
-                      "Agent"}
-                  </strong>
-                  <span>
-                    {item.status === "answered"
-                      ? "Answered by you"
-                      : item.status === "uncertain" ||
-                          item.status === "answering"
-                        ? "Delivery uncertain"
-                        : "Expired"}
-                  </span>
-                  {(item.answeredAt || item.createdAt) && (
-                    <time
-                      dateTime={new Date(
-                        (item.answeredAt || item.createdAt) * 1000,
-                      ).toISOString()}
-                    >
-                      {new Date(
-                        (item.answeredAt || item.createdAt) * 1000,
-                      ).toLocaleString()}
-                    </time>
-                  )}
-                </div>
-                {(item.answerHistory || item.questions).map((answer: Json) => (
-                  <div key={answer.id}>
-                    <p className="request-history-question">
-                      {answer.question}
-                    </p>
-                    {"answer" in answer && (
-                      <p className="request-history-answer">
-                        {answer.isSecret
-                          ? "Private answer hidden"
-                          : Array.isArray(answer.answer)
-                            ? answer.answer.join(" · ")
-                            : typeof answer.answer === "object"
-                              ? JSON.stringify(answer.answer)
-                              : String(answer.answer ?? "No answer")}
-                      </p>
-                    )}
-                  </div>
-                ))}
-                {item.decision &&
-                  !["answer", "accept"].includes(item.decision) && (
-                    <p>
-                      {item.decision === "decline" ? "Declined" : "Cancelled"}
-                    </p>
-                  )}
-                {item.answerError && (
-                  <p className="request-history-error">{item.answerError}</p>
-                )}
-              </article>
-            ))
-          )}
-        </div>
-      )}
-    </details>
-  );
-}
-
-export default function Requests({ requests, scopeAgentId, ...props }: Props) {
+export default function Requests({ requests, ...props }: Props) {
   const deferred = requests.filter((r) => r.deferred);
-  const revision = requests
-    .map((r) => `${r.id}:${r.status}:${r.deferred}`)
-    .join("|");
   return (
     <div id="requests">
       {requests
@@ -534,14 +407,6 @@ export default function Requests({ requests, scopeAgentId, ...props }: Props) {
             <RequestCard key={`${r.agent}:${r.id}`} request={r} {...props} />
           ))}
         </details>
-      )}
-      {scopeAgentId && (
-        <QuestionHistory
-          key={scopeAgentId}
-          agentId={scopeAgentId}
-          revision={revision}
-          agents={props.agents}
-        />
       )}
     </div>
   );

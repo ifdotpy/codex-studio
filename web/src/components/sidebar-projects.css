@@ -108,3 +108,27 @@
     opacity: 1;
   }
 }
+
+.agent-chats-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-chats-context:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.agent-chats-context svg {
+  flex-shrink: 0;
+}
+.agent-chats-context span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

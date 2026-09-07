@@ -98,6 +98,14 @@ with c.runtime.lock, c.runtime.db() as db:
     c.runtime.put(db, 'agents', a)
 other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt': 'Separate task'}, defer=True)
 c.runtime.create({'name': 'Standalone reviewer', 'cwd': str(c.root), 'prompt': 'Review', 'role': 'reviewer', 'model': 'gpt-5.6-luna'}, defer=True)
+if os.environ.get('SCOPED_ROOMS_UI_FIXTURE'):
+    with c.runtime.lock, c.runtime.db() as db:
+        active = c.runtime.agent(other['id'], db)
+        active['autoWake'] = True
+        c.runtime.put(db, 'agents', active)
+    c.runtime.chat_message(other['id'], 'broadcast', 'Only the second conversation', 'scope-other-broadcast')
+    c.runtime.chat_message(child['id'], other['id'], 'Direct cross-team discussion', 'scope-cross-team')
+    c.runtime.chat_message(child['id'], 'all', 'Global broadcast stays outside chat lists', 'scope-global')
 c.runtime.connect().gate.set()
 if os.environ.get('BACKGROUND_UI_FIXTURE'):
     c.runtime.monitor(lead['id'], {'command': 'watch-fixture --deploy production'}, approved=False)

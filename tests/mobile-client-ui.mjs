@@ -64,7 +64,10 @@ try {
     assert.ok(composer.x >= 0 && composer.x + composer.width <= width + 1);
     await page.getByLabel("Toggle conversations").click();
     await page.getByLabel("Search chats", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("tab", { name: /^Agents/ }).count(), 0);
+    assert.equal(
+      await page.getByRole("tab", { name: /^Agent chats/ }).count(),
+      0,
+    );
     assert.equal(
       await page.getByLabel("Add project", { exact: true }).count(),
       0,
@@ -172,7 +175,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.locator(".workspace-shortcuts").waitFor();
   await page.getByLabel("Add project", { exact: true }).waitFor();
-  await page.getByRole("tab", { name: /^Agents/ }).waitFor();
+  await page.getByRole("tab", { name: /^Agent chats/ }).waitFor();
   const manifest = await (await fetch(url + "/manifest.webmanifest")).json();
   assert.equal(manifest.display, "standalone");
   assert.equal(

@@ -606,7 +606,6 @@ export default function Conversation(p: {
         />
       )}
       <Requests
-        scopeAgentId={managed && !p.room ? agent?.id : undefined}
         requests={requests}
         agents={p.data.threads}
         refresh={p.refresh}

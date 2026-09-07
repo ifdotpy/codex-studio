@@ -540,7 +540,7 @@ try {
   await page.waitForTimeout(200);
   await page.screenshot({ path: join(root, "panel-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 980 });
-  await page.getByRole("tab", { name: /Agents/ }).click();
+  await page.getByRole("tab", { name: /Agent chats/ }).click();
   await page.locator("[data-room]").first().click();
   await page.locator(".room-footer").waitFor();
   assert.equal(await panel.count(), 0);

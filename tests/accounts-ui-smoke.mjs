@@ -204,6 +204,12 @@ const server = createServer(async (req, res) => {
     res.writeHead(503);
     return res.end();
   }
+  if (url.pathname === "/api/voice/records")
+    return json({ records: [], delivered: [], cursor: 0 });
+  if (url.pathname.startsWith("/api/sync/")) {
+    res.statusCode = 404;
+    return json({ error: "Fixture uses HTTP snapshots" });
+  }
   if (url.pathname.startsWith("/api/"))
     return json({ items: [], sessions: [] });
   try {
@@ -244,7 +250,7 @@ try {
   const errors = [];
   page.on("pageerror", (error) => {
     errors.push(error.message);
-    console.error(error.message);
+    console.error(error.stack);
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   const picker = page.locator(".account-picker");
@@ -329,6 +335,52 @@ try {
     /All local chats/,
   );
   await quota.click();
+
+  // Switch actual conversations, including a pending read for another account.
+  const quotaValues = () =>
+    quota.locator(".account-limits-summary > span").nth(1).innerText();
+  const otherQuota = await quotaValues();
+  agents.push(
+    makeLead("work-chat", "Work account conversation", "work", false),
+  );
+  await page.locator('[data-chat="work-chat"]').waitFor();
+  await page.locator('[data-chat="started"]').click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-limits-summary")
+      ?.textContent.includes("89% left"),
+  );
+  delayWork = true;
+  await page.locator('[data-chat="work-chat"]').click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-picker")
+      ?.textContent.includes("work@example.com"),
+  );
+  assert.match(
+    await quota.innerText(),
+    /78% left/,
+    "return navigation uses the selected account cache while refresh waits",
+  );
+  for (let i = 0; i < 100 && !delayed; i++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(delayed, "work account refresh remains pending");
+  await page.locator('[data-chat="empty"]').click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-picker")
+      ?.textContent.includes("another.long.account@example.com"),
+  );
+  assert.equal(await quotaValues(), otherQuota);
+  delayed();
+  delayed = null;
+  delayWork = false;
+  await page.waitForTimeout(100);
+  assert.equal(
+    await quotaValues(),
+    otherQuota,
+    "late work response cannot change selected conversation limits",
+  );
 
   await page.locator('[data-chat="started"]').click();
   await picker.click();
@@ -430,7 +482,7 @@ try {
   );
   accounts.find((a) => a.id === "signed-in").status = "ready";
   await dialog.getByText("Account connected.", { exact: true }).waitFor();
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 820, height: 844 });
   await page.waitForFunction(
     () =>
       document.querySelector(".account-row") &&
@@ -449,24 +501,24 @@ try {
   );
   const bounds = await dialog.boundingBox();
   assert.ok(
-    bounds.x >= 0 && bounds.x + bounds.width <= 390,
+    bounds.x >= 0 && bounds.x + bounds.width <= 820,
     "Account manager fits narrow screen",
   );
-  await page.setViewportSize({ width: 320, height: 720 });
+  await page.setViewportSize({ width: 780, height: 720 });
   await page.screenshot({
-    path: join(evidence, "accounts-320.png"),
+    path: join(evidence, "accounts-780.png"),
     animations: "disabled",
   });
   assert.ok(
     await dialog.evaluate(
       (element) => element.scrollWidth <= element.clientWidth,
     ),
-    "Account content does not overflow at 320px",
+    "Account content does not overflow at 780px",
   );
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   await page.screenshot({
-    path: join(evidence, "account-header-mobile.png"),
+    path: join(evidence, "account-header-narrow.png"),
     animations: "disabled",
   });
   assert.ok(await picker.isVisible());
@@ -480,13 +532,14 @@ try {
         "pinned started chat",
         "delayed limits isolation",
         "per-account snapshot limits",
+        "chat switch with cached limits and delayed account response",
         "reset binding",
         "global costs",
         "default new chat",
         "discovery",
         "device login",
         "Codex and Spark dual-window quotas",
-        "390px and 320px layouts",
+        "820px and 780px desktop layouts",
       ],
       evidence,
     }),

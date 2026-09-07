@@ -4,6 +4,8 @@
 import importlib.util
 from pathlib import Path
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import patch
 
@@ -33,6 +35,28 @@ class LimitsRefreshContracts(unittest.TestCase):
 
     def timeout(self):
         return ResponseTimeout("account/rateLimits/read response timed out; outcome unknown")
+
+    def test_slow_account_does_not_block_other_account(self):
+        slow = self.runtime.connect()
+        started, release = threading.Event(), threading.Event()
+
+        def read(*args, **kwargs):
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("Fixture read was not released")
+            return {"accountId": "default"}
+
+        with patch.object(slow, "call", side_effect=read):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pending = pool.submit(self.runtime.limits)
+                try:
+                    self.assertTrue(started.wait(2))
+                    other = pool.submit(self.runtime.limits, self.other_key)
+                    self.assertEqual(other.result(timeout=2)["accountKey"], self.other_key)
+                    self.assertFalse(pending.done())
+                finally:
+                    release.set()
+                self.assertEqual(pending.result(timeout=2)["data"]["accountId"], "default")
 
     def test_successful_recent_cache_does_not_read(self):
         cached = self.cache()

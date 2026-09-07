@@ -86,7 +86,7 @@ def consume_reset(runtime, data):
     except (ValueError, TypeError, AttributeError):
         raise ValueError("Supply a UUID request_id") from None
 
-    with runtime.limits_lock:
+    with runtime.limits_lock, runtime.limit_refresh_lock(account_key):
         with runtime.lock, runtime.db() as db:
             _setup(db)
             alias = db.execute(

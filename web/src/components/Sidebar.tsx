@@ -11,6 +11,7 @@ import {
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
+  ArrowLeft,
   Archive,
   Pin,
   PinOff,
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { api, errorText, save, saved } from "../api";
 import "./sidebar-projects.css";
+import { roomLeadIds } from "../chatScope";
 import {
   busy,
   complaintNeedsUserResponse,
@@ -42,6 +44,7 @@ import {
 type Props = {
   data: Snapshot;
   opened: string | null;
+  lead?: Agent;
   view: string;
   open: (id: string) => void;
   newChat: (path?: string) => void;
@@ -92,7 +95,10 @@ export default function Sidebar(p: Props) {
   const agents = p.data.threads.filter(
       (a) => a.source === "managed" && a.isLead,
     ),
-    rooms = p.data.runtime.rooms || [];
+    rooms = (p.data.runtime.rooms || []).filter(
+      (room) =>
+        !!p.lead && roomLeadIds(room, p.data.threads).includes(p.lead.id),
+    );
   useEffect(() => {
     const room = rooms.find((r) => r.id === p.opened);
     if (
@@ -373,7 +379,7 @@ export default function Sidebar(p: Props) {
               Chats
             </Tabs.Tab>
             <Tabs.Tab value="agents" leftSection={<Users size={14} />}>
-              Agents{" "}
+              Agent chats{" "}
               {rooms.length > 0 && (
                 <span className="tab-count">{rooms.length}</span>
               )}
@@ -418,6 +424,17 @@ export default function Sidebar(p: Props) {
             </ActionIcon>
           )}
         </div>
+      )}
+      {tab === "agents" && p.lead && (
+        <UnstyledButton
+          className="agent-chats-context"
+          onClick={() => p.open(p.lead!.id)}
+          aria-label={`Back to ${p.lead.name}`}
+          title={p.lead.name}
+        >
+          <ArrowLeft size={15} />
+          <span>{p.lead.name}</span>
+        </UnstyledButton>
       )}
       <nav
         id={tab === "leads" ? "chat-list" : "agent-chat-list"}
@@ -527,7 +544,13 @@ export default function Sidebar(p: Props) {
             })}
         {!filtered.length && (tab === "agents" || !projectGroups.length) && (
           <p className="notice">
-            {query ? "No matching chats." : "No chats yet."}
+            {query
+              ? "No matching chats."
+              : tab === "agents"
+                ? p.lead
+                  ? "No agent chats in this conversation."
+                  : "Select a chat to see its agent chats."
+                : "No chats yet."}
           </p>
         )}
         {tab === "agents" && limit < filtered.length && (

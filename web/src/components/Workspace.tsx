@@ -1164,7 +1164,6 @@ function Attention(c: Context) {
       </div>
       <Requests
         requests={c.data.runtime.requests}
-        scopeAgentId={c.agent?.id}
         agents={c.data.threads}
         refresh={c.refresh}
         notify={c.notify}

@@ -1,11 +1,5 @@
 import { Fragment, useEffect, useState, type ReactNode } from "react";
-import {
-  Check,
-  ChevronRight,
-  CircleAlert,
-  CircleStop,
-  Layers,
-} from "lucide-react";
+import { ChevronRight, CircleAlert, CircleStop, Layers } from "lucide-react";
 import { save, saved } from "../api";
 import type { Message } from "../types";
 import Activity from "./Activity";
@@ -78,16 +72,14 @@ function Turn({
       : group.outcome === "interrupted"
         ? "Turn interrupted"
         : group.outcome === "completed"
-          ? "Turn complete"
+          ? "Response"
           : "Turn ended";
   const Icon =
     group.outcome === "failed"
       ? CircleAlert
       : group.outcome === "interrupted"
         ? CircleStop
-        : group.outcome === "completed"
-          ? Check
-          : Layers;
+        : Layers;
   return (
     <section
       className="turn-history"
@@ -109,10 +101,12 @@ function Turn({
           }}
           aria-label={`${label}: ${result ? resultExcerpt(result.text) : "No final text"}`}
         >
-          <Icon size={15} className="turn-outcome-icon" />
+          {group.outcome !== "completed" && (
+            <Icon size={15} className="turn-outcome-icon" />
+          )}
           <span className="turn-result-copy">
             <span className="turn-result-label">
-              {label}
+              {group.outcome !== "completed" && label}
               {tools > 0 && (
                 <span>
                   {tools} tool {tools === 1 ? "call" : "calls"}

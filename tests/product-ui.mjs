@@ -159,7 +159,7 @@ try {
   await page.screenshot({ path: join(root, "canvas.png") });
   await page.locator("#view-toggle").click();
   assert.equal(await page.locator("#message").inputValue(), "Lead draft");
-  await page.getByRole("tab", { name: /Agents/ }).click();
+  await page.getByRole("tab", { name: /Agent chats/ }).click();
   assert.equal(
     await page.locator("[data-room]").count(),
     60,

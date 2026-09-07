@@ -1,5 +1,5 @@
 import { useMobileViewport } from "./hooks/mobileViewport";
-import { chatSnapshot } from "./chatScope";
+import { chatSnapshot, roomLeadIds } from "./chatScope";
 import {
   ActionIcon,
   Button,
@@ -134,6 +134,7 @@ export default function App() {
         ? saved("codex-mobile-opened", null)
         : null,
     ),
+    [roomContext, setRoomContext] = useState<string | null>(null),
     [view, setView] = useState("chat"),
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
@@ -149,7 +150,7 @@ export default function App() {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     ),
-    [limits, setLimits] = useState<Json | null>(null);
+    [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({});
   const receipts = new Map(
     (data?.runtime.events || []).map((event) => [event.id, event]),
   );
@@ -203,12 +204,15 @@ export default function App() {
     agent = agents.find((a) => a.id === opened),
     room = data?.runtime.rooms?.find((r) => r.id === opened),
     legacy = data?.chats.find((c) => c.id === opened),
+    roomRoots = room ? roomLeadIds(room, agents) : [],
     lead = agents.find(
       (a) =>
         a.id ===
         (agent?.rootId ||
           (agent?.isLead ? agent.id : undefined) ||
-          room?.rootId),
+          (roomContext && roomRoots.includes(roomContext)
+            ? roomContext
+            : roomRoots[0])),
     ),
     team = agents.filter((a) => a.rootId === lead?.id),
     workers = team.filter((a) => !a.isLead);
@@ -242,10 +246,20 @@ export default function App() {
     accountKey,
     !!agent && agent.source === "managed",
   );
-  const limitsRequest = useRef(0);
-  const currentAccountKey = useRef(accountKey);
-  currentAccountKey.current = accountKey;
-  const visibleLimits = limits?.accountKey === accountKey ? limits : null;
+  const limitsRequests = useRef(new Map<string, Promise<void>>());
+  const cachedLimits = limitsByAccount[accountKey];
+  const snapshotLimits =
+    data?.runtime.rateLimitsByAccount?.[accountKey] ||
+    (accountKey === "default" ? data?.runtime.rateLimits : null);
+  const matchingSnapshot =
+    snapshotLimits && (snapshotLimits.accountKey || "default") === accountKey
+      ? snapshotLimits
+      : null;
+  const visibleLimits =
+    matchingSnapshot &&
+    (!cachedLimits || (matchingSnapshot.at || 0) > (cachedLimits.at || 0))
+      ? matchingSnapshot
+      : cachedLimits || null;
   const chatData = chatSnapshot(data, lead?.id);
   const attentionCount =
     (chatData?.runtime.requests.filter((request) => !request.deferred).length ||
@@ -275,6 +289,7 @@ export default function App() {
       if (!root) return;
       id = root.id;
     }
+    setRoomContext(lead?.id || null);
     setOpened(id);
     setView("chat");
     setSidebar(false);
@@ -290,62 +305,79 @@ export default function App() {
     window.addEventListener("desktop-error", onError);
     return () => window.removeEventListener("desktop-error", onError);
   }, [notify]);
-  const reloadLimits = useCallback(async () => {
-    const request = ++limitsRequest.current;
+  const reloadLimits = useCallback(() => {
+    const pending = limitsRequests.current.get(accountKey);
+    if (pending) return pending;
     const query =
       accountKey === "default"
         ? ""
         : `?account_key=${encodeURIComponent(accountKey)}`;
-    await api("/api/limits" + query)
+    const request = api("/api/limits" + query)
       .then((result) => {
         if (result.accountKey && result.accountKey !== accountKey)
           throw new Error("Codex returned limits for another account.");
-        if (
-          request === limitsRequest.current &&
-          currentAccountKey.current === accountKey
-        )
-          setLimits({ ...result, accountKey });
+        setLimitsByAccount((old) => {
+          const previous = old[accountKey];
+          if (previous && (previous.at || 0) > (result.at || 0)) return old;
+          return { ...old, [accountKey]: { ...result, accountKey } };
+        });
       })
-      .catch((e) => {
-        if (
-          request === limitsRequest.current &&
-          currentAccountKey.current === accountKey
-        )
-          setLimits((old) => ({
-            ...(old?.accountKey === accountKey ? old : { data: null }),
-            error: errorText(e),
+      .catch((error) => {
+        setLimitsByAccount((old) => ({
+          ...old,
+          [accountKey]: {
+            ...(old[accountKey] || { data: null }),
+            error: errorText(error),
             accountKey,
-          }));
+          },
+        }));
+      })
+      .finally(() => {
+        limitsRequests.current.delete(accountKey);
       });
+    limitsRequests.current.set(accountKey, request);
+    return request;
   }, [accountKey]);
   useEffect(() => {
-    if (data?.stateDir) reloadLimits();
-  }, [data?.stateDir, reloadLimits]);
-  useEffect(() => {
-    if (!limits?.error || limits.accountKey !== accountKey) return;
-    let active = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const retry = async () => {
-      await reloadLimits();
-      if (active) timer = setTimeout(retry, 60000);
+    if (!data?.stateDir) return;
+    void reloadLimits();
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void reloadLimits();
+    }, 60000);
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") void reloadLimits();
     };
-    timer = setTimeout(retry, 30000);
+    window.addEventListener("focus", refreshVisible);
+    document.addEventListener("visibilitychange", refreshVisible);
     return () => {
-      active = false;
-      clearTimeout(timer);
+      clearInterval(timer);
+      window.removeEventListener("focus", refreshVisible);
+      document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [accountKey, limits?.accountKey, limits?.error, reloadLimits]);
+  }, [data?.stateDir, opened, reloadLimits]);
   useEffect(() => {
-    const result =
-      data?.runtime.rateLimitsByAccount?.[accountKey] ||
-      (accountKey === "default" ? data?.runtime.rateLimits : null);
-    if (result?.at && (result.accountKey || "default") === accountKey)
-      setLimits((old) =>
-        !old || old.accountKey !== accountKey || result.at >= (old.at || 0)
-          ? { ...result, accountKey }
-          : old,
-      );
-  }, [data?.runtime.rateLimits, data?.runtime.rateLimitsByAccount, accountKey]);
+    if (!visibleLimits?.error) return;
+    const timer = setTimeout(() => {
+      void reloadLimits();
+    }, 30000);
+    return () => clearTimeout(timer);
+  }, [accountKey, visibleLimits?.error, reloadLimits]);
+  useEffect(() => {
+    // Keep each account's latest snapshot for immediate return navigation.
+    const incoming = { ...data?.runtime.rateLimitsByAccount };
+    if (data?.runtime.rateLimits && !incoming.default)
+      incoming.default = data.runtime.rateLimits;
+    setLimitsByAccount((old) => {
+      let next = old;
+      for (const [key, value] of Object.entries(incoming)) {
+        if (!value?.at || (value.accountKey || "default") !== key) continue;
+        if (!old[key] || value.at > (old[key].at || 0)) {
+          next = { ...next, [key]: { ...value, accountKey: key } };
+        }
+      }
+      return next;
+    });
+  }, [data?.runtime.rateLimits, data?.runtime.rateLimitsByAccount]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -880,6 +912,7 @@ export default function App() {
       <Sidebar
         data={data}
         opened={opened}
+        lead={lead}
         view={view}
         open={open}
         newChat={(path) => void newChat(path)}

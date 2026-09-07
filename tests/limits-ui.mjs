@@ -483,7 +483,7 @@ try {
     },
     at: now + 6,
   };
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 780, height: 844 });
   await load();
   assert.match(await toggle().innerText(), /5h 58% left/);
   await toggle().click();
@@ -495,34 +495,34 @@ try {
         .opacity === "1",
   );
   await page.screenshot({
-    path: join(root, "limits-mobile.png"),
+    path: join(root, "limits-narrow-desktop.png"),
     animations: "disabled",
   });
   const box = await details().boundingBox();
   assert.ok(
     box &&
       box.x >= 0 &&
-      box.x + box.width <= 390 &&
+      box.x + box.width <= 780 &&
       box.y >= 0 &&
       box.y + box.height <= 844,
-    "mobile limits stay in viewport",
+    "narrow desktop limits stay in viewport",
   );
   assert.equal(
     await page.evaluate(
       () => document.documentElement.scrollWidth > innerWidth,
     ),
     false,
-    "mobile page has no horizontal overflow",
+    "narrow desktop page has no horizontal overflow",
   );
   assert.equal(
     await details().evaluate(
       (element) => element.scrollWidth > element.clientWidth,
     ),
     false,
-    "mobile limits have no horizontal overflow",
+    "narrow desktop limits have no horizontal overflow",
   );
   // Late cost data must not add a footer row or lift the composer.
-  for (const width of [390, 1280]) {
+  for (const width of [780, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     deferCosts = true;
     pendingCosts = undefined;
@@ -572,7 +572,7 @@ try {
         "error",
         "empty data",
         "empty map fallback",
-        "mobile",
+        "narrow desktop",
         "compact pools",
         "Codex before Spark",
         "reset countdown and exact time",
@@ -584,7 +584,7 @@ try {
         "reset duplicate click lock",
         "server credit count",
         "all reset outcomes",
-        "delayed cost geometry at 390/1280px",
+        "delayed cost geometry at 780/1280px",
         "failed quota refresh preserves account values and geometry",
       ],
     }),

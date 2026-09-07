@@ -5,7 +5,6 @@ import {
   CircleAlert,
   Pause,
   WifiOff,
-  CircleCheck,
   LoaderCircle,
   PenLine,
   Wrench,
@@ -38,18 +37,17 @@ export default function AgentPhase({
     queued: "Queued",
     waiting: "Waiting for agents or commands",
     approval: "Waiting for your answer",
-    completed: "Complete",
     failed: "Failed",
     paused: "Stopped",
     interrupted: "Interrupted",
     idle: "Ready",
   };
-  if (phase === "idle" && connection !== "reconnecting") return null;
+  if (["idle", "completed"].includes(phase) && connection !== "reconnecting")
+    return null;
   const icons: Record<string, typeof Brain> = {
     thinking: Brain,
     writing: PenLine,
     tool: Wrench,
-    completed: CircleCheck,
     starting: LoaderCircle,
     running: LoaderCircle,
     queued: Clock3,

@@ -539,6 +539,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
         self.factory = server_factory
         self.loaded = set()
         self.limits_lock = threading.Lock()
+        self.limit_refresh_locks = {}
         self.rate_limits = {"accountKey": "default", "data": None, "at": None, "error": None}
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=16)
         self.tool_pool = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="studio-tool")
@@ -2758,9 +2759,13 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
         if account_key == "default":
             self.rate_limits = value
 
+    def limit_refresh_lock(self, account_key):
+        with self.lock:
+            return self.limit_refresh_locks.setdefault(account_key, threading.Lock())
+
     def limits(self, account_key="default", force=False):
         self.accounts.get(account_key)
-        with self.limits_lock:
+        with self.limit_refresh_lock(account_key):
             with self.lock:
                 cached = self.rate_limits_for(account_key)
                 if not force and not cached.get("error") and cached["at"] and time.time() - cached["at"] < 30:
