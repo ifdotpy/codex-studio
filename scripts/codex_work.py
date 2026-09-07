@@ -83,6 +83,7 @@ class WorkMixin:
             CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search USING fts5(id UNINDEXED, agent UNINDEXED, kind UNINDEXED, body, tokenize='unicode61');
             CREATE TABLE IF NOT EXISTS runtime_search_indexed (id TEXT PRIMARY KEY);
         """)
+        self.setup_search_rows(db)
         # Backfill once. Later writes update the index in the same transaction.
         for row in db.execute(
             "SELECT i.id,i.agent,i.record FROM runtime_items i LEFT JOIN runtime_search_indexed s ON i.id=s.id WHERE s.id IS NULL"
@@ -92,12 +93,31 @@ class WorkMixin:
                 db, row["id"], row["agent"], item.get("title", ""), item.get("text", "")
             )
 
+    def setup_search_rows(self, db):
+        # FTS UNINDEXED columns cannot support an equality lookup. Keep the
+        # document address in an ordinary indexed table, including legacy rows.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
+            return
+        db.execute("SAVEPOINT search_rows_migration")
+        try:
+            db.execute("CREATE TABLE runtime_search_rows (id TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL UNIQUE)")
+            db.execute("INSERT INTO runtime_search_rows SELECT id,rowid FROM runtime_search")
+            db.execute("RELEASE search_rows_migration")
+        except BaseException:
+            db.execute("ROLLBACK TO search_rows_migration")
+            db.execute("RELEASE search_rows_migration")
+            raise
+
     def index_item(self, db, key, agent, kind, body):
-        db.execute("DELETE FROM runtime_search WHERE id=?", (key,))
-        db.execute(
+        row = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
+        if row:
+            db.execute("DELETE FROM runtime_search WHERE rowid=?", (row[0],))
+        cursor = db.execute(
             "INSERT INTO runtime_search(id,agent,kind,body) VALUES (?,?,?,?)",
             (key, agent, kind, body),
         )
+        db.execute("INSERT INTO runtime_search_rows VALUES (?,?) ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
+                   (key, cursor.lastrowid))
         db.execute("INSERT OR IGNORE INTO runtime_search_indexed VALUES (?)", (key,))
 
     def checked_actor(self, db, agent_id, actor=None):
