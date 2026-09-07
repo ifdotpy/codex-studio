@@ -33,8 +33,11 @@ export function paragraphPrefix(text: string, streaming: boolean) {
   }
   return text.slice(0, end);
 }
-const Block = memo(({ html }: { html: string }) => (
-  <div className="markdown-block" dangerouslySetInnerHTML={{ __html: html }} />
+const Block = memo(({ html, enter }: { html: string; enter: boolean }) => (
+  <div
+    className={`markdown-block${enter ? " paragraph-enter" : ""}`}
+    dangerouslySetInnerHTML={{ __html: html }}
+  />
 ));
 export default function StreamingText({
   text,
@@ -113,6 +116,8 @@ export default function StreamingText({
       };
     });
   }, [visible]);
+  // History is immediately readable. Only blocks added to this mounted message fade in.
+  const [initialBlockCount] = useState(blocks.length);
   return (
     <div
       className="prose"
@@ -147,7 +152,7 @@ export default function StreamingText({
         block.kind ? (
           <RichPreview key={i} kind={block.kind} source={block.source} />
         ) : (
-          <Block key={i} html={block.html!} />
+          <Block key={i} html={block.html!} enter={i >= initialBlockCount} />
         ),
       )}
       {preview && (
