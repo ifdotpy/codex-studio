@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import argparse
 from contextlib import contextmanager
+from functools import lru_cache
+import gzip
 import hashlib
 import json
 import os
@@ -27,6 +29,32 @@ WEB = SCRIPTS.parent / "web" / "dist"
 COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
 AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
+
+
+HASHED_ASSET = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.(?:js|css|png|svg|woff2?)$")
+
+
+def accepts_gzip(value):
+    encodings = {}
+    for part in (value or "").split(","):
+        name, *parameters = part.strip().lower().split(";")
+        quality = 1.0
+        for parameter in parameters:
+            if parameter.strip().startswith("q="):
+                try:
+                    quality = float(parameter.strip()[2:])
+                except ValueError:
+                    quality = 0
+        encodings[name] = quality
+    return encodings.get("gzip", encodings.get("*", 0)) > 0
+
+
+@lru_cache(maxsize=64)
+def static_content(path, modified_ns, size):
+    # Only versioned static files enter this cache. API data and tokens never do.
+    data = Path(path).read_bytes()
+    compressed = gzip.compress(data, compresslevel=3, mtime=0) if size >= 1024 else None
+    return data, compressed if compressed and len(compressed) < len(data) else None
 
 
 def identity(*parts):
@@ -457,12 +485,22 @@ def make_server(canvas, port=0, public_origin=None):
         def log_message(self, *_args):
             pass
 
-        def send(self, value, status=200, content_type="application/json"):
+        def send(self, value, status=200, content_type="application/json", cache_control="no-store", compressed=None):
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
+            compressible = content_type.startswith(("application/json", "application/manifest+json", "text/", "image/svg+xml"))
+            encoded = False
+            if accepts_gzip(self.headers.get("Accept-Encoding")) and compressible and len(data) >= 1024:
+                candidate = compressed if compressed is not None else gzip.compress(data, compresslevel=3, mtime=0)
+                if len(candidate) < len(data):
+                    data, encoded = candidate, True
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache_control)
+            if compressible:
+                self.send_header("Vary", "Accept-Encoding")
+            if encoded:
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header(
@@ -553,6 +591,8 @@ def make_server(canvas, port=0, public_origin=None):
             if not self.trusted() and not public_bridge:
                 return self.send({"error": "Local origin required"}, 403)
             try:
+                if path.path == "/api/session":
+                    return self.send({"token": token})
                 if path.path == "/api/sync/identity":
                     return self.send(sync().identity())
                 if path.path == "/api/sync/pull":
@@ -687,6 +727,11 @@ def make_server(canvas, port=0, public_origin=None):
                 asset = (WEB / relative).resolve()
                 if asset.is_relative_to(WEB.resolve()) and asset.is_file() and (relative in {"index.html", "manifest.webmanifest", "apple-touch-icon.png", "icon.svg", "icon-192.png", "icon-512.png"} or relative.startswith("assets/")):
                     mime = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".webmanifest": "application/manifest+json", ".png": "image/png", ".svg": "image/svg+xml"}.get(asset.suffix, "application/octet-stream")
+                    if HASHED_ASSET.fullmatch(relative):
+                        stat = asset.stat()
+                        data, compressed = static_content(str(asset), stat.st_mtime_ns, stat.st_size)
+                        return self.send(data, content_type=mime, compressed=compressed,
+                                         cache_control="private, max-age=31536000, immutable")
                     return self.send(asset.read_bytes(), content_type=mime)
                 if path.path == "/":
                     return self.send({"error": "Build the interface: cd web && npm ci && npm run build"}, 503)

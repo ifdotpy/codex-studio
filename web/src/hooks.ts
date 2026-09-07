@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorText, setToken } from "./api";
+import { api, ApiError, errorText, setToken } from "./api";
 import { watchProjection, UnsupportedSyncError } from "./sync/client";
 import type { Snapshot, Message, Agent, Json } from "./types";
 export function useSnapshot() {
@@ -9,9 +9,23 @@ export function useSnapshot() {
   const generation = useRef(0);
   const replicated = useRef(false);
   const sessionToken = useRef("");
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (credentialsOnly = false) => {
     const request = ++generation.current;
     try {
+      if (credentialsOnly) {
+        try {
+          const session = await api<{ token: string }>("/api/session");
+          if (request !== generation.current) return;
+          sessionToken.current = session.token;
+          setToken(session.token);
+          setData((old) => old && old.token !== session.token ? { ...old, token: session.token } : old);
+          setError("");
+          return;
+        } catch (error) {
+          // Keep compatibility with servers that predate the session endpoint.
+          if (!(error instanceof ApiError && error.status === 404)) throw error;
+        }
+      }
       const next = await api<Snapshot>("/api/state");
       if (request !== generation.current) return;
       sessionToken.current = next.token;
@@ -35,7 +49,7 @@ export function useSnapshot() {
     let stopped = false,
       timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      await refresh();
+      await refresh(replicated.current);
       if (!stopped) timer = setTimeout(poll, 1600);
     };
     void poll();
