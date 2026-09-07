@@ -59,7 +59,10 @@ export function ExecutionSettings({
   }, [opened]);
   const [saving, setSaving] = useState(false);
   const [pendingYolo, setPendingYolo] = useState<boolean | null>(null);
-  const [pending, setPending] = useState<Json | null>(null);
+  const [pending, setPending] = useState<{
+    scope: string;
+    values: Json;
+  } | null>(null);
   const [error, setError] = useState("");
   const label = teamDefaults
     ? "Subagent defaults"
@@ -88,7 +91,19 @@ export function ExecutionSettings({
         effort: agent.effort ?? null,
         fast_mode: !!agent.fastMode,
       };
-  const current = pending || stored;
+  const scope = `${agent.id}:${teamDefaults}`;
+  const current = pending?.scope === scope ? pending.values : stored;
+  useEffect(() => {
+    // The settings response can arrive before the replicated agent snapshot.
+    if (
+      !saving &&
+      pending?.scope === scope &&
+      pending.values.model === stored.model &&
+      pending.values.effort === stored.effort &&
+      pending.values.fast_mode === stored.fast_mode
+    )
+      setPending(null);
+  }, [saving, pending, scope, stored.model, stored.effort, stored.fast_mode]);
   const selectedModel = current.model || agent.model;
   const info = infoFor(catalog, selectedModel);
   const active = !teamDefaults && (!!agent.inFlight || busy.has(agent.status));
@@ -129,7 +144,7 @@ export function ExecutionSettings({
         next.effort = null;
       if (!fastTier(nextInfo)) next.fast_mode = false;
     }
-    setPending(next);
+    setPending({ scope, values: next });
     setSaving(true);
     setError("");
     try {
@@ -139,9 +154,9 @@ export function ExecutionSettings({
       });
       await refresh();
     } catch (failure) {
+      setPending(null);
       setError(errorText(failure));
     } finally {
-      setPending(null);
       setSaving(false);
     }
   };
