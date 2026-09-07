@@ -17,7 +17,7 @@ spec.loader.exec_module(f)
 class PanelContract(unittest.TestCase):
     def setUp(self):
         f.WorkspaceContract.setUp(self)
-        self.capture = patch("codex_runtime.render_panel", side_effect=lambda panel: {
+        self.capture = patch("codex_runtime.render_panel", side_effect=lambda panel, **options: {
             "data_url": "data:image/png;base64,fixture", "width": 1000, "height": 150, "version": panel["version"]})
         self.mock_capture = self.capture.start()
         self.addCleanup(self.capture.stop)
@@ -113,20 +113,76 @@ class PanelContract(unittest.TestCase):
             self.assertEqual(self.runtime.panel(a["id"])["html"], "Second")
             self.assertEqual(self.runtime.panel(a["id"])["version"], 2)
 
-    def test_image_failure_retains_write_and_get_can_recover(self):
+    def test_image_failure_rejects_write_and_preserves_callbacks(self):
         a = self.lead()
+        self.runtime.panel_action(a["id"], {"action": "set", "html": "Accepted",
+            "callbacks": [{"id": "go", "label": "Go"}]})
+        prior = self.runtime.panel(a["id"])
         self.mock_capture.side_effect = RuntimeError("fixture renderer failed")
-        result = self.tool(a, "orchestration_panel", {"action": "set", "html": "Retained"})
+        result = self.tool(a, "orchestration_panel", {"action": "set", "html": "Rejected"})
         self.assertFalse(result["success"])
-        meta = json.loads(result["contentItems"][0]["text"])
-        self.assertTrue(meta["panelSaved"])
-        self.assertEqual(self.runtime.panel(a["id"])["html"], "Retained")
-        self.mock_capture.side_effect = lambda panel: {
+        self.assertIn("fixture renderer failed", result["contentItems"][0]["text"])
+        self.assertEqual(self.runtime.panel(a["id"]), prior)
+        self.mock_capture.side_effect = lambda panel, **options: {
             "data_url": "data:image/png;base64,recovered", "width": 1000, "height": 150, "version": panel["version"]}
         result = self.tool(a, "orchestration_panel", {"action": "get"})
         self.assertTrue(result["success"])
         self.assertEqual(self.runtime.panel(a["id"])["version"], 1)
         self.assertTrue(any(item["type"] == "inputImage" for item in result["contentItems"]))
+        self.assertFalse(self.mock_capture.call_args.kwargs["strict_layout"])
+
+    def test_capture_once_before_commit_and_outside_lock(self):
+        a = self.lead()
+        original = self.mock_capture.side_effect
+        observed = []
+        def capture(panel, **options):
+            thread = threading.Thread(target=lambda: observed.append(self.runtime.panel(a["id"])["version"]))
+            thread.start()
+            thread.join(2)
+            self.assertFalse(thread.is_alive(), "Renderer holds the runtime lock")
+            self.assertTrue(options["strict_layout"])
+            return original(panel)
+        self.mock_capture.side_effect = capture
+        result = self.tool(a, "orchestration_panel", {"action": "set", "html": "Accepted"})
+        self.assertTrue(result["success"])
+        self.assertEqual(observed, [0])
+        self.assertEqual(self.mock_capture.call_count, 1)
+        self.assertEqual(self.runtime.panel(a["id"])["version"], 1)
+
+    def test_stop_during_render_prevents_commit(self):
+        a = self.lead()
+        original = self.mock_capture.side_effect
+        def capture(panel, **options):
+            self.agent_update(a, epoch=a["epoch"] + 1)
+            return original(panel)
+        self.mock_capture.side_effect = capture
+        with self.assertRaisesRegex(ValueError, "stopped"):
+            self.runtime.panel_action(a["id"], {"action": "set", "html": "Obsolete"})
+        self.assertEqual(self.runtime.panel(a["id"])["version"], 0)
+
+    def test_new_turn_during_render_prevents_commit(self):
+        a = self.lead()
+        original = self.mock_capture.side_effect
+        def capture(panel, **options):
+            self.agent_update(a, turnId="next-turn")
+            return original(panel)
+        self.mock_capture.side_effect = capture
+        with self.assertRaisesRegex(ValueError, "caller changed"):
+            self.runtime.panel_action(a["id"], {"action": "set", "html": "Previous turn"})
+        self.assertEqual(self.runtime.panel(a["id"])["version"], 0)
+
+    def test_concurrent_newer_panel_wins(self):
+        a = self.lead()
+        original = self.mock_capture.side_effect
+        def capture(panel, **options):
+            self.runtime.panel_action(a["id"], {"action": "clear"})
+            return original(panel)
+        self.mock_capture.side_effect = capture
+        with self.assertRaisesRegex(ValueError, "changed during validation"):
+            self.runtime.panel_action(a["id"], {"action": "set", "html": "Obsolete"})
+        panel = self.runtime.panel(a["id"])
+        self.assertEqual(panel["version"], 1)
+        self.assertEqual(panel["html"], "")
 
     def test_http_reads_committed_tool_content(self):
         from codex_canvas import Canvas, make_server

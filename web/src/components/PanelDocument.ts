@@ -26,6 +26,16 @@ export function panelDocument(
     custom.textContent = css.replace(/</g, "\\3c ");
     doc.head.append(custom);
   }
+  // The native preflight checks the full geometry, including clipped content.
+  // These host rules remove scrolling; they do not turn overflow into a valid fit.
+  const bounds = doc.createElement("style");
+  bounds.textContent =
+    "html,body{overflow:hidden!important;overscroll-behavior:none!important}*{scrollbar-width:none!important}";
+  doc.head.append(bounds);
+  for (const root of [doc.documentElement, doc.body]) {
+    root.style.setProperty("overflow", "hidden", "important");
+    root.style.setProperty("overscroll-behavior", "none", "important");
+  }
   const script = doc.createElement("script");
   script.setAttribute("nonce", nonce);
   script.src = new URL("assets/panel-bridge.js", document.baseURI).href;

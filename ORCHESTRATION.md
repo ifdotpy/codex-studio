@@ -101,8 +101,16 @@ The document survives a server restart. A new agent starts with an empty panel.
 hidden Electron process renders the exact accepted revision at 1000x150 CSS pixels
 with the same document builder as the visible panel. The capture does not depend
 on an open chat. Real window widths can differ. At most two captures run together;
-capture waits at most 30 seconds for a slot and has a 15-second process timeout. Image failure leaves the saved document intact and
-returns an explicit error. A new `get` retries the image without another write.
+capture waits at most 30 seconds for a slot and has a 15-second process timeout.
+Before `set` saves, Chromium measures the content at widths 320, 640, and 1000px.
+The content must fit within 150px at each width, without nested scrolling or clipping.
+Overflow or renderer failure rejects the update and preserves the previous panel,
+version, and callbacks. Validation holds no runtime or database lock.
+A concurrent panel update or caller change rejects the stale candidate.
+`get` can still capture an older panel without a write.
+Validation samples animation keyframes and intermediate positions at the three
+widths. It does not cover every viewport or later form state.
+Callback feedback appears above the panel and does not reduce its content height.
 
 `set` can declare up to 16 callbacks, each with `id`, `label`, and up to 32 `fields`.
 Use `data-callback="id"` on a button or form and named form inputs. Field values

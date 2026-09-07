@@ -23,6 +23,28 @@ class PanelRenderError(RuntimeError):
     """The renderer did not produce a verified PNG for the submitted revision."""
 
 
+class PanelLayoutError(PanelRenderError):
+    """Measured content needs more space or hides content behind a clip."""
+
+    def __init__(self, layout):
+        self.layout = layout
+        failed = next(view for view in layout["viewports"] if not view["fits"])
+        self.actual_height = failed["contentHeight"]
+        self.actual_width = failed["contentWidth"]
+        self.max_height = layout["maxHeight"]
+        self.width = failed["width"]
+        violation = failed["violations"][0]
+        detail = violation["kind"]
+        if detail == "clipped-content":
+            detail = (f"{violation['element']} clips {violation['contentHeight']}px of content "
+                      f"inside {violation['availableHeight']}px")
+        super().__init__(
+            f"Panel does not fit at {self.width}px width: content {self.actual_width}x{self.actual_height}px, "
+            f"maximum {self.width}x{self.max_height}px ({detail}). The previous panel is unchanged. "
+            "Reduce or rearrange the content; scrolling and clipping are not allowed."
+        )
+
+
 def _electron_command():
     """Use the source Electron or this package, never another user's app state."""
     configured = os.environ.get("CODEX_STUDIO_ELECTRON")
@@ -42,13 +64,14 @@ def _electron_command():
     raise PanelRenderError("The panel renderer needs the Codex Studio desktop package or desktop Electron dependency.")
 
 
-def render_panel(panel):
-    """Return {data_url, width, height, version} for the exact passed panel.
+def render_panel(panel, *, strict_layout=True):
+    """Return {data_url, width, height, version, layout} for the exact passed panel.
 
     No database or runtime locks may be held by the caller. At most two renderer
     processes run concurrently, with up to 30 seconds to acquire a slot and
     15 seconds to finish each capture. Saturation or failure raises PanelRenderError;
-    callers must preserve the successful panel write and report the image error.
+    Strict mode rejects overflow before a caller commits its panel write.
+    strict_layout=False can capture an old panel and return its failed metrics.
     """
     if not isinstance(panel, dict) or not isinstance(panel.get("html"), str):
         raise PanelRenderError("A panel with HTML is required.")
@@ -63,7 +86,7 @@ def render_panel(panel):
     if len(immutable["html"]) > 131072 or len(immutable["css"]) > 32768:
         raise PanelRenderError("The panel exceeds the render size limit.")
     if not _RENDERERS.acquire(timeout=_QUEUE_TIMEOUT):
-        raise PanelRenderError("Both panel renderers stayed busy for 30 seconds. Use a new panel get call to request its image.")
+        raise PanelRenderError("Both panel renderers stayed busy for 30 seconds. No new panel was accepted. Try again after the queue clears.")
     try:
         preview = _ROOT / "web/dist/panel-preview.html"
         if not preview.is_file():
@@ -76,6 +99,7 @@ def render_panel(panel):
             request_path.write_text(json.dumps({
                 "panel": immutable, "preview": str(preview), "output": str(output),
                 "width": WIDTH, "height": HEIGHT,
+                "strictLayout": strict_layout,
             }, ensure_ascii=False), encoding="utf-8")
             request_path.chmod(0o600)
             environment = os.environ.copy()
@@ -100,6 +124,11 @@ def render_panel(panel):
                 if status:
                     detail = (folder / "stderr.log").read_text(errors="replace")[-1600:].strip()
                     raise PanelRenderError(f"The panel renderer exited with code {status}: {detail}")
+                layout = json.loads(Path(str(output) + ".json").read_text(encoding="utf-8"))
+                if not isinstance(layout.get("fits"), bool) or len(layout.get("viewports", [])) != 3:
+                    raise PanelRenderError("The panel renderer did not return complete layout measurements.")
+                if strict_layout and not layout["fits"]:
+                    raise PanelLayoutError(layout)
                 data = output.read_bytes()
             except OSError as error:
                 raise PanelRenderError(f"The panel renderer could not produce its image: {error}") from error
@@ -111,6 +140,7 @@ def render_panel(panel):
             return {
                 "data_url": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
                 "width": WIDTH, "height": HEIGHT, "version": immutable.get("version"),
+                "layout": layout,
             }
     finally:
         _RENDERERS.release()

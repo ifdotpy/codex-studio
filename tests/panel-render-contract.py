@@ -66,6 +66,67 @@ def png_pixel(data, x, y):
 
 
 class RenderContract(unittest.TestCase):
+    def test_legacy_request_and_finite_animation_lifecycle(self):
+        with tempfile.TemporaryDirectory(prefix="codex-panel-legacy-") as folder:
+            request = Path(folder) / "request.json"
+            output = Path(folder) / "panel.png"
+            request.write_text(json.dumps({
+                "panel": {"html": "<div style='height:200px'>Legacy</div>", "css": "", "version": 1},
+                "preview": str(render._ROOT / "web/dist/panel-preview.html"), "output": str(output),
+                "width": 1000, "height": 150,
+            }))
+            environment = os.environ.copy()
+            environment.pop("ELECTRON_RUN_AS_NODE", None)
+            result = subprocess.run(render._electron_command() + ["--render-panel", str(request)],
+                                    capture_output=True, env=environment, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertEqual(output.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+        finite = render.render_panel({"html": "<div>Finite</div>",
+                                     "css": "div{animation:fade 1s linear}@keyframes fade{from{opacity:0}to{opacity:1}}", "version": 1})
+        self.assertTrue(all(view["animationSamples"] > 1 for view in finite["layout"]["viewports"]))
+
+    def test_layout_rejects_scroll_clip_position_and_responsive_overflow(self):
+        cases = {
+            "tall": ("<div style='height:151px'>Tall</div>", "html,body{margin:0}", "outside-panel"),
+            "nested clip": ("<div style='height:20px;overflow:hidden'><div style='height:100px'>Clipped</div></div>", "", "clipped-content"),
+            "nested scroll": ("<div style='height:20px;overflow:auto'><div style='height:100px'>Scroll</div></div>", "", "clipped-content"),
+            "zero clip": ("<div style='height:0;overflow:hidden'><div style='height:20px'>Clipped</div></div>", "", "clipped-content"),
+            "negative nested clip": ("<div style='height:30px;overflow:hidden'><div style='height:20px;transform:translateY(-5px)'>Clipped</div></div>", "", "clipped-content"),
+            "forced scrollbar": ("<div style='height:30px;overflow:scroll;scrollbar-width:auto!important'>Bar</div>", "", "visible-scrollbar"),
+            "offscreen": ("<div style='position:absolute;top:-100px;height:20px'>Outside</div>", "", "outside-panel"),
+            "negative pseudo": ("<div>Visible</div>", "div:after{content:'Hidden';position:absolute;top:-100px;height:20px}", "outside-pseudo"),
+            "stroke": ("<svg width='120' height='150'><circle cx='60' cy='75' r='50' fill='none' stroke='red' stroke-width='100'/></svg>", "html,body{margin:0}", "outside-stroke"),
+            "animation": ("<div>Moves outside</div>", "div{animation:move 2s linear infinite}@keyframes move{to{transform:translateY(180px)}}", "outside-panel"),
+            "animation end": ("<div>Grows at end</div>", "div{height:20px;animation:grow 1s steps(1,end) forwards}@keyframes grow{to{height:200px}}", "outside-panel"),
+            "narrow only": ("<div>Responsive</div>", "@media(max-width:400px){div{height:180px}}", "outside-panel"),
+        }
+        for name, (html, css, expected) in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(render.PanelLayoutError) as caught:
+                    render.render_panel({"html": html, "css": css, "version": 1})
+                layout = caught.exception.layout
+                self.assertFalse(layout["fits"])
+                self.assertEqual([view["width"] for view in layout["viewports"]], [320, 640, 1000])
+                self.assertTrue(any(item["kind"] == expected for view in layout["viewports"] for item in view["violations"]))
+        self.assertTrue(layout["viewports"][-1]["fits"], "The desktop layout fits but the narrow layout must reject")
+
+    def test_exact_height_svg_definitions_controls_and_legacy_capture(self):
+        panel = {"html": """<div style='height:150px'><input value='A long value in a normal native field'>
+          <svg width=20 height=20 viewBox='0 0 20 20'><defs><path id='unused' d='M0 0 L900 900'/></defs><circle cx=10 cy=10 r=8 /></svg></div>""",
+          "css": "html,body{margin:0}", "version": 1}
+        result = render.render_panel(panel)
+        self.assertTrue(result["layout"]["fits"])
+        scaled = render.render_panel({"html": "<div style='position:absolute;top:0;left:0;width:200px;height:300px;transform:scale(.4);transform-origin:0 0'>Scaled content</div>",
+                                      "css": "html,body{margin:0}", "version": 1})
+        self.assertTrue(scaled["layout"]["fits"])
+        line = render.render_panel({"html": "<svg width='100%' height='150'><line x1='0' y1='75' x2='100%' y2='75' stroke='red' stroke-width='2' stroke-linecap='butt'/></svg>",
+                                    "css": "html,body{margin:0}svg{display:block}", "version": 1})
+        self.assertTrue(line["layout"]["fits"])
+        panel["html"] = "<div style='height:200px'>Old oversized panel</div>"
+        old = render.render_panel(panel, strict_layout=False)
+        self.assertFalse(old["layout"]["fits"])
+        self.assertTrue(old["data_url"].startswith("data:image/png;base64,"))
+
     def test_real_image_theme_and_exact_revision(self):
         panel = {"version": 17, "html": "<h1>Build status</h1><button data-callback=retry>Retry</button>",
                  "css": "", "callbacks": [{"id": "retry", "label": "Retry"}]}
@@ -185,6 +246,24 @@ class DynamicRenderContract(unittest.TestCase):
     setUp = fixture.WorkspaceContract.setUp
     tearDown = fixture.WorkspaceContract.tearDown
     lead = fixture.WorkspaceContract.lead
+
+    def test_real_rejected_layout_preserves_previous_version_and_callbacks(self):
+        agent = self.runtime.prepare(self.lead())
+        request = {"id": "real-valid", "params": {
+            "threadId": agent["threadId"], "callId": "real-valid", "tool": "orchestration_panel",
+            "arguments": {"action": "set", "html": "<button data-callback=retry>Retry</button>",
+                          "callbacks": [{"id": "retry", "label": "Retry"}]},
+        }}
+        self.runtime.dynamic(request)
+        self.assertTrue(self.runtime.server.responses[-1]["result"]["success"])
+        previous = self.runtime.panel(agent["id"])
+        request.update(id="real-too-tall")
+        request["params"].update(callId="real-too-tall", arguments={"action": "set", "html": "<div style='height:200px'>Too tall</div>"})
+        self.runtime.dynamic(request)
+        response = self.runtime.server.responses[-1]["result"]
+        self.assertFalse(response["success"])
+        self.assertIn("previous panel is unchanged", response["contentItems"][0]["text"])
+        self.assertEqual(self.runtime.panel(agent["id"]), previous)
 
     def test_real_dynamic_result_contains_immutable_png_and_cached_replay(self):
         agent = self.runtime.prepare(self.lead())

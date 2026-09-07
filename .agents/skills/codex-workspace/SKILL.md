@@ -121,8 +121,12 @@ Override `css` or `--studio-bg`, `--studio-surface`, `--studio-text`,
 Inspect it for clipping, contrast, and readable labels. Real chat widths can differ.
 Also check whether shape, position, or size communicates the state. If the PNG
 contains only rows of text, revise the composition before you continue.
-If rendering fails, the document remains saved. Use a new `get` call to retry the
-image instead of repeating the write.
+`set` measures the rendered layout at widths 320, 640, and 1000px before it saves.
+Content must fit within 150px at each width, including nested containers.
+Scrolling and clipping are rejected. The error reports measured dimensions.
+Overflow or renderer failure leaves the previous panel and callbacks unchanged.
+Fix the layout and submit a new tool call. `get` can read an older panel.
+Keep hover states, open details, and form responses within the same height.
 
 For interactive controls, declare callbacks in `set`. Example:
 ```json

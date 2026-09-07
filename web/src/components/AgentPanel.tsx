@@ -278,51 +278,55 @@ export default function AgentPanel({
   const hasContent = !!(current?.html.trim() || current?.css.trim());
   if (!hasContent && !error) return null;
   return (
-    <section
-      className={hasContent ? "agent-panel" : "agent-panel-notice"}
-      aria-label="Agent panel"
-      aria-busy={loading}
-      data-agent={agentId}
-      data-panel-version={current?.version || 0}
-    >
-      {hasContent && (
-        <iframe
-          ref={iframe}
-          title="Agent panel content"
-          sandbox="allow-scripts allow-forms"
-          referrerPolicy="no-referrer"
-          srcDoc={frameDocument.html}
-        />
+    <>
+      {!error && feedback && (
+        <div
+          className={`agent-panel-feedback ${feedback.status}`}
+          role={
+            feedback.status === "error" || feedback.status === "rejected"
+              ? "alert"
+              : "status"
+          }
+        >
+          <span>{feedback.message}</span>
+          {feedback.status === "error" && enabled && (
+            <button
+              type="button"
+              onClick={() => void deliver(state, feedback, token)}
+            >
+              Retry
+            </button>
+          )}
+        </div>
       )}
-      {error ? (
-        <p className="agent-panel-error" role="alert">
-          Cannot load the agent panel: {error}
-          <button type="button" onClick={() => setRetry((value) => value + 1)}>
-            Retry
-          </button>
-        </p>
-      ) : (
-        feedback && (
-          <div
-            className={`agent-panel-feedback ${feedback.status}`}
-            role={
-              feedback.status === "error" || feedback.status === "rejected"
-                ? "alert"
-                : "status"
-            }
-          >
-            <span>{feedback.message}</span>
-            {feedback.status === "error" && enabled && (
-              <button
-                type="button"
-                onClick={() => void deliver(state, feedback, token)}
-              >
-                Retry
-              </button>
-            )}
-          </div>
-        )
-      )}
-    </section>
+      <section
+        className={hasContent ? "agent-panel" : "agent-panel-notice"}
+        aria-label="Agent panel"
+        aria-busy={loading}
+        data-agent={agentId}
+        data-panel-version={current?.version || 0}
+      >
+        {hasContent && (
+          <iframe
+            ref={iframe}
+            title="Agent panel content"
+            sandbox="allow-scripts allow-forms"
+            referrerPolicy="no-referrer"
+            srcDoc={frameDocument.html}
+          />
+        )}
+        {error && (
+          <p className="agent-panel-error" role="alert">
+            Cannot load the agent panel: {error}
+            <button
+              type="button"
+              onClick={() => setRetry((value) => value + 1)}
+            >
+              Retry
+            </button>
+          </p>
+        )}
+      </section>
+    </>
   );
 }

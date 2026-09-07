@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import unittest
+from unittest.mock import patch
 import urllib.request
 import urllib.error
 import uuid
@@ -17,7 +18,12 @@ from codex_panel import PanelConflict
 
 
 class CallbackContract(unittest.TestCase):
-    setUp = f.WorkspaceContract.setUp
+    def setUp(self):
+        f.WorkspaceContract.setUp(self)
+        capture = patch("codex_runtime.render_panel", side_effect=lambda panel, **options: {
+            "data_url": "data:image/png;base64,fixture", "width": 1000, "height": 150, "version": panel["version"]})
+        capture.start()
+        self.addCleanup(capture.stop)
     tearDown = f.WorkspaceContract.tearDown
     lead = f.WorkspaceContract.lead
     worker = f.WorkspaceContract.worker

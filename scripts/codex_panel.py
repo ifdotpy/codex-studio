@@ -1,5 +1,6 @@
 """Persistent, agent-owned HTML/CSS panels above the message composer."""
 
+import copy
 import json
 import re
 import time
@@ -31,7 +32,9 @@ def panel_tools(tool, text):
         "Each action is accepted once per panel version and wakes you after your final answer; publish a new panel to enable it again. "
         "set and get return a rendered PNG of that panel revision at 1000x150 CSS pixels. Inspect it and fix clipped or unreadable content. "
         "Also check whether shape, position or size communicates the state; if it is only rows of text, revise the composition. "
-        "If rendering fails, the saved document remains; use a new get call to retry the image. "
+        "set validates the rendered content at widths 320, 640, and 1000px before saving. "
+        "Overflow, clipping, or renderer failure rejects set and preserves the previous panel and callbacks. "
+        "Use the measured dimensions in the error to revise the layout. get can still read an older panel. "
         "Use button type=button for standalone actions and form data-callback plus button type=submit for forms. "
         "Your own scripts, navigation, and external resources are disabled; the trusted host handles callbacks. "
         "Keep content responsive and readable within 150px. Update on meaningful changes, not by polling.",
@@ -95,7 +98,8 @@ class PanelMixin:
             seen.add(name)
         return callbacks
 
-    def panel_action(self, actor_id, data, key=None, epoch=None):
+    def panel_action(self, actor_id, data, key=None, epoch=None, capture=None):
+        data = copy.deepcopy(data)
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             if epoch is not None and actor["epoch"] != epoch:
@@ -122,15 +126,38 @@ class PanelMixin:
                     raise ValueError("clear accepts no content")
                 html, css = "", ""
                 callbacks = []
+            base_version = panel["version"]
+            identity = tuple(actor.get(k) for k in ("epoch", "threadId", "turnId", "accountKey"))
             panel.pop("submittedCallbacks", None)
-            panel.update(html=html, css=css, callbacks=callbacks, version=panel["version"] + 1, updated=time.time())
-            self.put(db, "panels", panel)
-            actor["panelVersion"] = panel["version"]
-            self.put(db, "agents", actor)
-            result = {k: panel[k] for k in ("agent", "version", "updated")}
-            self.save_receipt(db, key, signature, result)
-            self.touch_ui(actor_id)
-            return result
+            panel.update(html=html, css=css, callbacks=callbacks, version=base_version + 1)
+            if action == "clear":
+                return self.commit_panel(db, actor, panel, key, signature)
+
+        # Chromium can take seconds. Keep database and runtime locks free.
+        rendered = self.capture_panel(panel, strict_layout=True)
+        with self.lock, self.db() as db:
+            actor = self.checked_actor(db, actor_id, actor_id)
+            if tuple(actor.get(k) for k in ("epoch", "threadId", "turnId", "accountKey")) != identity:
+                raise PanelConflict("The caller changed or was stopped. The panel was not saved")
+            signature, prior = self.operation_receipt(db, key, {"actor": actor_id, "panel": data})
+            if prior is not None:
+                return prior
+            if self.panel(actor_id, db)["version"] != base_version:
+                raise PanelConflict("The panel changed during validation. Read the current panel before another update")
+            result = self.commit_panel(db, actor, panel, key, signature)
+        if capture is not None:
+            capture.update(rendered)
+        return result
+
+    def commit_panel(self, db, actor, panel, key, signature):
+        panel["updated"] = time.time()
+        self.put(db, "panels", panel)
+        actor["panelVersion"] = panel["version"]
+        self.put(db, "agents", actor)
+        result = {k: panel[k] for k in ("agent", "version", "updated")}
+        self.save_receipt(db, key, signature, result)
+        self.touch_ui(actor["id"])
+        return result
 
     def panel_callback(self, data):
         if not isinstance(data, dict) or set(data) != {"id", "agent", "version", "callback", "values"}:

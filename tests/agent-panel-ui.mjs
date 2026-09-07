@@ -135,6 +135,7 @@ try {
     const transcript = await page.locator("#messages").boundingBox();
     const composer = await page.locator("#composer").boundingBox();
     assert.equal(bounds.height, 150);
+    assert.equal((await panel.locator("iframe").boundingBox()).height, 150);
     assert.equal(
       await panel.evaluate((el) => el.nextElementSibling?.id),
       "composer",
@@ -360,7 +361,17 @@ try {
   await pendingCallback.fulfill({
     json: { ...submissions[0], status: "pending" },
   });
-  await panel.getByText("Approve: sent to agent").waitFor();
+  await page
+    .locator(".agent-panel-feedback")
+    .getByText("Approve: sent to agent")
+    .waitFor();
+  await assertLayout();
+  const feedbackBounds = await page
+    .locator(".agent-panel-feedback")
+    .boundingBox();
+  assert.ok(
+    feedbackBounds.y + feedbackBounds.height <= (await panel.boundingBox()).y,
+  );
   callbackMode = "lost";
   await frame.getByRole("button", { name: "Send choice" }).click();
   await page.waitForTimeout(100);
@@ -371,7 +382,7 @@ try {
   );
   await frame.getByRole("textbox", { name: "Note" }).fill("Review it");
   await frame.getByRole("button", { name: "Send choice" }).click();
-  await panel.getByRole("alert").waitFor();
+  await page.locator('.agent-panel-feedback[role="alert"]').waitFor();
   assert.deepEqual(submissions[1].values, {
     choice: ["a", "b"],
     note: ["Review it"],
@@ -381,11 +392,20 @@ try {
   await select("Other project");
   await frame.getByText("Other agent panel").waitFor();
   await select("Release lead");
-  await panel.getByRole("button", { name: "Retry", exact: true }).waitFor();
+  await page
+    .locator(".agent-panel-feedback")
+    .getByRole("button", { name: "Retry", exact: true })
+    .waitFor();
   assert.equal(submissions.length, 2, "remount never retries automatically");
   callbackMode = "success";
-  await panel.getByRole("button", { name: "Retry", exact: true }).click();
-  await panel.getByText("Choose: sent to agent").waitFor();
+  await page
+    .locator(".agent-panel-feedback")
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
+  await page
+    .locator(".agent-panel-feedback")
+    .getByText("Choose: sent to agent")
+    .waitFor();
   assert.deepEqual(
     submissions[2],
     submissions[1],
@@ -412,9 +432,15 @@ try {
   );
   callbackMode = "stale";
   await frame.getByRole("button", { name: "Approve release" }).click();
-  await panel.getByText("Panel changed. Use the latest panel.").waitFor();
+  await page
+    .locator(".agent-panel-feedback")
+    .getByText("Panel changed. Use the latest panel.")
+    .waitFor();
   assert.equal(
-    await panel.getByRole("button", { name: "Retry", exact: true }).count(),
+    await page
+      .locator(".agent-panel-feedback")
+      .getByRole("button", { name: "Retry", exact: true })
+      .count(),
     0,
   );
   assert.equal(
@@ -454,7 +480,10 @@ try {
     () => submissions.length === beforeEnter + 1,
     "Enter submits the registered form",
   );
-  await panel.getByText("Choose: sent to agent").waitFor();
+  await page
+    .locator(".agent-panel-feedback")
+    .getByText("Choose: sent to agent")
+    .waitFor();
   assert.deepEqual(submissions.at(-1).values.note, ["Keyboard submit"]);
   await assertLayout();
   await page.screenshot({ path: join(root, "panel-interactive.png") });

@@ -2050,6 +2050,10 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 if total >= root["tokenBudget"]:
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
 
+    @staticmethod
+    def capture_panel(panel, *, strict_layout=True):
+        return render_panel(panel, strict_layout=strict_layout)
+
     def request(self, message, account_key="default", connection_id=None):
         if not self.connection_current(account_key, connection_id):
             return
@@ -2117,8 +2121,9 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                         + panel_tools(tool, TEXT)
                     }:
                         raise ValueError("Unknown workspace tool")
+                panel_capture = {}
                 if name == "orchestration_panel":
-                    value = self.panel_action(a["id"], args, key, epoch=a["epoch"])
+                    value = self.panel_action(a["id"], args, key, epoch=a["epoch"], capture=panel_capture)
                 elif name == "orchestration_user_task":
                     value = self.user_task_action(a["id"], args, key, epoch=a["epoch"])
                 elif name in {"orchestration_task", "orchestration_result"}:
@@ -2264,9 +2269,11 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                                    if args["action"] == "set" else value)
                     value = dict(value)
                     try:
-                        capture = render_panel(exact_panel)
+                        capture = panel_capture or self.capture_panel(exact_panel, strict_layout=False)
                         image = {"type": "inputImage", "imageUrl": capture["data_url"]}
                         value["render"] = {k: capture[k] for k in ("width", "height", "version")}
+                        if "layout" in capture:
+                            value["layout"] = capture["layout"]
                     except Exception as error:
                         render_failed = True
                         value.update(panelSaved=args["action"] == "set", renderError=str(error),
