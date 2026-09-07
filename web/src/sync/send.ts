@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, ApiError, errorText, setToken } from "../api";
+import { syncApi, ApiError, errorText, setToken } from "../api";
 import { syncDatabase, UnsupportedSyncError } from "./client";
+import { onResume } from "./resume";
 
 type Intention = {
   body: Record<string, any>;
@@ -28,15 +29,43 @@ async function deliver(doc: any) {
     return value.receipt || { status: value.status, error: value.error };
   try {
     const { workspaceId } = await syncDatabase();
-    const identity = await api<{ workspaceId: string }>("/api/sync/identity");
+    const identity = await syncApi<{ workspaceId: string }>(
+      "/api/sync/identity",
+    );
     if (identity.workspaceId !== workspaceId)
       throw new ApiError(
         "The server workspace changed. Reload before sending.",
         409,
       );
-    const state = await api("/api/state");
-    setToken(state.token);
-    const result = await api<any>("/api/messages", value.body);
+    let session;
+    try {
+      session = await syncApi<{ token: string }>("/api/session");
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+      session = await syncApi<{ token: string }>("/api/state");
+    }
+    setToken(session.token);
+    const result = await syncApi<any>("/api/messages", value.body);
+    const acknowledged = [
+      "queued",
+      "pending",
+      "reserved",
+      "dispatching",
+      "delivered",
+      "accepted",
+      "sent",
+      "uncertain",
+      "failed",
+      "cancelled",
+    ].includes(result?.status);
+    const legacyReceipt =
+      result?.status === undefined &&
+      result?.room === value.body.room &&
+      result?.text === value.body.text?.trim() &&
+      result?.deliveries &&
+      typeof result.deliveries === "object";
+    if (result?.id !== value.body.id || (!acknowledged && !legacyReceipt))
+      throw new Error("The delivery response does not match this message.");
     if (result.status === "failed" || result.status === "cancelled")
       throw new ApiError(
         result.error ||
@@ -87,27 +116,31 @@ export async function durableSend(
     if (error instanceof UnsupportedSyncError) return null;
     throw error;
   });
-  if (!storage) return api("/api/messages", body);
+  if (!storage) return syncApi("/api/messages", body);
   const { db } = storage;
   let doc = await db.outbox.findOne(body.id).exec();
-  if (doc) {
-    const old: Intention = JSON.parse(doc.payload);
-    if (JSON.stringify(old.body) !== JSON.stringify(body))
-      throw new Error("Message identity already has different content");
-    if (old.status === "failed") throw new Error(old.error || "Message failed");
-  } else {
-    doc = await db.outbox.insert({
-      id: body.id,
-      seq: 0,
-      payload: JSON.stringify({
-        body,
-        status: "queued",
-        created: Date.now(),
-        displayPending: true,
-        attachments,
-      } satisfies Intention),
-    });
+  if (!doc) {
+    try {
+      doc = await db.outbox.insert({
+        id: body.id,
+        seq: 0,
+        payload: JSON.stringify({
+          body,
+          status: "queued",
+          created: Date.now(),
+          displayPending: true,
+          attachments,
+        } satisfies Intention),
+      });
+    } catch (error) {
+      doc = await db.outbox.findOne(body.id).exec();
+      if (!doc) throw error;
+    }
   }
+  const old: Intention = JSON.parse(doc.payload);
+  if (JSON.stringify(old.body) !== JSON.stringify(body))
+    throw new Error("Message identity already has different content");
+  if (old.status === "failed") throw new Error(old.error || "Message failed");
   return once(doc);
 }
 export async function acknowledgeOutbox(ids: string[]) {
@@ -135,20 +168,24 @@ export function useOutbox() {
       try {
         const { db } = await syncDatabase();
         const docs = await db.outbox.find().exec();
-        const queued = docs.filter(
-          (doc: any) => JSON.parse(doc.payload).status === "queued",
-        );
+        const queued = docs
+          .filter((doc: any) => JSON.parse(doc.payload).status === "queued")
+          .sort(
+            (a: any, b: any) =>
+              JSON.parse(a.payload).created - JSON.parse(b.payload).created ||
+              a.id.localeCompare(b.id),
+          );
         if (queued.length) {
-          const state = await api("/api/state");
-          setToken(state.token);
           for (const doc of queued) {
             if (stop) break;
-            await once(doc).catch((e) => {
+            const result = await once(doc).catch((e) => {
               // Per-message rejection is already stored beside that message.
-              if (!(e instanceof ApiError)) setError(errorText(e));
+              if (!(e instanceof ApiError)) throw e;
             });
+            if (result?.queued) break;
           }
         }
+        if (!stop) setError("");
       } catch (e) {
         if (!stop && !(e instanceof UnsupportedSyncError))
           setError(errorText(e));
@@ -156,8 +193,13 @@ export function useOutbox() {
         draining = false;
       }
     };
-    void syncDatabase()
-      .then(({ db }) => {
+    let subscribing = false,
+      subscribed = false;
+    const subscribe = async () => {
+      if (stop || subscribing || subscribed) return;
+      subscribing = true;
+      try {
+        const { db } = await syncDatabase();
         if (stop) return;
         const sub = db.outbox.find().$.subscribe((docs: any[]) => {
           setEntries(
@@ -167,19 +209,27 @@ export function useOutbox() {
           );
         });
         unsubscribe = () => sub.unsubscribe();
+        subscribed = true;
         void drain();
-      })
-      .catch((e) => {
-        if (!stop && !(e instanceof UnsupportedSyncError))
-          setError(errorText(e));
-      });
-    const timer = setInterval(() => void drain(), 5000);
-    window.addEventListener("online", drain);
+      } catch (error) {
+        if (!stop && !(error instanceof UnsupportedSyncError))
+          setError(errorText(error));
+      } finally {
+        subscribing = false;
+      }
+    };
+    const resume = () => {
+      void subscribe();
+      void drain();
+    };
+    void subscribe();
+    const timer = setInterval(resume, 5000);
+    const stopResume = onResume(resume);
     return () => {
       stop = true;
       clearInterval(timer);
       unsubscribe();
-      window.removeEventListener("online", drain);
+      stopResume();
     };
   }, []);
   return { entries, error };

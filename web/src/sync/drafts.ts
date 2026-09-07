@@ -13,6 +13,14 @@ import {
 } from "./client";
 
 import { encodeDraftPayload } from "./draftPayload";
+import {
+  readDraftJournal,
+  writeDraftJournal,
+  forgetDraftJournal,
+  journalPrefix,
+  type PendingDraft,
+} from "./draftJournal";
+import { onResume } from "./resume";
 
 type Drafts = Record<string, string>;
 export type DraftVersion = {
@@ -33,18 +41,35 @@ export function useSyncedDrafts() {
   const storageKey = useRef(
     `codex-drafts:${saved("codex-sync-workspace", "legacy")}`,
   );
-  const [drafts, update] = useState<Drafts>(() =>
-    saved(
+  const [writer] = useState(() => crypto.randomUUID());
+  const [recovery] = useState(() => {
+    try {
+      return { entries: readDraftJournal(storageKey.current), error: "" };
+    } catch {
+      return {
+        entries: [] as PendingDraft[],
+        error: "Saved drafts could not be read. Keep this chat open.",
+      };
+    }
+  });
+  const journal = useRef(
+    new Map(recovery.entries.map((entry) => [entry.key, entry])),
+  );
+  const [drafts, update] = useState<Drafts>(() => {
+    const next: Drafts = saved(
       storageKey.current,
       storageKey.current.endsWith(":legacy")
         ? saved("codex-agent-drafts", {})
         : {},
-    ),
-  );
+    );
+    for (const entry of recovery.entries)
+      next[entry.version.session] = entry.version.text;
+    return next;
+  });
   const importLegacy = useRef(storageKey.current.endsWith(":legacy"));
   const current = useRef(drafts);
   const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
-  const [localError, setLocalError] = useState("");
+  const [localError, setLocalError] = useState(recovery.error);
   const [syncFailed, setSyncFailed] = useState(false);
   const [syncNotice, setSyncNotice] = useState("");
   useEffect(() => {
@@ -118,90 +143,213 @@ export function useSyncedDrafts() {
     },
     [reconcile],
   );
-  const writes = useRef(Promise.resolve());
-  const pendingEdits = useRef(new Map<string, number>());
+  const flushing = useRef<Promise<void> | null>(null);
+  const unsupported = useRef(false);
+  const pendingEdits = useRef(
+    new Map(
+      recovery.entries.map(({ version }) => [version.session, version.updated]),
+    ),
+  );
   const editSequence = useRef(0);
-  const setDrafts = useCallback((value: SetStateAction<Drafts>) => {
-    const previous = current.current;
-    const next = typeof value === "function" ? value(previous) : value;
+  const localHeads = useRef(new Map<string, number>());
+  const entries = () =>
+    [...journal.current.values()]
+      .filter((entry) =>
+        entry.key.startsWith(journalPrefix(storageKey.current)),
+      )
+      .sort(
+        (a, b) =>
+          a.version.updated - b.version.updated || a.key.localeCompare(b.key),
+      );
+  const markPending = () => {
+    pendingEdits.current = new Map(
+      entries().map(({ version }) => [version.session, version.updated]),
+    );
+  };
+  const adoptScope = useCallback((workspaceId: string) => {
+    const targetKey = `codex-drafts:${workspaceId}`;
+    if (storageKey.current === targetKey) return;
+    const previousKey = storageKey.current;
+    const legacy = previousKey.endsWith(":legacy");
+    const next: Drafts = legacy ? { ...current.current } : saved(targetKey, {});
+    if (legacy) {
+      for (const entry of entries()) {
+        const moved = {
+          ...entry,
+          key: targetKey + entry.key.slice(previousKey.length),
+        };
+        writeDraftJournal(moved);
+        forgetDraftJournal(entry);
+        journal.current.delete(entry.key);
+        journal.current.set(moved.key, moved);
+      }
+    }
+    storageKey.current = targetKey;
+    for (const entry of readDraftJournal(targetKey))
+      journal.current.set(entry.key, entry);
+    markPending();
+    for (const entry of entries())
+      next[entry.version.session] = entry.version.text;
+    dismissed.current = saved(`${targetKey}:dismissed`, []);
     current.current = next;
     update(next);
-    save(storageKey.current, next);
-    const updated = Math.max(
-      Date.now(),
-      ...versions.current.map((version) => version.updated + 1),
-      editSequence.current + 1,
-    );
-    const changes = [
-      ...new Set([...Object.keys(previous), ...Object.keys(next)]),
-    ]
-      .filter((session) => previous[session] !== next[session])
-      .map((session) => ({
-        id: `${device}:${session}`,
-        session,
-        device,
-        text: next[session] || "",
-        updated,
-        // An edit replaces only versions that this browser has already observed.
-        seen: Object.fromEntries(
-          versions.current
-            .filter((version) => version.session === session)
-            .flatMap((version) => [
-              [version.id, version.updated] as const,
-              ...Object.entries(version.seen || {}),
-            ])
-            .sort((a, b) => a[1] - b[1]),
-        ),
-      }));
-    const sequence = (editSequence.current = updated);
-    for (const item of changes)
-      pendingEdits.current.set(item.session, sequence);
-    writes.current = writes.current
-      .then(async () => {
-        const { db } = await syncDatabase();
-        for (const item of changes) {
-          const old = await db.drafts.findOne(item.id).exec();
-          const alternatives = old ? JSON.parse(old.payload).alternatives : [];
-          await db.drafts.incrementalUpsert({
-            id: item.id,
-            payload: encodeDraftPayload({ ...item, alternatives }),
-            seq: 0,
-          });
-          if (pendingEdits.current.get(item.session) === sequence)
-            pendingEdits.current.delete(item.session);
+    save(targetKey, next);
+  }, []);
+  const flushDrafts = useCallback(() => {
+    if (unsupported.current) return Promise.resolve();
+    if (flushing.current) return flushing.current;
+    flushing.current = (async () => {
+      let connecting = false;
+      try {
+        for (const entry of readDraftJournal(storageKey.current)) {
+          const old = journal.current.get(entry.key);
+          if (!old || entry.version.updated > old.version.updated)
+            journal.current.set(entry.key, entry);
         }
-        if (!pendingEdits.current.size) setLocalError("");
-      })
-      .catch((e) => {
-        if (!(e instanceof UnsupportedSyncError))
+        markPending();
+        if (!entries().length) return;
+        connecting = true;
+        const { db, workspaceId } = await syncDatabase();
+        connecting = false;
+        adoptScope(workspaceId);
+        for (;;) {
+          const batch = entries();
+          if (!batch.length) break;
+          for (const entry of batch) {
+            const item = entry.version;
+            const old = await db.drafts.findOne(item.id).exec();
+            const previous: DraftVersion | undefined =
+              old && JSON.parse(old.payload);
+            // A recovered older edit must not replace a newer branch from another tab.
+            const newer = previous && previous.updated > item.updated;
+            const chosen = newer ? previous : item;
+            const other = newer ? item : previous;
+            const alternatives = [
+              ...new Set([
+                ...(previous?.alternatives || []),
+                ...(item.alternatives || []),
+                ...(other &&
+                other.text !== chosen.text &&
+                other.text &&
+                (chosen.seen?.[other.id] ?? -1) < other.updated
+                  ? [other.text]
+                  : []),
+              ]),
+            ].filter((text) => text !== chosen.text);
+            const payload = encodeDraftPayload({ ...chosen, alternatives });
+            if (!old || old.payload !== payload)
+              await db.drafts.incrementalUpsert({
+                id: item.id,
+                payload,
+                seq: 0,
+              });
+            forgetDraftJournal(entry);
+            if (
+              journal.current.get(entry.key)?.version.updated === item.updated
+            )
+              journal.current.delete(entry.key);
+            markPending();
+          }
+        }
+        setLocalError("");
+        reconcile(
+          (await db.drafts.find().exec()).map((doc: any) =>
+            JSON.parse(doc.payload),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof UnsupportedSyncError) unsupported.current = true;
+        else if (connecting) setSyncFailed(true);
+        else
           setLocalError(
             "Draft changes could not be saved for synchronization. Keep this chat open.",
           );
-      });
-  }, []);
+      }
+    })().finally(() => {
+      flushing.current = null;
+    });
+    return flushing.current;
+  }, [adoptScope, reconcile]);
+  const setDrafts = useCallback(
+    (value: SetStateAction<Drafts>) => {
+      const previous = current.current;
+      const next = typeof value === "function" ? value(previous) : value;
+      current.current = next;
+      update(next);
+      const updated = Math.max(
+        Date.now(),
+        ...versions.current.map((version) => version.updated + 1),
+        ...entries().map((entry) => entry.version.updated + 1),
+        editSequence.current + 1,
+      );
+      editSequence.current = updated;
+      for (const session of new Set([
+        ...Object.keys(previous),
+        ...Object.keys(next),
+      ])) {
+        if (previous[session] === next[session]) continue;
+        const version: DraftVersion = {
+          id: `${device}:${session}`,
+          session,
+          device,
+          text: next[session] || "",
+          updated,
+          seen: Object.fromEntries(
+            [
+              ...versions.current
+                .filter((version) => version.session === session)
+                .flatMap((version) => [
+                  [version.id, version.updated] as const,
+                  ...Object.entries(version.seen || {}),
+                ]),
+              ...entries()
+                .filter((entry) => entry.version.session === session)
+                .map(
+                  (entry) => [entry.version.id, entry.version.updated] as const,
+                ),
+              [
+                `${device}:${session}`,
+                localHeads.current.get(session) || 0,
+              ] as const,
+            ].sort((a, b) => a[1] - b[1]),
+          ),
+        };
+        localHeads.current.set(session, updated);
+        const entry = {
+          key: `${journalPrefix(storageKey.current)}${writer}:${encodeURIComponent(session)}`,
+          version,
+        };
+        journal.current.set(entry.key, entry);
+        pendingEdits.current.set(session, updated);
+        try {
+          writeDraftJournal(entry);
+        } catch {
+          setLocalError(
+            "Draft changes are not saved yet. Keep this chat open.",
+          );
+        }
+      }
+      save(storageKey.current, next);
+      void flushDrafts();
+    },
+    [flushDrafts, writer],
+  );
   useEffect(() => {
     let stopped = false,
       unsubscribe = () => {},
       cancel = () => {};
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let starting = false,
+      started = false;
     const start = () => {
+      if (stopped || starting || started || unsupported.current) return;
+      clearTimeout(retry);
+      starting = true;
       void syncDatabase()
         .then(async ({ db, workspaceId }) => {
           if (stopped) return;
-          const targetKey = `codex-drafts:${workspaceId}`;
-          if (storageKey.current !== targetKey) {
-            const next: Drafts = storageKey.current.endsWith(":legacy")
-              ? current.current
-              : saved(targetKey, {});
-            // Preserve edits made in this mount before IndexedDB opened.
-            for (const session of pendingEdits.current.keys())
-              next[session] = current.current[session];
-            storageKey.current = targetKey;
-            dismissed.current = saved(`${targetKey}:dismissed`, []);
-            current.current = next;
-            update(next);
-            save(targetKey, next);
-          }
+          adoptScope(workspaceId);
+          await flushDrafts();
           cancel = await startDraftReplication((e) => {
             if (!stopped && !(e instanceof UnsupportedSyncError))
               setSyncFailed(e !== null);
@@ -233,24 +381,37 @@ export function useSyncedDrafts() {
             reconcile(docs.map((doc) => JSON.parse(doc.payload)));
           });
           unsubscribe = () => sub.unsubscribe();
+          started = true;
+          importLegacy.current = false;
         })
         .catch((e) => {
+          if (e instanceof UnsupportedSyncError) unsupported.current = true;
           if (!stopped && !(e instanceof UnsupportedSyncError)) {
             setSyncFailed(true);
             unsubscribe();
             cancel();
             retry = setTimeout(start, 3000);
           }
+        })
+        .finally(() => {
+          starting = false;
         });
     };
     start();
+    const stopResume = onResume(() => {
+      start();
+      void flushDrafts();
+    });
+    const writeTimer = setInterval(() => void flushDrafts(), 3000);
     return () => {
       stopped = true;
       clearTimeout(retry);
+      clearInterval(writeTimer);
+      stopResume();
       unsubscribe();
       cancel();
     };
-  }, [reconcile]);
+  }, [reconcile, adoptScope, flushDrafts]);
   return {
     drafts,
     setDrafts,

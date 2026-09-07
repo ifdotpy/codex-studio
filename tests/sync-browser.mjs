@@ -15,6 +15,7 @@ try {
  await page.route('**/sync-check', route=>route.fulfill({contentType:'text/html',body:'<!doctype html><title>Sync contract</title>'}));
  let revision = 1, failSend = true, sends = [], content = 'first', draftPushes=[];
  await page.route('**/api/state', route=>route.fulfill({json:{token:'fixture'}}));
+ await page.route('**/api/session', route=>route.fulfill({json:{token:'fixture'}}));
  await page.route('**/api/sync/identity', route => route.fulfill({json:{workspaceId:'a'.repeat(32)}}));
  await page.route('**/api/sync/stream', route => route.fulfill({contentType:'text/event-stream',body:'data: RESYNC\n\n'}));
  await page.route('**/api/sync/pull?**', route => {
@@ -35,7 +36,7 @@ try {
  await page.evaluate(async () => {
   const client = await import('/src/sync/client.ts');
   window.values = [];
-  window.stopSync = await client.watchProjection('state', value => {if(value)window.values.push(value.text);}, error=>{window.failure=String(error)});
+  window.stopSync = await client.watchProjection('state', value => {if(value)window.values.push(value.text);}, error=>{if(error)window.failure=String(error);else delete window.failure;});
  });
  await page.waitForFunction(()=>window.values.includes('first') || window.failure);
  assert.equal(await page.evaluate(()=>window.failure),undefined);
@@ -43,7 +44,7 @@ try {
  await page.waitForFunction(()=>window.values.includes('second'),null,{timeout:10000});
  await page.evaluate(async()=>{
   const client=await import('/src/sync/client.ts');
-  window.stopDrafts=await client.startDraftReplication(error=>{window.failure=String(error)});
+  window.stopDrafts=await client.startDraftReplication(error=>{if(error)window.failure=String(error);else delete window.failure;});
   const {db}=await client.syncDatabase();
   await db.drafts.insert({id:'device:lead',seq:0,payload:JSON.stringify({text:'draft',session:'lead',device:'device',updated:1})});
  });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, errorText, setToken } from "./api";
-import { watchProjection, UnsupportedSyncError } from "./sync/client";
+import { syncApi as api, ApiError, errorText, setToken } from "./api";
+import { subscribeProjection } from "./sync/client";
+import { onResume } from "./sync/resume";
 import type { Snapshot, Message, Agent, Json } from "./types";
 export function useSnapshot() {
   const [data, setData] = useState<Snapshot | null>(null),
@@ -18,7 +19,11 @@ export function useSnapshot() {
           if (request !== generation.current) return;
           sessionToken.current = session.token;
           setToken(session.token);
-          setData((old) => old && old.token !== session.token ? { ...old, token: session.token } : old);
+          setData((old) =>
+            old && old.token !== session.token
+              ? { ...old, token: session.token }
+              : old,
+          );
           setError("");
           return;
         } catch (error) {
@@ -47,46 +52,39 @@ export function useSnapshot() {
   }, []);
   useEffect(() => {
     let stopped = false,
-      timer: ReturnType<typeof setTimeout>;
+      polling = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
+      if (stopped || polling) return;
+      clearTimeout(timer);
+      polling = true;
       await refresh(replicated.current);
+      polling = false;
       if (!stopped) timer = setTimeout(poll, 1600);
     };
+    const stopResume = onResume(() => void poll());
     void poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
+      stopResume();
     };
   }, [refresh]);
-  useEffect(() => {
-    let stopped = false,
-      dispose = () => {};
-    void watchProjection(
-      "state",
-      (next) => {
-        if (!stopped && next) {
-          replicated.current = true;
-          setSyncError("");
-          setData({ ...next, token: sessionToken.current });
-        }
-      },
-      (error) => {
-        if (!stopped) setSyncError(errorText(error));
-      },
-    )
-      .then((stop) => {
-        if (stopped) stop();
-        else dispose = stop;
-      })
-      .catch((error) => {
-        if (!stopped && !(error instanceof UnsupportedSyncError))
-          setSyncError(errorText(error));
-      });
-    return () => {
-      stopped = true;
-      dispose();
-    };
-  }, []);
+  useEffect(
+    () =>
+      subscribeProjection(
+        "state",
+        (next) => {
+          if (next) {
+            replicated.current = true;
+            setSyncError("");
+            setData({ ...next, token: sessionToken.current });
+          }
+        },
+        (error) => setSyncError(error === null ? "" : errorText(error)),
+      ),
+    [],
+  );
   return { data, error: error || syncError, refresh };
 }
 export function useMessages(
@@ -353,46 +351,39 @@ export function useMessages(
     };
     connect();
     window.addEventListener("offline", offline);
-    window.addEventListener("online", connect);
+    const stopResume = onResume(connect);
     return () => {
       stopped = true;
       clearTimeout(timer);
       source.close();
       window.removeEventListener("offline", offline);
-      window.removeEventListener("online", connect);
+      stopResume();
     };
   }, [load, id, kind, managed, accept, syncId, scope]);
   useEffect(() => {
     if (!id || kind !== "agent" || !managed) return;
-    let stopped = false,
-      seen = false,
-      dispose = () => {};
-    void watchProjection(
+    let seen = false;
+    return subscribeProjection(
       `transcript:${id}`,
       (next) => {
-        if (!stopped && active.current === scope && next) {
+        if (active.current !== scope) return;
+        if (next) {
           seen = true;
           syncActive.current = scope;
           setSyncId(scope);
           accept(next);
-        } else if (!stopped && seen && active.current === scope) {
+        } else if (seen) {
           accept({
             items: [],
             unavailable: "This session is no longer available.",
           });
         }
       },
-      () => {},
-    )
-      .then((stop) => {
-        if (stopped) stop();
-        else dispose = stop;
-      })
-      .catch(() => {});
-    return () => {
-      stopped = true;
-      dispose();
-    };
+      (error) => {
+        if (active.current === scope && seen)
+          setConnection(error === null ? "live" : "reconnecting");
+      },
+    );
   }, [id, kind, managed, accept, scope]);
   const older = async () => {
     if (!id || !before) return;

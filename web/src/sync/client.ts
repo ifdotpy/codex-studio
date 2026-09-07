@@ -4,7 +4,9 @@ import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 import { replicateRxCollection } from "rxdb/plugins/replication";
 import { Subject } from "rxjs";
 import { draftConflictHandler } from "./conflicts";
-import { api, ApiError, saved, save, setWorkspace } from "../api";
+import { syncApi as api, ApiError, saved, save, setWorkspace } from "../api";
+
+import { onResume } from "./resume";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
 export class UnsupportedSyncError extends Error {
@@ -47,7 +49,11 @@ async function open() {
   } catch (error) {
     if (error instanceof ApiError && error.status === 404)
       throw new UnsupportedSyncError();
-    if (navigator.onLine && !(error instanceof TypeError)) throw error;
+    const unavailable =
+      error instanceof TypeError ||
+      (error instanceof ApiError &&
+        (error.status >= 500 || [408, 429].includes(error.status)));
+    if (!unavailable) throw error;
     workspaceId = saved("codex-sync-workspace", "");
     if (!workspaceId) throw error;
   }
@@ -84,7 +90,14 @@ async function pull(
     throw new Error("The server workspace changed. Reload to synchronize.");
   return result;
 }
-const scopes = new Map<string, { users: number; stop: () => void }>();
+const scopes = new Map<
+  string,
+  {
+    users: number;
+    stop: () => void;
+    listeners: Set<(error: unknown | null) => void>;
+  }
+>();
 export async function watchProjection(
   scope: string,
   accept: (payload: any | null) => void,
@@ -94,6 +107,9 @@ export async function watchProjection(
   let state = scopes.get(scope);
   if (!state) {
     const events = new Subject<any>();
+    const listeners = new Set<(error: unknown | null) => void>();
+    const report = (error: unknown | null) =>
+      listeners.forEach((listener) => listener(error));
     const replication = replicateRxCollection<SyncDocument, { seq: number }>({
       collection: db.projections,
       replicationIdentifier: `${workspaceId}:${scope}:v1`,
@@ -101,8 +117,21 @@ export async function watchProjection(
       retryTime: 3000,
       pull: {
         batchSize: 100,
-        handler: (checkpoint, batchSize) =>
-          pull(scope, checkpoint?.seq || 0, batchSize, workspaceId),
+        handler: async (checkpoint, batchSize) => {
+          try {
+            const result = await pull(
+              scope,
+              checkpoint?.seq || 0,
+              batchSize,
+              workspaceId,
+            );
+            report(null);
+            return result;
+          } catch (error) {
+            report(error);
+            throw error;
+          }
+        },
         stream$: events.asObservable(),
       },
     });
@@ -112,33 +141,33 @@ export async function watchProjection(
     source.onmessage = resync;
     // Reconcile file-backed state too, and recover missed notifications after suspension.
     const timer = setInterval(resync, 3000);
-    window.addEventListener("online", resync);
-    const visible = () => {
-      if (!document.hidden) resync();
-    };
-    document.addEventListener("visibilitychange", visible);
-    const errors = replication.error$.subscribe(fail);
+    const stopResume = onResume(resync);
+    const errors = replication.error$.subscribe((error) => {
+      if (error.code !== "RC_PULL") report(error);
+    });
     state = {
       users: 0,
+      listeners,
       stop: () => {
         clearInterval(timer);
         source.close();
         events.complete();
         errors.unsubscribe();
-        window.removeEventListener("online", resync);
-        document.removeEventListener("visibilitychange", visible);
+        stopResume();
         void replication.cancel();
       },
     };
     scopes.set(scope, state);
   }
   state.users++;
+  state.listeners.add(fail);
   const subscription = db.projections.findOne(scope).$.subscribe((doc: any) => {
     if (doc) accept(JSON.parse(doc.payload));
     else accept(null);
   });
   return () => {
     subscription.unsubscribe();
+    state!.listeners.delete(fail);
     if (--state!.users === 0) {
       state!.stop();
       scopes.delete(scope);
@@ -187,7 +216,9 @@ export async function startDraftReplication(
       batchSize: 100,
     },
   });
-  const timer = setInterval(() => replication.reSync(), 3000);
+  const resync = () => replication.reSync();
+  const timer = setInterval(resync, 3000);
+  const stopResume = onResume(resync);
   const errors = replication.error$.subscribe((error) => {
     const direction =
       error.code === "RC_PULL"
@@ -199,8 +230,58 @@ export async function startDraftReplication(
   });
   return () => {
     stopped = true;
+    stopResume();
     clearInterval(timer);
     errors.unsubscribe();
     void replication.cancel();
+  };
+}
+
+// Reopen a subscription after an initial connection failure, without a page reload.
+export function subscribeProjection(
+  scope: string,
+  accept: (payload: any | null) => void,
+  report: (error: unknown | null) => void,
+) {
+  let stopped = false,
+    connecting = false,
+    attached = false;
+  let dispose = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const connect = async () => {
+    if (stopped || connecting || attached) return;
+    clearTimeout(timer);
+    connecting = true;
+    try {
+      const stop = await watchProjection(
+        scope,
+        (value) => {
+          if (!stopped) accept(value);
+        },
+        (error) => {
+          if (!stopped) report(error);
+        },
+      );
+      if (stopped) stop();
+      else {
+        dispose = stop;
+        attached = true;
+      }
+    } catch (error) {
+      if (!stopped && !(error instanceof UnsupportedSyncError)) {
+        report(error);
+        timer = setTimeout(() => void connect(), 3000);
+      }
+    } finally {
+      connecting = false;
+    }
+  };
+  const stopResume = onResume(() => void connect());
+  void connect();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+    stopResume();
+    dispose();
   };
 }
