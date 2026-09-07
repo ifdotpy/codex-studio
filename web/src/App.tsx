@@ -172,6 +172,7 @@ export default function App() {
     drafts,
     setDrafts,
     conflicts: draftConflicts,
+    dismissDraft,
     error: draftError,
   } = useSyncedDrafts();
   const [pendingCreation, setPendingCreation] = useState<Json | null>(null);
@@ -1213,25 +1214,6 @@ export default function App() {
               Draft sync: {draftError}
             </p>
           )}
-          {draftConflicts
-            .filter((version) => version.session === (opened || "new"))
-            .map((version) => (
-              <details className="sync-status" key={version.id}>
-                <summary>Draft from another device</summary>
-                <p>{version.text}</p>
-                <Button
-                  onClick={() =>
-                    setDraft(
-                      (drafts[opened || "new"] || "") +
-                        (drafts[opened || "new"] || "" ? "\n\n" : "") +
-                        version.text,
-                    )
-                  }
-                >
-                  Add to this draft
-                </Button>
-              </details>
-            ))}
           {outbox.error && (
             <p className="sync-status" role="alert">
               {outbox.error}
@@ -1247,6 +1229,10 @@ export default function App() {
             data={data}
             draft={drafts[opened || "new"] || ""}
             setDraft={setDraft}
+            draftConflicts={draftConflicts.filter(
+              (version) => version.session === (opened || "new"),
+            )}
+            dismissDraft={dismissDraft}
             send={send}
             sending={sending}
             outgoing={visibleOutgoing}

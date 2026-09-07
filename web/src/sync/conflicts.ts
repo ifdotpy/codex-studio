@@ -7,18 +7,22 @@ export const draftConflictHandler: RxConflictHandler<SyncDocument> = {
   resolve: async ({ realMasterState, newDocumentState }) => {
     const master = JSON.parse(realMasterState.payload),
       fork = JSON.parse(newDocumentState.payload);
+    const winner = (fork.updated || 0) > (master.updated || 0) ? fork : master;
+    const other = winner === fork ? master : fork;
+    const replaced =
+      other.id && (winner.seen?.[other.id] ?? -1) >= other.updated;
     const alternatives = [
       ...new Set([
         ...(master.alternatives || []),
         ...(fork.alternatives || []),
-        fork.text,
+        ...(replaced ? [] : [other.text]),
       ]),
     ]
-      .filter((text) => text && text !== master.text)
+      .filter((text) => text && text !== winner.text)
       .sort();
     return {
       ...realMasterState,
-      payload: encodeDraftPayload({ ...master, alternatives }),
+      payload: encodeDraftPayload({ ...winner, alternatives }),
     };
   },
 };

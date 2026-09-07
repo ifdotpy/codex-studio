@@ -16,6 +16,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import { useMessages } from "../hooks";
+import DraftVersions from "./DraftVersions";
+import type { DraftVersion } from "../sync/drafts";
 import type { OutgoingMessage } from "../sync/send";
 import { outgoingTranscript, deliveryLabel } from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
@@ -53,6 +55,8 @@ export default function Conversation(p: {
   data: Snapshot;
   draft: string;
   setDraft: (v: string) => void;
+  draftConflicts?: DraftVersion[];
+  dismissDraft?: (version: DraftVersion) => void;
   send: (options?: {
     assets?: string[];
     delivery?: "queue" | "steer";
@@ -799,6 +803,12 @@ export default function Conversation(p: {
               }}
             />
             <div className="composer-bar">
+              <DraftVersions
+                key={p.id || "new"}
+                versions={p.draftConflicts || []}
+                useVersion={(version) => p.setDraft(version.text)}
+                dismiss={(version) => p.dismissDraft?.(version)}
+              />
               {managed && (
                 <ComposerAttachments
                   notify={p.notify}

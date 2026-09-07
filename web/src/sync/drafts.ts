@@ -22,6 +22,7 @@ export type DraftVersion = {
   device: string;
   updated: number;
   alternatives?: string[];
+  seen?: Record<string, number>;
 };
 let device = saved<string>("codex-draft-device", "");
 if (!device) {
@@ -40,9 +41,69 @@ export function useSyncedDrafts() {
         : {},
     ),
   );
+  const importLegacy = useRef(storageKey.current.endsWith(":legacy"));
   const current = useRef(drafts);
   const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
   const [error, setError] = useState("");
+  const versions = useRef<DraftVersion[]>([]);
+  const dismissed = useRef<string[]>(
+    saved(`${storageKey.current}:dismissed`, []),
+  );
+  const versionKey = (version: DraftVersion) =>
+    JSON.stringify([version.id, version.text]);
+  const reconcile = useCallback((records: DraftVersion[]) => {
+    versions.current = records;
+    const next = { ...current.current };
+    const alternatives: DraftVersion[] = [];
+    for (const session of new Set(records.map((version) => version.session))) {
+      const branches = records.filter((version) => version.session === session);
+      const active = branches
+        .filter(
+          (version) =>
+            !branches.some(
+              (other) =>
+                other.id !== version.id &&
+                (other.seen?.[version.id] ?? -1) >= version.updated,
+            ),
+        )
+        .sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
+      const chosen = active.find(
+        (version) => !dismissed.current.includes(versionKey(version)),
+      );
+      if (chosen && !pendingEdits.current.has(session))
+        next[session] = chosen.text;
+      if (pendingEdits.current.has(session)) continue;
+      for (const branch of active) {
+        if (branch.text && branch.text !== next[session])
+          alternatives.push(branch);
+        for (const text of branch.alternatives || [])
+          if (text && text !== next[session])
+            alternatives.push({ ...branch, id: `${branch.id}:conflict`, text });
+      }
+    }
+    current.current = next;
+    update(next);
+    save(storageKey.current, next);
+    const unique = new Set<string>();
+    setConflicts(
+      alternatives.filter((version) => {
+        const key = versionKey(version);
+        if (dismissed.current.includes(key) || unique.has(key)) return false;
+        unique.add(key);
+        return true;
+      }),
+    );
+  }, []);
+  const dismissDraft = useCallback(
+    (version: DraftVersion) => {
+      dismissed.current = [
+        ...new Set([...dismissed.current, versionKey(version)]),
+      ];
+      save(`${storageKey.current}:dismissed`, dismissed.current);
+      reconcile(versions.current);
+    },
+    [reconcile],
+  );
   const writes = useRef(Promise.resolve());
   const pendingEdits = useRef(new Map<string, number>());
   const editSequence = useRef(0);
@@ -52,6 +113,11 @@ export function useSyncedDrafts() {
     current.current = next;
     update(next);
     save(storageKey.current, next);
+    const updated = Math.max(
+      Date.now(),
+      ...versions.current.map((version) => version.updated + 1),
+      editSequence.current + 1,
+    );
     const changes = [
       ...new Set([...Object.keys(previous), ...Object.keys(next)]),
     ]
@@ -61,9 +127,19 @@ export function useSyncedDrafts() {
         session,
         device,
         text: next[session] || "",
-        updated: Date.now(),
+        updated,
+        // An edit replaces only versions that this browser has already observed.
+        seen: Object.fromEntries(
+          versions.current
+            .filter((version) => version.session === session)
+            .flatMap((version) => [
+              [version.id, version.updated] as const,
+              ...Object.entries(version.seen || {}),
+            ])
+            .sort((a, b) => a[1] - b[1]),
+        ),
       }));
-    const sequence = ++editSequence.current;
+    const sequence = (editSequence.current = updated);
     for (const item of changes)
       pendingEdits.current.set(item.session, sequence);
     writes.current = writes.current
@@ -101,6 +177,7 @@ export function useSyncedDrafts() {
           for (const session of pendingEdits.current.keys())
             next[session] = current.current[session];
           storageKey.current = targetKey;
+          dismissed.current = saved(`${targetKey}:dismissed`, []);
           current.current = next;
           update(next);
           save(targetKey, next);
@@ -114,7 +191,9 @@ export function useSyncedDrafts() {
           return;
         }
         // Import the previous browser drafts without replacing a replicated branch.
-        for (const [session, text] of Object.entries(current.current)) {
+        for (const [session, text] of Object.entries(
+          importLegacy.current ? current.current : {},
+        )) {
           const id = `${device}:${session}`;
           if (!(await db.drafts.findOne(id).exec()))
             await db.drafts.insert({
@@ -131,40 +210,7 @@ export function useSyncedDrafts() {
         }
         if (stopped) return;
         const sub = db.drafts.find().$.subscribe((docs: any[]) => {
-          const versions: DraftVersion[] = docs.map((doc) =>
-            JSON.parse(doc.payload),
-          );
-          const next = { ...current.current };
-          const alternatives: DraftVersion[] = [];
-          const sessions = new Set(versions.map((v) => v.session));
-          for (const session of sessions) {
-            const branches = versions
-              .filter((v) => v.session === session)
-              .sort(
-                (a, b) => b.updated - a.updated || a.id.localeCompare(b.id),
-              );
-            const own = branches.find((v) => v.device === device);
-            const chosen = own || branches[0];
-            if (!pendingEdits.current.has(session)) next[session] = chosen.text;
-            alternatives.push(
-              ...branches.filter(
-                (v) => v.id !== chosen.id && v.text && v.text !== chosen.text,
-              ),
-            );
-          }
-          for (const branch of versions)
-            for (const [index, text] of (branch.alternatives || []).entries()) {
-              if (text && text !== next[branch.session])
-                alternatives.push({
-                  ...branch,
-                  id: `${branch.id}:conflict:${index}`,
-                  text,
-                });
-            }
-          current.current = next;
-          update(next);
-          save(storageKey.current, next);
-          setConflicts(alternatives);
+          reconcile(docs.map((doc) => JSON.parse(doc.payload)));
         });
         unsubscribe = () => sub.unsubscribe();
       })
@@ -177,6 +223,6 @@ export function useSyncedDrafts() {
       unsubscribe();
       cancel();
     };
-  }, []);
-  return { drafts, setDrafts, conflicts, error };
+  }, [reconcile]);
+  return { drafts, setDrafts, conflicts, dismissDraft, error };
 }

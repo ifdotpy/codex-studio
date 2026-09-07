@@ -2149,3 +2149,30 @@ html body #root {
   max-height: 25dvh;
   overflow: auto;
 }
+
+.draft-versions {
+  max-width: calc(100vw - 24px);
+  max-height: min(320px, 45dvh);
+  overflow-y: auto;
+}
+.draft-versions > p {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.draft-version {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.draft-version pre {
+  max-height: 100px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 13px;
+}
+.draft-version-actions {
+  display: flex;
+  gap: 8px;
+}
