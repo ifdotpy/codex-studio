@@ -35,6 +35,7 @@ from codex_panel_render import render_panel
 from codex_panel_feed import PanelFeedConsumer
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
+from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices
 
 def uid():
     return str(uuid.uuid4())
@@ -495,7 +496,7 @@ class AppServer:
                             future = self.pending.pop(message.get("id"), None)
                         if future and not future.done():
                             if "error" in message:
-                                future.set_exception(RuntimeError(json.dumps(message["error"])))
+                                future.set_exception(NativeRpcError(message["error"]))
                             else:
                                 future.set_result(message.get("result", {}))
                 except Exception as error:
@@ -875,7 +876,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 None,
             ),
         )
-        if a["autoWake"] and a["status"] not in {"running", "starting", "approval"}:
+        if a["autoWake"] and not a.get("nativeFailureHold") and a["status"] not in {"running", "starting", "approval"}:
             a["status"] = "queued"
             self.put(db, "agents", a)
         if inserted.rowcount and kind != "rule":
@@ -1392,6 +1393,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         "Team token budget reached. Increase the budget before resuming"
                     )
                 a.update(autoWake=True, error=None, complaintMisses=0)
+                a.pop("nativeFailureHold", None)
                 self.put(db, "agents", a)
             if not a["autoWake"]:
                 raise ValueError("Agent is stopped; no message was queued")
@@ -1760,6 +1762,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     for a in agents
                     if a["status"] == "queued"
                     and a["autoWake"]
+                    and not a.get("nativeFailureHold")
                     and not a.get("inFlight")
                     and str(Path(a["cwd"]).resolve()) not in reserved_cwds
                 ),
@@ -2097,6 +2100,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         if not self.connection_current(account_key, connection_id):
             return
         method, p = message.get("method"), message.get("params", {})
+        if consume_native_notification(self, message, account_key, connection_id):
+            return
         if method == "account/login/completed":
             self.accounts.login_completed(account_key, p)
             return
@@ -2163,11 +2168,14 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             self.record_task(db, a, method, p, stale)
             if method.startswith("item/") and stale:
                 return
+            if method.startswith("item/"):
+                advance_native_status(a, method, p)
             a["events"] += len(samples) if samples else 1
             a["lastEvent"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             if method == "turn/started":
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (a["id"] + ":" + p["turn"]["id"],)).fetchone():
                     return
+                advance_native_status(a, method, p)
                 attempt = a.get("startAttempt") or {}
                 if attempt.get("submitted"):
                     observed = attempt.get("turnId") or attempt.get("observedTurnId")
@@ -2295,6 +2303,11 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 completion = a["id"] + ":" + str(turn.get("id"))
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
                     return
+                advance_native_status(a, method, p)
+                if turn.get("status") == "failed":
+                    turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
+                    notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
+                           "error", turnId=turn.get("id"), nativeError=turn["error"])
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
                 # Preserve the terminal outcome with the messages. Failed and interrupted
                 # work must never acquire a successful summary label in chat history.
@@ -2312,6 +2325,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 a["activeTools"] = []
                 a["inFlight"] = False
                 a["error"] = turn.get("error")
+                if turn.get("status") == "failed":
+                    a["nativeFailureHold"] = True
                 a["status"] = ("completed" if turn.get("status") == "completed" else
                                "interrupted" if turn.get("status") == "interrupted" else "failed")
                 if not a["autoWake"]:
@@ -2330,7 +2345,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 if turn.get("status") == "completed" and a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     self.enforce_complaints(db, a, completion)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
-                if pending and a["autoWake"]:
+                if pending and a["autoWake"] and not a.get("nativeFailureHold"):
                     a["status"] = "queued"
                 if a.get("worktreeReady"):
                     a["workspaceOperation"] = "checkpoint"
@@ -2388,6 +2403,10 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         else self.coordination_pool if name in {"orchestration_spawn", "orchestration_send", "orchestration_message", "orchestration_chat_read", "orchestration_title", "orchestration_complaint", "orchestration_task", "orchestration_result"}
                         else self.tool_pool)
             executor.submit(self.dynamic, message, account_key, connection_id)
+            return
+        if message["method"] not in SUPPORTED_REQUESTS:
+            self.reply({"id": message["id"], "error": {"code": -32601,
+                "message": "Codex Studio does not support this server request: " + message["method"]}}, account_key, connection_id)
             return
         with self.lock, self.db() as db:
             if not self.connection_current(account_key, connection_id):
@@ -3655,6 +3674,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     if r["agent"] in {a["id"] for a in agents}
                 ],
                 "rateLimits": self.rate_limits.copy(),
+                "nativeNotices": account_notices(self, db),
                 "rateLimitsByAccount": {k: self.rate_limits_for(k).copy() for k in self.rate_limits_by_account},
                 "events": events,
                 "connected": bool(set(self.servers) - self.offline_accounts) and not self.closed,

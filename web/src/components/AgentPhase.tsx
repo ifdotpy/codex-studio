@@ -34,6 +34,9 @@ export default function AgentPhase({
     running: "Working",
     starting: "Starting",
     acknowledgement: "Waiting for Codex",
+    retrying: "Codex is reconnecting",
+    auth: "Restoring sign-in",
+    error: "Codex reported an error",
     queued: "Queued",
     waiting: "Waiting for agents or commands",
     approval: "Waiting for your answer",
@@ -53,6 +56,9 @@ export default function AgentPhase({
     queued: Clock3,
     waiting: Clock3,
     acknowledgement: Clock3,
+    retrying: LoaderCircle,
+    auth: Clock3,
+    error: CircleAlert,
     approval: Clock3,
     failed: CircleAlert,
     interrupted: CircleAlert,
@@ -64,6 +70,7 @@ export default function AgentPhase({
       className={`agent-phase ${active ? "active" : ""}`}
       role="status"
       data-phase={phase}
+      title={agent.nativeStatus?.message || agent.nativeStatus?.error?.message}
     >
       <Icon size={15} />
       <span>

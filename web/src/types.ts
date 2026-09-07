@@ -1,3 +1,4 @@
+import { nativeErrorView } from "./nativeErrors";
 // The app-server publishes extensible JSON objects for tool and approval payloads.
 export type Json = Record<string, any>;
 export interface Agent extends Json {
@@ -101,6 +102,7 @@ export interface Snapshot {
     events?: Json[];
     rateLimits?: Json;
     rateLimitsByAccount?: Record<string, Json>;
+    nativeNotices?: Json[];
   };
 }
 export interface Message extends Json {
@@ -123,6 +125,9 @@ export const statusLabel = (status: string, phase?: string) =>
         thinking: "Thinking",
         writing: "Writing",
         tool: "Using tools",
+        retrying: "Codex is reconnecting",
+        auth: "Restoring sign-in",
+        error: "Codex reported an error",
       } as Record<string, string>
     )[phase]) ||
   {
@@ -170,7 +175,5 @@ export function agentErrorLabel(agent: Agent): string {
     !agent.inFlight
   )
     return "The previous attempt stopped because Codex was offline.";
-  return typeof agent.error === "string"
-    ? agent.error
-    : JSON.stringify(agent.error);
+  return nativeErrorView(agent.error).message;
 }

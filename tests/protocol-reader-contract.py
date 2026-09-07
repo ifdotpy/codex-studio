@@ -15,6 +15,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_runtime import AppServer, ResponseTimeout
+from codex_native_errors import NativeRpcError
 
 
 class Pipe:
@@ -98,6 +99,18 @@ class ReaderContract(unittest.TestCase):
     def block(self, proc):
         proc.emit({"method": "blocked"})
         self.assertTrue(self.entered.wait(1))
+
+    def test_explicit_rpc_error_keeps_code_and_data(self):
+        server, proc = self.start()
+        pending = server.submit("turn/steer", {})
+        data = {"codexErrorInfo": {"activeTurnNotSteerable": {"turnKind": "compact"}}}
+        proc.emit({"id": pending[0], "error": {"code": -32600, "message": "Cannot steer", "data": data}})
+        with self.assertRaises(NativeRpcError) as result:
+            server.wait(pending, 0.5)
+        self.assertEqual(result.exception.code, -32600)
+        self.assertEqual(result.exception.data, data)
+        self.assertNotIn(pending[0], server.pending)
+        self.assertNotIsInstance(result.exception, ResponseTimeout)
 
     def test_blocked_notification_does_not_block_rpc_clock_or_ordered_request(self):
         server, proc = self.start()

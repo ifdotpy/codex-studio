@@ -1,3 +1,8 @@
+import {
+  NativeError,
+  NativeNotice,
+  NativeAccountNotices,
+} from "./NativeNotice";
 import { ActionIcon, Button, Loader, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
@@ -24,7 +29,6 @@ import { useRemovedMessages } from "./removedMessages";
 import { useConversationScroll } from "./useConversationScroll";
 import {
   statusLabel,
-  agentErrorLabel,
   type Agent,
   type Json,
   type Message,
@@ -496,10 +500,12 @@ export default function Conversation(p: {
       id="conversation"
       className={p.room ? "agent-conversation" : "ai-conversation"}
     >
-      {agent?.error && (
-        <p className="agent-error" role="alert">
-          {agentErrorLabel(agent)}
-        </p>
+      {agent?.error && <NativeError agent={agent} />}
+      {agent && (
+        <NativeAccountNotices
+          notices={p.data.runtime.nativeNotices}
+          accountKey={agent.accountKey || "default"}
+        />
       )}
       <div className="prompt-navigation-slot">
         {!p.room && p.id && (
@@ -552,7 +558,13 @@ export default function Conversation(p: {
             currentTurn={agent?.turnId}
             enabled={managed && !p.room}
             storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
-            renderMessage={renderMessage}
+            renderMessage={(item) =>
+              item.nativeNotice ? (
+                <NativeNotice key={item.id} item={item} />
+              ) : (
+                renderMessage(item)
+              )
+            }
             agentId={managed ? agent?.id : undefined}
             onJump={jumpToPrompt}
           />

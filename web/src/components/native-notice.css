@@ -1,0 +1,47 @@
+.native-error {
+  margin: 8px 20px;
+  padding: 10px 14px;
+  border: 1px solid
+    color-mix(in srgb, var(--mantine-color-red-4) 30%, transparent);
+  border-radius: 10px;
+  color: var(--mantine-color-red-3);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.native-error > small {
+  display: block;
+  margin-top: 4px;
+  color: var(--mantine-color-dimmed);
+}
+.native-error details {
+  margin-top: 6px;
+  color: var(--mantine-color-dimmed);
+}
+.native-error summary,
+.native-notice summary {
+  cursor: pointer;
+}
+.native-error pre,
+.native-notice pre {
+  max-height: 180px;
+  max-width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.native-notice {
+  margin: 12px 0;
+  font-size: 13px;
+  color: var(--mantine-color-dimmed);
+  overflow-wrap: anywhere;
+}
+.native-notice.error {
+  color: var(--mantine-color-red-3);
+}
+
+.native-account-notices {
+  margin: 8px 20px;
+  max-height: 180px;
+  overflow: auto;
+}
