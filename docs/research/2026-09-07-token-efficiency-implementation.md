@@ -74,3 +74,23 @@ an update during an active turn and command. The active command exits normally.
 A new native thread receives the current schemas through its actual `thread/start`
 parameters. The fixture uses separate baseline globals to expose stale tool catalogs.
 The focused deployment review reported no remaining findings.
+
+## Live activation
+
+The guarded update applied to PID 35212 on September 7, 2026, at 22:04:07 UTC.
+Source: `ccfa8b6`. Application took 126 ms. Server connection objects, executor
+pools, and the existing search-index fix retained their identities. No restart,
+command cancellation, or model request was issued by the update.
+
+The installed task view returned 20 of 81 then-current tasks in 4,472 bytes.
+A second status read with the first revision returned `unchanged=true`.
+An ordinary worker subsequently completed a native `orchestration_task` call with
+`apiVersion=2` and a 2,476-byte text response. This confirms delivery through the
+running provider path, not only a direct helper call. It does not measure token
+savings or certify unrelated control-plane incidents.
+
+Private activation and delivery receipts are in the existing state directory under
+`diagnostics/efficiency-20260907T220402Z/`. The installed application resources match
+the updated source files. Existing threads retain their old native schemas and can
+use the documented workspace fallback for new parameters. New threads receive the
+current schemas without changing model, reasoning, or permission settings.
