@@ -34,6 +34,7 @@ from codex_panel import PanelMixin, panel_tools
 from codex_panel_render import render_panel
 from codex_panel_feed import PanelFeedConsumer
 from codex_tool_requests import RequestMixin, request_tools
+from codex_turn_recovery import TurnRecoveryMixin
 
 def uid():
     return str(uuid.uuid4())
@@ -525,7 +526,7 @@ class AppServer:
             self.reader.join(timeout=1)
 
 
-class Runtime(EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
+class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -1637,6 +1638,11 @@ class Runtime(EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMix
         self.check_account_project(a)
         server = self.connect(a.get("accountKey", "default"))
         previous = self.preparations.get(a["id"])
+        if previous and previous.get("connectionId") != self.connection_ids.get(a.get("accountKey", "default")):
+            # Disconnect persistence can fail when storage is unavailable. An old
+            # process's loaded cache and preparation future cannot survive replacement.
+            self.loaded.discard(a["id"])
+            previous = None
         if previous and not previous["future"].done():
             return previous["future"]
         if a["worktree"] and not a["worktreeReady"]:
@@ -1741,6 +1747,7 @@ class Runtime(EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMix
     def dispatch(self):
         with self.lock, self.db() as db:
             agents = self.records(db, "agents")
+            self.queue_turn_recovery(agents)
             reserved_cwds = {
                 str(Path(a["cwd"]).resolve())
                 for a in agents
