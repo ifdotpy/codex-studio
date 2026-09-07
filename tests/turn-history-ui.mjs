@@ -138,6 +138,10 @@ try {
         })
       : route.fulfill({ json: transcript });
   });
+  // This fixture supplies transcript records through the HTTP stream fallback.
+  await page.route("**/api/sync/identity", (r) =>
+    r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+  );
   await page.goto(url);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   const first = page.locator('[data-turn="one"]');

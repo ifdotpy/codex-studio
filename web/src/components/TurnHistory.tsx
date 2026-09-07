@@ -53,6 +53,7 @@ function Turn({
   const [open, setOpen] = useState(
     () => saved<Record<string, boolean>>(storageKey, {})[group.id] ?? latest,
   );
+  const [workOpen, setWorkOpen] = useState(false);
   const updateOpen = (value: boolean) => {
     setOpen(value);
     const prior = saved<Record<string, boolean>>(storageKey, {});
@@ -130,16 +131,36 @@ function Turn({
         </summary>
         <div className="turn-result-body">
           {result ? (
-            render(result)
+            open ? (
+              render(result)
+            ) : (
+              <span data-message={result.id} data-lazy-message hidden />
+            )
           ) : (
             <p className="notice">No final text was recorded.</p>
           )}
           {earlier.length > 0 && (
-            <details className="turn-work">
+            <details
+              className="turn-work"
+              open={workOpen}
+              onToggle={(event) => {
+                if (event.target === event.currentTarget)
+                  setWorkOpen(event.currentTarget.open);
+              }}
+            >
               <summary>
                 Work before this result <span>{earlier.length} records</span>
               </summary>
-              {messages(earlier, render)}
+              {open && workOpen
+                ? messages(earlier, render)
+                : earlier.map((item) => (
+                    <span
+                      key={item.id}
+                      data-message={item.id}
+                      data-lazy-message
+                      hidden
+                    />
+                  ))}
             </details>
           )}
         </div>

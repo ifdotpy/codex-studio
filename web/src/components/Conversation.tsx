@@ -13,7 +13,7 @@ import {
   Square,
   Terminal,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import { useMessages } from "../hooks";
 import { useConversationScroll } from "./useConversationScroll";
@@ -74,23 +74,33 @@ export default function Conversation(p: {
   const input = useRef<HTMLTextAreaElement>(null);
   const jumpToPrompt = (id: string) => {
     const root = scroll.current;
-    const message =
-      root &&
-      Array.from(root.querySelectorAll<HTMLElement>("[data-message]")).find(
-        (element) => element.dataset.message === id,
-      );
-    if (!root || !message) return;
+    if (!root) return;
+    const chat = p.id;
     setFollow(false);
-    let container: HTMLElement | null = message.parentElement;
-    while (container && container !== root) {
-      if (container instanceof HTMLDetailsElement) container.open = true;
-      container = container.parentElement;
-    }
-    root.scrollTop +=
-      message.getBoundingClientRect().top -
-      root.getBoundingClientRect().top -
-      16;
-    remember();
+    const reveal = (attempt = 0) => {
+      if (scroll.current !== root || activeId.current !== chat) return;
+      const target = Array.from(
+        root.querySelectorAll<HTMLElement>("[data-message]"),
+      ).find((element) => element.dataset.message === id);
+      if (!target) return;
+      let container = target.parentElement;
+      while (container && container !== root) {
+        if (container instanceof HTMLDetailsElement) container.open = true;
+        container = container.parentElement;
+      }
+      if (target.hasAttribute("data-lazy-message")) {
+        // A hidden turn can contain a hidden tool group. Reveal each boundary
+        // after its native toggle event mounts the next level of history.
+        if (attempt < 8) requestAnimationFrame(() => reveal(attempt + 1));
+        return;
+      }
+      root.scrollTop +=
+        target.getBoundingClientRect().top -
+        root.getBoundingClientRect().top -
+        16;
+      remember();
+    };
+    reveal();
   };
   const attachmentKey = `codex-agent-attachments:${p.data.stateDir}`;
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>(
@@ -290,6 +300,13 @@ export default function Conversation(p: {
   );
   const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
   const canSend = !!agent?.canSend || !!p.legacy || !p.id;
+  const lastAssistantByTurn = useMemo(() => {
+    const last = new Map<string, string>();
+    for (const item of items)
+      if (item.role === "assistant" && item.turnId)
+        last.set(item.turnId, item.id);
+    return last;
+  }, [items]);
   const renderMessage = (m: Message) => (
     <article
       key={m.id}
@@ -354,12 +371,7 @@ export default function Conversation(p: {
               m.role === "assistant" &&
               m.turnId &&
               m.turnId !== agent?.turnId &&
-              items
-                .filter(
-                  (item) =>
-                    item.role === "assistant" && item.turnId === m.turnId,
-                )
-                .at(-1)?.id === m.id && (
+              lastAssistantByTurn.get(m.turnId) === m.id && (
                 <ActionIcon
                   size="sm"
                   aria-label="Branch after this turn"

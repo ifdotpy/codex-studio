@@ -219,6 +219,7 @@ try {
       count,
     );
     await card.locator(":scope > summary").click();
+    await card.locator(".tool-body").waitFor();
     assert.equal(await card.locator(".tool-read-targets li").count(), count);
     if (item.id === "read-fail") {
       assert.equal(await card.getAttribute("data-tool-status"), "failed");

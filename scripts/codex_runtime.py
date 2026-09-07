@@ -377,6 +377,7 @@ class Runtime(QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, 
                 CREATE INDEX IF NOT EXISTS runtime_item_agent ON runtime_items(agent, created);
                 CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
+                CREATE INDEX IF NOT EXISTS runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running';
                 CREATE TABLE IF NOT EXISTS runtime_monitors (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_monitor_status ON runtime_monitors(json_extract(record,'$.status'),json_extract(record,'$.created'));
                 CREATE TABLE IF NOT EXISTS runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);

@@ -25,13 +25,19 @@ const names: Record<string, string> = {
   "turn/plan/updated": "Plan",
   "turn/diff/updated": "Changes",
 };
+const payloads = new WeakMap<Message, { text: string; value: Json }>();
 function payload(item: Message): Json {
+  const prior = payloads.get(item);
+  if (prior?.text === item.text) return prior.value;
+  let value: Json = {};
   try {
-    const value = JSON.parse(item.text);
-    return value && typeof value === "object" ? value : {};
+    const parsed = JSON.parse(item.text);
+    if (parsed && typeof parsed === "object") value = parsed;
   } catch {
-    return {};
+    /* Plain tool output has no structured fields. */
   }
+  payloads.set(item, { text: item.text, value });
+  return value;
 }
 const toolNames: Record<string, string> = {
   orchestration_spawn: "Create agents",
@@ -174,11 +180,12 @@ function ToolCard({ item }: { item: Message }) {
             ? FileDiff
             : Wrench;
   const label = read.label;
-  const output =
-    p.aggregatedOutput ??
-    textResult(p.contentItems ?? p.result?.content ?? p.result);
   const args = p.arguments;
   const [open, setOpen] = useState(false);
+  const output = open
+    ? (p.aggregatedOutput ??
+      textResult(p.contentItems ?? p.result?.content ?? p.result))
+    : "";
   return (
     <details
       className="tool-card"
@@ -227,87 +234,95 @@ function ToolCard({ item }: { item: Message }) {
           <ChevronRight size={13} className="tool-chevron" />
         </span>
       </summary>
-      <div className="tool-body">
-        {read.targets.length > 0 && (
-          <ul className="tool-read-targets" aria-label="Read targets">
-            {read.targets.map((target, i) => (
-              <li key={`${target.path}:${i}`}>
-                {target.skill ? <BookOpen size={14} /> : <FileText size={14} />}
-                <span>
-                  <small>{target.skill ? "Skill" : "File"}</small>
-                  <code>{target.path || target.name}</code>
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {p.command && (
-          <div className="tool-section">
-            <span>Command</span>
-            <pre className="tool-command">{textResult(p.command)}</pre>
-          </div>
-        )}
-        {p.cwd && <div className="tool-directory">{p.cwd}</div>}
-        {p.query && (
-          <div className="tool-section">
-            <span>Search query</span>
-            <p>{p.query}</p>
-          </div>
-        )}
-        {args != null && (
-          <div className="tool-section">
-            <span>Input</span>
-            {typeof args === "object" && !Array.isArray(args) ? (
-              <dl className="tool-arguments">
-                {Object.entries(args).map(([key, value]) => (
-                  <div key={key}>
-                    <dt>{key}</dt>
-                    <dd>{pretty(value)}</dd>
-                  </div>
-                ))}
-              </dl>
-            ) : (
-              <pre>{pretty(args)}</pre>
-            )}
-          </div>
-        )}
-        {p.changes?.map((change: Json, i: number) => (
-          <div className="tool-section" key={i}>
-            <span>{change.path || "File change"}</span>
-            <pre>{change.diff || pretty(change)}</pre>
-          </div>
-        ))}
-        {output && (
-          <div className="tool-section">
-            <span>Output</span>
-            <pre className="tool-output">{output}</pre>
-          </div>
-        )}
-        {p.exitCode != null && (
-          <div className={`tool-exit ${p.exitCode !== 0 ? "danger" : ""}`}>
-            Exit code {p.exitCode}
-          </div>
-        )}
-        {p.error && (
-          <div className="tool-section danger">
-            <span>Error</span>
-            <pre>{pretty(p.error)}</pre>
-          </div>
-        )}
-        {!Object.keys(p).length && (
-          <pre className="tool-output">{item.text}</pre>
-        )}
-        {!!Object.keys(p).length && (
-          <details className="tool-raw">
-            <summary>
-              <Code size={12} />
-              Raw event
-            </summary>
-            <pre>{pretty(p)}</pre>
-          </details>
-        )}
-        {item.truncated && <p className="notice">This activity is clipped.</p>}
-      </div>
+      {open && (
+        <div className="tool-body">
+          {read.targets.length > 0 && (
+            <ul className="tool-read-targets" aria-label="Read targets">
+              {read.targets.map((target, i) => (
+                <li key={`${target.path}:${i}`}>
+                  {target.skill ? (
+                    <BookOpen size={14} />
+                  ) : (
+                    <FileText size={14} />
+                  )}
+                  <span>
+                    <small>{target.skill ? "Skill" : "File"}</small>
+                    <code>{target.path || target.name}</code>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {p.command && (
+            <div className="tool-section">
+              <span>Command</span>
+              <pre className="tool-command">{textResult(p.command)}</pre>
+            </div>
+          )}
+          {p.cwd && <div className="tool-directory">{p.cwd}</div>}
+          {p.query && (
+            <div className="tool-section">
+              <span>Search query</span>
+              <p>{p.query}</p>
+            </div>
+          )}
+          {args != null && (
+            <div className="tool-section">
+              <span>Input</span>
+              {typeof args === "object" && !Array.isArray(args) ? (
+                <dl className="tool-arguments">
+                  {Object.entries(args).map(([key, value]) => (
+                    <div key={key}>
+                      <dt>{key}</dt>
+                      <dd>{pretty(value)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : (
+                <pre>{pretty(args)}</pre>
+              )}
+            </div>
+          )}
+          {p.changes?.map((change: Json, i: number) => (
+            <div className="tool-section" key={i}>
+              <span>{change.path || "File change"}</span>
+              <pre>{change.diff || pretty(change)}</pre>
+            </div>
+          ))}
+          {output && (
+            <div className="tool-section">
+              <span>Output</span>
+              <pre className="tool-output">{output}</pre>
+            </div>
+          )}
+          {p.exitCode != null && (
+            <div className={`tool-exit ${p.exitCode !== 0 ? "danger" : ""}`}>
+              Exit code {p.exitCode}
+            </div>
+          )}
+          {p.error && (
+            <div className="tool-section danger">
+              <span>Error</span>
+              <pre>{pretty(p.error)}</pre>
+            </div>
+          )}
+          {!Object.keys(p).length && (
+            <pre className="tool-output">{item.text}</pre>
+          )}
+          {!!Object.keys(p).length && (
+            <details className="tool-raw">
+              <summary>
+                <Code size={12} />
+                Raw event
+              </summary>
+              <pre>{pretty(p)}</pre>
+            </details>
+          )}
+          {item.truncated && (
+            <p className="notice">This activity is clipped.</p>
+          )}
+        </div>
+      )}
     </details>
   );
 }
@@ -320,13 +335,19 @@ export default function Activity({ items }: { items: Message[] }) {
     (item) => status(item, payload(item)) === "failed",
   ).length;
   const [open, setOpen] = useState(false);
+  const [visited, setVisited] = useState(false);
   return (
     <details
       className="tool-group"
       data-running={running}
       data-failed={failed}
       open={open}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
+      onToggle={(e) => {
+        if (e.target === e.currentTarget) {
+          setOpen(e.currentTarget.open);
+          if (e.currentTarget.open) setVisited(true);
+        }
+      }}
     >
       <summary>
         {running ? (
@@ -359,9 +380,18 @@ export default function Activity({ items }: { items: Message[] }) {
         </span>
       </summary>
       <div className="activity-list">
-        {items.map((item) => (
-          <ToolCard key={item.id} item={item} />
-        ))}
+        {items.map((item) =>
+          visited ? (
+            <ToolCard key={item.id} item={item} />
+          ) : (
+            <span
+              key={item.id}
+              data-message={item.id}
+              data-lazy-message
+              hidden
+            />
+          ),
+        )}
       </div>
     </details>
   );

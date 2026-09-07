@@ -277,6 +277,12 @@ class Canvas:
         return matches[0]
 
     def transcript(self, key):
+        if self.runtime:
+            # A managed history needs no global snapshot or legacy discovery.
+            with self.runtime.db() as db:
+                managed = db.execute("SELECT 1 FROM runtime_agents WHERE id=?", (key,)).fetchone()
+            if managed:
+                return self.runtime.transcript(key)
         thread = self.thread(key)
         if thread.get("source") == "managed" and self.runtime:
             return self.runtime.transcript(key)
