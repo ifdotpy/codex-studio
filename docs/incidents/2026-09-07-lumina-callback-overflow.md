@@ -134,3 +134,36 @@ A subsequent live check confirms active native turns for `lhs-core`, `lhs-native
 `lhs-ui`, `lhs-service`, `lhs-emulator`, and `lhs-rig`. Each records
 `status=running`, `inFlight=true`, and no error. The lead also remains active.
 This verifies team resumption, not task completion or a queue-delay fix.
+
+## Repeated outage and search index bottleneck, 2026-09-07 20:45 UTC
+
+Lumina stopped again after the earlier successful team resumption. Its log
+records two callback-queue overflows for `item/agentMessage/delta`. The lead and
+all implementation workers were inactive at the initial check. A new Lumina
+connection, PID 54722, was already idle by the administrator snapshots.
+
+The other active account still had 250 callbacks at the first snapshot, mostly
+text fragments. Its dispatcher was inside `Runtime.records`. The second snapshot
+placed that dispatcher in `WorkMixin.index_item`, at the statement
+`DELETE FROM runtime_search WHERE id=?`. SQLite reports a full virtual-table scan
+for this lookup because the FTS `id` column is UNINDEXED. The live index contains
+34,095 records. Each text fragment repeats this scan while holding the runtime
+writer lock. This establishes a concrete admission bottleneck. It does not prove
+that this is the only cause of every earlier outage.
+
+The fix stores FTS row addresses in an ordinary indexed table. Existing documents
+keep their search content. Table creation and backfill use a savepoint; a failed
+migration leaves no partial table. Each subsequent update uses the exact row
+address in the same transaction as the document update.
+
+An isolated 5,000-document regression measures 60,028 SQLite virtual-machine steps
+for the old lookup and 199 for the complete new update. Four focused contracts
+cover migration, rollback, duplicate rejection, update cost, and a guarded live
+cutover. All 34 workspace contracts pass, including search persistence and private
+room access. These measurements are not a live throughput benchmark.
+
+`codex_search_index_update.apply` accepts only the exact known legacy method. It
+uses the existing runtime writer lock, commits the row-address map, then replaces
+only that runtime instance's index method. It does not reload modules, replace
+connections, stop commands, or replay messages. The activation result and follow-up
+observations are required before claiming deployment or incident resolution.
