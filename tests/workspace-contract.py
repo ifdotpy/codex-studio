@@ -265,6 +265,173 @@ class WorkspaceContract(unittest.TestCase):
         with self.runtime.db() as db:
             self.assertEqual(len(self.runtime.records(db, "monitors")), 106)
 
+    def test_workspace_scope_includes_only_the_selected_lead_tree(self):
+        lead = self.lead()
+        other = self.lead("Other chat in the same project")
+        worker = self.worker(lead)
+        child_project = self.root / "child-project"
+        child_project.mkdir()
+        child = self.worker(worker, "Nested worker", cwd=str(child_project))
+        owners = [lead, worker, child, other]
+        for owner in owners:
+            self.runtime.user_task_action(owner["id"], {
+                "action": "create", "title": "User action", "criteria": "Check the result",
+            })
+            self.runtime.complaint(owner["id"], {
+                "action": "submit", "text": "This chat needs a response",
+            }, "complaint-" + owner["id"], user=True)
+            with self.runtime.lock, self.runtime.db() as db:
+                for table, record in [
+                    ("requests", {"status": "pending", "method": "item/tool/requestUserInput"}),
+                    ("monitors", {"status": "failed", "command": "check", "created": 1, "exitCode": 1}),
+                    ("rules", {"name": "Check rule", "kind": "interval", "error": "Check failed"}),
+                    ("annotations", {}),
+                    ("checkpoints", {}),
+                ]:
+                    self.runtime.put(db, table, {
+                        "id": table + "-" + owner["id"], "agent": owner["id"],
+                        "rootId": owner["rootId"], **record,
+                    })
+                self.runtime.put(db, "plans", {
+                    "id": owner["id"], "rootId": owner["rootId"],
+                })
+            self.agent_update(owner, status="failed")
+        for owner in [lead, other]:
+            work = self.work(owner)
+            with self.runtime.lock, self.runtime.db() as db:
+                self.runtime.put(db, "work", {**work, "status": "review"})
+
+        global_state = self.runtime.workspace_snapshot()
+        team_ids = {lead["id"], worker["id"], child["id"]}
+        for selected in [lead, worker, child]:
+            with self.subTest(selected=selected["name"]):
+                scoped = self.runtime.workspace_snapshot(selected["id"])
+                self.assertEqual(scoped["inbox"], [
+                    item for item in global_state["inbox"] if item["agent"] in team_ids
+                ])
+                self.assertEqual({item["kind"] for item in scoped["inbox"]}, {
+                    "request", "complaint", "user_task", "work", "agent", "monitor", "rule",
+                })
+                for field in ["annotations", "rules", "monitors"]:
+                    self.assertEqual({item["agent"] for item in scoped[field]}, team_ids)
+                self.assertEqual({item["id"] for item in scoped["plans"]}, team_ids)
+                self.assertEqual({item["rootId"] for item in scoped["work"]}, {lead["id"]})
+                self.assertEqual({item["agent"] for item in scoped["checkpoints"]}, {selected["id"]})
+        self.assertEqual({item["agent"] for item in global_state["inbox"]}, {
+            owner["id"] for owner in owners
+        })
+        other_state = self.runtime.workspace_snapshot(other["id"])
+        self.assertEqual({item["agent"] for item in other_state["inbox"]}, {other["id"]})
+
+    def test_workspace_background_history_limit_applies_within_the_chat(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        other = self.lead("Other chat")
+        with self.runtime.lock, self.runtime.db() as db:
+            for owner, offset in [(worker, 0), (other, 1000)]:
+                for table in ["tasks", "monitors"]:
+                    for number in range(105):
+                        self.runtime.put(db, table, {
+                            "id": f"{table}-{owner['id']}-{number}", "agent": owner["id"],
+                            "status": "failed", "created": offset + number,
+                            "command": "check", "exitCode": 1,
+                            "tail": "large output", "arguments": {"input": "large"}, "error": "failed",
+                        })
+                    self.runtime.put(db, table, {
+                        "id": table + "-active-" + owner["id"], "agent": owner["id"],
+                        "status": "running", "created": -1,
+                    })
+        scoped = self.runtime.workspace_snapshot(lead["id"])
+        for field in ["tasks", "monitors"]:
+            self.assertEqual(len(scoped[field]), 101)
+            self.assertEqual({item["agent"] for item in scoped[field]}, {worker["id"]})
+            keys = {item["id"] for item in scoped[field]}
+            self.assertIn(field + "-active-" + worker["id"], keys)
+            self.assertIn(f"{field}-{worker['id']}-5", keys)
+            self.assertNotIn(f"{field}-{worker['id']}-4", keys)
+        self.assertEqual(len([item for item in scoped["inbox"] if item["kind"] == "monitor"]), 100)
+        self.assertEqual(scoped["tasksHistoryLimit"], 100)
+        self.assertFalse(any({"tail", "arguments", "error"} & item.keys() for item in scoped["tasks"]))
+        global_state = self.runtime.workspace_snapshot()
+        runtime_state = self.runtime.snapshot()
+        for field in ["tasks", "monitors"]:
+            self.assertEqual(global_state[field], runtime_state[field])
+            self.assertEqual(len(global_state[field]), 102)
+            self.assertEqual({item["agent"] for item in global_state[field] if item["status"] != "running"}, {other["id"]})
+
+    def test_workspace_rejects_unknown_or_deleted_chat_scope(self):
+        with self.assertRaises(ValueError):
+            self.runtime.workspace_snapshot("unknown-chat")
+        lead = self.lead()
+        self.agent_update(lead, deletedAt=time.time())
+        with self.assertRaisesRegex(ValueError, "deleted"):
+            self.runtime.workspace_snapshot(lead["id"])
+
+    def test_reported_changes_are_per_agent_and_restore_the_full_saved_diff(self):
+        lead = self.git_project()
+        other = self.lead("Other chat in the same directory")
+        (self.project / "tracked.txt").write_text("Shared directory change\n")
+        self.assertIn("Shared directory change", self.runtime.changes(other["id"])["diff"])
+        diff = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before\n+" + "x" * 25000 + "\n"
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.item(db, lead["id"], "turn/diff/updated", "output", json.dumps({
+                "threadId": "fixture-thread", "turnId": "owned-turn", "diff": diff,
+            }), "Changes")
+        reported = self.runtime.changes(lead["id"], scope="chat")
+        self.assertEqual(reported["diff"], diff)
+        self.assertEqual(reported["patch"], diff)
+        self.assertEqual(reported["files"], [{"path": "owned.txt", "status": "M"}])
+        self.assertEqual(reported["turnId"], "owned-turn")
+        self.assertIsNotNone(reported["reportedAt"])
+        self.assertFalse(reported["truncated"])
+        empty = self.runtime.changes(other["id"], scope="chat")
+        self.assertEqual(empty, {
+            "scope": "chat", "git": True, "files": [], "diff": "", "patch": "",
+            "truncated": False, "turnId": None, "reportedAt": None,
+        })
+        with self.assertRaisesRegex(ValueError, "Unknown changes scope"):
+            self.runtime.changes(other["id"], scope="unknown")
+
+    def test_reported_changes_decode_git_paths_without_treating_content_as_headers(self):
+        diff = (
+            '--- a/real.txt\n+++ b/real.txt\n@@ -1 +1 @@\n--- a/fake.txt\n+++ b/fake.txt\n'
+            '--- /dev/null\n+++ "b/caf\\303\\251\\tname.txt"\n@@ -0,0 +1 @@\n+new\n'
+            '--- "a/quote\\\"file.txt"\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n'
+            '--- "a/unsupported\\q.txt"\n+++ "b/unsupported\\q.txt"\n'
+        )
+        self.assertEqual(self.runtime.reported_change_files(diff), [
+            {"path": "real.txt", "status": "M"},
+            {"path": "café\tname.txt", "status": "A"},
+            {"path": 'quote"file.txt', "status": "D"},
+        ])
+
+    def test_reported_changes_bound_output_and_reject_missing_full_payload(self):
+        lead = self.lead()
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.item(db, lead["id"], "turn/diff/updated", "output", json.dumps({
+                "turnId": "large-turn", "diff": "x" * 300001,
+            }), "Changes")
+        reported = self.runtime.changes(lead["id"], scope="chat")
+        self.assertEqual(len(reported["diff"]), 300000)
+        self.assertTrue(reported["truncated"])
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute("DELETE FROM runtime_search WHERE id=?", (lead["id"] + ":turn/diff/updated",))
+        with self.assertRaisesRegex(ValueError, "complete reported changes are unavailable"):
+            self.runtime.changes(lead["id"], scope="chat")
+
+    def test_reported_change_annotation_keeps_turn_context_and_retry_identity(self):
+        lead = self.lead()
+        data = {"id": "reported-comment", "path": "file.txt", "line": 2,
+                "text": "Check this line", "turnId": "reported-turn"}
+        note = self.runtime.annotate(lead["id"], data)
+        self.assertEqual(note["turnId"], "reported-turn")
+        self.assertEqual(self.runtime.annotate(lead["id"], data), note)
+        events = self.events(lead, "user")
+        self.assertEqual(len(events), 1)
+        self.assertIn("(reported turn reported-turn)", events[0]["text"])
+        with self.assertRaisesRegex(ValueError, "different content"):
+            self.runtime.annotate(lead["id"], {**data, "turnId": "other-turn"})
+
     def test_atomic_claim_has_one_winner_under_concurrent_workers(self):
         lead = self.lead()
         workers = [self.worker(lead, f"Worker {i}") for i in range(12)]

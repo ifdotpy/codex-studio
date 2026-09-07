@@ -71,7 +71,25 @@ startup files. Codex `command/exec` still applies account environment filters an
 the selected sandbox. The harness does not replace PATH with its own value.
 The monitor loads startup files when its process starts; it does not read a
 temporary native snapshot that can disappear when the agent's turn ends.
-The bottom terminal panel shows only user shells. **Background** lists agent commands and monitors across teams.
+The bottom terminal panel shows only user shells. **Background** lists commands,
+monitors, and other tools for the current chat and its descendants. It has no
+cross-team filter. Its history keeps up to 100 completed records of each type
+within that chat, plus every active record.
+
+Inbox, workspace agent choices, and attention counts use the same lead tree.
+Two chats remain separate even when they use the same account or project folder.
+Switching chats clears open request forms, task details, and pending view responses.
+`/api/workspace?agent=<id>` returns that agent's lead tree. An omitted `agent`
+retains the global API view for explicit administrative callers.
+
+**Changes** shows the selected agent's latest reported native turn diff. It does
+not use the shared working-tree diff. If no report exists, the view is empty.
+The timestamp and turn identify the report; comments retain that turn identity.
+File previews read current files, which can have changed since the report.
+`/api/changes?agent=<id>&scope=chat` supplies this view. The legacy scope-less
+API still reads the working tree for callers that explicitly need that state.
+An older server without the chat scope shows an update notice instead of an
+unscoped diff.
 
 ### Agent display panel
 

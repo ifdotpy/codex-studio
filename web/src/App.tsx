@@ -1,3 +1,4 @@
+import { chatSnapshot } from "./chatScope";
 import {
   ActionIcon,
   Button,
@@ -107,7 +108,13 @@ export default function App() {
     agent = agents.find((a) => a.id === opened),
     room = data?.runtime.rooms?.find((r) => r.id === opened),
     legacy = data?.chats.find((c) => c.id === opened),
-    lead = agents.find((a) => a.id === (agent?.rootId || room?.rootId)),
+    lead = agents.find(
+      (a) =>
+        a.id ===
+        (agent?.rootId ||
+          (agent?.isLead ? agent.id : undefined) ||
+          room?.rootId),
+    ),
     team = agents.filter((a) => a.rootId === lead?.id),
     workers = team.filter((a) => !a.isLead);
   const accounts = useAccounts(data?.stateDir);
@@ -123,15 +130,19 @@ export default function App() {
   const currentAccountKey = useRef(accountKey);
   currentAccountKey.current = accountKey;
   const visibleLimits = limits?.accountKey === accountKey ? limits : null;
+  const chatData = chatSnapshot(data, lead?.id);
   const attentionCount =
-    (data?.runtime.requests.length || 0) +
-    (data?.runtime.userTasks?.filter((task) => task.status === "open").length ||
+    (chatData?.runtime.requests.length || 0) +
+    (chatData?.runtime.userTasks?.filter((task) => task.status === "open")
+      .length || 0) +
+    (chatData?.runtime.complaints.filter(complaintNeedsUserResponse).length ||
       0) +
-    (data?.runtime.complaints.filter(complaintNeedsUserResponse).length || 0) +
-    (data?.runtime.work?.filter((w: Json) => w.status === "review").length ||
-      0) +
-    agents.filter((a) => ["failed", "interrupted"].includes(a.status)).length;
-  const taskCount = backgroundTasks(data).filter(activeTask).length;
+    (chatData?.runtime.work?.filter((w: Json) => w.status === "review")
+      .length || 0) +
+    (chatData?.threads || []).filter((a) =>
+      ["failed", "interrupted"].includes(a.status),
+    ).length;
+  const taskCount = backgroundTasks(chatData).filter(activeTask).length;
   const setDraft = (text: string, id = opened || "new") =>
     setDrafts((old) => {
       const next = { ...old, [id]: text };
@@ -781,11 +792,14 @@ export default function App() {
             >
               {label}
               {section === "user-tasks" &&
-                !!data.runtime.userTasks?.some((t) => t.status === "open") && (
+                !!chatData?.runtime.userTasks?.some(
+                  (t) => t.status === "open",
+                ) && (
                   <span className="attention-count">
                     {
-                      data.runtime.userTasks.filter((t) => t.status === "open")
-                        .length
+                      chatData!.runtime.userTasks!.filter(
+                        (t) => t.status === "open",
+                      ).length
                     }
                   </span>
                 )}
@@ -878,19 +892,21 @@ export default function App() {
         ))}
       <TerminalDock data={data} agent={agent || lead} notify={notify} />
       <Workspace
+        key={`workspace:${lead?.id || "none"}`}
         initialSection={workspaceSection}
         opened={workspaceOpen}
         onClose={() => setWorkspaceOpen(false)}
         agent={agent || lead}
-        data={data}
+        data={chatData!}
         onSelect={open}
         refresh={refresh}
         notify={notify}
       />
       <BackgroundTasks
+        key={`background:${lead?.id || "none"}`}
         opened={tasksOpen}
         close={() => setTasksOpen(false)}
-        data={data}
+        data={chatData!}
         leadId={lead?.id}
         openAgent={open}
         refresh={refresh}

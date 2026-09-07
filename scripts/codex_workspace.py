@@ -1,11 +1,13 @@
 """Workspace files, checkpoints, conversation forks, and capability discovery."""
 
 import base64
+import codecs
 import hashlib
 import json
 import mimetypes
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import time
@@ -203,7 +205,86 @@ class WorkspaceMixin:
             )
         return result.stdout
 
-    def changes(self, agent_id):
+    @staticmethod
+    def reported_change_files(patch):
+        def header_path(value):
+            if value.startswith('"'):
+                if not re.fullmatch(r'"(?:[^"\\]|\\(?:[abfnrtv\\"]|[0-3][0-7]{2}))*"', value):
+                    return None
+                try:
+                    return codecs.escape_decode(value[1:-1].encode("utf-8"))[0].decode("utf-8")
+                except (ValueError, UnicodeError):
+                    return None
+            return value.split("\t", 1)[0] or None
+
+        files = {}
+        previous = None
+        old_lines = new_lines = 0
+        for line in patch.splitlines():
+            hunk = re.match(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+            if hunk:
+                old_lines = int(hunk[1] or 1)
+                new_lines = int(hunk[2] or 1)
+                previous = None
+                continue
+            if old_lines or new_lines:
+                if line.startswith(("-", " ")):
+                    old_lines = max(0, old_lines - 1)
+                if line.startswith(("+", " ")):
+                    new_lines = max(0, new_lines - 1)
+                continue
+            if line.startswith("--- "):
+                previous = header_path(line[4:])
+            elif line.startswith("+++ ") and previous is not None:
+                current = header_path(line[4:])
+                if current is not None:
+                    path = previous if current == "/dev/null" else current
+                    prefix = "a/" if current == "/dev/null" else "b/"
+                    if path.startswith(prefix):
+                        path = path[2:]
+                    if path and path != "/dev/null":
+                        status = "D" if current == "/dev/null" else "A" if previous == "/dev/null" else "M"
+                        files[path] = {"path": path, "status": status}
+                previous = None
+            else:
+                previous = None
+        return list(files.values())
+
+    def reported_changes(self, agent_id):
+        with self.lock, self.db() as db:
+            self.checked_actor(db, agent_id)
+            row = db.execute(
+                "SELECT record FROM runtime_items WHERE id=? AND agent=?",
+                (agent_id + ":turn/diff/updated", agent_id),
+            ).fetchone()
+            record = json.loads(row[0]) if row else None
+            result = {
+                "scope": "chat", "git": True, "files": [], "diff": "", "patch": "",
+                "truncated": False, "turnId": None, "reportedAt": None,
+            }
+            if record is None or record.get("afterRestore"):
+                return result
+            full = db.execute("SELECT body FROM runtime_search WHERE id=?", (record["id"],)).fetchone()
+            if full is None and record.get("truncated"):
+                raise ValueError("The complete reported changes are unavailable")
+            try:
+                payload = json.loads(full[0] if full else record["text"])
+                patch = payload["diff"]
+                if not isinstance(patch, str):
+                    raise ValueError("Invalid diff")
+            except (ValueError, TypeError, KeyError):
+                raise ValueError("The recorded changes are invalid") from None
+            result.update(
+                files=self.reported_change_files(patch), diff=patch[:300000], patch=patch[:300000],
+                truncated=len(patch) > 300000, turnId=payload.get("turnId"), reportedAt=record.get("at"),
+            )
+            return result
+
+    def changes(self, agent_id, scope=None):
+        if scope == "chat":
+            return self.reported_changes(agent_id)
+        if scope is not None:
+            raise ValueError("Unknown changes scope")
         a = self.checked_actor_in_own_db(agent_id)
         try:
             self.git(a, ["rev-parse", "--show-toplevel"])
@@ -686,9 +767,13 @@ class WorkspaceMixin:
 
     def workspace_snapshot(self, key=None):
         with self.lock, self.db() as db:
-            agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
+            root = self.checked_actor(db, key)["rootId"] if key else None
+            agents = [
+                a for a in self.records(db, "agents")
+                if not a.get("deletedAt") and (root is None or a["rootId"] == root)
+            ]
             ids = {a["id"] for a in agents}
-            root = self.agent(key, db)["rootId"] if key else None
+            monitors = self.recent_monitors(db, root)
             inbox = []
             for r in self.records(db, "requests"):
                 if r["status"] == "pending" and r["agent"] in ids:
@@ -703,7 +788,7 @@ class WorkspaceMixin:
                         }
                     )
             for c in self.complaint_summaries(db):
-                if c.get("needsResponse"):
+                if c.get("needsResponse") and (root is None or c["leadId"] in ids):
                     inbox.append(
                         {
                             "id": c["id"],
@@ -715,7 +800,7 @@ class WorkspaceMixin:
                         }
                     )
             for task in self.user_tasks(db=db)["items"]:
-                if task["status"] == "open":
+                if task["status"] == "open" and task["agent"] in ids:
                     inbox.append(
                         {
                             "id": task["id"],
@@ -750,7 +835,7 @@ class WorkspaceMixin:
                             "text": str(a.get("error") or a["status"]),
                         }
                     )
-            for m in self.recent_monitors(db):
+            for m in monitors:
                 if (
                     m["agent"] in ids
                     and m["status"] in {"failed", "lost"}
@@ -804,6 +889,9 @@ class WorkspaceMixin:
                     if v["agent"] in ids and (not root or v["rootId"] == root)
                 ],
                 "inbox": inbox,
+                "tasks": self.recent_tasks(db, root),
+                "tasksHistoryLimit": 100,
+                "monitors": [m for m in monitors if m["agent"] in ids],
             }
 
     def monitor_log(self, key):
@@ -871,9 +959,33 @@ class WorkspaceMixin:
         ):
             raise ValueError("A workspace operation is active in this directory")
 
-    def recent_monitors(self, db):
+    def recent_tasks(self, db, root=None):
+        scope = "" if root is None else " AND json_extract(a.record,'$.rootId')=?"
+        params = () if root is None else (root, root)
         rows = db.execute(
-            """SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval')
-          UNION ALL SELECT record FROM (SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') NOT IN ('running','starting','approval') ORDER BY json_extract(record,'$.created') DESC LIMIT 100)"""
+            f"""SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
+                {scope} AND json_extract(t.record,'$.status')='running'
+                UNION ALL SELECT record FROM (SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
+                {scope} AND json_extract(t.record,'$.status')!='running'
+                ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)""",
+            params,
+        ).fetchall()
+        return [
+            {k: v for k, v in json.loads(row[0]).items() if k not in {"tail", "arguments", "error"}}
+            for row in rows
+        ]
+
+    def recent_monitors(self, db, root=None):
+        scope = "" if root is None else """ AND json_extract(record,'$.agent') IN (
+            SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?
+            AND json_extract(record,'$.deletedAt') IS NULL)"""
+        params = () if root is None else (root, root)
+        rows = db.execute(
+            f"""SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') {scope}
+          UNION ALL SELECT record FROM (SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') NOT IN ('running','starting','approval') {scope}
+          ORDER BY json_extract(record,'$.created') DESC LIMIT 100)""",
+            params,
         ).fetchall()
         return [json.loads(row[0]) for row in rows]

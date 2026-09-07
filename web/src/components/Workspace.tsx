@@ -77,8 +77,9 @@ const descriptions: Record<string, string> = {
   work: "Assign work, track dependencies, and accept results.",
   "user-tasks":
     "Tasks agents need you to complete. Each result goes back to its agent for review.",
-  changes: "Inspect the current files and send precise comments.",
-  inbox: "Questions, approvals, and problems across all teams.",
+  changes:
+    "Latest changes reported by this agent. File previews show the current files.",
+  inbox: "Questions, approvals, and problems in this chat.",
   search: "Find messages, work, plans, and agent conversations.",
   plan: "A shared plan for this agent. Saved edits remain separate from its reported plan.",
   checkpoints:
@@ -176,6 +177,8 @@ export function Workspace(props: Props) {
   const [notifications, setNotifications] = useState(() =>
     window.codexDesktop ? false : saved("workspace-notifications", false),
   );
+  const dataRef = useRef(props.data);
+  dataRef.current = props.data;
   const refreshRef = useRef(props.refresh),
     notifyRef = useRef(props.notify);
   refreshRef.current = props.refresh;
@@ -259,9 +262,13 @@ export function Workspace(props: Props) {
       seen: Set<string> | null = null;
     const check = async () => {
       try {
-        const result = await api("/api/workspace");
+        if (!props.agent) return;
+        const result = await api(endpoint("workspace", props.agent));
         if (!active) return;
-        const items: Json[] = result.inbox || [];
+        const ids = new Set(dataRef.current.threads.map((agent) => agent.id));
+        const items: Json[] = (result.inbox || []).filter((item: Json) =>
+          ids.has(item.agent),
+        );
         const next = new Set(items.map((item) => `${item.kind}:${item.id}`));
         const added = seen
           ? items.filter((item) => !seen!.has(`${item.kind}:${item.id}`))
@@ -302,7 +309,7 @@ export function Workspace(props: Props) {
       active = false;
       clearInterval(timer);
     };
-  }, [notifications]);
+  }, [notifications, props.agent?.rootId, props.agent?.id]);
   const selected = props.data.threads.find(
     (a) => a.id === agentId && a.source === "managed",
   );
@@ -925,50 +932,53 @@ function Work(c: Context) {
 }
 
 function Changes(c: Context) {
-  const state = useResource(endpoint("changes", c.selected), c.revision),
+  const state = useResource(
+      `${endpoint("changes", c.selected)}&scope=chat`,
+      c.revision,
+    ),
     comments = useResource(endpoint("workspace", c.selected), c.revision);
   const [path, setPath] = useState(""),
     [comment, setComment] = useState<Json | null>(null),
     [saving, setSaving] = useState(false);
-  const files: Json[] = state.data?.files || [];
+  const report = state.data?.scope === "chat" ? state.data : null;
+  const files: Json[] = report?.files || [];
+  const annotations: Json[] = (comments.data?.annotations || []).filter(
+    (entry: Json) => entry.agent === c.selected?.id,
+  );
   let line = 0,
-    current = "";
-  const rows = String(state.data?.diff || "")
+    current = "",
+    inHunk = false;
+  const rows = String(report?.diff || "")
     .split("\n")
     .map((text) => {
-      if (text.startsWith("+++ b/")) current = text.slice(6);
+      if (text.startsWith("diff --git ")) {
+        current = "";
+        inHunk = false;
+      }
+      if (!inHunk && text.startsWith("+++ b/")) current = text.slice(6);
       const hunk = text.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
-      if (hunk) line = Number(hunk[1]) - 1;
-      else if (
-        !text.startsWith("-") &&
-        !text.startsWith("diff ") &&
-        !text.startsWith("index ") &&
-        !text.startsWith("+++")
-      )
-        line++;
-      return {
-        text,
-        line,
-        path: current,
-        commentable:
-          !!current &&
-          !/^(diff |index |---|\+\+\+|@@|\\)/.test(text) &&
-          !text.startsWith("-"),
-      };
+      if (hunk) {
+        line = Number(hunk[1]) - 1;
+        inHunk = true;
+      }
+      const newLine =
+        inHunk && !hunk && (text.startsWith("+") || text.startsWith(" "));
+      if (newLine) line++;
+      return { text, line, path: current, commentable: !!current && newLine };
     });
   return (
     <>
       <ResourceState state={state} />
-      {state.data?.git === false ? (
-        <Empty>
-          {state.data.error || "This workspace is not a Git repository."}
-        </Empty>
+      {state.data && !report ? (
+        <Empty>Chat changes require the updated server.</Empty>
+      ) : report?.git === false ? (
+        <Empty>{report.error || "Could not read reported changes."}</Empty>
       ) : (
         <>
           <div className="workspace-toolbar">
             <span className="workspace-muted">
-              {files.length} changed files ·{" "}
-              <code>{state.data?.revision?.slice(0, 12)}</code>
+              {files.length} reported files
+              {report?.reportedAt && <> · {date(report.reportedAt)}</>}
             </span>
             <TextInput
               aria-label="Open a file"
@@ -990,6 +1000,11 @@ function Changes(c: Context) {
               }}
             />
           </div>
+          {report?.truncated && (
+            <p className="workspace-muted">
+              Showing the first 300,000 characters of the reported diff.
+            </p>
+          )}
           <div className="workspace-file-list">
             {files.map((file) => (
               <Button
@@ -1004,7 +1019,7 @@ function Changes(c: Context) {
               </Button>
             ))}
           </div>
-          {state.data?.diff ? (
+          {report?.diff ? (
             <div
               className="workspace-diff"
               role="region"
@@ -1018,7 +1033,11 @@ function Changes(c: Context) {
                   <button
                     type="button"
                     disabled={!row.commentable}
-                    aria-label={`Comment on ${row.path} line ${row.line}`}
+                    aria-label={
+                      row.commentable
+                        ? `Comment on ${row.path} line ${row.line}`
+                        : undefined
+                    }
                     title={
                       row.commentable
                         ? `Comment on line ${row.line}`
@@ -1028,6 +1047,7 @@ function Changes(c: Context) {
                       setComment({
                         path: row.path,
                         line: row.line,
+                        turnId: report?.turnId,
                         text: "",
                         id: crypto.randomUUID(),
                       })
@@ -1040,7 +1060,8 @@ function Changes(c: Context) {
               ))}
             </div>
           ) : (
-            !state.loading && (
+            !state.loading &&
+            !state.error && (
               <Empty>
                 {files.length
                   ? "Select a file to inspect its contents. No tracked text diff is available."
@@ -1050,10 +1071,10 @@ function Changes(c: Context) {
           )}
         </>
       )}
-      {!!comments.data?.annotations?.length && (
+      {!!annotations.length && (
         <section className="workspace-result">
           <h3>Comments sent to this agent</h3>
-          {comments.data.annotations.map((entry: Json) => (
+          {annotations.map((entry: Json) => (
             <article key={entry.id}>
               <small>
                 {entry.path}:{entry.line}
@@ -1104,8 +1125,14 @@ function Changes(c: Context) {
 }
 
 function Attention(c: Context) {
-  const state = useResource("/api/workspace", c.revision);
-  const items: Json[] = state.data?.inbox || [];
+  const state = useResource(
+    c.agent ? endpoint("workspace", c.agent) : null,
+    c.revision,
+  );
+  const ids = new Set(c.data.threads.map((agent) => agent.id));
+  const items: Json[] = (state.data?.inbox || []).filter((item: Json) =>
+    ids.has(item.agent),
+  );
   const groups = [
     ...new Set(
       items

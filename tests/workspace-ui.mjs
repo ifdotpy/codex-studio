@@ -34,7 +34,7 @@ for (const args of [
   execFileSync("git", args, { cwd: root });
 await writeFile(
   join(root, "report.md"),
-  "# Release evidence\nVerified report for orchestration.\n",
+  "# Release evidence\nVerified report for orchestration.\n++ b/other-chat.txt\n",
 );
 const proc = spawn(
   "python3",
@@ -286,8 +286,44 @@ try {
       !(await get("/api/resources")).state.claims["fixture-build-slot"],
     "resource released",
   );
+  const changedLead = (await get("/api/state")).runtime.agents.find(
+    (agent) => agent.id === lead.id,
+  );
+  assert.ok(changedLead.threadId, "fixture lead has a native thread");
+  proc.stdin.write(
+    JSON.stringify({
+      method: "turn/diff/updated",
+      params: {
+        threadId: changedLead.threadId,
+        turnId: changedLead.turnId,
+        diff: execFileSync("git", ["diff", "HEAD", "--no-color"], {
+          cwd: root,
+          encoding: "utf8",
+        }),
+      },
+    }) + "\n",
+  );
+  await poll(
+    async () =>
+      (
+        await get("/api/changes?agent=" + lead.id + "&scope=chat")
+      ).diff?.includes("Verified report"),
+    "chat diff recorded",
+  );
   await section("Changes");
   await drawer.getByRole("region", { name: "Changes diff" }).waitFor();
+  assert.equal(
+    await drawer
+      .getByRole("button", {
+        name: "Comment on other-chat.txt line 3",
+        exact: true,
+      })
+      .count(),
+    0,
+  );
+  await drawer
+    .getByRole("button", { name: "Comment on report.md line 3", exact: true })
+    .waitFor();
   await drawer
     .getByRole("button", { name: "Comment on report.md line 2", exact: true })
     .click();

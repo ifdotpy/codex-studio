@@ -558,7 +558,7 @@ def make_server(canvas, port=0):
                     if path.path == "/api/queue":
                         return self.send(runtime.queue_action(agent))
                     if path.path == "/api/changes":
-                        return self.send(runtime.changes(agent))
+                        return self.send(runtime.changes(agent, scope=q.get("scope")))
                     if path.path == "/api/plan":
                         return self.send(runtime.plan_action(agent))
                     if path.path == "/api/search/item":

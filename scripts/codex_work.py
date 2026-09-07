@@ -570,12 +570,17 @@ class WorkMixin:
                 "text": text_field(data.get("text"), "a comment"),
                 "created": time.time(),
             }
+            turn_id = data.get("turnId")
+            if turn_id is not None:
+                note["turnId"] = text_field(turn_id, "a turn ID", 200)
             self.put(db, "annotations", note)
             self.enqueue(
                 db,
                 a,
                 "user",
-                f"Review comment at {path}:{line}\n{note['text']}",
+                f"Review comment at {path}:{line}"
+                + (f" (reported turn {note['turnId']})" if turn_id is not None else "")
+                + f"\n{note['text']}",
                 "annotation:" + note["id"],
             )
             return self.save_receipt(db, data.get("id"), signature, note)

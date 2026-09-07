@@ -121,7 +121,6 @@ export default function BackgroundTasks({
   notify: (s: string) => void;
 }) {
   const [tab, setTab] = useState("active"),
-    [scope, setScope] = useState("all"),
     [kind, setKind] = useState("all"),
     [query, setQuery] = useState(""),
     [selected, setSelected] = useState<string | null>(null),
@@ -132,12 +131,56 @@ export default function BackgroundTasks({
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [opened]);
+  const [history, setHistory] = useState<Json | null>(null);
+  const [historyError, setHistoryError] = useState("");
+  useEffect(() => {
+    if (!opened || !leadId) return;
+    let active = true;
+    let loading = false;
+    const load = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const result = await api(
+          `/api/workspace?agent=${encodeURIComponent(leadId)}`,
+        );
+        if (active) {
+          setHistory(result);
+          setHistoryError("");
+        }
+      } catch (error) {
+        if (active) setHistoryError(errorText(error));
+      } finally {
+        loading = false;
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [opened, leadId]);
   const agents = data.threads,
-    tasks = backgroundTasks(data),
+    // Keep live records from the snapshot; scoped history avoids other chats
+    // consuming this conversation's history limit.
+    tasks = [
+      ...new Map(
+        [
+          ...(history?.monitors || []).map(
+            (monitor: Json) =>
+              ({ ...monitor, kind: "monitor" }) as BackgroundTask,
+          ),
+          ...(history?.tasks || []),
+          ...backgroundTasks(data),
+        ].map((task: BackgroundTask) => [task.id, task]),
+      ).values(),
+    ],
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
     (t) =>
-      (scope !== "team" || !leadId || owner(t.agent)?.rootId === leadId) &&
+      !!leadId &&
+      (t.agent === leadId || owner(t.agent)?.rootId === leadId) &&
       (kind === "all" || t.kind === kind),
   );
   const active = scoped.filter(activeTask).length;
@@ -180,6 +223,9 @@ export default function BackgroundTasks({
         header: "tasks-drawer-header",
       }}
     >
+      {historyError && (
+        <p role="alert">Could not refresh chat history: {historyError}</p>
+      )}
       <div className="tasks-toolbar">
         <SegmentedControl
           aria-label="Task status"
@@ -197,20 +243,6 @@ export default function BackgroundTasks({
           size="xs"
         />
         <div className="tasks-filters">
-          <NativeSelect
-            aria-label="Task team"
-            value={scope}
-            onChange={(e) => {
-              setScope(e.target.value);
-              setSelected(null);
-              setMobileDetail(false);
-            }}
-            data={[
-              { value: "all", label: "All teams" },
-              ...(leadId ? [{ value: "team", label: "This team" }] : []),
-            ]}
-            size="xs"
-          />
           <NativeSelect
             aria-label="Task type"
             value={kind}

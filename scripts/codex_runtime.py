@@ -3097,23 +3097,10 @@ class Runtime(AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, 
                 a.update(kind="agent", source="managed", canSend=True, launcherAlive=not self.closed,
                          wave="Team: " + next((r["name"] for r in agents if r["id"] == a["rootId"]), "Team"))
             events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
-            task_rows = db.execute("""SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
-                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
-                AND json_extract(t.record,'$.status')='running'
-                UNION ALL SELECT record FROM (SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
-                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
-                AND json_extract(t.record,'$.status')!='running' ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)""").fetchall()
             return {
                 "agents": agents,
                 "projects": self.projects(db=db)["items"],
-                "tasks": [
-                    {
-                        k: v
-                        for k, v in json.loads(r[0]).items()
-                        if k not in {"tail", "arguments", "error"}
-                    }
-                    for r in task_rows
-                ],
+                "tasks": self.recent_tasks(db),
                 "userTasks": self.user_tasks(db=db)["items"],
                 "tasksHistoryLimit": 100,
                 "monitors": [

@@ -137,8 +137,8 @@ try {
     0,
   );
   await poll(
-    async () => (await drawer.locator("[data-task]").count()) === 4,
-    "all tasks from both teams",
+    async () => (await drawer.locator("[data-task]").count()) === 3,
+    "only tasks from the selected chat",
   );
   const nativeRow = drawer
     .locator("[data-task]")
@@ -178,7 +178,13 @@ try {
     "follow resumes at latest output",
   );
 
-  await drawer.getByLabel("Task team").selectOption("team");
+  assert.equal(await drawer.getByLabel("Task team").count(), 0);
+  assert.equal(
+    await drawer
+      .getByText("watch-fixture --deploy production", { exact: true })
+      .count(),
+    0,
+  );
   assert.equal(await drawer.locator("[data-task]").count(), 3);
   await drawer.getByLabel("Task type").selectOption("tool");
   assert.equal(await drawer.locator("[data-task]").count(), 1);
@@ -287,7 +293,28 @@ try {
       .count(),
     0,
   );
-  await drawer.getByLabel("Task team").selectOption("all");
+  await page.keyboard.press("Escape");
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.locator("#tasks-toggle").click();
+  await drawer.waitFor();
+  await poll(
+    async () => (await drawer.locator("[data-task]").count()) === 1,
+    "other chat has its own monitor",
+  );
+  assert.equal(
+    await drawer
+      .locator("[data-task]")
+      .filter({ hasText: "npm run build" })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await drawer
+      .locator(".task-output")
+      .filter({ hasText: "type check failed" })
+      .count(),
+    0,
+  );
   await drawer.getByText("Active", { exact: true }).click();
   await drawer.locator("[data-task]").filter({ hasText: "production" }).click();
   await drawer
@@ -318,7 +345,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Background UI: PASS (multi-team filters, live output after turn, failure, approval, cancellation, history, 320px/390px/1440px, focus, no overflow)",
+    "Background UI: PASS (chat isolation, live output after turn, failure, approval, cancellation, history, 320px/390px/1440px, focus, no overflow)",
   );
   console.log(root);
 } finally {
