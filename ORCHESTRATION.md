@@ -115,10 +115,11 @@ unscoped diff.
 
 ### Agent display panel
 
-New leads and workers receive the bundled
-`.agents/skills/codex-workspace/references/panel.md` in their developer instructions,
-regardless of the project directory. The desktop package includes this skill and
-its examples. The application does not install it into vanilla Codex CLI profiles.
+New leads and workers receive the panel height and validation requirements in
+their developer instructions. Before first use, they read the bundled panel guide
+with `orchestration_context` and `topic=panel`, regardless of the project directory.
+The desktop package includes the guide and its examples. The application does not
+install this skill into vanilla Codex CLI profiles.
 
 Each managed conversation has a fixed 150px panel between the transcript and
 composer. The calling agent controls it through `orchestration_panel`:
@@ -568,3 +569,59 @@ Cost estimates come from the installed CodexBar CLI.
 The display shows today and the last 30 days across local Codex logs. These are
 API-rate estimates, not ChatGPT subscription charges. Missing prices or unknown
 history coverage remain visible. The backend caches scans for 15 minutes.
+
+## Model context and output budgets
+
+These rules apply at the managed dynamic-tool boundary. The HTTP workspace views,
+task evidence, chat messages, and execution receipts remain in SQLite. Native
+Codex tools such as `exec_command` retain Codex's own output controls.
+
+- `orchestration_task action=list` returns one `items` array of brief records.
+  Filter with `owner` and `state`. `limit` defaults to 20 and cannot exceed 50.
+  Continue with `nextCursor`. A changed list rejects an old cursor explicitly.
+  `action=get` reads one task's description, dependencies, and latest evidence.
+  `action=history` pages its results and decisions. Mutations return brief receipts;
+  the operation receipt retains the complete task and its evidence.
+- `orchestration_peers` returns a paged team directory and readable room identities.
+  `scope=all` discovers other teams without their private chat contents.
+  `orchestration_status` returns compact team and monitor states. Pass the returned
+  `revision` as `since_revision` to receive changes and removals. The server retains
+  eight snapshots per caller. An expired revision returns a full compact snapshot
+  with `reset=true`. Read profiles, schemas, and monitor details with
+  `orchestration_context`. Directory reads no longer attach message or log tails.
+- When a managed tool's encoded text exceeds 16,000 UTF-8 bytes, the model receives
+  an excerpt, outcome, operation identities, and `outputRef`. The full response is
+  saved before this projection. `orchestration_read` accepts `output_ref`, a Unicode
+  character `offset`, and an optional `contains` search. Each page contains at most
+  3,000 UTF-8 bytes. Only the original caller can read that reference. A missing or
+  pending result does not authorize a mutation retry. Images and immutable time
+  metadata remain in the response. Completed UI tool entries recover the saved
+  text within the existing transcript allowance.
+- `orchestration_message importance=progress` opts routine progress into a one-second
+  batch window, checked by the scheduler. The model receives the latest such update
+  per sender, room, and `progress_key` in that batch. `progress_version` must
+  increase for each update of that task or topic. Missing or ambiguous revisions
+  retain every update. Earlier updates remain in chat history with
+  their original message and event IDs. Questions, blockers, results, unclassified
+  messages, and user input bypass this delay. Urgent input takes priority over a
+  page of pending progress. Completion notifications remain distinct events.
+- Shared plans and required complaints carry content versions. Only confirmed
+  event delivery establishes a known version. An unchanged complaint retains its
+  required-response reminder and ID. The server supplies full context again after
+  thread replacement or observed compaction. Clearing a plan invalidates its older
+  text. `orchestration_context` reads the current full context on demand.
+- `orchestration_monitor wake_on=failure` retains successful results in the UI and
+  suppresses their model notification. Failures still notify the owner. Use this
+  option only if success requires no further agent work. The default, `exit`, still
+  notifies on every exit. For live counters and resource displays, use a structured
+  panel and `orchestration_panel_feed`; script updates require no model turns.
+  Panel writes still require layout validation and a rendered image.
+
+Existing native threads keep their original tool schemas. They can use new fields
+through `orchestration_send` with `agent_id="workspace"` and a JSON `text` value:
+`{"tool":"orchestration_task","arguments":{"action":"get","task_id":"…"}}`.
+This route also supports `orchestration_read`, `orchestration_context`,
+`orchestration_status`, `orchestration_peers`, `orchestration_message`, and
+`orchestration_monitor`. It preserves the caller and original request identity.
+New threads expose the current schemas directly. No reasoning, Fast mode, model,
+account admission, or permission settings change as part of these budgets.

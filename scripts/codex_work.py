@@ -22,12 +22,14 @@ def work_tools(tool, text):
     return [
         tool(
             "orchestration_task",
-            "Manage your team's work board. Claim ready work atomically. Submit evidence for review; only the lead can accept it. Dependencies unblock only after acceptance.",
+            "Manage your team's work board. list returns brief items with nextCursor; get reads one task; history pages older evidence. Mutations return brief receipts. Claim ready work atomically. Submit evidence for review; only the lead can accept it. Dependencies unblock only after acceptance.",
             {
                 "action": {
                     "type": "string",
                     "enum": [
                         "list",
+                        "get",
+                        "history",
                         "create",
                         "claim",
                         "update",
@@ -37,6 +39,9 @@ def work_tools(tool, text):
                     ],
                 },
                 "task_id": text,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "cursor": text,
+                "state": text,
                 "title": text,
                 "description": text,
                 "owner": text,

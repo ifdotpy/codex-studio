@@ -25,6 +25,7 @@ from codex_analytics_history import AnalyticsHistoryMixin
 from codex_shell import monitor_command
 from codex_time import append_message_clocks, message_clock, stamp_tool_result
 from codex_work import WorkMixin, work_tools
+from codex_efficiency import EfficiencyMixin, efficiency_tools
 from codex_workspace import WorkspaceMixin
 from codex_rules import RulesMixin, rule_tools
 from codex_user_tasks import UserTasksMixin, user_task_tools
@@ -72,12 +73,14 @@ TOOLS = [
           "complaint_id": TEXT, "text": TEXT,
           "status": {"type": "string", "enum": ["in_progress", "resolved", "declined"]}}, ["action"]),
     tool("orchestration_peers", "List all managed agents and your readable chat rooms. "
-         "Use agent ids to contact peers, including other teams. Do not poll.", {}),
+         "Returns a paged team directory without histories. scope=all discovers other teams. Do not poll.",
+         {"scope": {"type": "string", "enum": ["team", "all"]},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_message", "Send a message without ending your turn. "
          "target is an agent id, parent, lead, broadcast (your team), or all (all teams). "
          "Private chats are visible to their participants and the user. Messages wake idle "
-         "recipients but never resume stopped agents. Do not send acknowledgement loops.",
-         {"target": TEXT, "text": TEXT}, ["target", "text"]),
+         "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Do not send acknowledgement loops.",
+         {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}}, ["target", "text"]),
     tool("orchestration_chat_read", "Read messages in a chat you belong to. "
          "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
          {"room_id": TEXT, "before": {"type": "integer", "minimum": 1}}, ["room_id"]),
@@ -102,13 +105,13 @@ TOOLS = [
     tool("orchestration_send", "Send a follow-up to one of your descendants. It queues "
          "behind an active turn. Completion returns to its parent automatically.",
          {"agent_id": TEXT, "text": TEXT}, ["agent_id", "text"]),
-    tool("orchestration_status", "Read team status, budgets and pending command watches. "
-         "Use for a decision, not repeated waiting: completion events arrive automatically.", {}),
+    tool("orchestration_status", "Read compact team and monitor states. since_revision returns only changes and removals. "
+         "Use for a decision, not repeated waiting: completion events arrive automatically.", {"since_revision": TEXT}),
     tool("orchestration_monitor", "Run a command under this thread's sandbox and wait "
          "outside the model. Returns a watch id immediately. At process exit you receive "
          "one event with exit code, bounded output and log path. Finish your turn while waiting. "
-         "The thread's approval policy applies; a required approval appears in the canvas.",
-         {"command": TEXT, "timeout_ms": {"type": "integer", "minimum": 1000,
+         "wake_on=failure skips successful exit notifications; failures still wake you. Use this only when success requires no further agent work. The thread's approval policy applies; a required approval appears in the canvas.",
+         {"command": TEXT, "wake_on": {"type": "string", "enum": ["exit", "failure"]}, "timeout_ms": {"type": "integer", "minimum": 1000,
                                            "maximum": 86400000}}, ["command"]),
     tool("orchestration_cancel_monitor", "Cancel one of your command watches.",
          {"monitor_id": TEXT}, ["monitor_id"]),
@@ -121,7 +124,7 @@ def voice_tools():
                  {"text": TEXT}, ["text"])]
 
 
-TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT) + request_tools(tool, TEXT)
+TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -155,13 +158,13 @@ Give workers bounded files, an acceptance check and explicit commit authority.
 Implementer worktrees start from committed HEAD, not your uncommitted changes.
 Use orchestration_send for follow-ups and orchestration_interrupt to stop a descendant.
 Use orchestration_peers to discover agents, then orchestration_message to talk to them.
-Use target parent or lead to report progress before your final answer. Use an agent id
-for a private chat, broadcast for your team, or all for all teams. The user can read
+Report useful early progress with importance=progress; questions and blockers use their own importance.
+Do not repeat submitted evidence in a separate message: task submission and child completion notify the lead.
+Use an agent id for a private chat, broadcast for your team, or all for all teams. The user can read
 these chats. Private means other agents cannot read it through the chat tools.
 Messages wake recipients automatically. Send only useful questions, findings or answers.
 Do not reply merely to acknowledge receipt. Do not create broadcast reply loops.
-If this existing thread lacks the new chat tools, orchestration_status includes the
-peer directory and recent chats; orchestration_send accepts peer ids and these targets.
+Use orchestration_chat_read for message history; orchestration_send also accepts peer ids and these targets.
 Every agent, including the lead, can use orchestration_complaint action=submit for
 concrete problems with the harness, instructions, tools, resources, or coordination.
 Record confirmed defects in the book instead of leaving them only in chat feedback.
@@ -179,7 +182,7 @@ agent_id="complaint" and text containing JSON for the same action and fields.
 Use orchestration_task to track assignments, dependencies, submitted evidence and explicit acceptance.
 Use orchestration_watch for file changes or schedules with a script gate; no model runs during the wait.
 Use orchestration_resource to claim the shared codex-board. Never invent a separate resource registry.
-Worker profiles can be listed with orchestration_status and passed as profile_id to orchestration_spawn.
+Read profiles with orchestration_context topic=profiles; pass profile_id to orchestration_spawn.
 Omit model, effort and fast_mode to use the user's current team defaults for each new worker.
 An explicit profile model or effort overrides the team default; explicit spawn fields override the profile.
 Use effort=null to select a model's native default, or fast_mode=false to disable Fast for that worker.
@@ -190,7 +193,8 @@ Older threads can call the workspace tools through orchestration_send with agent
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
 orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task,
-orchestration_panel, orchestration_panel_feed, orchestration_request.
+orchestration_panel, orchestration_panel_feed, orchestration_request, orchestration_read, orchestration_context, orchestration_status,
+orchestration_peers, orchestration_message, orchestration_monitor.
 Use orchestration_panel_feed for live data from a background script, such as EC2 status or build counters.
 It updates structured panel state without model turns, including on command completion or error.
 Set the panel once, start the script, and finish your turn. Do not poll the feed through model calls.
@@ -200,7 +204,13 @@ it with a concrete reason and next action. Do not treat the user check as your a
 Use fenced mermaid blocks for diagrams and fenced html blocks for HTML/CSS previews.
 HTML previews are static and isolated; scripts and remote resources do not run.
 The user can inspect the source of each preview.
-Model names can be omitted to inherit yours.
+Task lists are paged summaries. Use action=get for one task and history for older evidence.
+For native command tools, use their exposed output limit and print only the needed fields.
+Large tool responses include outputRef. Read missing details with orchestration_read instead of rerunning the operation.
+Plans and complaints are supplied when changed and after compaction. orchestration_context retrieves full current context.
+Before first panel use, read orchestration_context topic=panel for the component language and Studio style.
+Panel set must pass the 150px height check and return a rendered image. Inspect it before proceeding.
+Use topic=background for script-driven panels and notification options. Profiles do not add permissions.
 Do not merge work without review. Do not make recurring checks when an event is pending.
 """
 
@@ -515,7 +525,7 @@ class AppServer:
             self.reader.join(timeout=1)
 
 
-class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
+class Runtime(EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -1539,8 +1549,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
             "config": THREAD_CONFIG.copy(),
             "serviceTier": "priority" if a.get("fastMode", False) else "default",
             "developerInstructions": INSTRUCTIONS
-            + "\n" + self.panel_guidance()
-            + "\nUse orchestration_task for assignments and explicit result acceptance. A final answer does not accept work. Read the shared plan supplied with each turn. Worker profiles set instructions, model, and role; they do not add permissions.\n"
+            + "\n"
             + a.get("profileInstructions", ""),
         }
         if a.get("fastMode", False):
@@ -1761,6 +1770,17 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                     a["status"] = "waiting"
                     self.put(db, "agents", a)
                     continue
+                if self.progress_only(rows):
+                    # An urgent event beyond this page must not wait behind progress.
+                    urgent = db.execute("""SELECT * FROM runtime_events
+                        WHERE agent=? AND status='pending' AND epoch=?
+                        AND CASE WHEN kind='agent_message' AND json_valid(text)
+                            THEN json_extract(text,'$.importance') ELSE NULL END IS NOT 'progress'
+                        ORDER BY created LIMIT 1""", (a["id"], a["epoch"])).fetchone()
+                    if urgent is not None:
+                        rows = [urgent] + rows[:31]
+                    elif not self.progress_batch_ready(rows):
+                        continue
                 selected = []
                 asset_count = 0
                 for event in rows:
@@ -1815,7 +1835,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                         "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
                         (r["id"],),
                     )
-            text = "\n\n".join(r["text"] if r["kind"] == "user" else f"[Orchestration event: {r['kind']}]\n{r['text']}" for r in rows if r["kind"] != "complaint")
+            text = self.model_event_text(rows)
             asset_ids = []
             clocks = []
             with self.lock, self.db() as db:
@@ -1840,20 +1860,14 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                         clocks.append(
                             message_clock(event["id"], metadata["acceptedAt"])
                         )
-                plan = db.execute(
-                    "SELECT record FROM runtime_plans WHERE id=?", (a["rootId"],)
-                ).fetchone()
-                if plan and json.loads(plan[0]).get("text"):
-                    text += "\n\n[Shared plan]\n" + json.loads(plan[0])["text"]
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
                 text += self.user_task_review_context(db, a["id"])
                 required = self.unanswered_complaints(db, a["id"])
                 latest["complaintsPresented"] = [c["id"] for c in required]
                 self.put(db, "agents", latest)
-                if required:
-                    text += "\n\n[Complaint messages requiring a response]\n" + self.complaint_message(db, required)
-                elif not text:
+                text += self.model_turn_context(db, a, rows[0]["id"])
+                if not text:
                     text = "[Complaint update] No complaints require a response."
                 self.item(
                     db,
@@ -2494,10 +2508,15 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                         + panel_tools(tool, TEXT)
                         + voice_tools()
                         + request_tools(tool, TEXT)
-                    }:
+                        + efficiency_tools(tool, TEXT)
+                    } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor"}:
                         raise ValueError("Unknown workspace tool")
                 panel_capture = {}
-                if name == "orchestration_request":
+                if name == "orchestration_read":
+                    value = self.model_read(a["id"], args)
+                elif name == "orchestration_context":
+                    value = self.model_context(a["id"], args)
+                elif name == "orchestration_request":
                     value = self.request_action(a["id"], args)
                 elif name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
@@ -2509,23 +2528,8 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                     value = self.user_task_action(a["id"], args, key, epoch=a["epoch"])
                 elif name in {"orchestration_task", "orchestration_result"}:
                     if name == "orchestration_result" and args.get("action") == "read":
-                        value = self.work_action(
-                            a["id"], {"action": "list"}, actor=a["id"]
-                        )
-                        value = next(
-                            (
-                                w
-                                for w in value["items"]
-                                if w["id"] == args.get("task_id")
-                            ),
-                            None,
-                        )
-                        if value is None:
-                            raise ValueError("Unknown work item")
-                    else:
-                        value = self.work_action(
-                            a["id"], args, key, actor=a["id"], epoch=a["epoch"]
-                        )
+                        args = {**args, "action": "get"}
+                    value = self.model_work(a["id"], args, key, a["epoch"])
                 elif name == "orchestration_search":
                     value = self.search_work(
                         args.get("query"), a["id"], args.get("limit", 50)
@@ -2562,22 +2566,9 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 elif name == "orchestration_spawn":
                     value = self.spawn_agents(a, args, key)
                 elif name in {"orchestration_status", "orchestration_peers"}:
-                    value = {
-                        **self.team(a["rootId"]),
-                        **self.peers(a["id"]),
-                        **self.profiles(),
-                        "workspaceTools": work_tools(tool, TEXT)
-                        + rule_tools(tool, TEXT)
-                        + user_task_tools(tool, TEXT)
-                        + panel_tools(tool, TEXT)
-                        + voice_tools()
-                        + request_tools(tool, TEXT),
-                    }
-                    if name == "orchestration_status":
-                        value["recentChats"] = [self.chat_read(r["id"], a["id"], limit=10)
-                                                for r in value["rooms"][:10]]
+                    value = self.model_directory(a["id"], name, args)
                 elif name == "orchestration_message":
-                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"])
+                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"))
                 elif name == "orchestration_chat_read":
                     value = self.chat_read(args["room_id"], a["id"], args.get("before"))
                 elif name == "orchestration_send" and args.get("agent_id") == "complaint":
@@ -2677,6 +2668,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
             receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else None))
             result = receipt.get("result") or result
         if a is not None:
+            result = self.model_tool_result(a["id"], key, result)
             with self.lock, self.db() as db:
                 self.analytics_safe(db, self.analytics_dynamic, a, p, result)
         try:
@@ -2975,7 +2967,13 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
             return {"room": room, "messages": messages,
                     "nextBefore": messages[0]["seq"] if len(rows) > limit else None}
 
-    def chat_message(self, sender_id, target, text, key, epoch=None):
+    def chat_message(self, sender_id, target, text, key, epoch=None, *, importance="message", progress_key=None, progress_version=None):
+        if importance not in {"message", "progress", "question", "blocker", "result"}:
+            raise ValueError("Unknown message importance")
+        if progress_key is not None or progress_version is not None:
+            if (importance != "progress" or not isinstance(progress_key, str) or not 1 <= len(progress_key) <= 200
+                    or type(progress_version) is not int or progress_version < 0):
+                raise ValueError("Versioned progress requires a progress_key and nonnegative integer progress_version")
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
             raise ValueError("Message must have 1 to 12000 characters")
         text = text.strip()
@@ -2998,8 +2996,14 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 ids = sorted([sender_id, recipient["id"]])
                 room = {"id": "private:" + ":".join(ids), "kind": "private", "members": ids}
                 recipients = [recipient]
+            signature, saved = self.operation_receipt(db, key, {"sender": sender_id, "room": room["id"], "text": text, "importance": importance,
+                                                               "progress_key": progress_key, "progress_version": progress_version})
+            if saved is not None:
+                return saved
             previous = db.execute("SELECT * FROM runtime_chat_messages WHERE id=?", (key,)).fetchone()
             if previous:
+                if importance != "message":
+                    raise ValueError("This legacy message id cannot change importance")
                 if (previous["room"], previous["sender"], previous["text"]) != (room["id"], sender_id, text):
                     raise ValueError("This message id has different content")
                 return {"id": key, "room": room["id"], "deliveries": json.loads(previous["deliveries"])}
@@ -3015,13 +3019,18 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 if not recipient["autoWake"] or self.empty_lead(db, recipient):
                     deliveries[recipient["id"]] = "stored_only"
                     continue
-                event = json.dumps({"room": room["id"], "message_id": key, "sender": sender_id,
-                                    "sender_name": sender["name"], "text": text}, ensure_ascii=False)
+                payload = {"room": room["id"], "message_id": key, "sender": sender_id,
+                           "sender_name": sender["name"], "text": text}
+                if importance != "message":
+                    payload["importance"] = importance
+                if progress_key is not None:
+                    payload.update(progress_key=progress_key, progress_version=progress_version)
+                event = json.dumps(payload, ensure_ascii=False)
                 self.enqueue(db, recipient, "agent_message", event, "chat:" + key + ":" + recipient["id"])
                 deliveries[recipient["id"]] = "queued"
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
-            return {"id": key, "room": room["id"], "deliveries": deliveries}
+            return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})
 
     def assert_panel_feed_binding(self, db, agent_id, key, binding):
         if binding is None:
@@ -3036,6 +3045,9 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
 
     def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None, *, panel_feed=None):
         command = data.get("command")
+        wake_on = data.get("wake_on", "exit")
+        if wake_on not in {"exit", "failure"}:
+            raise ValueError("wake_on must be exit or failure")
         timeout = data.get("timeout_ms", 3600000)
         if not isinstance(command, str) or not 1 <= len(command.strip()) <= 12000:
             raise ValueError("Supply a command with 1 to 12000 characters")
@@ -3055,7 +3067,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if row:
                 previous = json.loads(row[0])
-                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("panelFeed")) != (agent_id, command, timeout, bool(data.get("interactive")), panel_feed):
+                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("panelFeed"), previous.get("wakeOn", "exit")) != (agent_id, command, timeout, bool(data.get("interactive")), panel_feed, wake_on):
                     raise ValueError("This monitor request id has different content")
                 return previous
             a = self.agent(agent_id, db)
@@ -3094,6 +3106,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 "command": command,
                 "cwd": a["cwd"],
                 "timeout_ms": timeout,
+                "wakeOn": wake_on,
                 "status": "starting" if approved else "approval",
                 "created": time.time(),
                 "exitCode": None,
@@ -3346,7 +3359,8 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
             a = self.agent(m["agent"], db)
             if m.get("ruleId"):
                 self.rule_finished(m["ruleId"], code, "Monitor cancelled" if cancelled else error, m["tail"], db)
-            elif not m.get("panelFeed") and not cancelled and a["epoch"] == m["epoch"]:
+            elif (not m.get("panelFeed") and not cancelled and a["epoch"] == m["epoch"]
+                  and (m.get("wakeOn", "exit") == "exit" or m["status"] != "completed")):
                 self.enqueue(db, a, "monitor_exit", json.dumps({k: m.get(k) for k in
                     ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")}), "monitor:" + key)
         if m.get("panelFeed"):
@@ -3722,7 +3736,7 @@ class Runtime(RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixi
                 raise ValueError("This conversation was deleted")
             live = a["status"] in {"running", "starting", "approval"} and a.get("autoWake")
             for item in items:
-                if item.get("toolStatus") in {"running", "interrupted"}:
+                if item.get("title") == "dynamicToolCall":
                     self.transcript_tool_result(db, a, item)
                 if item.get("streaming") and (not live or item.get("turnId") != a.get("turnId")):
                     item["streaming"] = False

@@ -290,8 +290,12 @@ class RuntimeContract(unittest.TestCase):
         for index in range(3):
             eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
             prompt = [p for method, p in self.runtime.server.calls if method == 'turn/start'][-1]['input'][0]['text']
-            self.assertEqual(prompt.count(c['text']), 1)
-            self.assertIn('"author": "user"', prompt)
+            self.assertEqual(prompt.count(c['text']), 1 if index == 0 else 0)
+            self.assertIn(c['id'], prompt)
+            if index == 0:
+                self.assertIn('"author": "user"', prompt)
+            else:
+                self.assertIn('still requiring a response', prompt)
             self.complete(self.runtime.agent(lead['id']))
         stopped = self.runtime.agent(lead['id'])
         self.assertFalse(stopped['autoWake'])

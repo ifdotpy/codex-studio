@@ -126,7 +126,16 @@ class RequestMixin:
             return
         if not isinstance(payload, dict) or not isinstance(payload.get("id"), str):
             return
-        if payload.get("status") not in (None, "inProgress") or payload.get("success") is not None:
+        projected = False
+        for content in payload.get("contentItems", []):
+            if content.get("type") != "inputText":
+                continue
+            try:
+                value = json.loads(content.get("text", ""))
+                projected = projected or (isinstance(value, dict) and value.get("truncated") is True and isinstance(value.get("outputRef"), str))
+            except (ValueError, TypeError):
+                pass
+        if not projected and (payload.get("status") not in (None, "inProgress") or payload.get("success") is not None):
             return
         aliases = db.execute(
             "SELECT request FROM runtime_tool_request_aliases WHERE agent=? AND alias=? LIMIT 2",
@@ -147,8 +156,10 @@ class RequestMixin:
         item["toolStatus"] = "completed" if result["success"] else "failed"
         content = result.get("contentItems", [])
         encoded = json.dumps(content, ensure_ascii=False)
-        if len(encoded) > 12000:
-            content = [{"type": "inputText", "text": encoded[:12000] + "\n[Result truncated]"}]
+        # Model projection must not reduce the existing UI transcript allowance.
+        limit = 20000 if projected else 12000
+        if len(encoded) > limit:
+            content = [{"type": "inputText", "text": encoded[:limit] + "\n[Result truncated]"}]
             item["truncated"] = True
         payload.update(status=item["toolStatus"], success=result["success"],
                        contentItems=content)

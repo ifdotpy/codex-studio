@@ -27,7 +27,7 @@ class PanelContract(unittest.TestCase):
     agent_update = f.WorkspaceContract.agent_update
     tool = f.WorkspaceContract.tool
 
-    def test_new_lead_and_worker_receive_bundled_guidance_outside_studio(self):
+    def test_new_lead_and_worker_read_bundled_guidance_on_demand_outside_studio(self):
         guide = Path(__file__).resolve().parents[1] / ".agents/skills/codex-workspace/references/panel.md"
         content = guide.read_text().strip()
         lead = self.lead(cwd=str(self.state))
@@ -39,15 +39,21 @@ class PanelContract(unittest.TestCase):
         for params in calls:
             self.assertEqual(Path(params["cwd"]).resolve(), self.state.resolve())
             self.assertTrue(params["config"]["features.context_management.experimental_mode"])
-            self.assertIn(content, params["developerInstructions"])
-            self.assertEqual(params["developerInstructions"].count(content), 1)
-            self.assertIn(str(guide), params["developerInstructions"])
+            self.assertNotIn(content, params["developerInstructions"])
+            self.assertIn("topic=panel", params["developerInstructions"])
+            self.assertIn("150px", params["developerInstructions"])
+        for actor in (lead, worker):
+            result = self.tool(actor, "orchestration_context", {"topic": "panel"})
+            self.assertTrue(result["success"], result)
+            text = json.loads(result["contentItems"][0]["text"])["content"]
+            self.assertIn(content, text)
+            self.assertIn(str(guide), text)
 
     def test_missing_bundled_guidance_fails_visibly(self):
         lead = self.lead()
         with patch("codex_runtime.Path.read_text", side_effect=FileNotFoundError):
             with self.assertRaisesRegex(ValueError, "panel guidance is missing"):
-                self.runtime.new_thread_params(lead)
+                self.runtime.model_context(lead["id"], {"topic": "panel"})
 
     def test_replace_clear_restart_and_small_snapshot(self):
         a = self.lead()
@@ -131,7 +137,12 @@ class PanelContract(unittest.TestCase):
         for html in ["First", "Changed retry"]:
             request["params"]["arguments"]["html"] = html
             self.runtime.dynamic(request)
-            self.assertEqual(self.runtime.server.responses[-1]["result"], first)
+            result = self.runtime.server.responses[-1]["result"]
+            if html == "First":
+                self.assertEqual(result, first)
+            else:
+                self.assertFalse(result["success"])
+                self.assertIn("different content", result["contentItems"][0]["text"])
             self.assertEqual(self.runtime.panel(a["id"])["html"], "Second")
             self.assertEqual(self.runtime.panel(a["id"])["version"], 2)
 

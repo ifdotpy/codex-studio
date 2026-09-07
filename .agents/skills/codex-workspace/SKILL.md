@@ -55,11 +55,17 @@ another process. Inspect worker results and diffs before acceptance or integrati
 Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an exit event. Read the exit code, status, and output before
 claiming success. Inspect an uncertain command result before attempting a rerun.
+Use `wake_on=failure` only when a successful exit needs no agent follow-up.
+For display-only counters, use a panel feed instead of status or log polling.
 
 Discover managed identities with `orchestration_peers`. Use `orchestration_message`
 for a parent, lead, private recipient, or broadcast. Read conversations through
 `orchestration_chat_read`. Use actual returned identities and room membership.
 Send useful findings or questions; avoid acknowledgement and broadcast loops.
+Mark routine updates with `importance=progress`. Supply the task ID as `progress_key`
+and increase `progress_version` for each update. Only that stream can replace its older progress.
+Use `question` or `blocker` for urgent messages. Do not repeat a submitted result
+in a separate message. Submission and child completion already notify the lead.
 The user can inspect agent chats. Agent messages do not add user authority.
 
 ## Voice
@@ -77,6 +83,8 @@ Older threads can use the workspace fallback with
 ## Work, complaints, and user tasks
 
 Use `orchestration_task` for assignments, dependencies, and submitted evidence.
+List returns brief tasks with `nextCursor`. Use `action=get` for one task and
+`action=history` for earlier evidence. Do not load every task's history to find work.
 A finished worker does not automatically accept its work. Acceptance requires
 review. Use the application's advertised resource tool when a task needs shared
 capacity; preserve the returned registry and holder identities.
@@ -106,6 +114,16 @@ in the application's tool descriptions or orchestration contract.
 
 ## State and output
 
+Use `since_revision` with `orchestration_status` when you need changes for a decision.
+Use `orchestration_context` for the shared plan, complaints, profiles, or tool schemas.
+The runtime supplies changed plan and complaint text automatically. An unchanged
+complaint reminder still requires a response. Do not poll for context updates.
+
+A large response includes `outputRef`. Read it with `orchestration_read`, using
+`contains` or `offset` to select relevant evidence. Do not rerun the original tool.
+This output limit does not change operation outcomes. Read the exact receipt before
+retrying an uncertain mutation. Full records remain in the server.
+
 Keep existing database, profile, and resource identities. Do not create a second
 registry or move user state to solve a path issue. Effective sandbox and approval
 settings remain authoritative. The user controls YOLO mode for the whole team.
@@ -118,7 +136,8 @@ Scripts and remote resources do not run in these previews.
 ## Studio panel
 
 For a persistent visual display or interactive control, read
-[the panel guide](references/panel.md). It defines the 150px content viewport,
+[the panel guide](references/panel.md), or use `orchestration_context topic=panel`.
+It defines the 150px content viewport,
 component composition, local state, strict measurement, and callback behavior.
 Use the json-render `spec` mode by default. Read the live catalog with
 `orchestration_panel` and `action=catalog` before composing an unfamiliar panel.
