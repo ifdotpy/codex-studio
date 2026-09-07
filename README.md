@@ -100,6 +100,14 @@ Lock-screen and background voice are not supported.
 - [Context analytics](ANALYTICS.md): response tokens, tool payloads, history, and measurement limits.
 - [Extraction record](EXTRACTION.md): source history and local migration checks.
 
+## Team conversations
+
+Open **Agent chats** beside **Background** in the selected chat's toolbar.
+The panel shows that team's broadcast channel and private conversations between its members.
+Search the room list, select a conversation, or load earlier messages.
+The main conversation and its draft stay open. On mobile, use **Chat settings → Agent chats**.
+The sidebar contains project conversations only.
+
 ## State
 
 Existing chats, receipts, and agent state remain in

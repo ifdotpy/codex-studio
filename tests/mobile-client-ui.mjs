@@ -175,7 +175,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.locator(".workspace-shortcuts").waitFor();
   await page.getByLabel("Add project", { exact: true }).waitFor();
-  await page.getByRole("tab", { name: /^Agent chats/ }).waitFor();
+  await page.locator("#agent-chats-toggle").waitFor();
   const manifest = await (await fetch(url + "/manifest.webmanifest")).json();
   assert.equal(manifest.display, "standalone");
   assert.equal(

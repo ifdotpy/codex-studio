@@ -159,19 +159,15 @@ try {
   await page.screenshot({ path: join(root, "canvas.png") });
   await page.locator("#view-toggle").click();
   assert.equal(await page.locator("#message").inputValue(), "Lead draft");
-  await page.getByRole("tab", { name: /Agent chats/ }).click();
+  await page.locator("#agent-chats-toggle").click();
   assert.equal(
     await page.locator("[data-room]").count(),
     60,
     "bounded initial room list",
   );
-  // Menus remain inside the viewport at the bottom of a long, scrolled list.
-  await page.locator(".room-row").last().scrollIntoViewIfNeeded();
-  await page.locator(".room-row").last().locator(".row-actions").click();
-  await visibleInViewport(page.getByRole("menu"));
-  await shot("sidebar-menu");
-  await page.keyboard.press("Escape");
-  await page.locator("#chat-search").fill("Release lead");
+  await page
+    .getByRole("textbox", { name: "Search team chats" })
+    .fill("Release lead");
   const snapshot = await (await fetch(origin + "/api/state")).json();
   const privateRoom = snapshot.runtime.rooms.find(
     (r) =>
@@ -181,37 +177,33 @@ try {
   );
   await page.locator(`[data-room="${privateRoom.id}"]`).click();
   await page
-    .locator("#messages")
+    .locator(".team-room-messages")
     .getByText("A private update before the final answer.", { exact: true })
     .waitFor();
-  assert.equal(await page.locator("#composer").count(), 0);
-  assert.ok(await page.locator(".message.bubble").count());
-  await page.locator("#earlier-messages").click();
+  assert.equal(await page.locator("#message").inputValue(), "Lead draft");
+  assert.ok(await page.locator(".team-message").count());
+  await page
+    .getByRole("button", { name: "Earlier messages", exact: true })
+    .click();
   await poll(
-    async () => (await page.locator("[data-message]").count()) === 106,
+    async () => (await page.locator(".team-message").count()) === 106,
     "earlier history",
   );
   await page.waitForTimeout(1100);
-  assert.equal(await page.locator("#earlier-messages").count(), 0);
-  await page.locator("#messages").evaluate((el) => {
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Earlier messages", exact: true })
+      .count(),
+    0,
+  );
+  await page.locator(".team-room-messages").evaluate((el) => {
     el.scrollTop = el.scrollHeight;
   });
   await page.screenshot({ path: join(root, "agent-chat.png") });
-  // Rename in the actual sidebar row, then verify persistence through HTTP.
-  const row = page
-    .locator(".sidebar-row")
-    .filter({ has: page.locator(`[data-room="${privateRoom.id}"]`) });
-  await row.locator(".row-actions").click();
-  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
-  await row.getByRole("textbox", { name: "Chat name" }).fill("Release notes");
-  await row.getByRole("textbox", { name: "Chat name" }).press("Enter");
-  await poll(
-    async () =>
-      (await (await fetch(origin + "/api/state")).json()).runtime.rooms.some(
-        (r) => r.name === "Release notes",
-      ),
-    "room rename",
-  );
+  await page
+    .getByRole("dialog", { name: "Agent chats", exact: true })
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
   await page.locator("#open-complaints").click();
   assert.equal(
     await page
@@ -246,7 +238,6 @@ try {
     .getByRole("dialog", { name: "Complaint", exact: true })
     .getByRole("button", { name: "Close", exact: true })
     .click();
-  await page.getByRole("tab", { name: "Chats", exact: true }).click();
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   // Creation reply lost after the database commit.
   let lose = true;

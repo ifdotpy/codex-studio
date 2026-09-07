@@ -58,6 +58,7 @@ import {
   type Json,
 } from "./types";
 import Sidebar from "./components/Sidebar";
+import TeamChats from "./components/TeamChats";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
 import Accounts, { useAccounts } from "./components/Accounts";
@@ -139,6 +140,7 @@ export default function App() {
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
+    [agentChatsOpen, setAgentChatsOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [workspaceSection, setWorkspaceSection] = useState("work"),
     [workerQuery, setWorkerQuery] = useState(""),
@@ -231,6 +233,7 @@ export default function App() {
     setTeamOpen(false);
     setWorkspaceOpen(false);
     setTasksOpen(false);
+    setAgentChatsOpen(false);
     if (opened && (agent || room || legacy) && !agent?.isLead)
       setOpened(lead?.id || leads.at(-1)?.id || null);
   }, [mobileClient, opened, agent?.isLead, lead?.id]);
@@ -1227,6 +1230,14 @@ export default function App() {
               </Button>
             ))}
             <Button
+              id="agent-chats-toggle"
+              leftSection={<MessageSquare size={16} />}
+              disabled={!lead}
+              onClick={() => setAgentChatsOpen(true)}
+            >
+              Agent chats
+            </Button>
+            <Button
               id="tasks-toggle"
               aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
               leftSection={<Activity size={16} />}
@@ -1357,6 +1368,30 @@ export default function App() {
         refresh={refresh}
         notify={notify}
       />
+      <Drawer
+        opened={agentChatsOpen}
+        closeButtonProps={{ "aria-label": "Close" }}
+        onClose={() => setAgentChatsOpen(false)}
+        position="right"
+        size={940}
+        padding={0}
+        title={
+          <div className="tasks-title">
+            <MessageSquare size={19} />
+            <strong>Agent chats</strong>
+          </div>
+        }
+        classNames={{
+          content: "tasks-drawer",
+          body: "tasks-drawer-body",
+          header: "tasks-drawer-header",
+        }}
+      >
+        <p className="activity-team-name">{lead?.name}</p>
+        {agentChatsOpen && (
+          <TeamChats key={lead?.id} data={chatData!} leadId={lead?.id} />
+        )}
+      </Drawer>
       <BackgroundTasks
         key={`background:${lead?.id || "none"}`}
         opened={tasksOpen}
@@ -1373,6 +1408,16 @@ export default function App() {
         title="Chat settings"
       >
         <div className="mobile-chat-settings">
+          <Button
+            leftSection={<MessageSquare size={16} />}
+            disabled={!lead}
+            onClick={() => {
+              setSettingsOpen(false);
+              setAgentChatsOpen(true);
+            }}
+          >
+            Agent chats
+          </Button>
           {agent?.cwd && <p className="mobile-project-path">{agent.cwd}</p>}
           <NativeSelect
             label="Account"

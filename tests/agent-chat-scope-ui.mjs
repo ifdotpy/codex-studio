@@ -56,47 +56,95 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(origin);
-  const select = async (id) => {
-    await page.getByRole("tab", { name: /^Chats/ }).click();
-    await page.locator(`[data-chat="${id}"]`).click();
-    await page.getByRole("tab", { name: /^Agent chats/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Agent chats", exact: true });
+  const close = async () => {
+    if (await dialog.isVisible())
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
   };
-  const room = (id) => page.locator(`[data-room="${id}"]`);
+  const select = async (id) => {
+    await close();
+    await page.locator(`[data-chat="${id}"]`).click();
+    await page.locator("#agent-chats-toggle").click();
+    await dialog.waitFor();
+  };
+  const room = (id) => dialog.locator(`[data-room="${id}"]`);
   await select(other.id);
+  assert.equal(await page.locator("#sidebar [data-room]").count(), 0);
+  assert.equal(await page.locator("#sidebar [role=tab]").count(), 0);
   await room(`broadcast:${other.id}`).waitFor();
-  assert.equal(await page.locator("[data-room]").count(), 2);
+  assert.equal(await dialog.locator("[data-room]").count(), 1);
   assert.equal(await room(`broadcast:${lead.id}`).count(), 0);
   assert.equal(await room("broadcast:all").count(), 0);
-  await room(privateRoom.id).click();
-  await page
-    .getByRole("button", { name: `Back to ${other.name}`, exact: true })
-    .waitFor();
   assert.equal(
-    await page.locator("[data-room]").count(),
-    2,
-    "private room retains selected lead context",
+    await room(privateRoom.id).count(),
+    0,
+    "cross-team room stays outside a single team's conversations",
   );
+  await dialog
+    .getByText("Only the second conversation", { exact: true })
+    .last()
+    .waitFor();
   await page.screenshot({ path: join(root, "second-chat.png") });
   await select(lead.id);
   assert.equal(await room(`broadcast:${other.id}`).count(), 0);
   assert.equal(await room("broadcast:all").count(), 0);
   assert.equal(
-    await page.locator("[data-room]").count(),
+    await dialog.locator("[data-room]").count(),
     60,
-    "large team list remains bounded",
+    "bounded room list",
   );
-  await page.locator("#chat-search").fill(other.name);
-  await room(privateRoom.id).click();
-  await page
-    .getByRole("button", { name: `Back to ${lead.name}`, exact: true })
+  await dialog.getByRole("button", { name: "Show more chats" }).click();
+  assert.ok((await dialog.locator("[data-room]").count()) > 60);
+  const direct = state.runtime.rooms.find(
+    (r) => r.kind === "private" && r.members.includes(lead.id),
+  );
+  await dialog
+    .getByRole("textbox", { name: "Search team chats" })
+    .fill(direct.name);
+  await room(direct.id).click();
+  await dialog
+    .locator(".team-message")
+    .filter({ hasText: "A private update before the final answer." })
     .waitFor();
-  assert.equal(await room(`broadcast:${other.id}`).count(), 0);
-  await page.locator("#chat-search").fill("");
+  assert.equal(
+    await page.locator("#conversation-title").textContent(),
+    lead.name,
+    "main conversation remains selected",
+  );
+  await dialog.getByRole("button", { name: "Earlier messages" }).click();
+  await dialog
+    .locator(".team-message")
+    .filter({ hasText: "Earlier finding 0" })
+    .waitFor();
+  await dialog.getByRole("button", { name: "Latest messages" }).click();
   await page.screenshot({ path: join(root, "first-chat.png") });
+  const overflow = await dialog.evaluate((el) =>
+    [...el.querySelectorAll(".team-room-detail, .team-room-rows")].some(
+      (node) => node.scrollWidth > node.clientWidth + 1,
+    ),
+  );
+  assert.equal(overflow, false, "room layout contains long content");
+  await page.setViewportSize({ width: 600, height: 900 });
+  await dialog.waitFor({ state: "hidden" });
   await page
-    .getByRole("button", { name: `Back to ${lead.name}`, exact: true })
+    .getByRole("button", { name: "Chat settings", exact: true })
     .click();
-  await page.locator(`#chat-list [data-chat="${lead.id}"]`).waitFor();
+  await page
+    .getByRole("dialog", { name: "Chat settings" })
+    .getByRole("button", { name: "Agent chats", exact: true })
+    .click();
+  await dialog.waitFor();
+  await room(`broadcast:${lead.id}`).click();
+  await dialog.getByRole("button", { name: "Back to team chats" }).click();
+  await dialog.getByRole("textbox", { name: "Search team chats" }).waitFor();
+  await page.screenshot({ path: join(root, "narrow-list.png") });
+  await room(`broadcast:${lead.id}`).click();
+  await page.screenshot({ path: join(root, "narrow-room.png") });
+  await close();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator("#tasks-toggle").click();
+  await page.getByRole("dialog", { name: /Background tasks/ }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -105,7 +153,10 @@ try {
       cases: [
         "per conversation in same project",
         "private room without rootId",
-        "cross-team participant context",
+        "cross-team and global rooms excluded",
+        "toolbar entry and intact main conversation",
+        "room history and responsive navigation",
+        "background drawer preserved",
         "global broadcast excluded",
         "bounded room list",
       ],
