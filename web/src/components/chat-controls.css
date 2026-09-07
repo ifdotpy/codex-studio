@@ -152,6 +152,21 @@
   color: var(--muted);
   font-size: 11px;
 }
+
+.message-delivery-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.message-delivery-heading .message-delivery-status {
+  margin: 0;
+}
+
+.message-delivery-heading button {
+  flex-shrink: 0;
+}
 .message-delivery-error {
   margin-top: 8px;
   color: var(--danger, #e7a0a6);

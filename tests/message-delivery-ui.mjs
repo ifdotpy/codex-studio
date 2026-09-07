@@ -74,6 +74,18 @@ try {
     });
     const page = await context.newPage();
     page.setDefaultTimeout(12000);
+    const mutations = [];
+    page.on("request", (request) => {
+      // The voice transcript uses POST for a read on every chat mount.
+      if (
+        !["GET", "HEAD", "OPTIONS"].includes(request.method()) &&
+        new URL(request.url()).pathname !== "/api/voice/records"
+      )
+        mutations.push({
+          method: request.method(),
+          url: new URL(request.url()).pathname,
+        });
+    });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.addInitScript(() => {
@@ -520,11 +532,175 @@ try {
       expectedPosts,
       `${mode}: no automatic duplicate delivery`,
     );
+    // Dismissal hides one receipt on this device without cancelling delivery.
+    const dismissedText = `${mode} uncertain message removed from this device`;
+    const dismissed = await start(dismissedText);
+    await dismissed.route.fulfill({
+      json: {
+        id: dismissed.body.id,
+        status: "uncertain",
+        error: "Fixture cannot confirm delivery",
+      },
+    });
+    await row(dismissedText).locator(".message-delivery-error").waitFor();
+    await until(
+      async () => (await page.locator("#send-state").innerText()).trim() === "",
+      `${mode}: uncertain response returns control before dismissal`,
+    );
+    await page.waitForTimeout(350);
+    const mutationsBeforeRemoval = mutations.length;
+    const remove = row(dismissedText).getByRole("button", {
+      name: "Remove message",
+      exact: true,
+    });
+    assert.equal(
+      await remove.getAttribute("title"),
+      "Remove from this device. Delivery is not cancelled.",
+    );
+    await page.screenshot({
+      path: join(evidence, `${mode}-remove-message.png`),
+    });
+    await remove.click();
+    await row(dismissedText).waitFor({ state: "hidden" });
+    assert.equal(
+      await input.inputValue(),
+      dismissedText,
+      `${mode}: dismissal preserves the draft`,
+    );
+    await page.locator(`[data-chat="${b.id}"]`).click();
+    await page.locator(`[data-message="${b.id}-history-35"]`).waitFor();
+    await page.locator(`[data-chat="${a.id}"]`).click();
+    await page.locator(`[data-message="${a.id}-history-35"]`).waitFor();
+    assert.equal(
+      await row(dismissedText).count(),
+      0,
+      `${mode}: dismissal survives a chat switch`,
+    );
+    await page.reload();
+    await page.locator(`[data-chat="${a.id}"]`).click();
+    await page.locator(`[data-message="${a.id}-history-35"]`).waitFor();
+    assert.equal(
+      await row(dismissedText).count(),
+      0,
+      `${mode}: dismissal survives reload`,
+    );
+    const dismissedEcho = {
+      id: `${a.id}:${dismissed.body.id}`,
+      clientMessageId: dismissed.body.id,
+      role: "user",
+      text: dismissedText,
+    };
+    const distinctEcho = {
+      ...dismissedEcho,
+      id: `${mode}-distinct-dismissed-text`,
+      clientMessageId: `${mode}-distinct-client-id`,
+    };
+    await publish(a.id, [
+      ...history.get(a.id).items,
+      dismissedEcho,
+      distinctEcho,
+    ]);
+    await page.locator(`[data-message="${distinctEcho.id}"]`).waitFor();
+    assert.equal(
+      await page.locator(`[data-message="${dismissedEcho.id}"]`).count(),
+      0,
+      `${mode}: late delivery cannot restore a dismissed receipt`,
+    );
+    assert.equal(
+      await row(dismissedText).count(),
+      1,
+      `${mode}: a different identity with identical text remains visible`,
+    );
+    assert.equal(
+      await row(dismissedText)
+        .getByRole("button", { name: "Remove message", exact: true })
+        .count(),
+      0,
+      `${mode}: delivered messages do not expose dismissal`,
+    );
+
+    // Server-side failures use the same local dismissal as uncertain local sends.
+    const serverBase = [...history.get(a.id).items];
+    const removable = ["uncertain", "failed", "cancelled"].map((status) => ({
+      id: `${mode}-server-${status}`,
+      role: "user",
+      text: `${mode} server ${status} receipt`,
+      deliveryStatus: status,
+      deliveryError: `Fixture ${status} receipt`,
+    }));
+    const retained = ["accepted", "queued"].map((status) => ({
+      id: `${mode}-server-${status}`,
+      role: "user",
+      text: `${mode} server ${status} receipt`,
+      deliveryStatus: status,
+    }));
+    await publish(a.id, [...serverBase, ...removable, ...retained]);
+    for (const message of removable) {
+      const item = page.locator(`[data-message="${message.id}"]`);
+      await item.waitFor();
+      await item
+        .getByRole("button", { name: "Remove message", exact: true })
+        .click();
+      await item.waitFor({ state: "hidden" });
+    }
+    for (const message of retained)
+      assert.equal(
+        await page
+          .locator(`[data-message="${message.id}"]`)
+          .getByRole("button", { name: "Remove message", exact: true })
+          .count(),
+        0,
+        `${mode}: ${message.deliveryStatus} messages do not expose dismissal`,
+      );
+    await publish(a.id, [
+      ...serverBase,
+      ...removable.map(
+        ({ deliveryStatus, deliveryError, ...message }) => message,
+      ),
+      ...retained,
+    ]);
+    await page.reload();
+    await page.locator(`[data-chat="${a.id}"]`).click();
+    await page.locator(`[data-message="${retained.at(-1).id}"]`).waitFor();
+    for (const message of [...removable, dismissedEcho])
+      assert.equal(
+        await page.locator(`[data-message="${message.id}"]`).count(),
+        0,
+        `${mode}: delivered receipt ${message.id} remains dismissed after reload`,
+      );
+    assert.equal(
+      await page.locator(`[data-message="${distinctEcho.id}"]`).count(),
+      1,
+    );
+    // Message IDs do not share dismissal state across conversations.
+    const otherChatReceipt = {
+      ...removable[0],
+      text: `${mode} same ID in another chat`,
+    };
+    await publish(b.id, [...history.get(b.id).items, otherChatReceipt]);
+    await page.locator(`[data-chat="${b.id}"]`).click();
+    await page.locator(`[data-message="${otherChatReceipt.id}"]`).waitFor();
+    assert.equal(
+      await row(otherChatReceipt.text).count(),
+      1,
+      `${mode}: dismissal stays scoped to its chat`,
+    );
+    await page.locator(`[data-chat="${a.id}"]`).click();
+    await page.locator(`[data-message="${distinctEcho.id}"]`).waitFor();
+    assert.equal(
+      await page.locator(`[data-message="${otherChatReceipt.id}"]`).count(),
+      0,
+    );
+    assert.deepEqual(
+      mutations.slice(mutationsBeforeRemoval),
+      [],
+      `${mode}: dismissal does not mutate server state or cancel delivery`,
+    );
     assert.deepEqual(errors, [], `${mode}: no renderer exceptions`);
     await page.screenshot({ path: join(evidence, `${mode}.png`) });
     await context.close();
     console.log(
-      `${mode}: delivery, reconciliation, queue, rejection, focus, scroll, and chat isolation pass`,
+      `${mode}: delivery, reconciliation, queue, rejection, local dismissal, focus, scroll, and chat isolation pass`,
     );
   }
   console.log(`Evidence: ${evidence}`);

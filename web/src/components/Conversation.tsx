@@ -18,6 +18,7 @@ import { api, errorText, save, saved } from "../api";
 import { useMessages } from "../hooks";
 import type { OutgoingMessage } from "../sync/send";
 import { outgoingTranscript, deliveryLabel } from "./messageDelivery";
+import { useRemovedMessages } from "./removedMessages";
 import { useConversationScroll } from "./useConversationScroll";
 import {
   statusLabel,
@@ -86,7 +87,8 @@ export default function Conversation(p: {
     history,
     (p.outgoing || []).filter((entry) => entry.body.room === p.id),
   );
-  const items = delivery.items;
+  const removed = useRemovedMessages(p.data.stateDir, kind, p.id);
+  const items = delivery.items.filter((message) => !removed.hidden(message));
   const observed = delivery.observed.join(",");
   useEffect(() => {
     if (observed) p.onObserved?.(observed.split(","));
@@ -351,9 +353,36 @@ export default function Conversation(p: {
         <span className="message-label">{m.senderName}</span>
       )}
       {deliveryLabel(m) && (
-        <span className="message-label message-delivery-status" role="status">
-          {deliveryLabel(m)}
-        </span>
+        <div className="message-delivery-heading">
+          <span className="message-label message-delivery-status" role="status">
+            {deliveryLabel(m)}
+          </span>
+          {m.role === "user" &&
+            ["uncertain", "failed", "cancelled"].includes(
+              m.deliveryStatus || "",
+            ) && (
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                aria-label="Remove message"
+                title="Remove from this device. Delivery is not cancelled."
+                onClick={() => {
+                  try {
+                    removed.remove(m);
+                    p.notify(
+                      "Message removed from this device. Delivery was not cancelled.",
+                    );
+                  } catch (error) {
+                    p.notify(
+                      `Could not remove this message: ${errorText(error)}`,
+                    );
+                  }
+                }}
+              >
+                <Trash2 size={14} />
+              </ActionIcon>
+            )}
+        </div>
       )}
       {m.role === "user" ? (
         <div className="prose plain">{m.text}</div>
