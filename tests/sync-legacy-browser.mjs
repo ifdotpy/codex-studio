@@ -13,7 +13,7 @@ try {
  page.on('pageerror',error=>errors.push(error.message));
  let status=404, probes=0, sends=0;
  await page.route('**/sync-check',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><title>Legacy sync</title>'}));
- await page.route('**/api/sync/identity',route=>{probes++;return route.fulfill({status,json:{error:'Identity unavailable'}});});
+ await page.route('**/api/sync/identity',route=>{probes++;return route.fulfill({status,json:status === 200 ? {workspaceId:'a'.repeat(32)} : {error:'Identity unavailable'}});});
  await page.route('**/api/messages',route=>{sends++;return route.fulfill({json:{status:'queued'}});});
  const url=`http://127.0.0.1:${server.httpServer.address().port}/sync-check`;
  const mount=async()=>page.evaluate(async()=>{
@@ -40,7 +40,26 @@ try {
  status=503;
  await page.reload();await mount();
  await page.waitForFunction(()=>window.state?.drafts.error && window.state?.outbox.error);
- assert.match(await page.evaluate(()=>window.state.drafts.error),/Identity unavailable/);
+ assert.equal(await page.evaluate(()=>window.state.drafts.error),'Draft sync paused. Retrying automatically.');
+ // Initial connection failures retry without a reload or loss of the local draft.
+ await page.route('**/api/sync/pull?*', route=>route.fulfill({json:{workspaceId:'a'.repeat(32), documents:[], checkpoint:{seq:0}}}));
+ await page.route('**/api/sync/drafts', route=>route.fulfill({json:[]}));
+ status=200;
+ await page.waitForFunction(()=>window.state.drafts.error==='');
+ assert.equal(await page.evaluate(()=>window.state.drafts.drafts.lead),'Local legacy draft');
+ // Successful remote reads cannot clear a local storage failure.
+ await page.evaluate(async()=>{
+  const {db}=await (await import('/src/sync/client.ts')).syncDatabase();
+  const original=db.drafts.incrementalUpsert;
+  window.restoreDraftWrites=()=>{db.drafts.incrementalUpsert=original;};
+  db.drafts.incrementalUpsert=async()=>{throw new Error('Local write fixture');};
+  window.state.drafts.setDrafts({lead:'Unsaved local edit'});
+ });
+ await page.waitForFunction(()=>window.state.drafts.error.includes('could not be saved'));
+ await page.waitForTimeout(3500);
+ assert.match(await page.evaluate(()=>window.state.drafts.error),/could not be saved/);
+ await page.evaluate(()=>{window.restoreDraftWrites();window.state.drafts.setDrafts({lead:'Recovered local edit'});});
+ await page.waitForFunction(()=>window.state.drafts.error==='');
  assert.deepEqual(errors,[]);
  console.log('sync legacy browser contract passed');
 } finally {await browser.close();await server.close();}

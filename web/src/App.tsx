@@ -1271,8 +1271,8 @@ export default function App() {
             </div>
           )}
           {draftError && (
-            <p className="sync-status" role="alert">
-              Draft sync: {draftError}
+            <p className="sync-status" role="status" data-draft-sync-status>
+              {draftError}
             </p>
           )}
           {outbox.error && (

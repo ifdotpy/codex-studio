@@ -146,8 +146,29 @@ export async function watchProjection(
   };
 }
 
-export async function startDraftReplication(fail: (e: unknown) => void) {
+export async function startDraftReplication(
+  report: (e: unknown | null) => void,
+) {
   const { db, workspaceId } = await syncDatabase();
+  const failures = new Map<string, unknown>();
+  let stopped = false;
+  const state = (direction: string, error: unknown | null) => {
+    if (stopped) return;
+    if (error === null) failures.delete(direction);
+    else failures.set(direction, error);
+    report(failures.size ? failures.values().next().value : null);
+  };
+  const attempt = async <T>(direction: string, request: () => Promise<T>) => {
+    try {
+      const result = await request();
+      // Empty pulls also prove recovery. One direction cannot clear the other.
+      state(direction, null);
+      return result;
+    } catch (error) {
+      state(direction, error);
+      throw error;
+    }
+  };
   const replication = replicateRxCollection<SyncDocument, { seq: number }>({
     collection: db.drafts,
     replicationIdentifier: `${workspaceId}:drafts:v1`,
@@ -155,17 +176,29 @@ export async function startDraftReplication(fail: (e: unknown) => void) {
     retryTime: 3000,
     pull: {
       handler: (checkpoint, batchSize) =>
-        pull("drafts", checkpoint?.seq || 0, batchSize, workspaceId),
+        attempt("pull", () =>
+          pull("drafts", checkpoint?.seq || 0, batchSize, workspaceId),
+        ),
       batchSize: 100,
     },
     push: {
-      handler: (rows) => api("/api/sync/drafts", { rows }),
+      handler: (rows) =>
+        attempt("push", () => api("/api/sync/drafts", { rows })),
       batchSize: 100,
     },
   });
   const timer = setInterval(() => replication.reSync(), 3000);
-  const errors = replication.error$.subscribe(fail);
+  const errors = replication.error$.subscribe((error) => {
+    const direction =
+      error.code === "RC_PULL"
+        ? "pull"
+        : error.code === "RC_PUSH"
+          ? "push"
+          : "replication";
+    state(direction, error);
+  });
   return () => {
+    stopped = true;
     clearInterval(timer);
     errors.unsubscribe();
     void replication.cancel();

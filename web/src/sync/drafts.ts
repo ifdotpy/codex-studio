@@ -5,7 +5,7 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { errorText, saved, save } from "../api";
+import { saved, save } from "../api";
 import {
   startDraftReplication,
   syncDatabase,
@@ -44,7 +44,21 @@ export function useSyncedDrafts() {
   const importLegacy = useRef(storageKey.current.endsWith(":legacy"));
   const current = useRef(drafts);
   const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
-  const [error, setError] = useState("");
+  const [localError, setLocalError] = useState("");
+  const [syncFailed, setSyncFailed] = useState(false);
+  const [syncNotice, setSyncNotice] = useState("");
+  useEffect(() => {
+    if (!syncFailed) {
+      setSyncNotice("");
+      return;
+    }
+    // Brief network interruptions recover without moving the conversation.
+    const timer = setTimeout(
+      () => setSyncNotice("Draft sync paused. Retrying automatically."),
+      8000,
+    );
+    return () => clearTimeout(timer);
+  }, [syncFailed]);
   const versions = useRef<DraftVersion[]>([]);
   const dismissed = useRef<string[]>(
     saved(`${storageKey.current}:dismissed`, []),
@@ -156,73 +170,92 @@ export function useSyncedDrafts() {
           if (pendingEdits.current.get(item.session) === sequence)
             pendingEdits.current.delete(item.session);
         }
+        if (!pendingEdits.current.size) setLocalError("");
       })
       .catch((e) => {
-        if (!(e instanceof UnsupportedSyncError)) setError(errorText(e));
+        if (!(e instanceof UnsupportedSyncError))
+          setLocalError(
+            "Draft changes could not be saved for synchronization. Keep this chat open.",
+          );
       });
   }, []);
   useEffect(() => {
     let stopped = false,
       unsubscribe = () => {},
       cancel = () => {};
-    void syncDatabase()
-      .then(async ({ db, workspaceId }) => {
-        if (stopped) return;
-        const targetKey = `codex-drafts:${workspaceId}`;
-        if (storageKey.current !== targetKey) {
-          const next: Drafts = storageKey.current.endsWith(":legacy")
-            ? current.current
-            : saved(targetKey, {});
-          // Preserve edits made in this mount before IndexedDB opened.
-          for (const session of pendingEdits.current.keys())
-            next[session] = current.current[session];
-          storageKey.current = targetKey;
-          dismissed.current = saved(`${targetKey}:dismissed`, []);
-          current.current = next;
-          update(next);
-          save(targetKey, next);
-        }
-        cancel = await startDraftReplication((e) => {
-          if (!stopped && !(e instanceof UnsupportedSyncError))
-            setError(errorText(e));
-        });
-        if (stopped) {
-          cancel();
-          return;
-        }
-        // Import the previous browser drafts without replacing a replicated branch.
-        for (const [session, text] of Object.entries(
-          importLegacy.current ? current.current : {},
-        )) {
-          const id = `${device}:${session}`;
-          if (!(await db.drafts.findOne(id).exec()))
-            await db.drafts.insert({
-              id,
-              seq: 0,
-              payload: encodeDraftPayload({
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const start = () => {
+      void syncDatabase()
+        .then(async ({ db, workspaceId }) => {
+          if (stopped) return;
+          const targetKey = `codex-drafts:${workspaceId}`;
+          if (storageKey.current !== targetKey) {
+            const next: Drafts = storageKey.current.endsWith(":legacy")
+              ? current.current
+              : saved(targetKey, {});
+            // Preserve edits made in this mount before IndexedDB opened.
+            for (const session of pendingEdits.current.keys())
+              next[session] = current.current[session];
+            storageKey.current = targetKey;
+            dismissed.current = saved(`${targetKey}:dismissed`, []);
+            current.current = next;
+            update(next);
+            save(targetKey, next);
+          }
+          cancel = await startDraftReplication((e) => {
+            if (!stopped && !(e instanceof UnsupportedSyncError))
+              setSyncFailed(e !== null);
+          });
+          if (stopped) {
+            cancel();
+            return;
+          }
+          // Import the previous browser drafts without replacing a replicated branch.
+          for (const [session, text] of Object.entries(
+            importLegacy.current ? current.current : {},
+          )) {
+            const id = `${device}:${session}`;
+            if (!(await db.drafts.findOne(id).exec()))
+              await db.drafts.insert({
                 id,
-                session,
-                device,
-                text,
-                updated: Date.now(),
-              }),
-            });
-        }
-        if (stopped) return;
-        const sub = db.drafts.find().$.subscribe((docs: any[]) => {
-          reconcile(docs.map((doc) => JSON.parse(doc.payload)));
+                seq: 0,
+                payload: encodeDraftPayload({
+                  id,
+                  session,
+                  device,
+                  text,
+                  updated: Date.now(),
+                }),
+              });
+          }
+          if (stopped) return;
+          const sub = db.drafts.find().$.subscribe((docs: any[]) => {
+            reconcile(docs.map((doc) => JSON.parse(doc.payload)));
+          });
+          unsubscribe = () => sub.unsubscribe();
+        })
+        .catch((e) => {
+          if (!stopped && !(e instanceof UnsupportedSyncError)) {
+            setSyncFailed(true);
+            unsubscribe();
+            cancel();
+            retry = setTimeout(start, 3000);
+          }
         });
-        unsubscribe = () => sub.unsubscribe();
-      })
-      .catch((e) => {
-        if (!stopped && !(e instanceof UnsupportedSyncError))
-          setError(errorText(e));
-      });
+    };
+    start();
     return () => {
       stopped = true;
+      clearTimeout(retry);
       unsubscribe();
       cancel();
     };
   }, [reconcile]);
-  return { drafts, setDrafts, conflicts, dismissDraft, error };
+  return {
+    drafts,
+    setDrafts,
+    conflicts,
+    dismissDraft,
+    error: localError || syncNotice,
+  };
 }

@@ -52,6 +52,50 @@ try {
  assert.equal(await desktop.getByRole('button', { name: /^Other drafts/ }).count(), 0, 'Cleared drafts must not return as conflicts');
  await phone.locator('#message').fill('Current draft');
  await waitText(desktop, 'Current draft');
+ // A temporary pull error must not leave an error banner after recovery.
+ let failPull = false, failPush = false, pullFailures = 0, pushFailures = 0, successfulPulls = 0;
+ await desktop.route('**/api/sync/pull?*', async route => {
+  if (new URL(route.request().url()).searchParams.get('scope') !== 'drafts') return route.continue();
+  if (failPull) { pullFailures++; return route.abort('failed'); }
+  const response = await route.fetch();
+  successfulPulls++;
+  return route.fulfill({ response });
+ });
+ await desktop.route('**/api/sync/drafts', route => { if (failPush) { pushFailures++; return route.abort('failed'); } return route.continue(); });
+ const status = desktop.locator('[data-draft-sync-status]');
+ failPull = true;
+ const until = async (condition, label) => {
+  for (let i = 0; i < 160; i++) { if (condition()) return; await desktop.waitForTimeout(100); }
+  throw new Error(label);
+ };
+ await until(() => pullFailures > 0, 'pull failure observed');
+ assert.equal(await status.count(), 0, 'short failure does not move the chat');
+ failPull = false;
+ const previousPulls = successfulPulls;
+ await until(() => successfulPulls > previousPulls, 'empty pull recovered');
+ await desktop.waitForTimeout(8500);
+ assert.equal(await status.count(), 0, 'recovered pull leaves no delayed warning');
+ failPull = true;
+ await status.waitFor({ timeout: 18000 });
+ assert.equal(await status.innerText(), 'Draft sync paused. Retrying automatically.');
+ assert.ok((await status.boundingBox()).height < 50, 'failure is a compact status');
+ assert.equal(await desktop.getByText(/RxDB Error-Code|RC_PULL|Find out more about this error/).count(), 0);
+ failPush = true;
+ await desktop.locator('#message').fill('Retained during sync outage');
+ await until(() => pushFailures > 0, 'push failure observed');
+ const pullsBeforeRecovery = successfulPulls;
+ failPull = false;
+ await until(() => successfulPulls > pullsBeforeRecovery, 'pull restored while push fails');
+ await desktop.waitForTimeout(3500);
+ assert.equal(await status.isVisible(), true, 'healthy pull cannot hide failed push');
+ assert.equal(await desktop.locator('#message').inputValue(), 'Retained during sync outage');
+ failPush = false;
+ await waitText(phone, 'Retained during sync outage');
+ await status.waitFor({ state: 'hidden', timeout: 15000 });
+ await desktop.reload();
+ await waitText(desktop, 'Retained during sync outage');
+ await desktop.locator('#message').fill('Current draft');
+ await waitText(phone, 'Current draft');
  // Independent old branches model concurrent edits from offline profiles.
  const stamp = Date.now() - 10000;
  for (let i = 0; i < 12; i++) await push({ id: `offline-${i}:${session}`, session, device: `offline-${i}`, text: `Alternative ${i}\n` + 'Long draft text '.repeat(700), updated: stamp + i });
@@ -86,7 +130,7 @@ try {
  assert.equal(await phone.getByRole('button', { name: /^Other drafts/ }).count(), 0);
  assert.equal(await desktop.getByRole('button', { name: /^Other drafts/ }).count(), 0);
  assert.deepEqual(errors, []);
- console.log(`PASS: two-device draft handoff, clear, reload, bounded mobile preview, durable dismissal, replacement. ${state}`);
+ console.log(`PASS: two-device draft handoff, clear, reload, bounded mobile preview, durable dismissal, replacement, transient failure, direction-specific recovery, retained offline edits. ${state}`);
 } finally {
  if (browser) await browser.close();
  fixture.stdin.end();
