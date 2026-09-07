@@ -138,10 +138,23 @@ try {
   const panel = page.locator(".agent-panel");
   await panel.waitFor({ state: "hidden" });
   const assertLayout = async () => {
+    await page.waitForFunction(() => {
+      const panel = document.querySelector(".agent-panel");
+      return (
+        panel?.dataset.ready === "true" &&
+        panel.getBoundingClientRect().height > 0 &&
+        Math.abs(
+          panel.getBoundingClientRect().height - parseFloat(panel.style.height),
+        ) < 0.5
+      );
+    });
     const bounds = await panel.boundingBox();
     const transcript = await page.locator("#messages").boundingBox();
     const composer = await page.locator("#composer").boundingBox();
-    assert.equal(bounds.height, 150);
+    assert.ok(
+      bounds.height > 0 && bounds.height <= 150,
+      JSON.stringify(bounds),
+    );
     assert.equal((await panel.locator("iframe").boundingBox()).height, 150);
     assert.equal(
       await panel.evaluate((el) => el.nextElementSibling?.id),

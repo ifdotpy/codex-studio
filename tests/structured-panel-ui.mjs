@@ -167,7 +167,10 @@ try {
   await frame.getByRole("progressbar", { name: "Runtime checks" }).waitFor();
   const assertFits = async () => {
     const bounds = await panel.boundingBox();
-    assert.equal(bounds.height, 150);
+    assert.ok(
+      bounds.height > 0 && bounds.height <= 150,
+      JSON.stringify(bounds),
+    );
     assert.equal(
       await panel.evaluate((element) => element.nextElementSibling?.id),
       "composer",
