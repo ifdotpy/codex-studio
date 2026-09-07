@@ -38,7 +38,10 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(url);
-  await page.locator("#new-chat").click();
+  await page
+    .getByRole("button", { name: /^New chat in / })
+    .first()
+    .click();
   await page.getByRole("heading", { name: "New chat", exact: true }).waitFor();
   const state = await (await fetch(url + "/api/state")).json();
   assert.ok(
@@ -95,7 +98,9 @@ try {
     await route.fulfill({ json: { ok: true } });
   });
   await page.locator("#project").click();
-  const picker = page.getByRole("dialog", { name: "Project directory" });
+  const picker = page.getByRole("dialog", { name: "Project folder" });
+  await picker.getByLabel("Folder path", { exact: true }).fill("/projects");
+  await picker.getByRole("button", { name: "Go", exact: true }).click();
   await picker.getByRole("button", { name: "Alpha", exact: true }).waitFor();
   await picker.getByLabel("Filter folders").fill("alpha");
   assert.equal(await picker.locator(".directory-row").count(), 1);

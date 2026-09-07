@@ -253,16 +253,25 @@ try {
       await route.abort("failed");
     } else await route.fulfill({ response });
   });
-  await page.locator("#new-chat").click();
+  await page
+    .getByRole("button", { name: /^New chat in / })
+    .first()
+    .click();
   await page.locator("#toast").waitFor();
-  await page.locator("#new-chat").click();
+  await page
+    .getByRole("button", { name: /^New chat in / })
+    .first()
+    .click();
   await poll(
     async () =>
       (await page.locator("#conversation-title").textContent()) === "New chat",
     "creation retry",
   );
   await page.locator("#message").fill("Keep this draft");
-  await page.locator("#new-chat").click();
+  await page
+    .getByRole("button", { name: /^New chat in / })
+    .first()
+    .click();
   assert.equal(await page.locator("#message").inputValue(), "Keep this draft");
   const afterCreate = await (await fetch(origin + "/api/state")).json();
   assert.equal(

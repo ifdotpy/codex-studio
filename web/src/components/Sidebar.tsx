@@ -25,8 +25,6 @@ import {
   Folder,
   ChevronDown,
   Plus,
-  SquarePen,
-  Terminal,
   Trash2,
   Users,
 } from "lucide-react";
@@ -330,24 +328,13 @@ export default function Sidebar(p: Props) {
   const compact = useMediaQuery("(max-width: 760px)");
   const content = (
     <aside id="sidebar" aria-label="Conversations">
-      <a className="brand" href="/">
-        <span className="brand-mark">
-          <Terminal size={18} />
-        </span>
-        <span className="brand-name">
-          <strong>Codex</strong> <span>Studio</span>
-        </span>
-      </a>
-      <Button
-        id="new-chat"
-        className="new-chat"
-        variant="default"
-        leftSection={<SquarePen size={16} />}
-        onClick={() => p.newChat()}
-        loading={p.creating}
-      >
-        New chat
-      </Button>
+      <div className="sidebar-header">
+        <a className="brand" href="/">
+          <span className="brand-name">
+            <strong>Codex</strong> <span>Studio</span>
+          </span>
+        </a>
+      </div>
       <TextInput
         id="chat-search"
         type="search"

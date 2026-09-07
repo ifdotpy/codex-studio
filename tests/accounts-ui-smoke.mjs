@@ -57,7 +57,7 @@ const makeLead = (id, name, accountKey, empty) => ({
   created: Date.now() / 1000,
   inFlight: false,
   canSend: true,
-  cwd: "/tmp/fixture",
+  cwd: "/Users/igor/Projects/lumina",
 });
 const agents = [
   makeLead("started", "Started conversation", "default", false),
@@ -400,7 +400,10 @@ try {
     animations: "disabled",
   });
   await page.keyboard.press("Escape");
-  await page.locator("#new-chat").click();
+  await page
+    .getByRole("button", { name: /^New chat in / })
+    .first()
+    .click();
   await page.waitForFunction(
     () =>
       document.querySelector("#conversation-title")?.textContent ===

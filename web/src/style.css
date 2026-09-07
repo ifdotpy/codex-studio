@@ -86,16 +86,25 @@ p {
   padding: 22px 12px 12px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   min-height: 0;
+}
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 0 8px 4px;
+  padding: 0;
+  flex-shrink: 0;
   color: var(--text);
-  font-size: 15px;
+  font-size: 24px;
   font-weight: 650;
   text-decoration: none;
   letter-spacing: -0.3px;
@@ -105,7 +114,7 @@ p {
   align-items: baseline;
   gap: 6px;
   white-space: nowrap;
-  line-height: 20px;
+  line-height: 32px;
 }
 .brand-name strong {
   font: inherit;
@@ -114,43 +123,48 @@ p {
   font-weight: 400;
   color: var(--muted);
 }
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 29px;
-  height: 29px;
-  margin-right: 3px;
-  border: 1px solid #ffffff15;
-  border-radius: 9px;
-  background: #24242b;
-}
-.new-chat .mantine-Button-inner,
 #lead-row .mantine-Button-inner,
 .picker .mantine-Button-inner {
   justify-content: flex-start;
 }
-.new-chat {
-  min-height: 38px;
-  justify-content: flex-start;
-  background: #202026;
-  border-color: #ffffff12;
-}
 #chat-search {
-  background: transparent;
-  border-color: transparent;
+  height: 36px;
+  min-height: 36px;
+  border-radius: 8px;
+  background: #ffffff03;
+  border-color: #ffffff07;
+  font-size: 12px;
 }
 #chat-search:focus {
   border-color: #6366f1;
 }
-.chat-tabs {
-  margin-bottom: -7px;
+.chat-tabs [role="tablist"] {
+  padding: 3px;
+  border-radius: 9px;
+  background: #0e0e12;
+}
+.chat-tabs [role="tablist"]::before {
+  border: 0;
 }
 .chat-tabs [role="tab"] {
-  padding: 10px 4px;
+  height: 30px;
+  padding: 0 6px;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 6px;
   font-size: 12px;
   color: var(--muted);
 }
+.chat-tabs .mantine-Tabs-tabSection {
+  margin: 0;
+}
+.chat-tabs .mantine-Tabs-tabLabel {
+  flex: 0 0 auto;
+}
 .chat-tabs [role="tab"][data-active] {
+  background: #26262d;
+  box-shadow: 0 1px 3px #00000026;
   color: var(--text);
 }
 .tab-count {
@@ -294,25 +308,19 @@ p {
   border-bottom: 1px solid var(--line);
 }
 .desktop-mac .workspace-header,
-.desktop-mac .brand {
+.desktop-mac .sidebar-header {
   -webkit-app-region: drag;
 }
 .desktop-mac .workspace-header :is(button, a, input, select, [role="button"]),
-.desktop-mac .brand > span {
+.desktop-mac .sidebar-header :is(button, a) {
   -webkit-app-region: no-drag;
 }
-.desktop-mac .brand {
-  height: 56px;
-  flex: 0 0 56px;
-  align-items: flex-end;
-  justify-content: flex-start;
-  padding: 0 0 6px;
+.desktop-mac .sidebar-header {
+  height: 60px;
+  padding: 28px 0 0;
 }
 .desktop-mac #sidebar {
   padding-top: 0;
-}
-.desktop-mac .brand-mark {
-  display: none;
 }
 @media (max-width: 760px) {
   .desktop-mac .workspace-header {
