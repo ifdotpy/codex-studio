@@ -54,6 +54,7 @@ export default function ProjectDirectoryPicker({
     setLoading(true);
     setSelectionError("");
     setQuery("");
+    if (next === path) setAttempt((value) => value + 1);
     setPath(next);
     setTypedPath(next);
   };

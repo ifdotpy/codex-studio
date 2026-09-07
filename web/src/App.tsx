@@ -127,6 +127,7 @@ export default function App() {
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountChanging, setAccountChanging] = useState(false);
+  const selectionScope = useRef("");
   useMobileViewport(mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const { data, error, refresh } = useSnapshot(),
@@ -237,9 +238,6 @@ export default function App() {
     if (opened && (agent || room || legacy) && !agent?.isLead)
       setOpened(lead?.id || leads.at(-1)?.id || null);
   }, [mobileClient, opened, agent?.isLead, lead?.id]);
-  useEffect(() => {
-    if (mobileClient) save("codex-mobile-opened", opened);
-  }, [mobileClient, opened]);
   const accounts = useAccounts(data?.stateDir);
   const accountKey =
     agent?.accountKey ||
@@ -277,9 +275,15 @@ export default function App() {
       ["failed", "interrupted"].includes(a.status),
     ).length;
   const taskCount = backgroundTasks(chatData).filter(activeTask).length;
-  const setDraft = (text: string, id = opened || "new") =>
+  const setDraft = (
+    text: string | ((current: string) => string),
+    id = opened || "new",
+  ) =>
     setDrafts((old) => {
-      const next = { ...old, [id]: text };
+      const next = {
+        ...old,
+        [id]: typeof text === "function" ? text(old[id] || "") : text,
+      };
       save("codex-agent-drafts", next);
       return next;
     });
@@ -299,9 +303,31 @@ export default function App() {
     setTeamOpen(false);
   };
   useEffect(() => {
-    if (data && (!opened || (!agent && !room && !legacy)))
+    if (!data) return;
+    const scope = `${data.stateDir}:${mobileClient ? "mobile" : "desktop"}`;
+    const key = mobileClient
+      ? "codex-mobile-opened"
+      : `codex-desktop-opened:${data.stateDir}`;
+    if (selectionScope.current !== scope) {
+      selectionScope.current = scope;
+      const selected = saved<string | null>(key, null);
+      if (
+        selected &&
+        (data.threads.some(
+          (item) => item.id === selected && (!mobileClient || item.isLead),
+        ) ||
+          (!mobileClient &&
+            (data.runtime.rooms.some((item) => item.id === selected) ||
+              data.chats.some((item) => item.id === selected))))
+      ) {
+        setOpened(selected);
+        return;
+      }
+    }
+    if (!opened || (!agent && !room && !legacy))
       setOpened(leads.at(-1)?.id || null);
-  }, [data, opened, agent, room, legacy]);
+    else save(key, opened);
+  }, [data, opened, agent, room, legacy, mobileClient]);
   useEffect(() => {
     const onError = (event: Event) =>
       notify((event as CustomEvent<string>).detail);
@@ -502,6 +528,14 @@ export default function App() {
         /^\/(compact|review|stop|stop-team)(\s|$)/.test(text)
       ) {
         const [command] = text.split(/\s+/);
+        if (options?.assets?.length)
+          throw new Error(
+            "Commands cannot include files. Remove the attachments or send a normal message.",
+          );
+        if (text !== command)
+          throw new Error(
+            "Use the command without additional text, or send a normal message.",
+          );
         if (command === "/stop" || command === "/stop-team")
           await api("/api/stop", {
             id: command === "/stop-team" ? agent.rootId : id,
@@ -1358,6 +1392,7 @@ export default function App() {
         <TerminalDock data={data} agent={agent || lead} notify={notify} />
       )}
       <Workspace
+        allRequests={data.runtime.requests}
         key={`workspace:${lead?.id || "none"}`}
         initialSection={workspaceSection}
         opened={workspaceOpen}

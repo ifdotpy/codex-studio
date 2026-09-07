@@ -23,7 +23,7 @@ import { api, errorText, save, saved } from "../api";
 import { useMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
-import type { OutgoingMessage } from "../sync/send";
+import { changeOutbox, type OutgoingMessage } from "../sync/send";
 import { outgoingTranscript, deliveryLabel } from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
 import { useConversationScroll } from "./useConversationScroll";
@@ -42,6 +42,7 @@ import UserTasks from "./UserTasks";
 import TurnHistory from "./TurnHistory";
 import { Dictation } from "./Dictation";
 import RealtimeVoice from "./RealtimeVoice";
+import OutboxControls from "./OutboxControls";
 import StreamingText from "./StreamingText";
 import SelectionQuote, { selectedExcerpt } from "./SelectionQuote";
 import AgentPhase from "./AgentPhase";
@@ -59,7 +60,7 @@ export default function Conversation(p: {
   legacy?: Json;
   data: Snapshot;
   draft: string;
-  setDraft: (v: string) => void;
+  setDraft: (v: string | ((current: string) => string), id?: string) => void;
   draftConflicts?: DraftVersion[];
   dismissDraft?: (version: DraftVersion) => void;
   send: (options?: {
@@ -411,6 +412,36 @@ export default function Conversation(p: {
       {Array.isArray(m.assets) && (
         <MessageAttachments assets={m.assets} notify={p.notify} />
       )}
+      {m.localDelivery && (
+        <OutboxControls
+          entry={p.outgoing?.find((entry) => entry.id === m.clientMessageId)}
+          edit={async (entry) => {
+            if (p.draft.trim() || assets.length)
+              throw new Error("Send or clear the current draft first.");
+            await changeOutbox(entry.id, "cancel");
+            p.setDraft(
+              (current) =>
+                current.trim()
+                  ? `${current}\n\n${entry.body.text}`
+                  : entry.body.text,
+              entry.body.room,
+            );
+            setAttachments((current) => ({
+              ...current,
+              [entry.body.room]: [
+                ...new Map(
+                  [
+                    ...(current[entry.body.room] || []),
+                    ...(entry.attachments || []),
+                  ].map((asset: Attachment) => [asset.id, asset]),
+                ).values(),
+              ],
+            }));
+            if (activeId.current === entry.body.room)
+              input.current?.focus({ preventScroll: true });
+          }}
+        />
+      )}
       {m.deliveryError &&
         ["failed", "uncertain", "queued"].includes(m.deliveryStatus) && (
           <div className="message-delivery-error">
@@ -617,6 +648,8 @@ export default function Conversation(p: {
         />
       )}
       <Requests
+        scope={p.data.stateDir}
+        allRequests={p.data.runtime.requests}
         requests={requests}
         agents={p.data.threads}
         refresh={p.refresh}
@@ -814,7 +847,7 @@ export default function Conversation(p: {
             />
             <div className="composer-bar">
               <DraftVersions
-                key={p.id || "new"}
+                key={`drafts:${p.id || "new"}`}
                 versions={p.draftConflicts || []}
                 useVersion={(version) => p.setDraft(version.text)}
                 dismiss={(version) => p.dismissDraft?.(version)}
@@ -855,7 +888,11 @@ export default function Conversation(p: {
                 />
               )}
               {managed && agent?.isLead && p.id && (
-                <RealtimeVoice key={p.id} agentId={p.id} notify={p.notify} />
+                <RealtimeVoice
+                  key={`voice:${p.id}`}
+                  agentId={p.id}
+                  notify={p.notify}
+                />
               )}
               <span id="send-state" role="status" aria-live="polite">
                 {p.sending ? "Sending…" : ""}

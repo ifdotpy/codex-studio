@@ -104,13 +104,22 @@ try {
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("pageerror", (e) => {
+    errors.push(e.message);
+    console.error(e.stack);
+  });
   await page.route("**/api/**", async (route) => {
     const req = route.request(),
       url = new URL(req.url()),
       path = url.pathname;
     let value = {};
+    if (path.startsWith("/api/sync/"))
+      return route.fulfill({ status: 404, body: "Legacy fixture" });
     if (path === "/api/state") value = state;
+    else if (path === "/api/accounts")
+      value = { accounts: [], defaultAccountKey: "" };
+    else if (path === "/api/voice/records")
+      value = { records: [], cursor: 0, delivered: [] };
     else if (path === "/api/transcript/stream")
       return route.fulfill({ status: 503, body: "Use fixture polling" });
     else if (path === "/api/transcript")
@@ -258,14 +267,30 @@ try {
   );
   await full.getByLabel("Task status").selectOption("all");
   await full.getByLabel("Search your tasks").fill("another team");
+  assert.equal(await full.locator("[data-user-task]").count(), 0);
+  assert.equal(
+    await full.getByText(outsideTask.title, { exact: true }).count(),
+    0,
+  );
+  await full.getByLabel("Search your tasks").fill(task.title);
   assert.equal(await full.locator("[data-user-task]").count(), 1);
-  await full.getByText(outsideTask.title, { exact: true }).waitFor();
+  await full.getByText(task.title, { exact: true }).waitFor();
   await full.getByLabel("Search your tasks").fill("");
   await full.getByLabel("Task owner").selectOption("worker");
   assert.equal(await full.locator("[data-user-task]").count(), 1);
   await full.getByRole("button", { name: task.title, exact: true }).click();
   await page.screenshot({ path: join(root, "user-tasks-desktop.png") });
+  await full.getByRole("button", { name: "Open agent chat" }).click();
+  await page
+    .locator("#conversation-title")
+    .filter({ hasText: "Build reviewer" })
+    .waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
+  await full.waitFor({ state: "detached" });
+  await page
+    .locator("#conversation-title")
+    .filter({ hasText: "Release lead" })
+    .waitFor();
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth),
     390,
@@ -277,15 +302,10 @@ try {
     320,
   );
   assert.equal(
-    await full.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+    await compact.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
     true,
     "Task content stays within the panel",
   );
-  await full.getByRole("button", { name: "Open agent chat" }).click();
-  await page
-    .locator("#conversation-title")
-    .filter({ hasText: "Build reviewer" })
-    .waitFor();
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -299,7 +319,7 @@ try {
         "agent return",
         "agent acceptance",
         "stopped delivery",
-        "global history and search",
+        "team history and search",
         "owner filter",
         "mobile overflow",
       ],

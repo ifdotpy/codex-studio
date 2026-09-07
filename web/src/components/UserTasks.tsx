@@ -17,10 +17,36 @@ import {
   RotateCcw,
   Search,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api, errorText } from "../api";
 import type { Agent, Json, Snapshot, UserTask } from "../types";
 import "./user-tasks.css";
+
+// Keep unsent notes in memory across panel and chat changes. Never write them to disk.
+const noteDrafts = new Map<string, string>();
+const noteListeners = new Map<string, Set<() => void>>();
+function useTaskNote(key: string) {
+  const note = useSyncExternalStore(
+    (listener) => {
+      const listeners = noteListeners.get(key) || new Set();
+      noteListeners.set(key, listeners);
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        if (!listeners.size) noteListeners.delete(key);
+      };
+    },
+    () => noteDrafts.get(key) || "",
+  );
+  return [
+    note,
+    (value: string) => {
+      if (value) noteDrafts.set(key, value);
+      else noteDrafts.delete(key);
+      noteListeners.get(key)?.forEach((listener) => listener());
+    },
+  ] as const;
+}
 
 type Task = UserTask;
 type Props = {
@@ -161,6 +187,7 @@ export default function UserTasks(p: Props) {
               <UserTaskRow
                 key={task.id}
                 task={task}
+                noteKey={JSON.stringify([p.data.stateDir, task.id])}
                 owner={p.data.threads.find((agent) => agent.id === task.agent)}
                 compact={p.compact}
                 focused={p.focusId === task.id}
@@ -194,6 +221,7 @@ export default function UserTasks(p: Props) {
 
 function UserTaskRow(p: {
   task: Task;
+  noteKey: string;
   owner?: Agent;
   compact?: boolean;
   focused: boolean;
@@ -204,7 +232,7 @@ function UserTaskRow(p: {
 }) {
   const { task } = p;
   const [details, setDetails] = useState(p.focused);
-  const [note, setNote] = useState("");
+  const [note, setNote] = useTaskNote(p.noteKey);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const request = useRef<{ fingerprint: string; id: string } | null>(null);
@@ -237,7 +265,7 @@ function UserTaskRow(p: {
       });
       const updated = (response.task || response) as Task;
       p.update(updated);
-      setNote("");
+      if (noteDrafts.get(p.noteKey) === note) setNote("");
       request.current = null;
       const stopped = !!updated.agentStopped;
       const message = stopped

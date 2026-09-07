@@ -60,9 +60,7 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let extraRequests = true;
-  await page.route("**/api/state", async (route) => {
-    const response = await route.fetch(),
-      state = await response.json();
+  const questionState = (state) => {
     state.runtime.requests = state.runtime.requests.map((request) =>
       request.id !== "async-question"
         ? request
@@ -127,7 +125,42 @@ try {
           },
         },
       );
-    await route.fulfill({ response, json: state });
+    return state;
+  };
+  await page.route("**/api/state", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      json: questionState(await response.json()),
+    });
+  });
+  // HTTP and replicated snapshots must expose the same question fixture.
+  const identity = await (await fetch(origin + "/api/sync/identity")).json();
+  let statePayload = "",
+    stateSequence = 0;
+  await page.route("**/api/sync/pull?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("scope") !== "state") return route.fallback();
+    const state = questionState(
+      await (await fetch(origin + "/api/state")).json(),
+    );
+    delete state.token;
+    const payload = JSON.stringify(state);
+    if (payload !== statePayload) {
+      statePayload = payload;
+      stateSequence++;
+    }
+    const after = Number(url.searchParams.get("after") || 0);
+    await route.fulfill({
+      json: {
+        ...identity,
+        documents:
+          after < stateSequence
+            ? [{ id: "state", seq: stateSequence, payload, _deleted: false }]
+            : [],
+        checkpoint: { seq: Math.max(after, stateSequence) },
+      },
+    });
   });
   await page.goto(origin);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
@@ -199,6 +232,41 @@ try {
     await form.locator('[aria-pressed="true"]').count(),
     0,
     "custom text clears the option selection",
+  );
+  await card.getByRole("button", { name: "Hide", exact: true }).click();
+  await card.locator("[data-answer]").click();
+  assert.equal(
+    await form.getByRole("textbox", { name: "Which scope?" }).inputValue(),
+    "Only the request controls",
+    "Hide preserves the answer draft",
+  );
+  await page
+    .locator("[data-chat]")
+    .filter({ hasText: "Other project" })
+    .click();
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await card.locator("[data-answer]").click();
+  assert.equal(
+    await form.getByRole("textbox", { name: "Which scope?" }).inputValue(),
+    "Only the request controls",
+    "Chat navigation preserves the answer draft",
+  );
+  assert.equal(
+    await form
+      .getByRole("textbox", { name: "Which evidence must the report include?" })
+      .inputValue(),
+    "Tests and the complete diff",
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      [localStorage, sessionStorage].some((storage) =>
+        Object.keys(storage).some((key) =>
+          storage.getItem(key)?.includes("Only the request controls"),
+        ),
+      ),
+    ),
+    false,
+    "Answer drafts never enter browser storage",
   );
   for (const [width, height] of [
     [1440, 960],
@@ -298,9 +366,17 @@ try {
     true,
   );
   assert.equal(answers.length, 2, "Cancel never sends an answer");
+  await page.locator('[data-answer="other-question"]').click();
+  assert.equal(
+    await otherForm
+      .getByRole("textbox", { name: "Other project question?" })
+      .inputValue(),
+    "",
+    "Explicit Cancel discards the answer draft",
+  );
   assert.deepEqual(errors, []);
   console.log(
-    "Question UX: PASS (inline choices, custom text, explicit submit, failed retry, exact ID, stale response, blocking input, narrow layout)",
+    "Question UX: PASS (inline choices, custom text, draft preservation, explicit cancel, explicit submit, failed retry, exact ID, stale response, blocking input, narrow layout)",
   );
   console.log("Browser evidence:", root);
 } catch (error) {

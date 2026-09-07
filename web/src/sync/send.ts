@@ -5,7 +5,14 @@ import { onResume } from "./resume";
 
 type Intention = {
   body: Record<string, any>;
-  status: "queued" | "accepted" | "uncertain" | "failed";
+  status:
+    | "queued"
+    | "paused"
+    | "cancelled"
+    | "accepted"
+    | "uncertain"
+    | "failed";
+  attempted?: boolean;
   error?: string;
   receipt?: any;
   created: number;
@@ -23,10 +30,15 @@ const updateIntention = (doc: any, change: Partial<Intention>) =>
     ...record,
     payload: JSON.stringify({ ...JSON.parse(record.payload), ...change }),
   }));
+const intentionResult = (value: Intention) =>
+  value.receipt || {
+    queued: value.status === "queued" || value.status === "paused",
+    status: value.status,
+    error: value.error,
+  };
 async function deliver(doc: any) {
-  const value: Intention = JSON.parse(doc.payload);
-  if (value.status !== "queued")
-    return value.receipt || { status: value.status, error: value.error };
+  let value: Intention = JSON.parse(doc.getLatest().payload);
+  if (value.status !== "queued") return intentionResult(value);
   try {
     const { workspaceId } = await syncDatabase();
     const identity = await syncApi<{ workspaceId: string }>(
@@ -45,6 +57,19 @@ async function deliver(doc: any) {
       session = await syncApi<{ token: string }>("/api/state");
     }
     setToken(session.token);
+    // Claim the current content before HTTP. Cancellation uses the same atomic
+    // update and can succeed only before this request starts.
+    const claimed = await doc.incrementalModify((record: any) => {
+      const current: Intention = JSON.parse(record.payload);
+      return current.status === "queued"
+        ? {
+            ...record,
+            payload: JSON.stringify({ ...current, attempted: true }),
+          }
+        : record;
+    });
+    value = JSON.parse(claimed.payload);
+    if (value.status !== "queued") return intentionResult(value);
     const result = await syncApi<any>("/api/messages", value.body);
     const acknowledged = [
       "queued",
@@ -88,13 +113,23 @@ async function deliver(doc: any) {
       error.status === 408 ||
       error.status === 429
     ) {
-      await updateIntention(doc, { error: errorText(error) });
-      return { queued: true, status: "queued" };
+      const current = await updateIntention(doc, { error: errorText(error) });
+      return intentionResult(JSON.parse(current.payload));
     }
-    await updateIntention(doc, {
-      status: "failed",
-      error: errorText(error),
+    const current = await doc.incrementalModify((record: any) => {
+      const stored: Intention = JSON.parse(record.payload);
+      if (!["queued", "paused"].includes(stored.status)) return record;
+      return {
+        ...record,
+        payload: JSON.stringify({
+          ...stored,
+          status: "failed",
+          error: errorText(error),
+        }),
+      };
     });
+    const stored: Intention = JSON.parse(current.payload);
+    if (stored.status !== "failed") return intentionResult(stored);
     throw error;
   }
 }
@@ -127,6 +162,7 @@ export async function durableSend(
         payload: JSON.stringify({
           body,
           status: "queued",
+          attempted: false,
           created: Date.now(),
           displayPending: true,
           attachments,
@@ -154,6 +190,32 @@ export async function editOutboxDisplay(id: string, text: string) {
   const { db } = await syncDatabase();
   const doc = await db.outbox.findOne(id).exec();
   if (doc) await updateIntention(doc, { displayText: text });
+}
+export async function changeOutbox(
+  id: string,
+  action: "cancel" | "pause" | "resume",
+) {
+  const { db } = await syncDatabase();
+  const doc = await db.outbox.findOne(id).exec();
+  if (!doc) throw new Error("This message is no longer on this device.");
+  const updated = await doc.incrementalModify((record: any) => {
+    const current: Intention = JSON.parse(record.payload);
+    if (!["queued", "paused"].includes(current.status))
+      throw new Error("This message already left the device queue.");
+    const next = { ...current };
+    if (action === "cancel") {
+      // Older records lack this marker and may already have reached the server.
+      if (current.attempted !== false)
+        throw new Error(
+          "Delivery may have started. Stop retrying or check the conversation.",
+        );
+      next.status = "cancelled";
+      next.error = undefined;
+      next.receipt = { id, status: "cancelled" };
+    } else next.status = action === "pause" ? "paused" : "queued";
+    return { ...record, payload: JSON.stringify(next) };
+  });
+  if (action === "resume") void once(updated).catch(() => {});
 }
 export function useOutbox() {
   const [entries, setEntries] = useState<OutboxEntry[]>([]);

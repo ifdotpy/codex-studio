@@ -2081,8 +2081,33 @@ html body #root {
     font-size: 12px;
   }
   #sidebar {
-    padding-top: max(16px, env(safe-area-inset-top));
-    padding-bottom: max(16px, env(safe-area-inset-bottom));
+    height: var(--mobile-viewport-height, 100dvh);
+    padding-top: max(
+      16px,
+      var(--mobile-safe-area-top, env(safe-area-inset-top))
+    );
+    padding-bottom: max(
+      16px,
+      var(--mobile-safe-area-bottom, env(safe-area-inset-bottom))
+    );
+  }
+  .mantine-Drawer-inner,
+  .mantine-Modal-inner {
+    top: var(--mobile-viewport-top, 0px);
+    bottom: auto;
+    height: var(--mobile-viewport-height, 100dvh);
+  }
+  .mantine-Modal-root {
+    --modal-y-offset: 16px;
+  }
+  .mantine-Modal-content {
+    max-height: calc(
+      var(--mobile-viewport-height, 100dvh) - var(--modal-y-offset) * 2
+    );
+  }
+  .mantine-Modal-root[data-full-screen] .mantine-Modal-content {
+    height: var(--mobile-viewport-height, 100dvh);
+    max-height: var(--mobile-viewport-height, 100dvh);
   }
   #sidebar .row-actions,
   #sidebar .project-tree-action {

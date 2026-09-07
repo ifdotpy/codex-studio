@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
-import { api, errorText, saved, save } from "../api";
+import { api, ApiError, errorText, saved, save } from "../api";
 import "./realtime-voice.css";
 
 type RecordRow = { id: string; seq: number; kind: string; text: string; item_id: string; previous_item_id: string; session: string; payload?: string };
 type Records = { records: RecordRow[]; cursor: number; delivered: string[] };
+const editedTranscriptError = "Edited transcript must contain 1 to 32000 characters";
+const invalidEditedTranscript = (text: string | null) => text !== null && (!text.trim() || Array.from(text).length > 32000);
 function orderedVoiceRecords(records: RecordRow[]) {
   const sessions = new Map<string, number>();
   for (const row of records) sessions.set(row.session, Math.min(sessions.get(row.session) ?? row.seq, row.seq));
@@ -19,6 +21,8 @@ export default function RealtimeVoice({ agentId, notify }: { agentId: string; no
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [incomplete, setIncomplete] = useState(saved(`voice-incomplete:${agentId}`, false));
+  const missingSpeech = useRef(incomplete);
   const [status, setStatus] = useState("");
   const [rows, setRows] = useState<RecordRow[]>([]);
   const [approvals, setApprovals] = useState<{ id: string; method: string; params: unknown }[]>([]);
@@ -63,7 +67,23 @@ export default function RealtimeVoice({ agentId, notify }: { agentId: string; no
     void serial.current.catch(() => {});
     return operation;
   };
+  const retryRecords = () => {
+    const operation = serial.current.catch(() => {}).then(async () => {
+      for (const body of [...pendingRecords.current]) {
+        const row = await post("record", body);
+        if (["user", "courier"].includes(row.kind) && !all.current.some(r => r.id === row.id)) {
+          all.current.push(row); setRows([...all.current]);
+        }
+        pendingRecords.current = pendingRecords.current.filter(r => r.event_id !== body.event_id);
+        save(`voice-pending:${agentId}`, pendingRecords.current);
+        if (row.kind === "user") pending.current.delete(row.item_id);
+      }
+    });
+    serial.current = operation;
+    return operation;
+  };
   const send = async () => {
+    if (missingSpeech.current) { setStatus("Some speech has no transcript. Review the saved text, then choose Use saved transcript only."); return; }
     if (pending.current.size || speaking.current || responding.current) { sendWanted.current = true; setStatus("Waiting for the full transcript…"); return; }
     sendWanted.current = false;
     setBusy(true);
@@ -76,13 +96,27 @@ export default function RealtimeVoice({ agentId, notify }: { agentId: string; no
       }
       voiceSend.current = false;
       const selected = orderedVoiceRecords(all.current).filter(r => ["user", "courier"].includes(r.kind) && !delivered.current.has(r.id) && (!editIds.current || editIds.current.includes(r.id)));
-      if (!delivery.current) delivery.current = { id: crypto.randomUUID(), ids: selected.map(r => r.id), editedText };
+      if (!delivery.current) {
+        if (invalidEditedTranscript(editedText)) throw new Error(editedTranscriptError);
+        const text = editedText ?? ("Voice conversation, full transcript (speech recognition can contain errors):\n\n" + selected.map(r => `${r.kind === "user" ? "User" : "Voice courier"}: ${r.text}`).join("\n\n"));
+        if (Array.from(text).length > 32000) throw new Error("The transcript exceeds 32000 characters. Edit it before sending.");
+        delivery.current = { id: crypto.randomUUID(), ids: selected.map(r => r.id), editedText };
+      }
       save(`voice-delivery:${agentId}`, delivery.current);
       if (!delivery.current.ids.length) { delivery.current = null; return; }
       await post("submit", { message_id: delivery.current.id, record_ids: delivery.current.ids, edited_text: delivery.current.editedText });
       for (const id of delivery.current.ids) delivered.current.add(id);
       delivery.current = null; editIds.current = null; setEditedText(null); save(`voice-delivery:${agentId}`, null); setSent([...delivered.current]); setStatus("Sent. Waiting for the orchestrator.");
-    } catch (e) { setStatus(errorText(e)); } finally { setBusy(false); }
+    } catch (e) {
+      // VoiceStore.submit rejects this exact invalid body before reserving a delivery.
+      // A generic rejection or an uncertain response cannot release its identity.
+      if (e instanceof ApiError && e.status === 400 && e.message === editedTranscriptError &&
+          delivery.current && invalidEditedTranscript(delivery.current.editedText)) {
+        delivery.current = null;
+        save(`voice-delivery:${agentId}`, null);
+        setStatus("The server rejected the invalid transcript before sending. Edit the text, then send again.");
+      } else setStatus(errorText(e));
+    } finally { setBusy(false); }
   };
   const sendRef = useRef(send); sendRef.current = send;
   const playback = useRef<RecordRow | null>(null);
@@ -106,24 +140,23 @@ export default function RealtimeVoice({ agentId, notify }: { agentId: string; no
   };
   const close = () => {
     generation.current++;
+    const unsavedSpeech = [...pending.current].some(id => id === "awaiting-commit" ||
+      (!pendingRecords.current.some(row => row.kind === "user" && row.item_id === id) &&
+        !all.current.some(row => row.kind === "user" && row.item_id === id)));
+    if (unsavedSpeech || speaking.current) { missingSpeech.current = true; setIncomplete(true); save(`voice-incomplete:${agentId}`, true); }
+    pending.current.clear(); speaking.current = false; responding.current = false;
+    sendWanted.current = false; voiceSend.current = false;
     live.current = false; stopAudio(); queue.current = [];
     if (recorder.current?.state === "recording") recorder.current.stop(); recorder.current = null;
     channel.current?.close(); pc.current?.close(); stream.current?.getTracks().forEach(t => t.stop());
     remote.current?.pause(); if (remote.current) remote.current.srcObject = null;
     pc.current = null; stream.current = null; channel.current = null;
     if (session.current) void post("end", { session_id: session.current }).catch(() => {});
-    setActive(false); setBusy(false); setMuted(false); setStatus("");
+    setActive(false); setBusy(false); setMuted(false); setStatus(missingSpeech.current ? "Some speech has no transcript. Review the saved text, then choose Use saved transcript only." : "");
   };
   useEffect(() => {
     let disposed = false;
-    void (async () => {
-      for (const body of [...pendingRecords.current]) {
-        await post("record", body);
-        pendingRecords.current = pendingRecords.current.filter(r => r.event_id !== body.event_id);
-        save(`voice-pending:${agentId}`, pendingRecords.current);
-      }
-      return post("records");
-    })().then((data: Records) => {
+    void retryRecords().then(() => post("records")).then((data: Records) => {
       if (disposed) return;
       all.current = data.records; delivered.current = new Set(data.delivered); cursor.current = data.cursor;
       setRows(data.records); setSent(data.delivered);
@@ -158,10 +191,15 @@ export default function RealtimeVoice({ agentId, notify }: { agentId: string; no
       if (ticket !== generation.current) return;
       if (!config.configured) throw new Error(config.setup);
       if (!window.isSecureContext || !navigator.mediaDevices) throw new Error("Voice needs HTTPS. Open the Tailscale HTTPS address.");
-      session.current = crypto.randomUUID(); pending.current.clear(); order.current.clear(); previous.current.clear(); serial.current = Promise.resolve();
+      session.current = crypto.randomUUID(); pending.current.clear(); order.current.clear(); previous.current.clear();
       const connection = new RTCPeerConnection(); pc.current = connection;
       remote.current = new Audio(); remote.current.autoplay = true;
       connection.ontrack = e => { if (remote.current) { remote.current.srcObject = e.streams[0]; void remote.current.play().catch(() => setStatus("Tap Resume audio to enable sound.")); } };
+      // Reserve native access immediately before capture; configuration can take longer than the permit lasts.
+      if (window.codexDesktop && !window.codexDesktop.requestMicrophone)
+        throw new Error("Install the updated desktop app to enable microphone access.");
+      if (window.codexDesktop?.requestMicrophone) await window.codexDesktop.requestMicrophone();
+      if (ticket !== generation.current) return;
       stream.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       if (ticket !== generation.current) { stream.current.getTracks().forEach(t => t.stop()); return; }
       stream.current.getTracks().forEach(track => connection.addTrack(track, stream.current!));
@@ -246,7 +284,8 @@ export default function RealtimeVoice({ agentId, notify }: { agentId: string; no
     {active && approvals.map(request => <button type="button" key={request.id} onClick={() => { void post("approval_speech", { request_id: request.id }).then(() => setStatus("The permission will be read next. Say разрешаю after it ends.")).catch(e => setStatus(errorText(e))); }}>Read permission: {request.method} ({request.id.slice(0, 8)})</button>)}
     {rows.some(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id)) && <details><summary>Edit transcript before send</summary><textarea aria-label="Transcript to send" rows={5} value={editedText ?? ("Voice conversation, full transcript (speech recognition can contain errors):\n\n" + orderedVoiceRecords(rows).filter(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id)).map(r => `${r.kind === "user" ? "User" : "Voice courier"}: ${r.text}`).join("\n\n"))} onChange={e => { editIds.current ??= rows.filter(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id)).map(r => r.id); setEditedText(e.target.value); }} /><button type="button" onClick={() => { editIds.current = null; setEditedText(null); }}>Restore original transcript</button><small>The original remains in history. Speech after you start edits stays for the next send.</small></details>}
     {status && <p role="status">{status}</p>}
-    {!!pendingRecords.current.length && <button type="button" onClick={() => { void (async () => { for (const body of [...pendingRecords.current]) { const row = await post("record", body); if (["user", "courier"].includes(row.kind) && !all.current.some(r => r.id === row.id)) { all.current.push(row); setRows([...all.current]); } pendingRecords.current = pendingRecords.current.filter(r => r.event_id !== body.event_id); save(`voice-pending:${agentId}`, pendingRecords.current); } setStatus("Transcript sync restored."); })().catch(e => setStatus(errorText(e))); }}>Retry transcript sync</button>}
+    {incomplete && <button type="button" onClick={() => { missingSpeech.current = false; setIncomplete(false); save(`voice-incomplete:${agentId}`, false); setStatus("Only the saved transcript will be sent. Missing speech is not included."); }}>Use saved transcript only</button>}
+    {!!pendingRecords.current.length && <button type="button" onClick={() => { void retryRecords().then(() => { setStatus("Transcript sync restored."); if (sendWanted.current) void sendRef.current(); }).catch(e => setStatus(errorText(e))); }}>Retry transcript sync</button>}
     {active && <small>AI-generated voice. Audio goes to OpenAI. Transcripts remain on your Mac.</small>}
     {!!rows.length && <details><summary>Voice transcript and speech</summary><div className="realtime-voice-transcript">{orderedVoiceRecords(rows).filter(r => r.text && ["user", "courier", "orchestrator"].includes(r.kind)).map(r => <div key={r.id}><strong>{r.kind === "user" ? "You" : r.kind === "courier" ? "Voice courier" : "Orchestrator"}</strong><p>{r.text}</p>{r.kind === "orchestrator" && active && <button type="button" onClick={() => { queue.current.push(r); void pump(); }}>Repeat</button>}</div>)}</div></details>}
   </Popover.Dropdown>

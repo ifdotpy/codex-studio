@@ -210,3 +210,19 @@
     max-width: 42%;
   }
 }
+.outbox-controls {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.outbox-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.outbox-controls p {
+  margin: 6px 0;
+  color: var(--muted);
+}
+.outbox-controls [role="alert"] {
+  color: var(--warning, #e3b761);
+}

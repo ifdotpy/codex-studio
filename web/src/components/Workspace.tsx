@@ -45,6 +45,7 @@ type Props = {
   onClose: () => void;
   agent?: Agent;
   data: Snapshot;
+  allRequests: Json[];
   onSelect: (id: string) => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
@@ -1163,6 +1164,8 @@ function Attention(c: Context) {
         </Button>
       </div>
       <Requests
+        scope={c.data.stateDir}
+        allRequests={c.allRequests}
         requests={c.data.runtime.requests}
         agents={c.data.threads}
         refresh={c.refresh}

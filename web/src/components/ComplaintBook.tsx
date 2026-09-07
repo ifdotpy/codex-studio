@@ -170,6 +170,8 @@ export default function ComplaintBook({
   const [filter, setFilter] = useState("pending"),
     [detail, setDetail] = useState<Json | null>(null),
     [detailId, setDetailId] = useState<string | null>(null),
+    [detailError, setDetailError] = useState(""),
+    [detailAttempt, setDetailAttempt] = useState(0),
     [create, setCreate] = useState(false),
     [text, setText] = useState(""),
     [selected, setSelected] = useState(leadId || ""),
@@ -178,6 +180,7 @@ export default function ComplaintBook({
   activeDetailId.current = detailId;
   const changeDetail = (id: string | null) => {
     activeDetailId.current = id;
+    setDetailError("");
     setDetailId(id);
   };
   const request = useRef<Json | null>(null),
@@ -192,6 +195,7 @@ export default function ComplaintBook({
     let live = true;
     api(`/api/complaint?id=${encodeURIComponent(detailId)}`)
       .then((c) => {
+        if (live) setDetailError("");
         if (live)
           setDetail((current) =>
             current && current.id === c.id && current.version > c.version
@@ -199,11 +203,15 @@ export default function ComplaintBook({
               : c,
           );
       })
-      .catch((e) => notify(errorText(e)));
+      .catch((e) => {
+        if (live) setDetailError(errorText(e));
+      });
     return () => {
       live = false;
     };
-  }, [detailId, data, notify]);
+  }, [detailId, detailAttempt, data]);
+  const createDraft = useRef({ text, selected });
+  createDraft.current = { text, selected };
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (sending) return;
@@ -215,8 +223,16 @@ export default function ComplaintBook({
     try {
       await api("/api/complaints", request.current);
       request.current = null;
-      setText("");
-      setCreate(false);
+      const current = createDraft.current;
+      if (
+        current.text.trim() === text.trim() &&
+        (current.selected || leads[0]?.id) === lead
+      ) {
+        setText("");
+        setCreate(false);
+      } else {
+        notify("Complaint sent. Your new edits remain in the form.");
+      }
       setTab("lead");
       setFilter("pending");
       await refresh();
@@ -362,6 +378,19 @@ export default function ComplaintBook({
         onClose={() => changeDetail(null)}
         title="Complaint"
       >
+        {detailError && (
+          <div role="alert">
+            <p>Could not load the complaint: {detailError}</p>
+            <Button
+              onClick={() => {
+                setDetailError("");
+                setDetailAttempt((value) => value + 1);
+              }}
+            >
+              Retry
+            </Button>
+          </div>
+        )}
         {detail ? (
           <>
             <p className="notice">
@@ -424,9 +453,9 @@ export default function ComplaintBook({
                 <p className="notice">Update the server to respond here.</p>
               )}
           </>
-        ) : (
-          <p>Loading…</p>
-        )}
+        ) : !detailError ? (
+          <p role="status">Loading…</p>
+        ) : null}
       </Modal>
       <Modal
         opened={create}

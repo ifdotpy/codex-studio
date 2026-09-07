@@ -13,6 +13,8 @@ import "./request-questions.css";
 
 type Props = {
   requests: Json[];
+  allRequests: Json[];
+  scope: string;
   agents: Agent[];
   refresh: () => Promise<void>;
   notify: (s: string) => void;
@@ -35,24 +37,43 @@ function requestQuestions(request: Json): Json[] {
   );
 }
 
+type AnswerValues = Record<string, string>;
+// Answers, including secrets, remain in memory only.
+const answerDrafts = new Map<string, AnswerValues>();
+const answerKey = (scope: string, request: Json) =>
+  JSON.stringify([
+    scope,
+    request.agent,
+    request.id,
+    request.method,
+    request.params,
+  ]);
+
 function AnswerForm({
   request,
   sending,
   post,
   close,
   notify,
+  draftKey,
 }: {
+  draftKey: string;
   request: Json;
   sending: boolean;
   post: (body: Json) => Promise<void>;
   close: () => void;
   notify: Props["notify"];
 }) {
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<AnswerValues>(
+    () => answerDrafts.get(draftKey) || {},
+  );
   const questions = requestQuestions(request);
   const asynchronous = request.method === "agent/asyncQuestion";
-  const setValue = (id: string, value: string) =>
-    setValues((current) => ({ ...current, [id]: value }));
+  const setValue = (id: string, value: string) => {
+    const next = { ...values, [id]: value };
+    answerDrafts.set(draftKey, next);
+    setValues(next);
+  };
   const ready =
     !asynchronous ||
     (questions.length > 0 && questions.every((q) => values[q.id]?.trim()));
@@ -169,7 +190,10 @@ function AnswerForm({
           type="button"
           variant="subtle"
           disabled={sending}
-          onClick={close}
+          onClick={() => {
+            answerDrafts.delete(draftKey);
+            close();
+          }}
         >
           Cancel
         </Button>
@@ -192,7 +216,9 @@ function RequestCard({
   agents,
   refresh,
   notify,
-}: Omit<Props, "requests"> & { request: Json }) {
+  scope,
+}: Omit<Props, "requests" | "allRequests"> & { request: Json }) {
+  const draftKey = answerKey(scope, r);
   const [open, setOpen] = useState(false),
     [sending, setSending] = useState(false);
   const pending = useRef(false),
@@ -214,6 +240,7 @@ function RequestCard({
     setSending(true);
     try {
       await api("/api/answer", { ...body, id: r.id });
+      answerDrafts.delete(draftKey);
       if (!mounted.current) return;
       setOpen(false);
       await refresh();
@@ -355,6 +382,7 @@ function RequestCard({
             <div id={`answer-${r.id}`} className="request-inline-answer">
               <AnswerForm
                 request={r}
+                draftKey={draftKey}
                 sending={sending}
                 post={post}
                 close={close}
@@ -373,6 +401,7 @@ function RequestCard({
               {open && (
                 <AnswerForm
                   request={r}
+                  draftKey={draftKey}
                   sending={sending}
                   post={post}
                   close={close}
@@ -385,14 +414,21 @@ function RequestCard({
   );
 }
 
-export default function Requests({ requests, ...props }: Props) {
+export default function Requests({ requests, allRequests, ...props }: Props) {
+  useEffect(() => {
+    const active = new Set(
+      allRequests.map((request) => answerKey(props.scope, request)),
+    );
+    for (const key of answerDrafts.keys())
+      if (!active.has(key)) answerDrafts.delete(key);
+  }, [allRequests, props.scope]);
   const deferred = requests.filter((r) => r.deferred);
   return (
     <div id="requests">
       {requests
         .filter((r) => !r.deferred)
         .map((r) => (
-          <RequestCard key={`${r.agent}:${r.id}`} request={r} {...props} />
+          <RequestCard key={answerKey(props.scope, r)} request={r} {...props} />
         ))}
       {deferred.length > 0 && (
         <details className="request-history request-deferred">
@@ -404,7 +440,11 @@ export default function Requests({ requests, ...props }: Props) {
             agent.
           </p>
           {deferred.map((r) => (
-            <RequestCard key={`${r.agent}:${r.id}`} request={r} {...props} />
+            <RequestCard
+              key={answerKey(props.scope, r)}
+              request={r}
+              {...props}
+            />
           ))}
         </details>
       )}
