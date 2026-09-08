@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_costs import CostReader, normalize
 
 
-def report():
+def report(day=None):
+    day = day or time.strftime("%Y-%m-%d")
     return [
         {
             "provider": "codex",
@@ -29,7 +30,7 @@ def report():
             "coverage": {"priced": 2, "unpriced": 0},
             "daily": [
                 {
-                    "date": "2026-09-06",
+                    "date": day,
                     "modelsUsed": ["known"],
                     "modelBreakdowns": [
                         {"modelName": "known", "cost": 12.5, "totalTokens": 1000}
@@ -125,22 +126,82 @@ class CostsTests(unittest.TestCase):
         self.assertEqual((self.root / "local-costs.json").stat().st_mode & 0o777, 0o600)
         other.close()
 
+    def test_changed_report_updates_after_one_request_interval(self):
+        self.reader.snapshot()
+        first = wait(self.reader)
+        changed = report()
+        changed[0]["sessionCostUSD"] = 13.75
+        changed[0]["last30DaysCostUSD"] = 101.5
+        changed[0]["daily"][0]["modelBreakdowns"][0]["cost"] = 13.75
+        changed[0]["updatedAt"] = first["data"]["sourceUpdatedAt"]
+        self.payload.write_text(json.dumps(changed))
+        self.reader.state["checkedAt"] = 1
+        self.reader.attempt = 0
+        self.reader.snapshot()
+        refreshed = wait(self.reader)
+        self.assertEqual(refreshed["data"]["todayUSD"], 13.75)
+        self.assertEqual(refreshed["data"]["last30DaysUSD"], 101.5)
+        self.assertEqual((self.root / "calls").read_text().splitlines(), ["call", "call"])
+
+    def test_source_timestamp_only_change_does_not_claim_new_report(self):
+        self.reader.snapshot()
+        first = wait(self.reader)
+        changed = report()
+        changed[0]["updatedAt"] = "2099-01-01T00:00:00Z"
+        self.payload.write_text(json.dumps(changed))
+        self.reader.state["checkedAt"] = 1
+        self.reader.attempt = 0
+        self.reader.snapshot()
+        refreshed = wait(self.reader)
+        self.assertEqual(refreshed["at"], first["at"])
+        self.assertEqual(
+            refreshed["data"]["sourceUpdatedAt"], first["data"]["sourceUpdatedAt"]
+        )
+
     def test_repeated_report_does_not_accumulate_and_error_retains_previous(self):
         self.reader.snapshot()
         value = wait(self.reader)
-        self.reader.state["at"] = 1
+        self.reader.state["checkedAt"] = 1
         self.reader.attempt = 0
         self.reader.snapshot()
         repeated = wait(self.reader)
         self.assertEqual(repeated["data"], value["data"])
         self.payload.write_text("bad json")
-        self.reader.state["at"] = 1
+        reported_at = repeated["at"]
+        self.reader.state["checkedAt"] = 1
         self.reader.attempt = 0
         self.reader.snapshot()
         failed = wait(self.reader)
         self.assertEqual(failed["data"], value["data"])
+        self.assertEqual(failed["at"], reported_at)
+        self.assertEqual(
+            failed["data"]["sourceUpdatedAt"], value["data"]["sourceUpdatedAt"]
+        )
         self.assertTrue(failed["error"])
         self.assertTrue(failed["stale"])
+
+    def test_day_rollover_does_not_label_yesterday_as_today(self):
+        day = time.strftime("%Y-%m-%d")
+        midnight = time.mktime(time.strptime(day, "%Y-%m-%d"))
+        clock = [midnight + 12 * 3600]
+        self.payload.write_text(json.dumps(report(day=day)))
+        reader = CostReader(self.root, str(self.cli), clock=lambda: clock[0])
+        try:
+            reader.snapshot()
+            first = wait(reader)
+            self.assertEqual(first["data"]["todayUSD"], 12.5)
+            clock[0] = midnight + 36 * 3600
+            reader.state["checkedAt"] = 1
+            reader.attempt = 0
+            before = reader.snapshot()
+            self.assertIsNone(before["data"]["todayUSD"])
+            self.assertEqual(before["data"]["last30DaysUSD"], 100.25)
+            self.assertTrue(before["stale"])
+            after = wait(reader)
+            self.assertIsNone(after["data"]["todayUSD"])
+            self.assertEqual(after["data"]["last30DaysUSD"], 100.25)
+        finally:
+            reader.close()
 
     def test_timeout_ends_only_owned_scanner(self):
         (self.root / "delay").touch()

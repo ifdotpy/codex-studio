@@ -30,6 +30,20 @@ def amount(value):
     )
 
 
+def source_day(row):
+    days = []
+    for day in row.get("daily") or []:
+        if not isinstance(day, dict) or not isinstance(day.get("date"), str):
+            continue
+        value = day["date"]
+        try:
+            time.strptime(value, "%Y-%m-%d")
+        except (TypeError, ValueError):
+            continue
+        days.append(value)
+    return max(days) if days else None
+
+
 def normalize(payload):
     """Expose only aggregate costs, never project paths or session contents."""
     rows = payload if isinstance(payload, list) else []
@@ -94,6 +108,7 @@ def normalize(payload):
         "todayTokens": amount(row.get("sessionTokens")),
         "last30DaysTokens": amount(row.get("last30DaysTokens")),
         "sourceUpdatedAt": row.get("updatedAt"),
+        "sourceDay": source_day(row),
         "coverage": status,
         "unknownModels": sorted(unknown),
         "historyDays": row.get("historyDays", 30),
@@ -101,10 +116,32 @@ def normalize(payload):
     }
 
 
+def report_fingerprint(data):
+    """Identify report content without treating the source timestamp as usage."""
+    if not isinstance(data, dict):
+        return None
+    content = {
+        key: data.get(key)
+        for key in (
+            "todayUSD",
+            "last30DaysUSD",
+            "todayTokens",
+            "last30DaysTokens",
+            "sourceDay",
+            "coverage",
+            "unknownModels",
+            "historyDays",
+        )
+    }
+    return hashlib.sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 class CostReader:
     """One local scan at a time. GET requests return without waiting for the CLI."""
 
-    def __init__(self, root, executable=None, interval=900, timeout=90):
+    def __init__(self, root, executable=None, interval=120, timeout=90, clock=None):
         self.path = Path(root) / "local-costs.json"
         self.executable = executable or shutil.which("codexbar")
         if not self.executable:
@@ -127,7 +164,8 @@ class CostReader:
                 + str(self.executable)
             ).encode()
         ).hexdigest()
-        self.interval, self.timeout = interval, timeout
+        self.interval, self.timeout = max(1, interval), timeout
+        self.clock = clock or time.time
         self.lock = threading.RLock()
         self.process = None
         self.closed = False
@@ -145,27 +183,36 @@ class CostReader:
 
     def snapshot(self):
         with self.lock:
-            now = time.time()
+            now = self.clock()
+            checked_at = amount(self.state.get("checkedAt"))
+            if checked_at is None:
+                checked_at = amount(self.state.get("at"))
             stale = (
-                not amount(self.state.get("at"))
-                or now - self.state["at"] >= self.interval
+                not checked_at
+                or now - checked_at >= self.interval
+                or bool(self.state.get("error"))
             )
             if (
                 stale
                 and not self.closed
                 and not self.busy
-                and now - self.attempt >= min(self.interval, 60)
+                and now - self.attempt >= self.interval
             ):
                 self.busy = True
                 self.attempt = now
                 threading.Thread(
                     target=self._refresh, name="local-costs", daemon=True
                 ).start()
-            return {
-                **copy.deepcopy(self.state),
-                "refreshing": self.busy,
-                "stale": stale or bool(self.state.get("error")),
-            }
+            state = copy.deepcopy(self.state)
+            data = state.get("data")
+            current_day = time.strftime("%Y-%m-%d", time.localtime(now))
+            if isinstance(data, dict) and (
+                not data.get("sourceDay") or data.get("sourceDay") != current_day
+            ):
+                data["todayUSD"] = None
+                data["todayTokens"] = None
+                stale = True
+            return {**state, "refreshing": self.busy, "stale": stale}
 
     def _refresh(self):
         try:
@@ -201,13 +248,31 @@ class CostReader:
                     raise ValueError("CodexBar cost report exceeds 32 MiB.")
                 output.seek(0)
                 data = normalize(json.load(output))
+                fingerprint = report_fingerprint(data)
             with self.lock:
                 if not self.closed:
-                    self.state = {"at": time.time(), "error": None, "data": data}
+                    previous = self.state.get("data")
+                    previous_fingerprint = self.state.get("sourceFingerprint")
+                    if previous_fingerprint is None:
+                        previous_fingerprint = report_fingerprint(previous)
+                    changed = previous is None or fingerprint != previous_fingerprint
+                    finished_at = self.clock()
+                    self.state = {
+                        "at": (
+                            finished_at
+                            if changed or not amount(self.state.get("at"))
+                            else self.state.get("at")
+                        ),
+                        "checkedAt": finished_at,
+                        "error": None,
+                        "data": data if changed else previous,
+                        "sourceFingerprint": fingerprint,
+                    }
                     self._save()
         except (OSError, ValueError, TypeError) as error:
             with self.lock:
                 self.state["error"] = str(error)[:300]
+                self.state["checkedAt"] = self.clock()
         finally:
             with self.lock:
                 self.process = None
