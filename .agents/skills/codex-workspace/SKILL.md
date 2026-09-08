@@ -61,6 +61,9 @@ For display-only counters, use a panel feed instead of status or log polling.
 Discover managed identities with `orchestration_peers`. Use `orchestration_message`
 for a parent, lead, private recipient, or broadcast. Read conversations through
 `orchestration_chat_read`. Use actual returned identities and room membership.
+Broadcasts notify only active agents. Other agents can read the message in chat history.
+Use a direct follow-up to resume an assignment. Stop superseded workers explicitly;
+an information broadcast does not assign new work.
 Send useful findings or questions; avoid acknowledgement and broadcast loops.
 Mark routine updates with `importance=progress`. Supply the task ID as `progress_key`
 and increase `progress_version` for each update. Only that stream can replace its older progress.

@@ -137,7 +137,9 @@ class MonitorLifecycleContract(unittest.TestCase):
         fixture.eventually(lambda: self.record(key)["status"] == "cancelled")
         self.assertEqual(self.record(key)["exitCode"], 7)
         self.assertIsNotNone(self.record(key).get("finished"))
-        self.assertEqual(self.exits(key), [])
+        events = self.exits(key)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(json.loads(events[0]["text"])["exitCode"], 7)
 
     def test_termination_acknowledgement_waits_for_command_exit(self):
         key = self.monitor()
@@ -147,6 +149,32 @@ class MonitorLifecycleContract(unittest.TestCase):
         self.server.finish(key, 130)
         fixture.eventually(lambda: self.record(key)["status"] == "cancelled")
         self.assertEqual(self.record(key)["exitCode"], 130)
+        self.assertEqual(len(self.exits(key)), 1)
+
+    def test_cancelled_exit_is_delivered_after_owner_epoch_stops(self):
+        key = self.monitor()
+        self.runtime.cancel_monitor(key)
+        self.runtime.stop(self.agent["id"])
+        self.server.finish(key, 143)
+        fixture.eventually(lambda: self.record(key)["status"] == "cancelled")
+        event = self.exits(key)
+        self.assertEqual(len(event), 1)
+        payload = json.loads(event[0]["text"])
+        self.assertEqual(payload["status"], "cancelled")
+        self.assertEqual(payload["exitCode"], 143)
+        self.assertEqual(event[0]["status"], "cancelled")
+
+    def test_no_active_termination_preserves_unknown_with_exact_process_identity(self):
+        key = self.monitor()
+        self.server.terminate_error = f'{{"code": -32600, "message": "no active command/exec for process id \\\"{key}\\\""}}'
+        result = self.runtime.cancel_monitor(key)
+        self.assertEqual(result["status"], "running")
+        record = self.record(key)
+        self.assertEqual(record["status"], "running")
+        self.assertIsNone(record["exitCode"])
+        self.assertIn("not confirmed", record["error"])
+        terminate = [params for method, params in self.server.calls if method == "command/exec/terminate"][-1]
+        self.assertEqual(terminate, {"processId": key})
         self.assertEqual(self.exits(key), [])
 
     def test_command_timeout_retains_lease_until_late_success(self):
@@ -170,7 +198,7 @@ class MonitorLifecycleContract(unittest.TestCase):
         self.server.finish(key, 9)
         fixture.eventually(lambda: self.record(key)["status"] == "cancelled")
         self.assertEqual(self.record(key)["exitCode"], 9)
-        self.assertEqual(self.exits(key), [])
+        self.assertEqual(len(self.exits(key)), 1)
 
     def test_late_result_after_disconnect_does_not_claim_success_or_wake(self):
         self.server.timeout_commands = True
@@ -258,6 +286,7 @@ class MonitorLifecycleContract(unittest.TestCase):
         self.assertEqual(len(self.server.writes), 0)
         self.server.finish(key, 130)
         fixture.eventually(lambda: self.record(key)["status"] == "cancelled")
+        self.assertEqual(len(self.exits(key)), 1)
 
     def test_command_submission_transport_error_preserves_unknown_execution(self):
         self.server.command_submit_error = "Transport failed after command write"

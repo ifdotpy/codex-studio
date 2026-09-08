@@ -201,6 +201,38 @@ class RuntimeContract(unittest.TestCase):
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(len(self.runtime.chat_read(room['id'], peer['id'])['messages']), 100)
 
+    def test_broadcast_does_not_restart_inactive_assignments(self):
+        lead = self.lead()
+        states = ['completed', 'failed', 'interrupted', 'paused', 'idle',
+                  'queued', 'starting', 'running', 'waiting', 'approval']
+        with self.runtime.lock:
+            children = []
+            for state in states:
+                child = self.runtime.create({'name': state, 'prompt': 'Review', 'role': 'reviewer'}, lead['id'], defer=True)
+                child.update(status=state, autoWake=True)
+                with self.runtime.db() as db:
+                    self.runtime.put(db, 'agents', child)
+                children.append(child)
+            for target in ['broadcast', 'all']:
+                receipt = self.runtime.chat_message(lead['id'], target, 'Policy update only', 'inactive-' + target)
+                for child in children:
+                    active = child['status'] in states[5:]
+                    self.assertEqual(receipt['deliveries'][child['id']], 'queued' if active else 'stored_only')
+                    if not active:
+                        self.assertEqual(self.runtime.agent(child['id'])['status'], child['status'])
+                        with self.runtime.db() as db:
+                            self.assertIsNone(db.execute("SELECT id FROM runtime_events WHERE id=?", (
+                                'chat:inactive-' + target + ':' + child['id'],)).fetchone())
+                    history = self.runtime.chat_read(receipt['room'], child['id'])
+                    self.assertEqual(history['messages'][-1]['text'], 'Policy update only')
+                self.assertEqual(self.runtime.chat_message(lead['id'], target, 'Policy update only', 'inactive-' + target), receipt)
+            # A direct request still resumes an idle worker, and child results
+            # still wake a finished lead (covered by the private-chat test).
+            child = children[0]
+            direct = self.runtime.chat_message(lead['id'], child['id'], 'New scoped assignment', 'direct-resume')
+            self.assertEqual(direct['deliveries'][child['id']], 'queued')
+            self.assertEqual(self.runtime.agent(child['id'])['status'], 'queued')
+
     def test_chat_tools_are_exposed_and_dispatch_from_a_worker(self):
         lead = self.lead()
         child = self.runtime.create({'name': 'Peer', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
@@ -754,7 +786,8 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.cancel_monitor(m['id'])
         time.sleep(.1)
         self.assertEqual(self.runtime.snapshot()['monitors'][0]['status'], 'cancelled')
-        self.assertFalse(any(e['kind'] == 'monitor_exit' for e in self.runtime.snapshot()['events']))
+        exits = [e for e in self.runtime.snapshot()['events'] if e['kind'] == 'monitor_exit']
+        self.assertEqual(len(exits), 1)
 
     def test_managed_chat_delivery_and_offline_membership(self):
         from codex_canvas import Canvas

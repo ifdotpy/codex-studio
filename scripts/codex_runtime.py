@@ -80,7 +80,8 @@ TOOLS = [
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_message", "Send a message without ending your turn. "
          "target is an agent id, parent, lead, broadcast (your team), or all (all teams). "
-         "Private chats are visible to their participants and the user. Messages wake idle "
+         "Broadcasts notify only active agents; other recipients can read them in chat history. "
+         "Private chats are visible to their participants and the user. Direct messages wake idle "
          "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Do not send acknowledgement loops.",
          {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}}, ["target", "text"]),
     tool("orchestration_chat_read", "Read messages in a chat you belong to. "
@@ -164,7 +165,9 @@ Report useful early progress with importance=progress; questions and blockers us
 Do not repeat submitted evidence in a separate message: task submission and child completion notify the lead.
 Use an agent id for a private chat, broadcast for your team, or all for all teams. The user can read
 these chats. Private means other agents cannot read it through the chat tools.
-Messages wake recipients automatically. Send only useful questions, findings or answers.
+Direct messages wake recipients automatically. Broadcasts notify only active agents; idle and
+finished agents can read them in history. Use a direct follow-up to resume an assignment.
+Send only useful questions, findings or answers.
 Do not reply merely to acknowledge receipt. Do not create broadcast reply loops.
 Use orchestration_chat_read for message history; orchestration_send also accepts peer ids and these targets.
 Every agent, including the lead, can use orchestration_complaint action=submit for
@@ -919,6 +922,39 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             self.rule_event(db, a, kind, text, key)
         self.changed.set()
         return key
+
+    def store_completed_broadcasts(self, db, agent):
+        """Keep information broadcasts in history when no assignment remains."""
+        rows = db.execute("SELECT id,kind,text FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?",
+                          (agent["id"], agent["epoch"])).fetchall()
+        broadcasts = []
+        for event in rows:
+            if event["kind"] != "agent_message":
+                return 0
+            try:
+                payload = json.loads(event["text"])
+            except (TypeError, ValueError):
+                return 0
+            if (not isinstance(payload, dict)
+                    or not all(isinstance(payload.get(field), str) for field in ("message_id", "room", "sender"))):
+                return 0
+            message = db.execute("""SELECT m.id,m.deliveries FROM runtime_chat_messages m
+                JOIN runtime_rooms r ON r.id=m.room
+                WHERE m.id=? AND m.room=? AND m.sender=? AND json_extract(r.record,'$.kind')='broadcast'""",
+                (payload.get("message_id"), payload.get("room"), payload.get("sender"))).fetchone()
+            if message is None:
+                return 0
+            broadcasts.append((event["id"], message))
+        # Any pending direct message, child result, or other work keeps the
+        # next turn and its accompanying broadcasts. Otherwise no turn starts.
+        for event_id, message in broadcasts:
+            db.execute("UPDATE runtime_events SET status='stored_only',error=? WHERE id=? AND status='pending'",
+                       ("Assignment completed before broadcast delivery; message remains in chat history.", event_id))
+            deliveries = json.loads(message["deliveries"])
+            deliveries[agent["id"]] = "stored_only"
+            db.execute("UPDATE runtime_chat_messages SET deliveries=? WHERE id=?",
+                       (json.dumps(deliveries), message["id"]))
+        return len(broadcasts)
 
     @staticmethod
     def requested_rule_override(data):
@@ -2472,6 +2508,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                                       json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
                 if turn.get("status") == "completed" and a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     self.enforce_complaints(db, a, completion)
+                    if not watches and not children:
+                        self.store_completed_broadcasts(db, a)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
                 if pending and a["autoWake"] and not a.get("nativeFailureHold"):
                     a["status"] = "queued"
@@ -3174,7 +3212,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             for recipient in recipients:
                 if recipient["id"] == sender_id:
                     continue
-                if not recipient["autoWake"] or self.empty_lead(db, recipient):
+                if (not recipient["autoWake"] or self.empty_lead(db, recipient)
+                        or (room["kind"] == "broadcast" and (recipient.get("nativeFailureHold")
+                            or recipient["status"] not in {"queued", "starting", "running", "waiting", "approval"}))):
                     deliveries[recipient["id"]] = "stored_only"
                     continue
                 payload = {"room": room["id"], "message_id": key, "sender": sender_id,
@@ -3506,21 +3546,40 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 return
             self._finish_monitor(key, code, error)
 
+    def _monitor_exit_event(self, db, a, m):
+        if m.get("panelFeed") or m.get("ruleId"):
+            return
+        if m.get("wakeOn", "exit") != "exit" and m["status"] == "completed":
+            return
+        text = json.dumps({k: m.get(k) for k in
+            ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")})
+        event_key = "monitor:" + m["id"]
+        if a["epoch"] == m["epoch"]:
+            self.enqueue(db, a, "monitor_exit", text, event_key)
+            return
+        # Preserve a receipt from an earlier owner epoch without waking a
+        # resumed agent with a command that belongs to its previous turn.
+        db.execute(
+            "INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+            (event_key, a["id"], "monitor_exit", text, "cancelled", time.time(),
+             m["epoch"], None, None),
+        )
+        self.changed.set()
+
     def _finish_monitor(self, key, code, error):
         with self.db() as db:
             m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
             if m["status"] in {"cancelled", "lost", "completed", "failed"}:
                 return
             cancelled = bool(m.get("cancelRequested"))
-            m.update(status="cancelled" if cancelled else "failed" if error or code != 0 else "completed", exitCode=code, error=error, finished=time.time(), configurationPending=False)
+            status = "cancelled" if cancelled else "failed" if error or code != 0 else "completed"
+            m.update(status=status, exitCode=code, error=error, finished=time.time(), configurationPending=False)
             self.put(db, "monitors", m)
             a = self.agent(m["agent"], db)
             if m.get("ruleId"):
                 self.rule_finished(m["ruleId"], code, "Monitor cancelled" if cancelled else error, m["tail"], db)
-            elif (not m.get("panelFeed") and not cancelled and a["epoch"] == m["epoch"]
-                  and (m.get("wakeOn", "exit") == "exit" or m["status"] != "completed")):
-                self.enqueue(db, a, "monitor_exit", json.dumps({k: m.get(k) for k in
-                    ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")}), "monitor:" + key)
+            else:
+                self._monitor_exit_event(db, a, m)
         if m.get("panelFeed"):
             diagnostic = m.get("error") or (f"Command exited with code {code}" if code not in (None, 0) else None)
             self.panel_feed_consumer(m).finish(m["status"], diagnostic, discard=cancelled)
