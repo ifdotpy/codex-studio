@@ -82,3 +82,23 @@
   max-height: 180px;
   overflow: auto;
 }
+
+.capacity-retry p {
+  margin: 6px 0;
+  color: var(--mantine-color-dimmed);
+}
+.account-limit-recovery small {
+  display: block;
+  margin-top: 6px;
+  color: var(--mantine-color-dimmed);
+}
+.account-limit-recovery .mantine-Button-root {
+  max-width: 100%;
+  height: auto;
+  min-height: 26px;
+  padding-block: 4px;
+}
+.account-limit-recovery .mantine-Button-label {
+  white-space: normal;
+  text-align: left;
+}

@@ -945,6 +945,8 @@ def make_server(canvas, port=0, public_origin=None):
                         )
                     if self.path == "/api/configure":
                         return self.send(canvas.runtime.configure(body.get("id"), body))
+                    if self.path == "/api/capacity-retry":
+                        return self.send(canvas.runtime.capacity_retry(body.get("id"), body.get("retry_id"), body.get("action")))
                     if self.path == "/api/action":
                         return self.send(canvas.runtime.native_action(body.get("id"), body.get("action")))
                     if self.path == "/api/import":

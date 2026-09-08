@@ -1,3 +1,8 @@
+import { useEffect, useState } from "react";
+import { currentCapacityRetry } from "../capacityRetry";
+import { limitRecovery } from "../limitRecovery";
+import CapacityRetry from "./CapacityRetry";
+import LimitRecoveryNotice from "./LimitRecoveryNotice";
 import type { Agent, Message, Json } from "../types";
 import { agentErrorLabel } from "../types";
 import { Button } from "@mantine/core";
@@ -29,24 +34,48 @@ function Guidance({ error }: { error: ReturnType<typeof nativeErrorView> }) {
 export function NativeError({
   agent,
   planType,
+  limits,
   openLimits,
   newChat,
   chooseChat,
 }: {
   agent: Agent;
   planType?: string;
+  limits?: Json | null;
   openLimits?: () => void;
   newChat?: () => void;
   chooseChat?: () => void;
 }) {
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!limits) return;
+    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(timer);
+  }, [limits]);
+  const recovery = limitRecovery(agent, limits ?? null, now);
+  const retry = currentCapacityRetry(agent);
   const blocked = nativeThreadError(agent);
   const error = nativeErrorView(blocked || agent.error, planType);
   return (
-    <div className={`native-error ${error.severity}`} role="alert">
+    <div
+      className={`native-error ${retry ? "warning" : error.severity}`}
+      role="alert"
+    >
       <span>
-        {error.title || (blocked ? error.message : agentErrorLabel(agent))}
+        {error.title ||
+          (blocked ? error.message : agentErrorLabel(agent)) ||
+          (retry ? "Model retry" : "")}
       </span>
-      <Guidance error={error} />
+      {!recovery && !retry && <Guidance error={error} />}
+      {recovery && (
+        <LimitRecoveryNotice
+          key={JSON.stringify(recovery)}
+          recovery={recovery}
+        />
+      )}
+      {retry && (
+        <CapacityRetry key={retry.id} agentId={agent.id} retry={retry} />
+      )}
       {!!blocked && (
         <div className="native-error-actions">
           {newChat && (

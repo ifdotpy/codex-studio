@@ -20,6 +20,9 @@ class LimitsServer(m.FakeServer):
     limit_response = None
 
     def call(self, method, params, timeout=60):
+        if method == "turn/start" and os.environ.get("CAPACITY_UI_FIXTURE"):
+            with (c.root / "capacity-starts.jsonl").open("a") as output:
+                output.write(__import__("json").dumps(params) + "\n")
         if method == "account/rateLimits/read" and self.limit_response is not None:
             return self.limit_response
         return super().call(method, params, timeout)

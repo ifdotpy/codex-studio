@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
+import { currentCapacityRetry } from "../capacityRetry";
 import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
 import { useMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
@@ -182,6 +183,7 @@ export default function Conversation(p: {
       ? ({ ...p.agent, ...liveAgent } as Agent)
       : p.agent;
   const threadBlock = nativeThreadError(agent);
+  const capacityRetry = agent ? currentCapacityRetry(agent) : null;
   const errorKind = nativeErrorKind(agent?.error);
   const failureKey = [
     p.id,
@@ -202,9 +204,11 @@ export default function Conversation(p: {
         ? "Reconnecting"
         : threadBlock
           ? "Chat stopped as a precaution"
-          : agent?.nativeStatus?.error?.message ||
-            agent?.nativeStatus?.message ||
-            statusLabel(agent?.status || "idle", agent?.activity?.phase),
+          : capacityRetry?.status === "scheduled"
+            ? "Waiting to retry model"
+            : agent?.nativeStatus?.error?.message ||
+              agent?.nativeStatus?.message ||
+              statusLabel(agent?.status || "idle", agent?.activity?.phase),
     );
   }, [
     p.id,
@@ -213,6 +217,7 @@ export default function Conversation(p: {
     agent?.nativeStatus?.error?.message,
     agent?.nativeStatus?.message,
     threadBlock,
+    capacityRetry?.status,
     connection,
     p.onPhase,
   ]);
@@ -565,10 +570,11 @@ export default function Conversation(p: {
       id="conversation"
       className={p.room ? "agent-conversation" : "ai-conversation"}
     >
-      {agent && (agent.error || threadBlock) && (
+      {agent && (agent.error || threadBlock || capacityRetry) && (
         <NativeError
           agent={agent}
           planType={p.limits?.data?.rateLimits?.planType}
+          limits={p.limits}
           openLimits={() => {
             setLimitsOpen(true);
             p.reloadLimits();

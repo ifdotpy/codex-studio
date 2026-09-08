@@ -10,6 +10,7 @@ import {
   Wrench,
 } from "lucide-react";
 import type { Agent } from "../types";
+import { currentCapacityRetry } from "../capacityRetry";
 import { nativeThreadError } from "../nativeErrors";
 export default function AgentPhase({
   agent,
@@ -25,11 +26,13 @@ export default function AgentPhase({
     (agent.startAttempt?.prepareError || agent.startAttempt?.responseError);
   const phase = nativeThreadError(agent)
     ? "blocked"
-    : awaitingResponse
-      ? "acknowledgement"
-      : active
-        ? agent.activity?.phase || agent.status
-        : agent.status;
+    : currentCapacityRetry(agent)?.status === "scheduled"
+      ? "capacity-retry"
+      : awaitingResponse
+        ? "acknowledgement"
+        : active
+          ? agent.activity?.phase || agent.status
+          : agent.status;
   const names: Record<string, string> = {
     thinking: "Thinking",
     writing: "Writing",
@@ -38,6 +41,7 @@ export default function AgentPhase({
     starting: "Starting",
     acknowledgement: "Waiting for Codex",
     retrying: "Codex is retrying",
+    "capacity-retry": "Waiting to retry model",
     blocked: "Chat stopped as a precaution",
     auth: "Restoring sign-in",
     error: "Codex reported an error",
@@ -61,6 +65,7 @@ export default function AgentPhase({
     waiting: Clock3,
     acknowledgement: Clock3,
     retrying: LoaderCircle,
+    "capacity-retry": Clock3,
     auth: Clock3,
     error: CircleAlert,
     blocked: CircleAlert,

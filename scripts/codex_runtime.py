@@ -35,6 +35,7 @@ from codex_panel_render import render_panel
 from codex_panel_feed import PanelFeedConsumer
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
+from codex_capacity_retry import CapacityRetryMixin
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits, native_request_thread, LEGACY_APPROVAL_REQUESTS
 
 def uid():
@@ -563,7 +564,7 @@ class AppServer:
             self.reader.join(timeout=1)
 
 
-class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
+class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -617,6 +618,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_events (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,
                   text TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
@@ -662,6 +664,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 a.setdefault("compactions", 0)
                 a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
+                self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
                 self.put(db, "agents", a)
             for complaint in self.records(db, "complaints"):
@@ -831,6 +834,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             ids = {a["id"] for a in agents}
             self.loaded.difference_update(ids)
             for a in agents:
+                self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
                 if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
@@ -1448,6 +1452,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     )
                 a.update(autoWake=True, error=None, complaintMisses=0)
                 a.pop("nativeFailureHold", None)
+                self.capacity_reset(db, a)
                 self.put(db, "agents", a)
             if not a["autoWake"]:
                 raise ValueError("Agent is stopped; no message was queued")
@@ -1844,6 +1849,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 break
             try:
                 self.rules_tick()
+                self.capacity_tick()
                 self.dispatch()
             except Exception as error:
                 with (self.root / "runtime-errors.log").open("a") as log:
@@ -1913,6 +1919,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
                         (event["id"],),
                     )
+                self.capacity_reset(db, a)
                 a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
                          startAttempt={"id": uid(), "epoch": a["epoch"],
                                        "accountKey": a.get("accountKey", "default"),
@@ -2096,7 +2103,16 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 return
             if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
                 return
+            self.capacity_started(db, a, attempt, turn)
             completed = db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (agent_id + ":" + turn,)).fetchone()
+            if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
+                self.capacity_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
+                                               "error": a.get("error")}, True)
+                if (a["lastCompletedTurnStatus"] == "completed" and a["autoWake"]
+                        and not a.get("nativeFailureHold") and db.execute(
+                            "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?",
+                            (a["id"], a["epoch"])).fetchone()):
+                    a["status"] = "queued"
             stopped = not a["autoWake"] or a["epoch"] != a["startAttempt"]["epoch"]
             if not completed:
                 a.update(turnId=turn, inFlight=True)
@@ -2148,6 +2164,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 if current_epoch and a["autoWake"]:
                     a.update(status="failed", error=str(error))
                     self.parent_event(db, a, "start-failed:" + (attempt["events"][0] if attempt["events"] else attempt["id"]), str(error))
+            self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
                 status = ("uncertain" if attempt.get("submitted") else "reserved") if unknown else (
@@ -2327,6 +2344,10 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     # input. Only the RPC result or clientId can bind that batch.
                     if attempt:
                         attempt["observedTurnId"] = p["turn"]["id"]
+                if attempt.get("action") == "capacity":
+                    self.capacity_started(db, a, attempt, p["turn"]["id"])
+                else:
+                    self.capacity_reset(db, a, "A new native turn replaces this retry.")
                 a["turnId"] = p["turn"]["id"]
                 a["lastAnswer"] = ""
                 a["activity"] = {"phase": "thinking", "at": time.time()}
@@ -2438,6 +2459,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 completion = a["id"] + ":" + str(turn.get("id"))
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
                     return
+                known_capacity_source = bool(a.get("turnId") and a["turnId"] == turn.get("id"))
                 advance_native_status(a, method, p)
                 if turn.get("status") == "failed":
                     turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
@@ -2456,6 +2478,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         task.update(status="interrupted", finished=time.time())
                         self.put(db, "tasks", task)
                 a["lastCompletedTurn"] = turn.get("id")
+                a["lastCompletedTurnStatus"] = turn.get("status")
                 a["turnId"] = None
                 a["activity"] = None
                 a["activeTools"] = []
@@ -2480,6 +2503,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                                       json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
                 if turn.get("status") == "completed" and a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     self.enforce_complaints(db, a, completion)
+                self.capacity_completed(db, a, turn, known_capacity_source)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
                 if pending and a["autoWake"] and not a.get("nativeFailureHold"):
                     a["status"] = "queued"
@@ -3647,6 +3671,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     ids = expanded
             stopped = [a for a in agents if a["id"] in ids]
             for a in stopped:
+                self.capacity_reset(db, a, "The agent was stopped.")
                 a.update(autoWake=False, epoch=a["epoch"] + 1, status="paused", error=reason)
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
@@ -3986,6 +4011,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 raise ValueError("Wait for this agent's current turn before this action")
             if not a["autoWake"]:
                 raise ValueError("Send a new instruction to resume this agent first")
+            self.capacity_reset(db, a, "A native action replaces this retry.")
             a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
                      startAttempt={"id": uid(), "epoch": a["epoch"], "events": [], "action": action, "submitted": False})
             self.put(db, "agents", a)
@@ -4003,12 +4029,22 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     raise ValueError("Native action belongs to an earlier agent state")
                 self.assert_workspace_available(db, a)
                 assert_native_thread_open(a)
+                if attempt["action"] == "capacity":
+                    if a["startAttempt"].get("submitted"):
+                        return a.get("capacityRetry")
+                    self.capacity_check(db, a, a.get("capacityRetry") or {}, claimed=True)
                 attempt.update(submitted=True, accountKey=a.get("accountKey", "default"),
                                connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
                 a["startAttempt"] = dict(attempt)
                 self.put(db, "agents", a)
                 method = "thread/compact/start" if attempt["action"] == "compact" else "review/start"
                 params = {"threadId": a["threadId"]}
+                if attempt["action"] == "capacity":
+                    method = "turn/start"
+                    params.update(input=[], **self.turn_permissions(a))
+                    params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
+                    if a.get("nativeEffort", a.get("effort")) is not None:
+                        params["effort"] = a.get("nativeEffort", a.get("effort"))
                 if attempt["action"] == "review":
                     params.update(target={"type": "uncommittedChanges"}, delivery="inline")
                 db.commit()
@@ -4032,8 +4068,13 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             raise
 
     def native_action_accepted(self, key, attempt, result):
-        if attempt["action"] == "review":
-            self.start_accepted(key, attempt, result)
+        if attempt["action"] in {"review", "capacity"}:
+            try:
+                self.start_accepted(key, attempt, result)
+            except Exception as error:
+                if attempt["action"] != "capacity":
+                    raise
+                self.start_error(key, attempt["id"], error, unknown=True)
         else:
             with self.lock, self.db() as db:
                 a = self.agent(key, db)

@@ -3,7 +3,9 @@ import { Button, Popover, Progress, Tooltip } from "@mantine/core";
 import { ChevronUp, Gauge, RefreshCw, RotateCcw } from "lucide-react";
 import type { Agent, Json } from "../types";
 import { api, errorText } from "../api";
-import { nativeErrorKind } from "../nativeErrors";
+import { limitRecovery } from "../limitRecovery";
+import LimitRecoveryNotice from "./LimitRecoveryNotice";
+export { limitRecovery } from "../limitRecovery";
 import "./Usage.css";
 import Analytics from "./Analytics";
 
@@ -119,64 +121,6 @@ function selectedBucket(buckets: LimitBucket[], model: string) {
     ) ||
     null
   );
-}
-export function limitRecovery(agent: Agent, limits: Json | null, now: number) {
-  const kind = nativeErrorKind(agent.error);
-  if (kind !== "usageLimitExceeded" && kind !== "rateLimitExceeded")
-    return null;
-  const fallback = {
-    title: "Usage limit reached",
-    message:
-      "Refresh the account limits. Check the reset time and available reset credits below.",
-  };
-  const snapshot = limits?.data?.rateLimits;
-  if (
-    !snapshot ||
-    limits?.error ||
-    limits?.stale ||
-    limits?.loading ||
-    (limits?.accountKey || "default") !== (agent.accountKey || "default") ||
-    !number(limits?.at) ||
-    now - limits.at > 300 ||
-    [snapshot.primary, snapshot.secondary].some(
-      (window) => number(window?.resetsAt) && window.resetsAt <= now,
-    )
-  )
-    return fallback;
-  let reached = snapshot.rateLimitReachedType;
-  // Native usage errors take precedence over a depleted-credit snapshot.
-  if (kind === "usageLimitExceeded") {
-    if (reached === "workspace_owner_credits_depleted")
-      reached = "workspace_owner_usage_limit_reached";
-    if (reached === "workspace_member_credits_depleted")
-      reached = "workspace_member_usage_limit_reached";
-  }
-  switch (reached) {
-    case "workspace_owner_credits_depleted":
-      return {
-        title: "Workspace credits depleted",
-        message:
-          "Your workspace is out of credits. Add credits to continue using Codex.",
-      };
-    case "workspace_member_credits_depleted":
-      return {
-        title: "Workspace credits depleted",
-        message:
-          "Your workspace is out of credits. Ask your workspace owner to add credits.",
-      };
-    case "workspace_owner_usage_limit_reached":
-      return {
-        title: "Workspace usage limit reached",
-        message: "Increase your workspace usage limit to continue using Codex.",
-      };
-    case "workspace_member_usage_limit_reached":
-      return {
-        title: "Workspace usage limit reached",
-        message: "Ask your workspace owner to increase your usage limit.",
-      };
-    default:
-      return fallback;
-  }
 }
 export default function Usage({
   agent,
@@ -422,10 +366,10 @@ export default function Usage({
               </Button>
             </header>
             {recovery && (
-              <div className="account-limit-recovery" role="status">
-                <strong>{recovery.title}</strong>
-                <p>{recovery.message}</p>
-              </div>
+              <LimitRecoveryNotice
+                key={JSON.stringify(recovery)}
+                recovery={recovery}
+              />
             )}
             <div className="account-limits-groups">
               {buckets.map((bucket) => (

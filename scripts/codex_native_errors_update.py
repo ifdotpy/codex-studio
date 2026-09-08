@@ -1,4 +1,5 @@
 """Install reviewed error handlers without stopping native turns or commands."""
+from codex_capacity_retry import CapacityRetryMixin
 from pathlib import Path
 import types
 
@@ -18,6 +19,8 @@ POLICY_GUARDS = ('start', 'answer', 'dynamic', 'native_action', 'run_native_acti
 
 
 def apply(runtime):
+    if not isinstance(runtime, CapacityRetryMixin):
+        raise RuntimeError('Capacity retry requires current source; no update applied')
     source = Path(__file__).with_name('codex_runtime.py')
     module = compile(source.read_text(), str(source), 'exec', dont_inherit=True)
     cls = next(c for c in module.co_consts if isinstance(c, types.CodeType) and c.co_name == 'Runtime')

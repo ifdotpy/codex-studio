@@ -592,7 +592,9 @@ try {
         rateLimits: { rateLimitReachedType: reached, primary, secondary },
       },
     };
-    fixture.stdin.write(JSON.stringify({ method: "fixture/limits", params: limits.data }) + "\n");
+    fixture.stdin.write(
+      JSON.stringify({ method: "fixture/limits", params: limits.data }) + "\n",
+    );
     await load();
     await page.locator("#message").fill("Exercise native usage recovery.");
     await page.locator("#send").click();
@@ -652,11 +654,43 @@ try {
       .waitFor();
     await page.locator('[data-phase="failed"]').waitFor();
     await toggle().click();
-    await page.locator(".account-limit-recovery").waitFor();
+    await page
+      .locator(".account-limits-panel .account-limit-recovery")
+      .waitFor();
+    const recoveryPanel = page.locator(
+      ".account-limits-panel .account-limit-recovery",
+    );
+    if (reached.includes("owner")) {
+      const link = recoveryPanel.getByRole("link");
+      assert.match(
+        await link.getAttribute("href"),
+        kind === "usageLimitExceeded" ? /usage-limits/ : /admin\/billing/,
+      );
+    } else {
+      await page.evaluate(() =>
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: async (value) => {
+              window.fixtureOwnerRequest = value;
+            },
+          },
+        }),
+      );
+      await recoveryPanel
+        .getByRole("button", { name: "Copy request for owner", exact: true })
+        .click();
+      assert.match(
+        await page.evaluate(() => window.fixtureOwnerRequest),
+        kind === "usageLimitExceeded" ? /increase my limit/ : /add credits/,
+      );
+    }
     assert.ok(
-      (await page.locator(".account-limit-recovery").innerText()).includes(
-        expected,
-      ),
+      (
+        await page
+          .locator(".account-limits-panel .account-limit-recovery")
+          .innerText()
+      ).includes(expected),
     );
   }
   assert.deepEqual(errors, []);

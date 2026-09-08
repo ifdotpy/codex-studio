@@ -1,4 +1,5 @@
 """Install the turn-state watchdog without replacing connections or active frames."""
+from codex_capacity_retry import CapacityRetryMixin
 from pathlib import Path
 import types
 
@@ -11,6 +12,8 @@ BASE_PREPARE = '395b8ec1d54a285b8cb739acf833d9a7d190649afd77a9c6da70a1d81e00dfbd
 
 
 def apply(runtime):
+    if not isinstance(runtime, CapacityRetryMixin):
+        raise RuntimeError('Capacity retry requires current source; no update applied')
     source = Path(__file__).with_name('codex_runtime.py')
     module = compile(source.read_text(), str(source), 'exec', dont_inherit=True)
     cls = next(c for c in module.co_consts if isinstance(c, types.CodeType) and c.co_name == 'Runtime')

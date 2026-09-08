@@ -59,6 +59,12 @@ try {
   assert.equal(capacity.message, "Codex is currently experiencing high load.");
   assert.equal(capacity.severity, "warning");
   assert.equal(
+    nativeErrorView(
+      JSON.stringify({ message: "  ", codexErrorInfo: "serverOverloaded" }),
+    ).message,
+    capacity.message,
+  );
+  assert.equal(
     nativeErrorView({
       codexErrorInfo: { activeTurnNotSteerable: { turnKind: "compact" } },
     }).severity,
@@ -114,6 +120,87 @@ try {
       nativeErrorView({ codexErrorInfo: "cyberPolicy" }, plan).links[0].href,
       link,
     );
+  const nestedError = {
+    error: { message: "Service unavailable", code: "unavailable" },
+  };
+  for (const raw of [
+    JSON.stringify(nestedError),
+    "```json\n" + JSON.stringify(nestedError) + "\n```",
+    "HTTP 503: " + JSON.stringify(nestedError) + " (request abc)",
+    JSON.stringify({ error: { message: JSON.stringify(nestedError) } }),
+    JSON.stringify("Service unavailable"),
+  ]) {
+    const view = nativeErrorView(raw);
+    assert.equal(view.message, "Service unavailable");
+    assert.equal(view.details, raw);
+    const notification = {
+      message: raw,
+      codexErrorInfo: "httpConnectionFailed",
+    };
+    const copy = JSON.stringify(notification);
+    const native = nativeErrorView(notification);
+    assert.equal(native.message, "Service unavailable");
+    assert.equal(native.kind, "httpConnectionFailed");
+    assert.equal(native.details, JSON.stringify(notification, null, 2));
+    assert.equal(JSON.stringify(notification), copy);
+  }
+  assert.equal(
+    nativeErrorView(new Error("Error instance")).message,
+    "Error instance",
+  );
+  const instance = new Error('HTTP 503: {"error":{"message":"Unavailable"}}');
+  assert.equal(nativeErrorView(instance).message, "Unavailable");
+  assert.equal(
+    JSON.parse(nativeErrorView(instance).details).message,
+    instance.message,
+  );
+  assert.equal(
+    nativeErrorView({ error: { message: "Nested failure" } }).message,
+    "Nested failure",
+  );
+  for (const raw of [
+    'HTTP 400: {"error":{"code":"bio_policy","message":"Restricted"}} tail',
+    '```json\n{"error":{"code":"bio_policy","message":"Restricted"}}\n```',
+  ]) {
+    const view = nativeErrorView({ message: raw, codexErrorInfo: "other" });
+    assert.equal(view.message, "Restricted");
+    assert.equal(view.title, "This content can't be shown");
+    assert.equal(view.kind, "other");
+  }
+  for (const raw of [
+    'HTTP 500: {"message":"bio_policy mentioned in a log"}',
+    'HTTP 500: {"error":{"message":"Failed"},"metadata":{"code":"bio_policy"}}',
+    'HTTP 500: {"error":{"message":"Failed","codexErrorInfo":"misalignmentPolicyViolation"}}',
+    '{"message":"Failed","metadata":{"error":{"code":"bio_policy"}}}',
+  ]) {
+    const view = nativeErrorView({ message: raw, codexErrorInfo: "other" });
+    assert.equal(view.kind, "other");
+    assert.equal(view.title, "");
+    assert.equal(view.links.length, 0);
+    assert.equal(nativeThreadError({ error: { message: raw } }), undefined);
+  }
+  for (const raw of [
+    'HTTP failure {"requestId":"abc"} tail',
+    '{"requestId":"abc"}',
+    'HTTP failure {"error":{"message":null}} tail',
+    'HTTP failure {"error":{"message":"unterminated}',
+    "HTTP failure " + "{".repeat(70_000),
+  ])
+    assert.equal(nativeErrorView(raw).message, raw);
+  assert.equal(
+    nativeErrorView(
+      'HTTP error {"requestId":"abc"} then {"error":{"message":"Actual failure"}}',
+    ).message,
+    "Actual failure",
+  );
+  assert.equal(
+    nativeErrorView({
+      message: JSON.stringify({
+        error: { message: '<img src=x onerror="alert(1)"> {text}' },
+      }),
+    }).message,
+    '<img src=x onerror="alert(1)"> {text}',
+  );
   console.log(
     `PASS: ${codes.length} installed native error variants, structured and plain errors, unknown variant fallback`,
   );

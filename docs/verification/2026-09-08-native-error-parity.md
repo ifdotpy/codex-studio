@@ -144,3 +144,6 @@ Follow-up results: 32 native error contract tests, five updater contract tests,
 all 18 schema variants, limit guidance unit checks, build, and both browser paths passed.
 The limits browser and question form checks also passed. TypeScript and updater
 checks also passed with only this task's staged changes.
+
+Capacity continuation is now a documented exception to the terminal failure hold.
+See `2026-09-08-capacity-recovery-actions.md` for the schedule, cancellation, and exact request identities.

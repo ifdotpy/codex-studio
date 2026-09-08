@@ -67,7 +67,17 @@ try {
       },
     }),
   );
-  proc.stdin.write(JSON.stringify({ method: "fixture/limits", params: { rateLimits: { planType: "pro", rateLimitReachedType: "workspace_member_credits_depleted" } } }) + "\n");
+  proc.stdin.write(
+    JSON.stringify({
+      method: "fixture/limits",
+      params: {
+        rateLimits: {
+          planType: "pro",
+          rateLimitReachedType: "workspace_member_credits_depleted",
+        },
+      },
+    }) + "\n",
+  );
   await page.goto(origin);
   await page
     .locator("[data-chat]")
@@ -258,7 +268,11 @@ try {
     .locator(".native-notice.warning")
     .getByText("Model is at capacity", { exact: true })
     .waitFor();
-  await page.locator('[data-phase="failed"]').waitFor();
+  await page.locator('[data-phase="capacity-retry"]').waitFor();
+  await page
+    .getByRole("button", { name: "Cancel automatic retry", exact: true })
+    .click();
+  await page.getByText("Automatic retry cancelled.", { exact: true }).waitFor();
   assert.equal(
     (await state()).runtime.agents.find((a) => a.id === agent.id).inFlight,
     false,
@@ -281,6 +295,7 @@ try {
     .getByRole("region", { name: "Account limits details", exact: true })
     .waitFor();
   await page
+    .getByRole("region", { name: "Account limits details", exact: true })
     .getByText("Ask your workspace owner to increase your usage limit.", {
       exact: true,
     })
@@ -297,9 +312,11 @@ try {
     ],
     [
       {
-        message: JSON.stringify({
-          error: { code: "bio_policy", message: "Restricted" },
-        }),
+        message:
+          "HTTP 400: " +
+          JSON.stringify({
+            error: { code: "bio_policy", message: "Restricted" },
+          }),
         codexErrorInfo: "other",
       },
       "https://chatgpt.com/r/b749fb02595e04c3007a54375f3f4374",
@@ -311,7 +328,14 @@ try {
       .locator(".native-error.info")
       .getByText("This content can't be shown", { exact: true })
       .waitFor();
-    await poll(async () => (await page.locator(".native-error").getByRole("link", { name: "Trusted Access", exact: true }).getAttribute("href")) === trusted, "policy-specific Trusted Access link");
+    await poll(
+      async () =>
+        (await page
+          .locator(".native-error")
+          .getByRole("link", { name: "Trusted Access", exact: true })
+          .getAttribute("href")) === trusted,
+      "policy-specific Trusted Access link",
+    );
     assert.equal(
       await page.locator("#message").isEnabled(),
       true,
@@ -328,6 +352,21 @@ try {
     .locator(".native-error")
     .getByText("New provider error", { exact: true })
     .waitFor();
+  await start("Check readable JSON failure");
+  const wrappedError =
+    'HTTP 502: {"error":{"message":"The service did not answer."}}';
+  fail({ message: wrappedError, codexErrorInfo: "other" });
+  await poll(
+    async () =>
+      (await page.locator(".native-error > span").innerText()) ===
+      "The service did not answer.",
+    "readable error message",
+  );
+  await page.locator(".native-error summary").click();
+  assert.equal(
+    JSON.parse(await page.locator(".native-error pre").innerText()).message,
+    wrappedError,
+  );
   await start("Check terminal precaution");
   proc.stdin.write(
     JSON.stringify({
@@ -390,7 +429,9 @@ try {
     .waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => document.body.scrollWidth), 320);
   await page.screenshot({ path: join(root, "native-precaution-mobile.png") });
-  const previousChats = new Set((await state()).runtime.agents.map((a) => a.id));
+  const previousChats = new Set(
+    (await state()).runtime.agents.map((a) => a.id),
+  );
   await page
     .locator(".native-error")
     .getByRole("button", { name: "New chat", exact: true })
@@ -403,7 +444,10 @@ try {
     "new chat created",
   );
   await page.locator(".native-error").waitFor({ state: "detached" });
-  await poll(() => page.locator("#message").isEnabled(), "new chat accepts a message after projection arrival");
+  await poll(
+    () => page.locator("#message").isEnabled(),
+    "new chat accepts a message after projection arrival",
+  );
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, evidence: root }));
 } catch (error) {
