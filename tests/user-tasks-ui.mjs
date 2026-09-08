@@ -176,10 +176,17 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.locator('[data-chat="lead"]').click();
-  const compact = page.getByRole("region", {
-    name: "Tasks for you from this team",
-  });
-  await compact.getByRole("button", { name: /Your tasks/ }).click();
+  await page
+    .getByRole("navigation", { name: "Workspace shortcuts" })
+    .getByRole("button", { name: /^Your tasks/ })
+    .click();
+  const compact = page.getByRole("region", { name: "Your tasks", exact: true });
+  assert.equal(
+    await page.locator(".user-tasks-compact").count(),
+    0,
+    "Desktop tasks have one entry point",
+  );
+  await compact.locator("[data-user-task]").first().waitFor();
   assert.equal(await compact.locator("[data-user-task]").count(), 2);
   assert.equal(await compact.getByText(outsideTask.title).count(), 0);
   const row = compact.locator('[data-user-task="release-check"]');
@@ -248,9 +255,7 @@ try {
   await stoppedRow
     .getByText("Saved; agent stopped. Your result waits for the agent.")
     .waitFor();
-  await page.locator("#workspace-toggle").click();
-  const nav = page.getByRole("navigation", { name: "Workspace sections" });
-  await nav.getByRole("button", { name: "Your tasks", exact: true }).click();
+
   const full = page.getByRole("region", { name: "Your tasks", exact: true });
   await full.getByLabel("Task status").selectOption("accepted");
   await full.getByRole("button", { name: task.title, exact: true }).click();
@@ -302,7 +307,9 @@ try {
     320,
   );
   assert.equal(
-    await compact.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+    await page
+      .getByRole("region", { name: "Tasks for you from this team" })
+      .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
     true,
     "Task content stays within the panel",
   );

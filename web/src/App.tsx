@@ -1034,7 +1034,9 @@ export default function App() {
                 Back to lead
               </Button>
             )}
-            <h1 id="conversation-title">{title}</h1>
+            <h1 id="conversation-title" title={title}>
+              {title}
+            </h1>
             <span id="conversation-status">
               {mobileClient && agent?.cwd
                 ? `${agent.cwd.split("/").filter(Boolean).at(-1)} · `
@@ -1054,62 +1056,6 @@ export default function App() {
                         : ""}
             </span>
           </div>
-          {!mobileClient && (
-            <Accounts
-              state={accounts}
-              agent={agent || lead}
-              accountKey={accountKey}
-              onError={notify}
-              lead={lead || (agent?.isLead ? agent : undefined)}
-              teamBusy={
-                team.some(
-                  (member) =>
-                    !!member.inFlight ||
-                    busy.has(member.status) ||
-                    member.status === "queued",
-                ) ||
-                !!agent?.inFlight ||
-                (!!agent && busy.has(agent.status))
-              }
-              changeRuleOverride={async (enabled) => {
-                const root = lead || (agent?.isLead ? agent : undefined);
-                if (!root) return;
-                await api("/api/conversation", {
-                  id: root.id,
-                  dangerously_skip_rules: enabled,
-                });
-                await refresh();
-              }}
-              changeAccount={async (key) => {
-                if (agent?.isLead) {
-                  const allowed = accounts.data.accounts.find(
-                    (a) => a.id === key,
-                  )?.projectRules?.allowedProjects;
-                  if (
-                    allowed &&
-                    !agent.dangerouslySkipAccountRules &&
-                    !allowed.some(
-                      (path) =>
-                        agent.cwd === path ||
-                        agent.cwd?.startsWith(path.replace(/\/$/, "") + "/"),
-                    )
-                  ) {
-                    folders(agent, key);
-                    return;
-                  }
-                  await api("/api/agents/account", {
-                    id: agent.id,
-                    account_key: key,
-                  });
-                  await refresh();
-                } else {
-                  accounts.setData(
-                    await api("/api/accounts/default", { account_key: key }),
-                  );
-                }
-              }}
-            />
-          )}
           {mobileClient && (
             <ActionIcon
               aria-label="Chat settings"
@@ -1118,34 +1064,97 @@ export default function App() {
               <Settings size={20} />
             </ActionIcon>
           )}
-          {!mobileClient && view === "chat" && agent?.cwd && (
-            <Button
-              id="project"
-              className="project-picker"
-              leftSection={<Folder size={15} />}
-              aria-label="Choose project folder"
-              title={agent.cwd}
-              onClick={project}
+          {!mobileClient && (
+            <div
+              className="conversation-settings"
+              aria-label="Conversation settings"
             >
-              {agent.cwd.split("/").filter(Boolean).at(-1)}
-            </Button>
-          )}
-          {!mobileClient && view === "chat" && agent?.source === "managed" && (
-            <ExecutionSettings
-              key={"execution:" + agent.id}
-              agent={agent}
-              catalog={workerModels}
-              refresh={refresh}
-            />
-          )}
-          {!mobileClient && view === "chat" && lead?.isLead && (
-            <ExecutionSettings
-              key={"defaults:" + lead.id}
-              agent={lead}
-              catalog={workerModels}
-              refresh={refresh}
-              teamDefaults
-            />
+              <Accounts
+                state={accounts}
+                agent={agent || lead}
+                accountKey={accountKey}
+                onError={notify}
+                lead={lead || (agent?.isLead ? agent : undefined)}
+                teamBusy={
+                  team.some(
+                    (member) =>
+                      !!member.inFlight ||
+                      busy.has(member.status) ||
+                      member.status === "queued",
+                  ) ||
+                  !!agent?.inFlight ||
+                  (!!agent && busy.has(agent.status))
+                }
+                changeRuleOverride={async (enabled) => {
+                  const root = lead || (agent?.isLead ? agent : undefined);
+                  if (!root) return;
+                  await api("/api/conversation", {
+                    id: root.id,
+                    dangerously_skip_rules: enabled,
+                  });
+                  await refresh();
+                }}
+                changeAccount={async (key) => {
+                  if (agent?.isLead) {
+                    const allowed = accounts.data.accounts.find(
+                      (a) => a.id === key,
+                    )?.projectRules?.allowedProjects;
+                    if (
+                      allowed &&
+                      !agent.dangerouslySkipAccountRules &&
+                      !allowed.some(
+                        (path) =>
+                          agent.cwd === path ||
+                          agent.cwd?.startsWith(path.replace(/\/$/, "") + "/"),
+                      )
+                    ) {
+                      folders(agent, key);
+                      return;
+                    }
+                    await api("/api/agents/account", {
+                      id: agent.id,
+                      account_key: key,
+                    });
+                    await refresh();
+                  } else {
+                    accounts.setData(
+                      await api("/api/accounts/default", {
+                        account_key: key,
+                      }),
+                    );
+                  }
+                }}
+              />
+              {view === "chat" && agent?.cwd && (
+                <Button
+                  id="project"
+                  className="project-picker"
+                  leftSection={<Folder size={15} />}
+                  aria-label="Choose project folder"
+                  title={agent.cwd}
+                  onClick={project}
+                >
+                  {agent.cwd.split("/").filter(Boolean).at(-1)}
+                </Button>
+              )}
+              {view === "chat" && agent?.source === "managed" && (
+                <ExecutionSettings
+                  key={"execution:" + agent.id}
+                  agent={agent}
+                  catalog={workerModels}
+                  refresh={refresh}
+                />
+              )}
+              {view === "chat" && lead?.isLead && (
+                <ExecutionSettings
+                  key={"defaults:" + lead.id}
+                  agent={lead}
+                  catalog={workerModels}
+                  refresh={refresh}
+                  teamDefaults
+                />
+              )}
+            </div>
           )}
           {!mobileClient && view === "chat" && !!workers.length && (
             <Button
@@ -1546,6 +1555,15 @@ export default function App() {
               agent={agent}
               catalog={workerModels}
               refresh={refresh}
+            />
+          )}
+          {lead?.isLead && (
+            <ExecutionSettings
+              key={"mobile-defaults:" + lead.id}
+              agent={lead}
+              catalog={workerModels}
+              refresh={refresh}
+              teamDefaults
             />
           )}
           {agent?.cwd && (

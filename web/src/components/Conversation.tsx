@@ -539,17 +539,6 @@ export default function Conversation(p: {
           accountKey={agent.accountKey || "default"}
         />
       )}
-      <div className="prompt-navigation-slot">
-        {!p.room && p.id && (
-          <PromptNavigator
-            key={p.id}
-            messages={items}
-            container={scroll}
-            storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
-            jump={jumpToPrompt}
-          />
-        )}
-      </div>
       <div id="messages" ref={scroll} onScroll={onScroll}>
         <div ref={content} className="message-content">
           {notice && <p className="notice">{notice}</p>}
@@ -601,6 +590,33 @@ export default function Conversation(p: {
             onJump={jumpToPrompt}
           />
           {!p.room && <AgentPhase agent={agent} connection={connection} />}
+          {mobileClient && agent?.source === "managed" && !p.room && (
+            <UserTasks
+              key={agent.rootId || agent.id}
+              data={{
+                ...p.data,
+                runtime: {
+                  ...p.data.runtime,
+                  userTasks: p.data.runtime.userTasks?.filter(
+                    (task) => task.agent === agent.id,
+                  ),
+                },
+              }}
+              agent={agent}
+              compact
+              refresh={p.refresh}
+              notify={p.notify}
+              onSelect={p.onSelect}
+            />
+          )}
+          <Requests
+            scope={p.data.stateDir}
+            allRequests={p.data.runtime.requests}
+            requests={requests}
+            agents={p.data.threads}
+            refresh={p.refresh}
+            notify={p.notify}
+          />
         </div>
       </div>
       {!p.room && (
@@ -625,37 +641,6 @@ export default function Conversation(p: {
           </Button>
         </div>
       )}
-      {agent?.source === "managed" && !p.room && (
-        <UserTasks
-          key={agent.rootId || agent.id}
-          data={
-            mobileClient
-              ? {
-                  ...p.data,
-                  runtime: {
-                    ...p.data.runtime,
-                    userTasks: p.data.runtime.userTasks?.filter(
-                      (task) => task.agent === agent.id,
-                    ),
-                  },
-                }
-              : p.data
-          }
-          agent={agent}
-          compact
-          refresh={p.refresh}
-          notify={p.notify}
-          onSelect={p.onSelect}
-        />
-      )}
-      <Requests
-        scope={p.data.stateDir}
-        allRequests={p.data.runtime.requests}
-        requests={requests}
-        agents={p.data.threads}
-        refresh={p.refresh}
-        notify={p.notify}
-      />
       {p.room ? (
         <p className="room-footer">
           {p.room.kind === "private"
@@ -898,6 +883,18 @@ export default function Conversation(p: {
               <span id="send-state" role="status" aria-live="polite">
                 {p.sending ? "Sending…" : ""}
               </span>
+              <div className="prompt-navigation-slot">
+                {!p.room && p.id && (
+                  <PromptNavigator
+                    compact
+                    key={p.id}
+                    messages={items}
+                    container={scroll}
+                    storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+                    jump={jumpToPrompt}
+                  />
+                )}
+              </div>
               <div className="composer-submit-actions">
                 {agent && (
                   <ActionIcon

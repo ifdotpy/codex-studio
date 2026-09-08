@@ -10,7 +10,9 @@ export default function PromptNavigator({
   container,
   storageKey,
   jump,
+  compact = false,
 }: {
+  compact?: boolean;
   messages: Message[];
   container: RefObject<HTMLDivElement | null>;
   storageKey: string;
@@ -83,11 +85,14 @@ export default function PromptNavigator({
     save(storageKey, next);
   };
   return (
-    <nav className="prompt-navigation" aria-label="Conversation prompts">
+    <nav
+      className={`prompt-navigation${compact ? " prompt-navigation-compact" : ""}`}
+      aria-label="Conversation prompts"
+    >
       <Popover
         opened={opened}
         onChange={setOpened}
-        position="bottom-start"
+        position={compact ? "top-end" : "bottom-start"}
         width={380}
         withinPortal
         shadow="md"

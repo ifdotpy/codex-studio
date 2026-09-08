@@ -1,0 +1,232 @@
+/* Shared geometry for the conversation and its persistent controls. */
+.workspace {
+  --chat-width: 860px;
+  --chat-gutter: 24px;
+  --chat-inset: max(var(--chat-gutter), calc((100% - var(--chat-width)) / 2));
+  container: workspace / inline-size;
+}
+
+@media (min-width: 761px) {
+  .workspace-header,
+  .workspace-header:has(.execution-menu) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 0;
+    height: auto;
+    min-height: 0;
+    padding: 4px var(--chat-gutter);
+  }
+  .conversation-heading {
+    grid-area: 1 / 1;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    min-width: 0;
+    padding-block: 0;
+  }
+  #conversation-title {
+    min-width: 0;
+    flex: 1;
+    font-size: 15px;
+    line-height: 22px;
+  }
+  #conversation-status {
+    flex-shrink: 0;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 0;
+    font-size: 11px;
+    line-height: 16px;
+  }
+  .conversation-settings {
+    grid-area: 2 / 1 / 3 / -1;
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    min-width: 0;
+    gap: 2px 8px;
+    margin-left: -8px;
+  }
+  .conversation-settings > .mantine-Button-root {
+    height: 30px;
+    min-height: 30px;
+    min-width: 0;
+    flex: 0 1 auto;
+    font-size: 12px;
+  }
+  .conversation-settings .account-picker {
+    max-width: 220px;
+  }
+  .conversation-settings #project {
+    max-width: 200px;
+    padding-inline: 8px;
+  }
+  .conversation-settings .execution-menu {
+    padding-left: 8px;
+  }
+  .conversation-settings .mantine-Button-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .workspace-header #team-toggle {
+    grid-area: 1 / 2;
+    height: 30px;
+    min-width: 0;
+  }
+  .workspace-header .conversation-quick-actions {
+    grid-area: 1 / 3;
+    flex-wrap: nowrap;
+    flex-basis: auto;
+  }
+  .workspace-shortcuts {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    gap: 0;
+    min-height: 36px;
+    padding: 2px calc(var(--chat-gutter) - 8px);
+  }
+  .workspace-shortcuts > .mantine-Button-root {
+    flex-shrink: 0;
+    padding-inline: 8px;
+  }
+  .prompt-navigation {
+    height: 30px;
+    padding-inline: var(--chat-gutter);
+  }
+  #conversation #messages {
+    padding: 20px var(--chat-inset) 12px;
+    scrollbar-gutter: auto;
+  }
+  #conversation
+    :is(
+      #composer,
+      .agent-panel,
+      .usage-footer,
+      .message-queue,
+      .user-tasks-compact
+    ) {
+    width: calc(100% - 2 * var(--chat-gutter));
+    max-width: var(--chat-width);
+    align-self: center;
+    margin-inline: auto;
+  }
+  #conversation #composer {
+    margin-top: 6px;
+    padding: 8px 12px 6px;
+    border-radius: 16px;
+  }
+  #conversation #composer #message {
+    min-height: 28px;
+  }
+  #conversation .composer-bar {
+    padding-top: 3px;
+  }
+  #conversation #requests {
+    padding: 0;
+  }
+  #conversation .usage-footer {
+    margin-block: 5px 6px;
+    min-height: 22px;
+    gap: 10px;
+  }
+  #conversation .agent-panel {
+    margin-block: 0;
+  }
+  #conversation .message {
+    margin-bottom: 20px;
+  }
+  #conversation .turn-history {
+    margin-bottom: 16px;
+  }
+  #conversation .agent-phase {
+    margin-block: 4px;
+  }
+  #sidebar {
+    width: 240px;
+    flex-basis: 240px;
+    padding-inline: 16px;
+  }
+  .desktop-mac .sidebar-header {
+    padding-inline: 0;
+  }
+}
+
+@container workspace (max-width: 660px) {
+  .conversation-settings {
+    gap: 2px;
+  }
+  .conversation-settings > .mantine-Button-root {
+    flex: 1 1 0;
+    max-width: none;
+  }
+  .conversation-settings .mantine-Button-inner {
+    justify-content: flex-start;
+  }
+  .workspace-header #team-toggle {
+    padding-inline: 8px;
+  }
+}
+
+@media (max-width: 760px) {
+  .workspace {
+    --chat-gutter: 14px;
+  }
+  #conversation
+    :is(
+      #composer,
+      .agent-panel,
+      .usage-footer,
+      .user-tasks-compact,
+      .message-queue
+    ) {
+    width: calc(100% - 2 * var(--chat-gutter));
+    max-width: none;
+    align-self: center;
+    margin-inline: auto;
+  }
+  #conversation #requests {
+    padding: 0;
+  }
+}
+
+/* Questions belong to the transcript, so they cannot shrink its viewport. */
+#conversation #messages #requests,
+#conversation #messages .user-tasks-compact {
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+  padding: 0;
+}
+
+/* Prompt history shares the composer toolbar instead of reserving a row. */
+#composer .prompt-navigation-compact {
+  height: 28px;
+  padding: 0;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+}
+#composer .prompt-navigation-compact .current-prompt {
+  display: none;
+}
+@media (max-width: 760px) {
+  #conversation-status {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #composer .prompt-navigation-compact > .mantine-ActionIcon-root {
+    display: none;
+  }
+  #composer .prompt-history-toggle {
+    min-height: 44px;
+  }
+}

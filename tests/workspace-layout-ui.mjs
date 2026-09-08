@@ -44,6 +44,7 @@ const port = await new Promise((resolve, reject) => {
 });
 const origin = `http://127.0.0.1:${port}`;
 const initial = await (await fetch(origin + "/api/state")).json();
+const fixtureAccounts = await (await fetch(origin + "/api/accounts")).json();
 const lead = initial.threads.find((agent) => agent.name === "Release lead");
 assert.ok(lead, "fixture has a lead chat");
 
@@ -109,12 +110,11 @@ try {
     await route.fulfill({ response, json: data });
   });
   await page.route("**/api/accounts", async (route) => {
-    const response = await route.fetch();
-    const data = await response.json();
+    const data = structuredClone(fixtureAccounts);
     const account = data.accounts.find((item) => item.id === "default");
     account.email = longAccount;
     account.label = "Account owner with a very long label";
-    await route.fulfill({ response, json: data });
+    await route.fulfill({ json: data });
   });
   await page.route("**/api/panel?**", (route) =>
     route.fulfill({ json: panel }),
@@ -191,7 +191,7 @@ try {
         panel: box(".agent-panel"),
         composer: box("#composer"),
         message: box("#message"),
-        usage: box("#usage-footer"),
+        usage: box(".usage-footer"),
         shortcuts: box(".workspace-shortcuts"),
       };
     });
@@ -202,6 +202,10 @@ try {
     await page.waitForTimeout(80);
     const current = await measure();
     measurements.push(current);
+    await writeFile(
+      join(root, "measurements.json"),
+      JSON.stringify(measurements, null, 2),
+    );
     await page.screenshot({
       path: join(root, `workspace-${viewport.name}.png`),
       animations: "disabled",
@@ -243,7 +247,7 @@ try {
       `${prefix}: header horizontal overflow`,
     );
     assert.ok(
-      current.messages.height >= 150,
+      current.messages.height >= viewport.height * 0.48,
       `${prefix}: transcript height ${current.messages.height}`,
     );
     assert.ok(
@@ -254,6 +258,21 @@ try {
     assert.ok(
       current.composer.height <= (viewport.width <= 760 ? 110 : 90),
       `${prefix}: blank composer height ${current.composer.height}`,
+    );
+    assert.equal(
+      await page.locator("#messages #requests").count(),
+      1,
+      `${prefix}: requests scroll with the transcript`,
+    );
+    assert.equal(
+      await page.locator("#conversation > .user-tasks-compact").count(),
+      0,
+      `${prefix}: tasks do not reserve transcript space`,
+    );
+    assert.equal(
+      await page.locator("#composer .prompt-navigation").count(),
+      1,
+      `${prefix}: prompt history shares the composer toolbar`,
     );
     assert.ok(current.panel, `${prefix}: active panel is present`);
     assert.ok(
@@ -272,7 +291,7 @@ try {
       ["panel", current.panel],
       ["composer", current.composer],
     ]) {
-      const edgeTolerance = viewport.width <= 760 ? 16 : 8;
+      const edgeTolerance = 1;
       const left = element.x;
       const right = element.right;
       assert.ok(
@@ -317,6 +336,10 @@ try {
     `PASS workspace layout: long title, project, account, capped panel, shared edges, blank composer, and team drawer across 1440, 1280, 1024, and 390px. Evidence ${root}`,
   );
 } finally {
+  for (const context of browser?.contexts() || []) {
+    for (const page of context.pages())
+      await page.unrouteAll({ behavior: "wait" });
+  }
   await browser?.close();
   fixture.kill("SIGTERM");
 }

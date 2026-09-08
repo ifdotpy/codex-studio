@@ -4,6 +4,7 @@ import "@mantine/core/styles.css";
 import App from "./App";
 import { theme } from "./theme";
 import "./style.css";
+import "./workspace-layout.css";
 
 createRoot(document.getElementById("root")!).render(
   <MantineProvider theme={theme} forceColorScheme="dark">
