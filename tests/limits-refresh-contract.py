@@ -87,6 +87,28 @@ class LimitsRefreshContracts(unittest.TestCase):
             self.assertIs(self.runtime.limits(), cached)
         connect.assert_not_called()
 
+    def test_many_clients_share_one_successful_read(self):
+        server = self.runtime.connect()
+        with patch.object(server, "call", return_value={"accountId": "default"}) as call:
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                values = list(pool.map(lambda _: self.runtime.limits(), range(40)))
+        self.assertEqual(call.call_count, 1)
+        self.assertTrue(all(value["data"]["accountId"] == "default" for value in values))
+
+    def test_error_cooldown_prevents_client_retry_storm(self):
+        server = self.runtime.connect()
+        with patch.object(server, "call", side_effect=RuntimeError("Offline")) as call:
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                values = list(pool.map(lambda _: self.runtime.limits(), range(40)))
+        self.assertEqual(call.call_count, 1)
+        self.assertTrue(all(value["error"] == "Offline" for value in values))
+        self.assertTrue(all(value["at"] is None for value in values))
+        with self.runtime.lock:
+            self.runtime.rate_limits_for()["checkedAt"] -= 31
+        with patch.object(server, "call", return_value={"accountId": "default"}) as call:
+            self.assertIsNone(self.runtime.limits()["error"])
+        self.assertEqual(call.call_count, 1)
+
     def test_recent_error_cache_does_not_block_recovery(self):
         self.cache("Earlier timeout")
         server = self.runtime.connect()

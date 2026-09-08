@@ -76,6 +76,7 @@ export default function Conversation(p: {
   refresh: () => Promise<void>;
   notify: (s: string) => void;
   limits: Json | null;
+  limitsAccountLabel?: string;
   reloadLimits: () => void;
   onPhase: (id: string | null, label: string) => void;
 }) {
@@ -969,6 +970,7 @@ export default function Conversation(p: {
               key={p.agent?.accountKey || "default"}
               agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
               limits={p.limits}
+              accountLabel={p.limitsAccountLabel}
               reload={p.reloadLimits}
             />
           )}

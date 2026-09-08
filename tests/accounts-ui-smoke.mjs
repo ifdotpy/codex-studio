@@ -66,7 +66,9 @@ const agents = [
 const bodies = [];
 let delayed = null;
 let delayWork = false;
+let wrongLimitsAccount = false;
 let discoverCount = 0;
+let limitReads = 0;
 let snapshotLimits = {};
 const limits = (key) => {
   const codex = {
@@ -165,12 +167,13 @@ const server = createServer(async (req, res) => {
     return json(agent);
   }
   if (url.pathname === "/api/limits") {
+    limitReads++;
     const key = url.searchParams.get("account_key") || "default";
     if (key === "work" && delayWork) {
       delayed = () => json(limits(key));
       return;
     }
-    return json(limits(key));
+    return json(limits(wrongLimitsAccount && key === "work" ? "default" : key));
   }
   if (url.pathname === "/api/limits/reset") return json({ outcome: "reset" });
   if (url.pathname === "/api/costs")
@@ -268,7 +271,18 @@ try {
       ?.textContent.includes("personal@example.com"),
   );
   await quota.waitFor();
+  wrongLimitsAccount = true;
   await choose("work@example.com");
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-limits-summary .account-limits-warning")
+      ?.textContent.includes("Unavailable"),
+  );
+  assert.doesNotMatch(await quota.innerText(), /89% left/);
+  wrongLimitsAccount = false;
+  await quota.click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await quota.click();
   await page.waitForFunction(() =>
     document
       .querySelector(".account-picker")
@@ -284,10 +298,22 @@ try {
     "work",
   );
 
+  // Fresh account cache must avoid another GET on return navigation.
+  const readsBeforeSwitch = limitReads;
+  await choose("personal@example.com");
+  await choose("work@example.com");
+  await page.waitForTimeout(100);
+  assert.equal(limitReads, readsBeforeSwitch);
+  const forceRefresh = async () => {
+    await quota.click();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await quota.click();
+  };
   // A delayed response from account B must not replace account C's limits.
   await choose("personal@example.com");
   delayWork = true;
   await choose("work@example.com");
+  await forceRefresh();
   await page.waitForFunction(() =>
     document
       .querySelector(".account-picker")
@@ -362,6 +388,7 @@ try {
     /78% left/,
     "return navigation uses the selected account cache while refresh waits",
   );
+  await forceRefresh();
   for (let i = 0; i < 100 && !delayed; i++)
     await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(delayed, "work account refresh remains pending");
@@ -522,6 +549,26 @@ try {
     animations: "disabled",
   });
   assert.ok(await picker.isVisible());
+  // A stalled read must release the per-account request slot after its deadline.
+  delayWork = true;
+  delayed = null;
+  await choose("work@example.com");
+  await quota.click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  for (let i = 0; i < 100 && !delayed; i++) await page.waitForTimeout(20);
+  assert.ok(delayed, "the timeout case has a pending work request");
+  await page
+    .locator(".account-limits-updated")
+    .filter({ hasText: "Saved limits" })
+    .waitFor({ timeout: 35000 });
+  delayWork = false;
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page
+    .locator(".account-limits-updated")
+    .filter({ hasText: "Saved limits" })
+    .waitFor({ state: "hidden" });
+  assert.match(await quota.innerText(), /78% left/);
+  assert.match(await quota.innerText(), /All accounts ≈\$12.00 today/);
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -531,6 +578,9 @@ try {
         "empty chat account",
         "pinned started chat",
         "delayed limits isolation",
+        "wrong-account response rejection",
+        "stalled read releases request slot",
+        "fresh cache avoids reads on chat switch",
         "per-account snapshot limits",
         "chat switch with cached limits and delayed account response",
         "reset binding",

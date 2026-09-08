@@ -2927,7 +2927,11 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         with self.limit_refresh_lock(account_key):
             with self.lock:
                 cached = self.rate_limits_for(account_key)
-                if not force and not cached.get("error") and cached["at"] and time.time() - cached["at"] < 30:
+                now = time.time()
+                if not force and (
+                        (not cached.get("error") and cached["at"] and now - cached["at"] < 60)
+                        or (cached.get("error") and cached.get("checkedAt")
+                            and now - cached["checkedAt"] < 30)):
                     return cached
             for attempt in range(2):
                 error = None
@@ -2946,7 +2950,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         # Only this read is safe to repeat after a lost response.
                         continue
                     else:
-                        self.set_rate_limits(account_key, {**current, "error": str(error)})
+                        self.set_rate_limits(account_key, {**current, "error": str(error), "checkedAt": time.time()})
                     return self.rate_limits_for(account_key)
 
     @staticmethod

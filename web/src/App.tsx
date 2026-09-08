@@ -1,3 +1,4 @@
+import { accountLimits } from "./accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds } from "./chatScope";
 import {
@@ -248,14 +249,19 @@ export default function App() {
     !!agent && agent.source === "managed",
   );
   const limitsRequests = useRef(new Map<string, Promise<void>>());
-  const cachedLimits = limitsByAccount[accountKey];
+  const selectedAccount = accounts.data.accounts.find(
+    (a) => a.id === accountKey,
+  );
+  const accountId = selectedAccount?.accountId;
+  const cachedLimits = accountLimits(
+    limitsByAccount[accountKey],
+    accountKey,
+    accountId,
+  );
   const snapshotLimits =
     data?.runtime.rateLimitsByAccount?.[accountKey] ||
     (accountKey === "default" ? data?.runtime.rateLimits : null);
-  const matchingSnapshot =
-    snapshotLimits && (snapshotLimits.accountKey || "default") === accountKey
-      ? snapshotLimits
-      : null;
+  const matchingSnapshot = accountLimits(snapshotLimits, accountKey, accountId);
   const visibleLimits =
     matchingSnapshot &&
     (!cachedLimits || (matchingSnapshot.at || 0) > (cachedLimits.at || 0))
@@ -334,39 +340,66 @@ export default function App() {
     window.addEventListener("desktop-error", onError);
     return () => window.removeEventListener("desktop-error", onError);
   }, [notify]);
-  const reloadLimits = useCallback(() => {
-    const pending = limitsRequests.current.get(accountKey);
-    if (pending) return pending;
-    const query =
-      accountKey === "default"
-        ? ""
-        : `?account_key=${encodeURIComponent(accountKey)}`;
-    const request = api("/api/limits" + query)
-      .then((result) => {
-        if (result.accountKey && result.accountKey !== accountKey)
-          throw new Error("Codex returned limits for another account.");
-        setLimitsByAccount((old) => {
-          const previous = old[accountKey];
-          if (previous && (previous.at || 0) > (result.at || 0)) return old;
-          return { ...old, [accountKey]: { ...result, accountKey } };
+  const limitsCache = useRef(limitsByAccount);
+  limitsCache.current = limitsByAccount;
+  const reloadLimits = useCallback(
+    (force = false) => {
+      const pending = limitsRequests.current.get(accountKey);
+      if (pending) return pending;
+      const cached = accountLimits(
+        limitsCache.current[accountKey],
+        accountKey,
+        accountId,
+      );
+      if (
+        !force &&
+        cached?.data &&
+        !cached.error &&
+        Date.now() / 1000 - (cached.at || 0) < 60
+      )
+        return Promise.resolve();
+      const query =
+        accountKey === "default"
+          ? ""
+          : `?account_key=${encodeURIComponent(accountKey)}`;
+      const request = api("/api/limits" + query, undefined, {
+        timeoutMs: 25000,
+      })
+        .then((result) => {
+          if (!accountLimits(result, accountKey, accountId))
+            throw new Error("Codex returned limits for another account.");
+          setLimitsByAccount((old) => {
+            const previous = accountLimits(
+              old[accountKey],
+              accountKey,
+              accountId,
+            );
+            if (previous && (previous.at || 0) > (result.at || 0)) return old;
+            return { ...old, [accountKey]: { ...result, accountKey } };
+          });
+        })
+        .catch((error) => {
+          setLimitsByAccount((old) => ({
+            ...old,
+            [accountKey]: {
+              ...(old[accountKey] || { data: null }),
+              error: errorText(error),
+              accountKey,
+            },
+          }));
+        })
+        .finally(() => {
+          limitsRequests.current.delete(accountKey);
         });
-      })
-      .catch((error) => {
-        setLimitsByAccount((old) => ({
-          ...old,
-          [accountKey]: {
-            ...(old[accountKey] || { data: null }),
-            error: errorText(error),
-            accountKey,
-          },
-        }));
-      })
-      .finally(() => {
-        limitsRequests.current.delete(accountKey);
-      });
-    limitsRequests.current.set(accountKey, request);
-    return request;
-  }, [accountKey]);
+      limitsRequests.current.set(accountKey, request);
+      return request;
+    },
+    [accountKey, accountId],
+  );
+  const forceReloadLimits = useCallback(
+    () => reloadLimits(true),
+    [reloadLimits],
+  );
   useEffect(() => {
     if (!data?.stateDir) return;
     void reloadLimits();
@@ -1347,7 +1380,10 @@ export default function App() {
             refresh={refresh}
             notify={notify}
             limits={visibleLimits}
-            reloadLimits={reloadLimits}
+            limitsAccountLabel={
+              selectedAccount?.email || selectedAccount?.label
+            }
+            reloadLimits={forceReloadLimits}
             onPhase={onPhase}
             onSelect={open}
           />

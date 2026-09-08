@@ -1,3 +1,4 @@
+import { accountLimits } from "../accountUsage";
 import { useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress, Tooltip } from "@mantine/core";
 import { ChevronUp, Gauge, RefreshCw, RotateCcw } from "lucide-react";
@@ -121,13 +122,16 @@ function selectedBucket(buckets: LimitBucket[], model: string) {
 }
 export default function Usage({
   agent,
-  limits,
+  limits: reportedLimits,
+  accountLabel,
   reload,
 }: {
   agent: Agent;
   limits: Json | null;
+  accountLabel?: string;
   reload: () => void;
 }) {
+  const limits = accountLimits(reportedLimits, agent.accountKey || "default");
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState<string | null>(null);
   const [resetPending, setResetPending] = useState(false);
@@ -195,10 +199,12 @@ export default function Usage({
     let timer: number;
     const load = async () => {
       try {
-        const result = await api<Json>("/api/costs");
+        const result = await api<Json>("/api/costs", undefined, {
+          timeoutMs: 15000,
+        });
         if (!active) return;
         setCosts(result);
-        timer = window.setTimeout(load, result.refreshing ? 1500 : 60000);
+        timer = window.setTimeout(load, result.refreshing ? 5000 : 60000);
       } catch {
         if (active) {
           setCosts((previous) => ({
@@ -251,7 +257,11 @@ export default function Usage({
       ? `${buckets.length} ${buckets.length === 1 ? "pool" : "pools"}`
       : "Unavailable";
   return (
-    <div className="usage-footer" id="usage-footer">
+    <div
+      className="usage-footer"
+      id="usage-footer"
+      data-account-key={agent.accountKey || "default"}
+    >
       <Tooltip
         label={
           known
@@ -315,7 +325,7 @@ export default function Usage({
               </span>
               {resetCount !== null && resetCount > 0 && (
                 <span className="account-reset-summary">
-                  {resetCount} resets
+                  {resetCount} {resetCount === 1 ? "reset" : "resets"}
                 </span>
               )}
               {number(costs?.data?.todayUSD) && (
@@ -323,7 +333,7 @@ export default function Usage({
                   className="account-cost-summary"
                   title="API cost estimate for all local chats"
                 >
-                  ≈{dollars(costs?.data?.todayUSD)} today
+                  All accounts ≈{dollars(costs?.data?.todayUSD)} today
                 </span>
               )}
             </span>
@@ -337,7 +347,7 @@ export default function Usage({
             <header className="account-limits-heading">
               <div>
                 <h3>Account limits</h3>
-                <p>Allowance left · local time</p>
+                <p>{accountLabel || "Allowance left · local time"}</p>
               </div>
               <Button
                 size="compact-xs"

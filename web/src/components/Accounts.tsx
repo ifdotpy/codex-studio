@@ -1,3 +1,4 @@
+import { accountLimits } from "../accountUsage";
 import { Button, Menu, Modal, Switch, TextInput } from "@mantine/core";
 import {
   Check,
@@ -70,9 +71,13 @@ function AccountCapacity({
     if (!opened || account.status !== "ready") return;
     let live = true;
     setLimits(null);
-    void api(`/api/limits?account_key=${encodeURIComponent(account.id)}`)
+    void api(
+      `/api/limits?account_key=${encodeURIComponent(account.id)}`,
+      undefined,
+      { timeoutMs: 25000 },
+    )
       .then((result) => {
-        if (result.accountKey && result.accountKey !== account.id)
+        if (!accountLimits(result, account.id, account.accountId))
           throw new Error("Limits belong to another account.");
         if (live) setLimits(result);
       })

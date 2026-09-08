@@ -63,6 +63,21 @@ try {
     viewport: { width: 1440, height: 960 },
   });
   page.setDefaultTimeout(12000);
+  await page.route("**/api/accounts", (route) =>
+    route.fulfill({
+      json: {
+        defaultAccountKey: "default",
+        accounts: [
+          {
+            id: "default",
+            label: "Fixture",
+            status: "ready",
+            accountId: "test-account",
+          },
+        ],
+      },
+    }),
+  );
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let failLimits = false;
