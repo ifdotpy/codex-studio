@@ -125,7 +125,7 @@ export const statusLabel = (status: string, phase?: string) =>
         thinking: "Thinking",
         writing: "Writing",
         tool: "Using tools",
-        retrying: "Codex is reconnecting",
+        retrying: "Codex is retrying",
         auth: "Restoring sign-in",
         error: "Codex reported an error",
       } as Record<string, string>

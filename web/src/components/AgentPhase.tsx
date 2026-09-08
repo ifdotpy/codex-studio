@@ -10,6 +10,7 @@ import {
   Wrench,
 } from "lucide-react";
 import type { Agent } from "../types";
+import { nativeThreadError } from "../nativeErrors";
 export default function AgentPhase({
   agent,
   connection,
@@ -22,11 +23,13 @@ export default function AgentPhase({
   const awaitingResponse =
     active &&
     (agent.startAttempt?.prepareError || agent.startAttempt?.responseError);
-  const phase = awaitingResponse
-    ? "acknowledgement"
-    : active
-      ? agent.activity?.phase || agent.status
-      : agent.status;
+  const phase = nativeThreadError(agent)
+    ? "blocked"
+    : awaitingResponse
+      ? "acknowledgement"
+      : active
+        ? agent.activity?.phase || agent.status
+        : agent.status;
   const names: Record<string, string> = {
     thinking: "Thinking",
     writing: "Writing",
@@ -34,7 +37,8 @@ export default function AgentPhase({
     running: "Working",
     starting: "Starting",
     acknowledgement: "Waiting for Codex",
-    retrying: "Codex is reconnecting",
+    retrying: "Codex is retrying",
+    blocked: "Chat stopped as a precaution",
     auth: "Restoring sign-in",
     error: "Codex reported an error",
     queued: "Queued",
@@ -59,25 +63,35 @@ export default function AgentPhase({
     retrying: LoaderCircle,
     auth: Clock3,
     error: CircleAlert,
+    blocked: CircleAlert,
     approval: Clock3,
     failed: CircleAlert,
     interrupted: CircleAlert,
     paused: Pause,
   };
   const Icon = connection === "reconnecting" ? WifiOff : icons[phase] || Circle;
+  const native = ["retrying", "auth"].includes(phase)
+    ? agent.nativeStatus
+    : null;
+  const message =
+    native?.message || native?.error?.message || names[phase] || "Working";
+  const details = native?.error?.additionalDetails;
   return (
     <div
       className={`agent-phase ${active ? "active" : ""}`}
       role="status"
       data-phase={phase}
-      title={agent.nativeStatus?.message || agent.nativeStatus?.error?.message}
     >
       <Icon size={15} />
-      <span>
-        {connection === "reconnecting"
-          ? "Connection lost. Reconnecting…"
-          : names[phase] || "Working"}
-      </span>
+      <div className="agent-phase-copy">
+        <span>
+          {connection === "reconnecting"
+            ? "Connection lost. Reconnecting…"
+            : message}
+        </span>
+        {connection === "reconnecting" && native && <p>{message}</p>}
+        {typeof details === "string" && details && <pre>{details}</pre>}
+      </div>
       {active && connection !== "reconnecting" && (
         <span className="phase-dots" aria-hidden="true">
           <i />

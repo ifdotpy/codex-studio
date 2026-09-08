@@ -1285,6 +1285,21 @@ p {
 .agent-phase.active {
   color: #bcb7ec;
 }
+.agent-phase-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agent-phase-copy p {
+  margin: 4px 0 0;
+}
+.agent-phase-copy pre {
+  margin: 4px 0 0;
+  max-height: 100px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
 .phase-dots {
   display: flex;
   gap: 3px;

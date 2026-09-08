@@ -16,7 +16,15 @@ spec = importlib.util.spec_from_file_location('fixture', skill / 'tests/runtime-
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 c = Canvas(Path(sys.argv[1]))
-class BackgroundServer(m.FakeServer):
+class LimitsServer(m.FakeServer):
+    limit_response = None
+
+    def call(self, method, params, timeout=60):
+        if method == "account/rateLimits/read" and self.limit_response is not None:
+            return self.limit_response
+        return super().call(method, params, timeout)
+
+class BackgroundServer(LimitsServer):
     def __init__(self, *args):
         super().__init__(*args)
         self.commands = {}
@@ -46,7 +54,7 @@ class SettingsRuntime(Runtime):
             self.changed.clear()
 
 runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') else Runtime
-c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else m.FakeServer)
+c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else LimitsServer)
 if os.environ.get('EXECUTION_SETTINGS_CATALOG'):
     fixture_catalog = __import__('json').loads(os.environ['EXECUTION_SETTINGS_CATALOG'])
     c.runtime.catalog = lambda account='default': {'data': fixture_catalog}
@@ -116,7 +124,9 @@ import threading
 def fixture_events():
     for line in sys.stdin:
         message = json.loads(line)
-        if message.get('method') == 'fixture/agent-monitor':
+        if message.get('method') == 'fixture/limits':
+            c.runtime.connect(message.get('accountKey', 'default')).limit_response = message['params']
+        elif message.get('method') == 'fixture/agent-monitor':
             params = message['params']
             agent = c.runtime.agent(params['agent'])
             c.runtime.monitor(agent['id'], params, approved=params.get('approved', True),
@@ -130,6 +140,8 @@ def fixture_events():
             except Exception as error:
                 reply = {'id': message['id'], 'ok': False, 'error': str(error)}
             print(json.dumps(reply), flush=True)
+        elif 'id' in message:
+            c.runtime.request(message)
         else:
             c.runtime.notification(message)
 threading.Thread(target=fixture_events, daemon=True).start()

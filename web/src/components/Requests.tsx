@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import type { Json, Agent } from "../types";
 import "./request-questions.css";
+import { nativeThreadError } from "../nativeErrors";
 
 type Props = {
   requests: Json[];
@@ -219,6 +220,14 @@ function RequestCard({
   scope,
 }: Omit<Props, "requests" | "allRequests"> & { request: Json }) {
   const draftKey = answerKey(scope, r);
+  const owner = agents.find((a) => a.id === r.agent);
+  const requestThread = ["execCommandApproval", "applyPatchApproval"].includes(
+    r.method,
+  )
+    ? r.params?.conversationId
+    : r.params?.threadId;
+  const blocked =
+    !!nativeThreadError(owner) && requestThread === owner?.threadId;
   const [open, setOpen] = useState(false),
     [sending, setSending] = useState(false);
   const pending = useRef(false),
@@ -235,6 +244,10 @@ function RequestCard({
     trigger.current?.focus();
   };
   const post = async (body: Json) => {
+    if (blocked) {
+      notify("This chat stopped as a precaution. Open another chat.");
+      return;
+    }
     if (pending.current) return;
     pending.current = true;
     setSending(true);
@@ -337,7 +350,11 @@ function RequestCard({
           )}
         </div>
         <div className="request-actions">
-          {question ? (
+          {blocked ? (
+            <p>
+              This chat stopped as a precaution. This request cannot resume it.
+            </p>
+          ) : question ? (
             <>
               <Button
                 variant="subtle"
@@ -377,28 +394,10 @@ function RequestCard({
           )}
         </div>
       </div>
-      {asynchronous
-        ? open && (
-            <div id={`answer-${r.id}`} className="request-inline-answer">
-              <AnswerForm
-                request={r}
-                draftKey={draftKey}
-                sending={sending}
-                post={post}
-                close={close}
-                notify={notify}
-              />
-            </div>
-          )
-        : question && (
-            <Modal
-              opened={open}
-              onClose={() => {
-                if (!sending) close();
-              }}
-              title="Reply to the agent"
-            >
-              {open && (
+      {!blocked &&
+        (asynchronous
+          ? open && (
+              <div id={`answer-${r.id}`} className="request-inline-answer">
                 <AnswerForm
                   request={r}
                   draftKey={draftKey}
@@ -407,9 +406,28 @@ function RequestCard({
                   close={close}
                   notify={notify}
                 />
-              )}
-            </Modal>
-          )}
+              </div>
+            )
+          : question && (
+              <Modal
+                opened={open}
+                onClose={() => {
+                  if (!sending) close();
+                }}
+                title="Reply to the agent"
+              >
+                {open && (
+                  <AnswerForm
+                    request={r}
+                    draftKey={draftKey}
+                    sending={sending}
+                    post={post}
+                    close={close}
+                    notify={notify}
+                  />
+                )}
+              </Modal>
+            ))}
     </div>
   );
 }

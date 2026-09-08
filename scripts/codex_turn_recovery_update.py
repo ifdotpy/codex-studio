@@ -4,6 +4,7 @@ import types
 
 from codex_efficiency_update import fingerprint
 from codex_turn_recovery import TurnRecoveryMixin
+from codex_native_errors import native_thread_block
 
 BASE_DISPATCH = '9650dc7d75d928e17c494265a9feed79e82af9efd3cca8b41eece7cfc1afa815'
 BASE_PREPARE = '395b8ec1d54a285b8cb739acf833d9a7d190649afd77a9c6da70a1d81e00dfbd'
@@ -17,7 +18,9 @@ def apply(runtime):
                if isinstance(value, types.FunctionType)}
     for name in ('prepare_locked', 'dispatch'):
         code = next(c for c in cls.co_consts if isinstance(c, types.CodeType) and c.co_name == name)
-        function = types.FunctionType(code, getattr(runtime, name).__func__.__globals__.copy(), name)
+        scope = getattr(runtime, name).__func__.__globals__.copy()
+        scope['native_thread_block'] = native_thread_block
+        function = types.FunctionType(code, scope, name)
         methods[name] = types.MethodType(function, runtime)
     if not runtime.lock.acquire(timeout=10):
         raise RuntimeError('Runtime busy; no update applied')

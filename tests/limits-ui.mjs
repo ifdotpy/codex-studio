@@ -14,7 +14,7 @@ const root = await mkdtemp(join(tmpdir(), "codex-limits-ui-"));
 const fixture = spawn(
   "python3",
   ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-  { stdio: ["ignore", "pipe", "pipe"] },
+  { stdio: ["pipe", "pipe", "pipe"] },
 );
 let log = "",
   browser;
@@ -29,6 +29,7 @@ try {
     response.json(),
   );
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
+  let selectedChat = lead;
   const now = Date.now() / 1000;
   const primary = {
     usedPercent: 42,
@@ -109,7 +110,7 @@ try {
     await page.goto(origin);
     if (page.viewportSize().width <= 600)
       await page.locator("#sidebar-toggle").click();
-    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.locator(`[data-chat="${selectedChat.id}"]`).click();
     await toggle().waitFor();
   };
   await load();
@@ -555,6 +556,109 @@ try {
     assert.equal(summaryBox.height, 26, "quota trigger remains a single line");
     deferCosts = false;
   }
+  selectedChat = initial.threads.find(
+    (agent) => agent.name === "Other project",
+  );
+  let previousTurn;
+  for (const [reached, kind, expected] of [
+    [
+      "workspace_owner_credits_depleted",
+      "rateLimitExceeded",
+      "Add credits to continue using Codex.",
+    ],
+    [
+      "workspace_member_credits_depleted",
+      "rateLimitExceeded",
+      "Ask your workspace owner to add credits.",
+    ],
+    [
+      "workspace_owner_credits_depleted",
+      "usageLimitExceeded",
+      "Increase your workspace usage limit",
+    ],
+    [
+      "workspace_member_credits_depleted",
+      "usageLimitExceeded",
+      "Ask your workspace owner to increase your usage limit.",
+    ],
+  ]) {
+    const nativeLimitError = {
+      message: `Usage limit reached: ${reached} (${kind}).`,
+      codexErrorInfo: kind,
+    };
+    limits = {
+      at: Date.now() / 1000,
+      data: {
+        rateLimits: { rateLimitReachedType: reached, primary, secondary },
+      },
+    };
+    fixture.stdin.write(JSON.stringify({ method: "fixture/limits", params: limits.data }) + "\n");
+    await load();
+    await page.locator("#message").fill("Exercise native usage recovery.");
+    await page.locator("#send").click();
+    let active;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const state = await fetch(`${origin}/api/state`).then((response) =>
+        response.json(),
+      );
+      active = state.runtime.agents.find(
+        (agent) => agent.id === selectedChat.id,
+      );
+      if (
+        active.status === "running" &&
+        active.turnId &&
+        active.turnId !== previousTurn
+      )
+        break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(
+      active.status,
+      "running",
+      "native limit fixture starts a real runtime turn",
+    );
+    assert.ok(
+      active.turnId && active.turnId !== previousTurn,
+      "each recovery case has a new turn identity",
+    );
+    previousTurn = active.turnId;
+    for (const [method, params] of [
+      ["error", { willRetry: false, error: nativeLimitError }],
+      [
+        "turn/completed",
+        {
+          turn: {
+            id: active.turnId,
+            status: "failed",
+            error: nativeLimitError,
+          },
+        },
+      ],
+    ]) {
+      fixture.stdin.write(
+        JSON.stringify({
+          method,
+          params: {
+            threadId: active.threadId,
+            turnId: active.turnId,
+            ...params,
+          },
+        }) + "\n",
+      );
+    }
+    await page
+      .locator(".native-error")
+      .getByText(nativeLimitError.message, { exact: true })
+      .waitFor();
+    await page.locator('[data-phase="failed"]').waitFor();
+    await toggle().click();
+    await page.locator(".account-limit-recovery").waitFor();
+    assert.ok(
+      (await page.locator(".account-limit-recovery").innerText()).includes(
+        expected,
+      ),
+    );
+  }
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -562,6 +666,7 @@ try {
       evidence: root,
       cases: [
         "visible summary",
+        "native owner/member recovery and usage precedence",
         "context preserved",
         "active model",
         "multiple pools",

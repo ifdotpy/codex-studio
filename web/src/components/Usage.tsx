@@ -3,6 +3,7 @@ import { Button, Popover, Progress, Tooltip } from "@mantine/core";
 import { ChevronUp, Gauge, RefreshCw, RotateCcw } from "lucide-react";
 import type { Agent, Json } from "../types";
 import { api, errorText } from "../api";
+import { nativeErrorKind } from "../nativeErrors";
 import "./Usage.css";
 import Analytics from "./Analytics";
 
@@ -119,15 +120,83 @@ function selectedBucket(buckets: LimitBucket[], model: string) {
     null
   );
 }
+export function limitRecovery(agent: Agent, limits: Json | null, now: number) {
+  const kind = nativeErrorKind(agent.error);
+  if (kind !== "usageLimitExceeded" && kind !== "rateLimitExceeded")
+    return null;
+  const fallback = {
+    title: "Usage limit reached",
+    message:
+      "Refresh the account limits. Check the reset time and available reset credits below.",
+  };
+  const snapshot = limits?.data?.rateLimits;
+  if (
+    !snapshot ||
+    limits?.error ||
+    limits?.stale ||
+    limits?.loading ||
+    (limits?.accountKey || "default") !== (agent.accountKey || "default") ||
+    !number(limits?.at) ||
+    now - limits.at > 300 ||
+    [snapshot.primary, snapshot.secondary].some(
+      (window) => number(window?.resetsAt) && window.resetsAt <= now,
+    )
+  )
+    return fallback;
+  let reached = snapshot.rateLimitReachedType;
+  // Native usage errors take precedence over a depleted-credit snapshot.
+  if (kind === "usageLimitExceeded") {
+    if (reached === "workspace_owner_credits_depleted")
+      reached = "workspace_owner_usage_limit_reached";
+    if (reached === "workspace_member_credits_depleted")
+      reached = "workspace_member_usage_limit_reached";
+  }
+  switch (reached) {
+    case "workspace_owner_credits_depleted":
+      return {
+        title: "Workspace credits depleted",
+        message:
+          "Your workspace is out of credits. Add credits to continue using Codex.",
+      };
+    case "workspace_member_credits_depleted":
+      return {
+        title: "Workspace credits depleted",
+        message:
+          "Your workspace is out of credits. Ask your workspace owner to add credits.",
+      };
+    case "workspace_owner_usage_limit_reached":
+      return {
+        title: "Workspace usage limit reached",
+        message: "Increase your workspace usage limit to continue using Codex.",
+      };
+    case "workspace_member_usage_limit_reached":
+      return {
+        title: "Workspace usage limit reached",
+        message: "Ask your workspace owner to increase your usage limit.",
+      };
+    default:
+      return fallback;
+  }
+}
 export default function Usage({
   agent,
   limits,
   reload,
+  opened,
+  onChange,
 }: {
   agent: Agent;
   limits: Json | null;
   reload: () => void;
+  opened?: boolean;
+  onChange?: (opened: boolean) => void;
 }) {
+  const [localOpened, setLocalOpened] = useState(false);
+  const limitsOpened = opened ?? localOpened;
+  const changeOpened = (value: boolean) => {
+    setLocalOpened(value);
+    onChange?.(value);
+  };
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState<string | null>(null);
   const [resetPending, setResetPending] = useState(false);
@@ -240,6 +309,7 @@ export default function Usage({
   const selected = selectedBucket(buckets, agent.model || "");
   const windows = selected?.windows.slice(0, 2) || [];
   const stale = windows.some((window) => window.expired);
+  const recovery = limitRecovery(agent, limits, now);
   const summary = windows.length
     ? windows
         .map(
@@ -289,6 +359,8 @@ export default function Usage({
           : `${agent.compactions} ${agent.compactionsObservedOnly ? "observed " : ""}compactions`}
       </span>
       <Popover
+        opened={limitsOpened}
+        onChange={changeOpened}
         position="top-end"
         width="min(370px, calc(100vw - 24px))"
         withArrow
@@ -301,6 +373,7 @@ export default function Usage({
             variant="subtle"
             size="compact-xs"
             aria-label="Account limits"
+            onClick={() => changeOpened(!limitsOpened)}
             leftSection={<Gauge size={13} />}
             rightSection={<ChevronUp size={12} />}
           >
@@ -348,6 +421,12 @@ export default function Usage({
                 Refresh
               </Button>
             </header>
+            {recovery && (
+              <div className="account-limit-recovery" role="status">
+                <strong>{recovery.title}</strong>
+                <p>{recovery.message}</p>
+              </div>
+            )}
             <div className="account-limits-groups">
               {buckets.map((bucket) => (
                 <section

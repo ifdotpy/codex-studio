@@ -35,7 +35,7 @@ from codex_panel_render import render_panel
 from codex_panel_feed import PanelFeedConsumer
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
-from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices
+from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits, native_request_thread, LEGACY_APPROVAL_REQUESTS
 
 def uid():
     return str(uuid.uuid4())
@@ -650,6 +650,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 # Only existing managed orchestrators with an admitted model become leads.
                 a.setdefault("isLead", not a.get("parentId") and a.get("role") == "orchestrator"
                              and a.get("model") in LEAD_MODELS)
+                block = native_thread_block(a)
+                if block:
+                    a["nativeThreadBlock"] = block
                 if a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
@@ -1424,6 +1427,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         "status": old["status"],
                         "error": old["error"],
                     }
+            assert_native_thread_open(a)
             if delivery == "steer" and (
                 not a.get("turnId") or not a.get("inFlight") or not a["autoWake"]
             ):
@@ -1862,6 +1866,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     if a["status"] == "queued"
                     and a["autoWake"]
                     and not a.get("nativeFailureHold")
+                    and not native_thread_block(a)
                     and not a.get("inFlight")
                     and str(Path(a["cwd"]).resolve()) not in reserved_cwds
                 ),
@@ -1926,6 +1931,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         or current["epoch"] != epoch or not current["autoWake"] or current.get("deletedAt")):
                     self.start_error(a["id"], attempt_id, ValueError("Agent stopped before turn input submission"))
                     return
+                assert_native_thread_open(current)
             a = self.prepare(a)
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
@@ -2011,6 +2017,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     self.changed.set()
                     return
                 self.assert_workspace_available(db, current)
+                assert_native_thread_open(current)
                 current["startAttempt"]["submitted"] = True
                 current["startAttempt"].update(accountKey=a.get("accountKey", "default"),
                     connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
@@ -2434,6 +2441,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 advance_native_status(a, method, p)
                 if turn.get("status") == "failed":
                     turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
+                    refresh_native_limits(self, db, a, turn["error"], turn.get("id"), account_key, connection_id)
                     notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
                            "error", turnId=turn.get("id"), nativeError=turn["error"])
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
@@ -2540,10 +2548,15 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             if not self.connection_current(account_key, connection_id):
                 return
             p = message.get("params", {})
-            a = next((a for a in self.records(db, "agents") if p.get("threadId") and a.get("threadId") == p.get("threadId") and a.get("accountKey", "default") == account_key), None)
+            request_thread = native_request_thread(message["method"], p)
+            a = next((a for a in self.records(db, "agents") if request_thread and a.get("threadId") == request_thread and a.get("accountKey", "default") == account_key), None)
             r = {"id": uid(), "rpcId": message["id"], "method": message["method"],
                  "params": p, "agent": a["id"] if a else None, "status": "pending",
                  "accountKey": account_key, "connectionId": connection_id, "createdAt": time.time()}
+            if a and native_thread_block(a):
+                r["status"] = "blocked"
+                self.put(db, "requests", r)
+                return
             if a and p.get("itemId"):
                 row = db.execute("SELECT record FROM runtime_items WHERE id=?", (a["id"] + ":" + p["itemId"],)).fetchone()
                 if row:
@@ -2625,10 +2638,18 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             record = self.reserve_tool_request(message, account_key, connection_id)
             key = record["id"]
             with self.lock, self.db() as db:
+                # Another callback can claim this request after reservation returns.
+                # Only the current receipt can prove that execution has not started.
+                record = self.tool_request(key, db)
                 a = self.agent(record["agent"], db)
                 result = record.get("result")
+                if result is None and record.get("stage") == "queued" and native_thread_block(a):
+                    result = stamp_tool_result({"success": False, "contentItems": [
+                        {"type": "inputText", "text": THREAD_BLOCK_MESSAGE}]}, time.time())
+                    self.finish_tool_request(key, result, outcome="not_applied", db=db)
+                if result is None:
+                    claimed = self.begin_tool_request(key)
             if result is None:
-                claimed = self.begin_tool_request(key)
                 if not claimed:
                     receipt = self.tool_request(key)
                     result = receipt.get("result") or {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps({
@@ -2922,21 +2943,34 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         with self.lock:
             return self.limit_refresh_locks.setdefault(account_key, threading.Lock())
 
-    def limits(self, account_key="default", force=False):
+    def limits(self, account_key="default", force=False, connection_id=None):
         self.accounts.get(account_key)
         with self.limit_refresh_lock(account_key):
             with self.lock:
                 cached = self.rate_limits_for(account_key)
+                if connection_id is not None and (self.closed or not self.connection_current(account_key, connection_id)):
+                    return cached
                 if not force and not cached.get("error") and cached["at"] and time.time() - cached["at"] < 30:
                     return cached
             for attempt in range(2):
                 error = None
                 try:
-                    data = self.connect(account_key).call("account/rateLimits/read", {}, timeout=10)
+                    if connection_id is None:
+                        server = self.connect(account_key)
+                    else:
+                        with self.lock:
+                            if self.closed or not self.connection_current(account_key, connection_id):
+                                return self.rate_limits_for(account_key)
+                            server = self.servers.get(account_key)
+                        if server is None:
+                            return self.rate_limits_for(account_key)
+                    data = server.call("account/rateLimits/read", {}, timeout=10)
                 except Exception as cause:
                     error = cause
                 with self.lock:
                     current = self.rate_limits_for(account_key)
+                    if connection_id is not None and (self.closed or not self.connection_current(account_key, connection_id)):
+                        return current
                     # Notifications can update this account while the read waits.
                     if current is not cached and current.get("data") is not None and not current.get("error"):
                         return current
@@ -3689,6 +3723,17 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         )
                 return {"status": "answered"}
             method = r["method"]
+            request_thread = native_request_thread(method, r.get("params", {}))
+            if not r.get("agent") and method in LEGACY_APPROVAL_REQUESTS and request_thread:
+                a = next((a for a in self.records(db, "agents")
+                          if a.get("threadId") == request_thread
+                          and a.get("accountKey", "default") == r.get("accountKey", "default")), None)
+                if a:
+                    r["agent"] = a["id"]
+            if r.get("agent"):
+                a = self.agent(r["agent"], db)
+                if request_thread == a.get("threadId"):
+                    assert_native_thread_open(a)
             if data.get("decision") == "accept" and method in {
                 "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
                 "execCommandApproval", "applyPatchApproval", "item/permissions/requestApproval",
@@ -3773,7 +3818,10 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     }
                 for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy"):
                     a.pop(private, None)
-                a.update(kind="agent", source="managed", canSend=True, launcherAlive=not self.closed,
+                block = native_thread_block(a)
+                if block:
+                    a["nativeThreadBlock"] = block
+                a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
                          wave="Team: " + next((r["name"] for r in agents if r["id"] == a["rootId"]), "Team"))
             events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
             return {
@@ -3933,6 +3981,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             self.assert_workspace_available(db, a)
+            assert_native_thread_open(a)
             if a["status"] in {"queued", "starting", "running", "approval"}:
                 raise ValueError("Wait for this agent's current turn before this action")
             if not a["autoWake"]:
@@ -3953,6 +4002,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         or a["epoch"] != attempt["epoch"] or not a["autoWake"] or a.get("deletedAt")):
                     raise ValueError("Native action belongs to an earlier agent state")
                 self.assert_workspace_available(db, a)
+                assert_native_thread_open(a)
                 attempt.update(submitted=True, accountKey=a.get("accountKey", "default"),
                                connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
                 a["startAttempt"] = dict(attempt)

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
+import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
 import { useMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
@@ -72,6 +73,8 @@ export default function Conversation(p: {
   onObserved?: (ids: string[]) => void;
   onOutgoingEdit?: (id: string, text: string) => void;
   onSelect?: (id: string) => void;
+  onNewChat?: () => void;
+  onChooseChat?: () => void;
   sending: boolean;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
@@ -154,6 +157,8 @@ export default function Conversation(p: {
   const [uploading, setUploading] = useState(false);
   const [queue, setQueue] = useState<Json[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const refreshedFailure = useRef("");
   const [editing, setEditing] = useState<string | null>(null);
   const [queuedText, setQueuedText] = useState("");
   const [queueOriginal, setQueueOriginal] = useState("");
@@ -176,17 +181,45 @@ export default function Conversation(p: {
     p.agent && liveAgent?.id === p.id
       ? ({ ...p.agent, ...liveAgent } as Agent)
       : p.agent;
+  const threadBlock = nativeThreadError(agent);
+  const errorKind = nativeErrorKind(agent?.error);
+  const failureKey = [
+    p.id,
+    agent?.nativeTurnError?.turnId || agent?.turnId || agent?.lastCompletedTurn,
+    errorKind,
+  ].join(":");
+  useEffect(() => {
+    if (!["usageLimitExceeded", "rateLimitExceeded"].includes(errorKind))
+      return;
+    if (refreshedFailure.current === failureKey) return;
+    refreshedFailure.current = failureKey;
+    p.reloadLimits();
+  }, [errorKind, failureKey, p.reloadLimits]);
   useEffect(() => {
     p.onPhase(
       p.id,
       connection === "reconnecting"
         ? "Reconnecting"
-        : statusLabel(agent?.status || "idle", agent?.activity?.phase),
+        : threadBlock
+          ? "Chat stopped as a precaution"
+          : agent?.nativeStatus?.error?.message ||
+            agent?.nativeStatus?.message ||
+            statusLabel(agent?.status || "idle", agent?.activity?.phase),
     );
-  }, [p.id, agent?.status, agent?.activity?.phase, connection, p.onPhase]);
+  }, [
+    p.id,
+    agent?.status,
+    agent?.activity?.phase,
+    agent?.nativeStatus?.error?.message,
+    agent?.nativeStatus?.message,
+    threadBlock,
+    connection,
+    p.onPhase,
+  ]);
   useEffect(() => {
     setEditing(null);
     setQueueOpen(false);
+    setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
   const canSteer = managed && !!agent?.inFlight && !!agent?.turnId;
@@ -245,6 +278,7 @@ export default function Conversation(p: {
     if (
       sendLock.current ||
       p.sending ||
+      threadBlock ||
       uploading ||
       (!p.draft.trim() && !assets.length)
     )
@@ -345,7 +379,7 @@ export default function Conversation(p: {
       (!mobileClient && team.some((a) => a.id === r.agent)),
   );
   const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
-  const canSend = !!agent?.canSend || !!p.legacy || !p.id;
+  const canSend = !threadBlock && (!!agent?.canSend || !!p.legacy || !p.id);
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
     for (const item of items)
@@ -531,7 +565,18 @@ export default function Conversation(p: {
       id="conversation"
       className={p.room ? "agent-conversation" : "ai-conversation"}
     >
-      {agent?.error && <NativeError agent={agent} />}
+      {agent && (agent.error || threadBlock) && (
+        <NativeError
+          agent={agent}
+          planType={p.limits?.data?.rateLimits?.planType}
+          openLimits={() => {
+            setLimitsOpen(true);
+            p.reloadLimits();
+          }}
+          newChat={p.onNewChat}
+          chooseChat={p.onChooseChat}
+        />
+      )}
       {agent && (
         <NativeAccountNotices
           notices={p.data.runtime.nativeNotices}
@@ -591,7 +636,11 @@ export default function Conversation(p: {
             storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
             renderMessage={(item) =>
               item.nativeNotice ? (
-                <NativeNotice key={item.id} item={item} />
+                <NativeNotice
+                  key={item.id}
+                  item={item}
+                  planType={p.limits?.data?.rateLimits?.planType}
+                />
               ) : (
                 renderMessage(item)
               )
@@ -809,9 +858,11 @@ export default function Conversation(p: {
                     : "Enter to send. Shift + Enter for a new line."
               }
               placeholder={
-                canSend
-                  ? "What should we work on?"
-                  : "This session has no live mailbox"
+                threadBlock
+                  ? "Start a new chat or open another chat."
+                  : canSend
+                    ? "What should we work on?"
+                    : "This session has no live mailbox"
               }
               disabled={!canSend}
               value={p.draft}
@@ -887,7 +938,7 @@ export default function Conversation(p: {
                   }}
                 />
               )}
-              {managed && agent?.isLead && p.id && (
+              {managed && agent?.isLead && p.id && !threadBlock && (
                 <RealtimeVoice
                   key={`voice:${p.id}`}
                   agentId={p.id}
@@ -964,12 +1015,14 @@ export default function Conversation(p: {
               </div>
             </div>
           </form>
-          {!mobileClient && agent?.source === "managed" && (
+          {(!mobileClient || limitsOpen) && agent?.source === "managed" && (
             <Usage
               key={p.agent?.accountKey || "default"}
               agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
               limits={p.limits}
               reload={p.reloadLimits}
+              opened={limitsOpen}
+              onChange={setLimitsOpen}
             />
           )}
         </>

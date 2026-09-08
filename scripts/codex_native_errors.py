@@ -22,18 +22,86 @@ SUPPORTED_REQUESTS = frozenset({
     'item/tool/requestUserInput', 'item/permissions/requestApproval',
     'mcpServer/elicitation/request', 'execCommandApproval', 'applyPatchApproval',
 })
+LEGACY_APPROVAL_REQUESTS = frozenset({'execCommandApproval', 'applyPatchApproval'})
+
+
+def native_request_thread(method, params):
+    field = 'conversationId' if method in LEGACY_APPROVAL_REQUESTS else 'threadId'
+    return params.get(field)
+
+
 NOTICE_METHODS = frozenset({
     'warning', 'guardianWarning', 'configWarning', 'deprecationNotice',
     'mcpServer/startupStatus/updated', 'modelProvider/authRecoveryStarted',
     'modelProvider/authRecoveryCompleted', 'mcpServer/oauthLogin/completed',
     'autoApprovalReview/strictReviewRequired',
 })
+HOOK_METHODS = frozenset({'hook/started', 'hook/completed'})
 
 
 def error_message(error):
     if isinstance(error, dict):
         return str(error.get('message') or 'Codex reported an error.')
     return str(error or 'Codex reported an error.')
+
+
+THREAD_BLOCK_MESSAGE = 'This chat is stopped as a precaution. Start or resume another chat.'
+
+
+def preserve_thread_block(agent, error):
+    """Keep the native precaution separate from temporary transport errors."""
+    if (agent.get('threadId') and isinstance(error, dict)
+            and error.get('codexErrorInfo') == 'misalignmentPolicyViolation'):
+        agent['nativeThreadBlock'] = {'threadId': agent['threadId'], 'error': error}
+
+
+def native_thread_block(agent):
+    block = agent.get('nativeThreadBlock') or {}
+    if block.get('threadId') and block['threadId'] == agent.get('threadId'):
+        return block
+    # Existing records can predate the separate persistent precaution field.
+    error = agent.get('error')
+    if (agent.get('threadId') and isinstance(error, dict)
+            and error.get('codexErrorInfo') == 'misalignmentPolicyViolation'):
+        return {'threadId': agent['threadId'], 'error': error}
+    previous = agent.get('nativeTurnError') or {}
+    if agent.get('threadId') and previous.get('turnId') and previous['turnId'] == agent.get('turnId'):
+        error = previous.get('error')
+        if isinstance(error, dict) and error.get('codexErrorInfo') == 'misalignmentPolicyViolation':
+            return {'threadId': agent.get('threadId'), 'error': error}
+    return None
+
+
+def assert_native_thread_open(agent):
+    if native_thread_block(agent):
+        raise ValueError(THREAD_BLOCK_MESSAGE)
+
+
+def refresh_native_limits(runtime, db, agent, error, turn_id, account_key, connection_id):
+    """Read native limits once after this account's exact failed turn."""
+    if (not isinstance(error, dict) or error.get('codexErrorInfo') not in
+            ('usageLimitExceeded', 'rateLimitExceeded') or not turn_id or not agent.get('threadId')
+            or runtime.closed):
+        return
+    connection_id = connection_id or runtime.connection_ids.get(account_key)
+    if not connection_id or not runtime.connection_current(account_key, connection_id):
+        return
+    identity = [account_key, agent['threadId'], turn_id]
+    key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_native_limit_refreshes '
+               '(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    inserted = db.execute('INSERT OR IGNORE INTO runtime_native_limit_refreshes VALUES (?,?)',
+                         (key, json.dumps({'accountKey': account_key, 'threadId': agent['threadId'],
+                                           'turnId': turn_id, 'connectionId': connection_id})))
+    if not inserted.rowcount:
+        return
+    def read_limits():
+        try:
+            runtime.limits(account_key, force=True, connection_id=connection_id)
+        except Exception:
+            # A failed read does not change the turn or authorize another request.
+            return
+    runtime.recovery_pool.submit(read_limits)
 
 
 def notice(runtime, db, agent, key, text, kind='warning', **metadata):
@@ -80,9 +148,52 @@ def account_notices(runtime, db):
             if runtime.connection_ids.get(r['accountKey']) == r.get('connectionId')]
 
 
+def hook_notice(runtime, db, agent, method, params):
+    run = params.get('run') or {}
+    if not isinstance(run.get('id'), str) or not run['id']:
+        return
+    key = 'hook:' + run['id']
+    item_id = agent['id'] + ':native-notice:' + key
+    previous = db.execute('SELECT record FROM runtime_items WHERE id=?', (item_id,)).fetchone()
+    if method == 'hook/started' and previous:
+        status = (json.loads(previous[0]).get('nativeHook') or {}).get('status')
+        if status and status != 'running':
+            return
+    # Native TUI hides context entries and uses only the first warning entry.
+    entries = []
+    warning_seen = False
+    for entry in run.get('entries') or []:
+        if entry.get('kind') == 'context':
+            continue
+        if entry.get('kind') == 'warning':
+            if warning_seen:
+                continue
+            warning_seen = True
+        entries.append(entry)
+    status = run.get('status') or ('running' if method == 'hook/started' else 'completed')
+    if method == 'hook/completed' and status == 'completed' and not entries:
+        # Publish a tombstone so transcript caches also clear the running notice.
+        # Quiet success has no visible history cell in the native TUI.
+        notice(runtime, db, agent, key, '', 'info', turnId=params.get('turnId'),
+               nativeHook={**run, 'status': status, 'entries': []}, nativeHookQuiet=True)
+        runtime.touch_ui(agent['id'])
+        return
+    labels = {'running': 'Hook running', 'completed': 'Hook completed', 'failed': 'Hook failed',
+              'blocked': 'Blocked by hook', 'stopped': 'Hook stopped'}
+    text = labels.get(status, 'Hook ' + str(status))
+    if run.get('eventName'):
+        text += ': ' + str(run['eventName'])
+    details = '\n\n'.join(str(value) for value in
+                           [run.get('statusMessage'), *(entry.get('text') for entry in entries)] if value)
+    notice(runtime, db, agent, key, text, 'error' if status in {'failed', 'blocked', 'stopped'} else 'info',
+           turnId=params.get('turnId'), details=details or None,
+           nativeHook={**run, 'status': status, 'entries': entries})
+    runtime.touch_ui(agent['id'])
+
+
 def consume_native_notification(runtime, message, account_key, connection_id):
     method, p = message.get('method'), message.get('params') or {}
-    if method not in NOTICE_METHODS | {'error', 'serverRequest/resolved'}:
+    if method not in NOTICE_METHODS | HOOK_METHODS | {'error', 'serverRequest/resolved'}:
         return False
     tid = p.get('threadId')
     with runtime.lock, runtime.db() as db:
@@ -98,11 +209,13 @@ def consume_native_notification(runtime, message, account_key, connection_id):
             # A resolved request is not evidence that permission was granted.
             for a in agents:
                 for r in runtime.records(db, 'requests'):
-                    if (r.get('agent') == a['id'] and r.get('rpcId') == p.get('requestId')
+                    if ((r.get('agent') == a['id'] or
+                         (r.get('agent') is None and r.get('method') in LEGACY_APPROVAL_REQUESTS))
+                            and r.get('rpcId') == p.get('requestId')
                             and r.get('accountKey', 'default') == account_key
                             and r.get('connectionId') == connection_id
-                            and r.get('params', {}).get('threadId') == tid
-                            and r.get('status') in {'pending', 'answering', 'uncertain'}):
+                            and native_request_thread(r.get('method'), r.get('params', {})) == tid
+                            and r.get('status') in {'pending', 'answering', 'uncertain', 'blocked'}):
                         r.update(status='resolved', resolvedAt=time.time())
                         runtime.put(db, 'requests', r)
                 pending = any(r.get('agent') == a['id'] and r.get('status') == 'pending'
@@ -112,6 +225,10 @@ def consume_native_notification(runtime, message, account_key, connection_id):
                     runtime.put(db, 'agents', a)
             return True
         for a in agents:
+            if method in HOOK_METHODS:
+                if tid:
+                    hook_notice(runtime, db, a, method, p)
+                continue
             turn = p.get('turnId')
             if turn and (turn != a.get('turnId') or not a.get('inFlight')):
                 continue
@@ -130,6 +247,8 @@ def consume_native_notification(runtime, message, account_key, connection_id):
                     notice(runtime, db, a, 'steer:' + turn, error_message(error), 'warning', turnId=turn, nativeError=error)
                 else:
                     a.pop('nativeStatus', None)
+                    preserve_thread_block(a, error)
+                    refresh_native_limits(runtime, db, a, error, turn, account_key, connection_id)
                     a['nativeTurnError'] = {'turnId': turn, 'error': error}
                     a['error'] = error
                     a['activity'] = {'phase': 'error', 'at': now}
@@ -168,6 +287,8 @@ def advance_native_status(agent, method, params):
         previous = agent.get('nativeTurnError') or {}
         if turn.get('status') == 'failed' and not turn.get('error') and previous.get('turnId') == turn.get('id'):
             turn['error'] = previous['error']
+        if turn.get('status') == 'failed':
+            preserve_thread_block(agent, turn.get('error'))
         agent.pop('nativeStatus', None)
         agent.pop('nativeTurnError', None)
     elif method in {'item/agentMessage/delta', 'item/reasoning/textDelta',

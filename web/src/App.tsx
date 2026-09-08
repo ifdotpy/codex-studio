@@ -1,5 +1,6 @@
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds } from "./chatScope";
+import { nativeThreadError } from "./nativeErrors";
 import {
   ActionIcon,
   Button,
@@ -128,6 +129,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountChanging, setAccountChanging] = useState(false);
   const selectionScope = useRef("");
+  const createdSelection = useRef<string | null>(null);
   useMobileViewport(mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const { data, error, refresh } = useSnapshot(),
@@ -324,6 +326,9 @@ export default function App() {
         return;
       }
     }
+    // The create response can arrive before the replicated chat projection.
+    if (createdSelection.current && opened === createdSelection.current && !agent) return;
+    if (agent?.id === createdSelection.current) createdSelection.current = null;
     if (!opened || (!agent && !room && !legacy))
       setOpened(leads.at(-1)?.id || null);
     else save(key, opened);
@@ -464,6 +469,7 @@ export default function App() {
     if (
       agent?.isLead &&
       agent.empty &&
+      !nativeThreadError(agent) &&
       !creation.current &&
       (!cwd || cwd === agent.cwd)
     ) {
@@ -495,6 +501,7 @@ export default function App() {
       if (!opened && drafts.new) setDraft(drafts.new, a.id);
       setToast("");
       creation.current = null;
+      createdSelection.current = a.id;
       await refresh();
       setOpened(a.id);
       setView("chat");
@@ -1176,6 +1183,7 @@ export default function App() {
                       disabled={
                         busy.has(agent.status) ||
                         !!agent.inFlight ||
+                        !!nativeThreadError(agent) ||
                         !agent.threadId
                       }
                       leftSection={<Icon size={14} />}
@@ -1350,6 +1358,17 @@ export default function App() {
             reloadLimits={reloadLimits}
             onPhase={onPhase}
             onSelect={open}
+            onNewChat={() => void newChat(agent?.cwd || lead?.cwd)}
+            onChooseChat={() => {
+              setSidebar(true);
+              requestAnimationFrame(() =>
+                document
+                  .querySelector<HTMLInputElement>(
+                    '#sidebar [aria-label="Search chats"]',
+                  )
+                  ?.focus(),
+              );
+            }}
           />
         )}
         {view === "canvas" && (

@@ -356,3 +356,13 @@
   gap: 7px;
   margin-top: 8px;
 }
+.account-limit-recovery {
+  padding: 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--mantine-color-orange-6);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.account-limit-recovery p {
+  margin: 6px 0 0;
+}
