@@ -287,19 +287,22 @@ try {
       panelHeight,
       `${prefix}: active panel frame height`,
     );
-    for (const [name, element] of [
-      ["panel", current.panel],
-      ["composer", current.composer],
-    ]) {
-      const edgeTolerance = 1;
-      const left = element.x;
-      const right = element.right;
-      assert.ok(
-        Math.abs(left - current.transcript.left) <= edgeTolerance &&
-          Math.abs(right - current.transcript.right) <= edgeTolerance,
-        `${prefix}: ${name}, composer, and transcript edges differ`,
-      );
-    }
+    const transcriptWidth = current.transcript.right - current.transcript.left;
+    assert.ok(transcriptWidth <= 681, `${prefix}: readable text width`);
+    assert.ok(
+      Math.abs(
+        current.transcript.left +
+          current.transcript.right -
+          current.composer.x -
+          current.composer.right,
+      ) <= 2,
+      `${prefix}: text stays centered above the composer`,
+    );
+    assert.ok(
+      Math.abs(current.panel.x - current.composer.x) <= 1 &&
+        Math.abs(current.panel.right - current.composer.right) <= 1,
+      `${prefix}: panel and composer share their edges`,
+    );
     if (viewport.width === 1024) {
       await page.getByRole("button", { name: /^Team/ }).click();
       const drawer = page.locator(".mantine-Drawer-content:visible");
@@ -333,7 +336,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    `PASS workspace layout: long title, project, account, capped panel, shared edges, blank composer, and team drawer across 1440, 1280, 1024, and 390px. Evidence ${root}`,
+    `PASS workspace layout: long title, project, account, capped panel, narrow text, aligned composer, blank composer, and team drawer across 1440, 1280, 1024, and 390px. Evidence ${root}`,
   );
 } finally {
   for (const context of browser?.contexts() || []) {

@@ -303,3 +303,45 @@
 .terminal-dock .terminal-xterm .xterm-viewport {
   background-color: #141519;
 }
+
+/* A closed dock occupies only the bottom of the conversation sidebar. */
+@media (min-width: 761px) {
+  html body #root:has(.terminal-dock:not(.is-open)) {
+    height: 100dvh;
+  }
+  #root:has(.terminal-dock:not(.is-open)) #sidebar {
+    height: calc(100% - 38px);
+  }
+  .terminal-dock:not(.is-open) {
+    right: auto;
+    width: var(--studio-sidebar-width, 240px);
+    background: var(--sidebar);
+    border-right: 1px solid var(--line);
+  }
+  .terminal-dock:not(.is-open) .terminal-dock-bar {
+    padding-inline: 16px;
+    gap: 8px;
+  }
+  .terminal-dock:not(.is-open) .terminal-dock-toggle {
+    flex: 1;
+    min-width: 0;
+  }
+  .terminal-dock:not(.is-open)
+    :is(
+      .terminal-dock-running,
+      .terminal-dock-current,
+      .terminal-dock-spacer,
+      .terminal-new-label
+    ) {
+    display: none;
+  }
+  .terminal-dock:not(.is-open) .terminal-dock-bar > .mantine-Button-root {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+  }
+  .terminal-dock:not(.is-open) .mantine-Button-section {
+    margin: 0;
+  }
+}

@@ -252,12 +252,14 @@ export default function TerminalDock({
         <span className="terminal-dock-spacer" />
         <Button
           size="compact-xs"
+          aria-label="New terminal"
+          title="New terminal"
           leftSection={<Plus size={13} />}
           disabled={!agent}
           loading={creating}
           onClick={() => void create()}
         >
-          New terminal
+          <span className="terminal-new-label">New terminal</span>
         </Button>
       </header>
       {opened && (

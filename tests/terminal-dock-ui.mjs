@@ -104,7 +104,10 @@ try {
     permissions: ["clipboard-read", "clipboard-write"],
   });
   const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => {
+    errors.push(error.message);
+    console.error(error.stack);
+  });
   await page.route("**/api/**", async (route) => {
     const request = route.request(),
       url = new URL(request.url()),
@@ -116,7 +119,17 @@ try {
       writes.push({ path, body });
     }
     let value = {};
-    if (path === "/api/state") value = state;
+    if (path.startsWith("/api/sync/"))
+      return route.fulfill({
+        status: 404,
+        json: { error: "No replication in this transport fixture" },
+      });
+    if (path === "/api/accounts")
+      value = { accounts: [], defaultAccountKey: "default" };
+    else if (path === "/api/voice/records")
+      value = { records: [], cursor: 0, delivered: [] };
+    else if (path === "/api/session") value = { token: state.token };
+    else if (path === "/api/state") value = state;
     else if (path === "/api/transcript") value = { items: [], agent };
     else if (path === "/api/transcript/stream")
       return route.fulfill({ status: 503, body: "fixture polling" });
@@ -180,7 +193,62 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   assert.equal(await page.locator("#import-chat, #other-sessions").count(), 0);
   const dock = page.getByRole("region", { name: "Terminals", exact: true });
+  await dock
+    .locator(".terminal-dock-count")
+    .filter({ hasText: "250" })
+    .waitFor({ timeout: 10000 })
+    .catch(async (error) => {
+      await page.screenshot({ path: join(root, "terminal-start-failure.png") });
+      console.error(await page.locator("body").innerText(), errors);
+      throw error;
+    });
+  const closedGeometry = await page.evaluate(() => {
+    const dock = document
+      .querySelector(".terminal-dock")
+      .getBoundingClientRect();
+    const sidebar = document.querySelector("#sidebar").getBoundingClientRect();
+    const workspace = document
+      .querySelector(".workspace")
+      .getBoundingClientRect();
+    return {
+      dock: dock.toJSON(),
+      sidebar: sidebar.toJSON(),
+      workspace: workspace.toJSON(),
+      height: innerHeight,
+    };
+  });
+  assert.equal(
+    closedGeometry.workspace.bottom,
+    closedGeometry.height,
+    "Collapsed terminals reserve no chat height",
+  );
+  assert.equal(
+    closedGeometry.sidebar.bottom,
+    closedGeometry.dock.top,
+    "Sidebar ends above the terminal bar",
+  );
+  assert.equal(
+    closedGeometry.dock.right,
+    closedGeometry.sidebar.right,
+    "Collapsed terminal bar matches sidebar width",
+  );
+  assert.ok(
+    await dock.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    "Collapsed controls fit with 250 terminals",
+  );
+  await page.screenshot({ path: join(root, "terminal-collapsed-sidebar.png") });
   await dock.getByRole("button", { name: "Show terminals" }).click();
+  await page.waitForFunction(() => {
+    const dock = document
+      .querySelector(".terminal-dock")
+      .getBoundingClientRect();
+    const workspace = document
+      .querySelector(".workspace")
+      .getBoundingClientRect();
+    return (
+      Math.abs(workspace.bottom - dock.top) <= 1 && dock.width === innerWidth
+    );
+  });
   await dock
     .locator(".terminal-dock-count")
     .filter({ hasText: "250" })
@@ -348,6 +416,13 @@ try {
     ),
     "Mobile view must not overflow",
   );
+  assert.equal(
+    await dock.count(),
+    0,
+    "Phone view has no desktop terminal dock",
+  );
+  await page.setViewportSize({ width: 1440, height: 980 });
+  await dock.locator(".xterm-helper-textarea").waitFor();
   await dock
     .getByRole("button", { name: "Close terminal session", exact: true })
     .click();

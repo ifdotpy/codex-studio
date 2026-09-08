@@ -1,8 +1,16 @@
+:root {
+  --studio-sidebar-width: 240px;
+}
+
 /* Shared geometry for the conversation and its persistent controls. */
 .workspace {
   --chat-width: 860px;
+  --chat-text-width: 680px;
   --chat-gutter: 24px;
-  --chat-inset: max(var(--chat-gutter), calc((100% - var(--chat-width)) / 2));
+  --chat-inset: max(
+    var(--chat-gutter),
+    calc((100% - var(--chat-text-width)) / 2)
+  );
   container: workspace / inline-size;
 }
 
@@ -149,8 +157,8 @@
     margin-block: 4px;
   }
   #sidebar {
-    width: 240px;
-    flex-basis: 240px;
+    width: var(--studio-sidebar-width);
+    flex-basis: var(--studio-sidebar-width);
     padding-inline: 16px;
   }
   .desktop-mac .sidebar-header {
