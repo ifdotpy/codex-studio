@@ -28,7 +28,7 @@ def model(name, levels=("low", "high"), default="low", fast=True):
 
 CATALOG = {
     "data": [
-        model("gpt-6-astra"),
+        model("gpt-6-astra", ("low", "medium", "high")),
         model("gpt-5.6-sol"),
         model("gpt-5.6-luna", ("low", "high", "max")),
         model("worker"),
@@ -103,6 +103,16 @@ class WorkerDefaults(unittest.TestCase):
         inherited = self.worker()
         self.assertEqual((inherited["model"], inherited["effort"]),
                          (self.lead["model"], None))
+
+    def test_fresh_lead_and_empty_reuse(self):
+        self.assertEqual((self.lead["model"], self.lead["effort"]),
+                         ("gpt-6-astra", "medium"))
+        self.settings(model="gpt-5.6-sol", effort="high")
+        self.defaults("worker", "high", True)
+        reused = self.runtime.new_lead({"previous": self.lead["id"]})
+        self.assertEqual(reused["id"], self.lead["id"])
+        self.assertEqual((reused["model"], reused["effort"]), ("gpt-5.6-sol", "high"))
+        self.assertEqual(reused["workerDefaults"]["model"], "worker")
 
     def test_explicit_false_null_and_model_fallback(self):
         self.defaults("worker", "high", True)
@@ -240,17 +250,23 @@ class WorkerDefaults(unittest.TestCase):
         self.assertEqual(resume["threadId"], lead["threadId"])
         self.assertIsNone(self.runtime.agent(lead["id"])["effort"])
 
-    def test_defaults_persist_and_copy_to_new_conversation(self):
+    def test_new_conversation_resets_defaults_without_changing_previous(self):
         self.defaults("worker", "high", True)
-        self.settings(effort="high", fast_mode=True)
+        self.settings(model="gpt-5.6-sol", effort="high", fast_mode=True)
         self.runtime.send(self.lead["id"], "Task")
         new = self.runtime.new_lead({"previous": self.lead["id"]})
         self.assertNotEqual(new["id"], self.lead["id"])
         self.assertEqual(
             new["workerDefaults"],
-            {"model": "worker", "effort": "high", "fastMode": True},
+            {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False},
         )
-        self.assertEqual((new["effort"], new["fastMode"]), ("high", True))
+        self.assertEqual((new["model"], new["effort"], new["fastMode"]),
+                         ("gpt-6-astra", "medium", False))
+        old = self.runtime.agent(self.lead["id"])
+        self.assertEqual((old["model"], old["effort"], old["fastMode"]),
+                         ("gpt-5.6-sol", "high", True))
+        self.assertEqual(old["workerDefaults"]["model"], "worker")
+        self.assertEqual(self.worker(parent=new["id"])["effort"], "max")
         self.runtime.close()
         self.runtime = ControlledRuntime(self.root, f.FakeServer)
         self.assertEqual(

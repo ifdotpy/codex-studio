@@ -1088,7 +1088,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 raise ValueError("A lead must use Astra or Sol")
             if needs_catalog and account_key != catalog_account:
                 raise ValueError("The account changed. Create the worker again")
-            effort = data.get("effort", defaults["effort"] if root else None)
+            effort = data.get("effort", defaults["effort"] if root else "medium")
             fast_mode = data.get("fast_mode", defaults["fastMode"] if root else False)
             native_effort = effort
             if catalog is not None:
@@ -1243,15 +1243,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                                 "_creationSignature": signature, "account_key": account_key,
                                 "yolo_mode": data.get("yolo_mode", previous.get("yoloMode") is not False if previous else True),
                                 "dangerously_skip_rules": data.get("dangerously_skip_rules", False),
-                                "model": data.get("model") or (previous["model"] if previous else LEAD_MODELS[0])}, draft=True)
-            if previous and previous.get("accountKey", "default") == account_key:
-                created["workerDefaults"] = self.worker_defaults(previous)
-                if created["model"] == previous["model"]:
-                    created.update(effort=previous.get("effort"), fastMode=previous.get("fastMode", False))
-                    if "nativeEffort" in previous:
-                        created["nativeEffort"] = previous["nativeEffort"]
-                with self.db() as db:
-                    self.put(db, "agents", created)
+                                "model": data.get("model") or LEAD_MODELS[0]}, draft=True)
+            # Each new team starts with Studio defaults, independent of the previous chat.
             return created
 
     @staticmethod

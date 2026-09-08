@@ -508,7 +508,7 @@ export default function App() {
     creation.current ||= {
       id: crypto.randomUUID(),
       previous: lead?.id || null,
-      model: lead?.model || "gpt-6-astra",
+      model: "gpt-6-astra",
       account_key:
         agent?.isLead && agent.empty
           ? agent.accountKey
