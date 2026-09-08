@@ -107,12 +107,26 @@ try {
       document.querySelector(".prompt-history-toggle")?.textContent.trim() ===
       "1 / 8",
   );
-  await page.getByRole("button", { name: "Next prompt", exact: true }).click();
+  assert.equal(
+    await page
+      .getByRole("button", { name: /^(Next|Previous) prompt$/ })
+      .count(),
+    0,
+  );
+  await page.locator("#message").press("ArrowDown");
   await page.waitForFunction(
     () =>
       document.querySelector(".prompt-history-toggle")?.textContent.trim() ===
       "2 / 8",
   );
+  await page.locator("#message").fill("Draft stays editable");
+  await page.locator("#message").press("ArrowUp");
+  assert.equal(
+    await page.locator(".prompt-history-toggle").innerText(),
+    "2 / 8",
+    "Arrow keys edit a nonempty draft",
+  );
+  await page.locator("#message").fill("");
   await page
     .getByRole("button", { name: "Browse prompts", exact: true })
     .click();

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 
-type Position = { top: number; following: boolean };
+type Position = { top: number; following: boolean; distance: number };
 
 // One owner for scroll anchoring. Browser anchoring and React effects must not
 // both compensate for the same composer resize or streamed paragraph.
@@ -14,6 +14,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   const available = useRef(ready);
   available.current = ready;
   const lastTop = useRef(0);
+  const bottomDistance = useRef(0);
   const lastScrollInput = useRef(-Infinity);
   const anchor = useRef<{ element: HTMLElement; offset: number } | null>(null);
 
@@ -21,9 +22,14 @@ export function useConversationScroll(id: string, ready: boolean) {
     const root = scroll.current;
     if (!root) return;
     lastTop.current = root.scrollTop;
+    bottomDistance.current = Math.max(
+      0,
+      root.scrollHeight - root.clientHeight - root.scrollTop,
+    );
     positions.current.set(current.current, {
       top: root.scrollTop,
       following: following.current,
+      distance: bottomDistance.current,
     });
     if (following.current) {
       anchor.current = null;
@@ -52,7 +58,9 @@ export function useConversationScroll(id: string, ready: boolean) {
   const restore = () => {
     const root = scroll.current;
     if (!root || !available.current) return;
-    if (following.current) root.scrollTop = root.scrollHeight;
+    if (following.current)
+      root.scrollTop =
+        root.scrollHeight - root.clientHeight - bottomDistance.current;
     else if (
       anchor.current?.element.isConnected &&
       anchor.current.element.getClientRects().length
@@ -67,8 +75,10 @@ export function useConversationScroll(id: string, ready: boolean) {
   const setFollow = (value: boolean) => {
     following.current = value;
     updateFollow(value);
-    if (value) restore();
-    else remember();
+    if (value) {
+      bottomDistance.current = 0;
+      restore();
+    } else remember();
   };
 
   useLayoutEffect(() => {
@@ -78,6 +88,7 @@ export function useConversationScroll(id: string, ready: boolean) {
       anchor.current = null;
       const saved = positions.current.get(id);
       lastTop.current = saved?.top || 0;
+      bottomDistance.current = saved?.distance || 0;
       following.current = saved?.following ?? true;
       updateFollow(following.current);
     }

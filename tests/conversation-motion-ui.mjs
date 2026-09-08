@@ -126,6 +126,22 @@ try {
         .locator("#messages")
         .evaluate((e) => e.scrollHeight - e.scrollTop - e.clientHeight);
     assert.ok((await gap()) < 2, "initial history follows bottom");
+    await page.locator("#messages").evaluate((root) => {
+      root.scrollTop -= 18;
+      root.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await pause(100);
+    await page.locator("#message").fill("A small draft");
+    await pause(100);
+    assert.ok(
+      Math.abs((await gap()) - 18) < 2,
+      "A render preserves the reader's small bottom distance",
+    );
+    await page.locator("#messages").evaluate((root) => {
+      root.scrollTop = root.scrollHeight;
+      root.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+
     await page
       .locator("#message")
       .fill(Array.from({ length: 6 }, (_, i) => `Draft line ${i}`).join("\n"));

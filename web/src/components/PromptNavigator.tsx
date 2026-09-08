@@ -1,5 +1,5 @@
 import { ActionIcon, Button, Popover, TextInput } from "@mantine/core";
-import { ArrowDown, ArrowUp, Bookmark, ListTree, Search } from "lucide-react";
+import { Bookmark, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import { save, saved } from "../api";
 import type { Message } from "../types";
@@ -62,11 +62,49 @@ export default function PromptNavigator({
       cancelAnimationFrame(frame);
     };
   }, [prompts, container]);
-  if (!prompts.length) return null;
   const index = Math.max(
     0,
     prompts.findIndex((prompt) => prompt.id === activeId),
   );
+  useEffect(() => {
+    const navigate = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        !["ArrowUp", "ArrowDown"].includes(event.key)
+      )
+        return;
+      const target = event.target as HTMLElement | null;
+      const composer =
+        target instanceof HTMLTextAreaElement && target.id === "message";
+      if (
+        composer
+          ? target.value.length > 0
+          : !target?.closest("#messages") ||
+            !!target.closest(
+              "input, textarea, select, button, a, [contenteditable], [role=dialog]",
+            )
+      )
+        return;
+      if (!prompts.length) return;
+      const next = Math.max(
+        0,
+        Math.min(
+          prompts.length - 1,
+          index + (event.key === "ArrowUp" ? -1 : 1),
+        ),
+      );
+      event.preventDefault();
+      jump(prompts[next].id);
+    };
+    document.addEventListener("keydown", navigate);
+    return () => document.removeEventListener("keydown", navigate);
+  }, [prompts, index, jump]);
+  if (!prompts.length) return null;
   const current = prompts[index];
   const visible = prompts.filter(
     (prompt) =>
@@ -103,6 +141,7 @@ export default function PromptNavigator({
             variant="subtle"
             className="prompt-history-toggle"
             aria-label="Browse prompts"
+            title="Browse prompts. Use ↑/↓ when the message field is empty."
             aria-expanded={opened}
             onClick={() => setOpened(!opened)}
             leftSection={<ListTree size={14} />}
@@ -183,24 +222,6 @@ export default function PromptNavigator({
       >
         {current.text || "Attachment"}
       </button>
-      <ActionIcon
-        size="sm"
-        variant="subtle"
-        aria-label="Previous prompt"
-        disabled={index === 0}
-        onClick={() => go(prompts[index - 1].id)}
-      >
-        <ArrowUp size={14} />
-      </ActionIcon>
-      <ActionIcon
-        size="sm"
-        variant="subtle"
-        aria-label="Next prompt"
-        disabled={index === prompts.length - 1}
-        onClick={() => go(prompts[index + 1].id)}
-      >
-        <ArrowDown size={14} />
-      </ActionIcon>
     </nav>
   );
 }

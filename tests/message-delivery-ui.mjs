@@ -219,6 +219,11 @@ try {
         `${mode}: exactly one POST starts`,
       );
       const sent = posts.at(-1);
+      assert.equal(
+        await input.inputValue(),
+        "",
+        `${mode}: draft clears before the HTTP reply`,
+      );
       await row(text).waitFor();
       assert.equal(
         await row(text).count(),
@@ -236,11 +241,15 @@ try {
       );
       return sent;
     };
-    const accept = async (sent, status = "accepted") => {
+    const accept = async (sent, status = "accepted", expectedDraft = "") => {
       await sent.route.fulfill({ json: { id: sent.body.id, status } });
       await until(
-        async () => (await input.inputValue()) === "",
-        `${mode}: accepted draft clears`,
+        async () => !(await page.locator("#send-state").textContent()),
+        `${mode}: delivery request settles`,
+      );
+      await until(
+        async () => (await input.inputValue()) === expectedDraft,
+        `${mode}: acknowledgement preserves the current draft`,
       );
     };
     await page.goto(origin);
@@ -267,7 +276,20 @@ try {
       1,
       `${mode}: a delayed POST cannot hide the message`,
     );
-    await accept(first);
+    const optimisticNode = await row(firstText).elementHandle();
+    const pendingBox = await row(firstText).boundingBox();
+    await input.fill("Next draft typed during delivery");
+    await accept(first, "accepted", "Next draft typed during delivery");
+    const acceptedBox = await row(firstText).boundingBox();
+    assert.ok(
+      Math.abs(pendingBox.height - acceptedBox.height) <= 1,
+      `${mode}: receipt does not resize the sent message`,
+    );
+    assert.ok(
+      Math.abs(pendingBox.y - acceptedBox.y) <= 1,
+      `${mode}: receipt does not move the sent message`,
+    );
+    await input.fill("");
     const base = history.get(a.id).items;
     await publish(a.id, [...base]);
     await page.waitForTimeout(180);
@@ -288,7 +310,7 @@ try {
       `${mode}: matching text does not erase a distinct message`,
     );
     const echo = {
-      id: `${a.id}:${first.body.id}`,
+      id: `${a.id}:materialized-${first.body.id}`,
       clientMessageId: first.body.id,
       role: "user",
       text: firstText,
@@ -299,6 +321,11 @@ try {
       `${mode}: exact acknowledgement removes only the local duplicate`,
     );
     assert.equal(await page.locator(`[data-message="${echo.id}"]`).count(), 1);
+    assert.equal(
+      await optimisticNode.evaluate((node) => node.isConnected),
+      true,
+      `${mode}: receipt with a different server ID preserves the message DOM node`,
+    );
 
     // The history can acknowledge delivery before the POST response arrives.
     const earlyText = `${mode} history arrives before HTTP acknowledgement`;

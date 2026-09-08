@@ -12,6 +12,7 @@ import Activity, { ToolCard, activitySummary } from "./Activity";
 import ConversationResults from "./ConversationResults";
 import { historyGroups, type HistoryGroup } from "./turnHistoryModel";
 import "./turn-history.css";
+import { messageRenderKey } from "./messageDelivery";
 
 function messageGroups(items: Message[]) {
   const groups: (Message | Message[])[] = [];
@@ -30,7 +31,7 @@ function messages(items: Message[], render: (message: Message) => ReactNode) {
     Array.isArray(item) ? (
       <Activity key={item[0].id} items={item} />
     ) : (
-      <Fragment key={item.id}>{render(item)}</Fragment>
+      <Fragment key={messageRenderKey(item)}>{render(item)}</Fragment>
     ),
   );
 }
@@ -190,7 +191,7 @@ export default function TurnHistory({
     <>
       {historyGroups(items, currentTurn).map((group) =>
         group.items[0].role === "user" || !group.items[0].turnId ? (
-          <Fragment key={group.id}>
+          <Fragment key={messageRenderKey(group.items[0])}>
             {messages(group.items, renderMessage)}
           </Fragment>
         ) : (

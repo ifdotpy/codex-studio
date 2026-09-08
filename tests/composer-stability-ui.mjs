@@ -103,6 +103,7 @@ try {
         const result = {};
         for (const selector of [
           "#composer",
+          ...(mobile ? [] : ["#conversation-title"]),
           "#message",
           ".composer-bar",
           ".attach-button",

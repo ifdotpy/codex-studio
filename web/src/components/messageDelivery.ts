@@ -1,6 +1,11 @@
 import type { Message } from "../types";
 import type { OutgoingMessage } from "../sync/send";
 
+export const messageRenderKey = (item: Message) =>
+  item.role === "user" && item.clientMessageId
+    ? `client:${item.clientMessageId}`
+    : item.id;
+
 export function receiptMessage(item: Message, entry: OutgoingMessage) {
   const key = `${entry.body.room}:${entry.id}`;
   return (

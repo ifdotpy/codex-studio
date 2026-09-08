@@ -238,3 +238,58 @@
     min-height: 44px;
   }
 }
+
+/* Routine activity changes within one toolbar slot, not the transcript. */
+.composer-activity {
+  flex: 1 1 100px;
+  min-width: 0;
+  height: 28px;
+  overflow: hidden;
+}
+#conversation .composer-activity .agent-phase {
+  min-height: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.composer-activity .agent-phase > span,
+.composer-activity .agent-phase-copy {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.message-bottom .message-delivery-status {
+  margin: 0;
+}
+@media (min-width: 761px) {
+  #conversation-status {
+    width: 120px;
+  }
+  .workspace-header .conversation-quick-actions {
+    min-width: 132px;
+    width: 132px;
+    justify-content: flex-end;
+  }
+}
+@media (max-width: 760px) {
+  .composer-activity {
+    flex-basis: 0;
+  }
+  .composer-activity .phase-dots {
+    display: none;
+  }
+}
+
+.ai-conversation .message.user {
+  position: relative;
+}
+.message-delivery-inline {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  line-height: 18px;
+  font-size: 10px;
+  margin: 0;
+}

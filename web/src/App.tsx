@@ -601,6 +601,14 @@ export default function App() {
           displayPending: true,
         };
         setOutgoing((old) => ({ ...old, [entry.id]: entry }));
+        // Clear together with the optimistic message, not after the network reply.
+        setDrafts((old) => {
+          const next = { ...old };
+          if (next[draftKey]?.trim() === text) delete next[draftKey];
+          if (next[id]?.trim() === text) delete next[id];
+          save("codex-agent-drafts", next);
+          return next;
+        });
         const result = await durableSend(request, entry.attachments);
         setOutgoing((old) => ({
           ...old,
@@ -634,16 +642,25 @@ export default function App() {
         if (Object.values(result.deliveries || {}).some((v) => v !== "queued"))
           notify("Message saved. Some deliveries are not confirmed.");
       }
-      setDrafts((old) => {
-        const next = { ...old };
-        if (next[draftKey]?.trim() === text) delete next[draftKey];
-        if (next[id]?.trim() === text) delete next[id];
-        save("codex-agent-drafts", next);
-        return next;
-      });
+      if (!request)
+        setDrafts((old) => {
+          const next = { ...old };
+          if (next[draftKey]?.trim() === text) delete next[draftKey];
+          if (next[id]?.trim() === text) delete next[id];
+          save("codex-agent-drafts", next);
+          return next;
+        });
       void refresh().catch((error) => notify(errorText(error)));
     } catch (e) {
       if (request) {
+        // Never replace text the user typed while this request was in flight.
+        const targetKey = request.room || draftKey;
+        setDrafts((old) => {
+          if (old[targetKey]?.trim()) return old;
+          const next = { ...old, [targetKey]: text };
+          save("codex-agent-drafts", next);
+          return next;
+        });
         const key = request.id;
         const rejected =
           e instanceof ApiError &&

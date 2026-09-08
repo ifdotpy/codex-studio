@@ -24,7 +24,12 @@ import { useMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
 import { changeOutbox, type OutgoingMessage } from "../sync/send";
-import { outgoingTranscript, deliveryLabel } from "./messageDelivery";
+import { useDisplayPhase } from "./useDisplayPhase";
+import {
+  outgoingTranscript,
+  deliveryLabel,
+  messageRenderKey,
+} from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
 import { useConversationScroll } from "./useConversationScroll";
 import {
@@ -177,12 +182,27 @@ export default function Conversation(p: {
     p.agent && liveAgent?.id === p.id
       ? ({ ...p.agent, ...liveAgent } as Agent)
       : p.agent;
+  const displayPhase = useDisplayPhase(
+    p.id,
+    agent?.activity?.phase || "thinking",
+  );
+  const detailedActivity =
+    connection === "reconnecting" ||
+    !!agent?.error ||
+    !!agent?.startAttempt?.prepareError ||
+    !!agent?.startAttempt?.responseError ||
+    ["retrying", "auth", "error"].includes(agent?.activity?.phase || "") ||
+    !["starting", "running", "idle", "completed"].includes(
+      agent?.status || "idle",
+    );
   useEffect(() => {
     p.onPhase(
       p.id,
       connection === "reconnecting"
         ? "Reconnecting"
-        : statusLabel(agent?.status || "idle", agent?.activity?.phase),
+        : ["starting", "running"].includes(agent?.status || "")
+          ? "Working"
+          : statusLabel(agent?.status || "idle"),
     );
   }, [p.id, agent?.status, agent?.activity?.phase, connection, p.onPhase]);
   useEffect(() => {
@@ -256,21 +276,32 @@ export default function Conversation(p: {
     // manual scroll away from the bottom.
     setFollow(true);
     input.current?.focus({ preventScroll: true });
+    const sent = new Set(assets.map((asset) => asset.id));
+    setAttachments((current) => ({
+      ...current,
+      [id]: (current[id] || []).filter((asset) => !sent.has(asset.id)),
+    }));
     try {
       await p.send({
         assets: assets.map((asset) => asset.id),
         attachments: assets.map(({ preview: _preview, ...asset }) => asset),
         delivery: canSteer ? delivery : "queue",
       });
-      const sent = new Set(assets.map((asset) => asset.id));
-      setAttachments((current) => ({
-        ...current,
-        [id]: (current[id] || []).filter((asset) => !sent.has(asset.id)),
-      }));
       if (p.id && managed)
         void loadQueue(p.id).catch((error) => p.notify(errorText(error)));
     } catch {
-      // The send owner keeps the draft and renders its delivery error.
+      setAttachments((current) => ({
+        ...current,
+        [id]: Array.from(
+          new Map(
+            [...assets, ...(current[id] || [])].map((asset) => [
+              asset.id,
+              asset,
+            ]),
+          ).values(),
+        ),
+      }));
+      // The send owner restores the draft and renders its delivery error.
     } finally {
       sendLock.current = false;
     }
@@ -356,45 +387,61 @@ export default function Conversation(p: {
   }, [items]);
   const renderMessage = (m: Message) => (
     <article
-      key={m.id}
+      key={messageRenderKey(m)}
       data-message={m.id}
       className={`message ${m.role === "user" ? "user" : "assistant"} ${p.room ? "bubble " + (m.sender !== first ? "outgoing" : "incoming") : ""}`}
     >
+      {["sending", "reserved", "dispatching"].includes(
+        m.deliveryStatus || "",
+      ) && (
+        <span
+          className="message-delivery-status message-delivery-inline"
+          role="status"
+        >
+          Sending…
+        </span>
+      )}
       {p.room && m.senderName && (
         <span className="message-label">{m.senderName}</span>
       )}
-      {deliveryLabel(m) && (
-        <div className="message-delivery-heading">
-          <span className="message-label message-delivery-status" role="status">
-            {deliveryLabel(m)}
-          </span>
-          {m.role === "user" &&
-            ["uncertain", "failed", "cancelled"].includes(
-              m.deliveryStatus || "",
-            ) && (
-              <ActionIcon
-                size="sm"
-                variant="subtle"
-                aria-label="Remove message"
-                title="Remove from this device. Delivery is not cancelled."
-                onClick={() => {
-                  try {
-                    removed.remove(m);
-                    p.notify(
-                      "Message removed from this device. Delivery was not cancelled.",
-                    );
-                  } catch (error) {
-                    p.notify(
-                      `Could not remove this message: ${errorText(error)}`,
-                    );
-                  }
-                }}
-              >
-                <Trash2 size={14} />
-              </ActionIcon>
-            )}
-        </div>
-      )}
+      {deliveryLabel(m) &&
+        !["sending", "reserved", "dispatching", "accepted"].includes(
+          m.deliveryStatus || "",
+        ) && (
+          <div className="message-delivery-heading">
+            <span
+              className="message-label message-delivery-status"
+              role="status"
+            >
+              {deliveryLabel(m)}
+            </span>
+            {m.role === "user" &&
+              ["uncertain", "failed", "cancelled"].includes(
+                m.deliveryStatus || "",
+              ) && (
+                <ActionIcon
+                  size="sm"
+                  variant="subtle"
+                  aria-label="Remove message"
+                  title="Remove from this device. Delivery is not cancelled."
+                  onClick={() => {
+                    try {
+                      removed.remove(m);
+                      p.notify(
+                        "Message removed from this device. Delivery was not cancelled.",
+                      );
+                    } catch (error) {
+                      p.notify(
+                        `Could not remove this message: ${errorText(error)}`,
+                      );
+                    }
+                  }}
+                >
+                  <Trash2 size={14} />
+                </ActionIcon>
+              )}
+          </div>
+        )}
       {m.role === "user" ? (
         <div className="prose plain">{m.text}</div>
       ) : (
@@ -589,7 +636,9 @@ export default function Conversation(p: {
             agentId={managed ? agent?.id : undefined}
             onJump={jumpToPrompt}
           />
-          {!p.room && <AgentPhase agent={agent} connection={connection} />}
+          {!p.room && detailedActivity && (
+            <AgentPhase agent={agent} connection={connection} />
+          )}
           {mobileClient && agent?.source === "managed" && !p.room && (
             <UserTasks
               key={agent.rootId || agent.id}
@@ -883,6 +932,20 @@ export default function Conversation(p: {
               <span id="send-state" role="status" aria-live="polite">
                 {p.sending ? "Sending…" : ""}
               </span>
+              <div className="composer-activity">
+                {!detailedActivity && agent && (
+                  <AgentPhase
+                    agent={{
+                      ...agent,
+                      activity: {
+                        ...agent.activity,
+                        phase: displayPhase,
+                      },
+                    }}
+                    connection={connection}
+                  />
+                )}
+              </div>
               <div className="prompt-navigation-slot">
                 {!p.room && p.id && (
                   <PromptNavigator
