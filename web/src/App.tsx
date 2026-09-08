@@ -544,7 +544,7 @@ export default function App() {
   };
   const send = async (options?: {
     assets?: string[];
-    delivery?: "queue" | "steer";
+    delivery?: "queue" | "steer" | "after_tool";
     attachments?: Json[];
   }) => {
     const draftKey = opened || "new",
@@ -586,7 +586,7 @@ export default function App() {
             room: id,
             text,
             assets: options?.assets || [],
-            delivery: options?.delivery || "queue",
+            delivery: options?.delivery || "after_tool",
           };
         // Retain the exact request across reloads until acceptance is known.
         // A turn ending can change the default delivery mode, not this receipt.

@@ -28,7 +28,7 @@ try {
   const origin = `http://127.0.0.1:${port}`;
   const initial = await (await fetch(`${origin}/api/state`)).json();
   const lead = initial.threads.find((agent) => agent.name === "Other project");
-  const transcript = await (
+  const originalTranscript = await (
     await fetch(`${origin}/api/transcript?id=${lead.id}`)
   ).json();
   browser = await chromium.launch({
@@ -39,6 +39,7 @@ try {
   });
   const measurements = [];
   for (const width of [1440, 900, 390]) {
+    const transcript = structuredClone(originalTranscript);
     const page = await browser.newPage({
       viewport: { width: 1440, height: 960 },
     });
@@ -202,7 +203,19 @@ try {
         status: "queued",
       },
     ];
-    await page.getByRole("button", { name: /1 queued message/ }).waitFor();
+    transcript.items.push({
+      id: "queued-fixture",
+      clientMessageId: "queued-fixture",
+      role: "user",
+      text: "Later instruction",
+      pending: true,
+      deliveryStatus: "pending",
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page
+      .getByRole("button", { name: "Cancel queued message", exact: true })
+      .waitFor();
+    assert.equal(await page.locator(".message-queue").count(), 0);
     await stable("queue appears");
     await page.locator("#stop").click();
     await page.waitForTimeout(80);

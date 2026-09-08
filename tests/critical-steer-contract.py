@@ -71,6 +71,45 @@ class CriticalSteerContract(unittest.TestCase):
                 (agent + ":" + message_id, agent),
             ).fetchone()[0]
 
+    def test_after_tool_resolves_at_server_and_replay_keeps_original_route(self):
+        agent = self.lead()
+        result = self.runtime.send(agent, "Correction", "enter-active", delivery="after_tool")
+        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(self.metadata("enter-active")["delivery"], "steer")
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(agent, db)
+            a.update(inFlight=False, turnId=None, status="idle")
+            self.runtime.put(db, "agents", a)
+        with patch.object(self.server, "submit") as submit:
+            self.assertEqual(self.runtime.send(agent, "Correction", "enter-active", delivery="after_tool")["status"], "delivered")
+            submit.assert_not_called()
+        result = self.runtime.send(agent, "Start next", "enter-idle", delivery="after_tool")
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(self.metadata("enter-idle")["delivery"], "queue")
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(agent, db)
+            a.update(inFlight=True, turnId="later-turn", status="running")
+            self.runtime.put(db, "agents", a)
+        with patch.object(self.server, "submit") as submit:
+            self.runtime.send(agent, "Start next", "enter-idle", delivery="after_tool")
+            submit.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "different content"):
+            self.runtime.send(agent, "Start next", "enter-idle", delivery="queue")
+
+    def test_after_tool_unknown_delivery_never_becomes_a_second_message(self):
+        agent = self.lead()
+        with patch.object(self.server, "submit", side_effect=OSError("pipe disconnected")):
+            with self.assertRaisesRegex(RuntimeError, "outcome unknown"):
+                self.runtime.send(agent, "Correction", "enter-unknown", delivery="after_tool")
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(agent, db)
+            a.update(inFlight=False, turnId=None, status="idle")
+            self.runtime.put(db, "agents", a)
+        with patch.object(self.server, "submit") as submit:
+            self.assertEqual(self.runtime.send(agent, "Correction", "enter-unknown", delivery="after_tool")["status"], "uncertain")
+            submit.assert_not_called()
+        self.assertEqual(self.runtime.queue_action(agent)["items"], [])
+
     def test_unsent_steer_retry_preserves_identity_and_transcript(self):
         agent = self.lead()
         message_id = "steer-unsent"

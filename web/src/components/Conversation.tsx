@@ -11,7 +11,6 @@ import {
   Copy,
   GitBranch,
   Quote,
-  ListOrdered,
   Pencil,
   Trash2,
   ChevronUp,
@@ -71,7 +70,7 @@ export default function Conversation(p: {
   dismissDraft?: (version: DraftVersion) => void;
   send: (options?: {
     assets?: string[];
-    delivery?: "queue" | "steer";
+    delivery?: "queue" | "steer" | "after_tool";
     attachments?: Attachment[];
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
@@ -166,7 +165,6 @@ export default function Conversation(p: {
   }, [attachments, attachmentKey]);
   const [uploading, setUploading] = useState(false);
   const [queue, setQueue] = useState<Json[]>([]);
-  const [queueOpen, setQueueOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [queuedText, setQueuedText] = useState("");
   const [queueOriginal, setQueueOriginal] = useState("");
@@ -199,7 +197,7 @@ export default function Conversation(p: {
     !!agent?.startAttempt?.prepareError ||
     !!agent?.startAttempt?.responseError ||
     ["retrying", "auth", "error"].includes(agent?.activity?.phase || "") ||
-    !["starting", "running", "idle", "completed"].includes(
+    !["starting", "running", "queued", "idle", "completed"].includes(
       agent?.status || "idle",
     );
   useEffect(() => {
@@ -214,10 +212,8 @@ export default function Conversation(p: {
   }, [p.id, agent?.status, agent?.activity?.phase, connection, p.onPhase]);
   useEffect(() => {
     setEditing(null);
-    setQueueOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const canSteer = managed && !!agent?.inFlight && !!agent?.turnId;
   const loadQueue = async (id: string) => {
     const result = await api(`/api/queue?agent=${encodeURIComponent(id)}`);
     if (activeId.current === id) setQueue(result.items || []);
@@ -269,7 +265,7 @@ export default function Conversation(p: {
       setUploading(false);
     }
   };
-  const submit = async (delivery: "queue" | "steer" = "steer") => {
+  const submit = async (delivery: "queue" | "after_tool" = "after_tool") => {
     if (
       sendLock.current ||
       p.sending ||
@@ -292,7 +288,7 @@ export default function Conversation(p: {
       await p.send({
         assets: assets.map((asset) => asset.id),
         attachments: assets.map(({ preview: _preview, ...asset }) => asset),
-        delivery: canSteer ? delivery : "queue",
+        delivery,
       });
       if (p.id && managed)
         void loadQueue(p.id).catch((error) => p.notify(errorText(error)));
@@ -392,6 +388,85 @@ export default function Conversation(p: {
         last.set(item.turnId, item.id);
     return last;
   }, [items]);
+  const queueEntry = (m: Message) =>
+    m.role === "user"
+      ? queue.find(
+          (event) =>
+            event.id === m.clientMessageId ||
+            event.id === m.id ||
+            `${p.id}:${event.id}` === m.id,
+        )
+      : undefined;
+  const queueControls = (m: Message) => {
+    const event = queueEntry(m);
+    if (!event || editing === event.id) return null;
+    const index = queue.findIndex((item) => item.id === event.id);
+    return (
+      <div className="inline-queue-actions" data-queue-position={index + 1}>
+        {queue.length > 1 && index > 0 && (
+          <ActionIcon
+            size="sm"
+            aria-label="Move message first"
+            title="Move message first"
+            onClick={() => void queueAction(event, "first")}
+          >
+            <ChevronUp size={14} />
+          </ActionIcon>
+        )}
+        <ActionIcon
+          size="sm"
+          aria-label="Edit queued message"
+          title="Edit queued message"
+          onClick={() => {
+            setEditing(event.id);
+            setQueuedText(event.text);
+            setQueueOriginal(event.text);
+          }}
+        >
+          <Pencil size={13} />
+        </ActionIcon>
+        <ActionIcon
+          size="sm"
+          aria-label="Cancel queued message"
+          title="Cancel queued message"
+          onClick={() => void queueAction(event, "cancel")}
+        >
+          <Trash2 size={13} />
+        </ActionIcon>
+      </div>
+    );
+  };
+  const userText = (m: Message) => {
+    const event = queueEntry(m);
+    if (!event || editing !== event.id)
+      return <div className="prose plain">{m.text}</div>;
+    return (
+      <div className="queue-editor">
+        <Textarea
+          aria-label="Edit queued message"
+          value={queuedText}
+          onChange={(e) => setQueuedText(e.target.value)}
+          autosize
+          maxRows={5}
+          autoFocus
+        />
+        <Button
+          size="compact-xs"
+          disabled={!queuedText.trim()}
+          onClick={() => void queueAction(event, "edit")}
+        >
+          Save
+        </Button>
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          onClick={() => setEditing(null)}
+        >
+          Cancel
+        </Button>
+      </div>
+    );
+  };
   const renderMessage = (m: Message) => (
     <article
       key={messageRenderKey(m)}
@@ -422,6 +497,7 @@ export default function Conversation(p: {
             >
               {deliveryLabel(m)}
             </span>
+            {queueControls(m)}
             {m.role === "user" &&
               ["uncertain", "failed", "cancelled"].includes(
                 m.deliveryStatus || "",
@@ -450,7 +526,7 @@ export default function Conversation(p: {
           </div>
         )}
       {m.role === "user" ? (
-        <div className="prose plain">{m.text}</div>
+        userText(m)
       ) : (
         <StreamingText
           text={m.text}
@@ -711,85 +787,6 @@ export default function Conversation(p: {
               Message queue unavailable: {queueError}
             </p>
           )}
-          {queue.length > 0 && (
-            <div className="message-queue">
-              <Button
-                variant="subtle"
-                size="compact-xs"
-                leftSection={<ListOrdered size={14} />}
-                onClick={() => setQueueOpen(!queueOpen)}
-                aria-expanded={queueOpen}
-                title="These messages start a new turn after the current turn ends."
-              >
-                {queue.length} queued{" "}
-                {queue.length === 1 ? "message" : "messages"}
-              </Button>
-              {queueOpen && (
-                <div className="queued-items">
-                  {queue.map((event, index) => (
-                    <div key={event.id} className="queued-item">
-                      <span className="queue-position">{index + 1}</span>
-                      {editing === event.id ? (
-                        <div className="queue-editor">
-                          <Textarea
-                            aria-label="Edit queued message"
-                            value={queuedText}
-                            onChange={(e) => setQueuedText(e.target.value)}
-                            autosize
-                            maxRows={5}
-                          />
-                          <Button
-                            size="compact-xs"
-                            disabled={!queuedText.trim()}
-                            onClick={() => void queueAction(event, "edit")}
-                          >
-                            Save
-                          </Button>
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            onClick={() => setEditing(null)}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      ) : (
-                        <p>{event.text || "Attachments"}</p>
-                      )}
-                      <div className="queue-actions">
-                        <ActionIcon
-                          size="sm"
-                          aria-label="Move message first"
-                          disabled={index === 0}
-                          onClick={() => void queueAction(event, "first")}
-                        >
-                          <ChevronUp size={14} />
-                        </ActionIcon>
-                        <ActionIcon
-                          size="sm"
-                          aria-label="Edit queued message"
-                          onClick={() => {
-                            setEditing(event.id);
-                            setQueuedText(event.text);
-                            setQueueOriginal(event.text);
-                          }}
-                        >
-                          <Pencil size={13} />
-                        </ActionIcon>
-                        <ActionIcon
-                          size="sm"
-                          aria-label="Cancel queued message"
-                          onClick={() => void queueAction(event, "cancel")}
-                        >
-                          <Trash2 size={13} />
-                        </ActionIcon>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
           {managed && !p.legacy && agent && (
             <AgentPanel
               key={agent.id}
@@ -944,18 +941,20 @@ export default function Conversation(p: {
                 {p.sending ? "Sending…" : ""}
               </span>
               <div className="composer-activity">
-                {!detailedActivity && agent && (
-                  <AgentPhase
-                    agent={{
-                      ...agent,
-                      activity: {
-                        ...agent.activity,
-                        phase: displayPhase,
-                      },
-                    }}
-                    connection={connection}
-                  />
-                )}
+                {!detailedActivity &&
+                  agent &&
+                  !(agent.status === "queued" && queue.length > 0) && (
+                    <AgentPhase
+                      agent={{
+                        ...agent,
+                        activity: {
+                          ...agent.activity,
+                          phase: displayPhase,
+                        },
+                      }}
+                      connection={connection}
+                    />
+                  )}
               </div>
               <div className="prompt-navigation-slot">
                 {!p.room && p.id && (

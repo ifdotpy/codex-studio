@@ -235,10 +235,7 @@ try {
         true,
         `${mode}: submit retains composer focus`,
       );
-      assert.equal(
-        sent.body.delivery,
-        queue || !a.inFlight ? "queue" : "steer",
-      );
+      assert.equal(sent.body.delivery, queue ? "queue" : "after_tool");
       return sent;
     };
     const accept = async (sent, status = "accepted", expectedDraft = "") => {

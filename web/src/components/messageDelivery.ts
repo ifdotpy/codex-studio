@@ -85,7 +85,7 @@ export function deliveryLabel(item: Message) {
         sending: "Sending…",
         reserved: "Starting…",
         dispatching: "Sending…",
-        pending: "Queued · after turn",
+        pending: "Queued",
         queued: "Waiting to send",
         paused: "Retries paused",
         uncertain: "Delivery unconfirmed",

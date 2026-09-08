@@ -1406,8 +1406,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             raise ValueError(
                 "Message must have text or attachments, at most 32000 characters"
             )
-        if delivery not in {"queue", "steer"}:
-            raise ValueError("Choose queue or steer")
+        if delivery not in {"queue", "steer", "after_tool"}:
+            raise ValueError("Choose queue, steer or after_tool")
+        requested_delivery = delivery
         inputs = self.message_inputs(key, text, assets)
         message_id = message_id or uid()
         with self.lock, self.db() as db:
@@ -1432,9 +1433,11 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     old["agent"] != key
                     or old["text"] != text.strip()
                     or previous.get("assets", []) != assets
-                    or previous.get("delivery", "queue") != delivery
+                    or previous.get("requestedDelivery", previous.get("delivery", "queue")) != requested_delivery
                 ):
                     raise ValueError("This message id has different content")
+                if requested_delivery == "after_tool":
+                    delivery = previous.get("delivery", "queue")
                 retry_not_submitted = (
                     delivery == "steer"
                     and old["status"] == "failed"
@@ -1453,6 +1456,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         "status": old["status"],
                         "error": old["error"],
                     }
+            if delivery == "after_tool":
+                delivery = "steer" if a.get("turnId") and a.get("inFlight") and a["autoWake"] else "queue"
             if delivery == "steer" and (
                 not a.get("turnId") or not a.get("inFlight") or not a["autoWake"]
             ):
@@ -1487,6 +1492,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                             {
                                 "assets": assets,
                                 "delivery": delivery,
+                                "requestedDelivery": requested_delivery,
                                 "acceptedAt": time.time(),
                             }
                         ),
@@ -1519,6 +1525,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                             {
                                 "assets": assets,
                                 "delivery": delivery,
+                                "requestedDelivery": requested_delivery,
                                 "acceptedAt": time.time(),
                             }
                         ),

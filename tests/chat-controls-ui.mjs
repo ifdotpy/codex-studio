@@ -62,6 +62,7 @@ try {
       name: "Actions for Other project",
       exact: true,
     });
+  await row().hover();
   await actions().click();
   await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
   await poll(
@@ -71,6 +72,7 @@ try {
   );
   const folder = join(root, "Release checks");
   await mkdir(folder);
+  await row().hover();
   await actions().click();
   await page
     .getByRole("menuitem", { name: "Change project folder", exact: true })
@@ -92,6 +94,7 @@ try {
         .cwd.endsWith("/Release checks"),
     "project directory is persisted",
   );
+  await row().hover();
   await actions().click();
   await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
   await poll(
@@ -105,6 +108,7 @@ try {
     .getByRole("menuitem", { name: "Show archived chats", exact: true })
     .click();
   await row().waitFor();
+  await row().hover();
   await actions().click();
   await page
     .getByRole("menuitem", { name: "Restore chat", exact: true })
@@ -248,12 +252,22 @@ try {
       "message enters durable queue",
     );
   }
+  assert.equal(
+    await page.locator(".message-queue").count(),
+    0,
+    "No duplicate queue panel",
+  );
+  const queuedBubble = (text) =>
+    page.locator(".message.user").filter({ hasText: text });
+  await queuedBubble("First queued instruction").waitFor();
+  assert.equal(
+    await page.getByText("First queued instruction", { exact: true }).count(),
+    1,
+  );
   await page
-    .getByRole("button", { name: "2 queued messages", exact: true })
-    .click();
-  await page
-    .locator(".queued-item")
-    .first()
+    .locator(
+      '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
+    )
     .getByRole("button", { name: "Edit queued message", exact: true })
     .click();
   await page
@@ -268,8 +282,9 @@ try {
     "queue edit is persisted",
   );
   await page
-    .locator(".queued-item")
-    .nth(1)
+    .locator(
+      '.message.user:has(.inline-queue-actions[data-queue-position="2"])',
+    )
     .getByRole("button", { name: "Move message first", exact: true })
     .click();
   await poll(
@@ -278,14 +293,19 @@ try {
   );
   await poll(
     async () =>
-      (await page.locator(".queued-item").first().textContent()).includes(
-        "Second queued instruction",
-      ),
+      (
+        await page
+          .locator(
+            '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
+          )
+          .textContent()
+      ).includes("Second queued instruction"),
     "queue UI applies server order",
   );
   await page
-    .locator(".queued-item")
-    .first()
+    .locator(
+      '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
+    )
     .getByRole("button", { name: "Cancel queued message", exact: true })
     .click();
   await poll(
@@ -356,7 +376,7 @@ try {
   await page.locator("#message").press("Enter");
   assert.equal(
     (await entered).postDataJSON().delivery,
-    "steer",
+    "after_tool",
     "Enter uses after-tool-call delivery",
   );
   await poll(
@@ -382,10 +402,7 @@ try {
     .getByRole("button", { name: "evidence.txt", exact: true })
     .waitFor();
   await page
-    .getByRole("button", { name: "1 queued message", exact: true })
-    .click();
-  await page
-    .locator(".queued-item")
+    .locator(".message.user")
     .getByText("Revised first instruction", { exact: true })
     .waitFor();
   await page.locator("#toast").waitFor({ state: "hidden" });

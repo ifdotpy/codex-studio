@@ -226,3 +226,18 @@
 .outbox-controls [role="alert"] {
   color: var(--warning, #e3b761);
 }
+
+/* Queued messages have one home: their original chat bubble. */
+.inline-queue-actions {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  gap: 2px;
+}
+.inline-queue-actions .mantine-ActionIcon-root {
+  background: transparent;
+  color: var(--muted);
+}
+.message.user .queue-editor {
+  min-width: min(320px, 65vw);
+}
