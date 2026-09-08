@@ -42,6 +42,7 @@ import {
 } from "../types";
 import Usage from "./Usage";
 import PromptNavigator from "./PromptNavigator";
+import { usePromptRecall } from "./usePromptRecall";
 import Requests from "./Requests";
 import UserTasks from "./UserTasks";
 import TurnHistory from "./TurnHistory";
@@ -105,6 +106,12 @@ export default function Conversation(p: {
   );
   const removed = useRemovedMessages(p.data.stateDir, kind, p.id);
   const items = delivery.items.filter((message) => !removed.hidden(message));
+  const promptRecall = usePromptRecall(
+    `${p.data.stateDir}:${kind}:${p.id}`,
+    p.room ? [] : items,
+    p.draft,
+    p.setDraft,
+  );
   const observed = delivery.observed.join(",");
   useEffect(() => {
     if (observed) p.onObserved?.(observed.split(","));
@@ -850,10 +857,14 @@ export default function Conversation(p: {
               }
               disabled={!canSend}
               value={p.draft}
-              onChange={(e) => p.setDraft(e.target.value)}
+              onChange={(e) => {
+                promptRecall.reset();
+                p.setDraft(e.target.value);
+              }}
               maxLength={12000}
               rows={1}
               onKeyDown={(e) => {
+                if (promptRecall.onKeyDown(e)) return;
                 if (
                   managed &&
                   canSend &&

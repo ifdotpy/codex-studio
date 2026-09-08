@@ -11,7 +11,9 @@ Studio now retains the rendered user message when its server ID changes. It clea
 the submitted draft with the optimistic message and preserves any subsequent draft.
 Routine activity uses a fixed composer slot. Rapid phase changes settle for 250 ms.
 Errors remain immediate. Scroll compensation retains the distance from the bottom.
-Prompt navigation uses the arrow keys when the composer is empty.
+Up recalls the latest sent message into an empty composer. Further arrow presses
+select older or newer messages. Down after the latest message restores the empty
+draft. An edit or chat change ends recall. This does not navigate the transcript.
 
 ## Model defaults
 

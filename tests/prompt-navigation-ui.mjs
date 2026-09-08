@@ -113,20 +113,70 @@ try {
       .count(),
     0,
   );
-  await page.locator("#message").press("ArrowDown");
-  await page.waitForFunction(
-    () =>
-      document.querySelector(".prompt-history-toggle")?.textContent.trim() ===
-      "2 / 8",
-  );
-  await page.locator("#message").fill("Draft stays editable");
-  await page.locator("#message").press("ArrowUp");
+  const composer = page.locator("#message");
+  const scrollTop = await page
+    .locator("#messages")
+    .evaluate((el) => el.scrollTop);
+  await composer.press("ArrowUp");
   assert.equal(
-    await page.locator(".prompt-history-toggle").innerText(),
-    "2 / 8",
-    "Arrow keys edit a nonempty draft",
+    await composer.inputValue(),
+    prompts[7].text,
+    "Up recalls the latest message",
   );
-  await page.locator("#message").fill("");
+  await composer.press("ArrowUp");
+  assert.equal(await composer.inputValue(), prompts[6].text);
+  await composer.press("ArrowDown");
+  assert.equal(await composer.inputValue(), prompts[7].text);
+  await composer.press("ArrowDown");
+  assert.equal(
+    await composer.inputValue(),
+    "",
+    "Down restores the empty draft",
+  );
+  assert.equal(
+    await page.locator("#messages").evaluate((el) => el.scrollTop),
+    scrollTop,
+    "Recall does not navigate the transcript",
+  );
+  for (let i = 0; i < 10; i++) await composer.press("ArrowUp");
+  assert.equal(
+    await composer.inputValue(),
+    prompts[0].text,
+    "Oldest entry clamps",
+  );
+  await composer.fill("Draft stays editable\nSecond line");
+  await composer.press("ArrowUp");
+  assert.equal(
+    await composer.inputValue(),
+    "Draft stays editable\nSecond line",
+  );
+  await composer.fill("");
+  await composer.press("Shift+ArrowUp");
+  assert.equal(
+    await composer.inputValue(),
+    "",
+    "Modified arrows keep native behavior",
+  );
+  await composer.press("ArrowUp");
+  await page
+    .locator("[data-chat]")
+    .filter({ hasText: "Other project" })
+    .click();
+  await composer.fill("");
+  await composer.press("ArrowUp");
+  assert.equal(
+    await composer.inputValue(),
+    "",
+    "Another chat cannot recall this chat's messages",
+  );
+  await openLead();
+  await composer.fill("");
+  await composer.press("ArrowDown");
+  assert.equal(
+    await composer.inputValue(),
+    "",
+    "Chat changes reset the history cursor",
+  );
   await page
     .getByRole("button", { name: "Browse prompts", exact: true })
     .click();

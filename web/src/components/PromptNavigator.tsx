@@ -66,44 +66,6 @@ export default function PromptNavigator({
     0,
     prompts.findIndex((prompt) => prompt.id === activeId),
   );
-  useEffect(() => {
-    const navigate = (event: KeyboardEvent) => {
-      if (
-        event.defaultPrevented ||
-        event.isComposing ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey ||
-        !["ArrowUp", "ArrowDown"].includes(event.key)
-      )
-        return;
-      const target = event.target as HTMLElement | null;
-      const composer =
-        target instanceof HTMLTextAreaElement && target.id === "message";
-      if (
-        composer
-          ? target.value.length > 0
-          : !target?.closest("#messages") ||
-            !!target.closest(
-              "input, textarea, select, button, a, [contenteditable], [role=dialog]",
-            )
-      )
-        return;
-      if (!prompts.length) return;
-      const next = Math.max(
-        0,
-        Math.min(
-          prompts.length - 1,
-          index + (event.key === "ArrowUp" ? -1 : 1),
-        ),
-      );
-      event.preventDefault();
-      jump(prompts[next].id);
-    };
-    document.addEventListener("keydown", navigate);
-    return () => document.removeEventListener("keydown", navigate);
-  }, [prompts, index, jump]);
   if (!prompts.length) return null;
   const current = prompts[index];
   const visible = prompts.filter(
@@ -141,7 +103,7 @@ export default function PromptNavigator({
             variant="subtle"
             className="prompt-history-toggle"
             aria-label="Browse prompts"
-            title="Browse prompts. Use ↑/↓ when the message field is empty."
+            title="Browse prompts."
             aria-expanded={opened}
             onClick={() => setOpened(!opened)}
             leftSection={<ListTree size={14} />}
