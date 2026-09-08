@@ -388,7 +388,34 @@ try {
     // A queue row can briefly disappear while an older server dispatches it.
     const queuedText = `${mode} queued message survives dispatch`;
     const queued = await start(queuedText, true);
+    const queuedNode = await row(queuedText).elementHandle();
+    let queuedSendingBox = await row(queuedText).boundingBox();
+    let queuedTextBox = await row(queuedText)
+      .locator(".prose.plain")
+      .boundingBox();
+    const assertQueueGeometry = async (phase) => {
+      const box = await row(queuedText).boundingBox();
+      const textBox = await row(queuedText)
+        .locator(".prose.plain")
+        .boundingBox();
+      for (const key of ["x", "y", "width", "height"]) {
+        assert.ok(
+          Math.abs(box[key] - queuedSendingBox[key]) <= 1,
+          `${mode}: ${phase} keeps queued bubble ${key}: ${queuedSendingBox[key]} -> ${box[key]}`,
+        );
+        assert.ok(
+          Math.abs(textBox[key] - queuedTextBox[key]) <= 1,
+          `${mode}: ${phase} keeps queued text ${key}`,
+        );
+      }
+      assert.equal(
+        await queuedNode.evaluate((node) => node.isConnected),
+        true,
+        `${mode}: ${phase} preserves the message node`,
+      );
+    };
     await accept(queued, "queued");
+    await assertQueueGeometry("queued receipt");
     const queueBase = history.get(a.id).items;
     const queuedEcho = {
       id: `${a.id}:${queued.body.id}`,
@@ -404,6 +431,24 @@ try {
         /Queued/.test(await row(queuedText).innerText()),
       `${mode}: one queued row`,
     );
+    await assertQueueGeometry("queued transcript");
+    await page.screenshot({
+      path: join(evidence, `${mode}-queued-desktop.png`),
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await row(queuedText).scrollIntoViewIfNeeded();
+    await page.waitForTimeout(100);
+    queuedSendingBox = await row(queuedText).boundingBox();
+    queuedTextBox = await row(queuedText).locator(".prose.plain").boundingBox();
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+      `${mode}: queued metadata fits the mobile viewport`,
+    );
+    await page.screenshot({
+      path: join(evidence, `${mode}-queued-mobile.png`),
+    });
     await publish(a.id, [...queueBase]);
     await page.waitForTimeout(200);
     assert.equal(
@@ -419,6 +464,8 @@ try {
           0,
       `${mode}: materialized queue row stays unique`,
     );
+    await assertQueueGeometry("delivered transcript");
+    await page.setViewportSize({ width: 1440, height: 960 });
 
     // A rejected message keeps its draft, attachments, and an inline error.
     await page.locator('input[type="file"]').setInputFiles({

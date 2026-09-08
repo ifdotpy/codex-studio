@@ -152,6 +152,7 @@ export function MessageAttachments(p: {
   notify: (message: string) => void;
 }) {
   const [preview, setPreview] = useState<string | null>(null);
+  if (!p.assets.length) return null;
   return (
     <>
       <FilePreview

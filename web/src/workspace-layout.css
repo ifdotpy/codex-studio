@@ -293,3 +293,25 @@
   font-size: 10px;
   margin: 0;
 }
+
+/* Delivery metadata uses the existing message gap, never the bubble's size. */
+.ai-conversation .message.user .message-delivery-heading,
+.ai-conversation .message.user .message-delivery-inline {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: max-content;
+  max-width: min(680px, calc(100vw - 48px));
+  height: 24px;
+  margin: 0;
+  line-height: 24px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.ai-conversation
+  .message.user
+  .message-delivery-heading
+  .message-delivery-status {
+  font-size: inherit;
+  line-height: inherit;
+}
