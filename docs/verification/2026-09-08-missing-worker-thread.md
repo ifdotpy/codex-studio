@@ -58,7 +58,7 @@ All 108 checks passed:
 The source correction does not certify recovery of the reported build.
 No live message, build command, worker replacement, or monitor cancellation was
 submitted. Live notification code differs from the reviewed replacement versions.
-No live method was replaced without review, and the backend was not restarted.
+At the initial inspection, no live method was replaced without review, and the backend was not restarted.
 At 2026-09-08 07:07 UTC, the existing runtime's `prepare` method successfully
 resumed this worker's exact stored thread. A subsequent native `thread/read`
 returned `idle`. The loaded cache contained the worker. Its recorded status
@@ -72,3 +72,31 @@ A separate baseline run at `f215fd0` found one existing failure among 17
 `BASE_PREPARE` fingerprint. This patch changes neither `prepare_locked` nor
 that installer. The other 16 baseline checks passed. The version guard was
 not relaxed to apply unreviewed live code.
+
+
+## Live update
+
+The source mismatch was resolved by comparing live bytecode with Git history.
+The notification method matched `4bcf0b03d2d57ebf2d009de4db6910fbcd051377`.
+The other inspected methods matched `d1bd9b225173862d199f602bc875e95ed7cebeb9`.
+The dedicated installer preserves that notification method and adds the unload
+branch. It replaces `start_error` and `prepared_result` with the reviewed fixes.
+Existing pipe readers retain their old class. The installer converts only their
+exact structured missing-thread rejection to the typed error.
+
+The installer passed 13 isolated checks against those exact historical methods.
+These include the eight cache regressions, unchanged normal turn delivery,
+connection preservation, repeated installation, and rejection of unknown code.
+
+At 2026-09-08T07:21:06.166203+00:00, the installer returned `applied`
+for PID `35212`. All three native connection identities stayed unchanged.
+Read-back fingerprints matched all three replacements:
+
+- `notification`: `36ade05c0707f4731bf0f7d56b93b6aaebb828453a80af7354bbd8e02dac057d`
+- `start_error`: `12796feccec1f82553e3e32dc4da0abb7cbb6d3c65d6e427c3d5f5b76a7e8910`
+- `prepared_result`: `7e2627faea1a26a8980d0fcf572822ac3df57e842a829971b6be2a58b4618649`
+
+The existing native worker thread remained `idle` and loaded. Its Studio record
+still represents the previous failed delivery; no new turn or input was sent.
+The old send was not retried. This completes the live cache-fix deployment.
+The original unload trigger remains unknown, so the incident is not closed.
