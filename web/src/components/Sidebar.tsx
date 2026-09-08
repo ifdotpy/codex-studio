@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { api, errorText, save, saved } from "../api";
 import "./sidebar-projects.css";
+import { useSidebarOrder } from "./useSidebarOrder";
 import {
   busy,
   complaintNeedsUserResponse,
@@ -58,6 +59,11 @@ export default function Sidebar(p: Props) {
     [name, setName] = useState(""),
     [archive, setArchive] = useState(false),
     [projectsOpen, setProjectsOpen] = useState(true);
+  const sorting = useSidebarOrder(
+    `codex-sidebar-order:${p.data.stateDir}`,
+    p.notify,
+  );
+  const [organizing, setOrganizing] = useState<string | null>(null);
   const projectKey = `codex-project-tree:${p.data.stateDir}`;
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
     saved(projectKey, {}),
@@ -71,11 +77,15 @@ export default function Sidebar(p: Props) {
     save(projectKey, next);
   };
   const organize = async (id: string, data: Record<string, unknown>) => {
+    if (organizing) return;
+    setOrganizing(id);
     try {
       await api("/api/organization", { id, ...data });
       await p.refresh?.();
     } catch (error) {
       p.notify?.(errorText(error));
+    } finally {
+      setOrganizing(null);
     }
   };
   const agents = p.data.threads.filter(
@@ -93,18 +103,21 @@ export default function Sidebar(p: Props) {
       }
     }
   }, [p.opened]);
-  const filtered = agents
+  const chatGroup = (a: Agent) =>
+    JSON.stringify(["chats", a.cwd, !!a.pinned, !!a.archived]);
+  const orderedAgents = [...agents].sort(
+    (a, b) =>
+      Number(!!b.pinned) - Number(!!a.pinned) ||
+      sorting.rank(chatGroup(a), a.id) - sorting.rank(chatGroup(b), b.id) ||
+      (("updated" in b ? b.updated : b.created) || 0) -
+        (("updated" in a ? a.updated : a.created) || 0),
+  );
+  const filtered = orderedAgents
     .filter((row) => !!row.archived === archive)
     .filter((a) =>
-      `${a.name} ${(a as Agent).cwd || ""} ${(a as Agent).project || ""} ${a.tail || ""}`
+      `${a.name} ${a.cwd || ""} ${a.project || ""} ${a.tail || ""}`
         .toLowerCase()
         .includes(query.toLowerCase()),
-    )
-    .sort(
-      (a, b) =>
-        Number(!!(b as Agent).pinned) - Number(!!(a as Agent).pinned) ||
-        (("updated" in b ? b.updated : b.created) || 0) -
-          (("updated" in a ? a.updated : a.created) || 0),
     );
   const rename = async (e: React.FormEvent, id: string) => {
     e.preventDefault();
@@ -133,7 +146,7 @@ export default function Sidebar(p: Props) {
       registered: true,
       hasChats: agents.some((a) => a.cwd === project.path),
     });
-  for (const a of filtered as Agent[]) {
+  for (const a of agents) {
     const path = a.cwd || "";
     if (!groupMap.has(path))
       groupMap.set(path, {
@@ -143,18 +156,19 @@ export default function Sidebar(p: Props) {
         registered: false,
         hasChats: true,
       });
-    groupMap.get(path)!.chats.push(a);
   }
-  const projectGroups = [...groupMap.values()]
-    .filter(
-      (group) =>
-        !query ||
-        group.chats.length ||
-        `${group.path} ${group.name}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-    )
-    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const a of filtered) groupMap.get(a.cwd || "")!.chats.push(a);
+  const allProjectGroups = [...groupMap.values()].sort(
+    (a, b) =>
+      sorting.rank("projects", a.path) - sorting.rank("projects", b.path) ||
+      a.name.localeCompare(b.name),
+  );
+  const projectGroups = allProjectGroups.filter(
+    (group) =>
+      !query ||
+      group.chats.length ||
+      `${group.path} ${group.name}`.toLowerCase().includes(query.toLowerCase()),
+  );
   const renderRow = (row: Agent) => {
     const a = row;
     return (
@@ -163,6 +177,15 @@ export default function Sidebar(p: Props) {
         key={row.id}
       >
         <UnstyledButton
+          {...sorting.bindings(
+            chatGroup(row),
+            row.id,
+            orderedAgents
+              .filter((a) => chatGroup(a) === chatGroup(row))
+              .map((a) => a.id),
+          )}
+          title={row.name}
+          aria-description="Drag to reorder. Alt + Up or Down moves this chat."
           className="chat-row"
           data-chat={row.id}
           onClick={() => p.open(row.id)}
@@ -174,10 +197,23 @@ export default function Sidebar(p: Props) {
               {row.name}
             </strong>
           </span>
-          <span className="row-meta">
-            {a && busy.has(a.status) && <span className="dot running" />}
-          </span>
+          {busy.has(a.status) && (
+            <span className="row-meta">
+              <span className="dot running" />
+            </span>
+          )}
         </UnstyledButton>
+        {renaming !== row.id && (
+          <ActionIcon
+            className="row-pin-action"
+            aria-label={`${row.pinned ? "Unpin" : "Pin"} ${row.name}`}
+            title={row.pinned ? "Unpin chat" : "Pin chat"}
+            disabled={organizing === row.id}
+            onClick={() => void organize(row.id, { pinned: !row.pinned })}
+          >
+            {row.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+          </ActionIcon>
+        )}
         {renaming === row.id ? (
           <form
             className="inline-rename"
@@ -269,6 +305,9 @@ export default function Sidebar(p: Props) {
   };
   const content = (
     <aside id="sidebar" aria-label="Conversations">
+      <span className="sr-only" role="status">
+        {sorting.announcement}
+      </span>
       <div className="sidebar-header">
         <a className="brand" href="/">
           <span className="brand-name">
@@ -351,6 +390,12 @@ export default function Sidebar(p: Props) {
               >
                 <div className="project-tree-heading">
                   <UnstyledButton
+                    {...sorting.bindings(
+                      "projects",
+                      group.path,
+                      allProjectGroups.map((item) => item.path),
+                    )}
+                    aria-description="Drag to reorder. Alt + Up or Down moves this project."
                     className="project-tree-toggle"
                     title={group.path}
                     aria-expanded={!isCollapsed}

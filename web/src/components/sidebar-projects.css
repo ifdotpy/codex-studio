@@ -132,3 +132,119 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Titles own the row until pointer or keyboard interaction reveals controls. */
+#sidebar .project-chats .chat-row {
+  padding-right: 8px;
+}
+#sidebar .project-chats .row-actions,
+#sidebar .row-pin-action {
+  position: absolute;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  opacity: 0;
+  pointer-events: none;
+}
+#sidebar .row-pin-action {
+  right: 31px;
+}
+#sidebar .project-chats .row-actions {
+  right: 3px;
+}
+#sidebar
+  .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
+  .chat-row {
+  padding-right: 62px;
+}
+#sidebar
+  .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
+  :is(.row-actions, .row-pin-action) {
+  opacity: 1;
+  pointer-events: auto;
+}
+.chat-pin {
+  margin-right: 5px;
+  vertical-align: -1px;
+  color: var(--muted);
+}
+#sidebar .project-tree-heading {
+  position: relative;
+}
+#sidebar .project-tree-action {
+  position: absolute;
+  right: 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+#sidebar .project-tree-action:has(+ .project-tree-action) {
+  right: 28px;
+}
+#sidebar
+  .project-tree-heading:is(
+    :hover,
+    :has(:focus-visible),
+    :has(.project-tree-action[aria-expanded="true"])
+  )
+  .project-tree-toggle {
+  padding-right: 28px;
+}
+#sidebar
+  .project-tree-heading:has(.project-tree-action + .project-tree-action):is(
+    :hover,
+    :has(:focus-visible),
+    :has(.project-tree-action[aria-expanded="true"])
+  )
+  .project-tree-toggle {
+  padding-right: 54px;
+}
+#sidebar
+  .project-tree-heading:is(
+    :hover,
+    :has(:focus-visible),
+    :has(.project-tree-action[aria-expanded="true"])
+  )
+  .project-tree-action {
+  opacity: 1;
+  pointer-events: auto;
+}
+#sidebar [draggable="true"] {
+  position: relative;
+}
+#sidebar [data-drop-edge]::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--mantine-primary-color-filled);
+  pointer-events: none;
+}
+#sidebar [data-drop-edge="before"]::after {
+  top: 0;
+}
+#sidebar [data-drop-edge="after"]::after {
+  bottom: 0;
+}
+@media (hover: none), (max-width: 760px) {
+  #sidebar .row-pin-action {
+    display: none;
+  }
+  #sidebar .project-chats .chat-row,
+  #sidebar
+    .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
+    .chat-row {
+    padding-right: 46px;
+  }
+  #sidebar .project-chats .row-actions,
+  #sidebar .project-tree-action {
+    opacity: 1;
+    pointer-events: auto;
+    width: 40px;
+    height: 40px;
+  }
+  #sidebar .project-tree-toggle {
+    padding-right: 42px;
+  }
+}

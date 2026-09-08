@@ -159,6 +159,144 @@ try {
     await group("litos").getByText("No chats", { exact: true }).count(),
     1,
   );
+  const projectOrder = () =>
+    page
+      .locator(".sidebar-project")
+      .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath));
+  const chatOrder = () =>
+    group("assistant")
+      .locator("[data-chat]")
+      .evaluateAll((rows) => rows.map((row) => row.dataset.chat));
+  const beforeProjects = await projectOrder();
+  await group("litos")
+    .locator(".project-tree-toggle")
+    .dragTo(group("assistant").locator(".project-tree-toggle"), {
+      targetPosition: { x: 45, y: 3 },
+    });
+  const movedProjects = await projectOrder();
+  assert.ok(
+    movedProjects.indexOf(folders.litos) <
+      movedProjects.indexOf(folders.assistant),
+  );
+  assert.notDeepEqual(movedProjects, beforeProjects);
+  const beforeChats = await chatOrder();
+  const chatButton = (id) => page.locator(`[data-chat="${id}"]`);
+  await chatButton(beforeChats.at(-1)).dragTo(chatButton(beforeChats[0]), {
+    targetPosition: { x: 45, y: 3 },
+  });
+  assert.equal(
+    (await chatOrder())[0],
+    beforeChats.at(-1),
+    "Chat drag persists visual order",
+  );
+  const pinnedId = beforeChats[3];
+  const pinnedName = (await state()).find((a) => a.id === pinnedId).name;
+  await chatButton(pinnedId).hover();
+  await page
+    .getByRole("button", { name: `Pin ${pinnedName}`, exact: true })
+    .click();
+  await waitFor(
+    async () => (await state()).find((a) => a.id === pinnedId).pinned,
+  );
+  await page.waitForFunction(
+    (id) =>
+      document.querySelector(
+        `.sidebar-project[data-project-path="${CSS.escape(id.path)}"] [data-chat]`,
+      )?.dataset.chat === id.chat,
+    { path: folders.assistant, chat: pinnedId },
+  );
+  assert.equal(
+    (await chatOrder())[0],
+    pinnedId,
+    "Pins precede manually ordered chats",
+  );
+  const row = chatButton(pinnedId).locator("..");
+  await page.locator("#chat-search").focus();
+  await page.mouse.move(1100, 100);
+  const resting = await row.locator(".row-copy").boundingBox();
+  assert.equal(
+    await row
+      .locator(".row-actions")
+      .evaluate((el) => getComputedStyle(el).opacity),
+    "0",
+  );
+  await chatButton(pinnedId).hover();
+  const hovering = await row.locator(".row-copy").boundingBox();
+  assert.ok(
+    resting.width >= hovering.width + 40,
+    "Hidden controls return title space",
+  );
+  await page.mouse.move(1100, 100);
+  assert.equal(
+    await group("assistant")
+      .locator(".project-tree-action")
+      .evaluate((el) => getComputedStyle(el).opacity),
+    "0",
+    "Expanded projects hide actions without hover",
+  );
+  await page.screenshot({
+    path: join(root, "projects-pinned.png"),
+    animations: "disabled",
+  });
+  const beforeKeyboard = await chatOrder();
+  const keyboardId = beforeKeyboard[2];
+  await chatButton(keyboardId).focus();
+  await chatButton(keyboardId).press("Alt+ArrowUp");
+  assert.equal(
+    (await chatOrder())[1],
+    keyboardId,
+    "Keyboard reorder stays below pins",
+  );
+  const beforeFailure = await chatOrder();
+  await page.evaluate(() => {
+    window.originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key.startsWith("codex-sidebar-order:"))
+        throw new Error("Storage full fixture");
+      return window.originalSetItem.call(this, key, value);
+    };
+  });
+  await chatButton(keyboardId).press("Alt+ArrowDown");
+  assert.deepEqual(
+    await chatOrder(),
+    beforeFailure,
+    "Failed persistence does not report a saved reorder",
+  );
+  await page
+    .getByText(/Could not save sidebar order:.*Storage full fixture/)
+    .waitFor();
+  await page.evaluate(() => {
+    Storage.prototype.setItem = window.originalSetItem;
+  });
+  const savedChatOrder = await chatOrder();
+  // Cross-project drags cannot change an agent's working directory.
+  await chatButton(keyboardId).dragTo(
+    group("litos").locator(".project-tree-toggle"),
+  );
+  assert.equal(
+    (await state()).find((a) => a.id === keyboardId).cwd,
+    folders.assistant,
+  );
+  await page.reload();
+  await group("assistant").waitFor();
+  assert.deepEqual(
+    await projectOrder(),
+    movedProjects,
+    "Project order survives reload",
+  );
+  await group("assistant").getByText("Show more", { exact: true }).click();
+  assert.deepEqual(
+    await chatOrder(),
+    savedChatOrder,
+    "Chat order and pin survive reload",
+  );
+  await chatButton(pinnedId).hover();
+  await page
+    .getByRole("button", { name: `Unpin ${pinnedName}`, exact: true })
+    .click();
+  await waitFor(
+    async () => !(await state()).find((a) => a.id === pinnedId).pinned,
+  );
   await group("assistant").locator(".project-tree-toggle").click();
   assert.equal(await group("assistant").locator("[data-chat]").count(), 0);
   await page.reload();
@@ -166,6 +304,7 @@ try {
   assert.equal(await group("assistant").locator("[data-chat]").count(), 0);
   await page.getByLabel("Search chats").fill("Review component 2");
   await page.locator(`[data-chat="${created[2].id}"]`).click();
+  await group("litos").locator(".project-tree-heading").hover();
   await page
     .getByRole("button", { name: "New chat in litos", exact: true })
     .click();
