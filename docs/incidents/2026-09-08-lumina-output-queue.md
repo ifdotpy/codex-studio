@@ -45,5 +45,22 @@ The lead then reported `running`, no error, and native turn
 The recovery message requires checking existing processes and artifacts before
 repeating uncertain commands. It requests bounded output until deployment.
 
-At this record's creation, live code activation awaits the macOS administrator
-dialog. Recovery is observed; permanent live deployment is not yet verified.
+Live activation completed at 12:41 UTC on 2026-09-08. The version guard first
+rejected the update because the live notification handler included earlier
+thread-cache and broadcast fixes. The exact source was reconstructed and its
+code fingerprint matched before applying the output analytics change. Both
+analytics regressions passed against that exact replacement method.
+
+The running process then passed an isolated queue check: its installed enqueue
+method placed 5000 fragments into 40 entries, preserving all text and samples.
+This check used a separate in-memory queue, not an agent command.
+A real Lumina `account/read` returned in 3.4 ms. All three account processes
+retained their process IDs, had empty callback queues, and reported no transport
+error. No agents or account connections were restarted for activation.
+
+Installed enqueue fingerprint:
+`355ebeb011f6194bf05e24b84debb5fcd22bd6dd40d1fc23bd9620e470faf748`.
+Installed live notification fingerprint:
+`ce51418098473ba06f21a515d7f42d9990c539c770d4d5c8b7349ece82de8af5`.
+The live notification method retains the existing server version's other behavior;
+its fingerprint is not a claim that every newer source change is deployed.
