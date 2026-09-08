@@ -227,6 +227,10 @@ class PreparationPending(ResponseTimeout):
         self.future = future
 
 
+class SubmissionRejected(RuntimeError):
+    """No bytes from this request reached the native process."""
+
+
 class SubmissionUnknown(ResponseTimeout):
     def __init__(self, submitted, error):
         super().__init__(f"{submitted[1]} submission failed; outcome unknown: {error}")
@@ -234,6 +238,7 @@ class SubmissionUnknown(ResponseTimeout):
 
 
 class AppServer:
+    WRITE_TIMEOUT = 5
     CALLBACK_QUEUE_LIMIT = 4096
     CLOCK_QUEUE_LIMIT = 128
 
@@ -279,11 +284,42 @@ class AppServer:
             raise
 
     def write(self, value):
-        with self.write_lock:
+        import select
+        deadline = time.monotonic() + self.WRITE_TIMEOUT
+        if not self.write_lock.acquire(timeout=self.WRITE_TIMEOUT):
+            raise SubmissionRejected("Codex input is busy; request was not submitted")
+        try:
             if self.closed or getattr(self, "transport_error", None) or self.proc.poll() is not None:
                 raise RuntimeError("Codex app-server is offline")
-            self.proc.stdin.write(json.dumps(value) + "\n")
-            self.proc.stdin.flush()
+            text = json.dumps(value) + "\n"
+            try:
+                fd = self.proc.stdin.fileno()
+            except (AttributeError, OSError):
+                # In-memory protocol fixtures have no operating-system pipe.
+                self.proc.stdin.write(text)
+                self.proc.stdin.flush()
+                return
+            os.set_blocking(fd, False)
+            remaining = memoryview(text.encode("utf-8"))
+            try:
+                while remaining:
+                    left = deadline - time.monotonic()
+                    if left <= 0 or not select.select([], [fd], [], left)[1]:
+                        raise TimeoutError("Native input pipe did not drain")
+                    try:
+                        written = os.write(fd, remaining)
+                    except (BlockingIOError, InterruptedError):
+                        continue
+                    if written <= 0:
+                        raise BrokenPipeError("Native input pipe closed")
+                    remaining = remaining[written:]
+            except (OSError, TimeoutError) as cause:
+                # A partial JSON frame cannot share this stream with another call.
+                error = ResponseTimeout(f"Codex input write failed; outcome unknown: {cause}")
+                self.fail_transport(error)
+                raise error from cause
+        finally:
+            self.write_lock.release()
 
     def call(self, method, params, timeout=60):
         return self.wait(self.submit(method, params), timeout)
@@ -297,7 +333,7 @@ class AppServer:
         try:
             self.write({"id": key, "method": method, "params": params})
         except Exception as error:
-            if isinstance(error, RuntimeError) and str(error) == "Codex app-server is offline":
+            if isinstance(error, SubmissionRejected) or (isinstance(error, RuntimeError) and str(error) == "Codex app-server is offline"):
                 with self.lock:
                     self.pending.pop(key, None)
                 raise
@@ -1355,6 +1391,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             old = db.execute(
                 "SELECT * FROM runtime_events WHERE id=?", (message_id,)
             ).fetchone()
+            retry_not_submitted = False
             if old:
                 meta = db.execute(
                     "SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)
@@ -1369,11 +1406,24 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     or previous.get("delivery", "queue") != delivery
                 ):
                     raise ValueError("This message id has different content")
-                return {
-                    "id": message_id,
-                    "status": old["status"],
-                    "error": old["error"],
-                }
+                retry_not_submitted = (
+                    delivery == "steer"
+                    and old["status"] == "failed"
+                    and previous.get("notSubmitted") is True
+                )
+                if retry_not_submitted:
+                    prior_native = previous.get("native") or {}
+                    if (prior_native.get("threadId") != a.get("threadId")
+                            or prior_native.get("turnId") != a.get("turnId")
+                            or prior_native.get("epoch") != a.get("epoch")
+                            or prior_native.get("accountKey", "default") != a.get("accountKey", "default")):
+                        raise ValueError("This steer belongs to an earlier turn")
+                if not retry_not_submitted:
+                    return {
+                        "id": message_id,
+                        "status": old["status"],
+                        "error": old["error"],
+                    }
             if delivery == "steer" and (
                 not a.get("turnId") or not a.get("inFlight") or not a["autoWake"]
             ):
@@ -1397,20 +1447,22 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 self.put(db, "agents", a)
             if not a["autoWake"]:
                 raise ValueError("Agent is stopped; no message was queued")
-            db.execute(
-                "INSERT INTO runtime_event_meta VALUES (?,?)",
-                (
-                    message_id,
-                    json.dumps(
-                        {
-                            "assets": assets,
-                            "delivery": delivery,
-                            "acceptedAt": time.time(),
-                        }
-                    ),
-                ),
-            )
             if delivery == "queue":
+                if retry_not_submitted:
+                    raise ValueError("Only a steer can retry an unsent delivery")
+                db.execute(
+                    "INSERT INTO runtime_event_meta VALUES (?,?)",
+                    (
+                        message_id,
+                        json.dumps(
+                            {
+                                "assets": assets,
+                                "delivery": delivery,
+                                "acceptedAt": time.time(),
+                            }
+                        ),
+                    ),
+                )
                 return {
                     "id": self.enqueue(
                         db,
@@ -1421,25 +1473,47 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     ),
                     "status": "queued",
                 }
-            db.execute(
-                "INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    message_id,
-                    key,
-                    "user" if manual else "followup",
-                    text.strip(),
-                    "dispatching",
-                    time.time(),
-                    a["epoch"],
-                    a["turnId"],
-                    None,
-                ),
-            )
-            meta = json.loads(
+            if retry_not_submitted:
                 db.execute(
-                    "SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)
-                ).fetchone()[0]
-            )
+                    "UPDATE runtime_events SET status='dispatching',epoch=?,turn_id=?,error=NULL "
+                    "WHERE id=? AND agent=? AND status='failed'",
+                    (a["epoch"], a["turnId"], message_id, key),
+                )
+                meta = previous
+                meta.pop("notSubmitted", None)
+            else:
+                db.execute(
+                    "INSERT INTO runtime_event_meta VALUES (?,?)",
+                    (
+                        message_id,
+                        json.dumps(
+                            {
+                                "assets": assets,
+                                "delivery": delivery,
+                                "acceptedAt": time.time(),
+                            }
+                        ),
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        message_id,
+                        key,
+                        "user" if manual else "followup",
+                        text.strip(),
+                        "dispatching",
+                        time.time(),
+                        a["epoch"],
+                        a["turnId"],
+                        None,
+                    ),
+                )
+                meta = json.loads(
+                    db.execute(
+                        "SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)
+                    ).fetchone()[0]
+                )
             inputs = self.message_inputs(
                 key,
                 append_message_clocks(
@@ -1454,14 +1528,23 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                          "threadId": a["threadId"], "turnId": a["turnId"]}
             meta["native"] = operation
             db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?", (json.dumps(meta), message_id))
-            self.item(db, key, message_id, "user", text, turnId=a["turnId"], delivery="steer",
-                      assets=[self.asset_view(self.asset_record(v)) for v in assets])
+            if not retry_not_submitted:
+                self.item(db, key, message_id, "user", text, turnId=a["turnId"], delivery="steer",
+                          assets=[self.asset_view(self.asset_record(v)) for v in assets])
             # Keep the exact receipt even if writing the request loses its acknowledgement.
             db.commit()
             try:
                 submitted = self.submit_reserved(server,
                     "turn/steer", {"threadId": a["threadId"], "expectedTurnId": a["turnId"],
                                    "clientUserMessageId": message_id, "input": inputs})
+            except SubmissionRejected as error:
+                meta["notSubmitted"] = True
+                db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?",
+                           (json.dumps(meta), message_id))
+                db.execute("UPDATE runtime_events SET status='failed',error=? WHERE id=?",
+                           (str(error), message_id))
+                db.commit()
+                raise
             except Exception as error:
                 db.execute("UPDATE runtime_events SET status='uncertain',error=? WHERE id=?",
                            (str(error), message_id))
@@ -1483,7 +1566,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
     def delivery_receipt(self, message_id):
         with self.db() as db:
             event = db.execute("SELECT status,error FROM runtime_events WHERE id=?", (message_id,)).fetchone()
-            return {"id": message_id, "status": event["status"], "error": event["error"]}
+            return {"id": message_id, "status": event["status"], "error": event["error"]} if event else None
 
     def steer_accepted(self, message_id, operation, result):
         if result.get("turnId") != operation["turnId"]:
@@ -1653,8 +1736,23 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             directory = str(Path(repo) / ".worktrees" / "codex-agents" / a["id"])
             project_directory = str(Path(directory) / relative_project)
             branch = "codex-agent/" + a["id"]
-            subprocess.run(["git", "-C", repo, "worktree", "add", "-b", branch, directory, "HEAD"],
-                           check=True, capture_output=True, text=True, timeout=60)
+            # Git can commit the worktree before SQLite stores its identity.
+            # Adopt only the exact registered path and branch; preserve its files.
+            listing = subprocess.check_output(["git", "-C", repo, "worktree", "list", "--porcelain", "-z"],
+                                              timeout=30).decode("utf-8", errors="surrogateescape")
+            registered = None
+            for block in listing.split("\0\0"):
+                fields = dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
+                if fields.get("worktree") and Path(fields["worktree"]).resolve() == Path(directory).resolve():
+                    registered = fields
+                    break
+            if registered is not None:
+                if (registered.get("branch") != "refs/heads/" + branch
+                        or not Path(project_directory).is_dir()):
+                    raise ValueError("Worker worktree identity differs from its reservation; inspect the existing directory")
+            else:
+                subprocess.run(["git", "-C", repo, "worktree", "add", "-b", branch, directory, "HEAD"],
+                               check=True, capture_output=True, text=True, timeout=60)
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
                 latest.update(cwd=project_directory, branch=branch, worktreeReady=True)
@@ -1724,6 +1822,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                          sandbox=result.get("sandbox"), approvalPolicy=result.get("approvalPolicy"),
                          profile=result.get("activePermissionProfile"))
                 self.put(db, "agents", a)
+                db.commit()  # The cache must never outlive a failed thread-identity commit.
                 self.loaded.add(a["id"])
             with self.lock:
                 if not completion.done():
@@ -1928,7 +2027,11 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     self.start_result, a["id"], dispatch_attempt, future
                 ) if not self.closed else None)
                 return
-            self.start_accepted(a["id"], dispatch_attempt, result)
+            try:
+                self.start_accepted(a["id"], dispatch_attempt, result)
+            except Exception as error:
+                # A local failure cannot undo a successful native response.
+                self.start_error(a["id"], attempt_id, error, unknown=True)
         except PreparationPending as error:
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
@@ -1980,6 +2083,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             if not self.operation_current(a, attempt, epoch=False) or a["threadId"] != attempt["threadId"]:
                 return
             turn = result["turn"]["id"]
+            if not isinstance(turn, str) or not turn:
+                raise ValueError("Native response has no turn identity; outcome unknown")
             if not self.bind_start(db, a, attempt["id"], turn, historical=attempt):
                 return
             if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
@@ -1996,9 +2101,14 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
 
     def start_result(self, agent_id, attempt, future):
         try:
-            self.start_accepted(agent_id, attempt, future.result())
+            result = future.result()
         except Exception as error:
             self.start_error(agent_id, attempt["id"], error, unknown="outcome unknown" in str(error))
+            return
+        try:
+            self.start_accepted(agent_id, attempt, result)
+        except Exception as error:
+            self.start_error(agent_id, attempt["id"], error, unknown=True)
 
     def start_error(self, agent_id, attempt_id, error, *, unknown=False):
         with self.lock, self.db() as db:
@@ -2024,10 +2134,10 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     self.parent_event(db, a, "start-failed:" + (attempt["events"][0] if attempt["events"] else attempt["id"]), str(error))
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
-                status = "uncertain" if attempt.get("submitted") else (
-                    "reserved" if unknown else "failed" if current_epoch else "cancelled")
+                status = ("uncertain" if attempt.get("submitted") else "reserved") if unknown else (
+                    "failed" if current_epoch else "cancelled")
                 db.execute("UPDATE runtime_events SET status=?, error=? WHERE id=? "
-                           "AND status IN ('pending','reserved','dispatching')", (status, str(error), event_id))
+                           "AND status IN ('pending','reserved','dispatching','uncertain')", (status, str(error), event_id))
         self.changed.set()
 
     def parent_event(self, db, a, event_id, text):
@@ -3505,9 +3615,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             if not row:
                 raise ValueError("Unknown request")
             r = json.loads(row[0])
-            if is_question(r) and r.get("answerSignature"):
+            if r.get("answerSignature"):
                 if r["answerSignature"] != answer_signature(data):
-                    raise ValueError("This question already has a different answer")
+                    raise ValueError("This request already has a different answer")
                 if r["status"] == "answered":
                     return {"status": "answered", "replayed": True}
                 raise ValueError("Answer delivery is uncertain. Do not resend; inspect the agent conversation")
@@ -3589,18 +3699,22 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 result = {"action": decision, "content": data.get("content") if decision == "accept" else None}
             else:
                 raise ValueError("Unsupported request type; stop the agent and use a supported Codex client")
-            if is_question(r):
-                record_answer(r, data)
-                r["status"] = "answering"
-                self.put(db, "requests", r)
-                db.commit()  # A lost pipe write cannot turn this back into a retryable question.
+            unanswered = dict(r)
+            record_answer(r, data)
+            r["status"] = "answering"
+            self.put(db, "requests", r)
+            db.commit()  # A lost reply must not make an approval or answer retryable.
             try:
                 self.reply({"id": r["rpcId"], "result": result}, r.get("accountKey", "default"), r.get("connectionId"))
+            except SubmissionRejected:
+                # This typed failure proves that no answer bytes were sent.
+                self.put(db, "requests", unanswered)
+                db.commit()
+                raise
             except Exception:
-                if is_question(r):
-                    r.update(status="uncertain", answerError="Answer delivery could not be confirmed. Inspect the agent conversation before taking further action.")
-                    self.put(db, "requests", r)
-                    db.commit()
+                r.update(status="uncertain", answerError="Answer delivery could not be confirmed. Inspect the agent conversation before taking further action.")
+                self.put(db, "requests", r)
+                db.commit()
                 raise
             r["status"] = "answered"
             self.put(db, "requests", r)

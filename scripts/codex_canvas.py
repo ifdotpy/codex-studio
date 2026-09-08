@@ -386,6 +386,26 @@ class Canvas:
             rows = db.execute("SELECT * FROM messages WHERE room=? ORDER BY at DESC LIMIT 200", (room,)).fetchall()
         return [{**dict(r), "deliveries": json.loads(r["deliveries"])} for r in reversed(rows)]
 
+    @staticmethod
+    def _delivery_status(receipt):
+        if not isinstance(receipt, dict):
+            return "unknown: Runtime returned an invalid delivery receipt."
+        status = receipt.get("status")
+        if status in {"queued", "pending", "reserved", "dispatching", "delivered"}:
+            return "queued"
+        if status in {"failed", "cancelled"}:
+            return f"{status}: {receipt.get('error') or status}"
+        return f"unknown: {receipt.get('error') or status or 'Runtime returned no delivery status.'}"
+
+    def _managed_delivery(self, member, message, delivery_id):
+        try:
+            receipt = self.runtime.delivery_receipt(delivery_id)
+        except Exception as error:
+            return f"unknown: Delivery receipt could not be read: {error}"
+        if receipt is None:
+            receipt = self.runtime.send(member, message, delivery_id)
+        return self._delivery_status(receipt)
+
     def post(self, room, text, key, author="user", notify=True):
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
             raise ValueError("Use a message with 1 to 12000 characters.")
@@ -397,23 +417,29 @@ class Canvas:
             if previous:
                 if (previous["room"], previous["author"], previous["text"]) != (room, author, text.strip()):
                     raise ValueError("The request identity already has different content.")
-                return {**dict(previous), "deliveries": json.loads(previous["deliveries"])}
-            threads = self.threads()
-            group = next((g for g in self.chats() if g["id"] == room), None)
-            if group:
-                members = group["members"]
-            elif any(t["id"] == room for t in threads):
-                members = [room]
+                deliveries = json.loads(previous["deliveries"])
+                row = {**dict(previous), "deliveries": deliveries}
+                if not any(status == "pending" for status in deliveries.values()):
+                    return row
+                group = next((g for g in self.chats() if g["id"] == room), None)
+                db.commit()
             else:
-                raise ValueError("This chat is no longer available.")
-            if author != "user" and author not in members:
-                raise ValueError("The author is not a member of this group.")
-            deliveries = {m: "pending" for m in members if notify and m != author}
-            row = {"id": key, "room": room, "author": author, "text": text.strip(), "at": time.time(), "deliveries": deliveries}
-            db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (key, room, author, row["text"], row["at"], json.dumps(deliveries)))
-            db.commit()
-            # Persist before mailbox writes. A repeated HTTP request cannot resend work.
-            # A process death during dispatch leaves a visible 'pending' result for review.
+                threads = self.threads()
+                group = next((g for g in self.chats() if g["id"] == room), None)
+                if group:
+                    members = group["members"]
+                elif any(t["id"] == room for t in threads):
+                    members = [room]
+                else:
+                    raise ValueError("This chat is no longer available.")
+                if author != "user" and author not in members:
+                    raise ValueError("The author is not a member of this group.")
+                deliveries = {m: "pending" for m in members if notify and m != author}
+                row = {"id": key, "room": room, "author": author, "text": text.strip(), "at": time.time(), "deliveries": deliveries}
+                db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (key, room, author, row["text"], row["at"], json.dumps(deliveries)))
+                db.commit()
+                # Persist before mailbox writes. A repeated HTTP request cannot resend work.
+                # A process death during dispatch leaves a visible 'pending' result for recovery.
             message = row["text"]
             if group:
                 command = f"CODEX_AGENTS_STATE_DIR={shlex.quote(str(self.root))} {shlex.quote(str(SCRIPTS / 'codex-chat'))}"
@@ -423,13 +449,19 @@ class Canvas:
                            "Use your CODEX_BOARD_OWNER for authorship. Read peer replies before coordination decisions. "
                            "Posts are shared, but do not automatically start peer turns.")
             for member in deliveries:
+                if deliveries[member] != "pending":
+                    continue
                 try:
                     target = self.thread(member)
                     if not target["canSend"]:
                         raise ValueError("No live mailbox for this agent. The message remains in the shared chat.")
                     if target.get("source") == "managed":
-                        self.runtime.send(member, message, key + ":" + member)
-                        deliveries[member] = "queued"
+                        deliveries[member] = self._managed_delivery(member, message, key + ":" + member)
+                        db.execute("UPDATE messages SET deliveries=? WHERE id=?", (json.dumps(deliveries), key))
+                        db.commit()
+                        continue
+                    if previous:
+                        deliveries[member] = "unknown: Delivery was interrupted before mailbox acknowledgement. Inspect the mailbox before resending."
                         db.execute("UPDATE messages SET deliveries=? WHERE id=?", (json.dumps(deliveries), key))
                         db.commit()
                         continue
@@ -446,6 +478,7 @@ class Canvas:
                     deliveries[member] = "failed: " + str(error)
                 db.execute("UPDATE messages SET deliveries=? WHERE id=?", (json.dumps(deliveries), key))
                 db.commit()
+            row["deliveries"] = deliveries
             return row
 
 

@@ -93,6 +93,12 @@ class SyncStore:
                 value = json.loads(encoded)
                 if not isinstance(value, dict) or not isinstance(new.get('_deleted', False), bool):
                     raise ValueError('Invalid draft')
+                device, session = value.get('device'), value.get('session')
+                if (not isinstance(device, str) or not device
+                        or not isinstance(session, str) or not session
+                        or f'{device}:{session}' != key
+                        or ('id' in value and value.get('id') != key)):
+                    raise ValueError('Draft identity does not match its key')
                 assumed = row.get('assumedMasterState')
                 assumed_payload = None
                 if assumed is not None:

@@ -24,6 +24,7 @@ spec = importlib.util.spec_from_file_location(
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 Runtime, eventually = fixture.Runtime, fixture.eventually
+from codex_native_errors import NativeRpcError
 
 
 class WorkspaceServer(fixture.FakeServer):
@@ -830,7 +831,9 @@ class WorkspaceContract(unittest.TestCase):
                 },
             )
         preview = self.runtime.checkpoint_preview(worker["id"], checkpoint["id"])
-        self.runtime.connect().fork_error = RuntimeError("Provider rejected fork")
+        self.runtime.connect().fork_error = NativeRpcError(
+            {"code": -32000, "message": "Provider rejected fork"}
+        )
         with self.assertRaisesRegex(RuntimeError, "Provider rejected"):
             self.runtime.restore_checkpoint(
                 worker["id"],

@@ -28,6 +28,8 @@ def apply(runtime):
                        'advance_native_status', 'notice', 'error_message', 'account_notices'):
             scope[symbol] = getattr(errors, symbol)
         code = next(c for c in cls.co_consts if isinstance(c, types.CodeType) and c.co_name == name)
+        if 'SubmissionRejected' in code.co_names and 'SubmissionRejected' not in scope:
+            raise RuntimeError('Runtime transport update required; no update applied')
         function = types.FunctionType(code, scope, name, previous.__defaults__)
         function.__kwdefaults__ = previous.__kwdefaults__
         replacements[name] = types.MethodType(function, runtime)

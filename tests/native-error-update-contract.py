@@ -50,6 +50,23 @@ class UpdateContract(unittest.TestCase):
             finally:
                 runtime.close()
 
+    def test_old_transport_cannot_receive_a_partial_runtime_update(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Runtime(Path(temp), fixture.FakeServer)
+            try:
+                method = runtime.send.__func__
+                scope = method.__globals__.copy()
+                scope.pop('SubmissionRejected')
+                old = types.FunctionType(method.__code__, scope, 'send', method.__defaults__)
+                old.__kwdefaults__ = method.__kwdefaults__
+                runtime.send = types.MethodType(old, runtime)
+                before = {name: getattr(runtime, name) for name in BASE}
+                with self.assertRaisesRegex(RuntimeError, 'transport update required'):
+                    apply(runtime)
+                self.assertEqual(before, {name: getattr(runtime, name) for name in BASE})
+            finally:
+                runtime.close()
+
     def test_unknown_method_rejects_before_any_replacement(self):
         with tempfile.TemporaryDirectory() as temp:
             runtime = Runtime(Path(temp), fixture.FakeServer)
