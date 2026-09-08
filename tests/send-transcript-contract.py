@@ -67,6 +67,18 @@ class SendTranscriptContract(unittest.TestCase):
                     stored = json.loads(db.execute("SELECT record FROM runtime_items WHERE id=?", (item["id"],)).fetchone()[0])
                 self.assertEqual(stored["toolStatus"], "running", "Read must not rewrite historical evidence")
 
+    def test_empty_or_malformed_native_content_keeps_history_available(self):
+        from codex_sync import SyncStore
+        for contents in (None, [], {}, "unexpected", [None, 7, {}, {"type": "inputText", "text": None}]):
+            with self.subTest(contents=contents):
+                a, _ = self.tool_fixture(None, native={"contentItems": contents})
+                sync = SyncStore(self.runtime.db, self.runtime.snapshot, self.runtime.transcript)
+                result = sync.pull("transcript:" + a["id"])
+                transcript = json.loads(result["documents"][0]["payload"])
+                item = transcript["items"][-1]
+                self.assertEqual(item["toolStatus"], "interrupted")
+                self.assertEqual(json.loads(item["text"])["contentItems"], contents)
+
     def test_missing_or_ambiguous_tool_receipt_does_not_invent_completion(self):
         a, _ = self.tool_fixture(None)
         self.assertEqual(self.runtime.transcript(a["id"])["items"][-1]["toolStatus"], "interrupted")

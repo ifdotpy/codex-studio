@@ -127,8 +127,10 @@ class RequestMixin:
         if not isinstance(payload, dict) or not isinstance(payload.get("id"), str):
             return
         projected = False
-        for content in payload.get("contentItems", []):
-            if content.get("type") != "inputText":
+        # Native in-progress calls can explicitly carry contentItems=null.
+        contents = payload.get("contentItems")
+        for content in contents if isinstance(contents, list) else []:
+            if not isinstance(content, dict) or content.get("type") != "inputText":
                 continue
             try:
                 value = json.loads(content.get("text", ""))
