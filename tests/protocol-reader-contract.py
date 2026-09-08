@@ -234,6 +234,41 @@ class ReaderContract(unittest.TestCase):
         self.assertTrue(server.join_callbacks(1))
         self.assertEqual(self.records, ["blocked"])
 
+    def test_terminal_output_burst_keeps_connection_and_receipts(self):
+        server, proc = self.start(limit=64)
+        self.block(proc)
+        batches, order = [], []
+        def notification(message):
+            batches.append(message)
+            order.append(message['params']['itemId'])
+        server.notification = notification
+        server.request = lambda message: order.append('request')
+        samples = []
+        for i in range(5000):
+            params = {'threadId': 't', 'turnId': 'turn', 'itemId': 'command', 'delta': f'{i} Привет\n'}
+            samples.append(params)
+            proc.emit({'method': 'item/commandExecution/outputDelta', 'params': params})
+        proc.emit({'method': 'item/tool/call', 'id': 'request'})
+        for item in ['command', 'other']:
+            proc.emit({'method': 'item/commandExecution/outputDelta', 'params': {
+                'threadId': 't', 'turnId': 'turn', 'itemId': item, 'delta': 'tail'}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {'ready': True}})
+        self.assertEqual(server.wait(marker, 2), {'ready': True})
+        self.assertIsNone(proc.poll())
+        self.assertLess(server.callbacks.qsize(), 64)
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        before = batches[:-2]
+        self.assertEqual(''.join(m['params']['delta'] for m in before), ''.join(p['delta'] for p in samples))
+        self.assertEqual([p for m in before for p in m.get('_studioNotificationSamples', [m['params']])], samples)
+        self.assertEqual(order[-3:], ['request', 'command', 'other'])
+        self.assertTrue(all(len(m['params']['delta']) <= 65536 for m in before))
+        self.assertTrue(all(len(m.get('_studioNotificationSamples', [])) <= 128 for m in before))
+        self.assertIsNone(server.transport_error)
+
     def test_queue_saturation_is_explicit_and_preserves_accepted_order(self):
         server, proc = self.start(limit=2)
         self.block(proc)

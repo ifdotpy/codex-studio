@@ -596,6 +596,30 @@ class RuntimeContract(unittest.TestCase):
         item = next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'].endswith(':batch'))
         self.assertEqual(item['text'], ''.join(p['delta'] for p in samples))
 
+    def test_batched_terminal_output_preserves_content_and_notification_analytics(self):
+        from codex_analytics import encoded
+        a = self.lead()
+        eventually(lambda: (self.runtime.agent(a['id']).get('startAttempt') or {}).get('turnId') == a['turnId'])
+        samples = [{'threadId': a['threadId'], 'turnId': a['turnId'], 'itemId': 'batch', 'delta': text}
+                   for text in ['Первый ', 'абзац.\n\n', 'Second paragraph.']]
+        method = 'item/commandExecution/outputDelta'
+        def counters():
+            with self.runtime.db() as db:
+                return tuple(db.execute('SELECT coalesce(sum(count),0),coalesce(sum(bytes),0) FROM analytics_notifications WHERE agent=? AND method=?', (a['id'], method)).fetchone())
+        self.runtime.notification({'method': 'item/started', 'params': {
+            'threadId': a['threadId'], 'turnId': a['turnId'],
+            'item': {'id': 'batch', 'type': 'commandExecution', 'command': 'fixture'}}})
+        before = counters()
+        count = self.runtime.agent(a['id'])['events']
+        self.runtime.notification({'method': method, 'params': {**samples[0], 'delta': ''.join(p['delta'] for p in samples)},
+                                   '_studioNotificationSamples': samples})
+        after = counters()
+        self.assertEqual(after[0] - before[0], len(samples))
+        self.assertEqual(after[1] - before[1], sum(len(encoded(p).encode('utf-8')) for p in samples))
+        self.assertEqual(self.runtime.agent(a['id'])['events'] - count, len(samples))
+        item = next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'].endswith(':batch'))
+        self.assertEqual(json.loads(item['text'])['aggregatedOutput'], ''.join(p['delta'] for p in samples))
+
     def test_transcript_wait_wakes_on_committed_change_and_closes(self):
         a = self.lead()
         # turn/started can arrive before the start response binds the input batch.

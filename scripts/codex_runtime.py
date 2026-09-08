@@ -423,6 +423,30 @@ class AppServer:
         try:
             with self.callback_lock:
                 if not self.dispatch_stopped:
+                    # Compact terminal fragments before admission. Consumer-only
+                    # batching cannot protect a queue whose producer is faster.
+                    if (callback == self.notification and isinstance(message, dict)
+                            and "id" not in message
+                            and message.get("method") == "item/commandExecution/outputDelta"):
+                        params = message.get("params")
+                        if isinstance(params, dict) and isinstance(params.get("delta"), str):
+                            with self.callbacks.mutex:
+                                previous = self.callbacks.queue[-1] if self.callbacks.queue else None
+                                if previous and previous[0] == callback:
+                                    prior = previous[1]
+                                    old = prior.get("params", {}) if isinstance(prior, dict) else {}
+                                    samples = prior.get("_studioNotificationSamples", [old]) if isinstance(prior, dict) else []
+                                    if (isinstance(prior, dict) and "id" not in prior
+                                            and prior.get("method") == message["method"]
+                                            and isinstance(old, dict) and isinstance(old.get("delta"), str)
+                                            and {k: v for k, v in old.items() if k != "delta"}
+                                                == {k: v for k, v in params.items() if k != "delta"}
+                                            and len(samples) < 128
+                                            and len(old["delta"]) + len(params["delta"]) <= 65536):
+                                        self.callbacks.queue[-1] = (callback, {
+                                            **prior, "params": {**old, "delta": old["delta"] + params["delta"]},
+                                            "_studioNotificationSamples": [*samples, params]})
+                                        return
                     self.callbacks.put_nowait((callback, message))
                     return
         except queue.Full:
@@ -2326,7 +2350,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                                "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
                                (item["clientId"], a["id"], operation["epoch"], operation["turnId"]))
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
-            samples = message.get("_studioNotificationSamples") if method == "item/agentMessage/delta" else None
+            samples = message.get("_studioNotificationSamples") if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"} else None
             for sample in samples or [p]:
                 self.analytics_safe(db, self.analytics_event, a, method, sample)
             self.record_task(db, a, method, p, stale)
