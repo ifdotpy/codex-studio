@@ -32,7 +32,7 @@ No failed or uncertain input is automatically replayed. An unload alone does not
 change turn state, delivery receipts, or monitor state.
 
 Native source inspected: OpenAI Codex tag `rust-v0.153.4`, commit
-`042fb41b7c813ac7999105e886b2b7aa715b5081`.
+`3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`.
 In `codex-rs/app-server/src/request_processors/turn_processor.rs`, `load_thread`
 returns the missing-thread rejection when the in-memory lookup fails.
 `turn_start_inner` performs this lookup before it submits the input.
@@ -59,4 +59,16 @@ The source correction does not certify recovery of the reported build.
 No live message, build command, worker replacement, or monitor cancellation was
 submitted. Live notification code differs from the reviewed replacement versions.
 No live method was replaced without review, and the backend was not restarted.
-A live recovery check and evidence for the original unload remain required.
+At 2026-09-08 07:07 UTC, the existing runtime's `prepare` method successfully
+resumed this worker's exact stored thread. A subsequent native `thread/read`
+returned `idle`. The loaded cache contained the worker. Its recorded status
+remained `failed`, `inFlight` remained false, and `turnId` remained null.
+The old failed message was not retried. This verifies history restoration,
+not continuation of the build or deployment of the source correction.
+Evidence for the original unload remains required.
+
+A separate baseline run at `f215fd0` found one existing failure among 17
+`turn-recovery-contract.py` checks: its live-installer test expects an older
+`BASE_PREPARE` fingerprint. This patch changes neither `prepare_locked` nor
+that installer. The other 16 baseline checks passed. The version guard was
+not relaxed to apply unreviewed live code.
