@@ -1,9 +1,9 @@
-"""Cached local CodexBar estimates. Never interpret token estimates as a bill.
+"""Local cost estimates from native Codex profile logs.
 
-CodexBar owns token deltas, duplicate/fork reconciliation, and model pricing:
-https://github.com/steipete/CodexBar/blob/main/docs/codex.md#cost-usage-local-log-scan
-https://github.com/steipete/CodexBar/blob/main/docs/cli.md#cost-json-payload
-No token totals from Runtime are added to the scanner totals.
+The account reader uses the isolated helper in cost-scanner. Its upstream
+parser owns token deltas, duplicate/fork reconciliation, and pricing. The
+legacy CostReader command remains available for compatibility. No Runtime
+token totals are added to a scanner report. Estimates are not invoices.
 """
 
 import copy
@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -141,7 +142,10 @@ def report_fingerprint(data):
 class CostReader:
     """One local scan at a time. GET requests return without waiting for the CLI."""
 
-    def __init__(self, root, executable=None, interval=120, timeout=90, clock=None):
+    def __init__(self, root, executable=None, interval=120, timeout=90, clock=None, *, environment=None, scan_lock=None, command=None):
+        self.environment = dict(environment) if environment is not None else None
+        self.scan_lock = scan_lock
+        self.command = command
         self.path = Path(root) / "local-costs.json"
         self.executable = executable or shutil.which("codexbar")
         if not self.executable:
@@ -156,7 +160,7 @@ class CostReader:
         self.scope = hashlib.sha256(
             (
                 str(
-                    Path(os.environ.get("CODEX_HOME", "~/.codex"))
+                    Path((self.environment or os.environ).get("CODEX_HOME", "~/.codex"))
                     .expanduser()
                     .resolve()
                 )
@@ -215,8 +219,19 @@ class CostReader:
             return {**state, "refreshing": self.busy, "stale": stale}
 
     def _refresh(self):
+        scan_lock = getattr(self, "scan_lock", None)
+        command_factory = getattr(self, "command", None)
+        acquired = False
         try:
-            if not self.executable:
+            if scan_lock is not None:
+                acquired = scan_lock.acquire(timeout=self.timeout)
+                if not acquired:
+                    raise ValueError("Local cost scanner is busy.")
+            with self.lock:
+                if self.closed:
+                    return
+            command = command_factory() if command_factory is not None else None
+            if not command and not self.executable:
                 raise ValueError("Install CodexBar CLI to read local cost estimates.")
             # The cost subcommand is local-only. Never invoke usage/login/cookie APIs.
             with tempfile.TemporaryFile() as output:
@@ -224,7 +239,7 @@ class CostReader:
                     if self.closed:
                         return
                     self.process = subprocess.Popen(
-                        [
+                        command or [
                             self.executable,
                             "cost",
                             "--provider",
@@ -234,6 +249,7 @@ class CostReader:
                         ],
                         stdout=output,
                         stderr=subprocess.DEVNULL,
+                        env=getattr(self, "environment", None),
                     )
                     process = self.process
                 try:
@@ -269,11 +285,13 @@ class CostReader:
                         "sourceFingerprint": fingerprint,
                     }
                     self._save()
-        except (OSError, ValueError, TypeError) as error:
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
             with self.lock:
                 self.state["error"] = str(error)[:300]
                 self.state["checkedAt"] = self.clock()
         finally:
+            if acquired:
+                scan_lock.release()
             with self.lock:
                 self.process = None
                 self.busy = False
@@ -294,3 +312,56 @@ class CostReader:
             self.closed = True
             if self.process and self.process.poll() is None:
                 self.process.terminate()
+
+
+class AccountCostReader:
+    """Account profile logs and caches. No native API or ambient Pi scan."""
+
+    def __init__(self, root, accounts, *, reader_factory=CostReader, command_factory=None):
+        self.root = Path(root) / "account-costs"
+        self.accounts = accounts
+        self.readers = {}
+        self.lock = threading.RLock()
+        self.scan_lock = threading.Lock()
+        self.reader_factory = reader_factory
+        self.command_factory = command_factory or self.command
+        self.closed = False
+
+    def command(self, home, cache):
+        executable = self.root / "bin" / "codex-cost-scanner"
+        builder = Path(__file__).with_name("cost-scanner") / "build.py"
+        result = subprocess.run([sys.executable, str(builder), "--output", str(executable)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                timeout=120, text=True)
+        if result.returncode:
+            raise ValueError("Cannot prepare the local cost scanner.")
+        return [str(executable), "--home", str(home), "--cache", str(cache)]
+
+    def snapshot(self, account_key="default"):
+        account = self.accounts.get(account_key)
+        if account.get("status") != "ready":
+            raise ValueError("This account's local cost history is unavailable.")
+        home = Path(account["home"]).expanduser().resolve()
+        identity = [account_key, account.get("accountId"), str(home)]
+        scope = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        with self.lock:
+            if self.closed:
+                raise ValueError("The local cost reader is closed.")
+            reader = self.readers.get(scope)
+            if reader is None:
+                cache = self.root / scope
+                reader = self.reader_factory(cache, environment={**os.environ, "CODEX_HOME": str(home)},
+                    scan_lock=self.scan_lock, command=lambda: self.command_factory(home, cache / "scanner"))
+                self.readers[scope] = reader
+            value = reader.snapshot()
+        data = value.get("data")
+        if data is not None:
+            data.update(accountId=account.get("accountId"), source="Codex profile logs",
+                        scope="account", note="API-rate estimate", kind="api_estimate")
+        return {**value, "accountKey": account_key}
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+            for reader in self.readers.values():
+                reader.close()

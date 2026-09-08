@@ -69,6 +69,8 @@ let delayWork = false;
 let wrongLimitsAccount = false;
 let discoverCount = 0;
 let limitReads = 0;
+let delayCostWork = false;
+let delayedCosts;
 let snapshotLimits = {};
 const limits = (key) => {
   const codex = {
@@ -176,8 +178,17 @@ const server = createServer(async (req, res) => {
     return json(limits(wrongLimitsAccount && key === "work" ? "default" : key));
   }
   if (url.pathname === "/api/limits/reset") return json({ outcome: "reset" });
-  if (url.pathname === "/api/costs")
-    return json({ data: { todayUSD: 12, last30DaysUSD: 40 } });
+  if (url.pathname === "/api/costs") {
+    const accountKey = url.searchParams.get("account_key") || "default";
+    const todayUSD = { default: 5, work: 12, other: 23 }[accountKey];
+    const reply = () =>
+      json({ accountKey, data: { todayUSD, last30DaysUSD: todayUSD * 3 } });
+    if (accountKey === "work" && delayCostWork) {
+      delayedCosts = reply;
+      return;
+    }
+    return reply();
+  }
   if (url.pathname === "/api/leads") {
     const lead = makeLead(
       body.id,
@@ -298,6 +309,37 @@ try {
     "work",
   );
 
+  // Late costs cannot replace the newly selected account's amount.
+  await choose("personal@example.com");
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-cost-summary")
+      ?.textContent.includes("$5.00"),
+  );
+  delayCostWork = true;
+  await choose("work@example.com");
+  for (let n = 0; n < 100 && !delayedCosts; n++) await page.waitForTimeout(20);
+  assert.ok(delayedCosts);
+  await choose("another.long.account@example.com");
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-cost-summary")
+      ?.textContent.includes("$23.00"),
+  );
+  delayedCosts();
+  delayCostWork = false;
+  await page.waitForTimeout(100);
+  assert.match(
+    await page.locator(".account-cost-summary").innerText(),
+    /23.00/,
+  );
+  await choose("work@example.com");
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-cost-summary")
+      ?.textContent.includes("$12.00"),
+  );
+
   // Fresh account cache must avoid another GET on return navigation.
   const readsBeforeSwitch = limitReads;
   await choose("personal@example.com");
@@ -358,7 +400,7 @@ try {
     await page
       .getByRole("region", { name: "Local cost estimates" })
       .innerText(),
-    /All local chats/,
+    /23.00/,
   );
   await quota.click();
 
@@ -568,7 +610,7 @@ try {
     .filter({ hasText: "Saved limits" })
     .waitFor({ state: "hidden" });
   assert.match(await quota.innerText(), /78% left/);
-  assert.match(await quota.innerText(), /All accounts ≈\$12.00 today/);
+  assert.match(await quota.innerText(), /≈\$12.00 today/);
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -584,7 +626,7 @@ try {
         "per-account snapshot limits",
         "chat switch with cached limits and delayed account response",
         "reset binding",
-        "global costs",
+        "per-account costs",
         "default new chat",
         "discovery",
         "device login",

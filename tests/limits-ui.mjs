@@ -103,12 +103,12 @@ try {
   };
   let deferCosts = false,
     pendingCosts;
-  await page.route("**/api/costs", (route) => {
+  await page.route("**/api/costs?*", (route) => {
     if (deferCosts) {
       pendingCosts = route;
       return;
     }
-    return route.fulfill({ json: costs });
+    return route.fulfill({ json: { ...costs, accountKey: "default" } });
   });
   await page.route("**/api/state", async (route) => {
     const response = await route.fetch();
@@ -151,7 +151,10 @@ try {
   );
   assert.match(await details().innerText(), /\$1,234.56/);
   assert.match(await details().innerText(), /API cost estimate/);
-  assert.match(await details().innerText(), /All local chats/);
+  assert.doesNotMatch(
+    await details().innerText(),
+    /All local chats|All accounts/,
+  );
   assert.doesNotMatch(
     await details().innerText(),
     /CodexBar|coverage unverified|ChatGPT bill|Costs as of/,
@@ -477,7 +480,6 @@ try {
   await details().waitFor();
   assert.equal(await details().getByRole("progressbar").count(), 0);
   assert.match(await details().innerText(), /has not supplied/);
-  assert.match(await details().innerText(), /Partial estimate/);
   assert.match(await details().innerText(), /Estimate unavailable/);
   assert.doesNotMatch(
     await details().innerText(),
@@ -551,6 +553,7 @@ try {
     await pendingCosts.fulfill({
       json: {
         ...costs,
+        accountKey: "default",
         error: null,
         data: { ...costs.data, todayUSD: 123456.78 },
       },

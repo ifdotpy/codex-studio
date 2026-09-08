@@ -193,16 +193,23 @@ export default function Usage({
       setResetPending(false);
     }
   };
+  const accountKey = agent.accountKey || "default";
   const [costs, setCosts] = useState<Json | null>(null);
   useEffect(() => {
     let active = true;
     let timer: number;
     const load = async () => {
       try {
-        const result = await api<Json>("/api/costs", undefined, {
-          timeoutMs: 15000,
-        });
+        const result = await api<Json>(
+          `/api/costs?account_key=${encodeURIComponent(accountKey)}`,
+          undefined,
+          {
+            timeoutMs: 15000,
+          },
+        );
         if (!active) return;
+        if (result.accountKey !== accountKey)
+          throw new Error("Cost account mismatch");
         setCosts(result);
         timer = window.setTimeout(load, result.refreshing ? 5000 : 60000);
       } catch {
@@ -215,12 +222,13 @@ export default function Usage({
         }
       }
     };
+    setCosts(null);
     void load();
     return () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [accountKey]);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);
@@ -331,9 +339,9 @@ export default function Usage({
               {number(costs?.data?.todayUSD) && (
                 <span
                   className="account-cost-summary"
-                  title="API cost estimate for all local chats"
+                  title="API cost estimate for this account"
                 >
-                  All accounts ≈{dollars(costs?.data?.todayUSD)} today
+                  ≈{dollars(costs?.data?.todayUSD)} today
                 </span>
               )}
             </span>
@@ -600,15 +608,18 @@ export default function Usage({
                   <strong>{dollars(costs?.data?.last30DaysUSD)}</strong>
                 </div>
               </div>
-              <p className="account-cost-caption">
-                All local chats
-                {costs?.data?.coverage === "partial" && " · Partial estimate"}
-                {(costs?.stale || costs?.error) &&
-                  (number(costs?.data?.todayUSD) ||
-                  number(costs?.data?.last30DaysUSD)
-                    ? " · Saved estimate"
-                    : " · Estimate unavailable")}
-              </p>
+              {(costs?.data?.coverage === "partial" ||
+                costs?.stale ||
+                costs?.error) && (
+                <p className="account-cost-caption">
+                  {costs?.error || costs?.stale
+                    ? number(costs?.data?.todayUSD) ||
+                      number(costs?.data?.last30DaysUSD)
+                      ? "Saved estimate"
+                      : "Estimate unavailable"
+                    : "Partial estimate"}
+                </p>
+              )}
             </section>
             <footer className="account-limits-updated" role="status">
               {limits?.error

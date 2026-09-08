@@ -639,10 +639,13 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/costs":
                     with terminal_lock:
                         if cost_reader[0] is None:
-                            from codex_costs import CostReader
+                            from codex_costs import AccountCostReader
 
-                            cost_reader[0] = CostReader(canvas.root)
-                    return self.send(cost_reader[0].snapshot())
+                            if not canvas.runtime:
+                                raise ValueError("The agent runtime is unavailable")
+                            cost_reader[0] = AccountCostReader(canvas.root, canvas.runtime.accounts)
+                    query = parse_qs(path.query)
+                    return self.send(cost_reader[0].snapshot(query.get("account_key", ["default"])[0]))
                 if path.path == "/api/desktop":
                     return self.send(
                         {
