@@ -1814,7 +1814,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 raise RuntimeError("Thread resume returned a different thread identity; outcome unknown")
             with self.lock, self.db() as db:
                 a = self.agent(operation["agent"], db)
-                if (not self.operation_current(a, operation) or a["cwd"] != operation["cwd"]
+                if (operation.get("unloaded") or not self.operation_current(a, operation) or a["cwd"] != operation["cwd"]
                         or self.preparation_settings(a) != operation["settings"]
                         or a.get("prepareAttempt") != operation["id"] or a["threadId"] != operation["threadId"]):
                     raise ValueError("Thread preparation belongs to an earlier agent state")
@@ -2128,6 +2128,15 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     attempt["responseError"] = str(error)
                     a.update(status="starting", inFlight=True, error=str(error))
             else:
+                # Native rejects this request before submitting a turn. A cached
+                # load is no longer valid, even when the rollout still exists.
+                # Reload the same thread on the next authorized dispatch; do not
+                # replay this input batch or replace its thread identity.
+                if (isinstance(error, NativeRpcError) and error.code == -32600
+                        and isinstance(error.error, dict)
+                        and error.error.get("message") == "thread not found: " + str(a.get("threadId"))
+                        and attempt.get("threadId") == a.get("threadId")):
+                    self.loaded.discard(agent_id)
                 a["inFlight"] = False
                 if current_epoch and a["autoWake"]:
                     a.update(status="failed", error=str(error))
@@ -2260,6 +2269,15 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             if not a:
                 return
             if a.get("deletedAt"):
+                return
+            if method == "thread/closed" or (method == "thread/status/changed"
+                    and p.get("status", {}).get("type") == "notLoaded"):
+                # Unloading is not a turn outcome or a delivery acknowledgement.
+                self.loaded.discard(a["id"])
+                preparation = self.preparations.get(a["id"])
+                if (preparation and preparation.get("connectionId") == connection_id
+                        and preparation.get("threadId") == tid):
+                    preparation["unloaded"] = True
                 return
             item = p.get("item") or {}
             if method in {"item/started", "item/completed"} and item.get("type") == "userMessage" and item.get("clientId"):
