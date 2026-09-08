@@ -152,6 +152,14 @@ try {
   await dialog.getByRole("switch", { name: "Fast mode", exact: true }).check();
   for (const width of [1440, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
+    if (width === 390) {
+      await page
+        .getByRole("button", { name: "Chat settings", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Subagent defaults", exact: true })
+        .click();
+    }
     assert.ok(
       await dialog.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
     );
@@ -248,6 +256,14 @@ try {
   await page.screenshot({ path: join(root, "team-defaults.png") });
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
+    if (width === 390) {
+      await page
+        .getByRole("button", { name: "Chat settings", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Subagent defaults", exact: true })
+        .click();
+    }
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -283,6 +299,8 @@ try {
     async () =>
       (await state()).find((a) => a.id === fresh.id).yoloMode === false,
   );
+  await waitFor(async () => !(await freshYolo.isDisabled()));
+  await waitFor(async () => !(await freshYolo.isChecked()));
   await freshYolo.check();
   await waitFor(
     async () =>
