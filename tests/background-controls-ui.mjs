@@ -103,7 +103,18 @@ try {
       writes.push({ path, body });
     }
     let value = {};
+    if (path === "/api/sync/identity")
+      return route.fulfill({
+        status: 404,
+        json: { error: "Fixture uses HTTP snapshots" },
+      });
     if (path === "/api/state") value = state;
+    else if (path === "/api/accounts")
+      value = { accounts: [], defaultAccountKey: "default" };
+    else if (path === "/api/voice/records")
+      value = { records: [], delivered: [], cursor: 0 };
+    else if (path === "/api/workspace")
+      value = { tasks: [native], monitors: [monitor] };
     else if (path === "/api/task") value = native;
     else if (path === "/api/transcript") value = { items: [], agent };
     else if (path === "/api/transcript/stream")
@@ -126,6 +137,11 @@ try {
       return route.fulfill({
         status: 409,
         json: { error: "The command already exited" },
+      });
+    } else if (req.method() === "GET") {
+      return route.fulfill({
+        status: 404,
+        json: { error: "Not part of this fixture" },
       });
     }
     await route.fulfill({ json: value });
@@ -180,13 +196,15 @@ try {
     "full saved log\n",
   );
   await page.screenshot({ path: join(root, "interactive-desktop.png") });
-  await page.setViewportSize({ width: 320, height: 740 });
+  // The mobile client closes desktop drawers below 761px. Exercise this drawer
+  // at a narrow desktop width; mobile has its own client tests.
+  await page.setViewportSize({ width: 780, height: 740 });
   assert.equal(
     await page.evaluate(() => document.documentElement.scrollWidth),
-    320,
+    780,
   );
   await drawer.locator(".process-input").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: join(root, "interactive-mobile.png") });
+  await page.screenshot({ path: join(root, "interactive-narrow-desktop.png") });
   await drawer
     .getByRole("button", { name: "Close input (EOF)", exact: true })
     .click();
@@ -213,7 +231,6 @@ try {
     "running",
     "Cancellation preserves the active process",
   );
-  await drawer.getByRole("button", { name: "Tasks", exact: true }).click();
   await drawer.locator('[data-task="native-task"]').click();
   await drawer
     .getByRole("button", { name: "Send via agent", exact: true })
@@ -227,12 +244,13 @@ try {
     body: { id: "native-task", text: "continue\n", action: "input" },
   });
   await drawer
-    .getByRole("button", { name: "Ask agent to stop command", exact: true })
+    .getByRole("button", { name: "Stop command", exact: true })
     .click();
   assert.deepEqual(writes.at(-1), {
     path: "/api/native-command",
     body: { id: "native-task", action: "cancel" },
   });
+  await page.screenshot({ path: join(root, "native-command-controls.png") });
   assert.equal(
     writes.some((w) => w.path === "/api/monitor/input" && w.body.id === "9042"),
     false,

@@ -1358,24 +1358,30 @@ class WorkspaceMixin:
             raise ValueError("This native command has no active session")
         if data.get("action") not in {"input", "cancel"}:
             raise ValueError("Choose input or cancel")
-        text = (
-            "\u0003"
-            if data["action"] == "cancel"
-            else text_field(data.get("text"), "command input", 16000, empty=True)
-        )
-        instruction = (
-            "Use your native write_stdin tool for session "
-            + str(task["processId"])
-            + ". Send exactly this JSON string as chars: "
-            + json.dumps(text)
-            + ". This is a user request to "
-            + (
-                "interrupt this command."
-                if data["action"] == "cancel"
-                else "send command input."
-            )
-        )
         a = self.agent(task["agent"])
+        if data["action"] == "cancel":
+            server = self.connect(a.get("accountKey", "default"))
+            params = {"threadId": a.get("threadId"), "limit": 100}
+            # A process number alone can belong to another thread after recovery.
+            while True:
+                page = server.call("thread/backgroundTerminals/list", params)
+                if any(t["itemId"] == task["itemId"] and t["processId"] == str(task["processId"])
+                       for t in page["data"]):
+                    break
+                if not page.get("nextCursor"):
+                    raise ValueError("This command no longer has an active native session")
+                params["cursor"] = page["nextCursor"]
+            result = server.call("thread/backgroundTerminals/terminate", {
+                "threadId": params["threadId"], "processId": str(task["processId"])})
+            if not result["terminated"]:
+                raise ValueError("Codex did not confirm that the command stopped")
+            return result
+        text = data.get("text")
+        text_field(text, "command input", 16000, empty=True)
+        instruction = (
+            f"Use your native write_stdin tool for session {task['processId']}. "
+            f"Send exactly this JSON string as chars: {json.dumps(text)}."
+        )
         return self.send(
             a["id"],
             instruction,

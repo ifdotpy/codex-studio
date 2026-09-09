@@ -487,6 +487,24 @@ The client answers `currentTime/read` and both current and legacy command/file a
 Device attestation and externally supplied authentication refresh remain host-specific.
 These requests fail visibly instead of receiving fabricated credentials or an automatic success response.
 
+### Native ownership
+
+Prefer native Codex primitives when they remove a Studio mechanism and preserve its behavior.
+Experimental APIs are acceptable. Keep one execution path for each operation.
+Preserve account scope, workspace reservations, team limits, and delivery recovery before removing a Studio mechanism.
+
+Stopping a native background command uses `thread/backgroundTerminals/list` and
+`thread/backgroundTerminals/terminate`. Studio checks the item and process identities
+in the selected agent's account and thread. Stop does not send model input.
+The command completion event supplies its exit code. Terminal input still uses the
+agent's `write_stdin` tool and preserves whitespace, including the submitted newline.
+
+Codex 0.153.4's native user queue persists across app-server restarts. However,
+two `thread/queue/add` calls with the same `clientUserMessageId` create two entries.
+Its idle hook starts queued turns without consulting Studio's workspace or team scheduler.
+Retain the Studio queue and receipts until a replacement preserves these controls.
+See [native integration checks](tests/native-primitives-integration.py).
+
 Import copies visible user and assistant messages from at most the last 20 turns,
 limited to 24,000 characters, into a new managed lead. It does not take ownership
 of another client's live session or copy its complete tool history.

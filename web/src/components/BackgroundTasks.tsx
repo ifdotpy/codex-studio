@@ -685,11 +685,6 @@ function ProcessInput({
   };
   return (
     <section className="process-input" aria-label="Command controls">
-      <p>
-        {native
-          ? "These requests use the agent to control its command."
-          : "Input goes directly to the terminal."}
-      </p>
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -719,7 +714,7 @@ function ProcessInput({
               void act("/api/native-command", { id: task.id, action: "cancel" })
             }
           >
-            Ask agent to stop command
+            Stop command
           </Button>
         ) : (
           <>
