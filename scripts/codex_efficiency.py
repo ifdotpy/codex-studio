@@ -184,6 +184,10 @@ class EfficiencyMixin:
 
     def model_context(self, actor_id, args):
         topic = args.get('topic')
+        if topic == 'agent_manage':
+            # Compatibility for existing threads whose native tool list is fixed.
+            from codex_agent_management import manage_agent
+            return manage_agent(self, actor_id, args)
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             if topic == 'plan':

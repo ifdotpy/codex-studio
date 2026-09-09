@@ -5,6 +5,8 @@ import json
 import time
 import uuid
 
+from codex_agent_management import management_tools
+
 
 def text_field(value, name, maximum=32000, empty=False):
     if (
@@ -19,7 +21,7 @@ def text_field(value, name, maximum=32000, empty=False):
 
 
 def work_tools(tool, text):
-    return [
+    return management_tools(tool, text) + [
         tool(
             "orchestration_task",
             "Manage your team's work board. list returns brief items with nextCursor; get reads one task; history pages older evidence. Mutations return brief receipts. Claim ready work atomically. Submit evidence for review; only the lead can accept it. Dependencies unblock only after acceptance.",

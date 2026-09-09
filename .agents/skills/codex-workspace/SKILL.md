@@ -154,3 +154,30 @@ values and adapt the composition to the task. The example is not a required layo
 For data that changes without agent work, use [a background panel feed](references/panel-feed.md).
 A script supplies state directly to the panel without model calls. Use the EC2
 example for explicit instance IDs and separate machine state from resource claims.
+
+## Worker cleanup
+
+Only the orchestrator uses `orchestration_agent_manage`. Inspect a worker before
+recovery or archive. `recover` reconciles native turn state; it never replays input.
+Archive only after reviewing the result or assigning its remaining work elsewhere.
+`archive` requires `agent_id` and `reason`. It preserves history and files, and
+refuses active commands, pending or uncertain requests, resource claims, unfinished
+assignments, or unarchived children. `list_archived` supports `limit` and `cursor`.
+`restore` returns a worker paused. Use `orchestration_send` for explicit continuation.
+Do not treat silence as proof of failure. Do not archive a worker to hide an error.
+
+For an existing thread without this native tool, use the workspace compatibility
+call. Its permissions and archive checks are identical:
+
+```javascript
+await tools.orchestration_send({
+  agent_id: "workspace",
+  text: JSON.stringify({
+    tool: "orchestration_context",
+    arguments: { topic: "agent_manage", action: "inspect", agent_id: "WORKER_ID" }
+  })
+})
+```
+
+Replace `action` with `recover`, `archive`, `restore`, or `list_archived` as needed.
+Add `reason` for `archive`. Never replace the worker ID with a thread ID.

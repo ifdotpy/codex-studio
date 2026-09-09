@@ -2736,7 +2736,10 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor"}:
                         raise ValueError("Unknown workspace tool")
                 panel_capture = {}
-                if name == "orchestration_read":
+                if name == "orchestration_agent_manage":
+                    from codex_agent_management import manage_agent
+                    value = manage_agent(self, a["id"], args, a["epoch"])
+                elif name == "orchestration_read":
                     value = self.model_read(a["id"], args)
                 elif name == "orchestration_context":
                     value = self.model_context(a["id"], args)

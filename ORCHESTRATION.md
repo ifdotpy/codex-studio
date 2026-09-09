@@ -625,3 +625,20 @@ This route also supports `orchestration_read`, `orchestration_context`,
 `orchestration_monitor`. It preserves the caller and original request identity.
 New threads expose the current schemas directly. No reasoning, Fast mode, model,
 account admission, or permission settings change as part of these budgets.
+
+## Worker archive and recovery
+
+`orchestration_agent_manage` belongs to the lead. It manages only descendants in
+that lead's team. Actions are `inspect`, `recover`, `archive`, `restore`, and
+`list_archived`. Inspection returns bounded blocker IDs. Recovery reads the exact
+native turn through the existing reconciler; a failed read leaves its outcome unknown.
+
+Archive requires a reason. It hides a worker through the existing tombstone filter
+and stores a separate archive receipt with its actor, time, and epoch. No history,
+worktree, file, native thread, or resource claim is deleted. Active work and uncertain
+receipts block archive. Archive children before their parent. Restore checks the
+receipt, parent, and team limit; it leaves automatic continuation disabled. A later
+user deletion or stop invalidates that archive receipt. Repeated calls are safe.
+
+The shared Studio skill documents the workspace bridge for existing native threads.
+Tests: `tests/agent-management-contract.py`.
