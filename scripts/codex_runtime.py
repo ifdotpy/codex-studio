@@ -1902,8 +1902,16 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 self.rules_tick()
                 self.dispatch()
             except Exception as error:
-                with (self.root / "runtime-errors.log").open("a") as log:
-                    log.write(f"{time.time()}: {error}\n")
+                self.scheduler_error = {"at": time.time(), "error": str(error)}
+                try:
+                    with (self.root / "runtime-errors.log").open("a") as log:
+                        log.write(f"{self.scheduler_error['at']}: {error}\n")
+                except OSError:
+                    # Logging can fail with the same full disk as the operation.
+                    # Keep the scheduler alive so committed work can resume.
+                    pass
+            else:
+                self.scheduler_error = None
 
     def dispatch(self):
         with self.lock, self.db() as db:
