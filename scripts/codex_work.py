@@ -209,10 +209,10 @@ class WorkMixin:
             if action in {"create", "update"}:
                 if not leader:
                     raise ValueError("Only the lead can change work assignments")
-                if w["status"] in {"accepted", "review"}:
-                    raise ValueError(
-                        "Review or accepted work cannot be reassigned; reject a result before editing"
-                    )
+                if w["status"] == "accepted":
+                    raise ValueError("Cannot edit accepted work. Create a follow-up task with this task ID and the new evidence")
+                if w["status"] == "review":
+                    raise ValueError("Work under review cannot be reassigned; reject its result before editing")
                 if "title" in data:
                     w["title"] = text_field(data["title"], "a title", 160)
                 if "description" in data:
@@ -308,6 +308,8 @@ class WorkMixin:
             elif action in {"accept", "reject"}:
                 if not leader:
                     raise ValueError("Only the lead can accept or reject a result")
+                if w["status"] == "accepted":
+                    raise ValueError("This work is already accepted. Create a follow-up task with this task ID and the new evidence")
                 if w["status"] != "review" or not w["results"]:
                     raise ValueError("Submit a result before review")
                 reason = text_field(data.get("result"), "a review decision")

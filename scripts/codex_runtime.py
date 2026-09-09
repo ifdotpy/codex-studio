@@ -1441,7 +1441,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 caller = self.agent(sender, db)
                 if not caller["autoWake"] or caller["epoch"] != sender_epoch:
                     raise ValueError("Sender was stopped")
-            self.assert_workspace_available(db, a)
+            self.check_account_project(a, db)
             old = db.execute(
                 "SELECT * FROM runtime_events WHERE id=?", (message_id,)
             ).fetchone()
@@ -1480,6 +1480,12 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         "status": old["status"],
                         "error": old["error"],
                     }
+            blockers = self.workspace_blockers(db, a)
+            if any(b["operation"] not in {"checkpoint", "capture"} for b in blockers):
+                self.assert_workspace_available(db, a)
+            if blockers and not retry_not_submitted:
+                # Store the input once. Dispatch waits for the directory reservation.
+                delivery = "queue"
             if delivery == "after_tool":
                 delivery = "steer" if a.get("turnId") and a.get("inFlight") and a["autoWake"] else "queue"
             if delivery == "steer" and (
@@ -1531,7 +1537,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         message_id,
                     ),
                     "status": "queued",
+                    **({"delivery": "queue", "waitingFor": blockers} if blockers else {}),
                 }
+            self.assert_workspace_available(db, a)
             if retry_not_submitted:
                 db.execute(
                     "UPDATE runtime_events SET status='dispatching',epoch=?,turn_id=?,error=NULL "
@@ -2179,6 +2187,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             self.start_error(agent_id, attempt["id"], error, unknown=True)
 
     def start_error(self, agent_id, attempt_id, error, *, unknown=False):
+        from codex_workspace_delivery import defer_workspace_start
+        if defer_workspace_start(self, agent_id, attempt_id, error, unknown=unknown):
+            return
         with self.lock, self.db() as db:
             a = self.agent(agent_id, db)
             attempt = a.get("startAttempt") or {}

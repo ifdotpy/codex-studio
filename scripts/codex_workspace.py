@@ -1382,14 +1382,18 @@ class WorkspaceMixin:
             delivery="steer" if a.get("turnId") and a.get("inFlight") else "queue",
         )
 
+    def workspace_blockers(self, db, a):
+        cwd = Path(a["cwd"]).resolve()
+        return [{"agentId": other["id"], "operation": other["workspaceOperation"]}
+                for other in self.records(db, "agents")
+                if other.get("workspaceOperation") and Path(other["cwd"]).resolve() == cwd]
+
     def assert_workspace_available(self, db, a):
         self.check_account_project(a, db)
-        cwd = Path(a["cwd"]).resolve()
-        if any(
-            other.get("workspaceOperation") and Path(other["cwd"]).resolve() == cwd
-            for other in self.records(db, "agents")
-        ):
-            raise ValueError("A workspace operation is active in this directory")
+        blockers = self.workspace_blockers(db, a)
+        if blockers:
+            raise ValueError("A workspace operation is active in this directory: "
+                             + json.dumps(blockers))
 
     def recent_tasks(self, db, root=None):
         scope = "" if root is None else " AND json_extract(a.record,'$.rootId')=?"
