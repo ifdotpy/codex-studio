@@ -35,7 +35,7 @@ class TerminalsContract(unittest.TestCase):
         self.runtime = self.fixture.runtime
         self.agent = self.fixture.lead()
         self.manager = TerminalManager(self.fixture.state)
-        self.env = patch.dict("os.environ", {"SHELL": "/bin/sh"})
+        self.env = patch.dict("os.environ", {"SHELL": "/bin/sh", "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost"})
         self.env.start()
 
     def tearDown(self):
@@ -197,7 +197,7 @@ class TerminalsContract(unittest.TestCase):
             f.eventually(marker.exists)
             pid = int(marker.read_text())
             children.append(pid)
-            shell = self.manager.processes[task["id"]][0].pid
+            shell = int(self.manager.processes[task["id"]]["pid_path"].read_text())
             self.assertEqual(os.getsid(pid), shell)
             self.assertNotEqual(os.getpgid(pid), shell)
             return pid
@@ -252,6 +252,82 @@ class TerminalsContract(unittest.TestCase):
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+    def test_native_connection_loss_cleans_jobs_and_allows_a_new_terminal(self):
+        first = self.create()
+        self.send(first, "printf retained-before-loss; sleep 60 &\n")
+        f.eventually(lambda: "retained-before-loss" in self.manager.output(first["id"])["text"])
+        old_connection = self.manager.connection
+        server = self.manager.server
+        server.proc.kill()
+        server.proc.wait(5)
+        f.eventually(lambda: not self.manager.processes)
+        output = self.manager.output(first["id"])
+        self.assertEqual(output["status"], "exited")
+        self.assertIsNone(output["exitCode"])
+        self.assertIn("unknown", output["error"])
+        second = self.create()
+        self.assertIsNot(self.manager.server, server)
+        self.manager.disconnected(old_connection)
+        self.assertEqual(self.manager.output(second["id"])["status"], "running")
+        self.send(second, "exit 4\n")
+        f.eventually(lambda: self.manager.output(second["id"])["status"] == "exited")
+        self.assertEqual(self.manager.output(second["id"])["exitCode"], 4)
+
+    def test_lost_spawn_ack_does_not_create_another_shell(self):
+        from codex_runtime import ResponseTimeout
+        body = {"id": "lost-spawn", "agent": self.agent["id"]}
+        server = self.manager.connect()
+        wait = server.wait
+        def lose_ack(submitted, **kwargs):
+            result = wait(submitted, **kwargs)
+            if submitted[1] == "process/spawn":
+                raise ResponseTimeout("process/spawn response timed out; outcome unknown")
+            return result
+        with patch.object(server, "wait", side_effect=lose_ack):
+            first = self.manager.create(self.runtime, body)
+            second = self.manager.create(self.runtime, body)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(len(self.manager.processes), 1)
+        self.assertIn("unknown", first["error"])
+        f.eventually(lambda: self.manager.output(first["id"])["error"] is None)
+        self.send(first, "exit 6\n")
+        f.eventually(lambda: self.manager.output(first["id"])["status"] == "exited")
+        self.assertEqual(self.manager.output(first["id"])["exitCode"], 6)
+
+    def test_late_native_input_ack_updates_receipt_without_replay(self):
+        from codex_runtime import ResponseTimeout
+        task = self.create()
+        data = {"id": task["id"], "text": "printf x >> late-input\n", "request_id": "late-input"}
+        with patch.object(self.manager.server, "wait", side_effect=ResponseTimeout("outcome unknown")):
+            with self.assertRaises(ResponseTimeout):
+                self.manager.action("input", data)
+        marker = self.fixture.project / "late-input"
+        f.eventually(marker.exists)
+        f.eventually(lambda: self.manager.action("input", data).get("ok"))
+        self.assertEqual(marker.read_text(), "x")
+
+    def test_native_spawn_rejection_is_durable_and_does_not_retry(self):
+        from codex_native_errors import NativeRpcError
+        body = {"id": "rejected-spawn", "agent": self.agent["id"]}
+        server = self.manager.connect()
+        with patch.object(server, "submit", side_effect=NativeRpcError({"code": -32601, "message": "Unknown method process/spawn"})) as call:
+            first = self.manager.create(self.runtime, body)
+            second = self.manager.create(self.runtime, body)
+        self.assertEqual(first, second)
+        self.assertEqual(first["status"], "exited")
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(self.manager.processes, {})
+
+    def test_terminal_restores_user_environment_and_unicode(self):
+        task = self.create()
+        marker = self.fixture.project / "environment-proof"
+        script = "import os,json; from pathlib import Path; Path('environment-proof').write_text(json.dumps([os.environ.get('CODEX_HOME'),os.environ.get('TERM'),os.environ.get('COLORTERM')])); print('Терминал🙂')"
+        self.send(task, shlex.quote(sys.executable) + " -c " + shlex.quote(script) + "\n")
+        f.eventually(marker.exists)
+        self.assertEqual(json.loads(marker.read_text()), [os.environ.get("CODEX_HOME"), "xterm-256color", "truecolor"])
+        f.eventually(lambda: "Терминал🙂" in self.manager.output(task["id"])["text"])
+        self.assertIsNone(self.runtime.server)
 
     def test_http_origin_token_identity_and_manual_monitor_absent(self):
         canvas = Canvas(self.fixture.state)

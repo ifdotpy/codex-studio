@@ -112,6 +112,23 @@ class NativePrimitives(unittest.TestCase):
             finally:
                 f.tearDown()
 
+    def test_native_voice_cannot_replace_the_current_webrtc_v2_courier(self):
+        with native_server() as (server, _, provider, notifications, _):
+            tid = server.call('thread/start', {'cwd': str(Path(__file__).parent.resolve()),
+                'model': 'gpt-5.6-sol', 'approvalPolicy': 'never', 'sandbox': 'read-only',
+                'config': {**n.THREAD_CONFIG, 'model_provider': 'local-probe',
+                           'features.realtime_conversation': True}})['thread']['id']
+            server.call('thread/realtime/start', {'threadId': tid, 'version': 'v2',
+                'outputModality': 'audio', 'clientManagedHandoffs': True,
+                'includeStartupContext': False,
+                'transport': {'type': 'webrtc', 'sdp': 'v=0\r\n'}})
+            event = n.until(lambda: next((e for e in notifications
+                if e.get('method') == 'thread/realtime/error'
+                and e['params']['threadId'] == tid), None), 'native voice compatibility error')
+            self.assertEqual(event['params']['message'], 'AVAS realtime calls require realtime v1 or v3')
+            self.assertEqual(provider.requests, [])
+            self.assertEqual(provider.unexpected, [])
+
     def test_native_queue_persistence_and_same_client_id_behavior(self):
         with native_server() as (server, tid, provider, notifications, restart):
             server.call('turn/start', {'threadId': tid,

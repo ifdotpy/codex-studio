@@ -499,6 +499,32 @@ in the selected agent's account and thread. Stop does not send model input.
 The command completion event supplies its exit code. Terminal input still uses the
 agent's `write_stdin` tool and preserves whitespace, including the submitted newline.
 
+User terminals use `process/spawn`, `process/writeStdin`, `process/resizePty`,
+and `process/kill` on a dedicated local app-server connection. This connection
+starts no model turns and does not follow account switches. Native Codex owns
+PTY allocation and byte transport. Studio keeps bounded history and durable
+create/input receipts. A timeout does not permit replay; late replies reconcile
+the same receipt. Connection loss ends affected terminals with an unknown exit
+code. It never recreates their commands. A new terminal starts a new connection.
+
+Codex 0.153.4 kills the shell's process group. Interactive jobs can use other
+groups in the same session. Studio therefore retains session cleanup, using the
+PID recorded by its child bootstrap. The bootstrap no longer allocates a PTY.
+This migration removes direct PTY I/O but does not reduce the total adapter size.
+See [terminal checks](tests/terminals-contract.py).
+
+The voice transport remains unchanged. In Codex 0.153.4,
+`thread/realtime/start` rejects Realtime v2 with WebRTC: its native WebRTC path
+requires v1 or v3. Those paths use the AVAS protocol. The start parameters do not
+expose custom tools such as Studio's `send_transcript`. Furthermore,
+`clientManagedHandoffs` disables automatic Codex-to-voice responses, not incoming
+voice delegation. Core routes `HandoffRequested` into a Codex turn before it
+notifies the client (`core/src/realtime_conversation.rs`).
+Replacing the courier requires compatible audio transport, a client-enforced
+send boundary, and exact speech playback. A prompt alone does not provide that
+boundary. Do not remove the current courier until these behaviors are verified.
+The installed native rejection is covered by the native integration checks below.
+
 Codex 0.153.4's native user queue persists across app-server restarts. However,
 two `thread/queue/add` calls with the same `clientUserMessageId` create two entries.
 Its idle hook starts queued turns without consulting Studio's workspace or team scheduler.

@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
-"""Acquire the controlling PTY before replacing this helper with the user's shell."""
-
-import fcntl
+"""Record the native PTY session identity, then replace this process with the shell."""
 import os
+from pathlib import Path
 import sys
-import termios
 
-fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-shell = sys.argv[1]
-os.execvpe(shell, [shell, "-l"], os.environ)
+marker = Path(sys.argv[1])
+with marker.with_suffix(".tmp").open("x") as output:
+    os.chmod(output.name, 0o600)
+    output.write(str(os.getpid()))
+os.replace(output.name, marker)
+os.execv(sys.argv[2], [sys.argv[2], "-l"])
