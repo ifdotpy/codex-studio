@@ -72,11 +72,7 @@ with tempfile.TemporaryDirectory() as root:
     assert voice.speak("lead","Read these exact words.","tool-one",epoch=1)["record"]["seq"] == spoken["record"]["seq"]
     rejects(lambda: voice.speak("lead","Changed words.","tool-one",epoch=1))
     rejects(lambda: voice.speak("lead","stale", "tool-two",epoch=0))
-    captured = []
-    voice._openai = lambda endpoint, body, *args: captured.append((endpoint,json.loads(body))) or b"audio"
-    voice.speech("lead",spoken["record"]["id"],"session")
-    assert captured[0][1]["input"] == "Read these exact words."
-    rejects(lambda: voice.speech("other",spoken["record"]["id"],"session"))
+    rejects(lambda: voice.speech("lead",spoken["record"]["id"],"session"))
     voice.end("lead","session")
     rejects(lambda: voice.speech("lead",spoken["record"]["id"],"session"))
     assert VoiceStore(runtime).records("lead")["records"][-1]["id"] == spoken["record"]["id"]

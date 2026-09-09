@@ -62,24 +62,20 @@ A lost response does not authorize another underlying command.
 The page must load before it can work during a connection loss. There is no offline
 application shell. Keep the page open for sync and voice.
 
-Start voice inside the selected chat. The OpenAI Realtime courier clarifies speech.
-It does not solve the project task. Send the full new transcript with its button or
-an explicit voice command. You can edit the text before you send it.
-The orchestrator uses `orchestration_speak` to save exact text for audio playback.
-Outside a voice session, that text remains silent. Interrupt stops audio only.
-The Repeat button replays interrupted text.
+Start voice inside the selected chat. Native Codex voice uses that chat's
+ChatGPT account through its app-server. No separate API key is required.
+Voice can pass spoken tasks directly to the orchestrator. It does not wait for
+a separate Send transcript button. Normal orchestrator replies return to voice.
+End voice stops the microphone and voice connection. It does not stop the task.
+Transcripts remain on the Mac until the chat is deleted. Old courier drafts
+remain available for recovery; Studio does not automatically send them.
+`orchestration_speak` supplies additional speakable context to native voice.
+Its receipt does not confirm exact audible playback. Use chat buttons for
+permission requests. Lock-screen and background voice are not supported.
 
-Voice requires a separate OpenAI API key. Set `OPENAI_API_KEY` in the server
-environment, or create `voice-config.json` in the state directory:
-
-```json
-{"apiKeyFile": "/absolute/path/to/private-key-file"}
-```
-
-The key stays on the Mac. Voice uses the OpenAI API account's usage and charges.
-Voice text and events remain until the chat is deleted. Audio expires after seven
-days; the active server removes expired files on its hourly maintenance pass.
-Lock-screen and background voice are not supported.
+Existing loaded threads need the realtime feature. Studio enables it by reloading
+only an idle lead without background commands. Active threads remain running;
+start voice again after their current work finishes.
 
 ## Source and contracts
 

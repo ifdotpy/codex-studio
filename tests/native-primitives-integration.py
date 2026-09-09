@@ -112,7 +112,7 @@ class NativePrimitives(unittest.TestCase):
             finally:
                 f.tearDown()
 
-    def test_native_voice_cannot_replace_the_current_webrtc_v2_courier(self):
+    def test_native_voice_requires_v1_or_v3_for_webrtc(self):
         with native_server() as (server, _, provider, notifications, _):
             tid = server.call('thread/start', {'cwd': str(Path(__file__).parent.resolve()),
                 'model': 'gpt-5.6-sol', 'approvalPolicy': 'never', 'sandbox': 'read-only',
@@ -128,6 +128,28 @@ class NativePrimitives(unittest.TestCase):
             self.assertEqual(event['params']['message'], 'AVAS realtime calls require realtime v1 or v3')
             self.assertEqual(provider.requests, [])
             self.assertEqual(provider.unexpected, [])
+
+    def test_idle_native_thread_can_enable_voice_without_restart(self):
+        with native_server() as (server, tid, provider, notifications, _):
+            provider.release.set()
+            server.call('turn/start', {'threadId': tid, 'input': [{'type': 'text', 'text': 'Materialize this local fixture thread.'}]})
+            n.until(lambda: any(e.get('method') == 'turn/completed' and e['params']['threadId'] == tid for e in notifications), 'fixture turn')
+            params = {'threadId': tid, 'version': 'v3', 'outputModality': 'audio',
+                      'includeStartupContext': False,
+                      'transport': {'type': 'webrtc', 'sdp': 'v=0\r\n'}}
+            with self.assertRaisesRegex(Exception, 'does not support realtime conversation'):
+                server.call('thread/realtime/start', params)
+            server.call('thread/unsubscribe', {'threadId': tid})
+            server.call('thread/resume', {'threadId': tid, 'excludeTurns': True,
+                'config': {'features.realtime_conversation': True}})
+            # The local provider cannot create real audio. We test feature admission,
+            # then the expected native transport error without any external request.
+            server.call('thread/realtime/start', params)
+            event = n.until(lambda: next((e for e in notifications
+                if e.get('method') == 'thread/realtime/error'
+                and e['params']['threadId'] == tid), None), 'native transport error')
+            self.assertNotIn('does not support realtime conversation', event['params']['message'])
+            self.assertEqual(len(provider.requests), 1)
 
     def test_native_queue_persistence_and_same_client_id_behavior(self):
         with native_server() as (server, tid, provider, notifications, restart):

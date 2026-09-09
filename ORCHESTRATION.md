@@ -513,17 +513,20 @@ PID recorded by its child bootstrap. The bootstrap no longer allocates a PTY.
 This migration removes direct PTY I/O but does not reduce the total adapter size.
 See [terminal checks](tests/terminals-contract.py).
 
-The voice transport remains unchanged. In Codex 0.153.4,
-`thread/realtime/start` rejects Realtime v2 with WebRTC: its native WebRTC path
-requires v1 or v3. Those paths use the AVAS protocol. The start parameters do not
-expose custom tools such as Studio's `send_transcript`. Furthermore,
-`clientManagedHandoffs` disables automatic Codex-to-voice responses, not incoming
-voice delegation. Core routes `HandoffRequested` into a Codex turn before it
-notifies the client (`core/src/realtime_conversation.rs`).
-Replacing the courier requires compatible audio transport, a client-enforced
-send boundary, and exact speech playback. A prompt alone does not provide that
-boundary. Do not remove the current courier until these behaviors are verified.
-The installed native rejection is covered by the native integration checks below.
+Voice uses Codex 0.153.4's native `thread/realtime/start` with v3 WebRTC
+and ChatGPT sign-in. Studio enables `features.realtime_conversation` for leads.
+The RPC acknowledgement is not an SDP answer: `thread/realtime/sdp` completes
+the browser handshake. Session receipts retain the original account, connection,
+thread and offer. A lost acknowledgement never starts another session.
+`thread/realtime/item/completed` supplies canonical transcript records. Native
+Core handles incoming delegation and sends lead responses back to voice.
+There is no separate courier send gate. Ending voice disables transcript-tail
+flushing and does not interrupt the lead's turn. Stop-before-start retains a
+cancellation tombstone. Connection loss preserves the transcript without replay.
+`appendSpeech` provides speakable context, not an exact-playback receipt.
+The browser never converts a native transcript into a second Studio message.
+The old REST voice and TTS paths are removed. Legacy transcripts remain readable.
+See [voice lifecycle checks](tests/native-voice-contract.py).
 
 Codex 0.153.4's native user queue persists across app-server restarts. However,
 two `thread/queue/add` calls with the same `clientUserMessageId` create two entries.

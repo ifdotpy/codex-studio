@@ -122,7 +122,7 @@ TOOLS = [
 
 def voice_tools():
     return [tool("orchestration_speak", "Save exact text for the user's voice session. "
-                 "Active voice reads this text aloud. Without active voice, save it silently. "
+                 "Native voice receives speakable context. Ordinary replies already reach voice. "
                  "Use only for text the user should hear; this does not end your turn.",
                  {"text": TEXT}, ["text"])]
 
@@ -192,7 +192,7 @@ Omit model, effort and fast_mode to use the user's current team defaults for eac
 An explicit profile model or effort overrides the team default; explicit spawn fields override the profile.
 Use effort=null to select a model's native default, or fast_mode=false to disable Fast for that worker.
 Only the user can change team defaults. Do not call settings APIs to change them.
-Use orchestration_speak(text) when the user needs a spoken response. Active voice reads the exact text.
+Use orchestration_speak(text) for additional speech only; do not duplicate your normal reply. Native voice receives this text as speakable context; ordinary replies already reach voice.
 Without active voice the text is saved silently. Voice interruption does not stop your task.
 Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
@@ -883,6 +883,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             for operation in self.preparations.values():
                 if operation["accountKey"] == account_key and not operation["future"].done():
                     operation["future"].set_exception(RuntimeError("Codex disconnected during thread preparation; outcome unknown"))
+        voice = getattr(self, "_voice_store", None)
+        if voice:
+            voice.disconnected_native(account_key, connection_id)
         for monitor in lost_feeds:
             self.panel_feed_consumer(monitor).finish("lost", monitor.get("error"), discard=True)
 
@@ -1706,6 +1709,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             + "\n"
             + a.get("profileInstructions", ""),
         }
+        if a.get("isLead"):
+            params["config"]["features.realtime_conversation"] = True
         if a.get("fastMode", False):
             params["config"]["features.fast_mode"] = True
         native_effort = a.get("nativeEffort", a.get("effort"))
@@ -2298,6 +2303,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         if not self.connection_current(account_key, connection_id):
             return
         method, p = message.get("method"), message.get("params", {})
+        voice = getattr(self, "_voice_store", None)
+        if voice and voice.native_notification(message, account_key, connection_id):
+            return
         if consume_native_notification(self, message, account_key, connection_id):
             return
         if method == "account/login/completed":
@@ -3730,7 +3738,10 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     request["status"] = "expired"
                     self.put(db, "requests", request)
             monitors = [m["id"] for m in self.records(db, "monitors") if m["agent"] in ids and m["status"] in {"running", "approval", "starting"}]
+        voice = getattr(self, "_voice_store", None)
         for a in stopped:
+            if voice:
+                voice.end_active(a["id"])
             self.interrupt(a)
         for m in monitors:
             self.cancel_monitor(m)

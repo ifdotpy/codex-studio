@@ -1,293 +1,167 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
-import { api, ApiError, errorText, saved, save } from "../api";
+import { api, errorText, saved, save } from "../api";
 import "./realtime-voice.css";
 
-type RecordRow = { id: string; seq: number; kind: string; text: string; item_id: string; previous_item_id: string; session: string; payload?: string };
-type Records = { records: RecordRow[]; cursor: number; delivered: string[] };
-const editedTranscriptError = "Edited transcript must contain 1 to 32000 characters";
-const invalidEditedTranscript = (text: string | null) => text !== null && (!text.trim() || Array.from(text).length > 32000);
-function orderedVoiceRecords(records: RecordRow[]) {
-  const sessions = new Map<string, number>();
-  for (const row of records) sessions.set(row.session, Math.min(sessions.get(row.session) ?? row.seq, row.seq));
-  const position = (row: RecordRow) => { try { return JSON.parse(row.payload || "{}").utterance_order ?? row.seq; } catch { return row.seq; } };
-  return [...records].sort((a, b) => sessions.get(a.session)! - sessions.get(b.session)! || position(a) - position(b) || a.seq - b.seq);
+type VoiceRecord = { id: string; seq: number; kind: string; text: string };
+type Session = { session_id: string; state: string; sdp?: string; error?: string; ended?: number };
+type Peer = { id: string; connection: RTCPeerConnection; stream?: MediaStream; audio: HTMLAudioElement; channel: RTCDataChannel; remoteSet: boolean; ready: boolean; closed: boolean; submitted: boolean; registered: boolean; deadline: ReturnType<typeof setTimeout> };
+
+// A chat switch tears down this peer, including a pending microphone permission.
+export default function RealtimeVoice(props: { agentId: string; notify: (text: string) => void }) {
+  return <NativeVoice key={props.agentId} {...props} />;
 }
-export default function RealtimeVoice({ agentId, notify }: { agentId: string; notify: (text: string) => void }) {
+function NativeVoice({ agentId, notify }: { agentId: string; notify: (text: string) => void }) {
   const [opened, setOpened] = useState(false);
-  const editIds = useRef<string[] | null>(null);
-  const [editedText, setEditedText] = useState<string | null>(null);
   const [active, setActive] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [incomplete, setIncomplete] = useState(saved(`voice-incomplete:${agentId}`, false));
-  const missingSpeech = useRef(incomplete);
   const [status, setStatus] = useState("");
-  const [rows, setRows] = useState<RecordRow[]>([]);
-  const [approvals, setApprovals] = useState<{ id: string; method: string; params: unknown }[]>([]);
-  const lastPermission = useRef("");
-  const recorder = useRef<MediaRecorder | null>(null);
-  const [sent, setSent] = useState<string[]>([]);
-  const pc = useRef<RTCPeerConnection | null>(null);
-  const stream = useRef<MediaStream | null>(null);
-  const channel = useRef<RTCDataChannel | null>(null);
-  const remote = useRef<HTMLAudioElement | null>(null);
-  const speech = useRef<HTMLAudioElement | null>(null);
-  const session = useRef("");
-  const cursor = useRef(0);
-  const live = useRef(false);
-  const speaking = useRef(false);
-  const responding = useRef(false);
-  const pending = useRef(new Set<string>());
-  const order = useRef(new Map<string, number>());
-  const previous = useRef(new Map<string, string>());
-  const serial = useRef(Promise.resolve());
-  const queue = useRef<RecordRow[]>([]);
-  const all = useRef<RecordRow[]>([]);
-  const delivered = useRef(new Set<string>());
-  const sendWanted = useRef(false);
-  const voiceSend = useRef(false);
+  const [error, setError] = useState("");
+  const [blockedAudio, setBlockedAudio] = useState(false);
+  const [rows, setRows] = useState<VoiceRecord[]>([]);
+  const [partial, setPartial] = useState("");
+  const [legacy, setLegacy] = useState("");
+  const peer = useRef<Peer | null>(null);
   const generation = useRef(0);
-  const delivery = useRef<{ id: string; ids: string[]; editedText: string | null } | null>(saved(`voice-delivery:${agentId}`, null));
-  const pendingRecords = useRef<Record<string, unknown>[]>(saved(`voice-pending:${agentId}`, []));
-  const post = (action: string, body: object = {}) => api<any>(`/api/voice/${action}`, { agent: agentId, ...body });
-  const event = (kind: string, text = "", payload: object = {}, id: string = crypto.randomUUID(), item_id = "", previous_item_id = "") => {
-    const sid = session.current;
-    const body = { session_id: sid, event_id: id, kind, text, payload, item_id, previous_item_id };
-    pendingRecords.current.push(body); save(`voice-pending:${agentId}`, pendingRecords.current);
-    const operation = serial.current.catch(() => {}).then(async () => {
-      const row = await post("record", body);
-      pendingRecords.current = pendingRecords.current.filter(r => r.event_id !== id); save(`voice-pending:${agentId}`, pendingRecords.current);
-      if (["user", "courier"].includes(kind) && !all.current.some(r => r.id === row.id)) {
-        all.current.push(row); setRows([...all.current]);
-      }
+  const muteWanted = useRef(false);
+  const mounted = useRef(true);
+  const cursor = useRef(0);
+  const post = <T = any,>(action: string, body: object = {}) => api<T>(`/api/voice/${action}`, { agent: agentId, ...body }, { timeoutMs: 15000 });
+  const end = (p: Peer) => {
+    p.closed = true; clearTimeout(p.deadline);
+    p.channel.close(); p.connection.close();
+    p.stream?.getTracks().forEach(t => t.stop());
+    p.audio.pause(); p.audio.srcObject = null;
+    if (p.submitted) void post("end", { session_id: p.id }).catch(e => {
+      if (mounted.current && peer.current === null) setError(`Microphone stopped. ${errorText(e)}`);
     });
-    serial.current = operation.catch(e => { setStatus(`Transcript not saved: ${errorText(e)}`); throw e; });
-    void serial.current.catch(() => {});
-    return operation;
-  };
-  const retryRecords = () => {
-    const operation = serial.current.catch(() => {}).then(async () => {
-      for (const body of [...pendingRecords.current]) {
-        const row = await post("record", body);
-        if (["user", "courier"].includes(row.kind) && !all.current.some(r => r.id === row.id)) {
-          all.current.push(row); setRows([...all.current]);
-        }
-        pendingRecords.current = pendingRecords.current.filter(r => r.event_id !== body.event_id);
-        save(`voice-pending:${agentId}`, pendingRecords.current);
-        if (row.kind === "user") pending.current.delete(row.item_id);
-      }
-    });
-    serial.current = operation;
-    return operation;
-  };
-  const send = async () => {
-    if (missingSpeech.current) { setStatus("Some speech has no transcript. Review the saved text, then choose Use saved transcript only."); return; }
-    if (pending.current.size || speaking.current || responding.current) { sendWanted.current = true; setStatus("Waiting for the full transcript…"); return; }
-    sendWanted.current = false;
-    setBusy(true);
-    try {
-      await serial.current;
-      if (pendingRecords.current.length) throw new Error("Some transcript events are not saved. Retry sync before sending.");
-      if (voiceSend.current) {
-        const lastUser = orderedVoiceRecords(all.current).filter(r => r.kind === "user").at(-1);
-        if (!lastUser || !/^(отправляй|отправь|отправить|отправь сообщение|отправь оркестратору|send|send it|send message)[.!? ]*$/i.test(lastUser.text.trim())) throw new Error("Say отправляй as a separate command, or tap Send transcript.");
-      }
-      voiceSend.current = false;
-      const selected = orderedVoiceRecords(all.current).filter(r => ["user", "courier"].includes(r.kind) && !delivered.current.has(r.id) && (!editIds.current || editIds.current.includes(r.id)));
-      if (!delivery.current) {
-        if (invalidEditedTranscript(editedText)) throw new Error(editedTranscriptError);
-        const text = editedText ?? ("Voice conversation, full transcript (speech recognition can contain errors):\n\n" + selected.map(r => `${r.kind === "user" ? "User" : "Voice courier"}: ${r.text}`).join("\n\n"));
-        if (Array.from(text).length > 32000) throw new Error("The transcript exceeds 32000 characters. Edit it before sending.");
-        delivery.current = { id: crypto.randomUUID(), ids: selected.map(r => r.id), editedText };
-      }
-      save(`voice-delivery:${agentId}`, delivery.current);
-      if (!delivery.current.ids.length) { delivery.current = null; return; }
-      await post("submit", { message_id: delivery.current.id, record_ids: delivery.current.ids, edited_text: delivery.current.editedText });
-      for (const id of delivery.current.ids) delivered.current.add(id);
-      delivery.current = null; editIds.current = null; setEditedText(null); save(`voice-delivery:${agentId}`, null); setSent([...delivered.current]); setStatus("Sent. Waiting for the orchestrator.");
-    } catch (e) {
-      // VoiceStore.submit rejects this exact invalid body before reserving a delivery.
-      // A generic rejection or an uncertain response cannot release its identity.
-      if (e instanceof ApiError && e.status === 400 && e.message === editedTranscriptError &&
-          delivery.current && invalidEditedTranscript(delivery.current.editedText)) {
-        delivery.current = null;
-        save(`voice-delivery:${agentId}`, null);
-        setStatus("The server rejected the invalid transcript before sending. Edit the text, then send again.");
-      } else setStatus(errorText(e));
-    } finally { setBusy(false); }
-  };
-  const sendRef = useRef(send); sendRef.current = send;
-  const playback = useRef<RecordRow | null>(null);
-  const stopAudio = () => {
-    speech.current?.pause(); speech.current = null;
-    if (playback.current) void event("playback", "interrupted", { record_id: playback.current.id }).catch(() => {});
-    playback.current = null;
-  };
-  const pump = async () => {
-    if (!live.current || speaking.current || responding.current || playback.current || !queue.current.length) return;
-    const row = queue.current.shift()!; playback.current = row;
-    try {
-      const result = await post("speech", { record_id: row.id, session_id: session.current });
-      if (!live.current || playback.current?.id !== row.id) return;
-      if (speaking.current || responding.current) { queue.current.unshift(row); playback.current = null; return; }
-      const audio = new Audio(`data:${result.mime};base64,${result.audio}`); speech.current = audio;
-      audio.onended = () => { speech.current = null; if (row.id.startsWith("approval-speech:")) lastPermission.current = row.id; else lastPermission.current = ""; void event("playback", "played", { record_id: row.id }); playback.current = null; void pump(); };
-      audio.onerror = () => { void event("playback", "unknown", { record_id: row.id }); playback.current = null; setStatus("Audio failed. Use Repeat."); };
-      await audio.play(); void event("playback", "playing", { record_id: row.id });
-    } catch (e) { playback.current = null; setStatus(`Audio: ${errorText(e)}`); }
   };
   const close = () => {
-    generation.current++;
-    const unsavedSpeech = [...pending.current].some(id => id === "awaiting-commit" ||
-      (!pendingRecords.current.some(row => row.kind === "user" && row.item_id === id) &&
-        !all.current.some(row => row.kind === "user" && row.item_id === id)));
-    if (unsavedSpeech || speaking.current) { missingSpeech.current = true; setIncomplete(true); save(`voice-incomplete:${agentId}`, true); }
-    pending.current.clear(); speaking.current = false; responding.current = false;
-    sendWanted.current = false; voiceSend.current = false;
-    live.current = false; stopAudio(); queue.current = [];
-    if (recorder.current?.state === "recording") recorder.current.stop(); recorder.current = null;
-    channel.current?.close(); pc.current?.close(); stream.current?.getTracks().forEach(t => t.stop());
-    remote.current?.pause(); if (remote.current) remote.current.srcObject = null;
-    pc.current = null; stream.current = null; channel.current = null;
-    if (session.current) void post("end", { session_id: session.current }).catch(() => {});
-    setActive(false); setBusy(false); setMuted(false); setStatus(missingSpeech.current ? "Some speech has no transcript. Review the saved text, then choose Use saved transcript only." : "");
+    ++generation.current; muteWanted.current = false;
+    const p = peer.current; peer.current = null;
+    if (p) end(p);
+    if (mounted.current) { setActive(false); setMuted(false); setPartial(""); setStatus(""); }
+  };
+  const failure = (e: unknown) => { close(); if (mounted.current) setError(errorText(e)); };
+  const apply = async (p: Peer, state: Session) => {
+    if (peer.current !== p || p.closed) return;
+    if (state.error || state.ended) {
+      if (state.error) failure(new Error(state.error)); else close();
+      return;
+    }
+    if (state.sdp && !p.remoteSet) {
+      p.remoteSet = true; clearTimeout(p.deadline);
+      await p.connection.setRemoteDescription({ type: "answer", sdp: state.sdp });
+
+    }
   };
   useEffect(() => {
-    let disposed = false;
-    void retryRecords().then(() => post("records")).then((data: Records) => {
-      if (disposed) return;
-      all.current = data.records; delivered.current = new Set(data.delivered); cursor.current = data.cursor;
-      setRows(data.records); setSent(data.delivered);
-    }).catch(e => { if (!disposed && pendingRecords.current.length) setStatus(errorText(e)); });
-    return () => { disposed = true; close(); };
-  }, [agentId]);
+    mounted.current = true;
+    // Preserve unsaved text from the retired courier. Never automatically send it.
+    const pending = saved<Record<string, any>[]>(`voice-pending:${agentId}`, []);
+    const draft = saved<{ editedText?: string } | null>(`voice-delivery:${agentId}`, null);
+    setLegacy(draft?.editedText || pending.map(r => r.text || "").filter(Boolean).join("\n\n"));
+    return () => { mounted.current = false; close(); };
+  }, []);
   useEffect(() => {
-    if (!active) return;
-    let disposed = false, fetching = false;
-    const timer = window.setInterval(async () => {
-      if (fetching) return; fetching = true;
+    if (!opened && !active) return;
+    let disposed = false;
+    let fetching = false;
+    const update = async () => {
+      if (fetching) return;
+      fetching = true;
       try {
-        const data: Records = await post("records", { after: cursor.current });
-        const approvalData = await post("approvals");
-        if (!disposed) setApprovals(approvalData.requests);
+        const data = await post<{ records: VoiceRecord[]; cursor: number; session?: Session }>("records", { after: cursor.current });
         if (disposed) return;
         cursor.current = data.cursor;
-        for (const row of data.records) {
-          if (!all.current.some(r => r.id === row.id)) all.current.push(row);
-          if (row.kind === "orchestrator") { queue.current.push(row); void event("playback", "queued", { record_id: row.id }); }
-        }
-        setRows([...all.current]); void pump();
-      } catch (e) { if (!disposed) setStatus(`Sync: ${errorText(e)}`); } finally { fetching = false; }
-    }, 1200);
-    return () => { disposed = true; clearInterval(timer); };
-  }, [active]);
+        setRows(previous => [...new Map([...previous, ...data.records].map(r => [r.id, r])).values()]);
+        const p = peer.current;
+        if (p?.registered && data.session?.session_id === p.id) await apply(p, data.session);
+      } catch (e) {
+        // Stop capture on loss of Studio, even if the media peer still works.
+        if (!disposed) { if (peer.current) failure(e); else setError(errorText(e)); }
+      } finally { fetching = false; }
+    };
+    void update();
+    const timer = window.setInterval(() => void update(), active ? 1200 : 5000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [opened, active]);
   const start = async () => {
+    if (peer.current) return;
     const ticket = ++generation.current;
-    setBusy(true); setStatus("Connecting…");
+    setError(""); setBlockedAudio(false); setStatus("Connecting…"); setActive(true);
+    let p: Peer | null = null;
     try {
-      const config = await post("status");
+      await post("status");
       if (ticket !== generation.current) return;
-      if (!config.configured) throw new Error(config.setup);
-      if (!window.isSecureContext || !navigator.mediaDevices) throw new Error("Voice needs HTTPS. Open the Tailscale HTTPS address.");
-      session.current = crypto.randomUUID(); pending.current.clear(); order.current.clear(); previous.current.clear();
-      const connection = new RTCPeerConnection(); pc.current = connection;
-      remote.current = new Audio(); remote.current.autoplay = true;
-      connection.ontrack = e => { if (remote.current) { remote.current.srcObject = e.streams[0]; void remote.current.play().catch(() => setStatus("Tap Resume audio to enable sound.")); } };
-      // Reserve native access immediately before capture; configuration can take longer than the permit lasts.
+      if (!window.isSecureContext || !navigator.mediaDevices) throw new Error("Voice needs HTTPS or the desktop app");
+      const connection = new RTCPeerConnection();
+      const audio = new Audio(); audio.autoplay = true;
+      const channel = connection.createDataChannel("oai-events");
+      p = { id: crypto.randomUUID(), connection, audio, channel, remoteSet: false, ready: false, closed: false, submitted: false, registered: false, deadline: setTimeout(() => { if (ticket === generation.current) failure(new Error("Voice did not connect. Start again.")); }, 90000) };
+      peer.current = p;
+      const current = p;
+      connection.ontrack = e => {
+        if (current.closed) return;
+        audio.srcObject = e.streams[0] || new MediaStream([e.track]);
+        void audio.play().catch(() => { if (!current.closed) setBlockedAudio(true); });
+      };
+      connection.onconnectionstatechange = () => {
+        if (current.closed) return;
+        if (connection.connectionState === "failed") failure(new Error("Voice disconnected. The saved transcript remains."));
+        if (connection.connectionState === "disconnected") setStatus("Reconnecting…");
+        if (connection.connectionState === "connected") setStatus(current.ready ? "Listening" : "Connecting…");
+      };
+      channel.onmessage = message => {
+        if (current.closed) return;
+        let event;
+        try { event = JSON.parse(message.data); } catch { return; }
+        if (event.type === "error") { failure(new Error(event.error?.message || "Voice failed")); return; }
+        if (event.type === "session.started") { current.ready = true; setStatus("Listening"); }
+        if (event.type === "input_transcript.added") { setStatus("Listening"); setPartial(event.item?.text || ""); }
+        if (event.type === "output_transcript.added") { setStatus("Speaking"); setPartial(event.item?.text || ""); }
+        if (event.type === "delegation.created") { setStatus("Working"); setPartial(""); }
+        if (event.type === "turn.done") { setPartial(""); setStatus("Listening"); }
+        // Native Core owns delegation and transcript persistence. Do not mirror either.
+      };
       if (window.codexDesktop && !window.codexDesktop.requestMicrophone)
-        throw new Error("Install the updated desktop app to enable microphone access.");
+        throw new Error("Update the desktop app to enable microphone access");
       if (window.codexDesktop?.requestMicrophone) await window.codexDesktop.requestMicrophone();
-      if (ticket !== generation.current) return;
-      stream.current = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-      if (ticket !== generation.current) { stream.current.getTracks().forEach(t => t.stop()); return; }
-      stream.current.getTracks().forEach(track => connection.addTrack(track, stream.current!));
-      const dc = connection.createDataChannel("oai-events"); channel.current = dc;
-      dc.onmessage = message => {
-        const e = JSON.parse(message.data);
-        if (e.type === "input_audio_buffer.speech_started") { speaking.current = true; pending.current.add("awaiting-commit"); if (speech.current) stopAudio(); }
-        if (e.type === "input_audio_buffer.speech_stopped") speaking.current = false;
-        if (e.type === "input_audio_buffer.committed") { previous.current.set(e.item_id, e.previous_item_id || ""); pending.current.delete("awaiting-commit"); pending.current.add(e.item_id); if (!order.current.has(e.item_id)) order.current.set(e.item_id, order.current.size); }
-        if (["conversation.item.added", "conversation.item.created"].includes(e.type) && e.item?.id && !order.current.has(e.item.id)) order.current.set(e.item.id, order.current.size);
-        if (e.type === "response.created") responding.current = true;
-        if (e.type === "conversation.item.input_audio_transcription.completed" || e.type === "response.output_audio_transcript.done") {
-          const user = e.type.startsWith("conversation");
-          if (!order.current.has(e.item_id)) order.current.set(e.item_id, order.current.size);
-          void event(user ? "user" : "courier", e.transcript, { utterance_order: order.current.get(e.item_id) }, `${session.current}:${e.item_id}:${user ? "user" : "courier"}:${e.content_index ?? 0}`, e.item_id, previous.current.get(e.item_id) || "").then(() => {
-            if (user) {
-              pending.current.delete(e.item_id);
-              if (e.transcript.trim().toLowerCase().replace(/[.!?]+$/, "") === "разрешаю" && lastPermission.current) {
-                void post("approve", { session_id: session.current, speech_id: lastPermission.current, transcript_id: `${session.current}:${e.item_id}:user:${e.content_index ?? 0}` }).then(() => setStatus("Permission accepted.")).catch(error => setStatus(errorText(error)));
-                lastPermission.current = "";
-              }
-            }
-            if (sendWanted.current) void sendRef.current();
-          }).catch(() => {});
-        }
-        if (e.type === "response.function_call_arguments.done" && e.name === "send_transcript") {
-          sendWanted.current = true; voiceSend.current = true;
-          dc.send(JSON.stringify({ type: "conversation.item.create", item: { type: "function_call_output", call_id: e.call_id, output: JSON.stringify({ status: "The app will send after transcription finishes. Do not claim delivery." }) } }));
-        }
-        if (e.type === "response.done") { responding.current = false; if (sendWanted.current) void sendRef.current(); void pump(); }
-        if (e.type === "error" || e.type === "conversation.item.input_audio_transcription.failed") {
-          setStatus(e.error?.message || "Voice transcription failed. Do not send until the missing speech is repeated.");
-          void event("event", "error", e).catch(() => {});
-        }
-      };
-      connection.onconnectionstatechange = () => { if (["failed", "disconnected"].includes(connection.connectionState)) { close(); setStatus("Voice disconnected. Start again. The saved transcript remains."); } };
-      dc.onopen = () => {
-        const history = all.current.filter(r => ["user", "courier", "orchestrator"].includes(r.kind));
-        for (const row of history) dc.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: row.kind === "user" ? "user" : "assistant", content: [{ type: row.kind === "user" ? "input_text" : "text", text: row.text }] } }));
-      };
+      if (current.closed || ticket !== generation.current) return;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      if (current.closed || ticket !== generation.current) { stream.getTracks().forEach(t => t.stop()); return; }
+      current.stream = stream;
+      stream.getTracks().forEach(t => { t.enabled = !muteWanted.current; t.onended = () => { if (!current.closed) failure(new Error("Microphone disconnected")); }; connection.addTrack(t, stream); });
       const offer = await connection.createOffer(); await connection.setLocalDescription(offer);
-      const answer = await post("start", { session_id: session.current, sdp: offer.sdp });
-      if (ticket !== generation.current) { void post("end", { session_id: session.current }); return; }
-      cursor.current = answer.cursor; all.current = answer.records; setRows(answer.records); delivered.current = new Set(answer.delivered); setSent(answer.delivered);
-      await connection.setRemoteDescription({ type: "answer", sdp: answer.sdp });
-      if (typeof MediaRecorder !== "undefined" && stream.current) {
-        const mime = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find(t => MediaRecorder.isTypeSupported(t));
-        if (mime) {
-          const captureSession = session.current;
-          const capture = new MediaRecorder(stream.current, { mimeType: mime }); recorder.current = capture;
-          capture.ondataavailable = e => {
-            if (!e.data.size) return;
-            const chunk_id = crypto.randomUUID();
-            const reader = new FileReader();
-            reader.onload = () => { void post("audio", { session_id: captureSession, chunk_id, audio: String(reader.result).split(",")[1], mime }).catch(error => setStatus(`Audio debug copy: ${errorText(error)}`)); };
-            reader.readAsDataURL(e.data);
-          };
-          capture.start(15000);
-        }
-      }
-      live.current = true; setActive(true); setStatus("Listening. Send with the button or an explicit voice command.");
-    } catch (e) { close(); setStatus(errorText(e)); notify(errorText(e)); } finally { setBusy(false); }
+      if (current.closed) return;
+      current.submitted = true;
+      const result = await post<Session>("start", { session_id: current.id, sdp: offer.sdp });
+      current.registered = true;
+      if (current.closed) { end(current); return; }
+      await apply(current, result);
+    } catch (e) {
+      if (ticket === generation.current) { failure(e); notify(errorText(e)); }
+      else if (p && !p.closed) end(p);
+    }
   };
   return <Popover opened={opened} onChange={setOpened} position="top-start" width={360} withinPortal>
-    <Popover.Target>
-      <ActionIcon type="button" size="lg" variant="subtle" color={active ? "blue" : "gray"}
-        aria-label="Voice conversation" title="Voice conversation" aria-pressed={active}
-        onClick={() => setOpened(!opened)}>
-        <AudioLines size={18} />
-      </ActionIcon>
-    </Popover.Target>
+    <Popover.Target><ActionIcon type="button" size="lg" variant="subtle" color={active ? "blue" : "gray"}
+      aria-label="Voice conversation" title="Voice conversation" aria-pressed={active} onClick={() => setOpened(!opened)}><AudioLines size={18} /></ActionIcon></Popover.Target>
     <Popover.Dropdown className="realtime-voice">
-    <header className="realtime-voice-heading"><strong>Voice conversation</strong>
-      <ActionIcon type="button" variant="subtle" color="gray" size="sm" aria-label="Close voice panel" onClick={() => setOpened(false)}><X size={16} /></ActionIcon>
-    </header>
-    {!active && !status && <p className="realtime-voice-note">Talk through your request. Send the transcript when it is ready.</p>}
-    <div className="realtime-voice-actions">
-      <button type="button" disabled={busy} onClick={() => active ? close() : void start()}>{active ? "End voice" : "Start voice"}</button>
-      {active && <><button type="button" onClick={() => { const next = !muted; stream.current?.getAudioTracks().forEach(t => { t.enabled = !next; }); setMuted(next); }}>{muted ? "Enable microphone" : "Mute"}</button><button type="button" onClick={() => void remote.current?.play()}>Resume audio</button></>}
-      {(active || rows.some(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id))) && <button type="button" disabled={busy || !rows.some(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id))} onClick={() => { voiceSend.current = false; void send(); }}>Send transcript</button>}
-    </div>
-    {active && approvals.map(request => <button type="button" key={request.id} onClick={() => { void post("approval_speech", { request_id: request.id }).then(() => setStatus("The permission will be read next. Say разрешаю after it ends.")).catch(e => setStatus(errorText(e))); }}>Read permission: {request.method} ({request.id.slice(0, 8)})</button>)}
-    {rows.some(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id)) && <details><summary>Edit transcript before send</summary><textarea aria-label="Transcript to send" rows={5} value={editedText ?? ("Voice conversation, full transcript (speech recognition can contain errors):\n\n" + orderedVoiceRecords(rows).filter(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id)).map(r => `${r.kind === "user" ? "User" : "Voice courier"}: ${r.text}`).join("\n\n"))} onChange={e => { editIds.current ??= rows.filter(r => ["user", "courier"].includes(r.kind) && !sent.includes(r.id)).map(r => r.id); setEditedText(e.target.value); }} /><button type="button" onClick={() => { editIds.current = null; setEditedText(null); }}>Restore original transcript</button><small>The original remains in history. Speech after you start edits stays for the next send.</small></details>}
-    {status && <p role="status">{status}</p>}
-    {incomplete && <button type="button" onClick={() => { missingSpeech.current = false; setIncomplete(false); save(`voice-incomplete:${agentId}`, false); setStatus("Only the saved transcript will be sent. Missing speech is not included."); }}>Use saved transcript only</button>}
-    {!!pendingRecords.current.length && <button type="button" onClick={() => { void retryRecords().then(() => { setStatus("Transcript sync restored."); if (sendWanted.current) void sendRef.current(); }).catch(e => setStatus(errorText(e))); }}>Retry transcript sync</button>}
-    {active && <small>AI-generated voice. Audio goes to OpenAI. Transcripts remain on your Mac.</small>}
-    {!!rows.length && <details><summary>Voice transcript and speech</summary><div className="realtime-voice-transcript">{orderedVoiceRecords(rows).filter(r => r.text && ["user", "courier", "orchestrator"].includes(r.kind)).map(r => <div key={r.id}><strong>{r.kind === "user" ? "You" : r.kind === "courier" ? "Voice courier" : "Orchestrator"}</strong><p>{r.text}</p>{r.kind === "orchestrator" && active && <button type="button" onClick={() => { queue.current.push(r); void pump(); }}>Repeat</button>}</div>)}</div></details>}
-  </Popover.Dropdown>
+      <header className="realtime-voice-heading"><strong>Voice</strong><ActionIcon type="button" variant="subtle" color="gray" size="sm" aria-label="Close voice panel" onClick={() => setOpened(false)}><X size={16} /></ActionIcon></header>
+      {!active && !error && <p className="realtime-voice-note">Talk directly to this chat’s orchestrator.</p>}
+      <div className="realtime-voice-actions">
+        <button type="button" onClick={() => active ? close() : void start()}>{active ? "End voice" : "Start voice"}</button>
+        {active && <button type="button" onClick={() => { const next = !muted; muteWanted.current = next; peer.current?.stream?.getAudioTracks().forEach(t => { t.enabled = !next; }); setMuted(next); }}>{muted ? "Unmute" : "Mute"}</button>}
+        {active && blockedAudio && <button type="button" onClick={() => void peer.current?.audio.play().then(() => setBlockedAudio(false)).catch(e => setError(errorText(e)))}>Resume audio</button>}
+      </div>
+      {status && <p role="status">{status}</p>}
+      {error && <p role="alert">{error}</p>}
+      {partial && <p className="realtime-voice-note">{partial}</p>}
+      {active && <small>AI voice · ChatGPT account</small>}
+      {!!rows.length && <details><summary>Transcript</summary><div className="realtime-voice-transcript">{rows.filter(r => r.text && ["user", "courier", "assistant", "orchestrator"].includes(r.kind)).map(r => <div key={r.id}><strong>{r.kind === "user" ? "You" : r.kind === "courier" ? "Previous voice assistant" : "Codex"}</strong><p>{r.text}</p></div>)}</div></details>}
+      {legacy && <details><summary>Recovered voice draft</summary><p>{legacy}</p><button type="button" onClick={() => void navigator.clipboard.writeText(legacy).then(() => { save(`voice-recovered:${agentId}`, legacy); }).catch(e => setError(errorText(e)))}>Copy draft</button></details>}
+    </Popover.Dropdown>
   </Popover>;
 }
