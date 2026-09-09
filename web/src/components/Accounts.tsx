@@ -3,8 +3,6 @@ import { Button, Menu, Modal, Switch, TextInput } from "@mantine/core";
 import {
   Check,
   ChevronDown,
-  Copy,
-  ExternalLink,
   LockKeyhole,
   Plus,
   RefreshCw,
@@ -15,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import type { Agent, Json } from "../types";
 import "./accounts.css";
+import AccountSignIn, { type LoginReceipt } from "./AccountSignIn";
 import { readBuckets, formatPercent } from "./Usage";
 import AccountProjectRules, { projectRuleSummary } from "./AccountProjectRules";
 
@@ -32,6 +31,7 @@ export interface Account {
 export interface AccountsState {
   accounts: Account[];
   defaultAccountKey: string;
+  logins?: LoginReceipt[];
 }
 export function useAccounts(stateDir?: string) {
   const [data, setData] = useState<AccountsState>({
@@ -56,7 +56,7 @@ export function useAccounts(stateDir?: string) {
     const timer = window.setInterval(() => void refresh(), 30000);
     return () => window.clearInterval(timer);
   }, [stateDir, refresh]);
-  return { data, setData, error, refresh };
+  return { data, setData, error, refresh, scope: stateDir };
 }
 
 function AccountCapacity({
@@ -164,14 +164,6 @@ export default function Accounts({
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [home, setHome] = useState("");
-  const [login, setLogin] = useState<{
-    accountKey: string;
-    verificationUrl?: string;
-    userCode?: string;
-    status: string;
-  } | null>(null);
-  const [copied, setCopied] = useState(false);
-  const loginRequest = useRef<string | null>(null);
   const actionLock = useRef(false);
   const accounts = state.data.accounts || [];
   const selected = accounts.find((a) => a.id === accountKey);
@@ -198,29 +190,7 @@ export default function Accounts({
   useEffect(() => {
     if (!opened) return;
     void state.refresh();
-    if (!login || login.status !== "pending") return;
-    const timer = window.setInterval(() => void state.refresh(), 3000);
-    return () => window.clearInterval(timer);
-  }, [opened, login?.accountKey, login?.status, state.refresh]);
-  const loginAccount = accounts.find((a) => a.id === login?.accountKey);
-  const loginReady = loginAccount?.status === "ready";
-  const loginError = loginAccount?.error;
-  useEffect(() => {
-    if (loginReady || loginError)
-      setLogin((old) =>
-        old ? { ...old, status: loginReady ? "ready" : "failed" } : old,
-      );
-  }, [loginReady, loginError]);
-  const safeUrl = (() => {
-    try {
-      const url = new URL(login?.verificationUrl || "");
-      return url.protocol === "https:" && !url.username && !url.password
-        ? url.href
-        : null;
-    } catch {
-      return null;
-    }
-  })();
+  }, [opened, state.refresh]);
   return (
     <>
       <Menu position="bottom-end" width={300} withinPortal>
@@ -309,6 +279,12 @@ export default function Accounts({
             </div>
           )}
           <Menu.Item
+            leftSection={<Plus size={14} />}
+            onClick={() => setOpened(true)}
+          >
+            Add account
+          </Menu.Item>
+          <Menu.Item
             leftSection={<UserRound size={14} />}
             onClick={() => setOpened(true)}
           >
@@ -357,6 +333,7 @@ export default function Accounts({
             {teamBusy && <p>Wait for active turns to finish.</p>}
           </div>
         )}
+        <AccountSignIn state={state} opened={opened} />
         <div className="accounts-list" aria-label="Saved accounts">
           {accounts.map((account) => (
             <section
@@ -417,29 +394,6 @@ export default function Accounts({
         )}
         <div className="accounts-actions">
           <Button
-            leftSection={<Plus size={15} />}
-            loading={pending === "login"}
-            disabled={
-              !!pending ||
-              (login?.status === "pending" && !loginReady && !loginError)
-            }
-            onClick={() =>
-              void action("login", async () => {
-                loginRequest.current ||= crypto.randomUUID();
-                const result = await api<NonNullable<typeof login>>(
-                  "/api/accounts/login",
-                  { request_id: loginRequest.current },
-                );
-                setLogin(result);
-                loginRequest.current = null;
-                setCopied(false);
-                await state.refresh();
-              })
-            }
-          >
-            Sign in to another account
-          </Button>
-          <Button
             variant="subtle"
             leftSection={<RefreshCw size={14} />}
             loading={pending === "discover"}
@@ -455,55 +409,6 @@ export default function Accounts({
             Find existing accounts
           </Button>
         </div>
-        {login && (
-          <section className="account-login" aria-label="Account sign-in">
-            {loginReady ? (
-              <p role="status">
-                <Check size={16} /> Account connected.
-              </p>
-            ) : loginError ? (
-              <p role="alert">{loginError}</p>
-            ) : (
-              <>
-                <strong>Complete sign-in in your browser</strong>
-                <p>Copy this code, then open the sign-in page.</p>
-                {login.userCode && (
-                  <div className="account-login-code">
-                    <code>{login.userCode}</code>
-                    <Button
-                      size="compact-xs"
-                      variant="subtle"
-                      leftSection={<Copy size={13} />}
-                      onClick={() =>
-                        void action("copy", async () => {
-                          await navigator.clipboard.writeText(login.userCode!);
-                          setCopied(true);
-                        })
-                      }
-                    >
-                      {copied ? "Copied" : "Copy code"}
-                    </Button>
-                  </div>
-                )}
-                {safeUrl ? (
-                  <Button
-                    component="a"
-                    href={safeUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    size="compact-sm"
-                    rightSection={<ExternalLink size={13} />}
-                  >
-                    Open sign-in page
-                  </Button>
-                ) : (
-                  <p role="alert">A secure sign-in link is unavailable.</p>
-                )}
-                <small role="status">Waiting for sign-in…</small>
-              </>
-            )}
-          </section>
-        )}
         <details className="account-register">
           <summary>Add a Codex home directory</summary>
           <form

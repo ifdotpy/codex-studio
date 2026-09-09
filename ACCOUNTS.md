@@ -71,3 +71,18 @@ codex-control create 'Task' --account ACCOUNT --cwd /path/to/project --dangerous
 Checks: `tests/accounts-contract.py`, `tests/runtime-accounts-contract.py`, and
 `tests/accounts-ui-smoke.mjs`. Fixture checks do not make paid model requests
 or redeem real reset credits.
+
+## Add an account
+
+Open the account menu, select **Add account**, then **Sign in to another account**.
+Open the sign-in page and use the new account with the displayed device code.
+Studio starts a separate app-server and keeps the current teams on their existing accounts.
+The new account appears after Codex confirms authentication. It does not become the default automatically.
+
+The sign-in request survives a page reload. **Check status** reads its saved result.
+**Cancel sign-in** cancels that request only. A lost response remains unconfirmed
+until Studio can reconcile it with the native profile. A retry with the same request
+ID does not start another login. An existing native account appears only once.
+
+Checks: `tests/account-login-contract.py`, `tests/runtime-accounts-contract.py`,
+and `tests/accounts-ui-smoke.mjs`. These checks use isolated fixtures.

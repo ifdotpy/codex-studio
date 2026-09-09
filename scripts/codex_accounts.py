@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
+import time
 
 from codex_state import codex_home
 
@@ -132,6 +133,8 @@ class AccountStore:
     def refresh(self, key):
         with self.lock:
             row = self._row(key)
+            if row.get("duplicateOf"):
+                return {k: v for k, v in row.items() if not k.startswith("_") and k != "projectRules"}
             metadata = auth_metadata(row["home"])
             expected = row.get("accountId")
             credential_identity = row.get("_credentialIdentity")
@@ -302,15 +305,18 @@ class AccountStore:
 
     def list(self):
         with self.lock:
-            return [self.get(key) for key in self.data["accounts"]]
+            return [self.get(key) for key, row in self.data["accounts"].items()
+                    if not key.startswith("login-") or row.get("status") == "ready"]
 
     def snapshot(self):
         if not self.discovered:
             return self.discover()
         with self.lock:
+            logins = self.login_receipts()
             return {
                 "accounts": self.list(),
                 "defaultAccountKey": self.data["defaultAccountKey"],
+                "logins": logins,
             }
 
     def default(self, key=None):
@@ -413,63 +419,132 @@ class AccountStore:
         }
         return key
 
+    def login_receipts(self):
+        """Reconcile saved sign-ins from their isolated homes after a lost reply."""
+        with self.lock:
+            before = json.dumps(self.data, sort_keys=True)
+            for request, receipt in self.data.setdefault("logins", {}).items():
+                receipt.setdefault("requestId", request)
+                if receipt.get("status") in {"ready", "duplicate", "cancelled"}:
+                    continue
+                if receipt.get("status") == "starting" and time.time() - receipt.get("createdAt", 0) > 30:
+                    receipt.update(status="uncertain", error="Sign-in response is unconfirmed. Check status or start a separate attempt.")
+                key = receipt["accountKey"]
+                row = self.refresh(key)
+                if row.get("status") != "ready":
+                    continue
+                duplicate = next((other for other, value in self.data["accounts"].items()
+                                  if other != key and not value.get("duplicateOf")
+                                  and value.get("status") == "ready" and row.get("accountId")
+                                  and value.get("accountId") == row["accountId"]), None)
+                receipt.update(status="duplicate" if duplicate else "ready",
+                               accountKey=key, resolvedAccountKey=duplicate or key)
+                receipt.pop("error", None)
+                for field in ("userCode", "verificationUrl"):
+                    receipt.pop(field, None)
+                if duplicate:
+                    self.data["accounts"][key].update(status="duplicate", duplicateOf=duplicate)
+                else:
+                    self.data["accounts"][key]["label"] = row.get("email") or "Codex account"
+            if json.dumps(self.data, sort_keys=True) != before:
+                self._save()
+            return [dict(r) for r in self.data["logins"].values()]
+
     def start_login(self, runtime, request):
         try:
             request = str(uuid.UUID(request))
         except (ValueError, TypeError, AttributeError):
             raise ValueError("Supply a UUID request_id") from None
-        with self.login_lock:
+        # Reserve once, then release the registry lock before native I/O.
+        with self.lock:
+            self.login_receipts()
+            previous = self.data["logins"].get(request)
+            if previous:
+                return dict(previous)
+            key = self._login_profile(request)
+            self.data["logins"][request] = {
+                "requestId": request, "accountKey": key,
+                "status": "starting", "createdAt": time.time(),
+            }
+            self._save()
+        submitted = False
+        try:
+            server = runtime.connect(key)
+            submitted = True
+            response = server.call("account/login/start", {"type": "chatgptDeviceCode"}, timeout=20)
+            if response.get("type") != "chatgptDeviceCode" or not all(
+                isinstance(response.get(k), str) and response[k]
+                for k in ("loginId", "verificationUrl", "userCode")
+            ):
+                raise RuntimeError("Invalid device sign-in response")
             with self.lock:
-                previous = self.data["logins"].get(request)
-                if previous:
-                    return dict(previous)
-                key = self._login_profile(request)
-                self.data["logins"][request] = {
-                    "accountKey": key,
-                    "status": "uncertain",
-                    "error": "The login response was not recorded. Start a new sign-in attempt",
-                }
+                receipt = self.data["logins"][request]
+                # Completion may arrive before the request's acknowledgement.
+                if receipt["status"] not in {"ready", "duplicate", "cancelled", "error"}:
+                    receipt.update(status="pending", **{k: response[k] for k in ("loginId", "verificationUrl", "userCode")})
                 self._save()
-            try:
-                response = runtime.connect(key).call(
-                    "account/login/start", {"type": "chatgptDeviceCode"}, timeout=20
-                )
-                if response.get("type") != "chatgptDeviceCode" or not all(
-                    isinstance(response.get(k), str) and response[k]
-                    for k in ("loginId", "verificationUrl", "userCode")
-                ):
-                    raise RuntimeError("The Codex device sign-in response is invalid")
-                result = {
-                    "accountKey": key,
-                    "status": "pending",
-                    **{
-                        k: response[k]
-                        for k in ("loginId", "verificationUrl", "userCode")
-                    },
-                }
-            except Exception:
-                result = {
-                    "accountKey": key,
-                    "status": "error",
-                    "error": "Codex could not start device sign-in. Check the connection and start a new attempt",
-                }
+        except Exception:
             with self.lock:
-                self.data["logins"][request] = result
-                if result["status"] == "error":
-                    self.data["accounts"][key].update(
-                        status="error", error=result["error"]
-                    )
+                receipt = self.data["logins"][request]
+                if receipt["status"] not in {"ready", "duplicate", "cancelled", "error"}:
+                    receipt.update(status="uncertain" if submitted else "error",
+                                   error="Sign-in response is unconfirmed. Check its status before starting again." if submitted
+                                   else "Could not start sign-in. Try again.")
+                    if not submitted:
+                        self.data["accounts"][key].update(status="error", error=receipt["error"])
+                    self._save()
+        with self.lock:
+            self.login_receipts()
+            return dict(self.data["logins"][request])
+
+    def cancel_login(self, runtime, request):
+        with self.lock:
+            self.login_receipts()
+            receipt = self.data["logins"].get(request)
+            if not receipt:
+                raise ValueError("Unknown sign-in request")
+            if receipt["status"] in {"ready", "duplicate", "cancelled", "error"}:
+                return dict(receipt)
+            if not receipt.get("loginId"):
+                raise ValueError("The sign-in response is still unknown. Check its status first.")
+            key, login_id = receipt["accountKey"], receipt["loginId"]
+        try:
+            result = runtime.connect(key).call("account/login/cancel", {"loginId": login_id}, timeout=10)
+            if result.get("status") not in {"canceled", "notFound"}:
+                raise RuntimeError("Invalid cancellation response")
+        except Exception:
+            with self.lock:
+                receipt["error"] = "Cancellation is unconfirmed. Check status or retry cancellation."
                 self._save()
-            return result
+                return dict(receipt)
+        with self.lock:
+            self.login_receipts()
+            if receipt["status"] not in {"ready", "duplicate"}:
+                receipt.update(status="cancelled")
+                receipt.pop("error", None)
+                receipt.pop("userCode", None)
+                receipt.pop("verificationUrl", None)
+                self.data["accounts"][key]["status"] = "signedOut"
+                self._save()
+            return dict(receipt)
 
     def login_completed(self, key, params):
         with self.lock:
             row = self._row(key)
+            receipts = [r for r in self.data.setdefault("logins", {}).values() if r.get("accountKey") == key]
+            for receipt in receipts:
+                if receipt.get("loginId") and params.get("loginId") and params["loginId"] != receipt["loginId"]:
+                    return
+                if receipt.get("status") in {"ready", "duplicate", "cancelled"}:
+                    return
+                if params.get("loginId"):
+                    receipt["loginId"] = params["loginId"]
+                if not params.get("success"):
+                    receipt.update(status="error", error="Sign-in failed or expired. Try again.")
+                    receipt.pop("userCode", None)
+                    receipt.pop("verificationUrl", None)
+                    row.update(status="error", error=receipt["error"])
             if params.get("success"):
                 self.refresh(key)
-            else:
-                row.update(
-                    status="error",
-                    error="Codex sign-in failed or expired. Start a new attempt",
-                )
+                self.login_receipts()
             self._save()

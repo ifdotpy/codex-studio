@@ -309,3 +309,46 @@
     padding: 8px;
   }
 }
+.account-add {
+  margin-bottom: 20px;
+}
+.account-add-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+}
+.account-add-heading strong {
+  font-size: 14px;
+}
+.account-add-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.account-add-heading > button {
+  flex-shrink: 0;
+}
+.account-login-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.account-login > p[role="status"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.account-login > small {
+  display: block;
+  margin-top: 12px;
+  color: var(--muted);
+}
+@media (max-width: 600px) {
+  .account-add-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+}

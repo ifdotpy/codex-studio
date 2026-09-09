@@ -43,6 +43,7 @@ const accounts = [
   },
 ];
 let defaultAccountKey = "default";
+const logins = [];
 const makeLead = (id, name, accountKey, empty) => ({
   id,
   rootId: id,
@@ -161,7 +162,15 @@ const server = createServer(async (req, res) => {
   ) {
     if (url.pathname.endsWith("/default")) defaultAccountKey = body.account_key;
     if (url.pathname.endsWith("/discover")) discoverCount++;
-    return json({ accounts, defaultAccountKey });
+    for (const receipt of logins) {
+      if (
+        accounts.find((a) => a.id === receipt.accountKey)?.status === "ready"
+      ) {
+        receipt.status = "ready";
+        receipt.resolvedAccountKey = receipt.accountKey;
+      }
+    }
+    return json({ accounts, defaultAccountKey, logins });
   }
   if (url.pathname === "/api/agents/account") {
     const agent = agents.find((a) => a.id === body.id);
@@ -200,19 +209,29 @@ const server = createServer(async (req, res) => {
     return json(lead);
   }
   if (url.pathname === "/api/accounts/login") {
-    accounts.push({
-      id: "signed-in",
-      email: null,
-      label: "New account",
-      status: "pending",
-    });
-    return json({
-      accountKey: "signed-in",
-      loginId: "login-fixture",
+    const previous = logins.find((r) => r.requestId === body.request_id);
+    if (previous) return json(previous);
+    const id = `signed-in-${logins.length}`;
+    accounts.push({ id, email: null, label: "New account", status: "pending" });
+    const receipt = {
+      requestId: body.request_id,
+      accountKey: id,
+      loginId: id,
       verificationUrl: "https://auth.openai.com/codex/device",
       userCode: "ABCD-1234",
       status: "pending",
-    });
+    };
+    logins.push(receipt);
+    return json(receipt);
+  }
+  if (url.pathname === "/api/accounts/login/cancel") {
+    const receipt = logins.find((r) => r.requestId === body.request_id);
+    receipt.status = "cancelled";
+    accounts.splice(
+      accounts.findIndex((a) => a.id === receipt.accountKey),
+      1,
+    );
+    return json(receipt);
   }
   if (url.pathname === "/api/transcript/stream") {
     res.writeHead(503);
@@ -521,6 +540,7 @@ try {
     animations: "disabled",
   });
   await page.keyboard.press("Escape");
+  await page.locator(".project-tree-heading").first().hover();
   await page
     .getByRole("button", { name: /^New chat in / })
     .first()
@@ -549,7 +569,25 @@ try {
       .getAttribute("href"),
     "https://auth.openai.com/codex/device",
   );
-  accounts.find((a) => a.id === "signed-in").status = "ready";
+  const firstLogin = logins.at(-1).requestId;
+  await page.reload();
+  await page.locator('[data-testid="account-picker"]').click();
+  await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
+  await dialog.getByText("ABCD-1234", { exact: true }).waitFor();
+  assert.equal(logins.length, 1, "reload resumes the existing native login");
+  assert.equal(logins[0].requestId, firstLogin);
+  await dialog
+    .getByRole("button", { name: "Cancel sign-in", exact: true })
+    .click();
+  await dialog.getByText("Sign-in cancelled.", { exact: true }).waitFor();
+  assert.equal(logins[0].status, "cancelled");
+  await dialog
+    .getByRole("button", { name: "Sign in to another account", exact: true })
+    .click();
+  await dialog.getByText("ABCD-1234", { exact: true }).waitFor();
+  assert.equal(logins.length, 2);
+  assert.notEqual(logins[1].requestId, firstLogin);
+  accounts.find((a) => a.id === logins.at(-1).accountKey).status = "ready";
   await dialog.getByText("Account connected.", { exact: true }).waitFor();
   await page.setViewportSize({ width: 820, height: 844 });
   await page.waitForFunction(
