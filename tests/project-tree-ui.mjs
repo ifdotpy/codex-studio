@@ -154,6 +154,9 @@ try {
   await group("assistant").waitFor();
   assert.equal(await group("assistant").locator("[data-chat]").count(), 5);
   await group("assistant").getByText("Show more", { exact: true }).click();
+  await waitFor(
+    async () => (await group("assistant").locator("[data-chat]").count()) === 7,
+  );
   assert.equal(await group("assistant").locator("[data-chat]").count(), 7);
   assert.equal(
     await group("litos").getByText("No chats", { exact: true }).count(),

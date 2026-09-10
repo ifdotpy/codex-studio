@@ -512,10 +512,6 @@ export default function App() {
       id: crypto.randomUUID(),
       previous: lead?.id || null,
       model: "gpt-6-astra",
-      account_key:
-        agent?.isLead && agent.empty
-          ? agent.accountKey
-          : accounts.data.defaultAccountKey,
       ...(cwd ? { cwd } : {}),
     };
     if (!opened && drafts.new) setDraft(drafts.new, creation.current.id);

@@ -1200,6 +1200,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             return a
 
     def new_lead(self, data):
+        if "reuse_empty" in data and type(data["reuse_empty"]) is not bool:
+            raise ValueError("reuse_empty must be a boolean")
         self.requested_rule_override(data)
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
@@ -1243,9 +1245,11 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     raise ValueError("Select a lead conversation")
                 if previous and previous.get("deletedAt"):
                     raise ValueError("This conversation was deleted")
-                account_key = data.get("account_key", previous.get("accountKey", "default") if previous else self.accounts.default())
+                from codex_project_selection import project_default
+                target_cwd = requested_cwd or (previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
+                account_key = data["account_key"] if "account_key" in data else project_default(self, target_cwd, db)
                 self.accounts.get(account_key)
-                if previous and self.empty_lead(db, previous):
+                if previous and data.get("reuse_empty", True) and self.empty_lead(db, previous):
                     if previous.get("accountKey", "default") != account_key:
                         previous["cwd"] = requested_cwd or self.default_project(account_key, previous["cwd"])
                         previous["dangerouslySkipAccountRules"] = False
@@ -1932,6 +1936,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 self.scheduler_error = None
 
     def dispatch(self):
+        from codex_session_names import session_names
+        session_names(self).tick()
         with self.lock, self.db() as db:
             agents = self.records(db, "agents")
             transfer_store(self).tick(agents)

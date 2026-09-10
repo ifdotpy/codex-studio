@@ -10,6 +10,9 @@ If its rules exclude the current folder, choose an allowed project in the folder
 The server applies the account and folder together. Cancel or rejection preserves both.
 For an existing chat, select another account to transfer the team. The chat keeps
 its identity. Set the default in **Manage accounts** for new chats.
+A new chat uses the destination project's saved account, or the global default
+when the project has no choice. It does not inherit another chat's account.
+An explicit account choice still takes priority and remains subject to project rules.
 
 The application finds native profiles in `~/.codex`, `~/Projects/*/.codex-profile`,
 `~/Projects/*/.codex`, `~/.codex/profiles/*`, and `~/.codex-profiles/*`.

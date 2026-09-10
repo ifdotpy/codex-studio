@@ -81,7 +81,11 @@ Folder registration lives in SQLite. Removing an empty project from the sidebar 
 Each folder initially shows five chats. **Show more** expands the list, and search includes hidden chats.
 Folder collapse preferences stay in browser storage. Agent chats retain their separate **Agents** tab.
 Use the sidebar row menu to rename or delete a lead or agent chat.
-Renaming stays in SQLite and takes priority over an automatic lead title.
+Manual names take priority over an automatic lead title. Studio stores both manual
+and generated names in SQLite and copies them to Codex with `thread/name/set`.
+The copy uses the session's account and thread. It starts no model turn. A native
+failure preserves the Studio name and retries with backoff. Drafts sync when they
+have a native thread; existing sessions and transferred threads sync as well.
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
