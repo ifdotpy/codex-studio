@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { Modal } from "@mantine/core";
 import DOMPurify from "dompurify";
 import { marked, type Token } from "marked";
@@ -10,34 +10,10 @@ import {
   relativeFileLocation,
 } from "./fileLinks";
 
-// Release complete paragraphs. Blank lines inside fenced code are not boundaries.
-export function paragraphPrefix(text: string, streaming: boolean) {
-  if (!streaming) return text;
-  let end = 0,
-    offset = 0,
-    fence = "";
-  for (const line of text.match(/[^\n]*\n|[^\n]+$/g) || []) {
-    offset += line.length;
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
-    if (marker) {
-      if (!fence) fence = marker[1];
-      else if (
-        marker[1][0] === fence[0] &&
-        marker[1].length >= fence.length &&
-        /^ {0,3}(`{3,}|~{3,})\s*$/.test(line)
-      ) {
-        fence = "";
-        end = offset;
-      }
-    } else if (!fence && /^\s*\n$/.test(line)) end = offset;
-  }
-  return text.slice(0, end);
-}
-const Block = memo(({ html, enter }: { html: string; enter: boolean }) => (
-  <div
-    className={`markdown-block${enter ? " paragraph-enter" : ""}`}
-    dangerouslySetInnerHTML={{ __html: html }}
-  />
+import { sentencePrefix } from "./sentenceStream";
+import SentenceMarkup from "./SentenceMarkup";
+const StaticBlock = memo(({ html }: { html: string }) => (
+  <div className="markdown-block" dangerouslySetInnerHTML={{ __html: html }} />
 ));
 export default function StreamingText({
   text,
@@ -50,7 +26,9 @@ export default function StreamingText({
 }) {
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [linkError, setLinkError] = useState("");
-  const visible = paragraphPrefix(text, streaming);
+  const live = useRef(streaming);
+  live.current ||= streaming;
+  const visible = sentencePrefix(text, streaming);
   const blocks = useMemo(() => {
     const tokens = marked.lexer(visible);
     marked.walkTokens(tokens, (token) => {
@@ -116,7 +94,7 @@ export default function StreamingText({
       };
     });
   }, [visible]);
-  // History is immediately readable. Only blocks added to this mounted message fade in.
+  // History is immediately readable. New sentences retain existing DOM nodes.
   const [initialBlockCount] = useState(blocks.length);
   return (
     <div
@@ -151,8 +129,14 @@ export default function StreamingText({
       {blocks.map((block, i) =>
         block.kind ? (
           <RichPreview key={i} kind={block.kind} source={block.source} />
+        ) : !live.current ? (
+          <StaticBlock key={i} html={block.html!} />
         ) : (
-          <Block key={i} html={block.html!} enter={i >= initialBlockCount} />
+          <SentenceMarkup
+            key={i}
+            html={block.html!}
+            enter={i >= initialBlockCount}
+          />
         ),
       )}
       {preview && (

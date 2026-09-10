@@ -1573,7 +1573,7 @@ export default function App() {
             targetLabel={
               accounts.data.accounts.find(
                 (a) => a.id === agent?.accountTransfer?.targetAccountKey,
-              )?.email
+              )?.email || undefined
             }
             pending={accountChanging}
             onAction={(action) => {
