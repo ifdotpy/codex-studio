@@ -19,6 +19,7 @@ import time
 import uuid
 
 from codex_accounts import AccountStore
+from codex_account_transfer import transfer_store
 from codex_catalog import runtime_catalog
 from codex_analytics import AnalyticsMixin
 from codex_analytics_history import AnalyticsHistoryMixin
@@ -1276,7 +1277,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
 
     @staticmethod
     def empty_lead(db, a):
-        return bool(a.get("isLead") and not a.get("deletedAt") and a["status"] == "idle"
+        return bool(a.get("isLead") and not a.get("deletedAt") and not a.get("accountTransferId") and a["status"] == "idle"
                     and not a.get("threadId") and not a.get("prompt")
                     and not db.execute("SELECT 1 FROM runtime_events WHERE agent=?", (a["id"],)).fetchone()
                     and not db.execute("SELECT 1 FROM runtime_items WHERE agent=?", (a["id"],)).fetchone()
@@ -1488,6 +1489,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 self.assert_workspace_available(db, a)
             if blockers and not retry_not_submitted:
                 # Store the input once. Dispatch waits for the directory reservation.
+                delivery = "queue"
+            if a.get("accountTransferId"):
                 delivery = "queue"
             if delivery == "after_tool":
                 delivery = "steer" if a.get("turnId") and a.get("inFlight") and a["autoWake"] else "queue"
@@ -1793,6 +1796,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 "profileInstructions", "role", "dangerouslySkipAccountRules")}
 
     def prepare_locked(self, a):
+        if a.get("accountTransferId") and not a.get("inFlight"):
+            raise ValueError("This agent is transferring accounts. New input remains queued.")
         self.check_account_project(a)
         server = self.connect(a.get("accountKey", "default"))
         previous = self.preparations.get(a["id"])
@@ -1929,6 +1934,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
     def dispatch(self):
         with self.lock, self.db() as db:
             agents = self.records(db, "agents")
+            transfer_store(self).tick(agents)
+            agents = self.records(db, "agents")
             self.queue_turn_recovery(agents)
             reserved_cwds = {
                 str(Path(a["cwd"]).resolve())
@@ -1943,6 +1950,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     if a["status"] == "queued"
                     and a["autoWake"]
                     and not a.get("nativeFailureHold")
+                    and not a.get("accountTransferId")
                     and not a.get("inFlight")
                     and str(Path(a["cwd"]).resolve()) not in reserved_cwds
                 ),
@@ -4172,6 +4180,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             self.ui_condition.notify_all()
         self.changed.set()
         self.scheduler.join()
+        transfers = getattr(self, "_account_transfers", None)
+        if transfers:
+            transfers.close()
         with self.lock:
             feed_consumers = list(self.panel_feed_consumers.values())
         for consumer in feed_consumers:

@@ -62,7 +62,10 @@ import Sidebar from "./components/Sidebar";
 import TeamChats from "./components/TeamChats";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
-import Accounts, { useAccounts } from "./components/Accounts";
+import Accounts, {
+  useAccounts,
+  AccountTransferStatus,
+} from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import TerminalDock from "./components/TerminalDock";
@@ -1521,9 +1524,7 @@ export default function App() {
             aria-label="Chat account"
             value={accountKey}
             disabled={
-              accountChanging ||
-              (!!agent &&
-                (!agent.empty || !!agent.threadId || !!agent.inFlight))
+              accountChanging || agent?.accountTransfer?.status === "pending"
             }
             data={accounts.data.accounts.map((account) => ({
               value: account.id,
@@ -1550,10 +1551,16 @@ export default function App() {
                     folders(agent, key);
                     return;
                   }
-                  await api("/api/agents/account", {
-                    id: agent.id,
-                    account_key: key,
-                  });
+                  await api(
+                    agent.empty && !agent.threadId
+                      ? "/api/agents/account"
+                      : "/api/agents/account-transfer",
+                    {
+                      id: agent.id,
+                      account_key: key,
+                      request_id: crypto.randomUUID(),
+                    },
+                  );
                 } else
                   accounts.setData(
                     await api("/api/accounts/default", { account_key: key }),
@@ -1561,11 +1568,24 @@ export default function App() {
               }).finally(() => setAccountChanging(false));
             }}
           />
-          {agent && (!agent.empty || agent.threadId) && (
-            <p className="notice">
-              Start a new chat to choose another account.
-            </p>
-          )}
+          <AccountTransferStatus
+            transfer={agent?.accountTransfer}
+            targetLabel={
+              accounts.data.accounts.find(
+                (a) => a.id === agent?.accountTransfer?.targetAccountKey,
+              )?.email
+            }
+            pending={accountChanging}
+            onAction={(action) => {
+              setAccountChanging(true);
+              void run(async () => {
+                await api("/api/agents/account-transfer", {
+                  action,
+                  request_id: agent?.accountTransfer?.id,
+                });
+              }).finally(() => setAccountChanging(false));
+            }}
+          />
           {agent?.source === "managed" && (
             <ExecutionSettings
               key={agent.id}

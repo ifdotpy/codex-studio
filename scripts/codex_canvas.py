@@ -854,6 +854,12 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.accounts.cancel_login(runtime, body.get("request_id")))
                     if self.path == "/api/accounts/login":
                         return self.send(runtime.accounts.start_login(runtime, body.get("request_id")))
+                    if self.path == "/api/agents/account-transfer":
+                        from codex_account_transfer import transfer_store
+                        transfers = transfer_store(runtime)
+                        if body.get("action"):
+                            return self.send(transfers.action(body.get("request_id"), body["action"]))
+                        return self.send(transfers.request(body.get("id"), body.get("account_key"), body.get("request_id")))
                     if self.path == "/api/agents/account":
                         return self.send(runtime.set_account(body.get("id"), body.get("account_key"), body.get("cwd")))
                     if self.path == "/api/work":

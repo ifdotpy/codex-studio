@@ -1395,6 +1395,8 @@ class WorkspaceMixin:
                 if other.get("workspaceOperation") and Path(other["cwd"]).resolve() == cwd]
 
     def assert_workspace_available(self, db, a):
+        if a.get("accountTransferId") and not a.get("inFlight"):
+            raise ValueError("Wait for this agent's account transfer to finish")
         self.check_account_project(a, db)
         blockers = self.workspace_blockers(db, a)
         if blockers:

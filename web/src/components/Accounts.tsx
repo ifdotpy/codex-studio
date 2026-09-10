@@ -3,7 +3,7 @@ import { Button, Menu, Modal, Switch, TextInput } from "@mantine/core";
 import {
   Check,
   ChevronDown,
-  LockKeyhole,
+  ArrowRightLeft,
   Plus,
   RefreshCw,
   ShieldAlert,
@@ -141,6 +141,51 @@ function AccountCapacity({
   );
 }
 
+export function AccountTransferStatus({
+  transfer,
+  targetLabel,
+  pending,
+  onAction,
+}: {
+  transfer?: Json;
+  targetLabel?: string;
+  pending?: boolean;
+  onAction: (action: "retry" | "cancel") => void;
+}) {
+  if (transfer?.status !== "pending") return null;
+  return (
+    <div className="account-menu-note" role="status">
+      <ArrowRightLeft size={14} />
+      <div>
+        <div>
+          {transfer.completed}/{transfer.total} transferred to {targetLabel}
+        </div>
+        {transfer.waiting && <small>{transfer.waiting}</small>}
+        <div className="account-transfer-actions">
+          {transfer.canRetry && (
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              disabled={pending}
+              onClick={() => onAction("retry")}
+            >
+              Retry
+            </Button>
+          )}
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            disabled={pending}
+            onClick={() => onAction("cancel")}
+          >
+            Cancel remaining
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Accounts({
   state,
   agent,
@@ -170,6 +215,12 @@ export default function Accounts({
   const pinned =
     !!agent &&
     (!agent.isLead || !agent.empty || !!agent.threadId || !!agent.inFlight);
+  const owner = lead || (agent?.isLead ? agent : undefined);
+  const transfer = owner?.accountTransfer;
+  const transferring = transfer?.status === "pending";
+  const transferTarget = accounts.find(
+    (a) => a.id === transfer?.targetAccountKey,
+  );
   const title = selected?.email || selected?.label || "Codex account";
   const skipped = !!lead?.dangerouslySkipAccountRules;
   const action = async (key: string, run: () => Promise<unknown>) => {
@@ -211,12 +262,17 @@ export default function Accounts({
             rightSection={<ChevronDown size={13} />}
           >
             <span className="account-picker-label">{title}</span>
+            {transferring && (
+              <span aria-label="Account transfer in progress">
+                {transfer.completed}/{transfer.total}
+              </span>
+            )}
           </Button>
         </Menu.Target>
         <Menu.Dropdown>
           <Menu.Label>
             {pinned
-              ? "This conversation’s account"
+              ? "Transfer team to account"
               : "Account for this conversation"}
           </Menu.Label>
           {accounts.map((account) => (
@@ -225,7 +281,8 @@ export default function Accounts({
               disabled={
                 !!pending ||
                 account.status !== "ready" ||
-                (pinned && account.id !== accountKey)
+                (pinned && !owner) ||
+                transferring
               }
               leftSection={
                 account.id === accountKey ? (
@@ -235,7 +292,15 @@ export default function Accounts({
                 )
               }
               onClick={() =>
-                void action(account.id, () => changeAccount(account.id))
+                void action(account.id, async () => {
+                  if (pinned && owner) {
+                    await api("/api/agents/account-transfer", {
+                      id: owner.id,
+                      account_key: account.id,
+                      request_id: crypto.randomUUID(),
+                    });
+                  } else if (!pinned) await changeAccount(account.id);
+                })
               }
             >
               <span className="account-menu-identity">
@@ -255,12 +320,19 @@ export default function Accounts({
               </span>
             </Menu.Item>
           ))}
-          {pinned && (
-            <p className="account-menu-note">
-              <LockKeyhole size={12} /> New conversations can use another
-              account.
-            </p>
-          )}
+          <AccountTransferStatus
+            transfer={transfer}
+            targetLabel={transferTarget?.email || transferTarget?.label}
+            pending={!!pending}
+            onAction={(kind) =>
+              void action(`${kind}-transfer`, () =>
+                api("/api/agents/account-transfer", {
+                  action: kind,
+                  request_id: transfer.id,
+                }),
+              )
+            }
+          />
           <Menu.Divider />
           {lead && (
             <div className="account-rule-override">

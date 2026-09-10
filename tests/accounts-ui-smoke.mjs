@@ -477,7 +477,7 @@ try {
       .getByRole("menuitem")
       .filter({ hasText: "work@example.com" })
       .isDisabled(),
-    true,
+    false,
   );
   await page
     .getByRole("menuitem", { name: "Manage accounts · 3", exact: true })
@@ -656,7 +656,7 @@ try {
       cases: [
         "three identities",
         "empty chat account",
-        "pinned started chat",
+        "existing chat supports account transfer",
         "delayed limits isolation",
         "wrong-account response rejection",
         "stalled read releases request slot",
