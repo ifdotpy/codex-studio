@@ -88,6 +88,10 @@ is not guaranteed. Keep the page open for voice.
 
 The chat snapshot excludes work result histories. The work view loads those
 histories through its existing API. Mobile sync uses one shared event stream.
+While Studio is visible, it prepares unarchived chats and the selected team's
+agent chats in the background. It updates these saved histories before selection.
+The current chat loads first. At most two background histories load at once.
+A ready history appears immediately on selection, including its saved scroll position.
 After a network change or a return to Studio, sync replaces the old connection.
 A cached workspace cannot send drafts to a different workspace before verification.
 

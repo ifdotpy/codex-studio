@@ -1,0 +1,50 @@
+{
+  "chromium": {
+    "result": "PASS",
+    "browser": "Chromium",
+    "legacySync": false,
+    "neverOpenedSwitchMs": 102,
+    "revisitA": 62,
+    "revisitB": 74,
+    "olderReturn": 98,
+    "focusedReturn": 74,
+    "evidence": "/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/studio-chat-prefetch-vkCTRa",
+    "checks": [
+      "foreground before background",
+      "background freshness",
+      "paged and focused first-frame scroll",
+      "no wrong or empty frame",
+      "scroll restore",
+      "late HTTP and RxDB guards",
+      "workspace isolation"
+    ]
+  },
+  "webkit": {
+    "result": "PASS",
+    "browser": "WebKit",
+    "legacySync": true,
+    "neverOpenedSwitchMs": 80,
+    "revisitA": 78,
+    "revisitB": 82,
+    "olderReturn": 100,
+    "focusedReturn": 81,
+    "evidence": "/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/studio-chat-prefetch-s6xxbH",
+    "checks": [
+      "foreground before background",
+      "background freshness",
+      "paged and focused first-frame scroll",
+      "no wrong or empty frame",
+      "scroll restore",
+      "late HTTP and RxDB guards",
+      "workspace isolation"
+    ]
+  },
+  "liveReadOnly": {
+    "result": "PASS",
+    "backendPid": 48902,
+    "backgroundRecords": 151,
+    "renderedRows": 157,
+    "switchWithNetworkHeldMs": 456,
+    "blockedWrites": 0
+  }
+}

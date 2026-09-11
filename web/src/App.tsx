@@ -1,3 +1,4 @@
+import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { accountLimits } from "./accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
@@ -146,7 +147,7 @@ export default function App() {
   const createdSelection = useRef<string | null>(null);
   useMobileViewport(mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
-  const { data, error, refresh } = useSnapshot(),
+  const { data, error, refresh, workspaceId } = useSnapshot(),
     [opened, setOpened] = useState<string | null>(() =>
       window.matchMedia("(max-width: 760px)").matches
         ? saved("codex-mobile-opened", null)
@@ -171,6 +172,7 @@ export default function App() {
   const receipts = new Map(
     (data?.runtime.events || []).map((event) => [event.id, event]),
   );
+  useChatPrefetch(data, opened, workspaceId);
   const cancelledSends = outgoingMessages
     .filter((entry) => receipts.get(entry.id)?.status === "cancelled")
     .map((entry) => entry.id)
@@ -1342,6 +1344,7 @@ export default function App() {
           )}
         </div>
         <Conversation
+          syncWorkspaceId={workspaceId}
           id={opened}
           agent={agent}
           room={room}

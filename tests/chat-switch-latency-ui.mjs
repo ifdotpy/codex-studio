@@ -248,9 +248,10 @@ try {
   await page.locator(`[data-chat="${b.id}"]`).click();
   await page.waitForTimeout(50);
   await open(a.id, "sync-a-29");
-  assert.ok(
-    (await streamCount()) > beforeQuickReturn,
-    "Returning before another projection loads still starts a fresh transcript transport",
+  assert.equal(
+    await streamCount(),
+    beforeQuickReturn,
+    "A prefetched return uses the shared projection transport without another chat stream",
   );
   projectionDelay = 0;
   await open(b.id, "sync-b-29");
@@ -279,7 +280,11 @@ try {
       "Send uses the synchronized workspace",
     );
     await r.fulfill({
-      json: { status: "saved", deliveries: { [a.id]: "queued" } },
+      json: {
+        id: r.request().postDataJSON().id,
+        status: "queued",
+        deliveries: { [a.id]: "queued" },
+      },
     });
   });
   await page.locator("#stop").waitFor();
@@ -291,7 +296,9 @@ try {
     await page.locator("#message").fill(`Sync shortcut ${action}`);
     if (action === "button") await page.locator("#send").click();
     else if (action === "queue")
-      await page.getByRole("button", { name: "Queue after turn", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Queue after turn", exact: true })
+        .click();
     else await page.locator("#message").press(action);
     await page
       .waitForFunction(() => document.querySelector("#message").value === "")
@@ -303,7 +310,11 @@ try {
     const deadline = Date.now() + 12000;
     while (sends.length < expectedCount && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 40));
-    assert.equal(sends.length, expectedCount, "The outbox submits each message once");
+    assert.equal(
+      sends.length,
+      expectedCount,
+      "The outbox submits each message once",
+    );
     assert.equal(sends.at(-1).delivery, delivery);
     assert.equal(sends.at(-1).room, a.id);
   }

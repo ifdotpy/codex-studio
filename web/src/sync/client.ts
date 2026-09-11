@@ -7,6 +7,11 @@ import { draftConflictHandler } from "./conflicts";
 import { syncApi as api, ApiError, saved, save, setWorkspace } from "../api";
 
 import { onResume } from "./resume";
+import {
+  cacheTranscript,
+  peekTranscript,
+  subscribeTranscript,
+} from "./transcriptCache";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
 export class UnsupportedSyncError extends Error {
@@ -111,9 +116,35 @@ async function open() {
     multiInstance: true,
   });
   await db.addCollections({
-    projections: { schema },
+    projections: {
+      schema,
+      conflictHandler: {
+        isEqual: (a: SyncDocument, b: SyncDocument, context: string) =>
+          // RxDB checks the pulled master against the current local row here.
+          // A lower server sequence is already superseded, including tombstones.
+          (context === "downstream-check-if-equal-1" && a.seq < b.seq) ||
+          (a.seq === b.seq &&
+            a.payload === b.payload &&
+            a._deleted === b._deleted),
+        resolve: async ({
+          realMasterState,
+          newDocumentState,
+        }: {
+          realMasterState: SyncDocument & { _deleted: boolean };
+          newDocumentState: SyncDocument & { _deleted: boolean };
+        }) =>
+          newDocumentState.seq > realMasterState.seq
+            ? newDocumentState
+            : realMasterState,
+      },
+    },
     drafts: { schema, conflictHandler: draftConflictHandler },
     outbox: { schema },
+  });
+  db.projections.$.subscribe((event) => {
+    const doc = event.documentData;
+    if (doc.id.startsWith("transcript:"))
+      cacheTranscript(workspaceId, doc.id.slice(11), doc);
   });
   return { db, workspaceId, chatState, verifyWorkspace };
 }
@@ -143,7 +174,7 @@ async function pull(
 // A background PWA must not retain one HTTP connection per conversation.
 const invalidations = new Set<() => void>();
 let stopInvalidations: (() => void) | undefined;
-function watchInvalidations(resync: () => void) {
+export function watchSyncInvalidations(resync: () => void) {
   invalidations.add(resync);
   if (!stopInvalidations) {
     let source: EventSource | undefined;
@@ -198,20 +229,24 @@ function watchInvalidations(resync: () => void) {
     }
   };
 }
-const scopes = new Map<
-  string,
-  {
-    users: number;
-    stop: () => void;
-    listeners: Set<(error: unknown | null) => void>;
-  }
->();
-export async function watchProjection(
+type ProjectionState = {
+  users: number;
+  foreground: number;
+  stop: () => Promise<unknown>;
+  refresh: () => Promise<void>;
+  listeners: Set<(error: unknown | null) => void>;
+};
+const scopes = new Map<string, ProjectionState>();
+const closingScopes = new Map<string, Promise<unknown>>();
+async function acquireProjection(
   scope: string,
-  accept: (payload: any | null) => void,
-  fail: (e: unknown) => void,
+  expectedWorkspace?: string,
+  background = false,
 ) {
   const { db, workspaceId, chatState, verifyWorkspace } = await syncDatabase();
+  if (expectedWorkspace && expectedWorkspace !== workspaceId)
+    throw new Error("The server workspace changed. Reload to synchronize.");
+  while (closingScopes.has(scope)) await closingScopes.get(scope);
   const remoteScope = scope === "state" && chatState ? "state:chat" : scope;
   let state = scopes.get(scope);
   if (!state) {
@@ -221,8 +256,8 @@ export async function watchProjection(
       listeners.forEach((listener) => listener(error));
     const replication = replicateRxCollection<SyncDocument, { seq: number }>({
       collection: db.projections,
-      // The compact projection has its own checkpoint but keeps the existing
-      // local document, so a capability upgrade can show the cached chat first.
+      // A second tab must refresh chats which the leading tab has never opened.
+      waitForLeadership: false,
       replicationIdentifier: `${workspaceId}:${remoteScope}:v1`,
       live: true,
       retryTime: 3000,
@@ -230,6 +265,13 @@ export async function watchProjection(
         batchSize: 100,
         handler: async (checkpoint, batchSize) => {
           try {
+            if (
+              scopes.get(scope)?.foreground === 0 &&
+              (document.hidden || navigator.onLine === false)
+            )
+              throw new TypeError(
+                "The device is offline or the page is hidden.",
+              );
             const result = await pull(
               remoteScope,
               checkpoint?.seq || 0,
@@ -237,17 +279,37 @@ export async function watchProjection(
               workspaceId,
               verifyWorkspace,
             );
+            const documents: SyncDocument[] = result.documents.map(
+              (document: SyncDocument) =>
+                document.id === remoteScope
+                  ? { ...document, id: scope }
+                  : document,
+            );
+            // Another tab can commit a newer reply while this request is in flight.
+            // Include deleted rows so a late reply cannot restore a removed chat.
+            const existing =
+              await db.projections.storageInstance.findDocumentsById(
+                documents.map((document) => document.id),
+                true,
+              );
+            const current = new Map(
+              existing.map((document) => [document.id, document]),
+            );
+            const monotonic = documents.map((document) => {
+              const previous = current.get(document.id);
+              const next =
+                previous && previous.seq > document.seq
+                  ? {
+                      id: previous.id,
+                      payload: previous.payload,
+                      seq: previous.seq,
+                      _deleted: previous._deleted,
+                    }
+                  : document;
+              return next;
+            });
             report(null);
-            return remoteScope === scope
-              ? result
-              : {
-                  ...result,
-                  documents: result.documents.map((document: SyncDocument) =>
-                    document.id === remoteScope
-                      ? { ...document, id: scope }
-                      : document,
-                  ),
-                };
+            return { ...result, documents: monotonic };
           } catch (error) {
             report(error);
             throw error;
@@ -256,36 +318,138 @@ export async function watchProjection(
         stream$: events.asObservable(),
       },
     });
-    const stopInvalidation = watchInvalidations(() => events.next("RESYNC"));
+    const stopInvalidation = watchSyncInvalidations(() =>
+      events.next("RESYNC"),
+    );
     const errors = replication.error$.subscribe((error) => {
       if (error.code !== "RC_PULL") report(error);
     });
     state = {
       users: 0,
+      foreground: 0,
       listeners,
-      stop: () => {
+      refresh: async () => {
+        let rejectFailure!: (error: unknown) => void;
+        const failure = new Promise<never>((_, reject) => {
+          rejectFailure = reject;
+        });
+        const fail = (error: unknown | null) => {
+          if (error !== null) rejectFailure(error);
+        };
+        listeners.add(fail);
+        try {
+          replication.reSync();
+          await Promise.race([replication.awaitInSync(), failure]);
+        } finally {
+          listeners.delete(fail);
+        }
+      },
+      stop: async () => {
         stopInvalidation();
         events.complete();
         errors.unsubscribe();
-        void replication.cancel();
+        await replication.cancel();
       },
     };
     scopes.set(scope, state);
   }
   state.users++;
+  if (!background) state.foreground++;
+  const retained = state;
+  const release = () => {
+    if (!background) retained.foreground--;
+    if (--retained.users !== 0) return Promise.resolve();
+    scopes.delete(scope);
+    const closing = retained.stop().finally(() => {
+      if (closingScopes.get(scope) === closing) closingScopes.delete(scope);
+    });
+    closingScopes.set(scope, closing);
+    return closing;
+  };
+  try {
+    if (scope.startsWith("transcript:")) {
+      const [doc] = await db.projections.storageInstance.findDocumentsById(
+        [scope],
+        true,
+      );
+      if (doc) cacheTranscript(workspaceId, scope.slice(11), doc);
+    }
+    return { db, workspaceId, state, release };
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+export async function watchProjection(
+  scope: string,
+  accept: (payload: any | null) => void,
+  fail: (e: unknown) => void,
+) {
+  const { db, workspaceId, state, release } = await acquireProjection(scope);
   state.listeners.add(fail);
+  const id = scope.startsWith("transcript:") ? scope.slice(11) : null;
+  const stopCache = id
+    ? subscribeTranscript(workspaceId, id, (entry) => accept(entry.payload))
+    : () => {};
   const subscription = db.projections.findOne(scope).$.subscribe((doc: any) => {
-    if (doc) accept(JSON.parse(doc.payload));
-    else accept(null);
+    if (!id) {
+      accept(doc ? JSON.parse(doc.payload) : null);
+      return;
+    }
+    if (doc) cacheTranscript(workspaceId, id, doc);
+    else if (!peekTranscript(workspaceId, id)) accept(null);
   });
   return () => {
     subscription.unsubscribe();
-    state!.listeners.delete(fail);
-    if (--state!.users === 0) {
-      state!.stop();
-      scopes.delete(scope);
-    }
+    stopCache();
+    state.listeners.delete(fail);
+    void release();
   };
+}
+
+let prefetches = 0;
+const pendingPrefetches = new Map<string, Promise<boolean>>();
+/** Refresh one persisted chat without keeping a background subscription alive. */
+export function prefetchTranscript(
+  workspaceId: string,
+  id: string,
+): Promise<boolean> {
+  if (document.hidden || navigator.onLine === false)
+    return Promise.resolve(false);
+  const key = `${workspaceId}:${id}`;
+  const pending = pendingPrefetches.get(key);
+  if (pending) return pending;
+  if (prefetches >= 2) return Promise.resolve(false);
+  prefetches++;
+  const task = (async () => {
+    const handle = await acquireProjection(
+      `transcript:${id}`,
+      workspaceId,
+      true,
+    );
+    let stopCache = () => {};
+    try {
+      if (document.hidden || navigator.onLine === false) return false;
+      // Query the same persisted document used by the foreground view.
+      const subscription = handle.db.projections
+        .findOne(`transcript:${id}`)
+        .$.subscribe((doc: any) => {
+          if (doc) cacheTranscript(workspaceId, id, doc);
+        });
+      stopCache = () => subscription.unsubscribe();
+      await handle.state.refresh();
+      return true;
+    } finally {
+      stopCache();
+      await handle.release();
+    }
+  })().finally(() => {
+    prefetches--;
+    pendingPrefetches.delete(key);
+  });
+  pendingPrefetches.set(key, task);
+  return task;
 }
 
 export async function startDraftReplication(
@@ -338,7 +502,7 @@ export async function startDraftReplication(
       batchSize: 100,
     },
   });
-  const stopInvalidation = watchInvalidations(() => replication.reSync());
+  const stopInvalidation = watchSyncInvalidations(() => replication.reSync());
   const errors = replication.error$.subscribe((error) => {
     const direction =
       error.code === "RC_PULL"

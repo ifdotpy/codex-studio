@@ -66,6 +66,7 @@ import ComposerAttachments, {
 import "./chat-controls.css";
 export default function Conversation(p: {
   id: string | null;
+  syncWorkspaceId?: string;
   agent?: Agent;
   room?: Room;
   legacy?: Json;
@@ -117,7 +118,13 @@ export default function Conversation(p: {
     liveAgent,
     connection,
     loaded,
-  } = useMessages(p.id, kind, p.agent?.source === "managed", p.data.stateDir);
+  } = useMessages(
+    p.id,
+    kind,
+    p.agent?.source === "managed",
+    p.data.stateDir,
+    p.syncWorkspaceId,
+  );
   const delivery = outgoingTranscript(
     history,
     (p.outgoing || []).filter((entry) => entry.body.room === p.id),

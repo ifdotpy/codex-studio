@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { syncApi as api, ApiError, errorText, setToken } from "./api";
 import {
   subscribeProjection,
   syncDatabase,
   UnsupportedSyncError,
 } from "./sync/client";
+import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import type { Snapshot, Message, Agent, Json } from "./types";
 export function useSnapshot() {
   const [data, setData] = useState<Snapshot | null>(null),
     [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
+  const [workspaceId, setWorkspaceId] = useState("");
   const generation = useRef(0);
   const replicated = useRef(false);
   const sessionToken = useRef("");
@@ -67,8 +69,9 @@ export function useSnapshot() {
       clearTimeout(timer);
       polling = true;
       try {
-        await syncDatabase();
+        const storage = await syncDatabase();
         if (stopped) return;
+        setWorkspaceId(storage.workspaceId);
         await refresh(true);
       } catch (error) {
         if (stopped) return;
@@ -109,7 +112,7 @@ export function useSnapshot() {
       ),
     [],
   );
-  return { data, error: error || syncError, refresh };
+  return { data, error: error || syncError, refresh, workspaceId };
 }
 // Native input batches have separate user-visible message identities.
 export function transcriptMessages(
@@ -175,14 +178,55 @@ export function useMessages(
   kind: "agent" | "room" | "legacy",
   managed = false,
   workspace = "",
+  syncWorkspaceId = "",
 ) {
-  const scope = JSON.stringify([workspace, kind, managed, id]);
+  const scope = JSON.stringify([workspace, syncWorkspaceId, kind, managed, id]);
   const history = useRef(
-    new Map<string, { items: Message[]; notice: string; size: number }>(),
+    new Map<
+      string,
+      { items: Message[]; notice: string; size: number; seq?: number }
+    >(),
   );
   const messageSizes = useRef(new WeakMap<Message, number>());
-  const cached =
+  const pages = useRef(new Map<string, TranscriptPage>());
+  const retained =
     managed && kind === "agent" ? history.current.get(scope) : undefined;
+  const prefetched =
+    managed && kind === "agent" && id && syncWorkspaceId
+      ? peekTranscript(syncWorkspaceId, id)
+      : undefined;
+  const prepared = useMemo(
+    () =>
+      prefetched
+        ? {
+            items: transcriptMessages(prefetched.payload?.items || [], id),
+            notice:
+              prefetched.payload === null
+                ? "This session is no longer available."
+                : prefetched.payload.unavailable || "",
+            seq: prefetched.seq,
+          }
+        : undefined,
+    [prefetched, id],
+  );
+  const retainedPage = pages.current.get(scope);
+  const keepPage =
+    retainedPage &&
+    (!prefetched ||
+      (prefetched.payload &&
+        !prefetched.payload.unavailable &&
+        (!retainedPage.version ||
+          !prefetched.payload.historyVersion ||
+          retainedPage.version === prefetched.payload.historyVersion)));
+  const cached = keepPage
+    ? {
+        items: retainedPage!.items,
+        notice: retained?.notice || "",
+        seq: retained?.seq,
+      }
+    : prepared && (!retained || prepared.seq > (retained.seq ?? -1))
+      ? prepared
+      : retained;
   const [items, setItems] = useState<Message[]>([]),
     [loadedId, setLoadedId] = useState<string | null>(null),
     [notice, setNotice] = useState(""),
@@ -193,7 +237,6 @@ export function useMessages(
     [liveAgent, setLiveAgent] = useState<Partial<Agent> | null>(null),
     [connection, setConnection] = useState(""),
     [syncId, setSyncId] = useState<string | null>(null);
-  const pages = useRef(new Map<string, TranscriptPage>());
   const latest = useRef<{ scope: string; data: Json } | null>(null);
   const pageAttempt = useRef(0);
   const pageBusy = useRef(false);
@@ -211,7 +254,7 @@ export function useMessages(
     expanded = useRef(false);
   active.current = scope;
   const accept = useCallback(
-    (d: Json) => {
+    (d: Json, seq?: number) => {
       revision.current++;
       setLoadedId(scope);
       setLiveAgent(d.agent || null);
@@ -291,6 +334,7 @@ export function useMessages(
             items: nextItems,
             notice: nextNotice,
             size,
+            seq,
           });
         let bytes = 0,
           count = 0;
@@ -374,10 +418,14 @@ export function useMessages(
       kind === "agent"
     )
       return;
+    const seed =
+      managed && kind === "agent" && id && syncWorkspaceId
+        ? peekTranscript(syncWorkspaceId, id)
+        : undefined;
     const retained =
       managed && kind === "agent" ? history.current.get(scope) : undefined;
-    setLoadedId(retained ? scope : null);
     const page = pages.current.get(scope);
+    setLoadedId(retained || page ? scope : null);
     setItems(page?.items || retained?.items || []);
     setHistorical(!!page?.focused);
     setAfter(page?.focused ? page.after : null);
@@ -390,6 +438,18 @@ export function useMessages(
     setNotice(retained?.notice || "");
     setBefore(page?.before || null);
     expanded.current = false;
+    if (seed) {
+      syncActive.current = scope;
+      setSyncId(scope);
+      accept(
+        seed.payload || {
+          items: [],
+          unavailable: "This session is no longer available.",
+        },
+        seed.seq,
+      );
+      return;
+    }
     let stopped = false;
     let streamLive = false;
     let polling = false;
@@ -474,7 +534,7 @@ export function useMessages(
       window.removeEventListener("offline", offline);
       stopResume();
     };
-  }, [load, id, kind, managed, accept, syncId, scope]);
+  }, [load, id, kind, managed, accept, syncId, scope, syncWorkspaceId]);
   useEffect(() => {
     if (!id || kind !== "agent" || !managed) return;
     let seen = false;
@@ -486,8 +546,9 @@ export function useMessages(
           seen = true;
           syncActive.current = scope;
           setSyncId(scope);
-          accept(next);
-        } else if (seen) {
+          // The shared cache subscription owns transcript updates in this workspace.
+          if (!syncWorkspaceId) accept(next);
+        } else if (seen && !syncWorkspaceId) {
           accept({
             items: [],
             unavailable: "This session is no longer available.",
@@ -499,7 +560,22 @@ export function useMessages(
           setConnection(error === null ? "live" : "reconnecting");
       },
     );
-  }, [id, kind, managed, accept, scope]);
+  }, [id, kind, managed, accept, scope, syncWorkspaceId]);
+  useEffect(() => {
+    if (!id || !managed || kind !== "agent" || !syncWorkspaceId) return;
+    return subscribeTranscript(syncWorkspaceId, id, (entry) => {
+      if (active.current !== scope) return;
+      syncActive.current = scope;
+      setSyncId(scope);
+      accept(
+        entry.payload || {
+          items: [],
+          unavailable: "This session is no longer available.",
+        },
+        entry.seq,
+      );
+    });
+  }, [id, managed, kind, syncWorkspaceId, scope, accept]);
   const fetchPage = async (query: {
     before?: string;
     after?: string;
@@ -621,11 +697,22 @@ export function useMessages(
     loaded: !id || loadedId === scope || !!cached,
     items: loadedId === scope ? items : cached?.items || [],
     notice: loadedId === scope ? notice : cached?.notice || "",
-    before: loadedId === scope ? before : null,
+    before:
+      loadedId === scope
+        ? before
+        : keepPage
+          ? retainedPage!.before
+          : prefetched?.payload?.nextCursor || null,
     older,
     newer,
-    after: loadedId === scope ? after : null,
-    historical: loadedId === scope && historical,
+    after:
+      loadedId === scope
+        ? after
+        : keepPage && retainedPage!.focused
+          ? retainedPage!.after
+          : null,
+    historical:
+      loadedId === scope ? historical : !!(keepPage && retainedPage!.focused),
     pageLoading,
     showLatest,
     ensureMessage,
