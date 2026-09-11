@@ -91,6 +91,10 @@ const writes = [];
 let uncertainInput = false;
 let failOutput = false,
   truncateOutput = false;
+const archive = "Archive line λ\n".repeat(10000);
+const archiveReads = [];
+let historyMode = "ready",
+  heldHistory;
 let browser;
 try {
   browser = await chromium.launch({
@@ -147,6 +151,32 @@ try {
       shells.unshift(value);
       outputs.set(value.id, "Direct shell ready\r\n$ ");
     } else if (path === "/api/terminals/output") {
+      if (url.searchParams.get("history") === "1") {
+        archiveReads.push(Number(url.searchParams.get("offset")));
+        if (historyMode === "hold") {
+          heldHistory = route;
+          return;
+        }
+        const offset = Number(url.searchParams.get("offset"));
+        const end =
+          historyMode === "invalid"
+            ? offset
+            : Math.min(
+                archive.length,
+                offset + Number(url.searchParams.get("limit")),
+              );
+        return route.fulfill({
+          json: {
+            text: archive.slice(offset, end),
+            offset: end,
+            availableOffset: archive.length,
+            hasMore: end < archive.length,
+            historyStart: 0,
+            truncated: false,
+            status: "exited",
+          },
+        });
+      }
       if (failOutput) {
         failOutput = false;
         return route.fulfill({
@@ -264,7 +294,10 @@ try {
     .waitFor();
   // Output polls faster than the session list. Wait for the close control's
   // session record to report the exit before checking the completed-session path.
-  await dock.locator(".terminal-detail-status").filter({hasText:/^exited/}).waitFor();
+  await dock
+    .locator(".terminal-detail-status")
+    .filter({ hasText: /^exited/ })
+    .waitFor();
   assert.equal(
     await dock
       .getByRole("button", { name: "Ctrl+C", exact: true })
@@ -296,6 +329,51 @@ try {
       .join(""),
     "printf terminal-ok\r",
   );
+  let downloadCount = 0;
+  page.on("download", () => downloadCount++);
+  const downloadResult = page.waitForEvent("download");
+  await dock
+    .getByRole("button", { name: "Download saved output", exact: true })
+    .click();
+  const downloaded = await downloadResult;
+  assert.equal(await readFile(await downloaded.path(), "utf8"), archive);
+  assert.deepEqual(archiveReads, [0, 65536, 131072]);
+  historyMode = "hold";
+  await dock
+    .getByRole("button", { name: "Download saved output", exact: true })
+    .click();
+  for (let i = 0; i < 100 && !heldHistory; i++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(heldHistory);
+  await dock
+    .getByRole("button", { name: "Cancel download", exact: true })
+    .click();
+  await heldHistory.fulfill({
+    json: {
+      text: "late",
+      offset: 4,
+      availableOffset: 4,
+      hasMore: false,
+      historyStart: 0,
+      truncated: false,
+    },
+  });
+  await dock.getByText("Download cancelled.", { exact: true }).waitFor();
+  historyMode = "invalid";
+  await dock
+    .getByRole("button", { name: "Download saved output", exact: true })
+    .click();
+  await dock
+    .getByText("The saved output did not advance. Try the download again.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(
+    downloadCount,
+    1,
+    "A cancelled or invalid history never downloads a partial file",
+  );
+  historyMode = "ready";
   const screen = await dock.locator(".xterm-screen").boundingBox();
   await page.mouse.move(screen.x + 1, screen.y + 7);
   await page.mouse.down();
@@ -451,6 +529,7 @@ try {
         "direct input",
         "input order",
         "copy selection",
+        "saved output download, pagination, cancellation, invalid cursor",
         "uncertain input pauses",
         "resize",
         "interrupt",

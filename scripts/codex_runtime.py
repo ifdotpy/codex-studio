@@ -696,7 +696,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 block = native_thread_block(a)
                 if block:
                     a["nativeThreadBlock"] = block
-                if a["status"] in {"running", "starting", "approval"}:
+                from codex_restart_recovery import restore as restore_restart
+                restart_restored = restore_restart(db, a)
+                if not restart_restored and a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
                 a.setdefault("accountKey", "default")
@@ -739,6 +741,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     r.update(status="uncertain", answerError="Server restarted before answer delivery completed")
                     self.put(db, "requests", r)
                 if r["status"] == "pending":
+                    owner = self.agent(r["agent"], db) if r.get("agent") else None
+                    # Local questions have no native RPC to expire on restart.
+                    if (r["method"] == "agent/asyncQuestion" and owner
+                            and not owner.get("deletedAt") and owner["epoch"] == r.get("epoch")
+                            and (owner.get("autoWake") or (
+                                (owner.get("restartRecovery") or {}).get("stage") == "pending"
+                                and owner["restartRecovery"].get("autoWake")
+                                and owner["restartRecovery"].get("epoch") == owner["epoch"]))):
+                        continue
                     r["status"] = "expired"
                     self.put(db, "requests", r)
             self.analytics_init(db)
@@ -749,7 +760,22 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.setup_panels(db)
             self.setup_workspace(db)
             self.setup_rules(db)
+            from codex_monitor_recovery import recover_monitor_results, acknowledge_monitor_result
+            monitor_recovery = recover_monitor_results(self, db)
             self.recover_monitor_receipts(db)
+        for key in monitor_recovery["acknowledge"]:
+            try:
+                acknowledge_monitor_result(self.root, key)
+            except OSError as error:
+                monitor_recovery["warnings"].append({"monitor": key, "error": str(error)})
+        self.monitor_recovery_warnings = monitor_recovery["warnings"]
+        for warning in self.monitor_recovery_warnings:
+            print("Monitor recovery: " + json.dumps(warning), file=sys.stderr)
+        with self.db() as db:
+            recovered_feeds = [m for m in self.records(db, "monitors")
+                               if m["id"] in monitor_recovery["restored"] and m.get("panelFeed")]
+        for monitor in recovered_feeds:
+            self.panel_feed_monitor_status(monitor, monitor["status"], monitor.get("error"))
         # Restart never replays a panel command. Surface its persisted lost state.
         with self.db() as db:
             lost_feeds = [m for m in self.records(db, "monitors") if m.get("panelFeed") and m["status"] == "lost"]
@@ -2101,7 +2127,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             a = self.prepare(a)
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
-                if (current.get("startAttempt") or {}).get("id") != attempt_id:
+                if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
                     return
                 if not current["autoWake"] or current["epoch"] != epoch:
                     current["inFlight"] = False
@@ -2175,7 +2201,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             server = self.connect(a.get("accountKey", "default"))
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
-                if (current.get("startAttempt") or {}).get("id") != attempt_id:
+                if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
                     return
                 if not current["autoWake"] or current["epoch"] != epoch:
                     current["inFlight"] = False
@@ -3637,8 +3663,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     # The active lease remains authoritative when storage fails.
                     # Still register the late native result, without resubmission.
                     pass
-                server.on_result(submitted, lambda future: self.pool.submit(
-                    self.monitor_result, key, operation, future) if not self.closed else None)
+                server.on_result(submitted, lambda future: self.monitor_result(key, operation, future)
+                    if self.closed else self.pool.submit(self.monitor_result, key, operation, future))
                 return
             if hasattr(server, "after_events"):
                 server.after_events(lambda: self.monitor_accepted(key, operation, result))
@@ -3654,7 +3680,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 except (sqlite3.Error, OSError):
                     pass
             else:
-                self.finish_monitor(key, None, str(error))
+                self.finish_monitor(key, None, str(error), operation=operation)
 
     def monitor_configuration_result(self, key, preflight, future):
         with self.lock:
@@ -3749,11 +3775,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             chunk = base64.b64decode(p.get("deltaBase64", ""))
             path = Path(m["log"])
             path.parent.mkdir(exist_ok=True)
-            # Drain every chunk, retain at most 20 MiB per command on disk.
-            if m["bytes"] < 20 * 1024 * 1024:
-                with path.open("ab") as log:
-                    log.write(chunk[:20 * 1024 * 1024 - m["bytes"]])
-                path.chmod(0o600)
+            # Keep the complete log; only the live UI tail is bounded.
+            with path.open("ab") as log:
+                log.write(chunk)
+            path.chmod(0o600)
             m["bytes"] += len(chunk)
             m["tail"] = (m["tail"] + chunk.decode("utf-8", errors="replace"))[-12000:]
             self.put(db, "monitors", m)
@@ -3763,8 +3788,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     def finish_monitor(self, key, code, error, *, operation=None):
         with self.lock:
-            if self.closed:
-                return
             if not hasattr(self, "pending_monitor_results"):
                 self.pending_monitor_results = {}
             # Retain the first native result before any database access. A failed
@@ -3777,12 +3800,23 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 self._persist_monitor_result(key, receipt)
 
     def _persist_monitor_result(self, key, receipt):
+        from codex_monitor_recovery import persist_monitor_result, acknowledge_monitor_result
         try:
+            # Flush recorded output before publishing its definitive exit receipt.
+            log_path = self.root / "monitor-logs" / (key + ".log")
+            if log_path.is_file():
+                with log_path.open("rb") as log:
+                    os.fsync(log.fileno())
+            saved = persist_monitor_result(self.root, key, receipt)
+            receipt.update({name: saved[name] for name in ("code", "error", "operation", "finished")})
+            if self.closed:
+                return
             operation = receipt["operation"]
             if operation and not self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
                 self.pending_monitor_results.pop(key, None)
                 return
             self._finish_monitor(key, receipt["code"], receipt["error"], finished=receipt["finished"])
+            acknowledge_monitor_result(self.root, key)
         except (sqlite3.Error, OSError) as error:
             receipt["attempts"] += 1
             receipt["retryAt"] = time.monotonic() + min(30, 2 ** min(receipt["attempts"] - 1, 5))
@@ -3826,6 +3860,19 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                                (m["finished"], "monitor:" + m["id"]))
         return restored
 
+    def enqueue_recovery_event(self, db, a, kind, text, key):
+        restart = a.get("restartRecovery") or {}
+        pending_recovery = (not a.get("autoWake") and a.get("status") != "paused"
+            and not a.get("deletedAt") and restart.get("stage") == "pending" and restart.get("autoWake")
+            and all(restart.get(field) == a.get(field) for field in ("epoch", "accountKey", "threadId")))
+        if not pending_recovery:
+            return self.enqueue(db, a, kind, text, key)
+        # Save the event now; only native reconciliation can reopen dispatch.
+        db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+            (key, a["id"], kind, text, "pending", time.time(), a["epoch"], None, None))
+        self.changed.set()
+        return key
+
     def _monitor_exit_event(self, db, a, m, *, wake=True):
         if m.get("panelFeed") or m.get("ruleId"):
             return
@@ -3837,7 +3884,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         if db.execute("SELECT 1 FROM runtime_events WHERE id=?", (event_key,)).fetchone():
             return False
         if wake and not a.get("deletedAt") and a["epoch"] == m["epoch"]:
-            self.enqueue(db, a, "monitor_exit", text, event_key)
+            self.enqueue_recovery_event(db, a, "monitor_exit", text, event_key)
             return True
         # Preserve historical receipts without continuing a previous assignment.
         # Explicit recovery still cannot wake a stopped or replaced owner epoch.
@@ -4449,6 +4496,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         with self.lock:
             if self.closed:
                 return
+            from codex_restart_recovery import capture as capture_restart
+            with self.db() as db:
+                for agent in self.records(db, "agents"):
+                    capture_restart(agent)
+                    self.put(db, "agents", agent)
             self.closed = True
         with self.ui_condition:
             self.ui_condition.notify_all()

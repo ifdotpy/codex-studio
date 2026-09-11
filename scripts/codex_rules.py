@@ -87,6 +87,14 @@ class RulesMixin:
                 r.update(lowSince=None, nextAt=time.time())
                 self.put(db, "rules", r)
             if r.get("inFlight"):
+                if r.get("status") == "active":
+                    r["restartCheck"] = {
+                        "epoch": r["epoch"], "checks": r["checks"],
+                        "monitorId": str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                                   "rule:" + r["id"] + ":" + str(r["checks"]))),
+                    }
+                else:
+                    r.pop("restartCheck", None)
                 r.update(
                     inFlight=False,
                     status="paused",
@@ -133,6 +141,7 @@ class RulesMixin:
                     raise ValueError("Unknown rule")
                 if action == "resume" and old.get("inFlight"):
                     raise ValueError("Wait for the current rule check before resuming")
+                old.pop("restartCheck", None)
                 if action == "delete":
                     db.execute("DELETE FROM runtime_rules WHERE id=?", (key,))
                     return {"deleted": key}
@@ -395,13 +404,17 @@ class RulesMixin:
             lastOutput=output[-12000:],
             lastFinished=time.time(),
         )
+        restart = a.get("restartRecovery") or {}
+        pending_recovery = (not a.get("autoWake") and a.get("status") != "paused"
+            and not a.get("deletedAt") and restart.get("stage") == "pending" and restart.get("autoWake")
+            and all(restart.get(field) == a.get(field) for field in ("epoch", "accountKey", "threadId")))
         if (
             wake
             and r["status"] == "active"
-            and a["autoWake"]
+            and (a["autoWake"] or pending_recovery)
             and a["epoch"] == r["epoch"]
         ):
-            self.enqueue(
+            self.enqueue_recovery_event(
                 db,
                 a,
                 "rule",

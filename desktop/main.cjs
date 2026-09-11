@@ -11,11 +11,33 @@ const {
   Notification,
   Menu,
   systemPreferences,
+  screen,
 } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { ensureBackend, identity, updateStatus } = require("./backend.cjs");
+const {
+  configureRecovery,
+  recoveryPreference,
+  trackDesktopRecovery,
+} = require("./recovery.cjs");
+const { loadWindowState, trackWindowState } = require("./window-state.cjs");
 const hidden = process.argv.includes("--hidden");
+const backgroundRecovery = process.argv.includes("--background-recovery");
+let recoveryEnabled = false;
+let desktopRecovery;
+const recoverySupported =
+  app.isPackaged && process.platform === "darwin" && !hidden;
+async function setBackgroundRecovery(enabled) {
+  const result = await configureRecovery({
+    resources: backendResources,
+    supervisor: path.join(process.resourcesPath, "recover_backend.py"),
+    port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
+    enabled,
+    restartEnvironment: backend?.restartEnvironment,
+  });
+  recoveryEnabled = result.enabled;
+}
 // Preserve the existing browser profile when the product name changes.
 app.setPath(
   "userData",
@@ -285,6 +307,13 @@ async function nativeAction(event, request) {
   }
 }
 async function start() {
+  if (recoverySupported) {
+    try {
+      desktopRecovery = trackDesktopRecovery({ app });
+    } catch (error) {
+      console.error("Desktop recovery is unavailable:", error.message);
+    }
+  }
   await loadNotifications();
   backendResources = app.isPackaged
     ? path.join(process.resourcesPath, "workspace")
@@ -293,11 +322,24 @@ async function start() {
     resources: backendResources,
     port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
   });
+  if (recoverySupported) {
+    try {
+      await setBackgroundRecovery(recoveryPreference());
+    } catch (error) {
+      console.error("Background recovery is unavailable:", error.message);
+    }
+  }
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const restoredWindow = loadWindowState(app.getPath("userData"), [
+    primaryDisplay,
+    ...screen
+      .getAllDisplays()
+      .filter((display) => display.id !== primaryDisplay.id),
+  ]);
   win = new BrowserWindow({
-    width: 1440,
-    height: 960,
-    minWidth: 420,
-    minHeight: 600,
+    ...restoredWindow.bounds,
+    minWidth: restoredWindow.minWidth,
+    minHeight: restoredWindow.minHeight,
     show: false,
     title: "Codex Studio",
     ...(process.platform === "darwin"
@@ -315,6 +357,13 @@ async function start() {
       spellcheck: true,
     },
   });
+  const windowState = trackWindowState(
+    win,
+    app,
+    app.getPath("userData"),
+    restoredWindow,
+    { hidden },
+  );
   win.webContents.session.setPermissionRequestHandler(
     (contents, permission, callback, details) =>
       callback(
@@ -337,6 +386,15 @@ async function start() {
       details.mediaType === "audio" &&
       microphoneUntil > Date.now(),
   );
+  win.on("close", () => desktopRecovery?.windowClosing());
+  let rendererFailures = 0;
+  win.webContents.on("render-process-gone", (_event, details) => {
+    if (details.reason === "clean-exit" || ++rendererFailures > 3) return;
+    setTimeout(() => {
+      if (win && !win.isDestroyed())
+        win.loadURL(`${backend.origin}/`).catch(console.error);
+    }, 1000 * rendererFailures);
+  });
   win.webContents.on("will-attach-webview", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -347,7 +405,38 @@ async function start() {
     Menu.buildFromTemplate([
       {
         label: "Codex Studio",
-        submenu: [{ role: "about" }, { type: "separator" }, { role: "quit" }],
+        submenu: [
+          { role: "about" },
+          ...(recoverySupported
+            ? [
+                {
+                  label: "Restore server after login or failure",
+                  type: "checkbox",
+                  checked: recoveryEnabled,
+                  click: async (item) => {
+                    try {
+                      await setBackgroundRecovery(item.checked);
+                    } catch (error) {
+                      item.checked = recoveryEnabled;
+                      dialog.showErrorBox(
+                        "Cannot change background recovery",
+                        error.message,
+                      );
+                    }
+                  },
+                },
+              ]
+            : []),
+          { type: "separator" },
+          {
+            label: "Quit Codex Studio",
+            accelerator: "CommandOrControl+Q",
+            click: () => {
+              desktopRecovery?.closeExplicitly();
+              app.quit();
+            },
+          },
+        ],
       },
       { role: "editMenu" },
       {
@@ -363,6 +452,7 @@ async function start() {
     ]),
   );
   await win.loadURL(`${backend.origin}/`);
+  windowState.restore();
   if (!hidden) win.showInactive();
   console.log(
     JSON.stringify({
@@ -381,11 +471,12 @@ else
     .then(() => {
       if (hidden && process.platform === "darwin")
         app.setActivationPolicy("prohibited");
+
       return start();
     })
     .catch((error) => {
       console.error(error.stack || error);
-      if (!hidden)
+      if (!hidden && !backgroundRecovery)
         dialog.showErrorBox("Codex Studio cannot start", error.message);
       app.exit(1);
     });

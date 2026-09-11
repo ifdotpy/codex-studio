@@ -56,6 +56,10 @@ The desktop compares its installed backend source with the running server.
 It shows an update notice when they differ. Closing the window preserves the
 server and its active work, so reopening the window does not apply backend changes.
 
+The packaged macOS application restores its backend after login or a process
+failure. Saved input and verified interrupted work recover automatically.
+See [restart recovery](docs/restart-recovery.md) for the exact behavior and limits.
+
 ## iPhone access
 
 The mobile layout shows orchestrator chats, team agents, existing projects, account selection,

@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 
 sys.dont_write_bytecode = True
@@ -316,9 +317,21 @@ class MonitorContract(unittest.TestCase):
         finally:
             self.runtime.lock = original_lock
 
+    def test_restart_restores_definitive_feed_exit_without_command_replay(self):
+        feed = self.start()
+        # This native fixture returns exitCode=0 when close releases its gate.
+        self.runtime.close()
+        self.runtime = FeedRuntime(self.tmp.name, FeedServer)
+        self.assertEqual(self.runtime.servers, {})
+        self.assertTrue(any(args[1] == feed["id"] and args[4] == "completed"
+                            for args, _ in self.runtime.feed_statuses))
+        self.assertEqual(self.feed_events(feed["id"]), [])
+
     def test_restart_marks_lost_without_command_replay(self):
         feed = self.start()
-        self.runtime.close()
+        # Model a lost native reply, not the fixture's definitive shutdown exit.
+        with patch.object(self.runtime, "monitor_accepted", return_value=None):
+            self.runtime.close()
         self.runtime = FeedRuntime(self.tmp.name, FeedServer)
         self.assertEqual(self.runtime.servers, {})
         self.assertTrue(any(args[1] == feed["id"] and args[4] == "lost" for args, _ in self.runtime.feed_statuses))

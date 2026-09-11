@@ -16,6 +16,7 @@ import time
 import uuid
 
 HISTORY_LIMIT = 1024 * 1024
+ARCHIVE_CHUNK = 65536
 
 
 class TerminalManager:
@@ -37,6 +38,13 @@ class TerminalManager:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS user_terminal_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL)"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS user_terminal_output "
+                "(terminal TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, "
+                "text TEXT NOT NULL, PRIMARY KEY (terminal,start))"
+            )
+            db.execute("CREATE INDEX IF NOT EXISTS user_terminal_output_end "
+                       "ON user_terminal_output (terminal,end)")
             for row in db.execute("SELECT id,record FROM user_terminals"):
                 record = json.loads(row["record"])
                 if record["status"] == "running":
@@ -252,12 +260,67 @@ class TerminalManager:
             row = db.execute(
                 "SELECT output,offset FROM user_terminals WHERE id=?", (key,)
             ).fetchone()
+            self.seed_archive(db, key, row)
+            start = row["offset"] + len(row["output"])
+            self.archive_text(db, key, start, text)
             value = row["output"] + text
             dropped = max(0, len(value) - HISTORY_LIMIT)
             db.execute(
                 "UPDATE user_terminals SET output=?,offset=? WHERE id=?",
                 (value[dropped:], row["offset"] + dropped, key),
             )
+
+    @staticmethod
+    def archive_text(db, key, start, text):
+        previous = db.execute("SELECT start,end,text FROM user_terminal_output "
+                              "WHERE terminal=? ORDER BY start DESC LIMIT 1", (key,)).fetchone()
+        if previous and previous["end"] == start and len(previous["text"]) < ARCHIVE_CHUNK:
+            count = min(len(text), ARCHIVE_CHUNK - len(previous["text"]))
+            db.execute("UPDATE user_terminal_output SET end=?,text=? WHERE terminal=? AND start=?",
+                       (start + count, previous["text"] + text[:count], key, previous["start"]))
+            start += count
+            text = text[count:]
+        for position in range(0, len(text), ARCHIVE_CHUNK):
+            chunk = text[position:position + ARCHIVE_CHUNK]
+            db.execute("INSERT INTO user_terminal_output VALUES (?,?,?,?)",
+                       (key, start + position, start + position + len(chunk), chunk))
+
+    def seed_archive(self, db, key, row):
+        if row["output"] and not db.execute(
+                "SELECT 1 FROM user_terminal_output WHERE terminal=? LIMIT 1", (key,)).fetchone():
+            # Earlier releases retained only this suffix. Preserve its absolute
+            # cursor; an unavailable prefix must remain visibly unavailable.
+            self.archive_text(db, key, row["offset"], row["output"])
+
+    def history_output(self, key, offset=0, limit=ARCHIVE_CHUNK):
+        try:
+            offset, limit = int(offset), int(limit)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid terminal history cursor")
+        if offset < 0 or not 1 <= limit <= HISTORY_LIMIT:
+            raise ValueError("Invalid terminal history range")
+        with self.lock, self.db() as db:
+            row = db.execute("SELECT * FROM user_terminals WHERE id=?", (key,)).fetchone()
+            if not row:
+                raise ValueError("Unknown terminal")
+            self.seed_archive(db, key, row)
+            first = db.execute("SELECT start FROM user_terminal_output WHERE terminal=? "
+                               "ORDER BY start LIMIT 1", (key,)).fetchone()
+            start = first[0] if first else row["offset"]
+            available = row["offset"] + len(row["output"])
+            cursor = min(max(offset, start), available)
+            end = min(cursor + limit, available)
+            text = ''.join(chunk["text"][max(0, cursor - chunk["start"]):end - chunk["start"]]
+                           for chunk in db.execute(
+                               "SELECT start,text FROM user_terminal_output "
+                               "WHERE terminal=? AND end>? AND start<? ORDER BY start LIMIT ?",
+                               (key, cursor, end, limit // ARCHIVE_CHUNK + 2)))
+            record = json.loads(row["record"])
+            return {"text": text, "offset": cursor + len(text),
+                    "availableOffset": available, "historyStart": start,
+                    "hasMore": cursor + len(text) < available, "truncated": offset < start,
+                    "status": record["status"], "exitCode": record.get("exitCode"),
+                    "error": record.get("error")}
 
     def output(self, key, offset=0):
         try:

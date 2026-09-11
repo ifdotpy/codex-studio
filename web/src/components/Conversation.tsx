@@ -37,6 +37,9 @@ import {
 } from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
 import { useConversationScroll } from "./useConversationScroll";
+import { useAttachmentDrafts } from "./useAttachmentDrafts";
+import { useUploadRecovery } from "./useUploadRecovery";
+import { queueUploads } from "../sync/uploads";
 import {
   statusLabel,
   type Agent,
@@ -60,7 +63,6 @@ import AgentPhase from "./AgentPhase";
 import AgentPanel from "./AgentPanel";
 import ComposerAttachments, {
   MessageAttachments,
-  uploadAttachment,
   type Attachment,
 } from "./ComposerAttachments";
 import "./chat-controls.css";
@@ -79,7 +81,7 @@ export default function Conversation(p: {
     assets?: string[];
     delivery?: "queue" | "steer" | "after_tool";
     attachments?: Attachment[];
-    onPersist?: () => void;
+    onPersist?: () => void | Promise<void>;
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
   onObserved?: (ids: string[]) => void;
@@ -212,21 +214,20 @@ export default function Conversation(p: {
       .finally(() => p.onJumpHandled?.(target.requestId));
   }, [p.jumpTarget?.requestId, p.id]);
   const attachmentKey = `codex-agent-attachments:${p.data.stateDir}`;
-  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>(
-    () => saved(attachmentKey, {}),
+  const [attachments, setAttachments] = useAttachmentDrafts(
+    attachmentKey,
+    p.notify,
   );
-  useEffect(() => {
-    save(
-      attachmentKey,
-      Object.fromEntries(
-        Object.entries(attachments).map(([id, files]) => [
-          id,
-          files.map(({ preview: _preview, ...asset }) => asset),
-        ]),
-      ),
-    );
-  }, [attachments, attachmentKey]);
-  const [uploading, setUploading] = useState(false);
+  const [addingFiles, setUploading] = useState(false);
+  const uploadRecovery = useUploadRecovery(
+    p.data.stateDir,
+    p.syncWorkspaceId || "",
+    setAttachments,
+  );
+  const pendingFiles = uploadRecovery.pending.filter(
+    (row) => row.agent === p.id,
+  );
+  const uploading = addingFiles || pendingFiles.length > 0;
   const [queue, setQueue] = useState<Json[]>([]);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const refreshedFailure = useRef("");
@@ -372,24 +373,21 @@ export default function Conversation(p: {
     };
   }, [p.id, managed]);
   const addFiles = async (files: globalThis.File[]) => {
-    if (!p.id || !managed || uploadLock.current || !files.length) return;
-    if (files.length + assets.length > 8) {
-      p.notify("Attach at most eight files.");
-      return;
-    }
+    if (!p.id || !managed)
+      throw new Error("Select a managed chat before attaching files.");
+    if (uploadLock.current)
+      throw new Error("Wait for the selected files to be saved, then retry.");
+    if (!files.length) throw new Error("Select at least one file.");
+    if (files.length + assets.length + pendingFiles.length > 8)
+      throw new Error("Attach at most eight files.");
     const id = p.id;
     uploadLock.current = true;
     setUploading(true);
     try {
-      for (const file of files) {
-        const asset = await uploadAttachment(id, file);
-        setAttachments((current) => ({
-          ...current,
-          [id]: [...(current[id] || []), asset],
-        }));
-      }
-    } catch (error) {
-      p.notify(errorText(error));
+      uploadRecovery.include(
+        await queueUploads(p.data.stateDir, id, files, p.syncWorkspaceId || ""),
+      );
+      uploadRecovery.retry();
     } finally {
       uploadLock.current = false;
       setUploading(false);
@@ -417,16 +415,18 @@ export default function Conversation(p: {
     returnToLatest();
     input.current?.focus({ preventScroll: true });
     const sent = new Set(assets.map((asset) => asset.id));
-    setAttachments((current) => ({
-      ...current,
-      [id]: (current[id] || []).filter((asset) => !sent.has(asset.id)),
-    }));
     try {
       await p.send({
         assets: assets.map((asset) => asset.id),
         attachments: assets.map(({ preview: _preview, ...asset }) => asset),
         delivery,
-        onPersist: release,
+        onPersist: async () => {
+          await setAttachments((current) => ({
+            ...current,
+            [id]: (current[id] || []).filter((asset) => !sent.has(asset.id)),
+          }));
+          release();
+        },
       });
       if (p.id && managed)
         void loadQueue(p.id).catch((error) => p.notify(errorText(error)));
@@ -466,14 +466,15 @@ export default function Conversation(p: {
     uploadLock.current = true;
     setUploading(true);
     try {
-      const asset = await uploadAttachment(
-        id,
-        new File([text], "message.txt", { type: "text/plain" }),
+      uploadRecovery.include(
+        await queueUploads(
+          p.data.stateDir,
+          id,
+          [new File([text], "message.txt", { type: "text/plain" })],
+          p.syncWorkspaceId || "",
+        ),
       );
-      setAttachments((current) => ({
-        ...current,
-        [id]: [...(current[id] || []), asset],
-      }));
+      uploadRecovery.retry();
       p.setDraft((current) => (current === text ? "" : current), id);
     } catch (error) {
       p.notify(errorText(error));
@@ -1215,7 +1216,9 @@ export default function Conversation(p: {
             onDrop={(event) => {
               event.preventDefault();
               setDragging(false);
-              void addFiles(Array.from(event.dataTransfer.files));
+              void addFiles(Array.from(event.dataTransfer.files)).catch(
+                (error) => p.notify(errorText(error)),
+              );
             }}
             onSubmit={(e) => {
               e.preventDefault();
@@ -1227,7 +1230,9 @@ export default function Conversation(p: {
                 const files = Array.from(event.clipboardData.files);
                 if (managed && files.length) {
                   event.preventDefault();
-                  void addFiles(files);
+                  void addFiles(files).catch((error) =>
+                    p.notify(errorText(error)),
+                  );
                 }
               }}
               variant="unstyled"
@@ -1312,19 +1317,65 @@ export default function Conversation(p: {
                 dismiss={(version) => p.dismissDraft?.(version)}
               />
               {managed && (
-                <ComposerAttachments
-                  notify={p.notify}
-                  assets={assets}
-                  uploading={uploading}
-                  disabled={!canSend || p.sending}
-                  add={(files) => void addFiles(files)}
-                  remove={(id) =>
-                    setAttachments((current) => ({
-                      ...current,
-                      [p.id || ""]: assets.filter((asset) => asset.id !== id),
-                    }))
-                  }
-                />
+                <>
+                  {!!pendingFiles.length && (
+                    <div className="attachment-list" role="status">
+                      {pendingFiles.map((file) => (
+                        <div className="attachment-chip" key={file.id}>
+                          <span>
+                            {file.name}: saved on this device, waiting for
+                            upload
+                          </span>
+                          <Button
+                            size="compact-xs"
+                            onClick={() => {
+                              void uploadRecovery
+                                .remove(file.id, () => {
+                                  setAttachments((current) => ({
+                                    ...current,
+                                    [file.agent]: (
+                                      current[file.agent] || []
+                                    ).filter((asset) => asset.id !== file.id),
+                                  }));
+                                })
+                                .catch((error) => p.notify(errorText(error)));
+                            }}
+                          >
+                            Remove pending {file.name}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {uploadRecovery.error && (
+                    <p role="status">
+                      {uploadRecovery.error}{" "}
+                      <button type="button" onClick={uploadRecovery.retry}>
+                        Retry file upload
+                      </button>
+                    </p>
+                  )}
+                  <ComposerAttachments
+                    notify={p.notify}
+                    assets={assets}
+                    uploading={uploading}
+                    disabled={!canSend || p.sending}
+                    add={addFiles}
+                    remove={(id) => {
+                      const agentId = p.id || "";
+                      void uploadRecovery
+                        .remove(id, () => {
+                          setAttachments((current) => ({
+                            ...current,
+                            [agentId]: (current[agentId] || []).filter(
+                              (asset) => asset.id !== id,
+                            ),
+                          }));
+                        })
+                        .catch((error) => p.notify(errorText(error)));
+                    }}
+                  />
+                </>
               )}
               {managed && p.id && (
                 <Dictation

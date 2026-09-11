@@ -497,7 +497,7 @@ export async function startDraftReplication(
       handler: (rows) =>
         attempt("push", async () => {
           await verifyWorkspace();
-          return api("/api/sync/drafts", { rows });
+          return api("/api/sync/drafts", { rows }, { workspaceId });
         }),
       batchSize: 100,
     },

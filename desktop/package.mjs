@@ -57,7 +57,7 @@ try {
     overwrite: true,
     asar: true,
     prune: true,
-    extraResource: [resources, speech],
+    extraResource: [resources, speech, path.join(root, "recover_backend.py")],
     extendInfo: {
       NSMicrophoneUsageDescription:
         "Record dictation that you can review and convert to text.",
@@ -69,6 +69,9 @@ try {
       /^\/dist($|\/)/,
       /^\/node_modules($|\/)/,
       /^\/test\.mjs$/,
+      /^\/(?:backend-test|recovery-test|recovery-renderer-test|window-state-test|package-test)\.(?:mjs|cjs|py)$/,
+      /^\/recover_backend\.py$/,
+      /^\/__pycache__($|\/)/,
       /^\/package\.mjs$/,
       /^\/README\.md$/,
     ],

@@ -100,6 +100,26 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   };
+  await page
+    .locator('input[type="file"]')
+    .setInputFiles(
+      Array.from({ length: 9 }, (_, index) => ({
+        name: `too-many-${index}.txt`,
+        mimeType: "text/plain",
+        buffer: Buffer.from("Keep the refused selection"),
+      })),
+    );
+  await page
+    .getByText("Attach at most eight files.", { exact: true })
+    .first()
+    .waitFor();
+  assert.equal(
+    await page
+      .locator('input[type="file"]')
+      .evaluate((input) => input.files.length),
+    9,
+    "Admission refusal must not clear uncommitted files",
+  );
   await page.locator('input[type="file"]').setInputFiles({
     name: "first.txt",
     mimeType: "text/plain",
@@ -108,6 +128,45 @@ try {
   await page
     .getByRole("button", { name: "Remove first.txt", exact: true })
     .waitFor();
+  // A reload can happen after Send but before IndexedDB commits the outbox.
+  await page.evaluate(() => {
+    window.storage.db.outbox.insert = () => {
+      window.insertStarted = true;
+      return new Promise(() => {});
+    };
+  });
+  await input.fill("Preserve this uncommitted send");
+  await send.click();
+  await page.waitForFunction(() => window.insertStarted);
+  assert.equal(await input.inputValue(), "Preserve this uncommitted send");
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Remove first.txt", exact: true })
+      .count(),
+    1,
+  );
+  assert.equal(posts.length, 0, "No HTTP send before local persistence");
+  await page.reload();
+  await input.waitFor();
+  await until(
+    async () => (await input.inputValue()) === "Preserve this uncommitted send",
+  );
+  await page
+    .getByRole("button", { name: "Remove first.txt", exact: true })
+    .waitFor();
+  assert.equal(
+    posts.length,
+    0,
+    "Reload does not invent a send for an uncommitted draft",
+  );
+  await page.evaluate(async () => {
+    window.storage = await (await import("/src/sync/client.ts")).syncDatabase();
+    window.queued = async () =>
+      (await window.storage.db.outbox.find().exec()).map((doc) => ({
+        id: doc.id,
+        ...JSON.parse(doc.getLatest().payload),
+      }));
+  });
   await input.fill("Same intentional message");
   await send.click();
   await until(() => posts.length === 1);
@@ -391,7 +450,7 @@ try {
   assert.deepEqual(counts, [1, 1]);
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: responsive mobile composer, ordered distinct sends, late error draft/attachment guard, late finally lock guard, safe uncertain retry, offline reconnect, real cross-tab HTTP deduplication",
+    "PASS: draft and attachments survive reload before outbox commit, responsive mobile composer, ordered distinct sends, late error draft/attachment guard, late finally lock guard, safe uncertain retry, offline reconnect, real cross-tab HTTP deduplication",
   );
 } finally {
   await browser?.close();

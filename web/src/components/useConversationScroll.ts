@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { saved, save } from "../api";
 
 type Position = { top: number; following: boolean; distance: number };
 
@@ -18,6 +19,10 @@ export function useConversationScroll(id: string, ready: boolean) {
   const lastScrollInput = useRef(-Infinity);
   const anchor = useRef<{ element: HTMLElement; offset: number } | null>(null);
 
+  const persist = () => {
+    const position = positions.current.get(current.current);
+    if (position) save(`studio-chat-scroll:${current.current}`, position);
+  };
   const remember = () => {
     const root = scroll.current;
     if (!root) return;
@@ -79,17 +84,26 @@ export function useConversationScroll(id: string, ready: boolean) {
       bottomDistance.current = 0;
       restore();
     } else remember();
+    persist();
   };
 
   useLayoutEffect(() => {
     if (current.current !== id) {
+      persist();
       current.current = id;
       lastScrollInput.current = -Infinity;
       anchor.current = null;
-      const saved = positions.current.get(id);
-      lastTop.current = saved?.top || 0;
-      bottomDistance.current = saved?.distance || 0;
-      following.current = saved?.following ?? true;
+      const stored =
+        positions.current.get(id) ||
+        saved<Position | null>(`studio-chat-scroll:${id}`, null);
+      const valid =
+        stored &&
+        Number.isFinite(stored.top) &&
+        Number.isFinite(stored.distance) &&
+        typeof stored.following === "boolean";
+      lastTop.current = valid ? stored.top : 0;
+      bottomDistance.current = valid ? stored.distance : 0;
+      following.current = valid ? stored.following : true;
       updateFollow(following.current);
     }
     restore();
@@ -125,10 +139,18 @@ export function useConversationScroll(id: string, ready: boolean) {
     };
     for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
       root.addEventListener(type, input, { passive: true });
+    const checkpoint = () => {
+      if (available.current) persist();
+    };
+    window.addEventListener("pagehide", checkpoint);
+    document.addEventListener("visibilitychange", checkpoint);
     const observer = new ResizeObserver(restore);
     observer.observe(root);
     observer.observe(body);
     return () => {
+      checkpoint();
+      window.removeEventListener("pagehide", checkpoint);
+      document.removeEventListener("visibilitychange", checkpoint);
       observer.disconnect();
       for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
         root.removeEventListener(type, input);
@@ -148,6 +170,7 @@ export function useConversationScroll(id: string, ready: boolean) {
     following.current = value;
     updateFollow(value);
     remember();
+    persist();
   };
   return { scroll, content, follow, setFollow, onScroll, remember };
 }

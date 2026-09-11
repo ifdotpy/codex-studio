@@ -36,6 +36,7 @@ import { api, errorText, save, saved } from "../api";
 import type { Agent, Json, Snapshot } from "../types";
 import Requests from "./Requests";
 import UserTasks from "./UserTasks";
+import { useFormDraft } from "./useFormDraft";
 import UserMessages from "./UserMessages";
 import TeamChats from "./TeamChats";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
@@ -1737,7 +1738,10 @@ function Inventory({ value, query }: { value: any; query: string }) {
 
 function Profiles(c: Context) {
   const state = useResource("/api/profiles", c.revision),
-    [draft, setDraft] = useState<Json | null>(null),
+    [draft, setDraft] = useFormDraft(
+      `studio-profile-draft:${c.data.stateDir}`,
+      c.notify,
+    ),
     [busy, setBusy] = useState(false),
     [remove, setRemove] = useState<Json | null>(null),
     [launch, setLaunch] = useState<Json | null>(null);
@@ -1835,7 +1839,7 @@ function Profiles(c: Context) {
               setBusy(true);
               try {
                 await c.run("/api/profiles", { ...draft, action: "save" });
-                setDraft(null);
+                setDraft((current) => (current === draft ? null : current));
               } catch {
               } finally {
                 setBusy(false);
@@ -1959,7 +1963,10 @@ function Profiles(c: Context) {
 
 function Rules(c: Context) {
   const state = useResource(endpoint("rules", c.selected), c.revision),
-    [draft, setDraft] = useState<Json | null>(null),
+    [draft, setDraft] = useFormDraft(
+      `studio-rule-draft:${JSON.stringify([c.data.stateDir, c.selected?.id])}`,
+      c.notify,
+    ),
     [busy, setBusy] = useState(false),
     [remove, setRemove] = useState<Json | null>(null);
   const act = async (rule: Json, action: string) => {
@@ -2123,7 +2130,7 @@ function Rules(c: Context) {
                       ? new Date(draft.at).getTime() / 1000
                       : undefined,
                 });
-                setDraft(null);
+                setDraft((current) => (current === draft ? null : current));
               } catch {
               } finally {
                 setBusy(false);

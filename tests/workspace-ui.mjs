@@ -278,6 +278,16 @@ try {
   await modal
     .getByLabel("Message to the agent")
     .fill("Check release evidence.");
+  await page.reload();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page.locator('[data-workspace-section="work"]').click();
+  await section("Rules");
+  modal = page.locator(".mantine-Modal-content:visible").last();
+  assert.equal(await modal.getByLabel("Name").inputValue(), "Release watch");
+  assert.equal(
+    await modal.getByLabel("Message to the agent").inputValue(),
+    "Check release evidence.",
+  );
   await modal.getByRole("button", { name: "Save rule", exact: true }).click();
   await poll(
     async () => (await get("/api/rules")).rules.length === 1,
@@ -394,6 +404,19 @@ try {
   await modal
     .getByLabel("Instructions")
     .fill("Read the complete diff and verify the result.");
+  await page.reload();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page.locator('[data-workspace-section="work"]').click();
+  await section("Profiles");
+  modal = page.locator(".mantine-Modal-content:visible").last();
+  assert.equal(
+    await modal.getByLabel("Name").inputValue(),
+    "Evidence reviewer",
+  );
+  assert.equal(
+    await modal.getByLabel("Instructions").inputValue(),
+    "Read the complete diff and verify the result.",
+  );
   await modal
     .getByRole("button", { name: "Save profile", exact: true })
     .click();

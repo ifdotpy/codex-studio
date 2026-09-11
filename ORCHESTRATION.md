@@ -343,8 +343,8 @@ Existing native agents and legacy app-server waves remain visible on the canvas.
 Their recorded creator edges alone do not give this runtime control of them.
 
 A Monitor watch runs through `command/exec` with the thread's effective permission
-profile or sandbox. The runtime drains output without model calls. It stores at
-most 20 MiB per log and retains a 12,000-character tail. The final event includes
+profile or sandbox. The runtime drains output without model calls. It stores the
+complete log and retains a 12,000-character tail for the live view. The final event includes
 exit code, command status, output tail, log path and total output bytes.
 The default command timeout is one hour; the maximum is 24 hours.
 An acknowledgement timeout does not finish a command. Cancellation retains the
@@ -474,11 +474,11 @@ The runtime stores agents, events, transcripts, command watches and approval req
 in `runtime_*` tables in `canvas.sqlite3`. Existing chat tables remain intact.
 Only one runtime can own the state directory. SQLite uses write-ahead logging.
 
-After a server restart, idle queues can resume. A turn that was active at shutdown
-is marked interrupted. An unacknowledged delivery stays uncertain and is not replayed.
-Review its transcript, then send an explicit new instruction. Active command watches
-become lost when their exit result is unknown. They are not restarted automatically.
-Command process survival across a server or machine restart is not guaranteed.
+After a server restart, queued input and verified interrupted work can resume.
+Continuation requires the original permission and authoritative native evidence.
+An unacknowledged delivery stays uncertain and is not replayed. Command watches
+without a definitive result remain lost. See [restart recovery](docs/restart-recovery.md)
+for the persistence contract and exact limits.
 
 ## Codex features
 
@@ -610,8 +610,8 @@ preserves the backend and agent work. Existing SQLite chats use the same state
 directory. Historical Canvas positions remain browser-profile data.
 
 The terminal panel has a searchable session list without a fixed session count.
-It retains the latest 1,048,576 characters per user shell in SQLite. Reopening the UI
-restores that text. A backend restart marks old sessions ended; it does not
+It retains complete future output in SQLite, with a 1,048,576-character live view.
+Reopening the UI restores that view. Download saved output reads the archive. A backend restart marks old sessions ended; it does not
 recreate their processes. Input with uncertain delivery pauses until the user
 reconnects and never retries the same keystrokes automatically.
 

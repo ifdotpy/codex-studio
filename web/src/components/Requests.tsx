@@ -1,7 +1,8 @@
 import { Button, TextInput, Textarea, UnstyledButton } from "@mantine/core";
 import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText } from "../api";
+import { api, errorText, saved } from "../api";
+import { writeLocalDraft } from "../sync/localDraft";
 import type { Json, Agent } from "../types";
 import "./request-questions.css";
 import { nativeThreadError } from "../nativeErrors";
@@ -33,7 +34,7 @@ function requestQuestions(request: Json): Json[] {
 }
 
 type AnswerValues = Record<string, string>;
-// Answers, including secrets, remain in memory only.
+// Secret answers remain in memory. Other answers survive a reload.
 const answerDrafts = new Map<string, AnswerValues>();
 const answerKey = (scope: string, request: Json) =>
   JSON.stringify([
@@ -41,7 +42,12 @@ const answerKey = (scope: string, request: Json) =>
     request.agent,
     request.id,
     request.method,
-    request.params,
+    requestQuestions(request).map(({ id, question, isSecret, options }) => ({
+      id,
+      question,
+      isSecret,
+      options,
+    })),
   ]);
 
 function AnswerForm({
@@ -60,7 +66,9 @@ function AnswerForm({
   notify: Props["notify"];
 }) {
   const [values, setValues] = useState<AnswerValues>(
-    () => answerDrafts.get(draftKey) || {},
+    () =>
+      answerDrafts.get(draftKey) ||
+      saved(`studio-answer-draft:${draftKey}`, {}),
   );
   const questions = requestQuestions(request);
   const asynchronous = request.method === "agent/asyncQuestion";
@@ -68,6 +76,14 @@ function AnswerForm({
     const next = { ...values, [id]: value };
     answerDrafts.set(draftKey, next);
     setValues(next);
+    const publicValues = Object.fromEntries(
+      questions.filter((q) => !q.isSecret).map((q) => [q.id, next[q.id] || ""]),
+    );
+    const error = writeLocalDraft(
+      `studio-answer-draft:${draftKey}`,
+      publicValues,
+    );
+    if (error) notify(error);
   };
   const ready =
     !asynchronous ||
@@ -241,6 +257,11 @@ function RequestCard({
     try {
       await api("/api/answer", { ...body, id: r.id });
       answerDrafts.delete(draftKey);
+      const storageError = writeLocalDraft(
+        `studio-answer-draft:${draftKey}`,
+        null,
+      );
+      if (storageError) notify(storageError);
       if (!mounted.current) return;
       setOpen(false);
       await refresh();

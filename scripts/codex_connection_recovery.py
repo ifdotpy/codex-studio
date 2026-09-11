@@ -10,7 +10,7 @@ DISCONNECT_ERRORS = frozenset({
 })
 IDENTITY = ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'status', 'error',
             'inFlight', 'autoWake', 'startAttempt', 'accountTransferId',
-            'workspaceOperation', 'nativeThreadBlock', 'disconnectRecovery')
+            'workspaceOperation', 'nativeThreadBlock', 'disconnectRecovery', 'restartRecovery')
 
 
 def eligible(agent):
@@ -109,6 +109,9 @@ def apply_result(runtime, expected, connection, server, turn, *, automatic=False
                 result = runtime.apply_turn_recovery(identity, connection, 'notLoaded', turn)
                 with runtime.db() as db:
                     agent = runtime.agent(expected['id'], db)
+                    marker = agent.get('restartRecovery') or {}
+                    if marker.get('turnId') == turn['id'] and result['status'] == 'reconciled':
+                        marker.update(stage='finished', reconciledAt=time.time())
                     agent['connectionRecovery'] = {
                         'turnId': turn['id'], 'outcome': turn['status'], 'at': time.time(),
                         'source': 'native_thread_read', 'previousError': expected['error'],
@@ -121,6 +124,8 @@ def apply_result(runtime, expected, connection, server, turn, *, automatic=False
             return {'status': 'superseded'}
         agent = runtime.agent(expected['id'], db)
         outcome = turn['status']
+        from codex_restart_recovery import can_continue, continue_interrupted
+        restart_continuation = automatic and can_continue(db, agent, turn)
         # Restore final text directly. Notification handlers can wake parents,
         # create questions, or schedule checkpoints; this read must do none of those.
         for item in turn.get('items', []):
@@ -150,10 +155,34 @@ def apply_result(runtime, expected, connection, server, turn, *, automatic=False
                          'previousError': expected['error']})
         runtime.loaded.discard(agent['id'])
         runtime.put(db, 'agents', agent)
-        return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': outcome}
+        if restart_continuation:
+            continue_interrupted(runtime, db, agent, turn)
+        return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': outcome,
+                **({'continued': True} if restart_continuation else {})}
+
+
+def native_operations_settled(turn):
+    # Native history can contain an item whose start notification never reached
+    # SQLite. A terminal model turn does not prove that such a command ended.
+    for item in turn.get('items', []):
+        kind = item.get('type')
+        if kind == 'commandExecution':
+            if item.get('status') not in {'completed', 'failed', 'declined'}:
+                return False
+            if item.get('status') != 'declined' and type(item.get('exitCode')) is not int:
+                return False
+        elif kind == 'dynamicToolCall':
+            if item.get('status') != 'completed' or item.get('success') is not True:
+                return False
+        elif kind in {'mcpToolCall', 'fileChange', 'computerToolCall'}:
+            if item.get('status') != 'completed' or item.get('error'):
+                return False
+    return True
 
 
 def can_deliver_completion(db, agent, turn):
+    if not native_operations_settled(turn):
+        return False
     previous = agent.get('disconnectRecovery') or {}
     if (turn.get('status') != 'completed' or not previous.get('autoWake')
             or agent.get('nativeFailureHold')

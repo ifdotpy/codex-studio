@@ -12,41 +12,38 @@ export interface Attachment {
   size: number;
   preview?: string;
 }
-export const attachmentLimit = 20 * 1024 * 1024;
-export async function uploadAttachment(
-  agent: string,
-  file: globalThis.File,
-): Promise<Attachment> {
-  if (!file.size || file.size > attachmentLimit)
-    throw new Error("Files must contain 1 byte to 20 MiB.");
-  const base64 = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`Cannot read ${file.name}.`));
-    reader.onload = () => resolve(String(reader.result).split(",")[1]);
-    reader.readAsDataURL(file);
-  });
-  const response = await api("/api/assets", {
-    agent,
-    name: file.name,
-    base64,
-    id: crypto.randomUUID(),
-  });
-  const asset: Attachment = response.asset || response;
-  return {
-    ...asset,
-    preview: asset.image ? `data:${asset.mime};base64,${base64}` : undefined,
-  };
-}
+export { attachmentLimit } from "../sync/uploads";
 export default function ComposerAttachments(p: {
   notify: (message: string) => void;
   assets: Attachment[];
   uploading: boolean;
   disabled: boolean;
-  add: (files: globalThis.File[]) => void;
+  add: (files: globalThis.File[]) => Promise<void>;
   remove: (id: string) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const unsavedFiles = useRef<{
+    files: globalThis.File[];
+    add: typeof p.add;
+  } | null>(null);
+  const [saveError, setSaveError] = useState("");
+  const saveFiles = async (files: globalThis.File[], add = p.add) => {
+    if (!files.length) return;
+    const pending = { files, add };
+    unsavedFiles.current = pending;
+    try {
+      await add(files);
+      if (unsavedFiles.current !== pending) return;
+      unsavedFiles.current = null;
+      setSaveError("");
+      if (input.current) input.current.value = "";
+    } catch (error) {
+      if (unsavedFiles.current !== pending) return;
+      setSaveError(errorText(error));
+      p.notify(errorText(error));
+    }
+  };
   return (
     <div className="composer-attachments">
       <FilePreview
@@ -60,8 +57,7 @@ export default function ComposerAttachments(p: {
         hidden
         aria-label="Choose attachments"
         onChange={(event) => {
-          p.add(Array.from(event.target.files || []));
-          event.target.value = "";
+          void saveFiles(Array.from(event.currentTarget.files || []));
         }}
       />
       <ActionIcon
@@ -80,7 +76,7 @@ export default function ComposerAttachments(p: {
           void window.codexDesktop
             .pickFiles()
             .then((files) => {
-              p.add(
+              return saveFiles(
                 files.map(
                   (file) =>
                     new globalThis.File(
@@ -100,6 +96,20 @@ export default function ComposerAttachments(p: {
       >
         {p.uploading ? <Loader size={13} /> : <Paperclip size={16} />}
       </ActionIcon>
+      {saveError && (
+        <p role="status">
+          {saveError}{" "}
+          <button
+            type="button"
+            onClick={() => {
+              const pending = unsavedFiles.current;
+              if (pending) void saveFiles(pending.files, pending.add);
+            }}
+          >
+            Retry saving files
+          </button>
+        </p>
+      )}
       {!!p.assets.length && (
         <div className="attachment-list">
           {p.assets.map((asset) => (

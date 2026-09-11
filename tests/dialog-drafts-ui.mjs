@@ -20,16 +20,20 @@ import '@mantine/core/styles.css';
 import Picker from '/src/components/ProjectDirectoryPicker.tsx';
 import UserTasks from '/src/components/UserTasks.tsx';
 import UserMessages from '/src/components/UserMessages.tsx';
+import Requests from '/src/components/Requests.tsx';
 const lead={id:'lead',rootId:'lead',name:'Lead',isLead:true,source:'managed'};
 const task={id:'task',agent:'lead',rootId:'lead',title:'Check release',description:'Check it',criteria:'Confirmed',status:'open',version:1};
 const complaint={id:'complaint',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'Help needed',status:'open',needsResponse:true,created:1};
+const request={id:'question',agent:'lead',method:'item/tool/requestUserInput',params:{questions:[{id:'public',question:'Public answer'},{id:'secret',question:'Private answer',isSecret:true}]}};
 const base={stateDir:'workspace-a',token:'fixture',threads:[lead],runtime:{userTasks:[task],complaints:[complaint]}};
 function Fixture(){const [show,setShow]=useState(true),[compact,setCompact]=useState(true),[workspace,setWorkspace]=useState('workspace-a');
 return <MantineProvider><button onClick={()=>setShow(!show)}>Toggle tasks</button><button onClick={()=>setCompact(!compact)}>Toggle compact</button><button onClick={()=>setWorkspace(workspace==='workspace-a'?'workspace-b':'workspace-a')}>Switch workspace</button>
+<Requests requests={[request]} allRequests={[request]} scope={workspace} agents={[lead]} refresh={async()=>{}} notify={message=>window.notices.push(message)}/>
 <Picker initialPath='/project' onSelect={async()=>{}}/>
 {show&&<UserTasks data={{...base,stateDir:workspace}} agent={lead} compact={compact} refresh={async()=>{}} notify={()=>{}}/>}
 <UserMessages data={base} refresh={async()=>{}} notify={()=>{}}/>
 </MantineProvider>}
+window.notices=[];
 createRoot(document.getElementById('root')).render(<Fixture/>);`;
 const server = await createServer({
   configFile: false,
@@ -75,6 +79,7 @@ try {
     detailReads = 0,
     releaseSend;
   const sent = [];
+  const completions = [];
   const waitForSent = async (count) => {
     for (let attempt = 0; attempt < 100 && sent.length < count; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -104,6 +109,28 @@ try {
           json: { error: "Temporary failure" },
         });
       return route.fulfill({ json: message });
+    }
+    if (path === "/api/user-tasks/complete") {
+      const body = route.request().postDataJSON();
+      completions.push(body);
+      if (completions.length === 1)
+        return route.fulfill({
+          status: 503,
+          json: { error: "Lost completion reply" },
+        });
+      return route.fulfill({
+        json: {
+          task: {
+            id: "task",
+            agent: "lead",
+            rootId: "lead",
+            title: "Check release",
+            status: "review",
+            version: 2,
+            completionNote: body.note,
+          },
+        },
+      });
     }
     if (path === "/api/complaints") {
       const body = route.request().postDataJSON();
@@ -144,6 +171,66 @@ try {
     () => !document.querySelector(".directory-footer button")?.disabled,
   );
   assert.equal(directoryReads, 2);
+  await page.getByRole("button", { name: "Answer", exact: true }).click();
+  await page
+    .getByLabel("Public answer", { exact: true })
+    .fill("Keep the public answer");
+  await page
+    .getByLabel("Private answer", { exact: true })
+    .fill("DO-NOT-STORE-SECRET");
+  assert.equal(
+    await page.evaluate(() =>
+      JSON.stringify(localStorage).includes("DO-NOT-STORE-SECRET"),
+    ),
+    false,
+  );
+  await page.reload();
+  await page.getByRole("button", { name: "Answer", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("Public answer", { exact: true }).inputValue(),
+    "Keep the public answer",
+  );
+  assert.equal(
+    await page.getByLabel("Private answer", { exact: true }).inputValue(),
+    "",
+  );
+  await page
+    .getByRole("button", { name: "Switch workspace", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Answer", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("Public answer", { exact: true }).inputValue(),
+    "",
+  );
+  await page
+    .getByRole("button", { name: "Switch workspace", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Answer", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("Public answer", { exact: true }).inputValue(),
+    "Keep the public answer",
+  );
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    window.restoreStorage = () => (Storage.prototype.setItem = original);
+    Storage.prototype.setItem = function (key, value) {
+      if (key.startsWith("studio-answer-draft:"))
+        throw new DOMException("Full", "QuotaExceededError");
+      return original.call(this, key, value);
+    };
+  });
+  await page
+    .getByLabel("Public answer", { exact: true })
+    .fill("Unsaved answer remains visible");
+  assert.equal(
+    await page.getByLabel("Public answer", { exact: true }).inputValue(),
+    "Unsaved answer remains visible",
+  );
+  assert.match(
+    await page.evaluate(() => window.notices.at(-1)),
+    /could not be saved/,
+  );
+  await page.evaluate(() => window.restoreStorage());
   const taskSection = page.locator(".user-tasks");
   const expand = () =>
     taskSection.getByRole("button", { name: /Your tasks/ }).click();
@@ -181,6 +268,35 @@ try {
     .getByRole("button", { name: "Switch workspace", exact: true })
     .click();
   assert.equal(await note.inputValue(), "Keep this note");
+  await page.reload();
+  await expand();
+  await openTask();
+  assert.equal(
+    await note.inputValue(),
+    "Keep this note",
+    "Task notes survive a reload",
+  );
+  await taskSection
+    .getByRole("button", { name: "Send for review", exact: true })
+    .click();
+  await taskSection.getByRole("alert").waitFor();
+  assert.equal(completions.length, 1);
+  await page.reload();
+  await expand();
+  await openTask();
+  assert.equal(await note.inputValue(), "Keep this note");
+  await taskSection
+    .getByRole("button", { name: "Send for review", exact: true })
+    .click();
+  await taskSection
+    .getByText("Waiting for the agent to check your result.")
+    .waitFor();
+  assert.equal(completions.length, 2);
+  assert.deepEqual(
+    completions[1],
+    completions[0],
+    "Completion retry must keep its exact identity after reload",
+  );
   await page.locator('[data-complaint="complaint"]').click();
   const detail = page.getByRole("dialog", {
     name: "Message to you",
@@ -197,6 +313,15 @@ try {
   await detail.waitFor({ state: "hidden" });
   await page.locator('[data-complaint="complaint"]').click();
   assert.equal(await reply.inputValue(), "Original text");
+  await page.reload();
+  await page.locator('[data-complaint="complaint"]').click();
+  await reply.waitFor();
+  assert.equal(
+    await reply.inputValue(),
+    "Original text",
+    "Complaint reply survives a reload",
+  );
+
   await detail.getByRole("button", { name: "Send reply", exact: true }).click();
   await page.waitForFunction(
     () => document.querySelector(".complaint-reply textarea")?.disabled,
@@ -235,7 +360,10 @@ try {
         "same-folder retry",
         "task note collapse, remount, filter, workspace isolation",
         "message detail error and retry",
-        "reply draft retained after reopen",
+        "reply draft retained after reopen and reload",
+        "non-secret answers survive reload, secrets do not persist",
+        "answer workspace isolation and storage failure notice",
+        "task completion retry retains its exact identity after reload",
         "reply fixed during send, subsequent response uses new identity and version",
       ],
     }),

@@ -639,7 +639,7 @@ export default function App() {
     assets?: string[];
     delivery?: "queue" | "steer" | "after_tool";
     attachments?: Json[];
-    onPersist?: () => void;
+    onPersist?: () => void | Promise<void>;
   }) => {
     const draftKey = opened || "new",
       text = (drafts[draftKey] || "").trim();
@@ -703,24 +703,28 @@ export default function App() {
           displayPending: true,
         };
         setOutgoing((old) => ({ ...old, [entry.id]: entry }));
-        // Clear together with the optimistic message, not after the network reply.
-        setDrafts((old) => {
-          const next = { ...old };
-          if (next[draftKey]?.trim() === text) delete next[draftKey];
-          if (next[id]?.trim() === text) delete next[id];
-          save("codex-agent-drafts", next);
-          return next;
-        });
-        const result = await durableSend(request, entry.attachments, () => {
-          // The outbox now owns this immutable request. A new user submission,
-          // including identical text, gets its own identity.
-          if (sends.current[id]?.id === entry.id) {
-            delete sends.current[id];
-            persistSends();
-          }
-          release();
-          options?.onPersist?.();
-        });
+        const result = await durableSend(
+          request,
+          entry.attachments,
+          async () => {
+            // Keep the draft until a durable store owns the immutable message.
+            setDrafts((old) => {
+              const next = { ...old };
+              if (next[draftKey]?.trim() === text) delete next[draftKey];
+              if (next[id]?.trim() === text) delete next[id];
+              save("codex-agent-drafts", next);
+              return next;
+            });
+            // The outbox now owns this immutable request. A new user submission,
+            // including identical text, gets its own identity.
+            if (sends.current[id]?.id === entry.id) {
+              delete sends.current[id];
+              persistSends();
+            }
+            await options?.onPersist?.();
+            release();
+          },
+        );
         setOutgoing((old) => ({
           ...old,
           [entry.id]: {

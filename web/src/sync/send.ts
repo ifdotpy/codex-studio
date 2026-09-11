@@ -80,7 +80,9 @@ async function deliver(doc: any) {
     });
     value = JSON.parse(claimed.payload);
     if (value.status !== "queued") return intentionResult(value);
-    const result = await syncApi<any>("/api/messages", value.body);
+    const result = await syncApi<any>("/api/messages", value.body, {
+      workspaceId,
+    });
     const acknowledged = [
       "queued",
       "pending",
@@ -200,7 +202,7 @@ function once(doc: any) {
 export async function durableSend(
   body: Record<string, any>,
   attachments: any[] = [],
-  onPersist?: () => void,
+  onPersist?: () => void | Promise<void>,
 ) {
   if (typeof body.id !== "string" || !body.id)
     throw new Error("A message identity is required");
@@ -208,7 +210,12 @@ export async function durableSend(
     if (error instanceof UnsupportedSyncError) return null;
     throw error;
   });
-  if (!storage) return syncApi("/api/messages", body);
+  if (!storage) {
+    // Legacy servers have no local outbox. Their successful reply owns the data.
+    const result = await syncApi("/api/messages", body);
+    await onPersist?.();
+    return result;
+  }
   const { db } = storage;
   let doc = await db.outbox.findOne(body.id).exec();
   if (!doc) {
@@ -235,7 +242,7 @@ export async function durableSend(
     throw new Error("Message identity already has different content");
   if (old.status === "failed")
     throw new ApiError(old.error || "Message failed", 400);
-  onPersist?.();
+  await onPersist?.();
   return once(doc);
 }
 export async function acknowledgeOutbox(ids: string[]) {

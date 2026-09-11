@@ -343,6 +343,43 @@ try {
   assert.equal(page.url(), `${backend.origin}/`);
   assert.equal(desktop.windows().length, 1);
   await page.screenshot({ path: path.join(temp, "desktop-hidden.png") });
+  const savedBounds = await desktop.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    const bounds = window.getBounds();
+    window.setBounds(
+      {
+        ...bounds,
+        width: Math.max(420, bounds.width - 100),
+        height: Math.max(600, bounds.height - 80),
+      },
+      false,
+    );
+    return window.getNormalBounds();
+  });
+  await desktop.close();
+  desktop = null;
+  const savedWindow = JSON.parse(
+    await readFile(
+      path.join(env.CODEX_DESKTOP_PROFILE, "window-state.json"),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(savedWindow.bounds, savedBounds);
+  desktop = await electron.launch({ args: [root, "--hidden"], env });
+  const reopened = await desktop.firstWindow();
+  await reopened.waitForFunction(() => !!window.codexDesktop);
+  assert.deepEqual(
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].getNormalBounds(),
+    ),
+    savedBounds,
+  );
+  assert.equal(
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].isVisible(),
+    ),
+    false,
+  );
   await desktop.close();
   desktop = null;
   assert.equal(
@@ -383,6 +420,7 @@ try {
         "foreign renderer IPC rejection",
         "navigation denial",
         "popup denial",
+        "window bounds survive hidden app restart",
         "backend survives quit",
         "duplicate state owner rejection",
       ],

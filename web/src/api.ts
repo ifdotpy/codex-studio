@@ -37,7 +37,7 @@ export class NetworkTimeoutError extends TypeError {
 export async function api<T = any>(
   path: string,
   body?: unknown,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; workspaceId?: string } = {},
 ): Promise<T> {
   const timeoutMs =
     options.timeoutMs ?? (body === undefined ? 15000 : undefined);
@@ -60,7 +60,9 @@ export async function api<T = any>(
             headers: {
               "Content-Type": "application/json",
               "X-Canvas-Token": token,
-              ...(workspace ? { "X-Canvas-Workspace": workspace } : {}),
+              ...((options.workspaceId ?? workspace)
+                ? { "X-Canvas-Workspace": options.workspaceId ?? workspace }
+                : {}),
             },
             body: JSON.stringify(body),
           }),
@@ -91,8 +93,11 @@ export async function api<T = any>(
   }
 }
 // Only reads and operations with a durable request identity use this deadline.
-export const syncApi = <T = any>(path: string, body?: unknown) =>
-  api<T>(path, body, { timeoutMs: 15000 });
+export const syncApi = <T = any>(
+  path: string,
+  body?: unknown,
+  options: { workspaceId?: string } = {},
+) => api<T>(path, body, { ...options, timeoutMs: 15000 });
 
 export const errorText = (e: unknown) =>
   e instanceof Error ? e.message : String(e);

@@ -657,6 +657,10 @@ def make_server(canvas, port=0, public_origin=None):
                             "protocol": 1,
                             "mobileProtocol": 1,
                             "backendBuild": BACKEND_BUILD,
+                            "restartEnvironment": {key: os.environ[key] for key in (
+                                "CODEX_HOME", "CODEX_BOARD_STATE_DIR", "CODEX_CANVAS_CWD",
+                                "CODEX_CANVAS_CONCURRENCY", "CODEX_BIN", "SHELL", "LANG", "LC_ALL")
+                                if key in os.environ},
                             "publicOrigin": remote.origin(),
                             "pid": os.getpid(),
                             "stateDir": str(Path(canvas.root).resolve()),
@@ -666,6 +670,10 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send(terminals().listing())
                 if path.path == "/api/terminals/output":
                     query = parse_qs(path.query)
+                    if query.get("history") == ["1"]:
+                        return self.send(terminals().history_output(
+                            query.get("id", [None])[0], query.get("offset", [0])[0],
+                            query.get("limit", [65536])[0]))
                     return self.send(
                         terminals().output(
                             query.get("id", [None])[0], query.get("offset", [0])[0]

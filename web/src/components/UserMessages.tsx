@@ -16,8 +16,9 @@ import {
   type Complaint,
 } from "../types";
 import "./complaint-book.css";
+import { writeLocalDraft } from "../sync/localDraft";
 
-// Keep unsent replies in memory, separate from durable retry receipts.
+// Keep unsent replies separate from immutable delivery attempts.
 const replyDrafts = new Map<string, { text: string; status: string }>();
 
 const recipient = (c: Json) =>
@@ -41,7 +42,10 @@ function MessageResponse({
   onResponse: (c: Json) => void;
 }) {
   const draftKey = JSON.stringify([pendingKey, detail.id]);
-  const draft = replyDrafts.get(draftKey);
+  const storageKey = `studio-reply-draft:${draftKey}`;
+  const draft =
+    replyDrafts.get(draftKey) ||
+    saved<{ text: string; status: string } | null>(storageKey, null);
   const previous = requests.get(detail.id);
   const [text, setText] = useState(previous?.text || draft?.text || "");
   const [status, setStatus] = useState(
@@ -51,6 +55,10 @@ function MessageResponse({
   const [sending, setSending] = useState(false);
   const [retry, setRetry] = useState(!!previous);
   const [error, setError] = useState("");
+  const saveDraft = (value: { text: string; status: string }) => {
+    replyDrafts.set(draftKey, value);
+    setError(writeLocalDraft(storageKey, value) || "");
+  };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (sending || !text.trim() || text.length > 12000) return;
@@ -63,7 +71,15 @@ function MessageResponse({
       status,
     };
     requests.set(detail.id, payload);
-    save(pendingKey, Object.fromEntries(requests));
+    const storageError = writeLocalDraft(
+      pendingKey,
+      Object.fromEntries(requests),
+    );
+    if (storageError) {
+      requests.delete(detail.id);
+      setError(storageError);
+      return;
+    }
     setSending(true);
     setError("");
     try {
@@ -105,6 +121,8 @@ function MessageResponse({
       save(pendingKey, Object.fromEntries(requests));
       setRetry(false);
       replyDrafts.delete(draftKey);
+      const storageError = writeLocalDraft(storageKey, null);
+      if (storageError) notify(storageError);
       setText("");
       onResponse(result);
       try {
@@ -141,7 +159,7 @@ function MessageResponse({
           disabled={sending || retry}
           onChange={(event) => {
             setStatus(event.target.value);
-            replyDrafts.set(draftKey, { text, status: event.target.value });
+            saveDraft({ text, status: event.target.value });
           }}
         >
           <option value="in_progress">Keep open</option>
@@ -165,7 +183,7 @@ function MessageResponse({
         disabled={sending || retry}
         onChange={(event) => {
           setText(event.target.value);
-          replyDrafts.set(draftKey, { text: event.target.value, status });
+          saveDraft({ text: event.target.value, status });
         }}
       />
       {error && (

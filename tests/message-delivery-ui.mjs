@@ -225,8 +225,8 @@ try {
       const sent = posts.at(-1);
       assert.equal(
         await input.inputValue(),
-        "",
-        `${mode}: draft clears before the HTTP reply`,
+        sync ? "" : text,
+        `${mode}: draft clears only after the local outbox or server owns it`,
       );
       await row(text).waitFor();
       assert.equal(

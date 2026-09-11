@@ -17,14 +17,17 @@ import {
   Search,
 } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { api, errorText } from "../api";
+import { api, errorText, saved } from "../api";
+import { writeLocalDraft } from "../sync/localDraft";
 import type { Agent, Json, Snapshot, UserTask } from "../types";
 import "./user-tasks.css";
 
-// Keep unsent notes in memory across panel and chat changes. Never write them to disk.
+// Keep notes across panel changes and reloads within the same workspace.
 const noteDrafts = new Map<string, string>();
 const noteListeners = new Map<string, Set<() => void>>();
-function useTaskNote(key: string) {
+function useTaskNote(key: string, notify: (message: string) => void) {
+  const storageKey = `studio-task-note:${key}`;
+  if (!noteDrafts.has(key)) noteDrafts.set(key, saved(storageKey, ""));
   const note = useSyncExternalStore(
     (listener) => {
       const listeners = noteListeners.get(key) || new Set();
@@ -40,8 +43,9 @@ function useTaskNote(key: string) {
   return [
     note,
     (value: string) => {
-      if (value) noteDrafts.set(key, value);
-      else noteDrafts.delete(key);
+      noteDrafts.set(key, value);
+      const error = writeLocalDraft(storageKey, value);
+      if (error) notify(error);
       noteListeners.get(key)?.forEach((listener) => listener());
     },
   ] as const;
@@ -231,10 +235,10 @@ function UserTaskRow(p: {
 }) {
   const { task } = p;
   const [details, setDetails] = useState(p.focused);
-  const [note, setNote] = useTaskNote(p.noteKey);
+  const [note, setNote] = useTaskNote(p.noteKey, p.notify);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
-  const request = useRef<{ fingerprint: string; id: string } | null>(null);
+  const requestKey = `studio-task-completion:${p.noteKey}`;
   const lock = useRef(false);
   const row = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -253,11 +257,19 @@ function UserTaskRow(p: {
       version: task.version,
       note,
     });
-    if (request.current?.fingerprint !== fingerprint)
-      request.current = { fingerprint, id: crypto.randomUUID() };
+    const previous = saved<{ fingerprint: string; id: string } | null>(
+      requestKey,
+      null,
+    );
+    const request =
+      previous?.fingerprint === fingerprint
+        ? previous
+        : { fingerprint, id: crypto.randomUUID() };
     try {
+      const storageError = writeLocalDraft(requestKey, request);
+      if (storageError) throw new Error(storageError);
       const response = await api("/api/user-tasks/complete", {
-        id: request.current.id,
+        id: request.id,
         task_id: task.id,
         version: task.version,
         note,
@@ -265,7 +277,8 @@ function UserTaskRow(p: {
       const updated = (response.task || response) as Task;
       p.update(updated);
       if (noteDrafts.get(p.noteKey) === note) setNote("");
-      request.current = null;
+      const cleanupError = writeLocalDraft(requestKey, null);
+      if (cleanupError) p.notify(cleanupError);
       const stopped = !!updated.agentStopped;
       const message = stopped
         ? "Saved; agent stopped. Your result waits for the agent."

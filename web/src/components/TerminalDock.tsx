@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Download,
   Plus,
   Search,
   Square,
@@ -496,6 +497,85 @@ function ShellView({
   const [status, setStatus] = useState(shell.status);
   const [retry, setRetry] = useState(0);
   const inputChain = useRef(Promise.resolve());
+  const downloadAttempt = useRef<symbol | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadStatus, setDownloadStatus] = useState("");
+  useEffect(
+    () => () => {
+      downloadAttempt.current = null;
+    },
+    [],
+  );
+  const download = async () => {
+    if (downloadAttempt.current) return;
+    const attempt = Symbol();
+    downloadAttempt.current = attempt;
+    setDownloading(true);
+    setDownloadStatus("Preparing saved output…");
+    try {
+      const parts: string[] = [];
+      let offset = 0;
+      let end: number | undefined;
+      let incomplete = false;
+      for (let page = 0; page < 512; page++) {
+        const value = await api<
+          Output & {
+            hasMore: boolean;
+            availableOffset: number;
+            historyStart: number;
+          }
+        >(
+          `/api/terminals/output?id=${encodeURIComponent(shell.id)}&history=1&offset=${offset}&limit=${Math.min(65536, end === undefined ? 65536 : end - offset)}`,
+        );
+        if (downloadAttempt.current !== attempt) return;
+        if (
+          !Number.isSafeInteger(value.offset) ||
+          !Number.isSafeInteger(value.availableOffset) ||
+          typeof value.text !== "string" ||
+          typeof value.hasMore !== "boolean"
+        )
+          throw new Error("The server did not return saved terminal output.");
+        end ??= value.availableOffset;
+        if (value.offset < offset || (value.hasMore && value.offset === offset))
+          throw new Error(
+            "The saved output did not advance. Try the download again.",
+          );
+        parts.push(value.text);
+        incomplete ||= value.truncated;
+        offset = value.offset;
+        if (!value.hasMore || offset >= end) {
+          const url = URL.createObjectURL(
+            new Blob(parts, { type: "text/plain;charset=utf-8" }),
+          );
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `terminal-${shell.id}.txt`;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+          setDownloadStatus(
+            incomplete
+              ? "Saved output downloaded. Earlier output is unavailable."
+              : "Saved output downloaded.",
+          );
+          return;
+        }
+        setDownloadStatus(
+          `Preparing saved output: ${offset.toLocaleString()} of ${end.toLocaleString()} characters`,
+        );
+      }
+      throw new Error(
+        "This saved output exceeds the browser download limit (32 million characters).",
+      );
+    } catch (error) {
+      if (downloadAttempt.current === attempt)
+        setDownloadStatus(errorText(error));
+    } finally {
+      if (downloadAttempt.current === attempt) {
+        downloadAttempt.current = null;
+        setDownloading(false);
+      }
+    }
+  };
   const send = (text: string) => {
     if (inputBlocked.current) return;
     const request_id = crypto.randomUUID();
@@ -632,6 +712,11 @@ function ShellView({
         className="terminal-xterm"
         aria-label="Interactive terminal"
       />
+      {downloadStatus && (
+        <p className="terminal-output-notice" role="status">
+          {downloadStatus}
+        </p>
+      )}
       <footer className="terminal-output-actions">
         <span>
           {running(status)
@@ -639,6 +724,20 @@ function ShellView({
             : "Session ended · Output retained"}
         </span>
         <span className="terminal-dock-spacer" />
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          leftSection={<Download size={12} />}
+          onClick={() => {
+            if (downloading) {
+              downloadAttempt.current = null;
+              setDownloading(false);
+              setDownloadStatus("Download cancelled.");
+            } else void download();
+          }}
+        >
+          {downloading ? "Cancel download" : "Download saved output"}
+        </Button>
         <Button
           size="compact-xs"
           variant="subtle"
