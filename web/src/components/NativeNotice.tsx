@@ -4,6 +4,10 @@ import { limitRecovery } from "../limitRecovery";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import CapacityRetry from "./CapacityRetry";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
+import ConnectionRecovery, {
+  canCheckConnection,
+  matchingConnectionCheck,
+} from "./ConnectionRecovery";
 import type { Agent, Message, Json } from "../types";
 import { agentErrorLabel } from "../types";
 import { Button } from "@mantine/core";
@@ -41,6 +45,7 @@ export function NativeError({
   openLimits,
   newChat,
   chooseChat,
+  refresh,
 }: {
   agent: Agent;
   planType?: string;
@@ -48,6 +53,7 @@ export function NativeError({
   openLimits?: () => void;
   newChat?: () => void;
   chooseChat?: () => void;
+  refresh?: () => Promise<void>;
 }) {
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
@@ -59,6 +65,7 @@ export function NativeError({
   const recovery = recovered ? null : limitRecovery(agent, limits ?? null, now);
   const retry = currentCapacityRetry(agent);
   const blocked = nativeThreadError(agent);
+  const connectionCheck = matchingConnectionCheck(agent);
   const error = nativeErrorView(blocked || agent.error, planType);
   if (!blocked && !retry && recovered) return null;
   return (
@@ -68,12 +75,21 @@ export function NativeError({
     >
       {!recovery && (
         <span>
-          {error.title ||
+          {(connectionCheck && "Previous turn needs review") ||
+            error.title ||
             (blocked ? error.message : agentErrorLabel(agent)) ||
             (retry ? "Model retry" : "")}
         </span>
       )}
-      {!recovery && !retry && <Guidance error={error} />}
+      {connectionCheck ? (
+        <small>
+          {connectionCheck.nativeState === "active"
+            ? "Codex reported this thread as active. Its outcome is not confirmed."
+            : "Codex answered the connection check. The previous outcome is unconfirmed. Review the history before continuing."}
+        </small>
+      ) : !recovery && !retry ? (
+        <Guidance error={error} />
+      ) : null}
       {recovery && (
         <LimitRecoveryNotice
           key={JSON.stringify(recovery)}
@@ -83,6 +99,20 @@ export function NativeError({
       )}
       {retry && (
         <CapacityRetry key={retry.id} agentId={agent.id} retry={retry} />
+      )}
+      {refresh && canCheckConnection(agent) && (
+        <ConnectionRecovery
+          key={JSON.stringify([
+            agent.id,
+            agent.threadId,
+            agent.turnId,
+            agent.epoch,
+            agent.accountKey,
+            agent.error,
+          ])}
+          agentId={agent.id}
+          refresh={refresh}
+        />
       )}
       {!!blocked && (
         <div className="native-error-actions">
@@ -109,10 +139,12 @@ export function NativeError({
             View account limits
           </Button>
         )}
-      {(error.details || (recovery && error.message)) && (
+      {(connectionCheck || error.details || (recovery && error.message)) && (
         <details>
           <summary>Details</summary>
-          <pre>{error.details || error.message}</pre>
+          <pre>
+            {connectionCheck ? agent.error : error.details || error.message}
+          </pre>
         </details>
       )}
     </div>

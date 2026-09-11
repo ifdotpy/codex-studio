@@ -218,3 +218,22 @@ Select part of a message and choose **Quote selection**, or press Alt+Shift+Q.
 Each quote appends to the current draft. You can add several excerpts from the
 same message and write comments between them. The message quote button uses
 its selected excerpt, or the full message when no excerpt is selected.
+
+## Connection recovery
+
+After a disconnect or server restart, **Check connection** reads the affected
+thread and its exact turn from Codex. A confirmed terminal result replaces the
+saved connection error. The transcript retains the earlier error and final text.
+This check does not resume work, send a prompt, repeat a tool, or release queued
+messages. An active thread, missing turn, failed read, or changed chat keeps the
+recorded state. A successful read stores the check result even when the turn's
+outcome remains unknown. The notice then says that the previous turn needs review;
+it does not claim that Codex is still disconnected. Failed reads do not create
+this receipt. Review an unconfirmed outcome before sending another instruction.
+
+Targeted checks:
+
+```sh
+python3 tests/connection-recovery-contract.py
+node tests/disconnect-recovery-ui.mjs
+```

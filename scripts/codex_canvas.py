@@ -966,6 +966,9 @@ def make_server(canvas, port=0, public_origin=None):
                         )
                     if self.path == "/api/configure":
                         return self.send(canvas.runtime.configure(body.get("id"), body))
+                    if self.path == "/api/connection-recovery":
+                        from codex_connection_recovery import recover
+                        return self.send(recover(runtime, body.get("id")))
                     if self.path == "/api/capacity-retry":
                         return self.send(canvas.runtime.capacity_retry(body.get("id"), body.get("retry_id"), body.get("action")))
                     if self.path == "/api/action":

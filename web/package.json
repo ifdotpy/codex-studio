@@ -13,7 +13,7 @@
     "format:check": "prettier --check src index.html vite.config.ts tsconfig.json ../tests/*ui.mjs",
     "test:reliability": "node ../tests/draft-recovery-browser.mjs && node ../tests/sync-recovery-browser.mjs && node ../tests/message-retry-http-browser.mjs",
     "test:ux": "npm run build && node ../tests/questions-ux-ui.mjs && node ../tests/dialog-drafts-ui.mjs && node ../tests/realtime-voice-ux-ui.mjs && python3 ../tests/voice-validation-contract.py && node ../tests/outbox-controls-ui.mjs && node ../tests/ux-navigation-ui.mjs",
-    "test:ux-audit": "npm run build && node ../tests/shell-ux-ui.mjs && node ../tests/ux-chat-ui.mjs && node ../tests/messages-focused-ui.mjs && node ../tests/settings-ux-ui.mjs && node ../tests/rendering-ux-ui.mjs && node ../tests/ux-support-ui.mjs && node ../tests/browser-dictation-ux.mjs && node ../tests/native-ux-contract.mjs && python3 ../tests/ux-history-contract.py && python3 ../tests/account-disconnect-contract.py && node ../tests/markdown-image-http-ui.mjs && node ../tests/limit-recovery-state-ui.mjs"
+    "test:ux-audit": "npm run build && node ../tests/shell-ux-ui.mjs && node ../tests/ux-chat-ui.mjs && node ../tests/messages-focused-ui.mjs && node ../tests/settings-ux-ui.mjs && node ../tests/rendering-ux-ui.mjs && node ../tests/ux-support-ui.mjs && node ../tests/browser-dictation-ux.mjs && node ../tests/native-ux-contract.mjs && python3 ../tests/ux-history-contract.py && python3 ../tests/account-disconnect-contract.py && node ../tests/markdown-image-http-ui.mjs && node ../tests/limit-recovery-state-ui.mjs && node ../tests/disconnect-recovery-ui.mjs"
   },
   "dependencies": {
     "@json-render/core": "0.20.0",

@@ -968,6 +968,7 @@ export default function Conversation(p: {
       {agent && (agent.error || threadBlock || capacityRetry) && (
         <NativeError
           agent={agent}
+          refresh={p.refresh}
           planType={p.limits?.data?.rateLimits?.planType}
           limits={p.limits}
           openLimits={() => {
