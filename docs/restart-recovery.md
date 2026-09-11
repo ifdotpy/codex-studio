@@ -8,7 +8,10 @@ menu can disable that service without stopping the server or its active work.
 
 - The service starts after macOS login and restores a stopped backend.
 - Closing the desktop window preserves the backend. A renderer crash reloads its
-  interface, with a bounded retry count. The service can also restore a crashed
+  interface. The retry budget resets after 60 seconds with a healthy renderer.
+  Repeated immediate failures show a reload page. The native Reload command works
+  when the renderer has crashed or has no focus. Crash reasons enter the desktop
+  profile's `renderer-recovery.jsonl`. The service can also restore a crashed
   desktop process. It respects an explicit Quit. After a normal macOS shutdown,
   window reopening follows the macOS preference; the backend still starts after login.
 - The desktop restores normal window bounds and the maximized state. It adjusts
@@ -38,6 +41,13 @@ menu can disable that service without stopping the server or its active work.
   Saved uploads resume only for the same workspace. Confirmed attachment references
   persist before the local file journal entry is removed. Storage refusal keeps
   the failure visible; an uncommitted file has no recovery guarantee.
+- Each chat refresh reads only its saved projection. It does not scan other
+  cached chats or create bidirectional replication metadata. Storage revisions and
+  server sequence numbers protect concurrent writes and removed-chat records.
+- The RxDB 17.5.0 event cache uses weak keys so completed updates can leave memory.
+  The install, build, and development commands apply the checked dependency patch.
+  The patch also preserves projection conflicts for the server sequence check.
+  A different dependency version requires review of that patch.
 
 ## Limits
 
@@ -77,6 +87,7 @@ python3 -B tests/monitor-restart-contract.py
 python3 -B tests/terminal-history-restart-contract.py
 npm --prefix desktop test
 npm --prefix web run test:restart
+npm --prefix web run test:rxdb-cache
 ```
 
 These checks exercise abrupt process exit, backend and renderer failure, receipt

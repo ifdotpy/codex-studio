@@ -9,7 +9,7 @@
     "dev": "npm --prefix ../web run build && electron .",
     "start:hidden": "electron . --hidden",
     "package": "node package.mjs",
-    "test": "node backend-test.mjs && node recovery-test.mjs && node window-state-test.mjs && python3 -B recovery-test.py && node test.mjs",
+    "test": "node backend-test.mjs && node recovery-test.mjs && node renderer-recovery-test.mjs && node window-state-test.mjs && python3 -B recovery-test.py && node test.mjs",
     "test:package": "node package-test.mjs"
   },
   "devDependencies": {

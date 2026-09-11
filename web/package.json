@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "npm run build:panel && vite --host 127.0.0.1",
+    "dev": "npm run build:panel && vite --force --host 127.0.0.1",
     "build": "tsc --noEmit && vite build && npm run build:panel",
     "build:panel": "vite build --config vite.panel.config.ts",
     "preview": "vite preview --host 127.0.0.1",
@@ -15,7 +15,11 @@
     "test:ux": "npm run build && node ../tests/questions-ux-ui.mjs && node ../tests/dialog-drafts-ui.mjs && node ../tests/realtime-voice-ux-ui.mjs && python3 ../tests/voice-validation-contract.py && node ../tests/outbox-controls-ui.mjs && node ../tests/ux-navigation-ui.mjs",
     "test:ux-audit": "npm run build && node ../tests/shell-ux-ui.mjs && node ../tests/ux-chat-ui.mjs && node ../tests/messages-focused-ui.mjs && node ../tests/settings-ux-ui.mjs && node ../tests/rendering-ux-ui.mjs && node ../tests/ux-support-ui.mjs && node ../tests/browser-dictation-ux.mjs && node ../tests/native-ux-contract.mjs && python3 ../tests/ux-history-contract.py && python3 ../tests/account-disconnect-contract.py && node ../tests/markdown-image-http-ui.mjs && node ../tests/limit-recovery-state-ui.mjs && node ../tests/disconnect-recovery-ui.mjs",
     "test:mobile": "npm run build && python3 ../tests/mobile-state-contract.py && node ../tests/mobile-client-ui.mjs && node ../tests/mobile-keyboard-ui.mjs && node ../tests/message-delivery-ui.mjs && node ../tests/chat-prefetch-browser.mjs && node ../tests/chat-prefetch-ui.mjs && node ../tests/mobile-sync-browser.mjs && node ../tests/mobile-sync-cached-browser.mjs && node ../tests/mobile-request-deadline-browser.mjs && node ../tests/mobile-send-reliability-browser.mjs && node ../tests/mobile-send-reliability-ui.mjs && node ../tests/mobile-loading-ui.mjs && node ../tests/mobile-startup-performance.mjs",
-    "test:restart": "npm run build && node ../tests/upload-recovery-browser.mjs && node ../tests/scroll-restart-browser.mjs && node ../tests/draft-recovery-browser.mjs && node ../tests/dialog-drafts-ui.mjs && node ../tests/mobile-send-reliability-ui.mjs && node ../tests/workspace-ui.mjs"
+    "test:restart": "npm run build && node ../tests/upload-recovery-browser.mjs && node ../tests/scroll-restart-browser.mjs && node ../tests/draft-recovery-browser.mjs && node ../tests/dialog-drafts-ui.mjs && node ../tests/mobile-send-reliability-ui.mjs && node ../tests/workspace-ui.mjs",
+    "postinstall": "node scripts/patch-rxdb-runtime.cjs",
+    "prebuild": "node scripts/patch-rxdb-runtime.cjs",
+    "predev": "node scripts/patch-rxdb-runtime.cjs",
+    "test:rxdb-cache": "node ../tests/rxdb-event-cache-gc.mjs"
   },
   "dependencies": {
     "@json-render/core": "0.20.0",

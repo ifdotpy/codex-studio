@@ -11,6 +11,7 @@ const { createServer } = await import(
 const streams = new Set();
 const server = await createServer({
   configFile: false,
+  optimizeDeps: { force: true },
   root: fileURLToPath(new URL("../web", import.meta.url)),
   server: { host: "127.0.0.1", port: 0 },
   plugins: [
@@ -112,6 +113,33 @@ try {
     return page;
   }
   const page = await pageFor("first");
+  // A large durable cache must not be scanned when one scoped chat refreshes.
+  await page.evaluate(async () => {
+    const { db } = await client.syncDatabase();
+    const payload = JSON.stringify({
+      items: [],
+      padding: "x".repeat(512 * 1024),
+    });
+    await db.projections.bulkInsert(
+      Array.from({ length: 64 }, (_, n) => ({
+        id: `transcript:cold-${n}`,
+        seq: n + 1000,
+        payload,
+      })),
+    );
+    window.coldReads = [];
+    const storage = db.projections.storageInstance;
+    const original = storage.query.bind(storage);
+    storage.query = async (...args) => {
+      const result = await original(...args);
+      coldReads.push(
+        ...result.documents
+          .filter((row) => row.id.startsWith("transcript:cold-"))
+          .map((row) => row.id),
+      );
+      return result;
+    };
+  });
   documents.set("transcript:a", doc("a", 1));
   assert.equal(
     await page.evaluate(
@@ -192,6 +220,22 @@ try {
   assert.ok(
     maximum <= 2,
     "Background transport has at most two active requests",
+  );
+
+  assert.deepEqual(
+    await page.evaluate(() => coldReads),
+    [],
+    "Foreground and background refresh never read unrelated large transcripts",
+  );
+  assert.equal(
+    await page.evaluate(
+      async () =>
+        (await indexedDB.databases()).filter((db) =>
+          db.name.includes("rx-replication-meta"),
+        ).length,
+    ),
+    0,
+    "Pull-only chats do not create bidirectional replication metadata",
   );
 
   const beforePause = pulls.length;
@@ -365,6 +409,57 @@ try {
     "The late filtered reply never commits even a temporary rollback",
   );
   await second.evaluate(() => stopFilteredWrites.unsubscribe());
+
+  // A tombstone can appear after an absent read but before the stale insert.
+  await page.evaluate(async () => {
+    const { db } = await client.syncDatabase();
+    const storage = db.projections.storageInstance;
+    const original = storage.findDocumentsById.bind(storage);
+    window.absentRead = false;
+    storage.findDocumentsById = async (...args) => {
+      const rows = await original(...args);
+      if (args[0].includes("transcript:insert-race")) {
+        storage.findDocumentsById = original;
+        window.absentRead = rows.length === 0;
+        await new Promise((resolve) => {
+          window.releaseAbsent = resolve;
+        });
+      }
+      return rows;
+    };
+    window.staleInsert = client.persistProjection(db.projections, {
+      id: "transcript:insert-race",
+      seq: 30,
+      payload: "{}",
+      _deleted: false,
+    });
+  });
+  await page.waitForFunction(() => absentRead);
+  await second.evaluate(async () => {
+    const { db } = await client.syncDatabase();
+    await client.persistProjection(db.projections, {
+      id: "transcript:insert-race",
+      seq: 31,
+      payload: "{}",
+      _deleted: true,
+    });
+  });
+  await page.evaluate(async () => {
+    releaseAbsent();
+    await staleInsert;
+  });
+  assert.deepEqual(
+    await second.evaluate(async () => {
+      const { db } = await client.syncDatabase();
+      const [row] = await db.projections.storageInstance.findDocumentsById(
+        ["transcript:insert-race"],
+        true,
+      );
+      return { seq: row.seq, deleted: row._deleted };
+    }),
+    { seq: 31, deleted: true },
+    "A stale insert cannot auto-revive a newer tombstone",
+  );
 
   documents.set("transcript:active", doc("active", 10));
   await second.evaluate(async () => {

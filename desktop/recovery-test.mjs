@@ -126,7 +126,7 @@ test("launchd registration failure is an error and cannot report success", async
   }
 });
 
-test("the hidden desktop replaces a crashed renderer and preserves the backend", async () => {
+test("the hidden desktop survives crash loops and resets its recovery budget", async () => {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const { createServer } = await import("node:net");
@@ -146,7 +146,7 @@ test("the hidden desktop replaces a crashed renderer and preserves the backend",
       executable,
       [path.join(root, "recovery-renderer-test.cjs"), "--hidden"],
       {
-        timeout: 30000,
+        timeout: 125000,
         env: {
           ...process.env,
           CODEX_AGENTS_STATE_DIR: path.join(temp, "state"),

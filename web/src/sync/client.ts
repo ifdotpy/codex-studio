@@ -2,7 +2,7 @@ import { createRxDatabase, addRxPlugin } from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 import { replicateRxCollection } from "rxdb/plugins/replication";
-import { Subject } from "rxjs";
+import type { RxCollection, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
 import { syncApi as api, ApiError, saved, save, setWorkspace } from "../api";
 
@@ -229,6 +229,35 @@ export function watchSyncInvalidations(resync: () => void) {
     }
   };
 }
+// Pull-only projections never run RxDB's upstream scan of every cached chat.
+// The storage revision is a compare-and-swap across tabs; retry conflicts against
+// the latest row before applying server sequence order, including tombstones.
+export async function persistProjection(
+  collection: RxCollection<SyncDocument>,
+  incoming: SyncDocument,
+) {
+  for (;;) {
+    const [previous] = await collection.storageInstance.findDocumentsById(
+      [incoming.id],
+      true,
+    );
+    if (previous && previous.seq >= incoming.seq) return;
+    const document: RxDocumentData<SyncDocument> = {
+      ...incoming,
+      _deleted: incoming._deleted === true,
+      _attachments: {},
+      _meta: { lwt: 1 },
+      _rev: "",
+    };
+    const result = await collection.storageInstance.bulkWrite(
+      [{ previous, document }],
+      "studio-projection-pull",
+    );
+    const failure = result.error[0];
+    if (!failure) return;
+    if (failure.status !== 409) throw failure;
+  }
+}
 type ProjectionState = {
   users: number;
   foreground: number;
@@ -250,111 +279,81 @@ async function acquireProjection(
   const remoteScope = scope === "state" && chatState ? "state:chat" : scope;
   let state = scopes.get(scope);
   if (!state) {
-    const events = new Subject<any>();
     const listeners = new Set<(error: unknown | null) => void>();
     const report = (error: unknown | null) =>
       listeners.forEach((listener) => listener(error));
-    const replication = replicateRxCollection<SyncDocument, { seq: number }>({
-      collection: db.projections,
-      // A second tab must refresh chats which the leading tab has never opened.
-      waitForLeadership: false,
-      replicationIdentifier: `${workspaceId}:${remoteScope}:v1`,
-      live: true,
-      retryTime: 3000,
-      pull: {
-        batchSize: 100,
-        handler: async (checkpoint, batchSize) => {
-          try {
-            if (
-              scopes.get(scope)?.foreground === 0 &&
-              (document.hidden || navigator.onLine === false)
-            )
-              throw new TypeError(
-                "The device is offline or the page is hidden.",
+    let stopped = false;
+    let pending: Promise<void> | undefined;
+    let invalidated = false;
+    let mappedCheckpoint: number | undefined =
+      remoteScope !== scope ? 0 : undefined;
+    const refresh = (): Promise<void> => {
+      if (stopped) return Promise.resolve();
+      if (pending) return pending;
+      pending = (async () => {
+        do {
+          invalidated = false;
+          if (
+            scopes.get(scope)?.foreground === 0 &&
+            (document.hidden || navigator.onLine === false)
+          )
+            throw new TypeError("The device is offline or the page is hidden.");
+          const [previous] =
+            await db.projections.storageInstance.findDocumentsById(
+              [scope],
+              true,
+            );
+          const result = await pull(
+            remoteScope,
+            mappedCheckpoint ?? previous?.seq ?? 0,
+            100,
+            workspaceId,
+            verifyWorkspace,
+          );
+          if (stopped) return;
+          for (const document of result.documents as SyncDocument[]) {
+            if (document.id !== remoteScope)
+              throw new Error(
+                "The server returned a different projection scope.",
               );
-            const result = await pull(
-              remoteScope,
-              checkpoint?.seq || 0,
-              batchSize,
-              workspaceId,
-              verifyWorkspace,
-            );
-            const documents: SyncDocument[] = result.documents.map(
-              (document: SyncDocument) =>
-                document.id === remoteScope
-                  ? { ...document, id: scope }
-                  : document,
-            );
-            // Another tab can commit a newer reply while this request is in flight.
-            // Include deleted rows so a late reply cannot restore a removed chat.
-            const existing =
-              await db.projections.storageInstance.findDocumentsById(
-                documents.map((document) => document.id),
-                true,
-              );
-            const current = new Map(
-              existing.map((document) => [document.id, document]),
-            );
-            const monotonic = documents.map((document) => {
-              const previous = current.get(document.id);
-              const next =
-                previous && previous.seq > document.seq
-                  ? {
-                      id: previous.id,
-                      payload: previous.payload,
-                      seq: previous.seq,
-                      _deleted: previous._deleted,
-                    }
-                  : document;
-              return next;
-            });
-            report(null);
-            return { ...result, documents: monotonic };
-          } catch (error) {
-            report(error);
-            throw error;
+            await persistProjection(db.projections, { ...document, id: scope });
           }
-        },
-        stream$: events.asObservable(),
-      },
-    });
-    const stopInvalidation = watchSyncInvalidations(() =>
-      events.next("RESYNC"),
-    );
-    const errors = replication.error$.subscribe((error) => {
-      if (error.code !== "RC_PULL") report(error);
+          if (mappedCheckpoint !== undefined)
+            mappedCheckpoint = result.checkpoint.seq;
+          report(null);
+        } while (invalidated && !stopped);
+      })()
+        .catch((error) => {
+          report(error);
+          throw error;
+        })
+        .finally(() => {
+          pending = undefined;
+        });
+      return pending;
+    };
+    const stopInvalidation = watchSyncInvalidations(() => {
+      invalidated = true;
+      void refresh().catch(() => {});
     });
     state = {
       users: 0,
       foreground: 0,
       listeners,
-      refresh: async () => {
-        let rejectFailure!: (error: unknown) => void;
-        const failure = new Promise<never>((_, reject) => {
-          rejectFailure = reject;
-        });
-        const fail = (error: unknown | null) => {
-          if (error !== null) rejectFailure(error);
-        };
-        listeners.add(fail);
-        try {
-          replication.reSync();
-          await Promise.race([replication.awaitInSync(), failure]);
-        } finally {
-          listeners.delete(fail);
-        }
-      },
+      refresh,
       stop: async () => {
+        stopped = true;
         stopInvalidation();
-        events.complete();
-        errors.unsubscribe();
-        await replication.cancel();
+        await pending?.catch(() => {});
       },
     };
     scopes.set(scope, state);
   }
   state.users++;
-  if (!background) state.foreground++;
+  if (!background) {
+    state.foreground++;
+    void state.refresh().catch(() => {});
+  }
   const retained = state;
   const release = () => {
     if (!background) retained.foreground--;

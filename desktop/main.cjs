@@ -22,6 +22,7 @@ const {
   trackDesktopRecovery,
 } = require("./recovery.cjs");
 const { loadWindowState, trackWindowState } = require("./window-state.cjs");
+const { createRendererRecovery } = require("./renderer-recovery.cjs");
 const hidden = process.argv.includes("--hidden");
 const backgroundRecovery = process.argv.includes("--background-recovery");
 let recoveryEnabled = false;
@@ -387,18 +388,19 @@ async function start() {
       microphoneUntil > Date.now(),
   );
   win.on("close", () => desktopRecovery?.windowClosing());
-  let rendererFailures = 0;
-  win.webContents.on("render-process-gone", (_event, details) => {
-    if (details.reason === "clean-exit" || ++rendererFailures > 3) return;
-    setTimeout(() => {
-      if (win && !win.isDestroyed())
-        win.loadURL(`${backend.origin}/`).catch(console.error);
-    }, 1000 * rendererFailures);
+  const rendererRecovery = createRendererRecovery({
+    win,
+    workspaceURL: `${backend.origin}/`,
+    profile: app.getPath("userData"),
   });
   win.webContents.on("will-attach-webview", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  win.webContents.on("will-navigate", (event) => event.preventDefault());
-  win.webContents.on("will-frame-navigate", (event) => event.preventDefault());
+  win.webContents.on("will-navigate", (event) =>
+    rendererRecovery.handleNavigation(event),
+  );
+  win.webContents.on("will-frame-navigate", (event) =>
+    rendererRecovery.handleNavigation(event),
+  );
   win.webContents.on("will-redirect", (event) => event.preventDefault());
   ipcMain.handle("codex-desktop", nativeAction);
   Menu.setApplicationMenu(
@@ -442,7 +444,14 @@ async function start() {
       {
         label: "View",
         submenu: [
-          { role: "reload" },
+          {
+            id: "reload-workspace",
+            label: "Reload",
+            accelerator: "CommandOrControl+R",
+            click: () => {
+              void rendererRecovery.reload();
+            },
+          },
           { role: "resetZoom" },
           { role: "zoomIn" },
           { role: "zoomOut" },
@@ -451,7 +460,7 @@ async function start() {
       },
     ]),
   );
-  await win.loadURL(`${backend.origin}/`);
+  await rendererRecovery.reload({ manual: false });
   windowState.restore();
   if (!hidden) win.showInactive();
   console.log(

@@ -69,7 +69,7 @@ try {
       /^\/dist($|\/)/,
       /^\/node_modules($|\/)/,
       /^\/test\.mjs$/,
-      /^\/(?:backend-test|recovery-test|recovery-renderer-test|window-state-test|package-test)\.(?:mjs|cjs|py)$/,
+      /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test)\.(?:mjs|cjs|py)$/,
       /^\/recover_backend\.py$/,
       /^\/__pycache__($|\/)/,
       /^\/package\.mjs$/,
