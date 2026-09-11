@@ -42,24 +42,45 @@ function executable(name, env = process.env) {
     `Install ${name}, or set ${name === "python3" ? "CODEX_AGENTS_PYTHON" : "CODEX_BIN"} to its absolute executable path.`,
   );
 }
-async function identity(origin, state) {
-  let response;
-  try {
-    response = await fetch(`${origin}/api/desktop`, {
-      signal: AbortSignal.timeout(1000),
-      redirect: "error",
-    });
-  } catch (error) {
-    if (error.cause?.code === "ECONNREFUSED") return null;
-    throw new Error(`Cannot verify the local backend: ${error.message}`);
-  }
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error(
-      "Port is occupied by an incompatible server. Update or stop that server first.",
-    );
+async function identity(
+  origin,
+  state,
+  { attemptTimeoutMs = 5000, timeoutMs = 15000, retryDelayMs = 200 } = {},
+) {
+  const deadline = performance.now() + timeoutMs;
+  let uncertain = false;
+  let response, data;
+  for (;;) {
+    const remaining = Math.max(1, Math.ceil(deadline - performance.now()));
+    const signal = AbortSignal.timeout(Math.min(attemptTimeoutMs, remaining));
+    try {
+      response = await fetch(`${origin}/api/desktop`, {
+        signal,
+        redirect: "error",
+      });
+      try {
+        data = await response.json();
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw new Error(
+          "Port is occupied by an incompatible server. Update or stop that server first.",
+        );
+      }
+      break;
+    } catch (error) {
+      const refused = error.cause?.code === "ECONNREFUSED";
+      if (refused && !uncertain) return null;
+      if (!signal.aborted && !refused)
+        throw new Error(`Cannot verify the local backend: ${error.message}`);
+      // A timeout does not prove that the port or state directory is available.
+      uncertain = true;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0)
+        throw new Error(
+          "The local backend did not confirm its identity in time. Try opening Studio again. No replacement backend was started.",
+        );
+      await sleep(Math.min(retryDelayMs, remaining));
+    }
   }
   if (
     !response.ok ||
