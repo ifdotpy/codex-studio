@@ -346,6 +346,35 @@ export default function App() {
     window.addEventListener("desktop-error", onError);
     return () => window.removeEventListener("desktop-error", onError);
   }, [notify]);
+  const [backendUpdatePending, setBackendUpdatePending] = useState(false);
+  useEffect(() => {
+    const check = window.codexDesktop?.getBackendUpdate;
+    if (!check) return;
+    let active = true;
+    let checking = false;
+    const refreshUpdate = () => {
+      if (checking) return;
+      checking = true;
+      void check()
+        .then((status) => {
+          if (active) setBackendUpdatePending(status.updateRequired === true);
+        })
+        .catch(() => {
+          // Connection notices already report an unavailable backend.
+        })
+        .finally(() => {
+          checking = false;
+        });
+    };
+    refreshUpdate();
+    window.addEventListener("focus", refreshUpdate);
+    document.addEventListener("visibilitychange", refreshUpdate);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refreshUpdate);
+      document.removeEventListener("visibilitychange", refreshUpdate);
+    };
+  }, []);
   const [navigationTarget, setNavigationTarget] = useState<{
     agentId: string;
     section: "messages";
@@ -1323,6 +1352,15 @@ export default function App() {
           </div>
         )}
         <div className="sync-notices">
+          {backendUpdatePending && (
+            <p
+              className="sync-status"
+              role="status"
+              data-backend-update-pending
+            >
+              Server update pending. Active work continues.
+            </p>
+          )}
           {pendingCreation && !creating && (
             <div className="sync-status">
               <p>

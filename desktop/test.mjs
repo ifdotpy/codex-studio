@@ -47,11 +47,49 @@ try {
     identity(backend.origin, path.join(temp, "different-state")),
     /different state/,
   );
+  assert.match(backend.backendBuild, /^[a-f0-9]{64}$/);
   const attached = await ensureBackend({ resources, port, env });
   assert.equal(attached.owned, false);
   desktop = await electron.launch({ args: [root, "--hidden"], env });
   const page = await desktop.firstWindow();
   await page.waitForFunction(() => !!window.codexDesktop);
+  assert.equal(
+    (await page.evaluate(() => window.codexDesktop.getBackendUpdate()))
+      .updateRequired,
+    false,
+  );
+  await desktop.evaluate(() => {
+    const original = globalThis.fetch;
+    globalThis.__testOriginalFetch = original;
+    globalThis.fetch = async (...args) => {
+      const response = await original(...args);
+      if (String(args[0]).endsWith("/api/desktop")) {
+        const body = await response.json();
+        return new Response(
+          JSON.stringify({ ...body, backendBuild: "a".repeat(64) }),
+        );
+      }
+      return response;
+    };
+  });
+  assert.equal(
+    (await page.evaluate(() => window.codexDesktop.getBackendUpdate()))
+      .updateRequired,
+    true,
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.locator("[data-backend-update-pending]").waitFor();
+  assert.equal(
+    await page.locator("[data-backend-update-pending]").textContent(),
+    "Server update pending. Active work continues.",
+  );
+  await desktop.evaluate(() => {
+    globalThis.fetch = globalThis.__testOriginalFetch;
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page
+    .locator("[data-backend-update-pending]")
+    .waitFor({ state: "hidden" });
   const preferences = await desktop.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
     const preferences = window.webContents.getLastWebPreferences();
@@ -102,7 +140,9 @@ try {
   );
   // Real React callers use the isolated bridge and the real asset/database API.
   await page.getByRole("button", { name: "New chat", exact: true }).click();
-  await page.getByRole("button", { name: "Chat settings", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
   await page.locator("#project:not([disabled])").waitFor();
   const projectResponse = page.waitForResponse(
     (response) =>
@@ -110,9 +150,13 @@ try {
       response.request().method() === "POST",
   );
   await page.locator("#project").click();
-  await page.getByRole("button", { name: "Browse in Finder…", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Browse in Finder…", exact: true })
+    .click();
   await page.locator(".directory-location").filter({ hasText: temp }).waitFor();
-  await page.getByRole("button", { name: "Use this folder", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Use this folder", exact: true })
+    .click();
   assert.equal((await projectResponse).status(), 200);
   const uiState = await (await fetch(`${backend.origin}/api/state`)).json();
   const lead = uiState.runtime.agents.find((agent) => agent.isLead);
@@ -321,6 +365,8 @@ try {
       cases: [
         "startup race",
         "attach",
+        "backend source identity",
+        "pending update notice and recovery",
         "state mismatch",
         "sandbox",
         "gesture",

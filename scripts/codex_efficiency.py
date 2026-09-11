@@ -2,6 +2,8 @@
 import base64
 import hashlib
 import json
+import os
+from pathlib import Path
 import time
 
 
@@ -106,7 +108,45 @@ class EfficiencyMixin:
                          'error': clip(m.get('error') or '', 600)} for m in self.recent_monitors(db, actor["rootId"]) if m['agent'] in ids]
             records.sort(key=lambda r: (r['kind'], r['id']))
             defaults = self.worker_defaults(self.agent(actor['rootId'], db))
-            revision = digest([records, defaults])
+            from codex_native_errors import native_thread_block
+            from codex_safety_buffering import active as safety_retry_active
+            global_limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '16'))))
+            active = [a for a in agents if a.get('inFlight') or a['status'] in {'running', 'starting', 'approval'}]
+            team_active = sum(a['rootId'] == actor['rootId'] for a in active)
+            root = self.agent(actor['rootId'], db)
+            reservations = {str(Path(a['cwd']).resolve()): a['id'] for a in agents if a.get('workspaceOperation')}
+            queued = []
+            for a in team:
+                if a['status'] != 'queued':
+                    continue
+                reasons = []
+                if not a.get('autoWake'):
+                    reasons.append('paused')
+                for field in ('nativeFailureHold', 'accountTransferId'):
+                    if a.get(field):
+                        reasons.append(field)
+                if safety_retry_active(a):
+                    reasons.append('safety_retry')
+                if native_thread_block(a):
+                    reasons.append('native_thread_blocked')
+                if a.get('browserRecovery', {}).get('stage') in {'pending', 'reconnecting'}:
+                    reasons.append('browser_recovery')
+                blocker = reservations.get(str(Path(a['cwd']).resolve()))
+                if blocker:
+                    reasons.append('workspace_operation')
+                if len(active) >= global_limit:
+                    reasons.append('global_concurrency')
+                if team_active >= a['concurrency']:
+                    reasons.append('team_concurrency')
+                queued.append({'id': a['id'], 'reasons': reasons or ['awaiting_dispatch'],
+                               **({'blockingAgent': blocker} if blocker else {})})
+            capacity = {'teamLimit': root['concurrency'], 'globalLimit': global_limit,
+                        'teamActive': team_active, 'globalActive': len(active),
+                        'maxAgents': root['maxAgents'], 'queued': queued,
+                        'configure': {'command': 'codex-control configure ' + actor['rootId'] + ' --concurrency N',
+                                      'minimum': 1, 'maximum': 64,
+                                      'note': 'Change team capacity only within user authorization. The global server limit still applies.'}}
+            revision = digest([records, defaults, capacity])
             db.execute('CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))')
             previous = db.execute('SELECT record FROM runtime_model_status WHERE agent=? AND revision=?',
                                   (actor_id, args.get('since_revision'))).fetchone()
@@ -119,6 +159,7 @@ class EfficiencyMixin:
                     'counts': {state: sum(a['status'] == state for a in team) for state in sorted({a['status'] for a in team})},
                     'changes': changes, 'removed': sorted(old.keys() - now.keys()),
                     'workerDefaults': defaults,
+                    'capacity': capacity,
                     'help': 'Use orchestration_context for tools, profiles or monitor details. Use orchestration_peers for rooms.'}
 
     def model_tool_result(self, actor, key, result):
@@ -161,26 +202,71 @@ class EfficiencyMixin:
             actor = self.checked_actor(db, actor_id, actor_id)
             key = args.get('output_ref')
             receipt = self.tool_request(key, db)
-            if receipt is None or receipt.get('agent') != actor['id']:
-                raise ValueError('Output reference is not owned by this agent')
-            row = db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (key,)).fetchone()
-            if row is None:
-                raise ValueError('Result is not available yet. Do not repeat the operation.')
-            result = json.loads(row[0])
-            text = '\n'.join(c.get('text', '') for c in result.get('contentItems', []) if c.get('type') == 'inputText')
+            native = None
+            if receipt is None and isinstance(key, str) and key.startswith(actor['id'] + ':'):
+                # Native item IDs use the stable Studio agent ID, including after
+                # account transfer. Never authorize by a caller-supplied thread ID.
+                row = db.execute('SELECT record FROM runtime_items WHERE id=? AND agent=?', (key, actor['id'])).fetchone()
+                native = json.loads(row[0]) if row else None
+                if native and native.get('title') == 'dynamicToolCall':
+                    call_id = key[len(actor['id']) + 1:]
+                    aliases = db.execute('SELECT request FROM runtime_tool_request_aliases WHERE agent=? AND alias=? LIMIT 2',
+                                         (actor['id'], call_id)).fetchall()
+                    if len(aliases) > 1:
+                        raise ValueError('Output reference is ambiguous. Use the canonical request id.')
+                    receipt = self.tool_request(aliases[0][0], db) if aliases else self._legacy_tool_request(db, actor, call_id)
+                    if receipt and receipt.get('agent') == actor['id']:
+                        key = receipt['id']
+                    native = None
+                elif native and native.get('title') != 'commandExecution':
+                    native = None
+            if native:
+                full = None
+                if native.get('truncated') and db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search'").fetchone():
+                    # Runtime.item indexes the original text in the same transaction
+                    # before it clips the transcript view. Reuse that durable body.
+                    if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
+                        full = db.execute('SELECT s.body FROM runtime_search_rows r JOIN runtime_search s ON s.rowid=r.search_rowid '
+                                          'WHERE r.id=? AND s.id=? AND s.agent=?', (key, key, actor['id'])).fetchone()
+                    else:
+                        full = db.execute('SELECT body FROM runtime_search WHERE id=? AND agent=?', (key, actor['id'])).fetchone()
+                try:
+                    payload = json.loads(full[0] if full else native['text'])
+                except (ValueError, TypeError, KeyError):
+                    raise ValueError('Saved command output is truncated or unreadable. Do not repeat the command.') from None
+                text = payload.get('aggregatedOutput') if isinstance(payload, dict) else None
+                if not isinstance(text, str):
+                    raise ValueError('Saved command output is unavailable. Do not repeat the command.')
+                native = {**native, 'truncated': bool(payload.get('outputTruncated')) or bool(native.get('truncated') and not full)}
+                result = {'success': payload.get('status') == 'completed' and payload.get('exitCode') == 0}
+                receipt = {'outcome': 'unknown'}
+            else:
+                if receipt is None:
+                    receipt = self._legacy_tool_request(db, actor, key) if isinstance(key, str) else None
+                if receipt is None or receipt.get('agent') != actor['id'] or receipt.get('stage') == 'ambiguous':
+                    raise ValueError('Output reference is not owned by this agent')
+                key = receipt['id']
+                row = db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (key,)).fetchone()
+                if row is None:
+                    raise ValueError('Result is not available yet. Do not repeat the operation.')
+                result = json.loads(row[0])
+                text = '\n'.join(c.get('text', '') for c in result.get('contentItems', []) if c.get('type') == 'inputText')
             offset = args.get('offset', 0)
             if type(offset) is not int or offset < 0 or offset > len(text):
                 raise ValueError('offset must be within the saved text')
             if args.get('contains'):
                 found = text.find(args['contains'], offset)
                 if found < 0:
-                    return {'outputRef': key, 'found': False, 'success': result.get('success'), 'outcome': receipt['outcome']}
+                    return {'outputRef': key, 'found': False, 'success': result.get('success'), 'outcome': receipt['outcome'],
+                            **({'source': 'saved_native_output', 'truncated': bool(native.get('truncated'))} if native else {})}
                 offset = max(offset, found - 200)
             excerpt = clip(text[offset:], 3000)
             end = offset + len(excerpt)
             return {'outputRef': key, 'success': result.get('success'), 'outcome': receipt['outcome'],
                     'offset': offset, 'nextOffset': end if end < len(text) else None,
-                    'totalChars': len(text), 'text': excerpt}
+                    'totalChars': len(text), 'text': excerpt,
+                    **({'source': 'saved_native_output', 'truncated': bool(native.get('truncated')),
+                        'commandStatus': payload.get('status'), 'exitCode': payload.get('exitCode')} if native else {})}
 
     def reported_plan(self, db, root_id):
         row = db.execute('SELECT record FROM runtime_plans WHERE id=?', (root_id,)).fetchone()

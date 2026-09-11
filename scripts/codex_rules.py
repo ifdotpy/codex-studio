@@ -535,9 +535,18 @@ class RulesMixin:
         if action == "claim":
             args.append(text_field(data.get("note", ""), "a note", 2000, empty=True))
         result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        snapshot = self.resource_action()
+        holder = snapshot["state"].get("claims", {}).get(resource, {}).get("worker")
         return {
-            **self.resource_action(),
+            **snapshot,
             "ok": result.returncode == 0,
             "exitCode": result.returncode,
             "message": (result.stdout + result.stderr).strip(),
+            "action": action, "resource": resource, "agent": a["id"],
+            "holder": holder,
+            "ownsResource": holder == a["id"],
+            # Exit 1 is the board's explicit claim/renew/release refusal.
+            # A process error or timeout does not prove no board write occurred.
+            "outcome": ("applied" if result.returncode == 0 else
+                        "not_applied" if result.returncode == 1 else "unknown"),
         }

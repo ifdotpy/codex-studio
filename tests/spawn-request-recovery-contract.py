@@ -151,7 +151,8 @@ class SpawnRequestRecovery(unittest.TestCase):
             self.runtime.request(self.message('peers-1', 'orchestration_peers', {}))
             peers = self.value(self.response('peers-1'))
             self.assertTrue(self.response('peers-1')['success'])
-            self.assertTrue({a['id'] for a in self.children()}.issubset({a['id'] for a in peers['peers']}))
+            self.assertEqual(peers['apiVersion'], 2)
+            self.assertTrue({a['id'] for a in self.children()}.issubset({a['id'] for a in peers['items']}))
             self.assertTrue(all(not future.done() for future in futures), 'Both saturated pools must still be blocked')
         finally:
             release.set()

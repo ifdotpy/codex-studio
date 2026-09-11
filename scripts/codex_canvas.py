@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from codex_backend_identity import BACKEND_BUILD
 from codex_state import state_dir, board_dir, codex_home, read_threads, effective_status, process_is_alive
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -655,6 +656,7 @@ def make_server(canvas, port=0, public_origin=None):
                             "application": "codex-agents",
                             "protocol": 1,
                             "mobileProtocol": 1,
+                            "backendBuild": BACKEND_BUILD,
                             "publicOrigin": remote.origin(),
                             "pid": os.getpid(),
                             "stateDir": str(Path(canvas.root).resolve()),

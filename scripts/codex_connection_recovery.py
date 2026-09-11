@@ -1,4 +1,4 @@
-"""Confirm a disconnected turn without resuming or replaying its work."""
+"""Reconcile disconnected turns before restoring confirmed completion delivery."""
 from concurrent.futures import Future
 import time
 
@@ -10,7 +10,7 @@ DISCONNECT_ERRORS = frozenset({
 })
 IDENTITY = ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'status', 'error',
             'inFlight', 'autoWake', 'startAttempt', 'accountTransferId',
-            'workspaceOperation', 'nativeThreadBlock')
+            'workspaceOperation', 'nativeThreadBlock', 'disconnectRecovery')
 
 
 def eligible(agent):
@@ -22,13 +22,15 @@ def eligible(agent):
             and not native_thread_block(agent))
 
 
-def recover(runtime, key):
+def recover(runtime, key, *, automatic=False):
     with runtime.lock, runtime.db() as db:
         agent = runtime.checked_actor(db, key)
         if runtime.closed or not eligible(agent):
             return {'status': 'superseded'}
         expected = {field: agent.get(field) for field in IDENTITY}
         account = agent.get('accountKey', 'default')
+        if automatic and runtime.accounts.get(account).get('disconnected'):
+            return {'status': 'superseded'}
     try:
         # This can start the account transport. It never loads or resumes a thread.
         server = runtime.connect(account)
@@ -53,7 +55,7 @@ def recover(runtime, key):
         result = Future()
         def apply():
             try:
-                result.set_result(apply_result(runtime, expected, connection, server, turn))
+                result.set_result(apply_result(runtime, expected, connection, server, turn, automatic=automatic))
             except Exception as error:
                 result.set_exception(error)
         server.after_events(apply)
@@ -86,7 +88,34 @@ def record_check(runtime, expected, connection, server, native_state):
         return {'status': 'unconfirmed', 'checked': True}
 
 
-def apply_result(runtime, expected, connection, server, turn):
+def apply_result(runtime, expected, connection, server, turn, *, automatic=False):
+    if automatic:
+        with runtime.lock:
+            with runtime.db() as db:
+                if not current(runtime, db, expected, connection, server):
+                    return {'status': 'superseded'}
+                agent = runtime.agent(expected['id'], db)
+                if runtime.accounts.get(agent.get('accountKey', 'default')).get('disconnected'):
+                    return {'status': 'superseded'}
+                resume_completion = can_deliver_completion(db, agent, turn)
+                if resume_completion:
+                    # The exact turn is terminal. Restore only the permission that
+                    # this transport loss removed, then use normal completion delivery.
+                    agent.update(autoWake=True, inFlight=True)
+                    runtime.put(db, 'agents', agent)
+                    identity = {field: agent.get(field) for field in
+                                ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'startAttempt')}
+            if resume_completion:
+                result = runtime.apply_turn_recovery(identity, connection, 'notLoaded', turn)
+                with runtime.db() as db:
+                    agent = runtime.agent(expected['id'], db)
+                    agent['connectionRecovery'] = {
+                        'turnId': turn['id'], 'outcome': turn['status'], 'at': time.time(),
+                        'source': 'native_thread_read', 'previousError': expected['error'],
+                        'automatic': True, 'completionDelivered': result['status'] == 'reconciled',
+                    }
+                    runtime.put(db, 'agents', agent)
+                return result
     with runtime.lock, runtime.db() as db:
         if not current(runtime, db, expected, connection, server):
             return {'status': 'superseded'}
@@ -122,3 +151,78 @@ def apply_result(runtime, expected, connection, server, turn):
         runtime.loaded.discard(agent['id'])
         runtime.put(db, 'agents', agent)
         return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': outcome}
+
+
+def can_deliver_completion(db, agent, turn):
+    previous = agent.get('disconnectRecovery') or {}
+    if (turn.get('status') != 'completed' or not previous.get('autoWake')
+            or agent.get('nativeFailureHold')
+            or any(previous.get(field) != agent.get(field) for field in
+                   ('epoch', 'accountKey', 'threadId', 'turnId'))
+            or agent.get('turnEpoch', agent['epoch']) != agent['epoch']):
+        return False
+    # A completed model turn does not settle a lost process or tool mutation.
+    # Pending input remains pending; no uncertain input is replayed.
+    if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                  "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                  (agent['id'], agent['epoch'])).fetchone():
+        return False
+    for table in ('runtime_tasks', 'runtime_monitors'):
+        if db.execute(f"SELECT 1 FROM {table} WHERE json_extract(record,'$.agent')=? "
+                      "AND json_extract(record,'$.status') IN ('lost','running','starting','approval') LIMIT 1",
+                      (agent['id'],)).fetchone():
+            return False
+    if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+                  "AND (json_extract(record,'$.outcome')='unknown' OR "
+                  "json_extract(record,'$.stage') IN ('queued','running')) LIMIT 1",
+                  (agent['id'],)).fetchone():
+        return False
+    return True
+
+
+def tick(runtime, agents):
+    """One bounded read job; failed checks back off without blocking the scheduler."""
+    with runtime.lock:
+        if runtime.closed or getattr(runtime, '_connection_recovery_busy', False):
+            return
+        checks = runtime.__dict__.setdefault('_connection_recovery_checks', {})
+        now = time.time()
+        candidates = []
+        for agent in agents:
+            if not eligible(agent):
+                continue
+            if runtime.accounts.get(agent.get('accountKey', 'default')).get('disconnected'):
+                continue
+            identity = tuple(agent.get(field) for field in ('id', 'epoch', 'accountKey', 'threadId', 'turnId'))
+            previous = checks.get(identity, {})
+            if previous.get('nextAt', 0) <= now:
+                candidates.append((previous.get('at', 0), identity, agent['id']))
+        if not candidates:
+            return
+        _, identity, key = min(candidates, key=lambda candidate: candidate[0])
+        runtime._connection_recovery_busy = True
+        try:
+            runtime.recovery_pool.submit(run, runtime, key, identity)
+        except Exception:
+            runtime._connection_recovery_busy = False
+            raise
+
+
+def run(runtime, key, identity):
+    result = {'status': 'unconfirmed'}
+    try:
+        result = recover(runtime, key, automatic=True)
+        return result
+    finally:
+        with runtime.lock:
+            checks = runtime.__dict__.setdefault('_connection_recovery_checks', {})
+            failures = min(checks.get(identity, {}).get('failures', 0) + 1, 6)
+            delay = min(300, 15 * 2 ** (failures - 1))
+            now = time.time()
+            checks[identity] = {**result, 'at': now, 'nextAt': now + delay, 'failures': failures}
+            # Keep recent diagnostics without retaining every historical epoch.
+            if len(checks) > 256:
+                for old in sorted(checks, key=lambda key: checks[key]['at'])[:-256]:
+                    checks.pop(old)
+            runtime._connection_recovery_busy = False
+            runtime.changed.set()

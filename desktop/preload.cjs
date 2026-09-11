@@ -34,6 +34,7 @@ if (process.isMainFrame) {
       onTranscriptionProgress: (callback) =>
         subscribe("codex-desktop-transcription-progress", callback),
       onNavigate: (callback) => subscribe("codex-desktop-navigate", callback),
+      getBackendUpdate: () => invoke("getBackendUpdate", undefined, false),
       getNotifications: () => invoke("getNotifications", undefined, false),
       pickDirectory: () => invoke("pickDirectory"),
       pickFiles: () => invoke("pickFiles"),

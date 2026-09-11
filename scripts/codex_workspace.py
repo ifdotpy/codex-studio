@@ -24,6 +24,8 @@ class WorkspaceMixin:
         "provider_ready",
         "local_mutation",
         "recovery_required",
+        "capture_pending",
+        "capture_running",
     }
 
     def setup_workspace(self, db):
@@ -34,12 +36,20 @@ class WorkspaceMixin:
             CREATE TABLE IF NOT EXISTS runtime_projects (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_workspace_migrations (id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS runtime_workspace_operation_phase ON runtime_workspace_operations(
+                json_extract(record,'$.phase'), json_extract(record,'$.agent'));
         """)
         self.migrate_project_accounts(db)
+        # Capture uses a separate Git index and never restores workspace files or
+        # changes the native thread. A dead process cannot retain its reservation.
+        for operation in self._workspace_operations(db):
+            if operation.get("kind") in {"checkpoint", "capture"}:
+                operation.update(phase="failed", updated=time.time(),
+                                 error="Server restarted before checkpoint capture finished")
+                self.put(db, "workspace_operations", operation)
         active = {
             operation["id"]: operation
-            for operation in self.records(db, "workspace_operations")
-            if operation.get("phase") in self.WORKSPACE_OPERATION_ACTIVE
+            for operation in self._workspace_operations(db)
         }
         for a in self.records(db, "agents"):
             operations = [operation for operation in active.values() if operation.get("agent") == a["id"]]
@@ -65,6 +75,11 @@ class WorkspaceMixin:
                     error=operation.get("error")
                     or "Workspace operation interrupted. Inspect files before continuing.",
                 )
+                self.put(db, "agents", a)
+            elif a.get("workspaceOperation") in {"checkpoint", "capture"}:
+                a.update(workspaceOperation=None,
+                         checkpointError="Server restarted before checkpoint capture finished")
+                a.pop("workspaceReservationId", None)
                 self.put(db, "agents", a)
             elif a.get("workspaceOperation"):
                 a.update(
@@ -136,14 +151,15 @@ class WorkspaceMixin:
         return json.loads(row[0]) if row else None
 
     def _workspace_operations(self, db, agent_id=None):
-        operations = self.records(db, "workspace_operations")
+        phases = tuple(sorted(self.WORKSPACE_OPERATION_ACTIVE))
+        query = ("SELECT record FROM runtime_workspace_operations "
+                 "WHERE json_extract(record,'$.phase') IN ("
+                 + ",".join("?" for _ in phases) + ")")
+        params = phases
         if agent_id is not None:
-            operations = [operation for operation in operations if operation.get("agent") == agent_id]
-        return [
-            operation
-            for operation in operations
-            if operation.get("phase") in self.WORKSPACE_OPERATION_ACTIVE
-        ]
+            query += " AND json_extract(record,'$.agent')=?"
+            params += (agent_id,)
+        return [json.loads(row[0]) for row in db.execute(query, params)]
 
     def _put_workspace_operation(self, db, operation):
         self.put(db, "workspace_operations", operation)
@@ -212,10 +228,11 @@ class WorkspaceMixin:
             # agent marker already provide a durable hold if this write fails.
             pass
 
-    def _workspace_operation_busy(self, db, cwd):
+    def _workspace_operation_busy(self, db, cwd, exclude_operation=None):
         return any(
             Path(agent["cwd"]).resolve() == Path(cwd).resolve()
             for operation in self._workspace_operations(db)
+            if operation["id"] != exclude_operation
             for agent in self.records(db, "agents")
             if operation.get("agent") == agent["id"]
         )
@@ -594,6 +611,77 @@ class WorkspaceMixin:
             self.git(a, ["add", "-A", "--", "."], env)
             return self.git(a, ["write-tree"], env).decode().strip()
 
+    def _reserve_checkpoint(self, db, agent, kind, turn_id=None):
+        operation = {
+            "id": kind + ":" + str(uuid.uuid4()),
+            "kind": kind, "agent": agent["id"], "cwd": agent["cwd"],
+            "epoch": agent["epoch"], "turnId": turn_id,
+            "phase": "capture_pending", "created": time.time(),
+        }
+        self._put_workspace_operation(db, operation)
+        agent.update(workspaceOperation=kind, workspaceReservationId=operation["id"])
+        self.put(db, "agents", agent)
+        return operation["id"]
+
+    def queue_checkpoint_after_turn(self, db, agent, turn_id):
+        # A native turn can finish while a conversation fork holds this directory.
+        # Its completion must not replace the fork's reservation.
+        try:
+            self._assert_workspace_idle(db, agent, current_state=True)
+        except ValueError as error:
+            agent["checkpointError"] = "Checkpoint skipped: " + str(error)
+            return
+        operation_id = self._reserve_checkpoint(db, agent, "checkpoint", turn_id)
+        try:
+            self.pool.submit(self.checkpoint_after_turn, agent["id"], turn_id, operation_id)
+        except Exception as error:
+            self._settle_checkpoint(db, agent, operation_id, error)
+
+    def _settle_checkpoint(self, db, agent, operation_id, error=None):
+        operation = self._workspace_operation(db, operation_id)
+        if not operation or operation.get("kind") not in {"checkpoint", "capture"}:
+            return
+        if operation.get("phase") not in {"capture_pending", "capture_running"}:
+            return
+        operation.update(phase="failed" if error else "completed", updated=time.time(),
+                         error=str(error) if error else None)
+        self._put_workspace_operation(db, operation)
+        if (agent.get("workspaceReservationId") == operation_id
+                and agent.get("workspaceOperation") == operation["kind"]):
+            agent.update(workspaceOperation=None, checkpointError=str(error) if error else None)
+            agent.pop("workspaceReservationId", None)
+            self.put(db, "agents", agent)
+
+    def _capture_reserved_checkpoint(self, key, label, turn_id, operation_id):
+        with self.lock, self.db() as db:
+            agent = self.agent(key, db)
+            operation = self._workspace_operation(db, operation_id)
+            if not operation or operation.get("phase") != "capture_pending":
+                return None
+            if (agent.get("workspaceReservationId") != operation_id
+                    or agent.get("workspaceOperation") != operation["kind"]
+                    or agent["cwd"] != operation["cwd"]):
+                self._settle_checkpoint(db, agent, operation_id,
+                                        "Checkpoint reservation changed before capture")
+                return None
+            try:
+                self._assert_workspace_idle(db, agent, operation_id)
+            except ValueError as error:
+                self._settle_checkpoint(db, agent, operation_id, "Checkpoint skipped: " + str(error))
+                return None
+            operation.update(phase="capture_running", updated=time.time())
+            self._put_workspace_operation(db, operation)
+        error = None
+        try:
+            return self.capture_checkpoint(key, label, turn_id)
+        except Exception as cause:
+            error = cause
+            raise
+        finally:
+            with self.lock, self.db() as db:
+                self._settle_checkpoint(db, self.agent(key, db), operation_id, error)
+            self.changed.set()
+
     def checkpoint_capture(
         self, agent_id, label="Checkpoint", turn_id=None, internal=False
     ):
@@ -602,16 +690,8 @@ class WorkspaceMixin:
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id)
             self.assert_workspace_idle(a)
-            a["workspaceOperation"] = "capture"
-            self.put(db, "agents", a)
-        try:
-            return self.capture_checkpoint(agent_id, label, turn_id)
-        finally:
-            with self.lock, self.db() as db:
-                a = self.agent(agent_id, db)
-                a["workspaceOperation"] = None
-                self.put(db, "agents", a)
-            self.changed.set()
+            operation_id = self._reserve_checkpoint(db, a, "capture", turn_id)
+        return self._capture_reserved_checkpoint(agent_id, label, turn_id, operation_id)
 
     def capture_checkpoint(self, agent_id, label="Checkpoint", turn_id=None):
         a = self.checked_actor_in_own_db(agent_id)
@@ -661,20 +741,13 @@ class WorkspaceMixin:
             self.put(db, "checkpoints", record)
             return record
 
-    def checkpoint_after_turn(self, key, turn_id):
+    def checkpoint_after_turn(self, key, turn_id, operation_id):
         try:
-            self.checkpoint_capture(key, "After turn", turn_id, True)
-        except Exception as error:
-            with self.lock, self.db() as db:
-                a = self.agent(key, db)
-                a["checkpointError"] = str(error)
-                self.put(db, "agents", a)
-        finally:
-            with self.lock, self.db() as db:
-                a = self.agent(key, db)
-                a["workspaceOperation"] = None
-                self.put(db, "agents", a)
-            self.changed.set()
+            self._capture_reserved_checkpoint(key, "After turn", turn_id, operation_id)
+        except Exception:
+            # The capture helper persists the exact failure and releases only its
+            # own reservation. Automatic capture must not fail the completed turn.
+            pass
 
     def checkpoint_preview(self, key, checkpoint_id):
         a = self.checked_actor_in_own_db(key)
@@ -944,29 +1017,29 @@ class WorkspaceMixin:
 
     def assert_workspace_idle(self, a):
         with self.db() as db:
-            if self._workspace_operation_busy(db, a["cwd"]):
-                raise ValueError("Workspace recovery is required before using this workspace")
-            for other in self.records(db, "agents"):
-                if Path(other["cwd"]).resolve() == Path(a["cwd"]).resolve() and (
-                    other.get("inFlight") or other.get("workspaceOperation")
-                ):
-                    raise ValueError("An agent is using this workspace")
-            if any(
-                m["cwd"] == a["cwd"]
-                and m["status"] in {"running", "starting", "approval"}
-                for m in self.records(db, "monitors")
-            ):
-                raise ValueError("A monitor is using this workspace")
-            peers = {
-                v["id"]
-                for v in self.records(db, "agents")
-                if Path(v["cwd"]).resolve() == Path(a["cwd"]).resolve()
-            }
-            if any(
-                t["agent"] in peers and t["status"] == "running"
-                for t in self.records(db, "tasks")
-            ):
-                raise ValueError("A command or tool is still active")
+            self._assert_workspace_idle(db, a)
+
+    def _assert_workspace_idle(self, db, a, reservation_id=None, *, current_state=False):
+        if self._workspace_operation_busy(db, a["cwd"], reservation_id):
+            raise ValueError("Workspace recovery is required before using this workspace")
+        # Notification handlers have not yet written this turn's terminal state.
+        # Use that exact current agent rather than its older in-flight DB row.
+        agents = [a if current_state and other["id"] == a["id"] else other
+                  for other in self.records(db, "agents")]
+        cwd = Path(a["cwd"]).resolve()
+        peers = [other for other in agents if Path(other["cwd"]).resolve() == cwd]
+        for other in peers:
+            own_reservation = (reservation_id is not None and other["id"] == a["id"]
+                               and other.get("workspaceReservationId") == reservation_id)
+            if other.get("inFlight") or (other.get("workspaceOperation") and not own_reservation):
+                raise ValueError("An agent is using this workspace")
+        if any(Path(m["cwd"]).resolve() == cwd and m["status"] in {"running", "starting", "approval"}
+               for m in self.records(db, "monitors")):
+            raise ValueError("A monitor is using this workspace")
+        peer_ids = {other["id"] for other in peers}
+        if any(t["agent"] in peer_ids and t["status"] == "running"
+               for t in self.records(db, "tasks")):
+            raise ValueError("A command or tool is still active")
 
     def branch_conversation(self, key, data):
         with self.lock:
@@ -1512,10 +1585,20 @@ class WorkspaceMixin:
 
     def workspace_blockers(self, db, a):
         cwd = Path(a["cwd"]).resolve()
-        return [{"agentId": other["id"], "operation": other["workspaceOperation"]}
-                for other in self.records(db, "agents")
-                if other.get("workspaceOperation") and Path(other["cwd"]).resolve() == cwd]
-
+        blockers = []
+        for other in self.records(db, "agents"):
+            if not other.get("workspaceOperation") or Path(other["cwd"]).resolve() != cwd:
+                continue
+            blocker = {"agentId": other["id"], "operation": other["workspaceOperation"]}
+            operation_id = other.get("workspaceReservationId")
+            operation = self._workspace_operation(db, operation_id) if operation_id else None
+            if not operation and other["workspaceOperation"] not in {"checkpoint", "capture"}:
+                operation = next(iter(self._workspace_operations(db, other["id"])), None)
+            if operation:
+                blocker.update(operationId=operation["id"], phase=operation["phase"],
+                               created=operation.get("created"), turnId=operation.get("turnId"))
+            blockers.append(blocker)
+        return blockers
 
     def assert_workspace_available(self, db, a):
         if safety_retry_active(a):
@@ -1524,8 +1607,8 @@ class WorkspaceMixin:
             raise ValueError("Wait for this agent's account transfer to finish")
         blockers = self.workspace_blockers(db, a)
         if blockers:
-            raise ValueError("A workspace operation is active in this directory: "
-                             + json.dumps(blockers))
+            from codex_workspace_delivery import WorkspaceBusyError
+            raise WorkspaceBusyError(blockers)
 
     def recent_tasks(self, db, root=None):
         scope = "" if root is None else " AND json_extract(a.record,'$.rootId')=?"

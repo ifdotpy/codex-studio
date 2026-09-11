@@ -52,6 +52,10 @@ For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.
 Run `npm --prefix desktop run package` to build the desktop application.
 
+The desktop compares its installed backend source with the running server.
+It shows an update notice when they differ. Closing the window preserves the
+server and its active work, so reopening the window does not apply backend changes.
+
 ## iPhone access
 
 The mobile layout shows orchestrator chats, team agents, existing projects, account selection,
@@ -157,6 +161,12 @@ Open **Messages** in the chat header on a computer or phone.
 The main agent has the orchestrator role. Subagents ask it for help.
 Only the main agent sends conversational messages or tasks to you.
 Native tool permissions still require your approval.
+
+Use a stable `request_id` with `orchestration_send` to recover a lost reply.
+An exact retry returns the saved receipt without another instruction.
+Worker recovery reconciles saved read and validation failures before archive checks.
+Unknown mutations still block archive. Tool history and files remain available.
+Team status includes the configured concurrency and each queued agent's current blockers.
 Messages replace the separate Inbox, Agent chats, and Complaint book screens.
 The main conversation and its draft stay open.
 You can close a reply and return to its draft.

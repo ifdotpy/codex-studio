@@ -20,6 +20,10 @@ export interface DesktopBridge {
   openExternal(url: string): Promise<void>;
   setNotifications(enabled: boolean): Promise<boolean>;
   getNotifications(): Promise<boolean>;
+  getBackendUpdate?(): Promise<{
+    availableBackendBuild: string | null;
+    updateRequired: boolean | null;
+  }>;
   onNavigate(
     callback: (target: {
       agentId: string;

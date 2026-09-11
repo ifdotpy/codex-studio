@@ -25,6 +25,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 Runtime, eventually = fixture.Runtime, fixture.eventually
 from codex_native_errors import NativeRpcError
+from codex_shell import monitor_command
 
 
 class WorkspaceServer(fixture.FakeServer):
@@ -76,7 +77,10 @@ class WorkspaceServer(fixture.FakeServer):
                     ]
                 }
             return {}
-        if method == "command/exec" and params["command"][-1] == "fixture-rule-command":
+        if method == "command/exec" and params["command"] == monitor_command(
+            self, "fixture-rule-command", params["cwd"],
+            config={"features": {"shell_snapshot": False}},
+        ):
             self.calls.append((method, params))
             self.notify(
                 {

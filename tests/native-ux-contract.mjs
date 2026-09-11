@@ -17,6 +17,7 @@ async function fixture() {
     ready = resolve;
   });
   const events = [];
+  let backendBuild = "installed";
   class Window {
     constructor() {
       window = this;
@@ -90,7 +91,21 @@ async function fixture() {
             Menu: { setApplicationMenu() {}, buildFromTemplate() {} },
           }
         : name === "./backend.cjs"
-          ? { ensureBackend: async () => ({ origin: "http://localhost:1234" }) }
+          ? {
+              ensureBackend: async () => ({
+                origin: "http://localhost:1234",
+                stateDir: folder,
+              }),
+              identity: async (origin, state) => {
+                assert.equal(origin, "http://localhost:1234");
+                assert.equal(state, folder);
+                return { backendBuild };
+              },
+              updateStatus: (_resources, running) => ({
+                updateRequired: running.backendBuild !== "installed",
+                availableBackendBuild: "installed",
+              }),
+            }
           : name === "./speech.cjs"
             ? require("../desktop/speech.cjs")
             : require(name),
@@ -111,10 +126,25 @@ async function fixture() {
     event,
     events,
     notification: () => notification,
+    setBackendBuild: (value) => {
+      backendBuild = value;
+    },
   };
 }
 try {
   let f = await fixture();
+  assert.equal((await f.invoke("getBackendUpdate")).updateRequired, false);
+  f.setBackendBuild("old");
+  assert.equal((await f.invoke("getBackendUpdate")).updateRequired, true);
+  f.setBackendBuild("installed");
+  assert.equal((await f.invoke("getBackendUpdate")).updateRequired, false);
+  await assert.rejects(
+    f.handler(
+      { sender: {}, senderFrame: f.event.senderFrame },
+      { method: "getBackendUpdate" },
+    ),
+    /restricted/,
+  );
   assert.equal(await f.invoke("getNotifications"), false);
   assert.equal(await f.invoke("setNotifications", true), true);
   f = await fixture();
@@ -186,6 +216,9 @@ try {
       ipcRenderer: ipc,
     }),
   });
+  const updateCall = await api.getBackendUpdate();
+  assert.equal(updateCall[0], "codex-desktop");
+  assert.equal(updateCall[1].method, "getBackendUpdate");
   await api.getNotifications();
   await assert.rejects(api.setNotifications(true), /button/);
   listeners.click({ isTrusted: true });

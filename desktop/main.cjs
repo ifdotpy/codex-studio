@@ -14,7 +14,7 @@ const {
 } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { ensureBackend } = require("./backend.cjs");
+const { ensureBackend, identity, updateStatus } = require("./backend.cjs");
 const hidden = process.argv.includes("--hidden");
 // Preserve the existing browser profile when the product name changes.
 app.setPath(
@@ -26,6 +26,7 @@ app.setName("Codex Studio");
 app.enableSandbox();
 let win;
 let backend;
+let backendResources;
 let notifications = false;
 let microphoneUntil = 0;
 const transcriptionPermits = new Map();
@@ -227,6 +228,11 @@ async function nativeAction(event, request) {
     case "openExternal":
       await shell.openExternal(externalURL(request.value), { activate: false });
       return;
+    case "getBackendUpdate": {
+      const running = await identity(backend.origin, backend.stateDir);
+      if (!running) throw new Error("The local backend is unavailable.");
+      return updateStatus(backendResources, running);
+    }
     case "getNotifications":
       await notificationWrite;
       return notifications && Notification.isSupported();
@@ -280,10 +286,11 @@ async function nativeAction(event, request) {
 }
 async function start() {
   await loadNotifications();
+  backendResources = app.isPackaged
+    ? path.join(process.resourcesPath, "workspace")
+    : path.resolve(__dirname, "..");
   backend = await ensureBackend({
-    resources: app.isPackaged
-      ? path.join(process.resourcesPath, "workspace")
-      : path.resolve(__dirname, ".."),
+    resources: backendResources,
     port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
   });
   win = new BrowserWindow({

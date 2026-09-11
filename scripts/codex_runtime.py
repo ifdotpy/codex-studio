@@ -141,6 +141,8 @@ for definition in TOOLS:
         definition[
             "description"
         ] += " delivery=steer corrects the current active turn; queue waits for its completion."
+        definition["inputSchema"]["properties"]["request_id"] = {"type": "string", "maxLength": 200}
+        definition["description"] += " Supply a stable request_id for an instruction. Reuse it only for the exact same target, text and delivery mode. Recover the receipt before retrying."
     if definition["name"] == "orchestration_monitor":
         definition["inputSchema"]["properties"]["interactive"] = {"type": "boolean"}
     if definition["name"] == "orchestration_spawn":
@@ -210,7 +212,7 @@ and text containing JSON {"tool":"orchestration_task","arguments":{"action":"lis
 Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
 orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task,
 orchestration_panel, orchestration_panel_feed, orchestration_request, orchestration_read, orchestration_context, orchestration_status,
-orchestration_peers, orchestration_message, orchestration_monitor.
+orchestration_peers, orchestration_message, orchestration_monitor, orchestration_send.
 Use orchestration_panel_feed for live data from a background script, such as EC2 status or build counters.
 It updates structured panel state without model turns, including on command completion or error.
 Set the panel once, start the script, and finish your turn. Do not poll the feed through model calls.
@@ -747,6 +749,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.setup_panels(db)
             self.setup_workspace(db)
             self.setup_rules(db)
+            self.recover_monitor_receipts(db)
         # Restart never replays a panel command. Surface its persisted lost state.
         with self.db() as db:
             lost_feeds = [m for m in self.records(db, "monitors") if m.get("panelFeed") and m["status"] == "lost"]
@@ -875,7 +878,14 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
                 if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
-                    a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
+                    if a["status"] != "paused" or a.get("autoWake"):
+                        a["disconnectRecovery"] = {
+                            "epoch": a["epoch"], "accountKey": account_key,
+                            "threadId": a.get("threadId"), "turnId": a.get("turnId"),
+                            "connectionId": connection_id, "autoWake": bool(a.get("autoWake")),
+                            "at": time.time(),
+                        }
+                        a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
                     a["inFlight"] = False
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
@@ -1978,6 +1988,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 self.scheduler_error = None
 
     def dispatch(self):
+        self.retry_monitor_results()
         from codex_session_names import session_names
         session_names(self).tick()
         with self.lock, self.db() as db:
@@ -1985,6 +1996,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             transfer_store(self).tick(agents)
             agents = self.records(db, "agents")
             self.queue_turn_recovery(agents)
+            from codex_connection_recovery import tick as connection_recovery_tick
+            connection_recovery_tick(self, agents)
             from codex_browser_recovery import tick as browser_recovery_tick
             browser_recovery_tick(self, db, agents)
             reserved_cwds = {
@@ -2384,7 +2397,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     recorded = json.loads(record["text"])
                 except ValueError:
                     recorded = {"id": item_id, "type": "commandExecution", "command": task.get("command")}
-                recorded.update(aggregatedOutput=task.get("tail", ""), exitCode=task.get("exitCode"), durationMs=task.get("durationMs"))
+                recorded.update(aggregatedOutput=task.get("tail", ""), outputTruncated=task.get("outputTruncated", False),
+                                exitCode=task.get("exitCode"), durationMs=task.get("durationMs"))
                 self.item(db, a["id"], item_id, "output", json.dumps(recorded), "commandExecution",
                           toolStatus=task["status"], turnId=task.get("turnId"))
         self.touch_ui(a["id"])
@@ -2575,7 +2589,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if kind == "commandExecution" and not started and item.get("aggregatedOutput") is None:
                         saved = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (a["id"] + ":" + item["id"],)).fetchone()
                         if saved:
-                            item = {**item, "aggregatedOutput": json.loads(saved[0]).get("tail", "")}
+                            saved_task = json.loads(saved[0])
+                            item = {**item, "aggregatedOutput": saved_task.get("tail", ""),
+                                    "outputTruncated": saved_task.get("outputTruncated", False)}
                     self.item(db, a["id"], item.get("id", uid()), "output", json.dumps(item, ensure_ascii=False), kind,
                               toolStatus="running" if started else "failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed",
                               turnId=p.get("turnId") or a.get("turnId"))
@@ -2587,7 +2603,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         item = json.loads(record["text"])
                     except ValueError:
                         item = {"type": "commandExecution", "id": p["itemId"]}
-                    item["aggregatedOutput"] = ((item.get("aggregatedOutput") or "") + p.get("delta", ""))[-12000:]
+                    output = (item.get("aggregatedOutput") or "") + p.get("delta", "")
+                    item.update(aggregatedOutput=output[-12000:],
+                                outputTruncated=bool(item.get("outputTruncated")) or record.get("truncated", False) or len(output) > 12000)
                     self.item(db, a["id"], p["itemId"], "output", json.dumps(item, ensure_ascii=False), "commandExecution",
                               toolStatus="running", turnId=p.get("turnId") or a.get("turnId"))
             elif method in {"turn/plan/updated", "turn/diff/updated"}:
@@ -2675,10 +2693,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     a["status"] = "queued"
                 if (a.get("worktreeReady")
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
-                    a["workspaceOperation"] = "checkpoint"
-                    self.pool.submit(
-                        self.checkpoint_after_turn, a["id"], turn.get("id")
-                    )
+                    self.queue_checkpoint_after_turn(db, a, turn.get("id"))
                 self.changed.set()
             if a.get("activeTools") and (a.get("activity") or {}).get("phase") == "thinking":
                 a["activity"] = {"phase": "tool", "tools": a["activeTools"], "at": time.time()}
@@ -2813,6 +2828,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         result = None
         a = None
         claimed = False
+        request_outcome = None
         name = p.get("tool")
         key = str(p.get("threadId")) + ":" + str(p.get("callId", message["id"]))
         if account_key != "default":
@@ -2880,7 +2896,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         + voice_tools()
                         + request_tools(tool, TEXT)
                         + efficiency_tools(tool, TEXT)
-                    } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor"}:
+                    } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor", "orchestration_send"}:
                         raise ValueError("Unknown workspace tool")
                 panel_capture = {}
                 if name == "orchestration_agent_manage":
@@ -2912,6 +2928,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     value = self.rules(args, a["id"], a["epoch"])
                 elif name == "orchestration_resource":
                     value = self.resource_action(args, a["id"], a["epoch"])
+                    request_outcome = value.get("outcome")
                 elif name == "orchestration_monitor_input":
                     value = self.monitor_input(
                         args.get("monitor_id"), args, a["id"], a["epoch"]
@@ -3003,7 +3020,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         render_failed = True
                         value.update(panelSaved=args["action"] == "set", renderError=str(error),
                                      recovery="The document is retained. Use action=get with a new tool call to retry its image; do not repeat the write.")
-                result = {"success": not render_failed, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
+                operation_failed = name == "orchestration_resource" and value.get("ok") is False
+                result = {"success": not (render_failed or operation_failed), "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
                 if image:
                     result["contentItems"].append(image)
                 result = stamp_tool_result(result, time.time())
@@ -3039,7 +3057,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if not saved.get("success"):
                         result = saved
         if claimed:
-            receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else None))
+            receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else request_outcome))
             result = receipt.get("result") or result
         if a is not None:
             result = self.model_tool_result(a["id"], key, result)
@@ -3613,7 +3631,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             try:
                 result = server.wait(submitted, timeout=m["timeout_ms"] / 1000 + 60)
             except ResponseTimeout as error:
-                self.monitor_unknown(key, operation, str(error))
+                try:
+                    self.monitor_unknown(key, operation, str(error))
+                except (sqlite3.Error, OSError):
+                    # The active lease remains authoritative when storage fails.
+                    # Still register the late native result, without resubmission.
+                    pass
                 server.on_result(submitted, lambda future: self.pool.submit(
                     self.monitor_result, key, operation, future) if not self.closed else None)
                 return
@@ -3625,8 +3648,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.defer_preparation(error, lambda: self.launch_monitor(key, shell_config, preflight),
                 lambda cause: self.finish_monitor(key, None, str(cause)))
         except Exception as error:
-            if operation and "outcome unknown" in str(error):
-                self.monitor_unknown(key, operation, str(error))
+            if operation and ("outcome unknown" in str(error) or isinstance(error, (sqlite3.Error, OSError))):
+                try:
+                    self.monitor_unknown(key, operation, str(error))
+                except (sqlite3.Error, OSError):
+                    pass
             else:
                 self.finish_monitor(key, None, str(error))
 
@@ -3661,21 +3687,19 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         if not isinstance(code, int) or isinstance(code, bool):
             self.monitor_unknown(key, operation, "Command returned no exit code; outcome unknown")
             return
-        with self.lock:
-            if self.closed or not self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
-                return
-            self.finish_monitor(key, code, None)
+        self.finish_monitor(key, code, None, operation=operation)
 
     def monitor_result(self, key, operation, future):
         try:
             self.monitor_accepted(key, operation, future.result())
         except Exception as error:
-            if "outcome unknown" in str(error):
-                self.monitor_unknown(key, operation, str(error))
+            if "outcome unknown" in str(error) or isinstance(error, (sqlite3.Error, OSError)):
+                try:
+                    self.monitor_unknown(key, operation, str(error))
+                except (sqlite3.Error, OSError):
+                    pass
             else:
-                with self.lock:
-                    if not self.closed and self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
-                        self.finish_monitor(key, None, str(error))
+                self.finish_monitor(key, None, str(error), operation=operation)
 
     def panel_feed_monitor_status(self, monitor, status, error=None, sequence=None):
         binding = monitor["panelFeed"]
@@ -3737,13 +3761,72 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     and p.get("stream") == "stdout"):
                 self.panel_feed_consumer(m).feed(chunk)
 
-    def finish_monitor(self, key, code, error):
+    def finish_monitor(self, key, code, error, *, operation=None):
         with self.lock:
             if self.closed:
                 return
-            self._finish_monitor(key, code, error)
+            if not hasattr(self, "pending_monitor_results"):
+                self.pending_monitor_results = {}
+            # Retain the first native result before any database access. A failed
+            # commit must not turn its exit code into a storage-error outcome.
+            receipt = self.pending_monitor_results.setdefault(key, {
+                "code": code, "error": error, "operation": operation,
+                "finished": time.time(), "retryAt": 0, "attempts": 0,
+            })
+            if receipt["retryAt"] <= time.monotonic():
+                self._persist_monitor_result(key, receipt)
 
-    def _monitor_exit_event(self, db, a, m):
+    def _persist_monitor_result(self, key, receipt):
+        try:
+            operation = receipt["operation"]
+            if operation and not self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
+                self.pending_monitor_results.pop(key, None)
+                return
+            self._finish_monitor(key, receipt["code"], receipt["error"], finished=receipt["finished"])
+        except (sqlite3.Error, OSError) as error:
+            receipt["attempts"] += 1
+            receipt["retryAt"] = time.monotonic() + min(30, 2 ** min(receipt["attempts"] - 1, 5))
+            receipt["storageError"] = str(error)
+        else:
+            self.pending_monitor_results.pop(key, None)
+
+    def retry_monitor_results(self):
+        with self.lock:
+            if self.closed:
+                return
+            pending = getattr(self, "pending_monitor_results", {})
+            due = [(key, receipt) for key, receipt in pending.items()
+                   if receipt["retryAt"] <= time.monotonic()][:16]
+            for key, receipt in due:
+                self._persist_monitor_result(key, receipt)
+            failures = [receipt for key, receipt in due if key in pending]
+            if failures:
+                raise OSError("Monitor result persistence pending: " + failures[0]["storageError"])
+
+    def recover_monitor_receipts(self, db, *, wake=False, keys=None):
+        """Restore terminal history without replaying commands or old work."""
+        query = """SELECT m.record, a.record FROM runtime_monitors m
+            JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+            LEFT JOIN runtime_events e ON e.id='monitor:' || m.id
+            WHERE e.id IS NULL AND json_extract(m.record,'$.status')
+                IN ('completed','failed','cancelled')"""
+        params = ()
+        if keys is not None:
+            if not keys:
+                return []
+            query += " AND m.id IN (" + ",".join("?" for _ in keys) + ")"
+            params = tuple(keys)
+        restored = []
+        for row in db.execute(query, params).fetchall():
+            m, a = json.loads(row[0]), json.loads(row[1])
+            if self._monitor_exit_event(db, a, m, wake=wake):
+                restored.append(m["id"])
+                if isinstance(m.get("finished"), (int, float)):
+                    db.execute("UPDATE runtime_events SET created=? WHERE id=?",
+                               (m["finished"], "monitor:" + m["id"]))
+        return restored
+
+    def _monitor_exit_event(self, db, a, m, *, wake=True):
         if m.get("panelFeed") or m.get("ruleId"):
             return
         if m.get("wakeOn", "exit") != "exit" and m["status"] == "completed":
@@ -3751,26 +3834,32 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         text = json.dumps({k: m.get(k) for k in
             ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")})
         event_key = "monitor:" + m["id"]
-        if a["epoch"] == m["epoch"]:
+        if db.execute("SELECT 1 FROM runtime_events WHERE id=?", (event_key,)).fetchone():
+            return False
+        if wake and not a.get("deletedAt") and a["epoch"] == m["epoch"]:
             self.enqueue(db, a, "monitor_exit", text, event_key)
-            return
-        # Preserve a receipt from an earlier owner epoch without waking a
-        # resumed agent with a command that belongs to its previous turn.
+            return True
+        # Preserve historical receipts without continuing a previous assignment.
+        # Explicit recovery still cannot wake a stopped or replaced owner epoch.
         db.execute(
             "INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
             (event_key, a["id"], "monitor_exit", text, "cancelled", time.time(),
              m["epoch"], None, None),
         )
         self.changed.set()
+        return True
 
-    def _finish_monitor(self, key, code, error):
+    def _finish_monitor(self, key, code, error, *, finished=None):
         with self.db() as db:
             m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
             if m["status"] in {"cancelled", "lost", "completed", "failed"}:
+                if m["status"] != "lost":
+                    self._monitor_exit_event(db, self.agent(m["agent"], db), m, wake=False)
                 return
             cancelled = bool(m.get("cancelRequested"))
             status = "cancelled" if cancelled else "failed" if error or code != 0 else "completed"
-            m.update(status=status, exitCode=code, error=error, finished=time.time(), configurationPending=False)
+            m.update(status=status, exitCode=code, error=error,
+                     finished=finished if finished is not None else time.time(), configurationPending=False)
             self.put(db, "monitors", m)
             a = self.agent(m["agent"], db)
             if m.get("ruleId"):
@@ -3803,6 +3892,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     m["ruleId"], None, "Monitor cancelled", m["tail"], db
                 )
             self.put(db, "monitors", m)
+            if not running:
+                self._monitor_exit_event(db, self.agent(m["agent"], db), m)
             for request in self.records(db, "requests"):
                 if request["status"] == "pending" and request["method"] == "monitor/approve" and request.get("params", {}).get("monitorId") == key:
                     request["status"] = "expired"

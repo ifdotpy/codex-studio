@@ -44,11 +44,25 @@ def monitor_command(server, command, cwd, *, config=None):
     login = config.get("allow_login_shell", True)
     if name in {"pwsh", "powershell"}:
         return [shell, *([] if login else ["-NoProfile"]), "-Command", command]
+    # Resolve in the child environment, after account policy and shell startup.
+    # A compiler's implicit CLT SDK can differ from xcode-select's toolchain.
+    # Preserve even an explicitly empty SDKROOT and command-local overrides.
+    sdk_startup = (
+        'if [ -z "${SDKROOT+x}" ]; then\n'
+        '  if SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null)" '
+        '&& [ -d "$SDKROOT" ]; then\n'
+        '    export SDKROOT\n'
+        '  else\n'
+        '    unset SDKROOT\n'
+        '  fi\n'
+        'fi\n'
+        if sys.platform == "darwin" else ""
+    )
     if not login:
-        return [shell, "-c", command]
+        return [shell, "-c", sdk_startup + command]
     snapshot = (config.get("features") or {}).get("shell_snapshot", True)
     if not snapshot or name not in {"zsh", "bash"}:
-        return [shell, "-lc", command]
+        return [shell, "-lc", sdk_startup + command]
 
     # Codex shell_snapshot.rs explicitly sources these rc files in a login
     # shell. Merely changing sh to zsh still misses Homebrew in ~/.zshrc.
@@ -63,5 +77,5 @@ def monitor_command(server, command, cwd, *, config=None):
     for key, value in ((config.get("shell_environment_policy") or {}).get("set") or {}).items():
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
             lines.append(f"export {key}={shlex.quote(str(value))}")
-    lines.append(f"exec {shlex.quote(shell)} -c {shlex.quote(command)}")
+    lines.append(sdk_startup + f"exec {shlex.quote(shell)} -c {shlex.quote(command)}")
     return [shell, "-lc", "\n".join(lines)]

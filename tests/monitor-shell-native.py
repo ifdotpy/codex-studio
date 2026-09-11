@@ -105,6 +105,7 @@ stream_max_retries = 0
     server = None
     try:
         with patch.dict(os.environ, environment):
+            os.environ.pop("SDKROOT", None)
             server = f.AppServer(root, notifications.append, lambda _: None, lambda: None)
             started = server.call("thread/start", {"cwd": str(project), "model": "gpt-5.6-sol",
                 "config": {**f.THREAD_CONFIG, "model_provider": "local-shell"},
@@ -116,9 +117,18 @@ stream_max_retries = 0
             assert completed["params"]["turn"]["status"] == "completed", completed
             native = json.loads(result_file.read_text())
             result_file.unlink()
-            result = server.call("command/exec", {"command": monitor_command(server, command, str(project)),
+            managed_command = command
+            if sys.platform == "darwin":
+                (project / "main.c").write_text("int main(void) { return 0; }\n")
+                managed_command += ' && /usr/bin/cc main.c -o main && ./main && printf "%s" "$SDKROOT" > sdk.txt'
+            result = server.call("command/exec", {"command": monitor_command(server, managed_command, str(project)),
                 "cwd": str(project), "timeoutMs": 10000, "sandboxPolicy": {"type": "dangerFullAccess"}})
             assert result["exitCode"] == 0, result
+            if sys.platform == "darwin":
+                sdk = (project / "sdk.txt").read_text()
+                selected = server.call("command/exec", {"command": ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                    "cwd": str(project), "timeoutMs": 10000, "sandboxPolicy": {"type": "dangerFullAccess"}})
+                assert selected["exitCode"] == 0 and sdk == selected["stdout"].strip(), {"sdk": sdk, "selected": selected}
             managed = json.loads(result_file.read_text())
             # Native snapshots restore ambient exports even if the native
             # command policy excludes them. Keep command/exec's filter intact.
@@ -130,7 +140,8 @@ stream_max_retries = 0
                 assert native["tomllib"] and native["rc"] == "loaded", native
             else:
                 assert native["rc"] is None, native
-            print(json.dumps({"login": login, "snapshot": snapshot, "native_and_monitor": native}))
+            print(json.dumps({"login": login, "snapshot": snapshot, "native_and_monitor": native,
+                              "monitor_sdk": sdk if sys.platform == "darwin" else None}))
     finally:
         if server:
             server.close()

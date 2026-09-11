@@ -54,8 +54,12 @@ def _blockers(rt, db, a):
     add('assigned_work', [x['id'] for x in rt.records(db, 'work') if x.get('owner') == key and x.get('status') not in {'accepted','cancelled'}])
     # Older live servers can lack the request ledger. Their input/turn guards still apply.
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_tool_requests'").fetchone():
-        add('tool_requests', [x['id'] for x in rt.records(db, 'tool_requests') if x.get('agent') == key
-                             and (x.get('stage') in {'queued','running'} or x.get('outcome') == 'unknown')])
+        if hasattr(rt, 'reconcile_tool_requests'):
+            rt.reconcile_tool_requests(db, key)
+        add('tool_requests', [row[0] for row in db.execute(
+            "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+            "AND (json_extract(record,'$.stage') IN ('queued','running') OR json_extract(record,'$.outcome')='unknown')",
+            (key,))])
     board = rt.resource_action().get('state', {})
     add('resource_claims', [name for name, claim in board.get('claims', {}).items() if claim.get('worker') == key])
     add('resource_queue', [name for name, waiters in board.get('queue', {}).items() if any(w.get('worker') == key for w in waiters)])
@@ -121,6 +125,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
             return {'agent': _brief(target), 'canArchive': not archived and not blockers,
                     'blockers': blockers, 'schedulerAlive': getattr(rt, 'scheduler', None).is_alive() if getattr(rt, 'scheduler', None) else None}
         if archived: raise ValueError('Restore this worker before recovery')
+        request_recovery = (rt.reconcile_tool_requests(db, target['id'])
+                            if action == 'recover' and hasattr(rt, 'reconcile_tool_requests') else None)
         if action == 'archive':
             if (observed != (target['epoch'], target.get('threadId'), target.get('accountKey', 'default'))
                     or connection != getattr(rt, 'connection_ids', {}).get(observed[2])):
@@ -138,5 +144,5 @@ def manage_agent(rt, actor_id, args, epoch=None):
             return {'status': 'archived', 'agent': _brief(target)}
     # Native reads must not hold the runtime lock or a SQLite transaction.
     result = rt.reconcile_turn(target['id'])
-    return {'status': 'checked', 'recovery': result,
+    return {'status': 'checked', 'recovery': result, 'requests': request_recovery,
             'next': 'Inspect the worker. Use orchestration_send for an explicit continuation; never replay unknown mutations'}

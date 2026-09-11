@@ -1,9 +1,45 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const { createHash } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function backendBuild(resources) {
+  const scripts = path.join(resources, "scripts");
+  const names = fs
+    .readdirSync(scripts)
+    .filter(
+      (name) =>
+        (name.endsWith(".py") || name === "codex-canvas") &&
+        fs.statSync(path.join(scripts, name)).isFile(),
+    )
+    .sort();
+  if (!names.includes("codex-canvas"))
+    throw new Error("The backend entry point is missing.");
+  const digest = createHash("sha256");
+  for (const name of names) {
+    const content = createHash("sha256")
+      .update(fs.readFileSync(path.join(scripts, name)))
+      .digest("hex");
+    digest.update(`${name}\0${content}\n`);
+  }
+  return digest.digest("hex");
+}
+function updateStatus(resources, running) {
+  let availableBackendBuild;
+  try {
+    availableBackendBuild = backendBuild(resources);
+  } catch {
+    return { availableBackendBuild: null, updateRequired: null };
+  }
+  return {
+    availableBackendBuild,
+    // A legacy backend has no source identity. An app restart cannot prove
+    // that the code in the running process matches the installed files.
+    updateRequired: running.backendBuild !== availableBackendBuild,
+  };
+}
 function stateDirectory(env = process.env) {
   return path.resolve(
     env.CODEX_AGENTS_STATE_DIR ||
@@ -105,7 +141,13 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   const canonicalState = fs.realpathSync(state);
   const origin = `http://127.0.0.1:${port}`;
   const existing = await identity(origin, canonicalState);
-  if (existing) return { ...existing, origin, owned: false };
+  if (existing)
+    return {
+      ...existing,
+      ...updateStatus(resources, existing),
+      origin,
+      owned: false,
+    };
   const script = path.join(resources, "scripts/codex-canvas");
   if (
     !fs.existsSync(script) ||
@@ -156,7 +198,12 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       fs.writeFileSync(path.join(state, "canvas.pid"), `${ready.pid}\n`, {
         mode: 0o600,
       });
-      return { ...ready, origin, owned: ready.pid === child.pid };
+      return {
+        ...ready,
+        ...updateStatus(resources, ready),
+        origin,
+        owned: ready.pid === child.pid,
+      };
     }
     if (child.exitCode !== null)
       throw new Error(
@@ -168,4 +215,11 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     `Backend startup has not completed. Read ${log}. The process is ${child.pid}.`,
   );
 }
-module.exports = { ensureBackend, identity, executable, stateDirectory };
+module.exports = {
+  ensureBackend,
+  identity,
+  executable,
+  stateDirectory,
+  backendBuild,
+  updateStatus,
+};

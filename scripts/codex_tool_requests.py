@@ -28,8 +28,102 @@ def _arguments(message):
     return params, args
 
 
+def _identity_command(params, args):
+    tool = params.get("tool")
+    if tool == "orchestration_send" and args.get("agent_id") == "workspace":
+        try:
+            bridge = json.loads(args.get("text", ""))
+            if isinstance(bridge, dict) and bridge.get("tool") == "orchestration_send" and isinstance(bridge.get("arguments"), dict):
+                return bridge["tool"], bridge["arguments"]
+        except (ValueError, TypeError):
+            pass
+    return tool, args
+
+
 def _prefix(account, thread):
     return (str(account) + ":" if account != "default" else "") + str(thread) + ":"
+
+
+def request_prefixes(actor):
+    """Scopes recorded by the server, including completed account transfers."""
+    scopes = [actor, *actor.get("accountHistory", [])]
+    return list(dict.fromkeys(_prefix(scope.get("accountKey", "default"), scope["threadId"])
+                             for scope in scopes if isinstance(scope, dict) and scope.get("threadId")))
+
+
+_READ_TOOLS = {"orchestration_read", "orchestration_peers", "orchestration_search", "orchestration_chat_read"}
+# These exact failures originate before mutation in model_page/model_work,
+# work_action, model_read, and chat_message. Transport errors are excluded.
+_WORK_REJECTIONS = {
+    "limit must be 1 to 50", "List changed or cursor is invalid. Read the first page again.",
+    "Unknown task in this team", "Unknown work item", "This work item changed. Reload before editing",
+    "Only the lead can create work", "Only the lead can change work assignments",
+    "Only the assigned worker can submit its result", "Only the lead can accept or reject a result",
+    "This result is already accepted", "Submit a result before review", "This work item is not ready",
+    "Another agent owns this work item", "Dependencies have not been accepted", "Unknown managed agent",
+    "The file is outside this agent workspace", "Supply a source revision with 1 to 200 characters",
+    "Supply a result with 1 to 32000 characters", "Supply test evidence with 1 to 32000 characters",
+    "Work under review cannot be reassigned; reject its result before editing",
+    "Review or accepted work cannot be reassigned; reject a result before editing",
+}
+_MESSAGE_REJECTIONS = {
+    "Versioned progress requires a progress_key and nonnegative integer progress_version",
+    "Unknown message importance", "Message must have 1 to 12000 characters", "Select another agent",
+    "Unknown managed agent",
+}
+
+
+def request_read_only(tool, args):
+    if tool == "orchestration_send" and args.get("agent_id") == "workspace":
+        try:
+            bridge = json.loads(args.get("text", ""))
+            tool, args = bridge["tool"], bridge.get("arguments", {})
+        except (ValueError, TypeError, KeyError):
+            return False
+    if not isinstance(args, dict):
+        return False
+    return (tool in _READ_TOOLS
+            or tool in {"orchestration_task", "orchestration_result"} and args.get("action", "list") in {"list", "get", "read", "history"}
+            or tool == "orchestration_request" and args.get("action", "list") in {"list", "get"})
+
+
+def request_result_outcome(record, result):
+    if result.get("success") is True:
+        return "applied"
+    if result.get("success") is not False:
+        return "unknown"
+    tool = record.get("tool")
+    if record.get("readOnly") is True or tool in _READ_TOOLS:
+        return "not_applied"
+    texts = [item.get("text") for item in result.get("contentItems", [])
+             if isinstance(item, dict) and item.get("type") == "inputText"]
+    error = texts[0] if texts and isinstance(texts[0], str) else None
+    if tool in {"orchestration_task", "orchestration_result"} and error in _WORK_REJECTIONS:
+        return "not_applied"
+    if tool == "orchestration_message" and error in _MESSAGE_REJECTIONS:
+        return "not_applied"
+    rejections = {
+        "orchestration_monitor": {"Command timeout must be 1 second to 24 hours", "Supply a command with 1 to 12000 characters"},
+        "orchestration_monitor_input": {"This interactive monitor is not active"},
+        "orchestration_user_task": {"Wait for the user to check this task before accepting it"},
+        "orchestration_watch": {"The file is outside this agent workspace", "Choose a date within the next year", "Interval must be 10 seconds to one year"},
+        "orchestration_context": {"Unknown monitor in this team", "Unknown context topic"},
+    }
+    if error in rejections.get(tool, set()):
+        return "not_applied"
+    if tool == "orchestration_title" and error == "Only a lead can set a title of 1 to 80 characters":
+        return "not_applied"
+    # The legacy workspace bridge routes these errors only from read/validation
+    # paths. Do not infer safety from arbitrary exception words or JSON output.
+    if tool == "orchestration_send" and error in {
+        "Output reference is not owned by this agent", "Unknown context topic",
+        "There is no active turn to steer. Choose queue", "A workspace operation is active in this directory",
+        "Unknown managed agent", "Unknown workspace tool", "'agent_id'",
+        "request_id is not used by list", "limit must be 1 to 50",
+        "List changed or cursor is invalid. Read the first page again.", "Unknown task in this team",
+    }:
+        return "not_applied"
+    return "unknown"
 
 
 def _cancel_result(record, message):
@@ -101,12 +195,13 @@ class RequestMixin:
     def tool_request_key(message, account_key="default"):
         params, args = _arguments(message)
         call = str(params.get("callId", message.get("id")))
-        if params.get("tool") == "orchestration_spawn" and "request_id" in args:
-            request_id = args["request_id"]
+        name, identity_args = _identity_command(params, args)
+        if name in {"orchestration_spawn", "orchestration_send"} and "request_id" in identity_args:
+            request_id = identity_args["request_id"]
             if (not isinstance(request_id, str) or not 1 <= len(request_id) <= 200
                     or request_id != request_id.strip() or any(ord(c) < 32 for c in request_id)):
                 raise ValueError("Supply request_id with 1 to 200 characters and no surrounding whitespace")
-            call = "spawn:" + request_id
+            call = ("spawn:" if name == "orchestration_spawn" else "send:") + request_id
         return _prefix(account_key, params.get("threadId")) + call
 
     def tool_request(self, key, db=None):
@@ -170,8 +265,9 @@ class RequestMixin:
     def reserve_tool_request(self, message, account_key="default", connection_id=None):
         params, args = _arguments(message)
         key = self.tool_request_key(message, account_key)
+        identity_tool, identity_args = _identity_command(params, args)
         signature = hashlib.sha256(json.dumps(
-            {"tool": params.get("tool"), "arguments": args}, sort_keys=True,
+            {"tool": identity_tool, "arguments": identity_args}, sort_keys=True,
             separators=(",", ":"), ensure_ascii=False, allow_nan=False,
         ).encode()).hexdigest()
         with self.lock, self.db() as db:
@@ -193,7 +289,7 @@ class RequestMixin:
                           "rpcId": message.get("id"), "turnId": params.get("turnId"), "epoch": actor.get("epoch"),
                           "accountKey": account_key, "connectionId": connection_id,
                           "created": now, "updated": now, "stage": "queued", "outcome": "pending",
-                          "cancelRequested": False}
+                          "cancelRequested": False, "readOnly": request_read_only(params.get("tool"), args)}
                 received = message.get("_studioReceivedAt")
                 if type(received) in (int, float) and math.isfinite(received):
                     record["wireReceivedAt"] = received
@@ -204,8 +300,8 @@ class RequestMixin:
                     record["reservationDelayMs"] = max(0, now - dispatched) * 1000
                     if "wireReceivedAt" in record:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
-                if params.get("tool") == "orchestration_spawn" and "request_id" in args:
-                    record["request_id"] = args["request_id"]
+                if identity_tool in {"orchestration_spawn", "orchestration_send"} and "request_id" in identity_args:
+                    record["request_id"] = identity_args["request_id"]
                 self.put(db, "tool_requests", record)
                 cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
                 if cached:
@@ -245,11 +341,17 @@ class RequestMixin:
         # Definitive receipts cannot be replaced by a late transport error.
         if record["outcome"] in {"applied", "not_applied"}:
             return record
-        outcome = outcome or ("applied" if result.get("success") is True else "unknown")
+        if outcome is None:
+            outcome = request_result_outcome(record, result)
+            if outcome == "not_applied" and operation_receipt_evidence(db, key):
+                # A committed operation overrides an inferred rejection. Keep its
+                # final error and uncertainty; recovery exposes the commit.
+                outcome = "unknown"
         if record["outcome"] == outcome and record.get("result") == result:
             return record
+        now = time.time()
         record.update(stage="completed" if outcome == "applied" else "failed",
-                      outcome=outcome, result=result, updated=time.time(), finished=time.time())
+                      outcome=outcome, result=result, updated=now, finished=record.get("finished", now))
         record.pop("error", None)
         if record.get("tool") == "orchestration_spawn":
             ids = _spawned_ids(result)
@@ -259,13 +361,27 @@ class RequestMixin:
         return record
 
     def _legacy_tool_request(self, db, actor, request_id):
-        prefix = _prefix(actor.get("accountKey", "default"), actor.get("threadId"))
-        key = request_id if request_id.startswith(prefix) else prefix + request_id
-        row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
+        prefixes = request_prefixes(actor)
+        candidates = ([request_id] if any(request_id.startswith(prefix) for prefix in prefixes)
+                      else [prefix + request_id for prefix in prefixes])
+        found = []
+        for key in candidates:
+            owner = self.tool_request(key, db)
+            if owner and owner.get("agent") != actor["id"]:
+                continue
+            row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
+            evidence = operation_receipt_evidence(db, key) if not row else None
+            if row or evidence:
+                found.append((key, row, evidence))
+        if len(found) != 1:
+            if found:
+                return {"id": request_id, "agent": actor["id"], "legacy": True,
+                        "stage": "ambiguous", "outcome": "unknown",
+                        "message": "Use the full request id; this call id exists in several account histories."}
+            return None
+        key, row, evidence = found[0]
+        prefix = next(prefix for prefix in prefixes if key.startswith(prefix))
         if not row:
-            evidence = operation_receipt_evidence(db, key)
-            if evidence is None:
-                return None
             return {"id": key, "agent": actor["id"], "threadId": actor.get("threadId"),
                     "callId": key[len(prefix):], "stage": "unknown", "outcome": "unknown",
                     "cancelRequested": False, "legacy": True, **evidence,
@@ -279,9 +395,23 @@ class RequestMixin:
     def _refresh_tool_request(self, db, record):
         if record["outcome"] not in {"applied", "not_applied"}:
             cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (record["id"],)).fetchone()
-            if cached:
-                return self.finish_tool_request(record["id"], json.loads(cached[0]), db=db)
+            result = json.loads(cached[0]) if cached else record.get("result")
+            if isinstance(result, dict):
+                return self.finish_tool_request(record["id"], result, db=db)
         return record
+
+    def reconcile_tool_requests(self, db, agent_id):
+        rows = db.execute("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+                          "AND json_extract(record,'$.outcome') NOT IN ('applied','not_applied')", (agent_id,)).fetchall()
+        reconciled, unknown = [], []
+        for row in rows:
+            before = json.loads(row[0])
+            after = self._refresh_tool_request(db, before)
+            if after["outcome"] in {"applied", "not_applied"}:
+                reconciled.append(after["id"])
+            elif after["outcome"] == "unknown":
+                unknown.append(after["id"])
+        return {"reconciled": reconciled, "unknown": unknown}
 
     def _request_agent_states(self, db, record):
         agents = []
@@ -337,7 +467,7 @@ class RequestMixin:
                     record["result"] = _cancel_result(record, "Cancelled before execution")
                 self.put(db, "tool_requests", record)
             result = {k: v for k, v in record.items() if k != "signature"}
-            if action == "get" and "result" not in record and "operationResult" not in record:
+            if action == "get" and record.get("outcome") not in {"applied", "not_applied"} and "operationResult" not in record:
                 result.update(operation_receipt_evidence(db, record["id"]) or {})
             if action == "get" and (record.get("tool") == "orchestration_spawn"
                                     or (record.get("legacy") and record.get("agentIds"))):
