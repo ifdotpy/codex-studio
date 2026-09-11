@@ -64,6 +64,18 @@ try {
     },
     {
       ...shared(),
+      id: `check-${turn}`,
+      role: "tool",
+      toolStatus: "completed",
+      text: JSON.stringify({
+        type: "commandExecution",
+        command: "npm run check",
+        aggregatedOutput: "checks ok",
+        exitCode: 0,
+      }),
+    },
+    {
+      ...shared(),
       id: `build-${turn}`,
       role: "tool",
       toolStatus: "completed",
@@ -158,7 +170,7 @@ try {
   await work().waitFor();
   assert.match(
     await work().locator(":scope > summary").innerText(),
-    /Read 2 files · Ran 1 command/,
+    /Read 2 files · Ran 2 commands/,
   );
   assert.equal(
     await work().locator(".tool-group").count(),
@@ -293,8 +305,20 @@ try {
     "text is never inside a tool disclosure",
   );
   assert.equal(await blocks.locator(".message").count(), 0);
-  await blocks.first().locator(":scope > summary").click();
-  assert.equal(await blocks.first().locator(".tool-card").count(), 2);
+  for (const [index, count] of [2, 1].entries()) {
+    const block = blocks.nth(index);
+    assert.equal(await block.evaluate((element) => element.tagName), "DETAILS");
+    assert.equal(await block.locator(":scope > summary").count(), 1);
+    assert.notEqual(
+      await block.getAttribute("open"),
+      null,
+      "small groups start open",
+    );
+    assert.equal(await block.locator(".tool-card").count(), count);
+    for (const card of await block.locator(".tool-card").all())
+      assert.equal(await card.isVisible(), true, `${count} tools stay visible`);
+    assert.equal(await block.locator(".tool-card[open]").count(), 0);
+  }
   assert.equal(await middle.isVisible(), true);
   assert.equal(
     await page.evaluate(() => {
@@ -321,12 +345,72 @@ try {
   await page.screenshot({
     path: join(directory, "commentary-between-tools.png"),
   });
-  await blocks.first().locator(":scope > summary").click();
+  // New tools preserve the group and the user's open card.
+  await blocks
+    .first()
+    .locator(".tool-card")
+    .first()
+    .locator(":scope > summary")
+    .click();
+  await blocks
+    .first()
+    .locator(".tool-card")
+    .first()
+    .evaluate((element) => (element.dataset.retained = "yes"));
+  items.splice(2, 0, tool("third-result", "Third result received"));
+  await emit();
   assert.equal(
-    await middle.isVisible(),
-    true,
-    "closing tools cannot hide commentary",
+    await blocks.first().evaluate((element) => element.tagName),
+    "DETAILS",
   );
+  assert.notEqual(await blocks.first().getAttribute("open"), null);
+  assert.equal(await blocks.first().locator(".tool-card").count(), 3);
+  assert.equal(
+    await blocks
+      .first()
+      .locator(".tool-card")
+      .first()
+      .getAttribute("data-retained"),
+    "yes",
+  );
+  assert.notEqual(
+    await blocks.first().locator(".tool-card").first().getAttribute("open"),
+    null,
+  );
+  await blocks.first().locator(":scope > summary").click();
+  items.splice(2, 1);
+  await emit();
+  assert.equal(
+    await blocks.first().getAttribute("open"),
+    null,
+    "the closed choice survives fewer items",
+  );
+  await page.reload();
+  await page.locator(`[data-chat="${lead.id}"]`).click();
+  await middle.waitFor();
+  assert.equal(
+    await blocks.first().evaluate((element) => element.tagName),
+    "DETAILS",
+  );
+  assert.equal(await blocks.first().locator(":scope > summary").count(), 1);
+  assert.equal(
+    await blocks.first().getAttribute("open"),
+    null,
+    "the user's closed choice survives reload",
+  );
+  assert.equal(
+    await blocks.first().locator(".tool-card").count(),
+    0,
+    "an unvisited closed group stays lazy",
+  );
+  await blocks.first().locator(":scope > summary").click();
+  assert.equal(await blocks.first().locator(".tool-card").count(), 2);
+  assert.equal(
+    await blocks.first().locator(".tool-card").first().isVisible(),
+    true,
+    "the user can reopen the small group",
+  );
+  assert.equal(await middle.isVisible(), true);
   await page.setViewportSize({ width: 390, height: 900 });
   await page.screenshot({ path: join(directory, "commentary-mobile.png") });
   await page.setViewportSize({ width: 1100, height: 900 });
@@ -338,11 +422,14 @@ try {
     await page.locator("#team-toggle .team-button-count").innerText(),
     /^\d+\/40$/,
   );
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator('[data-action="stop-team"]').waitFor();
+  await page.keyboard.press("Escape");
   await page
     .locator("[data-chat]")
     .filter({ hasText: "Other project" })
     .click();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   assert.equal(
     await page.locator('[data-action="stop-team"]').count(),
     0,
@@ -356,6 +443,8 @@ try {
       cases: [
         "visible final",
         "single structured work log",
+        "small groups start open; added tools preserve expansion",
+        "small groups preserve saved closed choice",
         "manual choice",
         "reload",
         "reader anchor",

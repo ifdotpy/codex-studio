@@ -4,9 +4,9 @@
   left: 0;
   right: 0;
   z-index: 90;
-  background: #18191e;
-  border-top: 1px solid #33343c;
-  color: #d7d9e1;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  color: var(--text);
   font-size: 12px;
   display: flex;
   flex-direction: column;
@@ -39,15 +39,15 @@
   font-weight: 550;
 }
 .terminal-dock-count {
-  color: #a6a9b8;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .terminal-dock-running {
-  color: #9ac9a7;
+  color: var(--mantine-color-green-text);
   font-size: 11px;
 }
 .terminal-dock-current {
-  color: #989caa;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -68,21 +68,21 @@
 }
 .terminal-dock-resizer:hover,
 .terminal-dock-resizer:focus-visible {
-  background: #8480d777;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
   outline: 0;
 }
 .terminal-dock-body {
   display: flex;
   flex: 1;
   min-height: 0;
-  border-top: 1px solid #292b32;
+  border-top: 1px solid var(--line);
 }
 .terminal-dock-sessions {
   width: 245px;
   min-width: 180px;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #30323a;
+  border-right: 1px solid var(--line);
   padding: 8px 0 0;
 }
 .terminal-dock-sessions > .mantine-TextInput-root {
@@ -106,21 +106,21 @@
   cursor: pointer;
 }
 .terminal-session:hover {
-  background: #22242d;
+  background: var(--hover);
 }
 .terminal-session.is-selected {
-  background: #282837;
-  border-left-color: #9690e8;
+  background: var(--raised);
+  border-left-color: var(--accent);
 }
 .terminal-session-dot {
   width: 6px;
   height: 6px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: #696c78;
+  background: var(--muted);
 }
 .terminal-session-dot.is-running {
-  background: #98c7a1;
+  background: var(--mantine-color-green-text);
 }
 .terminal-session-description {
   display: flex;
@@ -137,7 +137,7 @@
 }
 .terminal-session-description small {
   font-size: 10px;
-  color: #9ca0af;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -147,7 +147,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: #141519;
+  background: var(--surface);
 }
 .terminal-detail-heading {
   height: 33px;
@@ -163,7 +163,7 @@
   gap: 6px;
 }
 .terminal-detail-title {
-  color: #dee0e9;
+  color: var(--text);
   background: none;
   border: 0;
   cursor: pointer;
@@ -176,13 +176,13 @@
   white-space: nowrap;
 }
 .terminal-detail-status {
-  color: #9398a8;
+  color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
 }
 .terminal-detail-path {
   font-size: 10px;
-  color: #858a9b;
+  color: var(--muted);
   padding: 0 12px 6px;
   white-space: nowrap;
   overflow: hidden;
@@ -195,6 +195,7 @@
   min-height: 0;
 }
 .terminal-xterm {
+  background: #141519;
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -209,21 +210,21 @@
   align-items: center;
   gap: 10px;
   padding: 3px 11px;
-  color: #969bac;
+  color: var(--muted);
   font-size: 10px;
   flex-wrap: wrap;
 }
 .terminal-output-notice {
   font-size: 11px;
   padding: 4px 12px;
-  background: #333025;
-  color: #d9cb9c;
+  background: var(--mantine-color-yellow-light);
+  color: var(--mantine-color-yellow-light-color);
 }
 .terminal-dock-error {
   margin: 0;
   padding: 6px 12px;
-  color: #edacac;
-  background: #43262a;
+  color: var(--mantine-color-red-light-color);
+  background: var(--mantine-color-red-light);
   font-size: 11px;
 }
 .terminal-dock-error button {
@@ -240,12 +241,12 @@
   justify-content: center;
   flex-direction: column;
   gap: 8px;
-  color: #a6aaba;
+  color: var(--muted);
   padding: 18px;
   text-align: center;
 }
 .terminal-dock-welcome strong {
-  color: #dedee9;
+  color: var(--text);
   font-size: 14px;
   font-weight: 500;
 }
@@ -255,13 +256,13 @@
   overflow-wrap: anywhere;
 }
 .terminal-dock-welcome small {
-  color: #818594;
+  color: var(--muted);
   font-size: 10px;
   margin-top: 5px;
 }
 .terminal-dock-empty {
   font-size: 11px;
-  color: #9398a8;
+  color: var(--muted);
   padding: 10px 13px;
 }
 @media (max-width: 650px) {
@@ -344,4 +345,17 @@
   .terminal-dock:not(.is-open) .mantine-Button-section {
     margin: 0;
   }
+}
+
+.terminal-end-confirm {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.terminal-end-confirm p {
+  flex-basis: 100%;
+  margin: 0;
 }

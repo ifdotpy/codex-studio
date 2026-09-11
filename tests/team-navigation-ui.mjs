@@ -84,6 +84,10 @@ try {
   page.setDefaultTimeout(10000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  // Keep this status fixture on the HTTP snapshot path. Sync has separate tests.
+  await page.route("**/api/sync/**", (route) =>
+    route.fulfill({ status: 503, body: "Fixture uses HTTP snapshots" }),
+  );
   await page.route("**/api/state", async (route) => {
     const response = await route.fetch();
     const data = await response.json();
@@ -95,8 +99,13 @@ try {
   const selectLead = () =>
     page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await selectLead();
+  assert.equal(
+    await page.locator("#team-toggle").getAttribute("aria-expanded"),
+    "false",
+  );
+  await page.locator("#team-toggle").click();
   const team = page.getByRole("complementary", { name: "Team", exact: true });
-  const search = team.getByRole("searchbox", { name: "Find a worker" });
+  const search = team.getByRole("searchbox", { name: "Find a subagent" });
   const row = (n) => team.locator(`[data-worker="${worker(n).id}"]`);
   const groupIds = (name) =>
     team
@@ -129,13 +138,15 @@ try {
   );
   await row(39).click();
   assert.equal(await row(39).getAttribute("aria-current"), "page");
-  await page.getByRole("button", { name: "Back to lead", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Back to main agent", exact: true })
+    .click();
   assert.equal(
     await page.locator("#conversation-title").innerText(),
     "Release lead",
   );
   await search.fill("no matching worker");
-  await team.getByText("No workers match your search.").waitFor();
+  await team.getByText("No subagents match your search.").waitFor();
   await search.fill("");
   assert.equal(
     await team
@@ -151,13 +162,13 @@ try {
   assert.equal(await row(2).getAttribute("aria-current"), "page");
   assert.equal(
     await page
-      .getByRole("button", { name: "Back to lead", exact: true })
+      .getByRole("button", { name: "Back to main agent", exact: true })
       .count(),
     1,
   );
   assert.equal(
     await page
-      .getByRole("button", { name: "Subagent settings", exact: true })
+      .getByRole("button", { name: "Chat settings", exact: true })
       .count(),
     1,
   );
@@ -202,7 +213,7 @@ try {
       .getAttribute("aria-pressed"),
     "true",
   );
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 800, height: 844 });
   await page.locator("#team-toggle").click();
   await search.waitFor({ state: "visible" });
   await search.fill("approval");
@@ -212,14 +223,97 @@ try {
     true,
   );
   await page.waitForTimeout(350);
-  await page.screenshot({ path: join(root, "team-mobile.png") });
+  await page.screenshot({ path: join(root, "team-narrow.png") });
   await row(2).click();
   await team.waitFor({ state: "hidden" });
-  await page.getByRole("button", { name: "Back to lead", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Back to main agent", exact: true })
+    .click();
   assert.equal(
     await page.locator("#conversation-title").innerText(),
     "Release lead",
   );
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.waitForTimeout(350);
+    if (await page.locator("#sidebar").isVisible())
+      await page.locator("#sidebar-toggle").click();
+    await page.locator("#message").fill(`Lead draft ${width}`);
+    await page.getByRole("button", { name: "Team", exact: true }).click();
+    await search.waitFor({ state: "visible" });
+    await search.fill("Worker 39");
+    await row(39).waitFor({ state: "visible" });
+    await page.waitForTimeout(350);
+    assert.ok(
+      await team.evaluate((n) => {
+        const r = n.getBoundingClientRect();
+        return (
+          r.left >= 0 && r.right <= innerWidth && n.scrollWidth <= n.clientWidth
+        );
+      }),
+      "the team list fits the mobile viewport",
+    );
+    await page.screenshot({ path: join(root, `team-mobile-${width}.png`) });
+    await row(39).click();
+    await team.waitFor({ state: "hidden" });
+    assert.equal(
+      await page.locator("#conversation-title").innerText(),
+      "Worker 39",
+    );
+    assert.ok(
+      await page.locator("#back-lead").evaluate((n) => {
+        const r = n.getBoundingClientRect();
+        const header = n.closest("header").getBoundingClientRect();
+        return r.top >= header.top && r.bottom <= header.bottom;
+      }),
+      "Back to main agent remains inside the mobile header",
+    );
+    await page.locator("#message").fill(`Worker draft ${width}`);
+    await page.screenshot({ path: join(root, `worker-mobile-${width}.png`) });
+    await page.reload();
+    await page
+      .locator("#conversation-title")
+      .filter({ hasText: "Worker 39" })
+      .waitFor();
+    assert.equal(
+      await page.locator("#message").inputValue(),
+      `Worker draft ${width}`,
+    );
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    await page.getByTestId("account-picker").click();
+    const accountOptions = page.getByRole("menuitem").filter({
+      has: page.locator(".account-menu-identity"),
+    });
+    await accountOptions.first().waitFor({ state: "visible" });
+    assert.ok(await accountOptions.count(), "saved accounts are visible");
+    for (const account of await accountOptions.all())
+      assert.equal(
+        await account.isDisabled(),
+        true,
+        "a subagent cannot change accounts",
+      );
+    await page.getByTestId("account-picker").click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await page
+      .getByRole("button", { name: "Back to main agent", exact: true })
+      .click();
+    assert.equal(
+      await page.locator("#message").inputValue(),
+      `Lead draft ${width}`,
+    );
+    await page.screenshot({ path: join(root, `chat-mobile-${width}.png`) });
+    assert.ok(
+      await page
+        .locator(".workspace-header")
+        .evaluate((n) => n.scrollWidth <= n.clientWidth),
+    );
+  }
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -229,7 +323,8 @@ try {
       completedSearch: true,
       selection: true,
       chatIsolation: true,
-      mobile: true,
+      narrowDesktop: true,
+      mobile: [320, 390],
       screenshots: root,
     }),
   );

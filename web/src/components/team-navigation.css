@@ -16,7 +16,7 @@
 }
 
 #team #lead-row[aria-current="page"] {
-  background: #ffffff0b;
+  background: light-dark(#1824470b, #ffffff0b);
 }
 
 #team .mantine-TextInput-root {
@@ -43,12 +43,12 @@
 
 .team-filters button:hover,
 .team-filters button[aria-pressed="true"] {
-  background: #ffffff0b;
+  background: light-dark(#1824470b, #ffffff0b);
   color: var(--text);
 }
 
 .team-filters button[aria-pressed="true"] {
-  box-shadow: inset 0 0 0 1px #ffffff12;
+  box-shadow: inset 0 0 0 1px light-dark(#18244712, #ffffff12);
 }
 
 .team-filters button span {
@@ -78,7 +78,7 @@
 }
 
 #team .worker-entry.selected {
-  background: #ffffff0d;
+  background: light-dark(#1824470d, #ffffff0d);
   box-shadow: inset 2px 0 0 var(--mantine-color-violet-4);
 }
 
@@ -222,4 +222,56 @@
   color: var(--muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+/* Keep the card readable even when a process returns a command or stack trace. */
+#team .worker-error {
+  color: light-dark(#a52c3c, #e7a0a6);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.worker-error-details {
+  min-width: 0;
+  padding-left: 12px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.worker-error-details summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.worker-error-details pre {
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 10px;
+  line-height: 1.5;
+  user-select: text;
+}
+#team .worker-entry {
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+#team .worker-text strong {
+  font-weight: 550;
+}
+#team.team-compact #lead-row {
+  margin-bottom: 16px;
+}
+#team.team-compact .team-heading {
+  padding-bottom: 16px;
 }

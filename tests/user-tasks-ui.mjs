@@ -65,7 +65,7 @@ const makeTask = (id, agent, title) => ({
   completionNote: "",
   history: [{ action: "create", text: "", actor: agent.id, at: now }],
 });
-const task = makeTask("release-check", worker, "Check the staging release");
+const task = makeTask("release-check", lead, "Check the staging release");
 const stoppedTask = makeTask(
   "stopped-task",
   lead,
@@ -136,7 +136,7 @@ try {
           {
             id: task.id,
             kind: "user_task",
-            agent: worker.id,
+            agent: lead.id,
             title: task.title,
             text: "Your action is needed",
           },
@@ -176,10 +176,8 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.locator('[data-chat="lead"]').click();
-  await page
-    .getByRole("navigation", { name: "Workspace shortcuts" })
-    .getByRole("button", { name: /^Your tasks/ })
-    .click();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page.locator('[data-workspace-section="user-tasks"]').click();
   const compact = page.getByRole("region", { name: "Your tasks", exact: true });
   assert.equal(
     await page.locator(".user-tasks-compact").count(),
@@ -193,21 +191,24 @@ try {
   await row.getByRole("button", { name: task.title, exact: true }).click();
   await row.getByText(task.criteria, { exact: true }).waitFor();
   await row
-    .getByLabel("Completion note (optional)")
+    .getByLabel("Result note (optional)")
     .fill("Verified: https://staging.example/result");
   failNext = true;
-  await row.getByRole("button", { name: "Complete and notify agent" }).click();
+  await row.getByRole("button", { name: "Send for review" }).click();
   await row.getByRole("alert").waitFor();
   assert.equal(
-    await row.getByLabel("Completion note (optional)").inputValue(),
+    await row.getByLabel("Result note (optional)").inputValue(),
     "Verified: https://staging.example/result",
   );
-  assert.equal(await row.getByRole("checkbox").isChecked(), false);
-  await row.getByRole("button", { name: "Complete and notify agent" }).click();
+  assert.equal(await row.getByRole("checkbox").count(), 0);
+  await row.getByRole("button", { name: "Send for review" }).click();
   await row.getByText("Agent reviewing", { exact: true }).waitFor();
   assert.equal(writes[0].id, writes[1].id, "Retry uses the same operation ID");
-  assert.equal(await row.getByRole("checkbox").isDisabled(), true);
-  assert.equal(await row.getByRole("checkbox").isChecked(), true);
+  assert.equal(
+    await row.getByRole("button", { name: "Send for review" }).count(),
+    0,
+  );
+  assert.equal(await row.getByRole("checkbox").count(), 0);
   task.agentStopped = true;
   await row
     .getByRole("status")
@@ -224,18 +225,21 @@ try {
   task.history.push({
     action: "return",
     text: task.reason,
-    actor: worker.id,
+    actor: lead.id,
     at: Date.now() / 1000,
   });
   await row
     .locator(".user-task-reason")
     .getByText(task.reason, { exact: true })
     .waitFor();
-  assert.equal(await row.getByRole("checkbox").isDisabled(), false);
+  assert.equal(
+    await row.getByRole("button", { name: "Send for review" }).isEnabled(),
+    true,
+  );
   await row
-    .getByLabel("Completion note (optional)")
+    .getByLabel("Result note (optional)")
     .fill("Screenshot: https://staging.example/screenshot.png");
-  await row.getByRole("checkbox").click();
+  await row.getByRole("button", { name: "Send for review" }).click();
   await row.getByText("Agent reviewing", { exact: true }).waitFor();
   Object.assign(task, {
     status: "accepted",
@@ -246,12 +250,13 @@ try {
   task.history.push({
     action: "accept",
     text: task.reason,
-    actor: worker.id,
+    actor: lead.id,
     at: Date.now() / 1000,
   });
   await row.waitFor({ state: "detached" });
   const stoppedRow = compact.locator('[data-user-task="stopped-task"]');
-  await stoppedRow.getByRole("checkbox").click();
+  await stoppedRow.locator(".user-task-toggle").click();
+  await stoppedRow.getByRole("button", { name: "Send for review" }).click();
   await stoppedRow
     .getByText("Saved; agent stopped. Your result waits for the agent.")
     .waitFor();
@@ -264,11 +269,14 @@ try {
     .getByText(task.reason, { exact: true })
     .waitFor();
   await full.locator("summary").click();
-  assert.equal(await full.getByRole("checkbox").isDisabled(), true);
+  assert.equal(
+    await full.getByRole("button", { name: "Send for review" }).count(),
+    0,
+  );
   assert.equal(
     await full.getByRole("button", { name: /accept/i }).count(),
     0,
-    "Only the agent can accept",
+    "Only the orchestrator can accept",
   );
   await full.getByLabel("Task status").selectOption("all");
   await full.getByLabel("Search your tasks").fill("another team");
@@ -281,14 +289,21 @@ try {
   assert.equal(await full.locator("[data-user-task]").count(), 1);
   await full.getByText(task.title, { exact: true }).waitFor();
   await full.getByLabel("Search your tasks").fill("");
-  await full.getByLabel("Task owner").selectOption("worker");
-  assert.equal(await full.locator("[data-user-task]").count(), 1);
+  await full.getByLabel("Task owner").selectOption("lead");
+  assert.equal(await full.locator("[data-user-task]").count(), 2);
+  assert.equal(
+    await full
+      .getByLabel("Task owner")
+      .locator('option[value="worker"]')
+      .count(),
+    0,
+  );
   await full.getByRole("button", { name: task.title, exact: true }).click();
   await page.screenshot({ path: join(root, "user-tasks-desktop.png") });
   await full.getByRole("button", { name: "Open agent chat" }).click();
   await page
     .locator("#conversation-title")
-    .filter({ hasText: "Build reviewer" })
+    .filter({ hasText: "Release lead" })
     .waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   await full.waitFor({ state: "detached" });
@@ -322,9 +337,9 @@ try {
         "team isolation",
         "completion note",
         "safe retry",
-        "review checkbox",
-        "agent return",
-        "agent acceptance",
+        "explicit review action",
+        "orchestrator return",
+        "orchestrator acceptance",
         "stopped delivery",
         "team history and search",
         "owner filter",

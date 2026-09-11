@@ -147,9 +147,11 @@ export default function AccountSignIn({
           {connected ? (
             <p role="status">
               <Check size={16} />{" "}
-              {receipt.status === "duplicate"
-                ? "This account is already connected."
-                : "Account connected."}{" "}
+              {account?.disconnected
+                ? "This account is saved but disconnected. Reconnect it in Accounts to use it for new chats."
+                : receipt.status === "duplicate"
+                  ? "This account is already connected."
+                  : "Account connected."}{" "}
               {account?.email}
             </p>
           ) : receipt.status === "cancelled" ? (

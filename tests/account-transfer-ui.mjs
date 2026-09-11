@@ -173,18 +173,11 @@ const server = createServer(async (req, res) => {
     return json({ accounts, defaultAccountKey, logins });
   }
   if (url.pathname === "/api/agents/account-transfer") {
-    const a = agents.find((a) => a.id === (body.id || "started"));
+    const a = agents.find(a => a.id === (body.id || "started"));
     if (body.action === "cancel") a.accountTransfer.status = "cancelled";
     else if (body.action === "retry") a.accountTransfer.needsAttention = false;
-    else
-      a.accountTransfer = {
-        id: body.request_id,
-        status: "pending",
-        targetAccountKey: body.account_key,
-        completed: 1,
-        total: 8,
-        waiting: "Waiting for the current turn",
-      };
+    else a.accountTransfer = {id: body.request_id, status: "pending", targetAccountKey: body.account_key,
+      completed: 1, total: 8, waiting: "Waiting for the current turn"};
     return json(a.accountTransfer);
   }
   if (url.pathname === "/api/agents/account") {
@@ -282,112 +275,47 @@ const server = createServer(async (req, res) => {
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 let browser;
 try {
-  browser = await chromium.launch({
-    executablePath:
-      process.env.CHROME_BIN ||
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    headless: true,
-  });
-  const page = await browser.newPage({
-    viewport: { width: 1280, height: 850 },
-  });
+  browser = await chromium.launch({executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true});
+  const page = await browser.newPage({viewport: {width: 1280, height: 850}});
   page.setDefaultTimeout(10000);
-  const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  const errors=[];page.on("pageerror",e=>errors.push(e.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.locator('[data-chat="started"]').click();
-  const picker = page.locator(".account-picker");
+  await page.getByRole("button", {name:"Chat settings", exact:true}).click();
+  const picker=page.locator(".account-picker");
   await picker.click();
-  await page
-    .getByRole("menuitem")
-    .filter({ hasText: "work@example.com" })
-    .click();
-  await page.waitForFunction(() =>
-    document.querySelector(".account-picker")?.textContent.includes("1/8"),
-  );
-  assert.equal(
-    bodies.filter((b) => b.path === "/api/agents/account-transfer").length,
-    1,
-  );
-  assert.equal(
-    bodies.find((b) => b.path === "/api/agents/account-transfer").body.id,
-    "started",
-  );
-  assert.match(await picker.innerText(), /personal@example.com/);
+  await page.getByRole("menuitem").filter({hasText:"work@example.com"}).click();
+  const confirmation=page.getByRole("dialog", {name:"Transfer this team", exact:true});
+  await confirmation.waitFor();
+  assert.equal(bodies.filter(b=>b.path==="/api/agents/account-transfer").length,0,"account selection requires confirmation");
+  await confirmation.getByRole("button", {name:"Transfer team", exact:true}).click();
+  await confirmation.waitFor({state:"hidden"});
+  await page.waitForFunction(()=>document.querySelector(".account-picker")?.textContent.includes("1/8"));
+  assert.equal(bodies.filter(b=>b.path==="/api/agents/account-transfer").length,1);
+  assert.equal(bodies.find(b=>b.path==="/api/agents/account-transfer").body.id,"started");
+  assert.match(await picker.innerText(),/personal@example.com/);
   await picker.click();
-  await page
-    .getByText("Waiting for the current turn", { exact: true })
-    .waitFor();
-  assert.equal(
-    await page
-      .getByRole("menuitem")
-      .filter({ hasText: "another.long.account@example.com" })
-      .isDisabled(),
-    true,
-  );
+  await page.getByText("Waiting for the current turn",{exact:true}).waitFor();
+  assert.equal(await page.getByRole("menuitem").filter({hasText:"another.long.account@example.com"}).isDisabled(),true);
   await page.waitForTimeout(180);
-  await page.screenshot({
-    path: join(evidence, "transfer-pending.png"),
-    animations: "disabled",
-  });
-  await page
-    .getByRole("button", { name: "Cancel remaining", exact: true })
-    .click();
-  await page.waitForFunction(
-    () =>
-      !document.querySelector(".account-picker")?.textContent.includes("1/8"),
-  );
-  assert.equal(agents[0].accountKey, "default");
-  agents[0].accountTransfer = {
-    id: "saved-request",
-    status: "pending",
-    targetAccountKey: "work",
-    completed: 3,
-    total: 8,
-    needsAttention: true,
-    canRetry: true,
-    waiting: "The source account is offline",
-  };
+  await page.screenshot({path:join(evidence,"transfer-pending.png"),animations:"disabled"});
+  await page.getByRole("button",{name:"Cancel remaining",exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector(".account-picker")?.textContent.includes("1/8"));
+  assert.equal(agents[0].accountKey,"default");
+  agents[0].accountTransfer={id:"saved-request",status:"pending",targetAccountKey:"work",completed:3,total:8,needsAttention:true,canRetry:true,waiting:"The source account is offline"};
   await page.reload();
   await page.locator('[data-chat="started"]').click();
+  await page.getByRole("button", {name:"Chat settings", exact:true}).click();
   await picker.click();
-  await page.getByRole("button", { name: "Retry", exact: true }).click();
-  assert.ok(
-    bodies.some(
-      (b) => b.body.action === "retry" && b.body.request_id === "saved-request",
-    ),
-  );
-  agents[0].accountKey = "work";
-  agents[0].accountTransfer = {
-    ...agents[0].accountTransfer,
-    status: "completed",
-    completed: 8,
-  };
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-picker")
-      ?.textContent.includes("work@example.com"),
-  );
+  await page.getByRole("button",{name:"Retry",exact:true}).click();
+  assert.ok(bodies.some(b=>b.body.action==="retry" && b.body.request_id==="saved-request"));
+  agents[0].accountKey="work";agents[0].accountTransfer={...agents[0].accountTransfer,status:"completed",completed:8};
+  await page.waitForFunction(()=>document.querySelector(".account-picker")?.textContent.includes("work@example.com"));
   await page.keyboard.press("Escape");
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({width:390,height:844});
   await page.reload();
-  assert.deepEqual(errors, []);
-  console.log(
-    JSON.stringify({
-      ok: true,
-      evidence,
-      cases: [
-        "same chat",
-        "team progress",
-        "cancel remaining",
-        "receipt after reload",
-        "retry",
-        "destination account",
-      ],
-    }),
-  );
+  assert.deepEqual(errors,[]);
+  console.log(JSON.stringify({ok:true,evidence,cases:["same chat", "team progress", "cancel remaining", "receipt after reload", "retry", "destination account"]}));
 } finally {
-  await browser?.close();
-  server.closeAllConnections();
-  server.close();
+  await browser?.close();server.closeAllConnections();server.close();
 }

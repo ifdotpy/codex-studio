@@ -36,8 +36,8 @@ try {
     recursive: true,
   });
   await cp(
-    path.join(root, "../.agents/skills/codex-workspace"),
-    path.join(resources, ".agents/skills/codex-workspace"),
+    path.join(root, "../.agents/skills"),
+    path.join(resources, ".agents/skills"),
     { recursive: true },
   );
   for (const document of ["README.md", "CLI.md", "ORCHESTRATION.md"]) {

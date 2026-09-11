@@ -6,7 +6,7 @@ If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
 Creation itself does not call the model. A repeated creation request returns the same chat.
 Leads carry an explicit `isLead` marker in SQLite. Only Astra and Sol can be leads.
-Standalone workers and registered sessions remain visible on **Canvas**.
+Use the command tools to inspect standalone workers and registered sessions.
 The project defaults to the previous lead's directory, `CODEX_CANVAS_CWD`, or the server's current directory.
 Before the first message, select **Project** beside the account to change the folder.
 Enter a folder path, browse directories, or use the native Finder picker.
@@ -67,11 +67,16 @@ under the same request identity.
 The microphone button opens [recoverable dictation](desktop/README.md#recoverable-dictation).
 Audio stays in this browser profile and chat. Transcription runs through macOS Speech;
 **Insert into message** adds the text to the draft without sending it.
-Select **Canvas** for all orchestrators, workers and registered sessions. Drag nodes to move them, drag the background to pan, and scroll to zoom.
-The canvas has one control, **Fit**. Parent links come from the runtime.
-The browser keeps existing canvas positions and message drafts when views change.
-Manual graph selection modes, chat wiring, the minimap, and duplicate zoom controls were removed.
-Shared agent chats remain in the **Agents** tab. Registered sessions remain on **Canvas**.
+Use **Team** to inspect worker status and open a worker chat.
+Use **Messages** for user requests, conversations with the orchestrator, team
+broadcasts, and private worker chats. The main chat draft stays open.
+Only the orchestrator contacts the user. A subagent sends its request to the
+orchestrator, which decides whether to resolve it or forward it.
+
+The harness injects `codex-orchestrator` or `codex-subagent` from the server's
+`isLead` identity. Native thread instructions contain the selected skill.
+Versioned turn context supplies it to existing threads and after changes or compaction.
+The native permission system still owns tool approval.
 
 The conversation header provides context compaction, review, and team stop.
 The **Projects** sidebar groups lead chats by their actual working directory.
@@ -79,7 +84,7 @@ Use **+** beside Projects to add a folder, including a project with no chats.
 Use **+** beside a folder to start a chat there. An empty current chat is reused.
 Folder registration lives in SQLite. Removing an empty project from the sidebar does not delete files.
 Each folder initially shows five chats. **Show more** expands the list, and search includes hidden chats.
-Folder collapse preferences stay in browser storage. Agent chats retain their separate **Agents** tab.
+Folder collapse preferences stay in browser storage. Agent conversations appear in **Messages**.
 Use the sidebar row menu to rename or delete a lead or agent chat.
 Manual names take priority over an automatic lead title. Studio stores both manual
 and generated names in SQLite and copies them to Codex with `thread/name/set`.
@@ -367,17 +372,18 @@ overrides for a loaded thread. Monitors use the same selected sandbox.
 Existing teams retain their inherited Codex permissions until the user selects a
 mode. A new chat copies an explicit mode preference from the previous chat.
 
-Account project admission rules remain separate. YOLO does not enable
-**Dangerously skip rules**. It does not supply answers to agent questions.
+Each project selects one default account for new chats. This setting adds no
+folder restrictions. Agents can use files and skills outside their project under
+the native permission settings. Native permission grants do not answer agent questions.
 
-## Complaint book
+## Messages to the user and orchestrator
 
-Leads and workers call `orchestration_complaint` with `action=submit`, a concrete
-problem, impact, and evidence. Responsibility comes from the author:
+Use `orchestration_complaint action=submit` for a message that needs a recorded response.
+The technical tool name remains for compatibility. Responsibility comes from the author:
 
-- Worker complaint: the team lead responds, under **For orchestrator**.
-- Lead complaint: the user responds, under **For you**.
-- User complaint: the selected team lead responds.
+- Subagent request: the orchestrator responds, under **To orchestrator**.
+- Orchestrator message: the user responds, under **For you**.
+- Historical user complaint: the selected orchestrator responds.
 
 Workers cannot close complaints. A lead cannot respond to or close their own
 complaint. The user cannot take over a complaint assigned to a lead through the
@@ -388,15 +394,15 @@ a turn, including after a final answer. The lead calls `action=respond` with a
 concrete action or reason and `in_progress`, `resolved`, or `declined`. The lead
 must not poll the book or routinely call `action=read`.
 
-Lead complaints stay in the user's inbox without starting a lead turn. The user
-records a response and status in the complaint dialog. That response notifies
+The orchestrator decides whether to handle a subagent request or send its own message to the user.
+Messages to the user do not start an orchestrator turn. The user records a response in the message dialog. That response notifies
 the reporting lead. A stopped lead keeps the record but does not resume.
 
 Unanswered complaints assigned to the lead remain in that lead's turn context.
 Three consecutive turns that ignore presented complaints stop automatic lead
 continuation with a visible error. Complaints assigned to the user do not block
 lead completion. A recorded next step counts as a response; `in_progress` entries
-remain visible under **All complaints**.
+remain visible under **All messages**.
 
 Responses remain append-only and record their actual author. User responses use
 an exact request id and complaint version. Repeated requests cannot add a second
@@ -601,7 +607,7 @@ See [UI and tool evidence](UI-AND-TOOLS.md) for the interface decisions and Code
 The [desktop host](desktop/README.md) provides native file and folder dialogs,
 Finder actions, external links, and optional notifications. Closing its window
 preserves the backend and agent work. Existing SQLite chats use the same state
-directory. Canvas positions remain browser-profile data.
+directory. Historical Canvas positions remain browser-profile data.
 
 The terminal panel has a searchable session list without a fixed session count.
 It retains the latest 1,048,576 characters per user shell in SQLite. Reopening the UI
@@ -631,6 +637,11 @@ Codex tools such as `exec_command` retain Codex's own output controls.
   Filter with `owner` and `state`. `limit` defaults to 20 and cannot exceed 50.
   Continue with `nextCursor`. A changed list rejects an old cursor explicitly.
   `action=get` reads one task's description, dependencies, and latest evidence.
+  `action=reject` takes the review reason and required corrections in `result`.
+  It returns the task to `ready` and sends `work_decision` to its owner atomically.
+  The owner uses that event as its next instruction and submits revised evidence.
+  The event queues an owner with automatic continuation enabled. It does not
+  resume an explicitly stopped agent or clear a native failure hold.
   `action=history` pages its results and decisions. Mutations return brief receipts;
   the operation receipt retains the complete task and its evidence.
 - `orchestration_peers` returns a paged team directory and readable room identities.
@@ -656,11 +667,12 @@ Codex tools such as `exec_command` retain Codex's own output controls.
   their original message and event IDs. Questions, blockers, results, unclassified
   messages, and user input bypass this delay. Urgent input takes priority over a
   page of pending progress. Completion notifications remain distinct events.
-- Shared plans and required complaints carry content versions. Only confirmed
+- Agent plans, role skills, and required requests carry content versions. Only confirmed
   event delivery establishes a known version. An unchanged complaint retains its
   required-response reminder and ID. The server supplies full context again after
   thread replacement or observed compaction. Clearing a plan invalidates its older
-  text. `orchestration_context` reads the current full context on demand.
+  steps. Historical saved-plan text remains stored but is not part of model context.
+  `orchestration_context` reads the current full context on demand.
 - `orchestration_monitor wake_on=failure` retains successful results in the UI and
   suppresses their model notification. Failures still notify the owner. Use this
   option only if success requires no further agent work. The default, `exit`, still

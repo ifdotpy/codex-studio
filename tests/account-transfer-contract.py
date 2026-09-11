@@ -169,13 +169,84 @@ class TransferContract(f.AccountContracts):
             db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='uncertain-message'")
         self.tick();self.assertEqual(self.pending,[])
 
+    def test_previous_backend_uncertainty_is_preserved_without_replay(self):
+        aid = self.lead_agent['id']
+        with self.runtime.db() as db:
+            a = self.runtime.agent(aid, db)
+            self.runtime.enqueue(db, a, 'user', 'Do not repeat', 'historical-unknown')
+            db.execute("UPDATE runtime_events SET status='uncertain',created=? WHERE id='historical-unknown'",
+                       (self.runtime.started_at - 60,))
+            self.runtime.put(db, 'tool_requests', {'id': 'old-tool', 'agent': aid,
+                'stage': 'interrupted', 'outcome': 'unknown', 'created': self.runtime.started_at - 60})
+        op = self.start_transfer()
+        self.tick(); self.until(lambda: len(self.pending) == 1); self.complete_fork()
+        self.until(lambda: self.receipt(op['id'])['members'][aid]['phase'] == 'completed')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='historical-unknown'").fetchone()[0], 'uncertain')
+            self.assertEqual(json.loads(db.execute("SELECT record FROM runtime_tool_requests WHERE id='old-tool'").fetchone()[0])['outcome'], 'unknown')
+        self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, params in self.native_calls))
+
+    def test_active_tool_from_before_boot_still_blocks(self):
+        aid = self.lead_agent['id']
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'tool_requests', {'id': 'active-tool', 'agent': aid,
+                'stage': 'running', 'outcome': 'unknown', 'created': self.runtime.started_at - 60})
+        self.start_transfer(); self.tick()
+        self.assertEqual(self.pending, [])
+
+    def test_native_submission_holds_the_transfer_slot_until_receipt(self):
+        self.runtime.create({'name': 'Second', 'prompt': 'Task'}, parent=self.lead_agent['id'], defer=True)
+        self.start_transfer(); self.tick(); self.until(lambda: len(self.pending) == 1)
+        self.until(lambda: not self.store.running)
+        self.tick()
+        self.assertEqual(len(self.pending), 1)
+        self.complete_fork()
+        self.until(lambda: not self.store.futures)
+        self.tick(); self.until(lambda: len(self.pending) == 2)
+
+    def test_preparation_lock_retries_without_a_model_turn(self):
+        from codex_native_errors import NativeRpcError
+        op = self.start_transfer(); self.tick(); self.until(lambda: len(self.pending) == 1)
+        self.pending[0][2].set_exception(NativeRpcError({'code': -32603,
+            'message': 'failed to prepare paginated fork: database is locked'}))
+        aid = self.lead_agent['id']
+        self.until(lambda: self.receipt(op['id'])['members'][aid]['phase'] == 'waiting')
+        m = self.receipt(op['id'])['members'][aid]
+        self.assertEqual(m['preparationRejections'][0]['outcome'], 'fork_not_created')
+        self.assertGreater(m['nextCheck'], time.time())
+        self.tick(); self.assertEqual(len(self.pending), 1)
+
+    def test_arbitrary_database_error_is_not_retried(self):
+        from codex_native_errors import NativeRpcError
+        op = self.start_transfer(); self.tick(); self.until(lambda: len(self.pending) == 1)
+        self.pending[0][2].set_exception(NativeRpcError({'code': -32603, 'message': 'database is locked'}))
+        self.until(lambda: self.receipt(op['id'])['members'][self.lead_agent['id']]['phase'] == 'unknown')
+        self.tick(); self.assertEqual(len(self.pending), 1)
+
+    def test_preparation_retries_are_bounded_and_keep_all_rejections(self):
+        from codex_native_errors import NativeRpcError
+        op = self.start_transfer()
+        aid = self.lead_agent['id']
+        error = NativeRpcError({'code': -32603, 'message': 'failed to prepare paginated fork: database is locked'})
+        for attempt in range(4):
+            with self.runtime.db() as db:
+                current = self.store.get(db, op['id'])
+                current['members'][aid].update(phase='submitted', submittedAt=attempt)
+                self.store.save(db, current)
+            self.assertTrue(self.store.retry_preparation(op['id'], aid, error))
+        member = self.receipt(op['id'])['members'][aid]
+        self.assertEqual(member['phase'], 'blocked')
+        self.assertEqual(len(member['preparationRejections']), 4)
+
     def test_workers_created_during_transfer_are_included(self):
         aid=self.lead_agent['id'];op=self.start_transfer()
         worker=self.runtime.create({'name':'Worker','prompt':'Task'},parent=aid,defer=True)
         self.set_agent(worker['id'], status='waiting', inFlight=False, threadId=None)
-        self.tick();self.until(lambda:len(self.pending)==2)
+        self.tick();self.until(lambda:len(self.pending)==1)
         self.assertIn(worker['id'],self.receipt(op['id'])['members'])
-        self.complete_fork(0);self.complete_fork(1);self.tick()
+        self.complete_fork(0);self.until(lambda:not self.store.futures)
+        self.tick();self.until(lambda:len(self.pending)==2)
+        self.complete_fork(1);self.tick()
         self.assertEqual(self.runtime.agent(worker['id'])['parentId'],aid)
         self.assertEqual(self.runtime.agent(worker['id'])['accountKey'],self.other_key)
         self.assertEqual(self.receipt(op['id'])['status'],'completed')

@@ -89,7 +89,7 @@ node tests/native-error-ui.mjs
 The schema check starts only schema generation, not a model session.
 The browser test uses an isolated state directory and a hidden browser.
 
-Verified in this change: 174 backend tests, all 18 installed schema variants,
+Initial verification: 174 backend tests, all 18 installed schema variants,
 the TypeScript/build check, and the desktop/mobile native-error browser test.
 The watchdog installer fixture now reconstructs the exact historical dispatcher,
 including removal of the later failure-hold condition. Its original hash guard
@@ -98,3 +98,52 @@ and unknown-version rejection remain unchanged.
 Live activation remains separate from these test results. The runtime updater
 checks six exact method hashes before replacing any method. It preserves native
 connections, pools, pending futures, and current turn identities.
+
+## Follow-up: CLI display and recovery parity
+
+The same tagged source also defines these display rules:
+
+- `tui/src/chatwidget/streaming.rs`: the retry message and additional details.
+- `tui/src/chatwidget/turn_runtime.rs`: capacity warnings, usage guidance, and thread blocks.
+- `tui/src/chatwidget/notices.rs`: policy notices and Trusted Access links.
+
+The follow-up closes these gaps:
+
+| Native event | Studio result |
+| --- | --- |
+| Retry | Show the native message and details inline. Keep transport loss separate. |
+| Model capacity or rejected steer | Show warning severity. Do not add a Studio retry. |
+| Usage or rate limit | Refresh native limits once per account, thread, and turn. Show owner or member guidance. Open limits from mobile. |
+| Cyber or bio policy | Show the native information notice and the corresponding trusted-access links. |
+| Misalignment policy | Preserve the thread block across reload and restart. Offer another chat or a new chat. Preserve the draft. |
+| Approval in a blocked thread | Reject answers and new commands. Match legacy approvals by `conversationId`. |
+| Duplicate tool callback during a block | Read the current receipt under the lock. Preserve an execution that already started. |
+| Hook start or completion | Update one history notice. Hide a quiet successful completion with a durable tombstone. |
+
+The new-chat action keeps its selection while RxDB receives the new chat.
+The old projection cannot select the blocked chat again.
+
+The block guards cover message submission, queued dispatch, native actions,
+approval answers, and dynamic tool requests. Existing request receipts retain
+priority over the block, so retries preserve an earlier result or unknown outcome.
+
+Studio intentionally holds pending messages after a terminal failure until the
+user resumes or sends an instruction. The CLI can advance its queued input.
+Studio keeps this difference because its queue can contain autonomous work.
+
+Additional checks: `tests/native-limit-recovery-ui.mjs`, `tests/limits-ui.mjs`,
+and `tests/questions-ux-ui.mjs`. The native-error browser test covers normal RxDB
+sync and the legacy stream path, including a 320-pixel thread-block screen.
+The tests use consistent native limit responses, not only HTTP route mocks.
+
+The updater also checks the current policy-guard methods before it changes the
+runtime. Live activation remains separate. No live backend was restarted, and
+no paid model request or real reset-credit redemption was used for this review.
+
+Follow-up results: 32 native error contract tests, five updater contract tests,
+all 18 schema variants, limit guidance unit checks, build, and both browser paths passed.
+The limits browser and question form checks also passed. TypeScript and updater
+checks also passed with only this task's staged changes.
+
+Capacity continuation is now a documented exception to the terminal failure hold.
+See `2026-09-08-capacity-recovery-actions.md` for the schedule, cancellation, and exact request identities.

@@ -177,7 +177,9 @@ try {
     }
     await page.locator("#message").fill("Additional instruction");
     pendingSend = null;
-    await page.locator("#message").press("Tab");
+    await page
+      .getByRole("button", { name: "Queue after turn", exact: true })
+      .click();
     for (let i = 0; !pendingSend && i < 100; i++)
       await new Promise((r) => setTimeout(r, 10));
     assert.equal(pendingSend.request().postDataJSON().delivery, "queue");

@@ -1,7 +1,7 @@
 import { ActionIcon, Button, Popover, TextInput } from "@mantine/core";
 import { Bookmark, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
-import { save, saved } from "../api";
+import { syncApi, errorText, save, saved } from "../api";
 import type { Message } from "../types";
 import "./prompt-navigation.css";
 
@@ -11,8 +11,10 @@ export default function PromptNavigator({
   storageKey,
   jump,
   compact = false,
+  agentId,
 }: {
   compact?: boolean;
+  agentId?: string;
   messages: Message[];
   container: RefObject<HTMLDivElement | null>;
   storageKey: string;
@@ -29,6 +31,47 @@ export default function PromptNavigator({
     saved(storageKey, {}),
   );
   const [onlySaved, setOnlySaved] = useState(false);
+  const [search, setSearch] = useState<{
+    query: string;
+    results: Message[];
+    loading: boolean;
+    error: string;
+    truncated?: boolean;
+  }>({ query: "", results: [], loading: false, error: "" });
+  const [retry, setRetry] = useState(0);
+  const searchQuery = query.trim();
+  useEffect(() => {
+    if (!opened || !agentId || !searchQuery || onlySaved) return;
+    let active = true;
+    setSearch({ query: searchQuery, results: [], loading: true, error: "" });
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({ id: agentId, q: searchQuery });
+      void syncApi(`/api/transcript/search?${params}`)
+        .then((result) => {
+          if (active)
+            setSearch({
+              query: searchQuery,
+              results: result.results || [],
+              loading: false,
+              error: "",
+              truncated: result.truncated,
+            });
+        })
+        .catch((error) => {
+          if (active)
+            setSearch({
+              query: searchQuery,
+              results: [],
+              loading: false,
+              error: errorText(error),
+            });
+        });
+    }, 250);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [opened, agentId, searchQuery, onlySaved, retry]);
   useEffect(() => {
     const root = container.current;
     if (!root) return;
@@ -66,13 +109,28 @@ export default function PromptNavigator({
     0,
     prompts.findIndex((prompt) => prompt.id === activeId),
   );
-  if (!prompts.length) return null;
+  if (!messages.length) return null;
   const current = prompts[index];
-  const visible = prompts.filter(
-    (prompt) =>
-      (!onlySaved || bookmarks[prompt.id]) &&
-      prompt.text.toLowerCase().includes(query.toLowerCase()),
-  );
+  const searching = !!searchQuery && !onlySaved;
+  const searchPending =
+    searching && !!agentId && (search.query !== searchQuery || search.loading);
+  const searchError =
+    searching && search.query === searchQuery ? search.error : "";
+  const visible = searching
+    ? agentId
+      ? search.query === searchQuery
+        ? search.results
+        : []
+      : messages.filter(
+          (message) =>
+            ["user", "assistant"].includes(message.role) &&
+            message.text.toLowerCase().includes(searchQuery.toLowerCase()),
+        )
+    : prompts.filter(
+        (prompt) =>
+          (!onlySaved || bookmarks[prompt.id]) &&
+          prompt.text.toLowerCase().includes(query.toLowerCase()),
+      );
   const go = (id: string) => {
     jump(id);
     setOpened(false);
@@ -108,7 +166,9 @@ export default function PromptNavigator({
             onClick={() => setOpened(!opened)}
             leftSection={<ListTree size={14} />}
           >
-            {index + 1} / {prompts.length}
+            {prompts.length
+              ? `${index + 1} / ${prompts.length}`
+              : "Search chat"}
           </Button>
         </Popover.Target>
         <Popover.Dropdown
@@ -118,13 +178,15 @@ export default function PromptNavigator({
           aria-labelledby=""
         >
           <div className="prompt-history-heading">
-            <strong>Prompts</strong>
-            <span>{prompts.length} loaded</span>
+            <strong>{searching ? "Search this chat" : "Prompts"}</strong>
+            <span>
+              {searching ? "All messages" : `${prompts.length} loaded`}
+            </span>
           </div>
           <div className="prompt-history-search">
             <TextInput
-              aria-label="Find a prompt"
-              placeholder="Find a prompt"
+              aria-label="Search this chat"
+              placeholder="Search questions and answers"
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               leftSection={<Search size={14} />}
@@ -140,50 +202,89 @@ export default function PromptNavigator({
             </ActionIcon>
           </div>
           <div className="prompt-history-list">
+            {searchPending && (
+              <p role="status" className="prompt-history-empty">
+                Searching…
+              </p>
+            )}
+            {searchError && (
+              <p role="alert" className="prompt-history-empty">
+                {searchError}{" "}
+                <button
+                  type="button"
+                  onClick={() => setRetry((value) => value + 1)}
+                >
+                  Retry search
+                </button>
+              </p>
+            )}
             {visible.map((prompt) => (
               <div className="prompt-history-row" key={prompt.id}>
                 <button
                   type="button"
                   className="prompt-history-entry"
                   aria-current={
-                    current.id === prompt.id ? "location" : undefined
+                    current?.id === prompt.id ? "location" : undefined
                   }
                   onClick={() => go(prompt.id)}
                 >
-                  <span>{prompts.indexOf(prompt) + 1}</span>
-                  <span>{prompt.text || "Attachment"}</span>
+                  <span>
+                    {searching
+                      ? prompt.role === "user"
+                        ? "You"
+                        : "Assistant"
+                      : prompts.indexOf(prompt) + 1}
+                  </span>
+                  <span>
+                    {(searching ? prompt.excerpt : prompt.text) ||
+                      prompt.text ||
+                      "Attachment"}
+                  </span>
                 </button>
-                <ActionIcon
-                  size="sm"
-                  variant="subtle"
-                  aria-label={`${bookmarks[prompt.id] ? "Remove bookmark from" : "Bookmark"} prompt ${prompts.indexOf(prompt) + 1}`}
-                  aria-pressed={!!bookmarks[prompt.id]}
-                  onClick={() => toggleBookmark(prompt.id)}
-                >
-                  <Bookmark
-                    size={14}
-                    fill={bookmarks[prompt.id] ? "currentColor" : "none"}
-                  />
-                </ActionIcon>
+                {!searching && (
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    aria-label={`${bookmarks[prompt.id] ? "Remove bookmark from" : "Bookmark"} prompt ${prompts.indexOf(prompt) + 1}`}
+                    aria-pressed={!!bookmarks[prompt.id]}
+                    onClick={() => toggleBookmark(prompt.id)}
+                  >
+                    <Bookmark
+                      size={14}
+                      fill={bookmarks[prompt.id] ? "currentColor" : "none"}
+                    />
+                  </ActionIcon>
+                )}
               </div>
             ))}
-            {!visible.length && (
+            {!visible.length && !searchPending && !searchError && (
               <p className="prompt-history-empty">
-                {onlySaved ? "No matching bookmarks." : "No matching prompts."}
+                {onlySaved
+                  ? "No matching bookmarks."
+                  : searching
+                    ? "No matching messages."
+                    : "No matching prompts."}
+              </p>
+            )}
+            {searching && search.truncated && !searchPending && (
+              <p className="prompt-history-empty">
+                More results exist. Use a more specific search.
               </p>
             )}
           </div>
         </Popover.Dropdown>
       </Popover>
-      <button
-        type="button"
-        className="current-prompt"
-        title={current.text}
-        aria-label="Return to current prompt"
-        onClick={() => go(current.id)}
-      >
-        {current.text || "Attachment"}
-      </button>
+      {current && !compact && (
+        <button
+          type="button"
+          className="current-prompt"
+          title={current.text}
+          aria-label="Return to current prompt"
+          onClick={() => go(current.id)}
+        >
+          {current.text || "Attachment"}
+        </button>
+      )}
     </nav>
   );
 }

@@ -166,12 +166,11 @@ try {
       name: "Chat settings",
       exact: true,
     });
-    await dialog
-      .getByRole("button", { name: "Agent chats", exact: true })
-      .click();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await mobile.locator("#messages-toggle").click();
     await fits(".mantine-Drawer-content", 390, 54);
     await mobile
-      .getByRole("dialog", { name: "Agent chats", exact: true })
+      .getByRole("dialog", { name: "Messages", exact: true })
       .getByRole("button", { name: "Close", exact: true })
       .click();
     await mobile.evaluate(() =>
@@ -192,7 +191,7 @@ try {
   });
   await mobile.keyboard.press("Escape");
   await mobile.setViewportSize({ width: 1440, height: 960 });
-  await mobile.locator(".workspace-shortcuts").waitFor();
+  await mobile.locator(".simple-workspace-header").waitFor();
   assert.equal(
     await mobile.evaluate(() =>
       document.documentElement.style.getPropertyValue(

@@ -87,6 +87,65 @@ export function useSnapshot() {
   );
   return { data, error: error || syncError, refresh };
 }
+// Native input batches have separate user-visible message identities.
+export function transcriptMessages(
+  source: Message[],
+  id: string | null,
+): Message[] {
+  return source.flatMap((m: Message) =>
+    m.inputs
+      ? m.inputs.map((r: Json, i: number) => ({
+          ...m,
+          id: r.id ? `${id}:${r.id}` : `${m.id}:${i}`,
+          sourceId: m.id,
+          clientMessageId:
+            r.clientMessageId ||
+            r.id ||
+            (i === 0 ? m.clientMessageId : undefined),
+          deliveryStatus: r.deliveryStatus,
+          deliveryError: r.deliveryError,
+          materialized: r.materialized ?? m.materialized,
+          pending: r.pending,
+          assets: (r as Json).assets || (i === 0 ? m.assets : []),
+          role: r.kind === "user" ? "user" : "tool",
+          text: r.text,
+          truncated: r.truncated,
+          title:
+            r.kind === "user"
+              ? "You"
+              : (
+                  {
+                    agent_message: "Agent message received",
+                    child_result: "Worker result received",
+                    monitor_exit: "Command finished",
+                    monitor_cancelled: "Command cancelled",
+                    complaint_response: "Complaint response received",
+                    followup: "Agent follow-up",
+                    complaint: "Complaint requires a response",
+                  } as Record<string, string>
+                )[r.kind] || "Team activity",
+        }))
+      : [m],
+  );
+}
+
+type TranscriptPage = {
+  items: Message[];
+  before: string | null;
+  after: string | null;
+  focused: boolean;
+  version?: string;
+  latest?: Json;
+};
+
+function mergeTranscript(earlier: Message[], later: Message[]): Message[] {
+  return [
+    ...new Map([...earlier, ...later].map((item) => [item.id, item])).values(),
+  ].sort(
+    (a, b) => Number(a.at ?? a.created ?? 0) - Number(b.at ?? b.created ?? 0),
+  );
+}
+
 export function useMessages(
   id: string | null,
   kind: "agent" | "room" | "legacy",
@@ -103,10 +162,25 @@ export function useMessages(
   const [items, setItems] = useState<Message[]>([]),
     [loadedId, setLoadedId] = useState<string | null>(null),
     [notice, setNotice] = useState(""),
-    [before, setBefore] = useState<number | null>(null),
+    [before, setBefore] = useState<number | string | null>(null),
+    [after, setAfter] = useState<string | null>(null),
+    [historical, setHistorical] = useState(false),
+    [pageLoading, setPageLoading] = useState(false),
     [liveAgent, setLiveAgent] = useState<Partial<Agent> | null>(null),
     [connection, setConnection] = useState(""),
     [syncId, setSyncId] = useState<string | null>(null);
+  const pages = useRef(new Map<string, TranscriptPage>());
+  const latest = useRef<{ scope: string; data: Json } | null>(null);
+  const pageAttempt = useRef(0);
+  const pageBusy = useRef(false);
+  const displayed = useRef<{ scope: string; items: Message[] }>({
+    scope,
+    items,
+  });
+  displayed.current = {
+    scope,
+    items: loadedId === scope ? items : cached?.items || [],
+  };
   const revision = useRef(0);
   const syncActive = useRef<string | null>(null);
   const active = useRef(scope),
@@ -117,44 +191,55 @@ export function useMessages(
       revision.current++;
       setLoadedId(scope);
       setLiveAgent(d.agent || null);
-      const nextItems: Message[] = (d.items || []).flatMap((m: Message) =>
-        m.inputs
-          ? m.inputs.map((r: Json, i: number) => ({
-              ...m,
-              id: r.id ? `${id}:${r.id}` : `${m.id}:${i}`,
-              sourceId: m.id,
-              clientMessageId:
-                r.clientMessageId ||
-                r.id ||
-                (i === 0 ? m.clientMessageId : undefined),
-              deliveryStatus: r.deliveryStatus,
-              deliveryError: r.deliveryError,
-              materialized: r.materialized ?? m.materialized,
-              pending: r.pending,
-              assets: (r as Json).assets || (i === 0 ? m.assets : []),
-              role: r.kind === "user" ? "user" : "tool",
-              text: r.text,
-              truncated: r.truncated,
-              title:
-                r.kind === "user"
-                  ? "You"
-                  : (
-                      {
-                        agent_message: "Agent message received",
-                        child_result: "Worker result received",
-                        monitor_exit: "Command finished",
-                        monitor_cancelled: "Command cancelled",
-                        complaint_response: "Complaint response received",
-                        followup: "Agent follow-up",
-                        complaint: "Complaint requires a response",
-                      } as Record<string, string>
-                    )[r.kind] || "Team activity",
-            }))
-          : [m],
-      );
+      const liveItems = transcriptMessages(d.items || [], id);
+      let page = pages.current.get(scope);
+      if (
+        d.unavailable ||
+        (page?.version && d.historyVersion && page.version !== d.historyVersion)
+      ) {
+        pages.current.delete(scope);
+        page = undefined;
+        setHistorical(false);
+      }
+      if (page) {
+        page.latest = d;
+        if (page.focused) {
+          const present = new Set(page.items.map((item) => item.id));
+          page.items = mergeTranscript(
+            page.items,
+            liveItems.filter((item) => present.has(item.id)),
+          );
+        } else {
+          // A live snapshot is authoritative for its current time range, including removed queue rows.
+          const firstAt = Math.min(
+            ...liveItems.map((item) =>
+              Number(item.at ?? item.created ?? Infinity),
+            ),
+          );
+          const present = new Set(liveItems.map((item) => item.id));
+          page.items = mergeTranscript(
+            page.items.filter(
+              (item) =>
+                present.has(item.id) ||
+                Number(item.at ?? item.created ?? 0) < firstAt,
+            ),
+            liveItems,
+          );
+        }
+      }
+      const nextItems = page?.items || liveItems;
+      if (managed && kind === "agent") {
+        setBefore(
+          page
+            ? page.before
+            : d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
+        );
+        setAfter(page?.focused ? page.after : null);
+      }
+      latest.current = { scope, data: d };
       const nextNotice =
         d.unavailable ||
-        (d.truncated
+        (d.truncated && !managed
           ? "Recent messages only. Full history remains on disk."
           : "");
       setItems(nextItems);
@@ -268,12 +353,18 @@ export function useMessages(
     const retained =
       managed && kind === "agent" ? history.current.get(scope) : undefined;
     setLoadedId(retained ? scope : null);
-    setItems(retained?.items || []);
+    const page = pages.current.get(scope);
+    setItems(page?.items || retained?.items || []);
+    setHistorical(!!page?.focused);
+    setAfter(page?.focused ? page.after : null);
+    pageAttempt.current++;
+    pageBusy.current = false;
+    setPageLoading(false);
     syncActive.current = null;
     setLiveAgent(null);
     setConnection("");
     setNotice(retained?.notice || "");
-    setBefore(null);
+    setBefore(page?.before || null);
     expanded.current = false;
     let stopped = false;
     let streamLive = false;
@@ -385,8 +476,106 @@ export function useMessages(
       },
     );
   }, [id, kind, managed, accept, scope]);
+  const fetchPage = async (query: {
+    before?: string;
+    after?: string;
+    around?: string;
+  }) => {
+    if (
+      !id ||
+      !managed ||
+      kind !== "agent" ||
+      (pageBusy.current && !query.around)
+    )
+      return false;
+    const attempt = ++pageAttempt.current;
+    pageBusy.current = true;
+    setPageLoading(true);
+    try {
+      const params = new URLSearchParams({ id, ...query });
+      const result = await api(`/api/transcript/page?${params}`);
+      if (active.current !== scope || attempt !== pageAttempt.current)
+        return false;
+      const source = transcriptMessages(result.items || [], id);
+      const prior = pages.current.get(scope);
+      const live =
+        latest.current?.scope === scope ? latest.current.data : undefined;
+      if (
+        result.historyVersion &&
+        live?.historyVersion &&
+        result.historyVersion !== live.historyVersion
+      )
+        throw new Error(
+          "The conversation changed. Search or load its history again.",
+        );
+      const existing =
+        displayed.current.scope === scope ? displayed.current.items : [];
+      const focused = !!query.around || !!prior?.focused;
+      const next: TranscriptPage = {
+        items: query.around
+          ? source
+          : query.after
+            ? mergeTranscript(existing, source)
+            : mergeTranscript(source, existing),
+        before: query.after ? prior?.before || null : result.nextCursor || null,
+        after: focused
+          ? query.before
+            ? prior?.after || null
+            : result.nextAfterCursor || null
+          : null,
+        focused,
+        version: result.historyVersion,
+        latest: live,
+      };
+      pages.current.delete(scope);
+      pages.current.set(scope, next);
+      while (pages.current.size > 12)
+        pages.current.delete(pages.current.keys().next().value!);
+      setItems(next.items);
+      setBefore(next.before);
+      setAfter(next.after);
+      setHistorical(next.focused);
+      setLoadedId(scope);
+      return true;
+    } finally {
+      if (attempt === pageAttempt.current) {
+        pageBusy.current = false;
+        setPageLoading(false);
+      }
+    }
+  };
+  const showLatest = () => {
+    pageAttempt.current++;
+    pageBusy.current = false;
+    setPageLoading(false);
+    if (!pages.current.get(scope)?.focused) return;
+    const data =
+      pages.current.get(scope)?.latest ||
+      (latest.current?.scope === scope ? latest.current.data : undefined);
+    pages.current.delete(scope);
+    setHistorical(false);
+    setAfter(null);
+    if (data) accept(data);
+  };
+  const ensureMessage = async (messageId: string) => {
+    const present =
+      displayed.current.scope === scope &&
+      displayed.current.items.some(
+        (item) => item.id === messageId || item.sourceId === messageId,
+      );
+    if (present) return true;
+    if (!managed || kind !== "agent") return false;
+    return fetchPage({ around: messageId });
+  };
+  const newer = async () => {
+    if (after) await fetchPage({ after });
+  };
   const older = async () => {
     if (!id || !before) return;
+    if (managed && kind === "agent") {
+      await fetchPage({ before: String(before) });
+      return;
+    }
     const d = await api(
       `/api/agent-chat?room=${encodeURIComponent(id)}&before=${before}`,
     );
@@ -410,6 +599,12 @@ export function useMessages(
     notice: loadedId === scope ? notice : cached?.notice || "",
     before: loadedId === scope ? before : null,
     older,
+    newer,
+    after: loadedId === scope ? after : null,
+    historical: loadedId === scope && historical,
+    pageLoading,
+    showLatest,
+    ensureMessage,
     reload: load,
     liveAgent: loadedId === scope ? liveAgent : null,
     connection: loadedId === scope ? connection : "",

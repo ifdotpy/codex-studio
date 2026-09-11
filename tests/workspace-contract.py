@@ -275,9 +275,17 @@ class WorkspaceContract(unittest.TestCase):
         child = self.worker(worker, "Nested worker", cwd=str(child_project))
         owners = [lead, worker, child, other]
         for owner in owners:
-            self.runtime.user_task_action(owner["id"], {
+            user_task = {
                 "action": "create", "title": "User action", "criteria": "Check the result",
-            })
+            }
+            if owner["isLead"]:
+                self.runtime.user_task_action(owner["id"], user_task)
+            else:
+                with self.assertRaisesRegex(ValueError, "Only the orchestrator"):
+                    self.runtime.user_task_action(owner["id"], user_task)
+                with self.runtime.db() as db:
+                    self.assertFalse(any(task["agent"] == owner["id"]
+                        for task in self.runtime.records(db, "user_tasks")))
             self.runtime.complaint(owner["id"], {
                 "action": "submit", "text": "This chat needs a response",
             }, "complaint-" + owner["id"], user=True)
@@ -590,7 +598,7 @@ class WorkspaceContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another conversation"):
             self.runtime.message_inputs(self.lead("Other")["id"], "Read", [asset["id"]])
 
-    def test_workspace_reads_reject_parent_and_symlink_escape(self):
+    def test_workspace_reads_allow_external_absolute_relative_and_symlink_paths(self):
         lead = self.lead()
         secret = self.root / "secret.txt"
         secret.write_text("secret")
@@ -600,8 +608,7 @@ class WorkspaceContract(unittest.TestCase):
             self.runtime.file_content(lead["id"], "allowed.txt")[0], b"allowed"
         )
         for path in ("../secret.txt", "escape", str(secret)):
-            with self.assertRaisesRegex(ValueError, "outside"):
-                self.runtime.file_content(lead["id"], path)
+            self.assertEqual(self.runtime.file_content(lead["id"], path)[0], b"secret")
 
     def test_queue_attachments_persist_and_dispatch_after_restart(self):
         lead = self.lead()
@@ -1184,6 +1191,30 @@ class WorkspaceContract(unittest.TestCase):
             <= names
         )
         self.assertEqual(inventory["errors"], [])
+
+    def test_capability_refresh_discovers_a_new_skill_in_the_same_directory(self):
+        lead = self.start(self.lead())
+        server = self.runtime.server
+        original_call = server.call
+        installed = ["existing-skill"]
+        cached = []
+
+        def call(method, params, timeout=60):
+            if method != "skills/list":
+                return original_call(method, params, timeout)
+            if params.get("forceReload") or not cached:
+                cached[:] = installed
+            return {"data": [{"cwd": params["cwds"][0],
+                              "skills": [{"name": name} for name in cached]}]}
+
+        with patch.object(server, "call", side_effect=call):
+            first = self.runtime.capabilities(lead["id"])
+            self.assertEqual(len(first["skills"][0]["skills"]), 1)
+            installed.append("new-skill")
+            self.runtime.capability_cache[lead["id"]]["at"] = 0
+            refreshed = self.runtime.capabilities(lead["id"])
+        self.assertEqual([skill["name"] for skill in refreshed["skills"][0]["skills"]],
+                         ["existing-skill", "new-skill"])
 
 
 if __name__ == "__main__":

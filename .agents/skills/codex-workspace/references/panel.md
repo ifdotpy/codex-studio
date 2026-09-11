@@ -14,7 +14,7 @@ Shape and position should communicate information. Use short labels and explicit
 
 Call `action=set` with `spec: {root, elements, state?}` and optional top-level `callbacks`. Elements use catalog types, properties, and child identifiers. Do not combine `spec` with `html` or `css`. Adapt [the progress example](../assets/panel-progress.json), replacing sample values with verified data.
 
-The viewport is 150 CSS pixels high. The server validates schema and fit at widths 320, 640, and 1000px. Padding and borders belong inside that height. All selectable views must fit. Use Tabs when several detailed views need the same space. Do not conceal overflow with scrolling, clipping, or ellipsis.
+The viewport is 150 CSS pixels high. The server validates schema and fit at widths 320, 640, and 1000px. Padding and borders belong inside that height. All selectable views must fit. Keep each requested workstream and the current stage visible together. Prefer one overview without tabs. Use Tabs only for secondary detail that cannot fit beside the overview. Do not conceal overflow with scrolling, clipping, or ellipsis.
 
 The tool returns a PNG at 1000×150px. Inspect readability, structure, and fit. Catalog components ensure consistent styles, not a good composition. Validation or render failure preserves the previous content, version, and callbacks. Fix the error and submit a new call. `action=get` reads and renders the current panel; `action=clear` removes it.
 

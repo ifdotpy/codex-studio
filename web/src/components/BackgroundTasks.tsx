@@ -106,6 +106,7 @@ export function backgroundTasks(data: Snapshot | null): BackgroundTask[] {
 export default function BackgroundTasks({
   opened,
   close,
+  afterClose,
   data,
   leadId,
   openAgent,
@@ -114,6 +115,7 @@ export default function BackgroundTasks({
 }: {
   opened: boolean;
   close: () => void;
+  afterClose?: () => void;
   data: Snapshot;
   leadId?: string;
   openAgent: (id: string) => void;
@@ -123,7 +125,9 @@ export default function BackgroundTasks({
   const [tab, setTab] = useState("active"),
     [kind, setKind] = useState("all"),
     [query, setQuery] = useState(""),
-    [selected, setSelected] = useState<string | null>(null),
+    [selection, setSelection] = useState<{ scope?: string; id: string } | null>(
+      null,
+    ),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
   useEffect(() => {
@@ -145,7 +149,7 @@ export default function BackgroundTasks({
           `/api/workspace?agent=${encodeURIComponent(leadId)}`,
         );
         if (active) {
-          setHistory(result);
+          setHistory({ ...result, scope: leadId });
           setHistoryError("");
         }
       } catch (error) {
@@ -167,11 +171,14 @@ export default function BackgroundTasks({
     tasks = [
       ...new Map(
         [
-          ...(history?.monitors || []).map(
+          ...(history && history.scope === leadId
+            ? history.monitors || []
+            : []
+          ).map(
             (monitor: Json) =>
               ({ ...monitor, kind: "monitor" }) as BackgroundTask,
           ),
-          ...(history?.tasks || []),
+          ...(history && history.scope === leadId ? history.tasks || [] : []),
           ...backgroundTasks(data),
         ].map((task: BackgroundTask) => [task.id, task]),
       ).values(),
@@ -197,7 +204,24 @@ export default function BackgroundTasks({
       (a, b) =>
         Number(activeTask(b)) - Number(activeTask(a)) || b.created - a.created,
     );
-  const selectedTask = scoped.find((t) => t.id === selected) || filtered[0];
+  const selectedTask =
+    (selection && selection.scope === leadId
+      ? scoped.find((task) => task.id === selection.id)
+      : undefined) || filtered[0];
+  const selectedId = selectedTask?.id;
+  useEffect(() => {
+    setSelection((previous) =>
+      selectedId
+        ? previous && previous.scope === leadId && previous.id === selectedId
+          ? previous
+          : { scope: leadId, id: selectedId }
+        : null,
+    );
+  }, [leadId, selectedId, selection]);
+  useEffect(() => {
+    setMobileDetail(false);
+    setHistoryError("");
+  }, [leadId]);
   useEffect(() => {
     if (!opened) setMobileDetail(false);
   }, [opened]);
@@ -205,6 +229,8 @@ export default function BackgroundTasks({
     <Drawer
       opened={opened}
       onClose={close}
+      onExitTransitionEnd={afterClose}
+      returnFocus={!afterClose}
       position="right"
       size={940}
       padding={0}
@@ -232,7 +258,7 @@ export default function BackgroundTasks({
           value={tab}
           onChange={(value) => {
             setTab(value);
-            setSelected(null);
+            setSelection(null);
             setMobileDetail(false);
           }}
           data={[
@@ -248,7 +274,7 @@ export default function BackgroundTasks({
             value={kind}
             onChange={(e) => {
               setKind(e.target.value);
-              setSelected(null);
+              setSelection(null);
               setMobileDetail(false);
             }}
             data={[
@@ -274,7 +300,7 @@ export default function BackgroundTasks({
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setSelected(null);
+                setSelection(null);
                 setMobileDetail(false);
               }}
             />
@@ -289,7 +315,7 @@ export default function BackgroundTasks({
                   className={`task-row ${selectedTask?.id === task.id ? "selected" : ""}`}
                   aria-pressed={selectedTask?.id === task.id}
                   onClick={() => {
-                    setSelected(task.id);
+                    setSelection({ scope: leadId, id: task.id });
                     setMobileDetail(true);
                   }}
                 >

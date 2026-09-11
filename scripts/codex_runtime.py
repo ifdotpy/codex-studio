@@ -36,7 +36,9 @@ from codex_panel_render import render_panel
 from codex_panel_feed import PanelFeedConsumer
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
-from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices
+from codex_capacity_retry import CapacityRetryMixin
+from codex_safety_buffering import active as safety_retry_active
+from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits, native_request_thread, LEGACY_APPROVAL_REQUESTS
 
 def uid():
     return str(uuid.uuid4())
@@ -79,11 +81,11 @@ TOOLS = [
          "Returns a paged team directory without histories. scope=all discovers other teams. Do not poll.",
          {"scope": {"type": "string", "enum": ["team", "all"]},
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
-    tool("orchestration_message", "Send a message without ending your turn. "
+    tool("orchestration_message", "Share a finding, question, or answer with other agents during work. "
          "target is an agent id, parent, lead, broadcast (your team), or all (all teams). "
          "Broadcasts notify only active agents; other recipients can read them in chat history. "
          "Private chats are visible to their participants and the user. Direct messages wake idle "
-         "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Do not send acknowledgement loops.",
+         "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
          {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}}, ["target", "text"]),
     tool("orchestration_chat_read", "Read messages in a chat you belong to. "
          "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
@@ -106,8 +108,9 @@ TOOLS = [
                  "model": TEXT, "effort": {"type": ["string", "null"]},
                  "fast_mode": {"type": "boolean"}}, "required": ["name", "prompt"],
              "additionalProperties": False}}}, ["agents"]),
-    tool("orchestration_send", "Send a follow-up to one of your descendants. It queues "
-         "behind an active turn. Completion returns to its parent automatically.",
+    tool("orchestration_send", "Assign a new or revised instruction to an existing descendant, "
+         "or explicitly resume its authorized work. The instruction queues behind an active turn. "
+         "Completion returns to its parent automatically. Review corrections travel through orchestration_task action=reject.",
          {"agent_id": TEXT, "text": TEXT}, ["agent_id", "text"]),
     tool("orchestration_status", "Read compact team and monitor states. since_revision returns only changes and removals. "
          "Use for a decision, not repeated waiting: completion events arrive automatically.", {"since_revision": TEXT}),
@@ -149,6 +152,8 @@ for definition in TOOLS:
 
 INSTRUCTIONS = """You work in Codex Studio. One lead agent coordinates a team.
 Use orchestration_spawn for delegation and orchestration_monitor for long commands.
+A project's account is the default for new chats. The project directory is a working directory, not an access boundary.
+Use files and skills outside that directory when the task needs them. Native sandbox and approval settings still apply.
 Give each spawn a stable request_id. After a lost response, use orchestration_request to read its saved result.
 A timeout is not proof of failure. Never replay an uncertain mutation with a new id.
 Request cancellation prevents queued work; already-running work must settle its receipt.
@@ -160,25 +165,30 @@ task scope. Inspect worker changes and evidence before accepting them. A turn en
 does not prove the entire task is complete. Read each worker result and status.
 Give workers bounded files, an acceptance check and explicit commit authority.
 Implementer worktrees start from committed HEAD, not your uncommitted changes.
-Use orchestration_send for follow-ups and orchestration_interrupt to stop a descendant.
+Choose the operation from the work transition:
+- New or revised assignment for an existing descendant: orchestration_send.
+- Evidence ready for review: orchestration_task action=submit, which sets review and notifies the lead.
+- Review accepted: orchestration_task action=accept, which records acceptance and releases dependent work.
+- Corrections required: orchestration_task action=reject with the reason and corrections in result.
+  The server sets ready and delivers work_decision to the owner. That event carries the next instructions.
+  The owner continues when automatic continuation is enabled; explicit stops and native failure holds remain in effect.
+- Stop a descendant: orchestration_interrupt.
 Use orchestration_peers to discover agents, then orchestration_message to talk to them.
 Report useful early progress with importance=progress; questions and blockers use their own importance.
-Do not repeat submitted evidence in a separate message: task submission and child completion notify the lead.
+The server delivers submitted evidence and child completion to the lead.
 Use an agent id for a private chat, broadcast for your team, or all for all teams. The user can read
 these chats. Private means other agents cannot read it through the chat tools.
 Direct messages wake recipients automatically. Broadcasts notify only active agents; idle and
 finished agents can read them in history. Use a direct follow-up to resume an assignment.
-Send only useful questions, findings or answers.
-Do not reply merely to acknowledge receipt. Do not create broadcast reply loops.
+Send a message when you have a new finding, question, or answer for its recipient.
 Use orchestration_chat_read for message history; orchestration_send also accepts peer ids and these targets.
-Every agent, including the lead, can use orchestration_complaint action=submit for
-concrete problems with the harness, instructions, tools, resources, or coordination.
-Record confirmed defects in the book instead of leaving them only in chat feedback.
-Include reproduction, evidence, impact, and any workaround. Distinguish confirmed
-defects from suspicions and project code errors. Do not duplicate an existing entry.
-Worker complaints go to the lead as messages and wake the lead.
-Lead complaints go to the user in the UI. Only the user can respond to or close
-a lead complaint. Do not send yourself a response or poll for the user decision.
+Use orchestration_complaint action=submit for a message that requires a recorded response.
+Subagent messages go to the orchestrator and wake it. The orchestrator decides whether
+to handle the request or send its own message to the user. Do not forward requests automatically.
+Only the orchestrator can send messages to the user. Only the user can answer or close them.
+For confirmed defects, include reproduction, evidence, impact, and any workaround.
+Distinguish confirmed defects from suspicions. Do not duplicate an existing message.
+Do not send yourself a response or poll for the user decision.
 The user response automatically notifies the reporting lead.
 Do not poll or routinely read the complaint book. For complaints assigned to the lead,
 use action=respond with an action, a reasoned refusal, or a next step before finishing.
@@ -193,7 +203,7 @@ Omit model, effort and fast_mode to use the user's current team defaults for eac
 An explicit profile model or effort overrides the team default; explicit spawn fields override the profile.
 Use effort=null to select a model's native default, or fast_mode=false to disable Fast for that worker.
 Only the user can change team defaults. Do not call settings APIs to change them.
-Use orchestration_speak(text) for additional speech only; do not duplicate your normal reply. Native voice receives this text as speakable context; ordinary replies already reach voice.
+Only the orchestrator uses orchestration_speak(text) for additional speech. Do not duplicate your normal reply; native voice already receives it.
 Without active voice the text is saved silently. Voice interruption does not stop your task.
 Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
@@ -204,8 +214,9 @@ orchestration_peers, orchestration_message, orchestration_monitor.
 Use orchestration_panel_feed for live data from a background script, such as EC2 status or build counters.
 It updates structured panel state without model turns, including on command completion or error.
 Set the panel once, start the script, and finish your turn. Do not poll the feed through model calls.
-Use orchestration_user_task for things the user must do. Supply clear completion criteria.
-A user check wakes the requesting agent and awaits its review. Accept the result or return
+Only the orchestrator uses orchestration_user_task for things the user must do. Supply clear completion criteria.
+Subagents ask their orchestrator to contact the user. Do not create direct user questions or tasks.
+A user check wakes the orchestrator and awaits its review. Accept the result or return
 it with a concrete reason and next action. Do not treat the user check as your acceptance.
 Use fenced mermaid blocks for diagrams and fenced html blocks for HTML/CSS previews.
 HTML previews are static and isolated; scripts and remote resources do not run.
@@ -591,8 +602,9 @@ class AppServer:
             self.reader.join(timeout=1)
 
 
-class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
+class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
+        self.started_at = time.time()
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "canvas.sqlite3"
@@ -645,6 +657,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_events (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,
                   text TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
@@ -678,15 +691,18 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 # Only existing managed orchestrators with an admitted model become leads.
                 a.setdefault("isLead", not a.get("parentId") and a.get("role") == "orchestrator"
                              and a.get("model") in LEAD_MODELS)
+                block = native_thread_block(a)
+                if block:
+                    a["nativeThreadBlock"] = block
                 if a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
                 a.setdefault("accountKey", "default")
-                a.setdefault("dangerouslySkipAccountRules", False)
                 a.setdefault("yoloMode", None)
                 a.setdefault("compactions", 0)
                 a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
+                self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
                 self.put(db, "agents", a)
             for complaint in self.records(db, "complaints"):
@@ -856,6 +872,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             ids = {a["id"] for a in agents}
             self.loaded.difference_update(ids)
             for a in agents:
+                self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
                 if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
@@ -985,28 +1002,6 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         return len(broadcasts)
 
     @staticmethod
-    def requested_rule_override(data):
-        value = data.get("dangerously_skip_rules", False)
-        if type(value) is not bool:
-            raise ValueError("dangerously_skip_rules must be a boolean")
-        return value
-
-    def check_account_project(self, a, db=None):
-        """Check project admission using the current team override, not a worker copy."""
-        root = self.agent(a["rootId"], db)
-        self.accounts.check_project(
-            a.get("accountKey", "default"),
-            a["cwd"],
-            skip=root.get("dangerouslySkipAccountRules", False),
-        )
-
-    def default_project(self, account_key, cwd):
-        if self.accounts.project_allowed(account_key, cwd):
-            return cwd
-        allowed = self.accounts.get(account_key)["projectRules"]["allowedProjects"]
-        return next((path for path in allowed or [] if Path(path).is_dir()), cwd)
-
-    @staticmethod
     def worker_defaults(root):
         return {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False,
                 **root.get("workerDefaults", {})}
@@ -1042,7 +1037,6 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         return {"model": value["model"], "effort": value["effort"], "fastMode": value["fast_mode"]}
 
     def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False):
-        requested_skip = self.requested_rule_override(data)
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         if parent and "yolo_mode" in data:
@@ -1051,10 +1045,6 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             raise ValueError("Select an available model")
         if parent and "worker_defaults" in data:
             raise ValueError("Only the user can change worker defaults on a lead")
-        if parent and requested_skip:
-            raise ValueError(
-                "Only the user can enable dangerously_skip_rules on a lead"
-            )
         if data.get("profile_id"):
             with self.lock, self.db() as db:
                 row = db.execute(
@@ -1072,7 +1062,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         # Obtain remote metadata before taking the database write lock. Batch spawn
         # passes one catalogue snapshot for all children and validates under its lock.
         needs_catalog = parent is not None or any(k in data for k in ("effort", "fast_mode", "worker_defaults"))
-        catalog_account = self.agent(parent).get("accountKey", "default") if parent else data.get("account_key", "default")
+        catalog_account = (self.agent(parent).get("accountKey", "default") if parent
+                           else data["account_key"] if "account_key" in data
+                           else self.project_account(data.get("cwd") or os.getcwd()))
         catalog = _catalog if _catalog is not None else self.catalog(catalog_account) if needs_catalog else None
         key = data.get("id") or uid()
         try:
@@ -1098,17 +1090,15 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 for request_field, stored_field in (("model", "model"), ("effort", "effort"), ("fast_mode", "fastMode"), ("yolo_mode", "yoloMode")):
                     if request_field in data and data[request_field] != a.get(stored_field):
                         raise ValueError("This request id has different execution settings")
-                if "dangerously_skip_rules" in data and a.get("dangerouslySkipAccountRules", False) != requested_skip:
-                    raise ValueError("This request id has different rules settings")
-                if not draft:
-                    self.check_account_project(a, db)
                 return a
             p = self.agent(parent, db) if parent else None
             root = self.agent(p["rootId"], db) if p else None
-            account_key = p.get("accountKey", "default") if p else data.get("account_key", "default")
+            account_key = p.get("accountKey", "default") if p else catalog_account
             if p and data.get("account_key", account_key) != account_key:
                 raise ValueError("A worker must use its parent account")
-            self.accounts.get(account_key)
+            account = self.accounts.get(account_key)
+            if not p and account.get("disconnected"):
+                raise ValueError("Reconnect this account before creating a chat")
             is_lead = p is None and role == "orchestrator"
             defaults = self.worker_defaults(root or {})
             model = data.get("model") or ((defaults["model"] or root["model"]) if root else LEAD_MODELS[0])
@@ -1137,9 +1127,6 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             cwd = str(Path(p["cwd"] if p else data.get("cwd", "")).expanduser().resolve())
             if not Path(cwd).is_dir() or (not p and not data.get("cwd")):
                 raise ValueError("Select an existing project directory")
-            skip = root.get("dangerouslySkipAccountRules", False) if root else requested_skip
-            if not draft:
-                self.accounts.check_project(account_key, cwd, skip=skip)
             concurrency = int(data.get("concurrency", 8))
             max_agents = int(data.get("maxAgents", 64))
             if not 1 <= concurrency <= 64 or not 1 <= max_agents <= 256:
@@ -1151,7 +1138,6 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 "id": key,
                 "threadId": None,
                 "accountKey": account_key,
-                "dangerouslySkipAccountRules": skip,
                 "yoloMode": root.get("yoloMode") if root else data.get("yolo_mode", True),
                 "name": name.strip(),
                 "prompt": prompt.strip(),
@@ -1192,8 +1178,13 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 a["nativeEffort"] = native_effort
             if draft:
                 a.update(quickCreate=True, quickCreateRequest=data.get("_creationSignature"))
+                if data.get('_projectFolder') is not None:
+                    a['projectFolder'] = data['_projectFolder']
+                    a['projectFolderRevision'] = 1
             if _validate_only:
                 return a
+            if is_lead:
+                self.ensure_project(cwd, account_key, db)
             self.put(db, "agents", a)
             if not defer and not draft:
                 self.enqueue(db, a, "user", prompt.strip(), key + ":initial")
@@ -1202,13 +1193,17 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
     def new_lead(self, data):
         if "reuse_empty" in data and type(data["reuse_empty"]) is not bool:
             raise ValueError("reuse_empty must be a boolean")
-        self.requested_rule_override(data)
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         key = data.get("id")
         settings = {k: data.get(k) for k in ("model", "previous")}
         if "account_key" in data:
             settings["account_key"] = data["account_key"]
+        if "reuse_empty" in data:
+            settings["reuse_empty"] = data["reuse_empty"]
+        if 'project_folder' in data:
+            settings['project_folder'] = data['project_folder']
+        # Retain this retired field only in the identity of requests saved by older clients.
         if "dangerously_skip_rules" in data:
             settings["dangerously_skip_rules"] = data["dangerously_skip_rules"]
         if "yolo_mode" in data:
@@ -1245,36 +1240,28 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     raise ValueError("Select a lead conversation")
                 if previous and previous.get("deletedAt"):
                     raise ValueError("This conversation was deleted")
-                from codex_project_selection import project_default
-                target_cwd = requested_cwd or (previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
-                account_key = data["account_key"] if "account_key" in data else project_default(self, target_cwd, db)
-                self.accounts.get(account_key)
+                cwd = requested_cwd or (previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
+                account_key = data["account_key"] if "account_key" in data else self.project_account(cwd, db=db)
+                if self.accounts.get(account_key).get("disconnected"):
+                    raise ValueError("Reconnect this account before creating a chat")
+                from codex_project_folders import folder_for
+                project_folder = folder_for(self, db, cwd, data.get('project_folder'))
                 if previous and data.get("reuse_empty", True) and self.empty_lead(db, previous):
-                    if previous.get("accountKey", "default") != account_key:
-                        previous["cwd"] = requested_cwd or self.default_project(account_key, previous["cwd"])
-                        previous["dangerouslySkipAccountRules"] = False
                     if "yolo_mode" in data:
                         previous["yoloMode"] = data["yolo_mode"]
-                    previous["accountKey"] = account_key
-                    if "dangerously_skip_rules" in data:
-                        previous["dangerouslySkipAccountRules"] = data["dangerously_skip_rules"]
-                    if requested_cwd is not None:
-                        self.accounts.check_project(account_key, requested_cwd, skip=previous.get("dangerouslySkipAccountRules", False))
-                        previous["cwd"] = requested_cwd
+                    if previous.get('projectFolder') != project_folder or previous['cwd'] != cwd:
+                        previous['projectFolderRevision'] = previous.get('projectFolderRevision', 0) + 1
+                    previous.update(accountKey=account_key, cwd=cwd)
+                    previous['projectFolder'] = project_folder
+                    self.ensure_project(cwd, account_key, db)
                     self.put(db, "agents", previous)
                     if key:
                         db.execute("INSERT INTO runtime_lead_requests VALUES (?,?,?)", (key, previous["id"], signature))
                     return previous
-                if requested_cwd is not None:
-                    self.accounts.check_project(account_key, requested_cwd, skip=data.get("dangerously_skip_rules", False))
-                    cwd = requested_cwd
-                else:
-                    cwd = previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd())
-                    cwd = self.default_project(account_key, cwd)
             created = self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
+                                "_projectFolder": project_folder,
                                 "_creationSignature": signature, "account_key": account_key,
                                 "yolo_mode": data.get("yolo_mode", previous.get("yoloMode") is not False if previous else True),
-                                "dangerously_skip_rules": data.get("dangerously_skip_rules", False),
                                 "model": data.get("model") or LEAD_MODELS[0]}, draft=True)
             # Each new team starts with Studio defaults, independent of the previous chat.
             return created
@@ -1289,22 +1276,26 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     and not db.execute("SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.agent')=?", (a["id"],)).fetchone())
 
     def set_account(self, key, account_key, cwd=None):
-        self.accounts.get(account_key)
         with self.lock, self.db() as db:
             a = self.agent(key, db)
-            if a.get("accountKey", "default") == account_key and cwd is None:
-                return a
-            if not self.empty_lead(db, a) or a.get("inFlight"):
-                raise ValueError("The account is fixed after the first message. Create a new chat")
             directory = a["cwd"]
             if cwd is not None:
                 if not isinstance(cwd, str) or not cwd.strip():
                     raise ValueError("Select an existing project directory")
                 directory = str(Path(cwd).expanduser().resolve())
-                if not Path(directory).is_dir():
-                    raise ValueError("Select an existing project directory")
-            self.accounts.check_project(account_key, directory, skip=a.get("dangerouslySkipAccountRules", False))
+            if a.get("accountKey", "default") == account_key and directory == a["cwd"]:
+                return a
+            if self.accounts.get(account_key).get("disconnected"):
+                raise ValueError("Reconnect this account before selecting it")
+            if not self.empty_lead(db, a) or a.get("inFlight"):
+                raise ValueError("The account is fixed after the first message. Create a new chat")
+            if not Path(directory).is_dir():
+                raise ValueError("Select an existing project directory")
+            if directory != a['cwd']:
+                a.pop('projectFolder', None)
+                a['projectFolderRevision'] = a.get('projectFolderRevision', 0) + 1
             a.update(accountKey=account_key, cwd=directory)
+            self.ensure_project(directory, account_key, db)
             self.put(db, "agents", a)
             return a
 
@@ -1330,14 +1321,47 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         return {"deleted": sorted(ids)}
 
     def conversation_settings(self, key, data):
-        requested_skip = self.requested_rule_override(data)
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         execution_fields = {"model", "effort", "fast_mode"}
+        if data.get("next_turn") is True:
+            if set(data) - {"id", "request_id", "next_turn", *execution_fields}:
+                raise ValueError("Only execution settings can apply to the next turn")
+            request_id = data.get("request_id")
+            if not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
+                raise ValueError("A settings request id is required")
+            receipt_body = {"operation": "next_turn_settings", "agent": key, **data}
+            with self.lock, self.db() as db:
+                target = self.checked_actor(db, key)
+                signature, prior = self.operation_receipt(db, request_id, receipt_body)
+                if prior is not None:
+                    return self.agent(key, db)
+            if target.get("isLead") and "model" in data and data["model"] not in LEAD_MODELS:
+                raise ValueError("A lead must use Astra or Sol")
+            catalog = self.catalog(target.get("accountKey", "default"))
+            with self.lock, self.db() as db:
+                a = self.checked_actor(db, key)
+                signature, prior = self.operation_receipt(db, request_id, receipt_body)
+                if prior is not None:
+                    return a
+                if a.get("accountKey", "default") != target.get("accountKey", "default"):
+                    raise ValueError("The account changed. Select the model again")
+                base = {**a, **(a.get("pendingSettings") or {})}
+                model = data.get("model", base["model"])
+                effort, native_effort = self.validate_execution(
+                    catalog, model, data.get("effort", base.get("effort")),
+                    data.get("fast_mode", base.get("fastMode", False)),
+                    fallback_effort="model" in data and "effort" not in data)
+                a["pendingSettings"] = dict(model=model, effort=effort, nativeEffort=native_effort,
+                    fastMode=data.get("fast_mode", base.get("fastMode", False)))
+                a["pendingSettingsAccountKey"] = a.get("accountKey", "default")
+                self.put(db, "agents", a)
+                self.save_receipt(db, request_id, signature, {"applied": True})
+                return a
         with self.lock:
             pending = self.preparations.get(key)
             if pending and not pending["future"].done() and set(data).intersection(
-                    execution_fields | {"cwd", "yolo_mode", "dangerously_skip_account_rules"}):
+                    execution_fields | {"cwd", "yolo_mode"}):
                 raise ValueError("Wait for thread preparation before changing execution settings")
         defaults_only = set(data) <= {"id", "worker_defaults"} and "worker_defaults" in data
         with self.lock, self.db() as db:
@@ -1374,12 +1398,12 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 if any(t["agent"] in team_ids and t["status"] == "running" for t in self.records(db, "tasks")):
                     raise ValueError("Wait for team tools to end before changing YOLO mode")
                 a["yoloMode"] = data["yolo_mode"]
-            if "dangerously_skip_rules" in data:
-                if any(other["rootId"] == a["id"] and (other.get("inFlight") or other["status"] in {"running", "starting", "approval"})
-                       for other in self.records(db, "agents")):
-                    raise ValueError("Wait for every team turn to end before changing account rules")
-                a["dangerouslySkipAccountRules"] = requested_skip
             if execution_fields.intersection(data):
+                # An explicit idle update replaces the queued choice in one transaction.
+                queued = a.pop("pendingSettings", {})
+                queued_account = a.pop("pendingSettingsAccountKey", a.get("accountKey", "default"))
+                if queued_account == a.get("accountKey", "default"):
+                    a.update(queued)
                 model = data.get("model", a["model"])
                 effort, native_effort = self.validate_execution(
                     catalog, model, data.get("effort", a.get("effort")),
@@ -1401,12 +1425,12 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 cwd = Path(data["cwd"]).expanduser().resolve()
                 if not cwd.is_dir():
                     raise ValueError("Select an existing project directory")
+                if str(cwd) != a['cwd']:
+                    a.pop('projectFolder', None)
+                    a['projectFolderRevision'] = a.get('projectFolderRevision', 0) + 1
                 a["cwd"] = str(cwd)
-                self.accounts.check_project(
-                    a.get("accountKey", "default"),
-                    a["cwd"],
-                    skip=a.get("dangerouslySkipAccountRules", False),
-                )
+                a["accountKey"] = self.project_account(str(cwd), db=db)
+                self.ensure_project(str(cwd), a["accountKey"], db)
             self.put(db, "agents", a)
             for member in team:
                 if member["id"] != key:
@@ -1445,11 +1469,12 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         message_id = message_id or uid()
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
+            if safety_retry_active(a):
+                raise ValueError('Wait for the model change before sending another message')
             if sender:
                 caller = self.agent(sender, db)
                 if not caller["autoWake"] or caller["epoch"] != sender_epoch:
                     raise ValueError("Sender was stopped")
-            self.check_account_project(a, db)
             old = db.execute(
                 "SELECT * FROM runtime_events WHERE id=?", (message_id,)
             ).fetchone()
@@ -1488,6 +1513,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         "status": old["status"],
                         "error": old["error"],
                     }
+            assert_native_thread_open(a)
             blockers = self.workspace_blockers(db, a)
             if any(b["operation"] not in {"checkpoint", "capture"} for b in blockers):
                 self.assert_workspace_available(db, a)
@@ -1518,6 +1544,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     )
                 a.update(autoWake=True, error=None, complaintMisses=0)
                 a.pop("nativeFailureHold", None)
+                self.capacity_reset(db, a)
                 self.put(db, "agents", a)
             if not a["autoWake"]:
                 raise ValueError("Agent is stopped; no message was queued")
@@ -1677,8 +1704,38 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         return THREAD_CONFIG.copy()
 
     @staticmethod
-    def tool_definitions():
-        return TOOLS
+    def tool_definitions(actor=None):
+        if actor is None:
+            return TOOLS
+        lead = bool(actor.get("isLead"))
+        definitions = []
+        for definition in TOOLS:
+            if not lead and definition["name"] in {"orchestration_user_task", "orchestration_speak", "orchestration_agent_manage"}:
+                continue
+            if definition["name"] == "orchestration_complaint":
+                definition = {**definition, "description": (
+                    "Send a message to the user with action=submit. Only the user can answer or close it. "
+                    "Read team messages with action=read. Use action=respond only for messages assigned to you."
+                    if lead else
+                    "Send a request or problem to your orchestrator with action=submit. "
+                    "The orchestrator decides whether to handle it or contact the user. "
+                    "Use action=read for message history. You cannot contact the user directly."
+                )}
+            definitions.append(definition)
+        return definitions
+
+    @staticmethod
+    def role_guidance(actor):
+        name = "codex-orchestrator" if actor.get("isLead") else "codex-subagent"
+        path = Path(__file__).resolve().parent.parent / ".agents" / "skills" / name / "SKILL.md"
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise ValueError(f"Studio role skill {name} is missing. Update the installed Studio workspace") from error
+        if not content:
+            raise ValueError(f"Studio role skill {name} is empty. Update the installed Studio workspace")
+        shared = path.parent.parent / "codex-workspace" / "SKILL.md"
+        return f"[Studio role skill: {name}]\nSource: {path}\nShared tool guidance: {shared}\n{content}\n[End Studio role skill]"
 
     @staticmethod
     def turn_permissions(a):
@@ -1707,12 +1764,13 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             raise ValueError("Studio panel guidance is empty. Update the installed Studio workspace")
         return f"[Studio panel guidance: {guide}]\n{content}"
 
-    def new_thread_params(self, a, *, inherit_account_rule_override=True):
+    def new_thread_params(self, a):
         params = {
             "cwd": a["cwd"],
             "config": THREAD_CONFIG.copy(),
             "serviceTier": "priority" if a.get("fastMode", False) else "default",
             "developerInstructions": INSTRUCTIONS
+            + "\n" + self.role_guidance(a)
             + "\n"
             + a.get("profileInstructions", ""),
         }
@@ -1723,23 +1781,6 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         native_effort = a.get("nativeEffort", a.get("effort"))
         if native_effort is not None:
             params["config"]["model_reasoning_effort"] = native_effort
-        policy = self.accounts.get(a.get("accountKey", "default"))["projectRules"]
-        root = self.agent(a["rootId"])
-        if policy["allowedProjects"] is not None:
-            params["developerInstructions"] += (
-                "\n[Account project rules] Project admission policy; stay within these projects. "
-                "Allowed project roots: " + json.dumps(policy["allowedProjects"]) + ". "
-                "Only the user can change these rules or enable an exception. "
-                "Do not modify account policy files or call settings APIs to bypass this policy."
-            )
-        if inherit_account_rule_override and root.get(
-            "dangerouslySkipAccountRules", False
-        ):
-            params["developerInstructions"] += (
-                "\nThe user enabled Dangerously skip rules for this team. "
-                "The account project admission restriction is bypassed. "
-                "Native Codex permissions and sandbox rules still apply."
-            )
         if a.get("needsTitle"):
             params[
                 "developerInstructions"
@@ -1752,7 +1793,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             params.update(approvalPolicy="on-request", sandbox="read-only" if a["role"] == "reviewer" else "workspace-write")
         elif a["role"] == "reviewer":
             params["sandbox"] = "read-only"
-        params["dynamicTools"] = TOOLS
+        params["dynamicTools"] = self.tool_definitions(a)
+        from codex_browser import configure_browser
+        configure_browser(self, a, params)
         return params
 
     def prepare(self, a):
@@ -1797,12 +1840,11 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
     @staticmethod
     def preparation_settings(a):
         return {key: a.get(key) for key in ("model", "effort", "nativeEffort", "fastMode", "yoloMode",
-                "profileInstructions", "role", "dangerouslySkipAccountRules")}
+                "profileInstructions", "role")}
 
     def prepare_locked(self, a):
         if a.get("accountTransferId") and not a.get("inFlight"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
-        self.check_account_project(a)
         server = self.connect(a.get("accountKey", "default"))
         previous = self.preparations.get(a["id"])
         if previous and previous.get("connectionId") != self.connection_ids.get(a.get("accountKey", "default")):
@@ -1856,8 +1898,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 params.update(threadId=a["threadId"], excludeTurns=True)
             else:
                 method = "thread/start"
-                params["dynamicTools"] = self.tool_definitions()
-            self.check_account_project(a)
+                params["dynamicTools"] = self.tool_definitions(a)
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
                 if latest["epoch"] != a["epoch"] or latest.get("deletedAt"):
@@ -1922,6 +1963,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 break
             try:
                 self.rules_tick()
+                self.capacity_tick()
                 self.dispatch()
             except Exception as error:
                 self.scheduler_error = {"at": time.time(), "error": str(error)}
@@ -1943,6 +1985,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             transfer_store(self).tick(agents)
             agents = self.records(db, "agents")
             self.queue_turn_recovery(agents)
+            from codex_browser_recovery import tick as browser_recovery_tick
+            browser_recovery_tick(self, db, agents)
             reserved_cwds = {
                 str(Path(a["cwd"]).resolve())
                 for a in agents
@@ -1956,7 +2000,10 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     if a["status"] == "queued"
                     and a["autoWake"]
                     and not a.get("nativeFailureHold")
+                    and not safety_retry_active(a)
+                    and a.get("browserRecovery", {}).get("stage") not in {"pending", "reconnecting"}
                     and not a.get("accountTransferId")
+                    and not native_thread_block(a)
                     and not a.get("inFlight")
                     and str(Path(a["cwd"]).resolve()) not in reserved_cwds
                 ),
@@ -2003,6 +2050,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
                         (event["id"],),
                     )
+                self.capacity_reset(db, a)
                 a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
                          startAttempt={"id": uid(), "epoch": a["epoch"],
                                        "accountKey": a.get("accountKey", "default"),
@@ -2021,6 +2069,22 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         or current["epoch"] != epoch or not current["autoWake"] or current.get("deletedAt")):
                     self.start_error(a["id"], attempt_id, ValueError("Agent stopped before turn input submission"))
                     return
+                assert_native_thread_open(current)
+            with self.lock, self.db() as db:
+                current = self.agent(a["id"], db)
+                attempt = current.get("startAttempt") or {}
+                if attempt.get("id") != attempt_id or current["epoch"] != epoch or not current["autoWake"]:
+                    return
+                if not attempt.get("settingsFixed"):
+                    if current.get("pendingSettings"):
+                        if current.get("pendingSettingsAccountKey", current.get("accountKey", "default")) != current.get("accountKey", "default"):
+                            raise ValueError("The account changed. Save the next-turn settings again")
+                        current.pop("pendingSettingsAccountKey", None)
+                        current.update(current.pop("pendingSettings"))
+                        self.loaded.discard(current["id"])
+                    attempt["settingsFixed"] = True
+                    self.put(db, "agents", current)
+                a = current
             a = self.prepare(a)
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
@@ -2106,6 +2170,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     self.changed.set()
                     return
                 self.assert_workspace_available(db, current)
+                assert_native_thread_open(current)
                 current["startAttempt"]["submitted"] = True
                 current["startAttempt"].update(accountKey=a.get("accountKey", "default"),
                     connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
@@ -2184,7 +2249,17 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 return
             if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
                 return
+            self.capacity_started(db, a, attempt, turn)
             completed = db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (agent_id + ":" + turn,)).fetchone()
+            if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
+                self.capacity_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
+                                               "error": a.get("error")}, True)
+                if (a["lastCompletedTurnStatus"] == "completed" and a["autoWake"]
+                        and not a.get("nativeFailureHold")
+                    and not a.get("accountTransferId") and db.execute(
+                            "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?",
+                            (a["id"], a["epoch"])).fetchone()):
+                    a["status"] = "queued"
             stopped = not a["autoWake"] or a["epoch"] != a["startAttempt"]["epoch"]
             if not completed:
                 a.update(turnId=turn, inFlight=True)
@@ -2239,6 +2314,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 if current_epoch and a["autoWake"]:
                     a.update(status="failed", error=str(error))
                     self.parent_event(db, a, "start-failed:" + (attempt["events"][0] if attempt["events"] else attempt["id"]), str(error))
+            self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
                 status = ("uncertain" if attempt.get("submitted") else "reserved") if unknown else (
@@ -2379,6 +2455,8 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 if (preparation and preparation.get("connectionId") == connection_id
                         and preparation.get("threadId") == tid):
                     preparation["unloaded"] = True
+                if a.get("inFlight") and not safety_retry_active(a):
+                    self.queue_turn_recovery([a], force_id=a["id"])
                 return
             item = p.get("item") or {}
             if method in {"item/started", "item/completed"} and item.get("type") == "userMessage" and item.get("clientId"):
@@ -2421,6 +2499,10 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     # input. Only the RPC result or clientId can bind that batch.
                     if attempt:
                         attempt["observedTurnId"] = p["turn"]["id"]
+                if attempt.get("action") == "capacity":
+                    self.capacity_started(db, a, attempt, p["turn"]["id"])
+                else:
+                    self.capacity_reset(db, a, "A new native turn replaces this retry.")
                 a["turnId"] = p["turn"]["id"]
                 a["lastAnswer"] = ""
                 a["activity"] = {"phase": "thinking", "at": time.time()}
@@ -2444,6 +2526,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 item = p.get("item", {})
                 kind = item.get("type")
                 started = method == "item/started"
+                if not started and not stale:
+                    from codex_browser_recovery import observe as observe_browser_result
+                    observe_browser_result(self, db, a, item, p.get("turnId"), connection_id)
                 attempt = a.get("startAttempt") or {}
                 if (kind == "userMessage" and attempt.get("submitted") and attempt.get("events")
                         and item.get("clientId") == attempt["events"][0]
@@ -2477,8 +2562,13 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                             questions = [{"id": str(i), "question": q["title"],
                                           "options": [{"label": o} for o in q.get("options") or []], "isSecret": bool(q.get("isSecret"))}
                                          for i, q in enumerate(item["questions"])]
-                            self.put(db, "requests", {"id": request_id, "method": "agent/asyncQuestion",
-                                "agent": a["id"], "epoch": a["epoch"], "params": {"questions": questions}, "status": "pending", "createdAt": time.time()})
+                            if a.get("isLead"):
+                                self.put(db, "requests", {"id": request_id, "method": "agent/asyncQuestion",
+                                    "agent": a["id"], "epoch": a["epoch"], "params": {"questions": questions}, "status": "pending", "createdAt": time.time()})
+                            else:
+                                lead = self.agent(a["rootId"], db)
+                                question_text = "Questions for the orchestrator:\n" + json.dumps(questions, ensure_ascii=False)
+                                self.submit_complaint(db, a, lead, question_text, request_id, max_chars=None)
                     a["tail"] = text[-300:]
                     a["lastAnswer"] = text[-16000:]
                 elif kind not in {"reasoning", "userMessage", "agentMessage"}:
@@ -2532,9 +2622,11 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 completion = a["id"] + ":" + str(turn.get("id"))
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
                     return
+                known_capacity_source = bool(a.get("turnId") and a["turnId"] == turn.get("id"))
                 advance_native_status(a, method, p)
                 if turn.get("status") == "failed":
                     turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
+                    refresh_native_limits(self, db, a, turn["error"], turn.get("id"), account_key, connection_id)
                     notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
                            "error", turnId=turn.get("id"), nativeError=turn["error"])
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
@@ -2549,6 +2641,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         task.update(status="interrupted", finished=time.time())
                         self.put(db, "tasks", task)
                 a["lastCompletedTurn"] = turn.get("id")
+                a["lastCompletedTurnStatus"] = turn.get("status")
                 a["turnId"] = None
                 a["activity"] = None
                 a["activeTools"] = []
@@ -2568,17 +2661,20 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                                for c in self.records(db, "agents"))
                 if a["status"] == "completed" and (watches or children):
                     a["status"] = "waiting"
-                if a["status"] != "waiting" and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
+                if (a["status"] != "waiting" and a.get("turnEpoch", a["epoch"]) == a["epoch"]
+                        and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
                     self.parent_event(db, a, turn.get("id", "unknown"),
                                       json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
                 if turn.get("status") == "completed" and a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     self.enforce_complaints(db, a, completion)
                     if not watches and not children:
                         self.store_completed_broadcasts(db, a)
+                self.capacity_completed(db, a, turn, known_capacity_source)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
                 if pending and a["autoWake"] and not a.get("nativeFailureHold"):
                     a["status"] = "queued"
-                if a.get("worktreeReady"):
+                if (a.get("worktreeReady")
+                        and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
                     a["workspaceOperation"] = "checkpoint"
                     self.pool.submit(
                         self.checkpoint_after_turn, a["id"], turn.get("id")
@@ -2643,10 +2739,20 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             if not self.connection_current(account_key, connection_id):
                 return
             p = message.get("params", {})
-            a = next((a for a in self.records(db, "agents") if p.get("threadId") and a.get("threadId") == p.get("threadId") and a.get("accountKey", "default") == account_key), None)
+            request_thread = native_request_thread(message["method"], p)
+            a = next((a for a in self.records(db, "agents") if request_thread and a.get("threadId") == request_thread and a.get("accountKey", "default") == account_key), None)
+            if a and not a.get("isLead") and message["method"] == "item/tool/requestUserInput":
+                self.reply({"id": message["id"], "error": {"code": -32600,
+                    "message": "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."}},
+                    account_key, connection_id)
+                return
             r = {"id": uid(), "rpcId": message["id"], "method": message["method"],
                  "params": p, "agent": a["id"] if a else None, "status": "pending",
                  "accountKey": account_key, "connectionId": connection_id, "createdAt": time.time()}
+            if a and native_thread_block(a):
+                r["status"] = "blocked"
+                self.put(db, "requests", r)
+                return
             if a and p.get("itemId"):
                 row = db.execute("SELECT record FROM runtime_items WHERE id=?", (a["id"] + ":" + p["itemId"],)).fetchone()
                 if row:
@@ -2728,10 +2834,18 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             record = self.reserve_tool_request(message, account_key, connection_id)
             key = record["id"]
             with self.lock, self.db() as db:
+                # Another callback can claim this request after reservation returns.
+                # Only the current receipt can prove that execution has not started.
+                record = self.tool_request(key, db)
                 a = self.agent(record["agent"], db)
                 result = record.get("result")
+                if result is None and record.get("stage") == "queued" and native_thread_block(a):
+                    result = stamp_tool_result({"success": False, "contentItems": [
+                        {"type": "inputText", "text": THREAD_BLOCK_MESSAGE}]}, time.time())
+                    self.finish_tool_request(key, result, outcome="not_applied", db=db)
+                if result is None:
+                    claimed = self.begin_tool_request(key)
             if result is None:
-                claimed = self.begin_tool_request(key)
                 if not claimed:
                     receipt = self.tool_request(key)
                     result = receipt.get("result") or {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps({
@@ -3028,11 +3142,13 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         with self.lock:
             return self.limit_refresh_locks.setdefault(account_key, threading.Lock())
 
-    def limits(self, account_key="default", force=False):
+    def limits(self, account_key="default", force=False, connection_id=None):
         self.accounts.get(account_key)
         with self.limit_refresh_lock(account_key):
             with self.lock:
                 cached = self.rate_limits_for(account_key)
+                if connection_id is not None and (self.closed or not self.connection_current(account_key, connection_id)):
+                    return cached
                 now = time.time()
                 if not force and (
                         (not cached.get("error") and cached["at"] and now - cached["at"] < 60)
@@ -3042,11 +3158,22 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             for attempt in range(2):
                 error = None
                 try:
-                    data = self.connect(account_key).call("account/rateLimits/read", {}, timeout=10)
+                    if connection_id is None:
+                        server = self.connect(account_key)
+                    else:
+                        with self.lock:
+                            if self.closed or not self.connection_current(account_key, connection_id):
+                                return self.rate_limits_for(account_key)
+                            server = self.servers.get(account_key)
+                        if server is None:
+                            return self.rate_limits_for(account_key)
+                    data = server.call("account/rateLimits/read", {}, timeout=10)
                 except Exception as cause:
                     error = cause
                 with self.lock:
                     current = self.rate_limits_for(account_key)
+                    if connection_id is not None and (self.closed or not self.connection_current(account_key, connection_id)):
+                        return current
                     # Notifications can update this account while the read waits.
                     if current is not cached and current.get("data") is not None and not current.get("error"):
                         return current
@@ -3114,6 +3241,25 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 raise ValueError("Unknown complaint")
             return json.loads(row[0])
 
+    def submit_complaint(self, db, actor, lead, text, key, *, user=False, max_chars=12000):
+        if not isinstance(text, str) or not text.strip() or (max_chars is not None and len(text.strip()) > max_chars):
+            raise ValueError("Describe the complaint in 1 to 12000 characters")
+        author = "user" if user else actor["id"]
+        cid = str(uuid.uuid5(uuid.NAMESPACE_URL, "complaint:" + key))
+        row = db.execute("SELECT record FROM runtime_complaints WHERE id=?", (cid,)).fetchone()
+        if row:
+            previous = json.loads(row[0])
+            if (previous["text"], previous["author"], previous["leadId"]) != (text.strip(), author, lead["id"]):
+                raise ValueError("This complaint id has different content")
+            return previous
+        c = {"id": cid, "leadId": lead["id"], "author": author, "text": text.strip(),
+             "recipient": "user" if author == lead["id"] else "lead", "version": 1,
+             "status": "open", "created": time.time(), "updated": time.time(), "readAt": None, "responses": []}
+        self.put(db, "complaints", c)
+        if c["recipient"] == "lead":
+            self.enqueue(db, lead, "complaint", self.complaint_message(db, [c]), "complaint:" + cid)
+        return c
+
     def complaint(self, actor_id, data, key, epoch=None, user=False):
         if not isinstance(data, dict):
             raise ValueError("Complaint arguments must be an object")
@@ -3126,24 +3272,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             if not lead.get("isLead") or lead.get("deletedAt"):
                 raise ValueError("A complaint needs an existing lead")
             if action == "submit":
-                text = data.get("text")
-                if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
-                    raise ValueError("Describe the complaint in 1 to 12000 characters")
-                author = "user" if user else actor_id
-                cid = str(uuid.uuid5(uuid.NAMESPACE_URL, "complaint:" + key))
-                row = db.execute("SELECT record FROM runtime_complaints WHERE id=?", (cid,)).fetchone()
-                if row:
-                    previous = json.loads(row[0])
-                    if (previous["text"], previous["author"], previous["leadId"]) != (text.strip(), author, lead["id"]):
-                        raise ValueError("This complaint id has different content")
-                    return previous
-                c = {"id": cid, "leadId": lead["id"], "author": author, "text": text.strip(),
-                     "recipient": "user" if author == lead["id"] else "lead", "version": 1,
-                     "status": "open", "created": time.time(), "updated": time.time(), "readAt": None, "responses": []}
-                self.put(db, "complaints", c)
-                if c["recipient"] == "lead":
-                    self.enqueue(db, lead, "complaint", self.complaint_message(db, [c]), "complaint:" + cid)
-                return c
+                return self.submit_complaint(db, actor, lead, data.get("text"), key, user=user)
             if user:
                 raise ValueError("Only the responsible lead can record a read or response")
             if action == "read":
@@ -3744,6 +3873,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     ids = expanded
             stopped = [a for a in agents if a["id"] in ids]
             for a in stopped:
+                self.capacity_reset(db, a, "The agent was stopped.")
                 a.update(autoWake=False, epoch=a["epoch"] + 1, status="paused", error=reason)
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
@@ -3775,6 +3905,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 raise ValueError("Answer delivery is uncertain. Do not resend; inspect the agent conversation")
             if r["status"] != "pending":
                 raise ValueError("Request is no longer pending")
+            if r["method"] in {"agent/asyncQuestion", "item/tool/requestUserInput"} and r.get("agent"):
+                if not self.agent(r["agent"], db).get("isLead"):
+                    raise ValueError("Only the orchestrator can ask the user. The subagent must contact its orchestrator.")
             if r["method"] == "agent/asyncQuestion":
                 answers = data.get("answers")
                 if not isinstance(answers, dict):
@@ -3823,15 +3956,17 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         )
                 return {"status": "answered"}
             method = r["method"]
-            if data.get("decision") == "accept" and method in {
-                "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
-                "execCommandApproval", "applyPatchApproval", "item/permissions/requestApproval",
-                "mcpServer/elicitation/request",
-            }:
-                if r.get("agent"):
-                    self.check_account_project(self.agent(r["agent"], db), db)
-                elif self.accounts.get(r.get("accountKey", "default"))["projectRules"]["allowedProjects"] is not None:
-                    raise ValueError("Cannot approve this action without its project identity")
+            request_thread = native_request_thread(method, r.get("params", {}))
+            if not r.get("agent") and method in LEGACY_APPROVAL_REQUESTS and request_thread:
+                a = next((a for a in self.records(db, "agents")
+                          if a.get("threadId") == request_thread
+                          and a.get("accountKey", "default") == r.get("accountKey", "default")), None)
+                if a:
+                    r["agent"] = a["id"]
+            if r.get("agent"):
+                a = self.agent(r["agent"], db)
+                if request_thread == a.get("threadId"):
+                    assert_native_thread_open(a)
             if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval"}:
                 decision = data.get("decision")
                 if decision not in {"accept", "decline", "cancel"}:
@@ -3891,6 +4026,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
         with self.lock, self.db() as db:
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
             for a in agents:
+                a["nextTurnSettingsSupported"] = True
                 a["empty"] = self.empty_lead(db, a)
                 if not a.get("isLead"):
                     task = str(a.get("prompt") or "")
@@ -3907,12 +4043,16 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     }
                 for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy"):
                     a.pop(private, None)
-                a.update(kind="agent", source="managed", canSend=True, launcherAlive=not self.closed,
+                block = native_thread_block(a)
+                if block:
+                    a["nativeThreadBlock"] = block
+                a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
                          wave="Team: " + next((r["name"] for r in agents if r["id"] == a["rootId"]), "Team"))
             events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
             return {
                 "agents": agents,
                 "projects": self.projects(db=db)["items"],
+                "projectOrganizationVersion": 1,
                 "tasks": self.recent_tasks(db),
                 "userTasks": self.user_tasks(db=db)["items"],
                 "tasksHistoryLimit": 100,
@@ -3953,14 +4093,22 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 "agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "effort", "fastMode", "workerDefaults", "tokensUsed", "error")} for a in agents],
                 "monitors": [m for m in state["monitors"] if m["agent"] in {a["id"] for a in agents}]}
 
-    def transcript(self, key):
+    def transcript(self, key, before=None, around=None, limit=120, after=None):
         self.agent(key)
         with self.lock, self.db() as db:
-            rows = db.execute(
-                "SELECT record FROM runtime_items WHERE agent=? AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created DESC LIMIT 121",
-                (key,),
-            ).fetchall()
-            items = list(reversed([json.loads(r[0]) for r in rows[:120]]))
+            from codex_transcript_history import history_rows
+            rows, limit = history_rows(db, key, before, around, limit, after)
+            items = list(reversed([json.loads(r['record']) for r in rows[:limit]]))
+            next_after_cursor = None
+            if items and (before or around or after):
+                edge = rows[0]
+                if db.execute("SELECT 1 FROM runtime_items WHERE agent=? AND json_extract(record,'$.afterRestore') IS NULL AND (created,id)>(?,?) LIMIT 1", (key, edge['created'], edge['id'])).fetchone():
+                    next_after_cursor = edge['id']
+            next_cursor = None
+            if items:
+                oldest = rows[min(len(rows), limit) - 1]
+                if db.execute("SELECT 1 FROM runtime_items WHERE agent=? AND json_extract(record,'$.afterRestore') IS NULL AND (created,id)<(?,?) LIMIT 1", (key, oldest['created'], oldest['id'])).fetchone():
+                    next_cursor = oldest['id']
             turn_keys = {key + ":" + item["turnId"] for item in items if item.get("turnId")}
             ended = {row[0] for row in db.execute(
                 "SELECT id FROM runtime_completed_turns WHERE id IN (" + ",".join("?" for _ in turn_keys) + ")",
@@ -3991,7 +4139,7 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 "OR (e.status='failed' AND e.created>=?)) ORDER BY e.created",
                 (key, items[0].get("at", 0) if items else 0),
             ).fetchall()
-            for event in outstanding:
+            for event in ([] if before or around or after else outstanding):
                 if event["id"] in represented:
                     continue
                 meta = json.loads(event["metadata"]) if event["metadata"] else {}
@@ -4028,7 +4176,13 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")
             live = a["status"] in {"running", "starting", "approval"} and a.get("autoWake")
+            failed_turns = {item['turnId'] for item in items if item.get('turnStatus') == 'failed' and item.get('turnId')}
+            turn_errors = {turn['turnId']: turn['error'] for turn in
+                           self.analytics_turn_errors(db, key, a['threadId'], failed_turns)
+                           if turn['status'] == 'failed' and turn['error']} if a.get('threadId') else {}
             for item in items:
+                if item.get('turnId') in failed_turns:
+                    item.update(turnError=turn_errors.get(item['turnId']), turnErrorResolved=True)
                 if item.get("title") == "dynamicToolCall":
                     self.transcript_tool_result(db, a, item)
                 if item.get("streaming") and (not live or item.get("turnId") != a.get("turnId")):
@@ -4036,7 +4190,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                 if item.get("toolStatus") == "running" and (not live or item.get("turnId") != a.get("turnId")):
                     task = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (item["id"],)).fetchone()
                     item["toolStatus"] = json.loads(task[0])["status"] if task else "interrupted"
-            return {"items": items, "truncated": len(rows) > 120, "unavailable": None,
+            from codex_reasoning_history import reasoning_history
+            items = reasoning_history(db, a, rows[:limit], items)
+            return {"items": items, "truncated": bool(next_cursor), "nextCursor": next_cursor, "nextAfterCursor": next_after_cursor, "historyVersion": str(a.get("threadId")) + ":" + str(a.get("restoredCheckpoint")), "unavailable": None,
                     "agent": {k: a.get(k) for k in ("id", "status", "activity", "inFlight", "contextUsage", "compactions", "compactionsObservedOnly")}}
 
     def catalog(self, account_key="default"):
@@ -4062,15 +4218,20 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             return {"id": key, "concurrency": concurrency, "maxAgents": limit, "tokenBudget": budget}
 
     def native_action(self, key, action):
+        if isinstance(action, dict) and 'safety' in action:
+            from codex_safety_buffering import action as safety_action
+            return safety_action(self, key, action)
         if action not in {"compact", "review"}:
             raise ValueError("Choose compact or review")
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             self.assert_workspace_available(db, a)
+            assert_native_thread_open(a)
             if a["status"] in {"queued", "starting", "running", "approval"}:
                 raise ValueError("Wait for this agent's current turn before this action")
             if not a["autoWake"]:
                 raise ValueError("Send a new instruction to resume this agent first")
+            self.capacity_reset(db, a, "A native action replaces this retry.")
             a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
                      startAttempt={"id": uid(), "epoch": a["epoch"], "events": [], "action": action, "submitted": False})
             self.put(db, "agents", a)
@@ -4079,7 +4240,6 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
     def run_native_action(self, key, attempt):
         try:
             a = self.prepare(self.agent(key))
-            self.check_account_project(a)
             server = self.connect(a.get("accountKey", "default"))
             with self.lock, self.db() as db:
                 a = self.agent(key, db)
@@ -4087,12 +4247,23 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                         or a["epoch"] != attempt["epoch"] or not a["autoWake"] or a.get("deletedAt")):
                     raise ValueError("Native action belongs to an earlier agent state")
                 self.assert_workspace_available(db, a)
+                assert_native_thread_open(a)
+                if attempt["action"] == "capacity":
+                    if a["startAttempt"].get("submitted"):
+                        return a.get("capacityRetry")
+                    self.capacity_check(db, a, a.get("capacityRetry") or {}, claimed=True)
                 attempt.update(submitted=True, accountKey=a.get("accountKey", "default"),
                                connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
                 a["startAttempt"] = dict(attempt)
                 self.put(db, "agents", a)
                 method = "thread/compact/start" if attempt["action"] == "compact" else "review/start"
                 params = {"threadId": a["threadId"]}
+                if attempt["action"] == "capacity":
+                    method = "turn/start"
+                    params.update(input=[], **self.turn_permissions(a))
+                    params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
+                    if a.get("nativeEffort", a.get("effort")) is not None:
+                        params["effort"] = a.get("nativeEffort", a.get("effort"))
                 if attempt["action"] == "review":
                     params.update(target={"type": "uncommittedChanges"}, delivery="inline")
                 db.commit()
@@ -4116,8 +4287,13 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
             raise
 
     def native_action_accepted(self, key, attempt, result):
-        if attempt["action"] == "review":
-            self.start_accepted(key, attempt, result)
+        if attempt["action"] in {"review", "capacity"}:
+            try:
+                self.start_accepted(key, attempt, result)
+            except Exception as error:
+                if attempt["action"] != "capacity":
+                    raise
+                self.start_error(key, attempt["id"], error, unknown=True)
         else:
             with self.lock, self.db() as db:
                 a = self.agent(key, db)
@@ -4151,11 +4327,9 @@ class Runtime(TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, 
                     a = json.loads(row[0])
                     if a.get("importedFrom") != tid or a.get("accountKey", "default") != account_key:
                         raise ValueError("This import id belongs to another conversation")
-                    self.check_account_project(a, db)
                     return a
         result = self.connect(account_key).call("thread/read", {"threadId": tid, "includeTurns": False})
         thread = result["thread"]
-        self.accounts.check_project(account_key, thread.get("cwd"), skip=self.requested_rule_override(data))
         page = self.connect(account_key).call("thread/turns/list", {"threadId": tid, "limit": 20,
                                   "sortDirection": "desc", "itemsView": "full"})
         visible = []

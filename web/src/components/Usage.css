@@ -34,7 +34,7 @@
   color: var(--muted);
 }
 .account-limits-warning {
-  color: #ffbd78;
+  color: light-dark(#8a4700, #ffbd78);
 }
 .account-limits-popover {
   padding: 0;
@@ -147,7 +147,7 @@
 }
 .account-limits-error {
   margin: 12px 0 0;
-  color: #ffbd78;
+  color: light-dark(#8a4700, #ffbd78);
   overflow-wrap: anywhere;
 }
 @media (max-width: 600px) {
@@ -280,7 +280,7 @@
   line-height: 1.4;
 }
 .account-costs .account-limits-warning {
-  color: #ffbd78;
+  color: light-dark(#8a4700, #ffbd78);
 }
 @media (max-width: 600px) {
   .account-limits-panel {
@@ -334,7 +334,7 @@
   overflow-wrap: anywhere;
 }
 .account-reset-credits .account-limits-warning {
-  color: #ffbd78;
+  color: light-dark(#8a4700, #ffbd78);
 }
 .account-reset-credit-row > button {
   flex-shrink: 0;
@@ -355,4 +355,14 @@
   justify-content: flex-end;
   gap: 7px;
   margin-top: 8px;
+}
+.account-limit-recovery {
+  padding: 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--mantine-color-orange-6);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.account-limit-recovery p {
+  margin: 6px 0 0;
 }

@@ -182,6 +182,15 @@ class EfficiencyMixin:
                     'offset': offset, 'nextOffset': end if end < len(text) else None,
                     'totalChars': len(text), 'text': excerpt}
 
+    def reported_plan(self, db, root_id):
+        row = db.execute('SELECT record FROM runtime_plans WHERE id=?', (root_id,)).fetchone()
+        plan = json.loads(row[0]) if row else None
+        if not plan or not isinstance(plan.get('native'), dict):
+            return None
+        return {'id': plan['id'], 'rootId': plan['rootId'],
+                'steps': plan['native'].get('plan', []),
+                'explanation': plan['native'].get('explanation') or ''}
+
     def model_context(self, actor_id, args):
         topic = args.get('topic')
         if topic == 'agent_manage':
@@ -191,8 +200,7 @@ class EfficiencyMixin:
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             if topic == 'plan':
-                row = db.execute('SELECT record FROM runtime_plans WHERE id=?', (actor['rootId'],)).fetchone()
-                value = json.loads(row[0]) if row else None
+                value = self.reported_plan(db, actor['rootId'])
             elif topic == 'complaints':
                 value = self.unanswered_complaints(db, actor['rootId'])
             elif topic == 'profiles':
@@ -210,7 +218,7 @@ class EfficiencyMixin:
                          'polling': 'Do not poll status, read logs, or get unchanged panel screenshots. Use the event or feed.',
                          'frames': 'Each complete NDJSON line is the next value at state_path. Write a newline. Keep frames below 65536 bytes.'}
             elif topic == 'tools':
-                value = self.tool_definitions()
+                value = self.tool_definitions(actor)
             else:
                 raise ValueError('Unknown context topic')
         return {'topic': topic, 'version': digest(value), 'content': value}
@@ -221,11 +229,16 @@ class EfficiencyMixin:
         old = json.loads(row[0]).get('contextManifest', {}) if row else {}
         known = old.get('versions', {}) if old.get('epoch') == epoch else {}
         versions, blocks = {}, []
-        plan = db.execute('SELECT record FROM runtime_plans WHERE id=?', (actor['rootId'],)).fetchone()
+        role_skill = self.role_guidance(actor)
+        versions['roleSkill'] = digest(role_skill)
+        if known.get('roleSkill') != versions['roleSkill']:
+            blocks.append(role_skill)
+        plan = self.reported_plan(db, actor['rootId'])
         if plan is not None or 'plan' in known:
-            value = json.loads(plan[0]).get('text', '') if plan else ''; version = digest(value); versions['plan'] = version
+            version = digest(plan); versions['plan'] = version
             if known.get('plan') != version:
-                blocks.append('[Shared plan version ' + version + ']\n' + (value or 'The shared plan is empty. Discard the previous shared plan.'))
+                content = packed(plan) if plan and (plan['steps'] or plan['explanation']) else 'The agent plan is empty. Discard the previous agent plan.'
+                blocks.append('[Agent plan version ' + version + ']\n' + content)
         complaints = self.unanswered_complaints(db, actor['id'])
         changed = []
         for complaint in complaints:

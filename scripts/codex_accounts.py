@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import tempfile
 import threading
 import uuid
@@ -156,141 +155,30 @@ class AccountStore:
                 row.update(metadata)
                 if metadata["status"] != "error":
                     row.pop("error", None)
-            return {k: v for k, v in row.items() if not k.startswith("_")}
+            return {k: v for k, v in row.items() if not k.startswith("_") and k != "projectRules"}
 
     def get(self, key):
         with self.lock:
-            result = self.refresh(key)
-            result["projectRules"] = self._rule_owner(key).setdefault(
-                "projectRules", {"allowedProjects": None, "revision": 0}
-            )
-            return result
+            return self.refresh(key)
 
-    def _rule_owner(self, key):
-        row = self._row(key)
-        identity = row.get("accountId") or row.get("_credentialIdentity")
-        if identity:
-            for candidate in self.data["accounts"].values():
-                if (
-                    candidate.get("accountId") or candidate.get("_credentialIdentity")
-                ) == identity:
-                    return candidate
-        return row
-
-    def set_project_rules(self, key, allowed, expected_revision):
-        if type(expected_revision) is not int or expected_revision < 0:
-            raise ValueError("Supply the current project rule revision")
-        if allowed is not None:
-            if not isinstance(allowed, list) or len(allowed) > 128:
-                raise ValueError("Supply up to 128 project directories")
-            normalized = []
-            for value in allowed:
-                if not isinstance(value, str) or not value.strip():
-                    raise ValueError("Each project needs a directory path")
-                path = Path(value).expanduser().resolve()
-                if not path.is_dir():
-                    raise ValueError("A project directory does not exist: " + str(path))
-                if str(path) not in normalized:
-                    normalized.append(str(path))
-            allowed = normalized
+    def legacy_project_defaults(self):
+        """Read old directory rules only as migration hints, never permissions."""
         with self.lock:
-            previous = self.get(key)["projectRules"]
-            if previous["revision"] != expected_revision:
-                if previous["allowedProjects"] == allowed:
-                    return dict(previous)
-                raise ValueError("Project rules changed. Reload them before saving")
-            if previous["allowedProjects"] == allowed:
-                return dict(previous)
-            rules = {"allowedProjects": allowed, "revision": expected_revision + 1}
-            owner = self._rule_owner(key)
-            owner["projectRules"] = rules
-            try:
-                self._save()
-            except Exception:
-                owner["projectRules"] = previous
-                raise
-            return dict(rules)
-
-    @staticmethod
-    def _git(path, *args):
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(path), *args],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=False,
-                env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
-            )
-            return result.stdout.strip() if result.returncode == 0 else None
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-
-    @classmethod
-    def _linked_worktree(cls, cwd, allowed):
-        target_top = cls._git(cwd, "rev-parse", "--show-toplevel")
-        source_top = cls._git(allowed, "rev-parse", "--show-toplevel")
-        if not target_top or not source_top:
-            return False
-        target_top, source_top = Path(target_top).resolve(), Path(source_top).resolve()
-        target_common = cls._git(
-            cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"
-        )
-        source_common = cls._git(
-            allowed, "rev-parse", "--path-format=absolute", "--git-common-dir"
-        )
-        if (
-            not target_common
-            or not source_common
-            or Path(target_common).resolve() != Path(source_common).resolve()
-        ):
-            return False
-        entries = cls._git(allowed, "worktree", "list", "--porcelain", "-z")
-        registered = {
-            Path(part[9:]).resolve()
-            for part in (entries or "").split("\0")
-            if part.startswith("worktree ")
-        }
-        if target_top not in registered:
-            return False
-        try:
-            # A rule for a subdirectory grants the matching subtree, not the whole repository.
-            subtree = allowed.relative_to(source_top)
-            cwd.relative_to(target_top / subtree)
-            return True
-        except ValueError:
-            return False
-
-    def project_allowed(self, key, cwd):
-        allowed = self.get(key)["projectRules"]["allowedProjects"]
-        if allowed is None:
-            return True
-        if not isinstance(cwd, (str, Path)) or not str(cwd).strip():
-            return False
-        directory = Path(cwd).expanduser().resolve()
-        for value in allowed:
-            root = Path(value)
-            # Replacing a saved root with a symlink does not grant a different project.
-            if root.resolve() != root or not root.is_dir():
-                continue
-            if directory == root or root in directory.parents:
-                return True
-            if self._linked_worktree(directory, root):
-                return True
-        return False
-
-    def check_project(self, key, cwd, skip=False):
-        if type(skip) is not bool:
-            raise ValueError("Dangerously skip rules must be true or false")
-        account = self.get(key)
-        if skip or self.project_allowed(key, cwd):
-            return
-        allowed = account["projectRules"]["allowedProjects"]
-        roots = ", ".join(allowed) if allowed else "none"
-        raise ValueError(
-            f"Account {account.get('email') or account['label']} cannot use project {cwd}. "
-            f"Allowed projects: {roots}. Choose another account or enable Dangerously skip rules for this team"
-        )
+            candidates = {}
+            for key, row in self.data["accounts"].items():
+                rules = row.get("projectRules") or {}
+                allowed = rules.get("allowedProjects")
+                if not isinstance(allowed, list):
+                    continue
+                identity = row.get("accountId") or row.get("_credentialIdentity") or key
+                for value in allowed:
+                    if isinstance(value, str) and value.strip():
+                        path = str(Path(value).expanduser().resolve())
+                        candidates.setdefault(path, {}).setdefault(identity, key)
+            return {
+                path: next(iter(owners.values()))
+                for path, owners in candidates.items() if len(owners) == 1
+            }
 
     def home(self, key):
         row = self.get(key)
@@ -317,17 +205,46 @@ class AccountStore:
                 "accounts": self.list(),
                 "defaultAccountKey": self.data["defaultAccountKey"],
                 "logins": logins,
+                "supportsDisconnect": True,
             }
 
     def default(self, key=None):
         with self.lock:
             if key is not None:
                 row = self.get(key)
-                if row["status"] != "ready":
+                if row["status"] != "ready" or row.get("disconnected"):
                     raise ValueError("Sign in to this account first")
                 self.data["defaultAccountKey"] = key
                 self._save()
             return self.data["defaultAccountKey"]
+
+    def disconnect(self, key):
+        """Remove a profile from new choices; existing native identities still work."""
+        with self.lock:
+            row = self._row(key)
+            if row.get("disconnected"):
+                return self.snapshot()
+            if self.data["defaultAccountKey"] == key:
+                replacement = next((other for other in self.data["accounts"]
+                                    if other != key
+                                    and not self.data["accounts"][other].get("disconnected")
+                                    and not self.data["accounts"][other].get("duplicateOf")
+                                    and self.get(other).get("status") == "ready"), None)
+                if replacement is None:
+                    raise ValueError("Connect another account before disconnecting the application default.")
+                self.data["defaultAccountKey"] = replacement
+            row["disconnected"] = True
+            self._save()
+            return self.snapshot()
+
+    def reconnect(self, key):
+        with self.lock:
+            row = self.get(key)
+            if row.get("status") != "ready":
+                raise ValueError("Restore this profile's original login before reconnecting it.")
+            self._row(key).pop("disconnected", None)
+            self._save()
+            return self.snapshot()
 
     def register(self, home):
         if not isinstance(home, str) or not home.strip():

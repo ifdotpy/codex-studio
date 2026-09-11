@@ -29,7 +29,33 @@ let backend;
 let notifications = false;
 let microphoneUntil = 0;
 const transcriptionPermits = new Map();
-let transcriptionRunning = false;
+let transcriptionRunning = null;
+let notificationWrite = Promise.resolve();
+const notificationSettings = path.join(
+  app.getPath("userData"),
+  "notifications.json",
+);
+async function loadNotifications() {
+  try {
+    notifications =
+      JSON.parse(await fs.readFile(notificationSettings, "utf8")).enabled ===
+      true;
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      console.error("Cannot read notification settings:", error.message);
+  }
+}
+function notificationTarget(value) {
+  if (!value || value.section !== "messages")
+    throw new Error("Invalid notification target.");
+  return {
+    agentId: string(value.agentId, 512),
+    section: "messages",
+    ...(value.itemId === undefined
+      ? {}
+      : { itemId: string(value.itemId, 512) }),
+  };
+}
 function trusted(event) {
   if (
     !win ||
@@ -95,31 +121,69 @@ async function nativeAction(event, request) {
     case "prepareTranscription": {
       if (process.platform !== "darwin")
         throw new Error("Local transcription currently requires macOS.");
-      for (const [token, expiry] of transcriptionPermits)
-        if (expiry < Date.now()) transcriptionPermits.delete(token);
+      for (const [token, permit] of transcriptionPermits)
+        if (permit.expiry < Date.now()) transcriptionPermits.delete(token);
       const token = require("node:crypto").randomUUID();
-      transcriptionPermits.set(token, Date.now() + 60000);
+      transcriptionPermits.set(token, {
+        expiry: Date.now() + 60000,
+        sender: event.sender,
+      });
       return token;
     }
     case "transcribeAudio": {
       const token = request.value?.permit;
-      const expiry = transcriptionPermits.get(token);
+      const permit = transcriptionPermits.get(token);
       transcriptionPermits.delete(token);
-      if (!expiry || expiry < Date.now())
+      if (
+        !permit ||
+        permit.expiry < Date.now() ||
+        permit.sender !== event.sender
+      )
         throw new Error("Use the Transcribe button again.");
       if (transcriptionRunning)
         throw new Error(
           "Another recording is being transcribed. Retry when it finishes.",
         );
-      transcriptionRunning = true;
+      const id = string(request.value?.id, 128);
+      const controller = new AbortController();
+      const sender = event.sender;
+      transcriptionRunning = { id, sender, controller };
+      const abort = () => controller.abort();
+      const navigate = (_event, _url, _inPlace, isMainFrame) => {
+        if (isMainFrame) abort();
+      };
+      sender.once("destroyed", abort);
+      sender.on("did-start-navigation", navigate);
       try {
         const helper = app.isPackaged
           ? path.join(process.resourcesPath, "studio-speech")
           : path.join(__dirname, "native", "studio-speech");
-        return await require("./speech.cjs").transcribe(request.value, helper);
+        return await require("./speech.cjs").transcribe(request.value, helper, {
+          signal: controller.signal,
+          onProgress: (progress) => {
+            if (!controller.signal.aborted && !sender.isDestroyed())
+              sender.send("codex-desktop-transcription-progress", {
+                id,
+                ...progress,
+              });
+          },
+        });
       } finally {
-        transcriptionRunning = false;
+        sender.removeListener("destroyed", abort);
+        sender.removeListener("did-start-navigation", navigate);
+        transcriptionRunning = null;
       }
+    }
+    case "cancelTranscription": {
+      const id = string(request.value, 128);
+      if (
+        !transcriptionRunning ||
+        transcriptionRunning.id !== id ||
+        transcriptionRunning.sender !== event.sender
+      )
+        return false;
+      transcriptionRunning.controller.abort();
+      return true;
     }
     case "pickDirectory": {
       const result = await dialog.showOpenDialog(win, {
@@ -163,24 +227,59 @@ async function nativeAction(event, request) {
     case "openExternal":
       await shell.openExternal(externalURL(request.value), { activate: false });
       return;
-    case "setNotifications":
+    case "getNotifications":
+      await notificationWrite;
+      return notifications && Notification.isSupported();
+    case "setNotifications": {
       if (typeof request.value !== "boolean")
         throw new Error("Notification permission must be true or false.");
-      notifications = request.value;
+      const enabled = request.value;
+      const write = notificationWrite
+        .catch(() => {})
+        .then(async () => {
+          await fs.mkdir(path.dirname(notificationSettings), {
+            recursive: true,
+          });
+          const temporary = `${notificationSettings}.tmp`;
+          await fs.writeFile(temporary, JSON.stringify({ enabled }), {
+            mode: 0o600,
+          });
+          await fs.rename(temporary, notificationSettings);
+          notifications = enabled;
+        });
+      notificationWrite = write;
+      await write;
       return notifications && Notification.isSupported();
-    case "notify":
+    }
+    case "notify": {
       if (!notifications || !Notification.isSupported()) return false;
-      new Notification({
+      const target = notificationTarget(request.value?.target);
+      const notification = new Notification({
         title: string(request.value?.title, 160),
         body: string(request.value?.body, 2000),
         silent: true,
-      }).show();
+      });
+      notification.on("click", () => {
+        if (
+          !win ||
+          win.isDestroyed() ||
+          win.webContents.getURL() !== `${backend.origin}/`
+        )
+          return;
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+        win.webContents.send("codex-desktop-navigate", target);
+      });
+      notification.show();
       return true;
+    }
     default:
       throw new Error("Unknown native action.");
   }
 }
 async function start() {
+  await loadNotifications();
   backend = await ensureBackend({
     resources: app.isPackaged
       ? path.join(process.resourcesPath, "workspace")

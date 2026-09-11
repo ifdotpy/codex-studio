@@ -1,7 +1,7 @@
 import { Button, Popover, NativeSelect, Switch } from "@mantine/core";
 import { ChevronDown } from "lucide-react";
-import { useEffect, useState } from "react";
-import { api, errorText } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, ApiError, errorText, save, saved } from "../api";
 import { busy, type Agent, type Json } from "../types";
 import type { useWorkerModels } from "./WorkerModelPicker";
 import "./execution-settings.css";
@@ -42,38 +42,71 @@ export function ExecutionSettings({
   catalog,
   refresh,
   teamDefaults = false,
+  nextTurnSupported,
+  onOpenChange,
 }: {
   agent: Agent;
   catalog: Catalog;
   refresh: () => Promise<void>;
   teamDefaults?: boolean;
+  nextTurnSupported?: boolean;
+  onOpenChange?: (opened: boolean) => void;
 }) {
+  const canQueueSettings =
+    nextTurnSupported ??
+    (agent as Agent & { nextTurnSettingsSupported?: boolean })
+      .nextTurnSettingsSupported === true;
   const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    onOpenChange?.(opened);
+    return () => onOpenChange?.(false);
+  }, [opened, onOpenChange]);
   useEffect(() => {
     if (!opened) return;
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpened(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpened(false);
+      }
     };
     document.addEventListener("keydown", close);
     return () => document.removeEventListener("keydown", close);
   }, [opened]);
   const [saving, setSaving] = useState(false);
+  const saveLock = useRef(false);
+  const receiptKey = `next-turn-settings:${agent.id}`;
+  const [unconfirmed, setUnconfirmed] = useState<Json | null>(() => {
+    if (teamDefaults) return null;
+    const value = saved<Json | null>(receiptKey, null);
+    return value?.id === agent.id && value?.next_turn === true ? value : null;
+  });
   const [pendingYolo, setPendingYolo] = useState<boolean | null>(null);
   const [pending, setPending] = useState<{
     scope: string;
     values: Json;
   } | null>(null);
   const [error, setError] = useState("");
+  const [adjustment, setAdjustment] = useState("");
   const label = teamDefaults
     ? "Subagent defaults"
     : agent.isLead
-      ? "Lead settings"
+      ? "Main agent settings"
       : "Subagent settings";
   const prefix = teamDefaults
     ? "Default subagent"
     : agent.isLead
-      ? "Lead"
+      ? "Main agent"
       : "Subagent";
+  const queued = (
+    agent as Agent & {
+      pendingSettings?: {
+        model?: string;
+        effort?: string | null;
+        fastMode?: boolean;
+      };
+    }
+  ).pendingSettings;
   const stored = teamDefaults
     ? {
         model:
@@ -87,12 +120,13 @@ export function ExecutionSettings({
         fast_mode: !!agent.workerDefaults?.fastMode,
       }
     : {
-        model: agent.model,
-        effort: agent.effort ?? null,
-        fast_mode: !!agent.fastMode,
+        model: queued?.model ?? agent.model,
+        effort: queued ? (queued.effort ?? null) : (agent.effort ?? null),
+        fast_mode: queued ? !!queued.fastMode : !!agent.fastMode,
       };
   const scope = `${agent.id}:${teamDefaults}`;
-  const current = pending?.scope === scope ? pending.values : stored;
+  const current =
+    unconfirmed || (pending?.scope === scope ? pending.values : stored);
   useEffect(() => {
     // The settings response can arrive before the replicated agent snapshot.
     if (
@@ -107,7 +141,12 @@ export function ExecutionSettings({
   const selectedModel = current.model || agent.model;
   const info = infoFor(catalog, selectedModel);
   const active = !teamDefaults && (!!agent.inFlight || busy.has(agent.status));
-  const disabled = saving || active || catalog.loading || !!catalog.error;
+  const disabled =
+    saving ||
+    !!unconfirmed ||
+    (active && !canQueueSettings) ||
+    catalog.loading ||
+    !!catalog.error;
   const models = catalog.models.filter(
     (row) =>
       teamDefaults ||
@@ -121,7 +160,7 @@ export function ExecutionSettings({
   if (teamDefaults)
     modelOptions.unshift({
       value: DEFAULT,
-      label: `Same as lead (${shortModel(agent.model)})`,
+      label: `Same as main agent (${shortModel(agent.model)})`,
     });
   if (!modelOptions.some((row) => row.value === (current.model || DEFAULT)))
     modelOptions.unshift({
@@ -131,34 +170,86 @@ export function ExecutionSettings({
   const options = effortOptions(info);
   if (current.effort && !options.some((row) => row.value === current.effort))
     options.push({ value: current.effort, label: title(current.effort) });
+  const submit = async (request: Json, next: Json, notice = "") => {
+    if (saveLock.current) return;
+    saveLock.current = true;
+    const previous = request.next_turn ? stored : current;
+    setPending({ scope, values: next });
+    setSaving(true);
+    setError("");
+    if (request.next_turn) {
+      save(receiptKey, request);
+      setUnconfirmed(request);
+    }
+    let confirmed = false;
+    try {
+      await api(
+        "/api/conversation",
+        request,
+        request.next_turn ? { timeoutMs: 15000 } : {},
+      );
+      confirmed = true;
+      if (request.next_turn) {
+        save(receiptKey, null);
+        setUnconfirmed(null);
+      }
+      setPending({ scope, values: next });
+      setAdjustment(notice);
+      await refresh();
+    } catch (failure) {
+      const rejected =
+        failure instanceof ApiError &&
+        [400, 401, 403, 404, 409, 422].includes(failure.status);
+      if (!confirmed && (!request.next_turn || rejected)) {
+        setPending({ scope, values: previous });
+        if (request.next_turn) {
+          save(receiptKey, null);
+          setUnconfirmed(null);
+        }
+      }
+      setError(
+        confirmed
+          ? `Settings saved. ${errorText(failure)}`
+          : errorText(failure),
+      );
+    } finally {
+      saveLock.current = false;
+      setSaving(false);
+    }
+  };
   const change = async (patch: Json) => {
     if (disabled) return;
     const next = { ...current, ...patch };
+    const adjustments: string[] = [];
     if ("model" in patch) {
       const nextInfo = infoFor(catalog, next.model || agent.model);
       if (
         !nextInfo?.supportedReasoningEfforts?.some(
           (row: Json) => row.reasoningEffort === next.effort,
         )
-      )
+      ) {
+        if (next.effort)
+          adjustments.push("Reasoning changed to the model default.");
         next.effort = null;
-      if (!fastTier(nextInfo)) next.fast_mode = false;
+      }
+      if (!fastTier(nextInfo)) {
+        if (next.fast_mode)
+          adjustments.push("Fast mode is unavailable and was turned off.");
+        next.fast_mode = false;
+      }
     }
-    setPending({ scope, values: next });
-    setSaving(true);
-    setError("");
-    try {
-      await api("/api/conversation", {
-        id: agent.id,
-        ...(teamDefaults ? { worker_defaults: next } : next),
-      });
-      await refresh();
-    } catch (failure) {
-      setPending(null);
-      setError(errorText(failure));
-    } finally {
-      setSaving(false);
-    }
+    const request = {
+      id: agent.id,
+      ...(teamDefaults
+        ? { worker_defaults: next }
+        : {
+            ...next,
+            ...(active || queued
+              ? { next_turn: true, request_id: crypto.randomUUID() }
+              : {}),
+          }),
+    };
+    await submit(request, next, adjustments.join(" "));
   };
   const changeYolo = async (enabled: boolean) => {
     setPendingYolo(enabled);
@@ -200,8 +291,12 @@ export function ExecutionSettings({
             setOpened(!opened);
           }}
         >
-          {teamDefaults ? "Subagents" : agent.isLead ? "Lead" : "Subagent"} ·{" "}
-          {shortModel(selectedModel)}
+          {teamDefaults
+            ? "Subagents"
+            : agent.isLead
+              ? "Main agent"
+              : "Subagent"}{" "}
+          · {shortModel(selectedModel)}
         </Button>
       </Popover.Target>
       <Popover.Dropdown
@@ -251,31 +346,76 @@ export function ExecutionSettings({
           }
         />
         {!teamDefaults && agent.isLead && (
-          <Switch
-            label="YOLO mode"
-            aria-label="YOLO mode"
-            checked={pendingYolo ?? agent.yoloMode === true}
-            disabled={saving || active || !("yoloMode" in agent)}
-            description={
-              !("yoloMode" in agent)
-                ? "Available after the server update."
-                : agent.yoloMode == null
-                  ? "Uses the existing Codex permissions. Enable for full access without prompts."
-                  : "Full access without permission prompts for the whole team. Account project rules still apply."
-            }
-            onChange={(event) => void changeYolo(event.currentTarget.checked)}
-          />
+          <details className="execution-permissions">
+            <summary>Permissions</summary>
+            <p>
+              These permissions apply to the main agent and every subagent in
+              this team.
+            </p>
+            <Switch
+              label="Full access without approval"
+              aria-label="Full access without approval"
+              checked={pendingYolo ?? agent.yoloMode === true}
+              disabled={saving || active || !("yoloMode" in agent)}
+              description={
+                !("yoloMode" in agent)
+                  ? "Available after the server update."
+                  : agent.yoloMode == null
+                    ? "The team currently uses the existing Codex permissions."
+                    : "When enabled, the team can use tools without permission prompts."
+              }
+              onChange={(event) => void changeYolo(event.currentTarget.checked)}
+            />
+          </details>
+        )}
+        {adjustment && (
+          <p role="status" className="notice">
+            {adjustment}
+          </p>
         )}
         {teamDefaults && (
           <p className="notice">
-            For new subagents. The orchestrator can override each launch.
+            For new subagents. The main agent can change these settings when it
+            starts a subagent.
           </p>
         )}
-        {active && <p className="notice">Available when this turn ends.</p>}
+        {((!teamDefaults && queued) || (active && canQueueSettings)) && (
+          <p className="notice" role="status">
+            Model settings apply to the next turn. The current response keeps
+            its settings.
+          </p>
+        )}
+        {active && !canQueueSettings && (
+          <p className="notice">
+            Available when this turn ends. Update the server to set options for
+            the next turn.
+          </p>
+        )}
         {catalog.error && (
           <div role="alert">
             <p>{catalog.error}</p>
             <Button onClick={catalog.retry}>Retry model list</Button>
+          </div>
+        )}
+        {unconfirmed && !saving && (
+          <div role="status">
+            <p>
+              The settings response is unconfirmed. Check the same save before
+              changing settings again.
+            </p>
+            <Button
+              disabled={saving}
+              loading={saving}
+              onClick={() =>
+                void submit(unconfirmed, {
+                  model: unconfirmed.model,
+                  effort: unconfirmed.effort,
+                  fast_mode: unconfirmed.fast_mode,
+                })
+              }
+            >
+              Check settings save
+            </Button>
           </div>
         )}
         {error && (

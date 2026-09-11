@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ActionIcon,
   Button,
   Drawer,
   Menu,
+  Modal,
   TextInput,
   UnstyledButton,
 } from "@mantine/core";
@@ -13,7 +14,6 @@ import {
   Pin,
   PinOff,
   ArchiveRestore,
-  BookOpen,
   Check,
   FolderOpen,
   MoreHorizontal,
@@ -29,25 +29,28 @@ import { api, errorText, save, saved } from "../api";
 import "./sidebar-projects.css";
 import { useSidebarOrder } from "./useSidebarOrder";
 import {
-  busy,
-  complaintNeedsUserResponse,
-  type Agent,
-  type Snapshot,
-} from "../types";
+  ProjectNameForm,
+  MoveChatForm,
+  folderLabel,
+  type Project,
+  type ProjectFolder,
+} from "./ProjectOrganization";
+import { busy, type Agent, type Snapshot } from "../types";
 type Props = {
   data: Snapshot;
   opened: string | null;
   lead?: Agent;
-  view: string;
   open: (id: string) => void;
-  newChat: (path?: string) => void;
+  newChat: (path?: string, folder?: string) => void;
   addProject: () => void;
   changeProject: (agent: Agent) => void;
+  projectAccount: (path: string) => void;
   creating: boolean;
-  complaints: () => void;
   rename: (id: string, name: string) => Promise<void>;
   remove: (id: string, room: boolean) => void;
   mobile: boolean;
+  collapsed?: boolean;
+  onSearch: () => void;
   close: () => void;
   refresh?: () => Promise<void>;
   notify?: (message: string) => void;
@@ -64,6 +67,46 @@ export default function Sidebar(p: Props) {
     p.notify,
   );
   const [organizing, setOrganizing] = useState<string | null>(null);
+  const organizationLock = useRef(false);
+  const [dialog, setDialog] = useState<{
+    title: string;
+    path: string;
+    folder?: string;
+    parentId?: string;
+    agentId?: string;
+  } | null>(null);
+  const canOrganizeProjects = !!p.data.runtime.projectOrganizationVersion;
+  const requireProjectSupport = () => {
+    if (canOrganizeProjects) return true;
+    p.notify?.(
+      "Restart Studio after active work finishes to edit project names and folders.",
+    );
+    return false;
+  };
+  const savedProject = async () => {
+    await p.refresh?.();
+    setDialog(null);
+  };
+  const editProject = (
+    project: Project,
+    folder?: ProjectFolder | "new",
+    parentId?: string,
+  ) => {
+    if (!requireProjectSupport()) return;
+    setDialog({
+      title:
+        folder === "new"
+          ? "New folder"
+          : folder
+            ? "Rename folder"
+            : "Rename project",
+      path: project.path,
+      folder: folder === "new" ? "new" : folder?.id,
+      parentId,
+    });
+  };
+  const folderKey = (path: string, id: string) =>
+    JSON.stringify([path, "folder", id]);
   const projectKey = `codex-project-tree:${p.data.stateDir}`;
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
     saved(projectKey, {}),
@@ -77,20 +120,25 @@ export default function Sidebar(p: Props) {
     save(projectKey, next);
   };
   const organize = async (id: string, data: Record<string, unknown>) => {
-    if (organizing) return;
+    if (organizationLock.current) return false;
+    organizationLock.current = true;
     setOrganizing(id);
     try {
       await api("/api/organization", { id, ...data });
       await p.refresh?.();
+      return true;
     } catch (error) {
       p.notify?.(errorText(error));
+      return false;
     } finally {
+      organizationLock.current = false;
       setOrganizing(null);
     }
   };
   const agents = p.data.threads.filter(
     (a) => a.source === "managed" && a.isLead,
   );
+  const selectedFolder = agents.find((a) => a.id === p.opened)?.projectFolder;
   useEffect(() => {
     if (agents.some((a) => a.id === p.opened)) {
       setQuery("");
@@ -101,10 +149,79 @@ export default function Sidebar(p: Props) {
         setCollapsed(next);
         save(projectKey, next);
       }
+      const folders =
+        p.data.runtime.projects?.find((project) => project.path === path)
+          ?.folders || [];
+      let folder = folders.find((item) => item.id === selectedFolder);
+      const ancestors: Record<string, boolean> = {};
+      while (folder && !(folderKey(path || "", folder.id) in ancestors)) {
+        ancestors[folderKey(path || "", folder.id)] = false;
+        folder = folders.find((item) => item.id === folder!.parentId);
+      }
+      if (path && Object.keys(ancestors).length) {
+        const next = { ...collapsed, [path]: false, ...ancestors };
+        setCollapsed(next);
+        save(projectKey, next);
+      }
     }
-  }, [p.opened]);
+  }, [p.opened, selectedFolder]);
   const chatGroup = (a: Agent) =>
-    JSON.stringify(["chats", a.cwd, !!a.pinned, !!a.archived]);
+    JSON.stringify([
+      "chats",
+      a.cwd,
+      !!a.pinned,
+      !!a.archived,
+      ...(a.projectFolder ? [a.projectFolder] : []),
+    ]);
+  const folderDrop = (project: Project, folder: ProjectFolder | null = null) =>
+    sorting.dropBindings(
+      folder ? folderKey(project.path, folder.id) : project.path,
+      (source) => {
+        const chat = agents.find((a) => a.id === source.id);
+        return !!(
+          canOrganizeProjects &&
+          !organizationLock.current &&
+          chat &&
+          source.group === chatGroup(chat) &&
+          chat.cwd === project.path &&
+          (chat.projectFolder || null) !== (folder?.id || null)
+        );
+      },
+      ({ id }) => {
+        const chat = agents.find((a) => a.id === id)!;
+        void organize(id, {
+          project_path: project.path,
+          project_folder: folder?.id || null,
+          expected_folder: chat.projectFolder || null,
+          expected_revision: chat.projectFolderRevision || 0,
+        }).then((moved) => {
+          if (!moved) return;
+          setCollapsed((previous) => {
+            const next = { ...previous, [project.path]: false };
+            let parent = folder;
+            const seen = new Set<string>();
+            while (parent && !seen.has(parent.id)) {
+              seen.add(parent.id);
+              next[folderKey(project.path, parent.id)] = false;
+              parent =
+                project.folders?.find((f) => f.id === parent?.parentId) || null;
+            }
+            save(projectKey, next);
+            return next;
+          });
+          const key = folder
+            ? folderKey(project.path, folder.id)
+            : project.path;
+          setProjectLimits((previous) => ({
+            ...previous,
+            [key]: agents.length,
+          }));
+          sorting.announce(
+            `Moved ${chat.name} to ${folder?.name || project.name}`,
+          );
+        });
+      },
+    );
   const orderedAgents = [...agents].sort(
     (a, b) =>
       Number(!!b.pinned) - Number(!!a.pinned) ||
@@ -114,11 +231,14 @@ export default function Sidebar(p: Props) {
   );
   const filtered = orderedAgents
     .filter((row) => !!row.archived === archive)
-    .filter((a) =>
-      `${a.name} ${a.cwd || ""} ${a.project || ""} ${a.tail || ""}`
+    .filter((a) => {
+      const project = p.data.runtime.projects?.find(
+        (item) => item.path === a.cwd,
+      );
+      return `${a.name} ${a.cwd || ""} ${project?.name || a.project || ""} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`
         .toLowerCase()
-        .includes(query.toLowerCase()),
-    );
+        .includes(query.toLowerCase());
+    });
   const rename = async (e: React.FormEvent, id: string) => {
     e.preventDefault();
     try {
@@ -130,9 +250,7 @@ export default function Sidebar(p: Props) {
   };
   const groupMap = new Map<
     string,
-    {
-      path: string;
-      name: string;
+    Project & {
       chats: Agent[];
       registered: boolean;
       hasChats: boolean;
@@ -140,8 +258,7 @@ export default function Sidebar(p: Props) {
   >();
   for (const project of p.data.runtime.projects || [])
     groupMap.set(project.path, {
-      path: project.path,
-      name: project.name,
+      ...project,
       chats: [],
       registered: true,
       hasChats: agents.some((a) => a.cwd === project.path),
@@ -150,6 +267,8 @@ export default function Sidebar(p: Props) {
     const path = a.cwd || "";
     if (!groupMap.has(path))
       groupMap.set(path, {
+        id: path,
+        created: 0,
         path,
         name: path.split("/").filter(Boolean).at(-1) || "Other chats",
         chats: [],
@@ -173,7 +292,7 @@ export default function Sidebar(p: Props) {
     const a = row;
     return (
       <div
-        className={`sidebar-row lead-row ${p.opened === row.id && p.view === "chat" ? "selected" : ""}`}
+        className={`sidebar-row lead-row ${p.opened === row.id ? "selected" : ""}`}
         key={row.id}
       >
         <UnstyledButton
@@ -185,7 +304,7 @@ export default function Sidebar(p: Props) {
               .map((a) => a.id),
           )}
           title={row.name}
-          aria-description="Drag to reorder. Alt + Up or Down moves this chat."
+          aria-description="Drag to reorder or move to a folder. Alt + Up or Down reorders this chat."
           className="chat-row"
           data-chat={row.id}
           onClick={() => p.open(row.id)}
@@ -244,6 +363,22 @@ export default function Sidebar(p: Props) {
               </ActionIcon>
             </Menu.Target>
             <Menu.Dropdown>
+              {a.cwd && (
+                <Menu.Item
+                  leftSection={<Folder size={14} />}
+                  onClick={() => {
+                    if (!requireProjectSupport()) return;
+                    const project = groupMap.get(a.cwd || "")!;
+                    setDialog({
+                      title: "Move chat",
+                      path: project.path,
+                      agentId: a.id,
+                    });
+                  }}
+                >
+                  Move to folder
+                </Menu.Item>
+              )}
               {a && (
                 <>
                   <Menu.Item
@@ -303,6 +438,131 @@ export default function Sidebar(p: Props) {
       </div>
     );
   };
+  const renderProjectChats = (
+    group: Project & { chats: Agent[] },
+    parent: ProjectFolder | null = null,
+  ): ReactNode => {
+    const folders = group.folders || [];
+    const key = parent ? folderKey(group.path, parent.id) : group.path;
+    const assigned = group.chats.filter((chat) =>
+      parent
+        ? chat.projectFolder === parent.id
+        : !folders.some((folder) => folder.id === chat.projectFolder),
+    );
+    const shown = projectLimits[key] || 5;
+    const chats = assigned.slice(0, query ? assigned.length : shown);
+    const selected = assigned.find((chat) => chat.id === p.opened);
+    if (selected && !chats.includes(selected)) chats.push(selected);
+    const children = folders
+      .filter((folder) => (folder.parentId || null) === (parent?.id || null))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return (
+      <>
+        {children.map((folder) => {
+          const id = folderKey(group.path, folder.id);
+          const closed = collapsed[id] && !query;
+          const occupied =
+            folders.some((item) => item.parentId === folder.id) ||
+            agents.some(
+              (chat) =>
+                chat.cwd === group.path && chat.projectFolder === folder.id,
+            );
+          return (
+            <section
+              className="project-folder"
+              data-folder-id={folder.id}
+              key={folder.id}
+            >
+              <div
+                className="project-tree-heading"
+                {...folderDrop(group, folder)}
+              >
+                <UnstyledButton
+                  className="project-tree-toggle"
+                  aria-expanded={!closed}
+                  onClick={() => toggleProject(id)}
+                >
+                  {closed ? <Folder size={16} /> : <FolderOpen size={16} />}
+                  <span>{folder.name}</span>
+                </UnstyledButton>
+                {!archive && (
+                  <ActionIcon
+                    className="project-tree-action"
+                    aria-label={`New chat in folder ${folder.name}`}
+                    disabled={p.creating}
+                    onClick={() => {
+                      if (requireProjectSupport())
+                        p.newChat(group.path, folder.id);
+                    }}
+                  >
+                    <Plus size={15} />
+                  </ActionIcon>
+                )}
+                <Menu withinPortal position="bottom-end">
+                  <Menu.Target>
+                    <ActionIcon
+                      className="project-tree-action"
+                      aria-label={`Options for folder ${folder.name}`}
+                    >
+                      <MoreHorizontal size={15} />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    <Menu.Item
+                      onClick={() => editProject(group, "new", folder.id)}
+                    >
+                      New subfolder
+                    </Menu.Item>
+                    <Menu.Item onClick={() => editProject(group, folder)}>
+                      Rename folder
+                    </Menu.Item>
+                    <Menu.Item
+                      disabled={occupied}
+                      onClick={async () => {
+                        if (!requireProjectSupport()) return;
+                        try {
+                          await api("/api/projects", {
+                            action: "remove_folder",
+                            path: group.path,
+                            folder_id: folder.id,
+                            expected_revision: group.organizationRevision || 0,
+                          });
+                          await p.refresh?.();
+                        } catch (error) {
+                          p.notify?.(errorText(error));
+                        }
+                      }}
+                    >
+                      Remove empty folder
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
+              </div>
+              {!closed && (
+                <div className="project-folder-chats">
+                  {renderProjectChats(group, folder)}
+                </div>
+              )}
+            </section>
+          );
+        })}
+        {chats.map(renderRow)}
+        {!chats.length && !children.length && (
+          <p className="project-empty">No chats</p>
+        )}
+        {!query && assigned.length > shown && (
+          <UnstyledButton
+            className="project-show-more"
+            onClick={() =>
+              setProjectLimits({ ...projectLimits, [key]: shown + 10 })
+            }
+          >
+            Show more
+          </UnstyledButton>
+        )}
+      </>
+    );
+  };
   const content = (
     <aside id="sidebar" aria-label="Conversations">
       <span className="sr-only" role="status">
@@ -314,17 +574,31 @@ export default function Sidebar(p: Props) {
             <strong>Codex</strong> <span>Studio</span>
           </span>
         </a>
-        {compact && (
+        {
           <ActionIcon aria-label="Close conversations" onClick={p.close}>
             <X size={20} />
           </ActionIcon>
-        )}
+        }
       </div>
+      <Button
+        className="sidebar-search"
+        leftSection={<Search size={15} />}
+        onClick={p.onSearch}
+      >
+        Search chats
+      </Button>
+      <Button
+        leftSection={<Plus size={15} />}
+        disabled={p.creating}
+        onClick={() => p.newChat()}
+      >
+        New chat
+      </Button>
       <TextInput
         id="chat-search"
         type="search"
-        placeholder="Search chats"
-        aria-label="Search chats"
+        placeholder="Filter projects and chats"
+        aria-label="Filter projects and chats"
         leftSection={<Search size={15} />}
         value={query}
         onChange={(e) => {
@@ -361,26 +635,15 @@ export default function Sidebar(p: Props) {
             </Menu.Item>
           </Menu.Dropdown>
         </Menu>
-        {!compact && (
+        {
           <ActionIcon aria-label="Add project" onClick={p.addProject}>
             <Plus size={18} />
           </ActionIcon>
-        )}
+        }
       </div>
-      <nav
-        id="chat-list"
-        className="chat-scroll"
-        aria-label="Lead conversations"
-      >
+      <nav id="chat-list" className="chat-scroll" aria-label="Chats">
         {projectsOpen &&
           projectGroups.map((group) => {
-            const shown = projectLimits[group.path] || 5;
-            const selected = group.chats.find((a) => a.id === p.opened);
-            const chats = group.chats.slice(
-              0,
-              query ? group.chats.length : shown,
-            );
-            if (selected && !chats.includes(selected)) chats.push(selected);
             const isCollapsed = collapsed[group.path] && !query;
             return (
               <section
@@ -388,7 +651,7 @@ export default function Sidebar(p: Props) {
                 data-project-path={group.path}
                 key={group.path}
               >
-                <div className="project-tree-heading">
+                <div className="project-tree-heading" {...folderDrop(group)}>
                   <UnstyledButton
                     {...sorting.bindings(
                       "projects",
@@ -418,7 +681,7 @@ export default function Sidebar(p: Props) {
                       <Plus size={15} />
                     </ActionIcon>
                   )}
-                  {!compact && group.registered && !group.hasChats && (
+                  {!!group.path && (
                     <Menu withinPortal position="bottom-end">
                       <Menu.Target>
                         <ActionIcon
@@ -429,42 +692,39 @@ export default function Sidebar(p: Props) {
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
-                        <Menu.Item
-                          onClick={async () => {
-                            try {
-                              await api("/api/projects", {
-                                action: "remove",
-                                path: group.path,
-                              });
-                              await p.refresh?.();
-                            } catch (error) {
-                              p.notify?.(errorText(error));
-                            }
-                          }}
-                        >
-                          Remove from sidebar
+                        <Menu.Item onClick={() => editProject(group)}>
+                          Rename project
                         </Menu.Item>
+                        <Menu.Item onClick={() => editProject(group, "new")}>
+                          New folder
+                        </Menu.Item>
+                        <Menu.Item onClick={() => p.projectAccount(group.path)}>
+                          Project account
+                        </Menu.Item>
+                        {group.registered && !group.hasChats && (
+                          <Menu.Item
+                            onClick={async () => {
+                              try {
+                                await api("/api/projects", {
+                                  action: "remove",
+                                  path: group.path,
+                                });
+                                await p.refresh?.();
+                              } catch (error) {
+                                p.notify?.(errorText(error));
+                              }
+                            }}
+                          >
+                            Remove from sidebar
+                          </Menu.Item>
+                        )}
                       </Menu.Dropdown>
                     </Menu>
                   )}
                 </div>
                 {!isCollapsed && (
                   <div className="project-chats">
-                    {chats.map(renderRow)}
-                    {!chats.length && <p className="project-empty">No chats</p>}
-                    {!query && group.chats.length > shown && (
-                      <UnstyledButton
-                        className="project-show-more"
-                        onClick={() =>
-                          setProjectLimits({
-                            ...projectLimits,
-                            [group.path]: shown + 10,
-                          })
-                        }
-                      >
-                        Show more
-                      </UnstyledButton>
-                    )}
+                    {renderProjectChats(group)}
                   </div>
                 )}
               </section>
@@ -476,41 +736,63 @@ export default function Sidebar(p: Props) {
           </p>
         )}
       </nav>
-      {!compact && (
-        <div className="sidebar-footer">
-          <Button
-            id="open-complaints"
-            fullWidth
-            justify="space-between"
-            className={p.view === "complaints" ? "selected" : ""}
-            leftSection={<BookOpen size={16} />}
-            onClick={p.complaints}
-            rightSection={
-              <span id="complaint-count">
-                {p.data.runtime.complaints?.filter(complaintNeedsUserResponse)
-                  .length || ""}
-              </span>
-            }
-          >
-            Complaint book
-          </Button>
-        </div>
-      )}
     </aside>
   );
-  return compact ? (
-    <Drawer
-      opened={p.mobile}
-      onClose={p.close}
-      size="min(360px, 100vw)"
-      padding={0}
-      withCloseButton={false}
-      title="Conversations"
-      classNames={{ header: "sr-only" }}
-    >
-      {content}
-    </Drawer>
-  ) : (
-    content
+  const dialogProject = dialog ? groupMap.get(dialog.path) : undefined;
+  const dialogAgent = dialog?.agentId
+    ? agents.find((item) => item.id === dialog.agentId)
+    : undefined;
+  const dialogFolder = dialogProject?.folders?.find(
+    (item) => item.id === dialog?.folder,
+  );
+  const dialogAvailable =
+    dialogProject &&
+    (!dialog?.agentId || dialogAgent) &&
+    (!dialog?.folder || dialog.folder === "new" || dialogFolder);
+  return (
+    <>
+      {compact ? (
+        <Drawer
+          opened={p.mobile}
+          onClose={p.close}
+          size="min(360px, 100vw)"
+          padding={0}
+          withCloseButton={false}
+          title="Conversations"
+          classNames={{ header: "sr-only" }}
+        >
+          {content}
+        </Drawer>
+      ) : p.collapsed ? null : (
+        content
+      )}
+      <Modal
+        opened={!!dialog}
+        onClose={() => setDialog(null)}
+        title={dialog?.title}
+      >
+        {dialog &&
+          (dialogAvailable && dialogProject ? (
+            dialogAgent ? (
+              <MoveChatForm
+                project={dialogProject}
+                agent={dialogAgent}
+                saved={savedProject}
+              />
+            ) : (
+              <ProjectNameForm
+                project={dialogProject}
+                folder={dialog.folder === "new" ? "new" : dialogFolder}
+                parentId={dialog.parentId}
+                saved={savedProject}
+              />
+            )
+          ) : (
+            <p role="alert">
+              This project, chat, or folder is no longer available.
+            </p>
+          ))}
+      </Modal>
+    </>
   );
 }

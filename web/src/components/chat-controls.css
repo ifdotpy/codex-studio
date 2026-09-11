@@ -15,6 +15,44 @@
 .composer-submit-actions > button {
   flex: none;
 }
+.conversation-navigation {
+  flex: none;
+  min-width: 0;
+}
+.conversation-navigation:empty {
+  display: none;
+}
+.conversation-navigation .prompt-navigation {
+  background: transparent;
+}
+.draft-length-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--mantine-color-red-4);
+  font-size: 12px;
+  padding: 6px 0;
+}
+.historical-chat-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.branch-draft-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.message[data-found="true"] {
+  outline: 2px solid var(--mantine-color-violet-5);
+  outline-offset: 5px;
+  border-radius: 8px;
+}
 /* Sending changes the icon, never the space between the controls. */
 .composer-bar #send-state {
   position: absolute;
@@ -101,6 +139,12 @@
 }
 .message-bottom {
   gap: 4px;
+}
+.ai-conversation
+  .message.user
+  .message-bottom:has([aria-label="Edit in a new chat"]) {
+  display: flex;
+  justify-content: flex-end;
 }
 .message-queue {
   width: min(800px, calc(100% - 48px));

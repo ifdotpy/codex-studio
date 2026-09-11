@@ -114,12 +114,12 @@ scripts/codex-report --wave parser [worker --answers]
 - Hand-rolled sentinel (when `codex-watch` is unavailable): copy terminal values from one real record first. `goalStatus` terminal values are `complete`, `budgetLimited`, `blocked` — not `completed`. Safe condition: goal present and not `active`, or turn `failed`/`interrupted`.
 - Arm the replacement watcher before stopping the old one; a gap is a missed event.
 
-## Canvas, chat nodes, and creator connections
+## Studio, chats, and creator connections
 
 Build the interface with `npm ci && npm run build` in `web/`.
 Run `scripts/codex-canvas` and open `http://127.0.0.1:4620`.
 Use `--port PORT` to select another port. The server uses Python's standard library and listens only on the local machine.
-Keep its terminal session alive while the canvas is in use.
+Keep its terminal session alive while Studio is in use.
 
 Agents and chats are separate nodes. Do not use a wave or a visual container as a chat.
 An agent can connect to several chats. Chat connections define membership.
@@ -128,10 +128,10 @@ Do not infer a creator from a shared wave, directory, model, or resource claim.
 
 The default view is a lead conversation. Select **New chat** to create it without a form.
 Only managed records with `isLead=true` appear in the chat list. Leads use Astra or Sol.
-Select **Canvas** for all teams and registered sessions. Click a node to read its transcript.
-Drag a node to move it. Drag the background to pan. Scroll to zoom. **Fit** shows the team.
-Canvas positions stay in browser storage on this device.
-Use **Other sessions** for legacy agents and shared chats. Use the chat commands below to change membership.
+Use **Team** for worker status and worker chats. Use **Messages** for user requests
+and conversations within the selected team. Canvas is removed. Historical node
+positions and session records remain stored. Use the commands below for legacy
+sessions and chat membership.
 
 ### App-server creators
 

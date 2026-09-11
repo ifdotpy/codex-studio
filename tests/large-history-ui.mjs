@@ -91,6 +91,20 @@ try {
       window.longTasks.push(...list.getEntries().map((x) => x.duration)),
     ).observe({ type: "longtask", buffered: true });
   });
+  // Small tool groups open by default. Exercise a reader's saved collapsed
+  // history here; turn-history-ui separately checks the small-group default.
+  await page.addInitScript(
+    ({ key, ids }) => {
+      localStorage.setItem(
+        key,
+        JSON.stringify(Object.fromEntries(ids.map((id) => [id, false]))),
+      );
+    },
+    {
+      key: `studio-turns:${state.stateDir}:${lead.id}:tools-v3`,
+      ids: items.filter((item) => item.role === "tool").map((item) => item.id),
+    },
+  );
   await page.route("**/api/sync/**", (r) =>
     r.fulfill({
       status: 404,
@@ -155,6 +169,21 @@ try {
     assert.match(
       await page.locator('[data-message="tool-0-0"] .tool-output').innerText(),
       /check passed/,
+    );
+    const tool = await page.locator('[data-message="tool-0-0"]').elementHandle();
+    const output = await page
+      .locator('[data-message="tool-0-0"] .tool-output')
+      .elementHandle();
+    const group = page.locator('[data-turn="turn-0"] .turn-work').first();
+    await group.locator(":scope > summary").click();
+    assert.equal(await tool.evaluate((node) => node.isConnected), true);
+    assert.equal(await output.evaluate((node) => node.isConnected), true);
+    await group.locator(":scope > summary").click();
+    await page.locator('[data-message="tool-0-0"] .tool-output').waitFor();
+    assert.equal(
+      await tool.evaluate((node) => node.open),
+      true,
+      "Reopening the group preserves the selected tool details",
     );
   }
   assert.deepEqual(errors, []);

@@ -462,11 +462,19 @@ button.workspace-row:hover {
     padding: 16px;
   }
 }
-@media (prefers-color-scheme: light) {
-  [data-mantine-color-scheme="light"] .workspace-diff-line.addition {
-    color: #236238;
-  }
-  [data-mantine-color-scheme="light"] .workspace-diff-line.deletion {
-    color: #92363d;
-  }
+[data-mantine-color-scheme="light"] .workspace-diff-line.addition {
+  color: #236238;
+}
+[data-mantine-color-scheme="light"] .workspace-diff-line.deletion {
+  color: #92363d;
+}
+[data-mantine-color-scheme="light"] .workspace-diff-line.hunk {
+  color: #3b4fc4;
+}
+
+.workspace-shell.workspace-focused-messages {
+  grid-template-columns: minmax(0, 1fr);
+}
+.workspace-focused-messages .workspace-content.workspace-messages {
+  height: calc(100dvh - 78px);
 }

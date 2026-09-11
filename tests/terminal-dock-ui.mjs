@@ -262,6 +262,9 @@ try {
   await dock
     .getByText("Session ended · Output retained", { exact: true })
     .waitFor();
+  // Output polls faster than the session list. Wait for the close control's
+  // session record to report the exit before checking the completed-session path.
+  await dock.locator(".terminal-detail-status").filter({hasText:/^exited/}).waitFor();
   assert.equal(
     await dock
       .getByRole("button", { name: "Ctrl+C", exact: true })
@@ -423,8 +426,12 @@ try {
   );
   await page.setViewportSize({ width: 1440, height: 980 });
   await dock.locator(".xterm-helper-textarea").waitFor();
+  await dock.getByRole("button", { name: "End session", exact: true }).click();
   await dock
-    .getByRole("button", { name: "Close terminal session", exact: true })
+    .getByRole("button", {
+      name: "End session and stop processes",
+      exact: true,
+    })
     .click();
   await dock
     .getByText("Your terminals, always here", { exact: true })
@@ -462,6 +469,8 @@ try {
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));
 }
+
+if (process.argv.includes("--fixture-only")) process.exit(0);
 
 // The same dock also exercises real shell input and saved output through the HTTP server.
 const { spawn } = await import("node:child_process");
@@ -550,9 +559,8 @@ try {
   );
   assert.equal(ownerBefore.status, ownerAfter.status);
   await page.screenshot({ path: join(liveRoot, "terminal-live-desktop.png") });
-  await dock
-    .getByRole("button", { name: "Close terminal session", exact: true })
-    .click();
+  await dock.getByRole("button", { name: "End session", exact: true }).click();
+  // This shell already exited. Closing its saved session needs no stop confirmation.
   await dock
     .getByText("Your terminals, always here", { exact: true })
     .waitFor();

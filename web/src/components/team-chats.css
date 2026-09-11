@@ -81,7 +81,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #a8a1ed;
+  background: var(--accent);
   flex: none;
 }
 .team-room-detail {
@@ -140,12 +140,12 @@
 }
 .team-message.from-first {
   align-self: flex-end;
-  background: #343044;
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
   border-radius: 14px 4px 14px 14px;
 }
 .team-message-sender {
   display: block;
-  color: #bfb8ea;
+  color: var(--accent);
   font-size: 11px;
   margin-bottom: 5px;
 }
@@ -256,4 +256,122 @@
   .team-message {
     max-width: 96%;
   }
+}
+
+.workspace-content.workspace-messages {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 78px);
+  min-height: 0;
+}
+.workspace-messages > .workspace-heading {
+  padding: 16px 20px;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+.workspace-message-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.workspace-messages .team-chats {
+  grid-template-columns: minmax(300px, 38%) minmax(0, 1fr);
+}
+.message-group {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+.message-group > h3,
+.message-group > summary {
+  margin: 0;
+  padding: 14px 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.message-group > summary {
+  cursor: pointer;
+}
+.message-group > summary > span {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 8px;
+}
+.for-you .workspace-toolbar {
+  padding: 0 10px;
+  flex-wrap: wrap;
+}
+.for-you .workspace-toolbar > span {
+  display: none;
+}
+.user-message-list .book-filter {
+  margin: 10px;
+}
+.user-message-list .complaint-card {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+.user-message-list .book-empty {
+  padding: 10px;
+}
+.user-message-list .book-empty > svg,
+.user-message-list .book-empty > p {
+  display: none;
+}
+.user-message-list .book-empty > h2 {
+  font-size: 12px;
+  font-weight: 400;
+}
+.user-message-list .complaint-meta {
+  flex-wrap: wrap;
+}
+@media (max-width: 760px) {
+  .workspace-content.workspace-messages {
+    height: calc(100dvh - 130px);
+  }
+}
+@media (max-width: 640px) {
+  .workspace-messages .team-chats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.for-you #requests {
+  padding: 0 10px;
+  max-height: none;
+  overflow: visible;
+}
+.for-you .request-summary {
+  flex-wrap: wrap;
+}
+.for-you .request-summary .request-copy {
+  flex-basis: calc(100% - 36px);
+}
+.for-you .request-actions {
+  margin-left: auto;
+}
+
+.messages-views {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.messages-view-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.messages-for-you {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+}
+.messages-for-you > .workspace-toolbar {
+  justify-content: flex-end;
+}
+.messages-for-you > .workspace-toolbar > span {
+  display: none;
 }

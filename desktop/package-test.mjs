@@ -58,6 +58,29 @@ try {
   );
   assert.equal(speech.helperReady, true);
   assert.equal(speech.onDeviceOnly, true);
+  const roleSkills = JSON.parse(
+    execFileSync(
+      "python3",
+      [
+        "-B",
+        "-c",
+        `
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from codex_runtime import Runtime
+print(json.dumps({name: Runtime.role_guidance({"isLead": lead}) for name, lead in [("orchestrator", True), ("subagent", False)]}))
+`,
+        path.join(path.dirname(executable), "../Resources/workspace/scripts"),
+      ],
+      { encoding: "utf8" },
+    ),
+  );
+  assert.ok(
+    roleSkills.orchestrator.includes("[Studio role skill: codex-orchestrator]"),
+  );
+  assert.ok(
+    roleSkills.subagent.includes("[Studio role skill: codex-subagent]"),
+  );
   const identity = await (await fetch(`${origin}/api/desktop`)).json();
   pid = identity.pid;
   assert.equal(identity.stateDir, await realpath(state));

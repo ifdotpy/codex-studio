@@ -1,0 +1,21 @@
+.reasoning-duration {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.reasoning-duration svg {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+.reasoning-time {
+  font-variant-numeric: tabular-nums;
+}
+.reasoning-duration[data-running="true"] {
+  color: var(--accent);
+}

@@ -284,12 +284,14 @@ try {
   });
   await page.locator("#stop").waitFor();
   for (const [action, delivery] of [
-    ["button", "steer"],
-    ["Enter", "steer"],
-    ["Tab", "queue"],
+    ["button", "after_tool"],
+    ["Enter", "after_tool"],
+    ["queue", "queue"],
   ]) {
     await page.locator("#message").fill(`Sync shortcut ${action}`);
     if (action === "button") await page.locator("#send").click();
+    else if (action === "queue")
+      await page.getByRole("button", { name: "Queue after turn", exact: true }).click();
     else await page.locator("#message").press(action);
     await page
       .waitForFunction(() => document.querySelector("#message").value === "")
@@ -297,6 +299,11 @@ try {
         console.error("Shortcut failure", action, JSON.stringify(sends));
         throw error;
       });
+    const expectedCount = action === "button" ? 1 : action === "Enter" ? 2 : 3;
+    const deadline = Date.now() + 12000;
+    while (sends.length < expectedCount && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(sends.length, expectedCount, "The outbox submits each message once");
     assert.equal(sends.at(-1).delivery, delivery);
     assert.equal(sends.at(-1).room, a.id);
   }
@@ -313,7 +320,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    `Chat switch latency: PASS (cold ${cold}ms, cached ${cached}ms, refreshed ${refreshed}ms, RxDB revisit ${syncCached}ms; scope isolation, scroll restore, late HTTP guard, real RxDB Send/Enter/Tab).`,
+    `Chat switch latency: PASS (cold ${cold}ms, cached ${cached}ms, refreshed ${refreshed}ms, RxDB revisit ${syncCached}ms; scope isolation, scroll restore, late HTTP guard, real RxDB Send/Enter/Queue).`,
   );
 } catch (e) {
   await page?.screenshot({ path: join(dir, "failure.png") });

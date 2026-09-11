@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """HTTP compression and cache rules with an isolated server and static assets."""
 import gzip
+from concurrent.futures import ThreadPoolExecutor
 import http.client
 import json
 from pathlib import Path
@@ -82,6 +83,17 @@ class HttpCacheContract(unittest.TestCase):
             with self.subTest(path=path):
                 _, headers, _ = self.get(path)
                 self.assertEqual(headers['Cache-Control'], 'no-store')
+
+    def test_parallel_module_requests_preserve_all_responses(self):
+        barrier = threading.Barrier(32)
+        def read_module(_):
+            barrier.wait(timeout=5)
+            return self.get('/assets/main-Abcd1234.js')
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            replies = list(pool.map(read_module, range(32)))
+        for code, headers, body in replies:
+            self.assertEqual(code, 200)
+            self.assertEqual(body, self.script)
 
     def test_origin_gate_precedes_asset_cache(self):
         code, headers, _ = self.get('/assets/main-Abcd1234.js', {'Origin': 'https://evil.example'})

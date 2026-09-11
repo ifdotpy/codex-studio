@@ -28,10 +28,6 @@ const accounts = [
     plan: "plus",
     source: "CodexBar",
     status: "ready",
-    projectRules: {
-      allowedProjects: ["/Users/igor/Projects/lumina"],
-      revision: 1,
-    },
   },
   {
     id: "other",
@@ -202,7 +198,7 @@ const server = createServer(async (req, res) => {
     const lead = makeLead(
       body.id,
       "Created conversation",
-      body.account_key,
+      body.account_key || defaultAccountKey,
       true,
     );
     agents.push(lead);
@@ -291,38 +287,81 @@ try {
     name: "Account limits",
     exact: true,
   });
+  const settings = page.getByRole("dialog", {
+    name: "Chat settings",
+    exact: true,
+  });
+  const openSettings = async () => {
+    if (!(await settings.isVisible()))
+      await page
+        .getByRole("button", { name: "Chat settings", exact: true })
+        .click();
+    await picker.waitFor();
+  };
+  const closeSettings = async () => {
+    if (!(await settings.isVisible())) return;
+    await settings.getByRole("button", { name: "Close", exact: true }).click();
+    await settings.waitFor({ state: "hidden" });
+  };
+  const expectAccount = async (email) => {
+    await openSettings();
+    await page.waitForFunction(
+      (email) =>
+        document.querySelector(".account-picker")?.textContent.includes(email),
+      email,
+    );
+    await closeSettings();
+  };
   const choose = async (email) => {
+    await openSettings();
     await picker.click();
     await page.getByRole("menuitem").filter({ hasText: email }).click();
+    await page.waitForFunction(
+      (email) =>
+        document.querySelector(".account-picker")?.textContent.includes(email),
+      email,
+    );
+    await closeSettings();
   };
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-picker")
-      ?.textContent.includes("personal@example.com"),
-  );
+  const details = page.getByRole("region", {
+    name: "Account limits details",
+    exact: true,
+  });
+  const inspectLimits = async (check) => {
+    const wasOpen = (await quota.getAttribute("aria-expanded")) === "true";
+    if (!wasOpen) await quota.click();
+    await details.waitFor();
+    const result = await check(details);
+    if (!wasOpen) {
+      await quota.click();
+      await details.waitFor({ state: "hidden" });
+    }
+    return result;
+  };
+  const limitText = () => inspectLimits((panel) => panel.innerText());
+  const waitLimits = (text) =>
+    inspectLimits((panel) =>
+      panel.getByText(text, { exact: true }).first().waitFor(),
+    );
+  const waitCost = (text) =>
+    inspectLimits(() =>
+      page
+        .getByRole("region", { name: "Local cost estimates" })
+        .getByText(text, { exact: true })
+        .waitFor(),
+    );
+  await expectAccount("personal@example.com");
   await quota.waitFor();
   wrongLimitsAccount = true;
   await choose("work@example.com");
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-limits-summary .account-limits-warning")
-      ?.textContent.includes("Unavailable"),
-  );
-  assert.doesNotMatch(await quota.innerText(), /89% left/);
+  await waitLimits("Limits temporarily unavailable");
+  assert.doesNotMatch(await limitText(), /89% left/);
   wrongLimitsAccount = false;
   await quota.click();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await quota.click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-picker")
-      ?.textContent.includes("work@example.com"),
-  );
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-limits-summary")
-      ?.textContent.includes("78% left"),
-  );
+  await expectAccount("work@example.com");
+  await waitLimits("78% left");
   assert.equal(
     bodies.find((r) => r.path === "/api/agents/account").body.account_key,
     "work",
@@ -330,34 +369,24 @@ try {
 
   // Late costs cannot replace the newly selected account's amount.
   await choose("personal@example.com");
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-cost-summary")
-      ?.textContent.includes("$5.00"),
-  );
+  await waitCost("$5.00");
   delayCostWork = true;
   await choose("work@example.com");
   for (let n = 0; n < 100 && !delayedCosts; n++) await page.waitForTimeout(20);
   assert.ok(delayedCosts);
   await choose("another.long.account@example.com");
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-cost-summary")
-      ?.textContent.includes("$23.00"),
-  );
+  await waitCost("$23.00");
   delayedCosts();
   delayCostWork = false;
   await page.waitForTimeout(100);
   assert.match(
-    await page.locator(".account-cost-summary").innerText(),
+    await inspectLimits(() =>
+      page.getByRole("region", { name: "Local cost estimates" }).innerText(),
+    ),
     /23.00/,
   );
   await choose("work@example.com");
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-cost-summary")
-      ?.textContent.includes("$12.00"),
-  );
+  await waitCost("$12.00");
 
   // Fresh account cache must avoid another GET on return navigation.
   const readsBeforeSwitch = limitReads;
@@ -375,32 +404,20 @@ try {
   delayWork = true;
   await choose("work@example.com");
   await forceRefresh();
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-picker")
-      ?.textContent.includes("work@example.com"),
-  );
+  await expectAccount("work@example.com");
   await choose("another.long.account@example.com");
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-limits-summary")
-      ?.textContent.includes("67% left"),
-  );
+  await waitLimits("67% left");
   assert.ok(delayed, "B request is pending");
   delayed();
   delayed = null;
   delayWork = false;
   await page.waitForTimeout(100);
-  assert.match(await quota.innerText(), /67% left/);
+  assert.match(await limitText(), /67% left/);
   const updated = limits("other");
   updated.at += 5;
   updated.data.rateLimits.primary.usedPercent = 41;
   snapshotLimits = { other: updated, default: limits("default") };
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-limits-summary")
-      ?.textContent.includes("59% left"),
-  );
+  await waitLimits("59% left");
   snapshotLimits = {};
 
   await quota.click();
@@ -425,27 +442,21 @@ try {
 
   // Switch actual conversations, including a pending read for another account.
   const quotaValues = () =>
-    quota.locator(".account-limits-summary > span").nth(1).innerText();
+    inspectLimits((panel) =>
+      panel.locator(".account-limit-value").allTextContents(),
+    );
   const otherQuota = await quotaValues();
   agents.push(
     makeLead("work-chat", "Work account conversation", "work", false),
   );
   await page.locator('[data-chat="work-chat"]').waitFor();
   await page.locator('[data-chat="started"]').click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-limits-summary")
-      ?.textContent.includes("89% left"),
-  );
+  await waitLimits("89% left");
   delayWork = true;
   await page.locator('[data-chat="work-chat"]').click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-picker")
-      ?.textContent.includes("work@example.com"),
-  );
+  await expectAccount("work@example.com");
   assert.match(
-    await quota.innerText(),
+    await limitText(),
     /78% left/,
     "return navigation uses the selected account cache while refresh waits",
   );
@@ -454,35 +465,51 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(delayed, "work account refresh remains pending");
   await page.locator('[data-chat="empty"]').click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector(".account-picker")
-      ?.textContent.includes("another.long.account@example.com"),
-  );
-  assert.equal(await quotaValues(), otherQuota);
+  await expectAccount("another.long.account@example.com");
+  assert.deepEqual(await quotaValues(), otherQuota);
   delayed();
   delayed = null;
   delayWork = false;
   await page.waitForTimeout(100);
-  assert.equal(
+  assert.deepEqual(
     await quotaValues(),
     otherQuota,
     "late work response cannot change selected conversation limits",
   );
 
   await page.locator('[data-chat="started"]').click();
+  await openSettings();
   await picker.click();
+  const mutationsBeforeTransfer = bodies.filter((r) =>
+    ["/api/agents/account", "/api/agents/account-transfer"].includes(r.path),
+  ).length;
+  await page
+    .getByRole("menuitem")
+    .filter({ hasText: "work@example.com" })
+    .click();
+  const transferDialog = page.getByRole("dialog", {
+    name: "Transfer this team",
+    exact: true,
+  });
+  await transferDialog.waitFor();
+  assert.equal(agents.find((a) => a.id === "started").accountKey, "default");
   assert.equal(
-    await page
-      .getByRole("menuitem")
-      .filter({ hasText: "work@example.com" })
-      .isDisabled(),
-    false,
+    bodies.filter((r) =>
+      ["/api/agents/account", "/api/agents/account-transfer"].includes(r.path),
+    ).length,
+    mutationsBeforeTransfer,
   );
+  await transferDialog
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await picker.click();
   await page
     .getByRole("menuitem", { name: "Manage accounts · 3", exact: true })
     .click();
-  const dialog = page.getByRole("dialog", { name: "Accounts", exact: true });
+  const dialog = page.getByRole("dialog", {
+    name: /^(Accounts|Add account)$/,
+    exact: true,
+  });
   await dialog.locator("[data-account]").first().waitFor();
   assert.equal(await dialog.locator("[data-account]").count(), 3);
   await dialog
@@ -501,13 +528,14 @@ try {
     await dialog.getByText("7d 65% left", { exact: true }).count(),
     3,
   );
-  await dialog
-    .getByText("/Users/igor/Projects/lumina", { exact: true })
-    .waitFor();
+  assert.equal(
+    await dialog.getByText("Edit rules", { exact: true }).count(),
+    0,
+  );
   const desktopBounds = await dialog.boundingBox();
   assert.ok(
     desktopBounds.y >= 0 && desktopBounds.y + desktopBounds.height <= 900,
-    "Three accounts with both quota windows and project rules fit a 900px viewport",
+    "Three accounts with both quota windows fit a 900px viewport",
   );
   await dialog
     .getByRole("button", {
@@ -517,7 +545,7 @@ try {
     .click();
   await dialog
     .locator('[data-account="work"]')
-    .getByText("Default", { exact: true })
+    .getByText("Application default", { exact: true })
     .waitFor();
   await dialog
     .getByRole("button", { name: "Find existing accounts", exact: true })
@@ -540,7 +568,14 @@ try {
     animations: "disabled",
   });
   await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  await closeSettings();
   await page.locator(".project-tree-heading").first().hover();
+  await page
+    .getByRole("button", { name: /^New chat in / })
+    .first()
+    .locator("..")
+    .hover();
   await page
     .getByRole("button", { name: /^New chat in / })
     .first()
@@ -552,12 +587,16 @@ try {
   );
   assert.equal(
     bodies.find((r) => r.path === "/api/leads").body.account_key,
-    "work",
+    undefined,
   );
 
+  await openSettings();
   await picker.click();
   await page
     .getByRole("menuitem", { name: "Manage accounts · 3", exact: true })
+    .click();
+  await dialog
+    .getByRole("button", { name: "Add account", exact: true })
     .click();
   await dialog
     .getByRole("button", { name: "Sign in to another account", exact: true })
@@ -571,8 +610,11 @@ try {
   );
   const firstLogin = logins.at(-1).requestId;
   await page.reload();
-  await page.locator('[data-testid="account-picker"]').click();
-  await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
+  await openSettings();
+  await picker.click();
+  await page
+    .getByRole("menuitem", { name: "Add account", exact: true })
+    .click();
   await dialog.getByText("ABCD-1234", { exact: true }).waitFor();
   assert.equal(logins.length, 1, "reload resumes the existing native login");
   assert.equal(logins[0].requestId, firstLogin);
@@ -589,6 +631,9 @@ try {
   assert.notEqual(logins[1].requestId, firstLogin);
   accounts.find((a) => a.id === logins.at(-1).accountKey).status = "ready";
   await dialog.getByText("Account connected.", { exact: true }).waitFor();
+  await dialog
+    .getByRole("button", { name: "Back to accounts", exact: true })
+    .click();
   await page.setViewportSize({ width: 820, height: 844 });
   await page.waitForFunction(
     () =>
@@ -628,7 +673,9 @@ try {
     path: join(evidence, "account-header-narrow.png"),
     animations: "disabled",
   });
+  await openSettings();
   assert.ok(await picker.isVisible());
+  await closeSettings();
   // A stalled read must release the per-account request slot after its deadline.
   delayWork = true;
   delayed = null;
@@ -647,8 +694,13 @@ try {
     .locator(".account-limits-updated")
     .filter({ hasText: "Saved limits" })
     .waitFor({ state: "hidden" });
-  assert.match(await quota.innerText(), /78% left/);
-  assert.match(await quota.innerText(), /≈\$12.00 today/);
+  assert.match(await limitText(), /78% left/);
+  assert.match(
+    await inspectLimits(() =>
+      page.getByRole("region", { name: "Local cost estimates" }).innerText(),
+    ),
+    /\$12.00/,
+  );
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -656,7 +708,7 @@ try {
       cases: [
         "three identities",
         "empty chat account",
-        "existing chat supports account transfer",
+        "started chat account requires transfer confirmation",
         "delayed limits isolation",
         "wrong-account response rejection",
         "stalled read releases request slot",

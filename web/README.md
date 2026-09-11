@@ -2,7 +2,7 @@
 
 React and TypeScript components, built with Vite. Mantine provides controls,
 menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,
-SQLite, message delivery, command monitors, and the complaint book.
+SQLite, message delivery, and command monitors.
 
 ## Run
 
@@ -41,8 +41,8 @@ Set `CHROME_BIN` if Chrome uses another executable path.
 - `src/components/WorkerOverview.tsx`: worker assignments, reports, and team counts.
 - `src/components/Requests.tsx`: active questions, deferral, and answer history.
 - `src/components/Dictation.tsx`: saved recordings and explicit transcript insertion.
-- `src/components/Canvas.tsx`: the shared agent graph and stored positions.
-- `src/components/ComplaintBook.tsx`: complaints, lead decisions, and user submissions.
+- `src/components/TeamChats.tsx`: messages in order by recipient and team channel.
+- `src/components/UserMessages.tsx`: user requests, replies, and review decisions.
 - `src/components/Usage.tsx`: context usage, compaction count, and account limits.
 - `src/components/Analytics.tsx`: response usage history, tool payload measurements, and export.
 - `src/hooks.ts`: server snapshots and transcript updates.
@@ -83,9 +83,10 @@ browser checks measure these transitions against the production bundle.
 
 ## Live conversation
 
-Send delivers after active tool calls. Desktop Enter does the same. Tab in a nonempty composer queues
-the message after the current turn. Shift+Enter adds a line. Empty Tab and Shift+Tab
-keep normal focus navigation. An idle agent starts a new turn with either action.
+Send delivers after active tool calls. Desktop Enter does the same.
+**Queue after turn** holds the message until the current turn ends.
+Shift+Enter adds a line. Tab and Shift+Tab move the keyboard focus.
+An idle agent starts a new turn with either send action.
 
 Managed conversations use `/api/transcript/stream`, a server-sent event stream.
 The server sends a snapshot on connection and changed records after that.
@@ -101,9 +102,8 @@ The client reconnects with a fresh snapshot. It uses the transcript GET endpoint
 as a fallback during connection loss. Agent rooms and the team list retain their
 existing refresh intervals.
 
-Assistant text appears in complete paragraphs. Open fenced code blocks wait for
-the closing fence. Item completion, turn completion, interruption, and stop reveal
-the remaining text. Earlier paragraph elements stay mounted as new text arrives.
+Assistant text and incomplete code appear as they arrive. Complete sentences use
+a short fade. Earlier text nodes stay mounted as new text arrives.
 
 `AgentPhase.tsx` shows the phase from runtime events. It does not display private
 reasoning. `Activity.tsx` shows commands, inputs, outputs, exit codes, and durations.
@@ -115,9 +115,16 @@ It tests the real HTTP stream and React interface without model inference.
 
 ## Orchestration workspace
 
-The **Work** button opens the shared work board, changes, attention inbox, search,
-plans, checkpoints, tools, profiles, rules, and resource leases. The main screen
-keeps the conversation and worker list. Canvas remains the shared graph.
+The **Work** button opens the work board, changes, Messages, search, the agent plan,
+checkpoints, tools, profiles, rules, and resource leases. The main screen keeps the
+conversation and worker list. Canvas and the saved-plan editor are removed.
+**Plan** displays native steps and explanation. Changes go through the agent chat.
+
+**Messages** opens user requests and agent conversations. **For you** shows user
+requests, questions, and replies. **Team** shows orchestrator conversations, the
+team channel, and private subagent chats. Only the orchestrator contacts the user.
+Subagents send requests to the orchestrator, which decides whether to forward them.
+Message replies retain their request identity after a lost response and drawer closure.
 
 Work items have an owner, dependencies, submitted evidence, and an acceptance
 record. A completed agent turn does not accept a work item. The lead must inspect
@@ -129,7 +136,7 @@ as explicit file references. HTML previews cannot run scripts or load remote fil
 Attachment drafts survive reloads. Rejected sends retain the draft and attachments.
 Offline messages remain in the device outbox.
 
-Use Tab for the next turn or Send for the current turn. Queue entries
+Use **Queue after turn** for the next turn or **Send** after active tools. Queue entries
 can be edited, moved first, or cancelled. Uncertain delivery never silently retries
 as a new turn. Conversation branches include the complete selected native turn.
 
@@ -183,13 +190,13 @@ negative script checks remain in rule history; they do not fill the attention in
 
 ## User tasks and previews
 
-Agents create user tasks with `orchestration_user_task`. The compact list appears
+The orchestrator creates user tasks with `orchestration_user_task`. The compact list appears
 above the composer. **Work > Your tasks** shows tasks across all teams, with
 search, owner and status filters, and history.
 
-Check a task to send its result to the requesting agent. An optional note can
+Select **Send for review** to send a task result to the orchestrator. An optional note can
 include a result or link. The task enters review. The agent can accept it or
-return it with a reason. Only its requesting agent or team lead can change it.
+return it with a reason. Only its team lead can change it.
 Repeated requests do not send duplicate events. An explicit Stop prevents an
 automatic wake; the pending review returns when the agent resumes.
 
@@ -200,9 +207,12 @@ An invalid diagram shows its error. Mermaid loads only when a diagram is present
 
 ## Direct controls and quotes
 
-The navigation bar opens common workspace sections directly. Agents create
-monitors; the background panel shows their controls. Account capacity appears below
-the composer. The account panel groups percentages and reset times by limit.
+The chat menu opens the workspace sections. Agents create monitors.
+The background panel shows their controls. Settings contains accounts, models,
+permissions, and the theme. The account panel groups usage and reset times by limit.
+A fresh account response with available quota clears the current limit warning.
+Studio keeps that result for the same error after reopening the chat.
+The historical error remains. Recovery does not send or retry a message.
 
 Select part of a message and choose **Quote selection**, or press Alt+Shift+Q.
 Each quote appends to the current draft. You can add several excerpts from the

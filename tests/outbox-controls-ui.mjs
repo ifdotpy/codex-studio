@@ -108,6 +108,20 @@ try {
     await window.syncModule.syncDatabase();
   });
   const entry = (text) => page.locator(".message").filter({ hasText: text });
+  const accepted = async (text) => {
+    await until(() => page.evaluate(async (text) => {
+      const { syncDatabase } = await import("/src/sync/client.ts");
+      const { db } = await syncDatabase();
+      const rows = await db.outbox.find().exec();
+      return rows.some((row) => {
+        const value = JSON.parse(row.payload);
+        return value.body.text === text && value.status === "accepted";
+      });
+    }, text));
+    await entry(text).waitFor();
+    assert.equal(await entry(text).getByRole("status").count(), 0,
+      "Confirmed messages do not retain a delivery heading");
+  };
   available = false;
   await page.locator("#message").fill("Cancel while offline");
   await page.locator("#send").click();
@@ -168,10 +182,7 @@ try {
   await page.locator("#message").fill("Corrected offline message");
   available = true;
   await page.locator("#send").click();
-  await entry("Corrected offline message")
-    .getByRole("status")
-    .filter({ hasText: /^Sent$/ })
-    .waitFor();
+  await accepted("Corrected offline message");
   assert.equal(posts.length, 1);
   assert.equal(posts[0].text, "Corrected offline message");
   assert.equal(posts[0].assets.length, 1);
@@ -278,10 +289,7 @@ try {
   await entry("Keep the immutable request")
     .getByRole("button", { name: "Resume retries", exact: true })
     .click();
-  await entry("Keep the immutable request")
-    .getByRole("status")
-    .filter({ hasText: /^Sent$/ })
-    .waitFor();
+  await accepted("Keep the immutable request");
   assert.deepEqual(
     posts.slice(-2),
     [body, body],

@@ -16,7 +16,18 @@ spec = importlib.util.spec_from_file_location('fixture', skill / 'tests/runtime-
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 c = Canvas(Path(sys.argv[1]))
-class BackgroundServer(m.FakeServer):
+class LimitsServer(m.FakeServer):
+    limit_response = None
+
+    def call(self, method, params, timeout=60):
+        if method == "turn/start" and os.environ.get("CAPACITY_UI_FIXTURE"):
+            with (c.root / "capacity-starts.jsonl").open("a") as output:
+                output.write(__import__("json").dumps(params) + "\n")
+        if method == "account/rateLimits/read" and self.limit_response is not None:
+            return self.limit_response
+        return super().call(method, params, timeout)
+
+class BackgroundServer(LimitsServer):
     def __init__(self, *args):
         super().__init__(*args)
         self.commands = {}
@@ -46,7 +57,7 @@ class SettingsRuntime(Runtime):
             self.changed.clear()
 
 runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') else Runtime
-c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else m.FakeServer)
+c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else LimitsServer)
 if os.environ.get('EXECUTION_SETTINGS_CATALOG'):
     fixture_catalog = __import__('json').loads(os.environ['EXECUTION_SETTINGS_CATALOG'])
     c.runtime.catalog = lambda account='default': {'data': fixture_catalog}
@@ -107,6 +118,9 @@ if os.environ.get('SCOPED_ROOMS_UI_FIXTURE'):
     c.runtime.chat_message(child['id'], other['id'], 'Direct cross-team discussion', 'scope-cross-team')
     c.runtime.chat_message(child['id'], 'all', 'Global broadcast stays outside chat lists', 'scope-global')
 c.runtime.connect().gate.set()
+if os.environ.get('MESSAGES_UI_FIXTURE'):
+    c.runtime.complaint(lead['id'], {'action': 'submit', 'text': 'Please confirm the release scope.'}, 'messages-lead')
+    c.runtime.complaint(child['id'], {'action': 'submit', 'text': 'Please provide the review account.'}, 'messages-worker')
 if os.environ.get('BACKGROUND_UI_FIXTURE'):
     c.runtime.monitor(lead['id'], {'command': 'watch-fixture --deploy production'}, approved=False)
 server = make_server(c, port=int(sys.argv[2]) if len(sys.argv) > 2 else 0)
@@ -116,7 +130,9 @@ import threading
 def fixture_events():
     for line in sys.stdin:
         message = json.loads(line)
-        if message.get('method') == 'fixture/agent-monitor':
+        if message.get('method') == 'fixture/limits':
+            c.runtime.connect(message.get('accountKey', 'default')).limit_response = message['params']
+        elif message.get('method') == 'fixture/agent-monitor':
             params = message['params']
             agent = c.runtime.agent(params['agent'])
             c.runtime.monitor(agent['id'], params, approved=params.get('approved', True),
@@ -130,6 +146,8 @@ def fixture_events():
             except Exception as error:
                 reply = {'id': message['id'], 'ok': False, 'error': str(error)}
             print(json.dumps(reply), flush=True)
+        elif 'id' in message:
+            c.runtime.request(message)
         else:
             c.runtime.notification(message)
 threading.Thread(target=fixture_events, daemon=True).start()

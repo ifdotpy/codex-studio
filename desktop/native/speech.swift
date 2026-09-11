@@ -24,7 +24,14 @@ guard permission == .authorized else { emit(["error": "Speech recognition permis
 do {
     let source = try AVAudioFile(forReading: fileURL)
     let segmentFrames = AVAudioFrameCount(source.processingFormat.sampleRate * 50)
+    let total = Int(ceil(Double(source.length) / Double(segmentFrames)))
+    func progress(_ completed: Int) {
+        let data = try! JSONSerialization.data(withJSONObject: ["type": "progress", "completed": completed, "total": total])
+        FileHandle.standardError.write(data)
+        FileHandle.standardError.write(Data([10]))
+    }
     var parts: [String] = []
+    progress(0)
     while source.framePosition < source.length {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: source.processingFormat, frameCapacity: segmentFrames) else { throw NSError(domain: "Audio", code: 1, userInfo: [NSLocalizedDescriptionKey: "Cannot allocate an audio segment."]) }
         try source.read(into: buffer, frameCount: segmentFrames)
@@ -45,6 +52,7 @@ do {
         if let failure = failure { throw failure }
         guard let final = final else { throw NSError(domain: "Speech", code: 2, userInfo: [NSLocalizedDescriptionKey: "Speech recognition timed out. The recording is saved; retry transcription."]) }
         parts.append(final)
+        progress(parts.count)
     }
     let text = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     if text.isEmpty { throw NSError(domain: "Speech", code: 3, userInfo: [NSLocalizedDescriptionKey: "No speech was recognized. Play the recording before retrying."]) }

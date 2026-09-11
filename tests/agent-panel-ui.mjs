@@ -98,6 +98,25 @@ try {
     await route.fulfill({ json: panels.get(id) });
   });
   let queued = false;
+  // Keep transcript and queue snapshots consistent in this panel fixture.
+  await page.route("**/api/transcript/stream?*", (route) =>
+    route.fulfill({ status: 404, json: { error: "Snapshot fixture" } }),
+  );
+  await page.route("**/api/transcript?*", async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    const id = new URL(route.request().url()).searchParams.get("id");
+    if (queued && id === lead.id)
+      data.items.push({
+        id: `${lead.id}:queued-fixture`,
+        clientMessageId: "queued-fixture",
+        role: "user",
+        text: "A queued message",
+        deliveryStatus: "pending",
+        delivery: "queue",
+      });
+    await route.fulfill({ response, json: data });
+  });
   await page.route("**/api/queue?*", async (route) => {
     await route.fulfill({
       json: {
@@ -331,11 +350,23 @@ try {
   queued = true;
   put(lead, 8, interactive, "", callbacks);
   await frame.getByRole("button", { name: "Approve release" }).waitFor();
-  await page.locator(".message-queue").waitFor();
+  const queuedMessage = page
+    .locator("#messages .message.user")
+    .filter({ hasText: "A queued message" });
+  await queuedMessage
+    .getByRole("button", { name: "Edit queued message", exact: true })
+    .waitFor();
   assert.equal(
-    await panel.evaluate((el) => el.previousElementSibling?.className),
-    "message-queue",
+    await queuedMessage
+      .getByRole("button", { name: "Cancel queued message", exact: true })
+      .count(),
+    1,
   );
+  assert.equal(
+    await page.getByText("A queued message", { exact: true }).count(),
+    1,
+  );
+  assert.equal(await page.locator(".message-queue").count(), 0);
   await page.waitForTimeout(400);
   assert.equal(submissions.length, 0, "render never sends a callback");
   await assertLayout();
@@ -553,14 +584,13 @@ try {
   await page.waitForTimeout(200);
   await page.screenshot({ path: join(root, "panel-mobile.png") });
   await page.setViewportSize({ width: 1280, height: 980 });
-  await page.locator("#agent-chats-toggle").click();
-  await page.locator("[data-room]").first().click();
+  await page.locator("#messages-toggle").click();
+  const messages = page.getByRole("dialog", { name: "Messages", exact: true });
+  await messages.getByRole("tab", { name: "Team", exact: true }).click();
+  await messages.locator("[data-room]").first().click();
   await page.locator(".team-room-footer").waitFor();
   assert.equal(
-    await page
-      .getByRole("dialog", { name: "Agent chats", exact: true })
-      .locator(".agent-panel")
-      .count(),
+    await messages.locator(".agent-panel").count(),
     0,
   );
   assert.deepEqual(errors, []);

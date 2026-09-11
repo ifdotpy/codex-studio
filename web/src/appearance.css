@@ -1,0 +1,133 @@
+:root {
+  --raised: #26262e;
+  --inset: #141418;
+  --hover: #ffffff08;
+  --accent: #a5b4fc;
+}
+:root[data-mantine-color-scheme="light"] {
+  color-scheme: light;
+  --surface: #ffffff;
+  --sidebar: #f4f5f8;
+  --raised: #eef0f5;
+  --inset: #f7f8fa;
+  --hover: #18244708;
+  --line: #18244724;
+  --muted: #596174;
+  --text: #222737;
+  --accent: #3b4fc4;
+}
+.workspace-header.simple-workspace-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 56px;
+  height: auto;
+  padding: 8px 16px;
+}
+.simple-workspace-header .conversation-heading {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.simple-workspace-header #conversation-status {
+  max-width: none;
+}
+.simple-workspace-header #sidebar-toggle,
+.simple-workspace-header #team-toggle,
+#team-close {
+  display: inline-flex;
+}
+.simple-workspace-header > button {
+  flex-shrink: 0;
+}
+.chat-settings-panel {
+  display: grid;
+  gap: 16px;
+}
+.chat-settings-panel > .mantine-Button-root {
+  justify-self: start;
+  max-width: 100%;
+}
+.chat-settings-panel .execution-menu {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  flex-wrap: wrap;
+}
+.sidebar-search {
+  margin: 0 8px 8px;
+  justify-content: flex-start;
+}
+@media (max-width: 760px) {
+  .workspace-header.simple-workspace-header {
+    gap: 2px;
+    padding: 8px;
+    flex-wrap: wrap;
+  }
+  .simple-workspace-header .conversation-heading {
+    flex-basis: calc(100% - 48px);
+  }
+  .simple-workspace-header #messages-toggle {
+    margin-left: auto;
+  }
+  .simple-workspace-header #team-toggle {
+    min-height: 36px;
+  }
+}
+:root[data-mantine-color-scheme="light"] body {
+  color: var(--text);
+  background: var(--surface);
+}
+:root[data-mantine-color-scheme="light"] a {
+  color: var(--accent);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(
+    .message-content,
+    .message-text,
+    .prose,
+    .markdown-body,
+    .task-note,
+    .task-record,
+    .worker,
+    .chat-row
+  ) {
+  color: var(--text);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(
+    #chat-search,
+    #message,
+    .composer,
+    .composer-shell,
+    .chat-composer,
+    .draft-version,
+    .user-message,
+    .task-detail,
+    .task-row,
+    .task-input pre,
+    .task-output,
+    .task-terminal,
+    .agent-error,
+    .sync-status
+  ) {
+  background: var(--inset);
+  color: var(--text);
+  border-color: var(--line);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(.chat-row:hover, .worker:hover, .task-row:hover, .read-activity:hover) {
+  background: var(--hover);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(.chat-row.selected, .worker.selected, .task-row.selected) {
+  background: var(--raised);
+}
+:root[data-mantine-color-scheme="light"] :is(code, pre) {
+  color: var(--text);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(.attention-count, .tasks-count, .team-button-count) {
+  background: var(--raised);
+  color: var(--accent);
+}

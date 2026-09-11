@@ -102,6 +102,7 @@ try {
   );
   // Real React callers use the isolated bridge and the real asset/database API.
   await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("button", { name: "Chat settings", exact: true }).click();
   await page.locator("#project:not([disabled])").waitFor();
   const projectResponse = page.waitForResponse(
     (response) =>
@@ -136,7 +137,7 @@ try {
     "Native attachment",
   );
   await page
-    .getByRole("button", { name: "Inbox", exact: true })
+    .getByRole("button", { name: /^Messages/ })
     .first()
     .click();
   await page

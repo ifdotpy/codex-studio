@@ -1,12 +1,11 @@
 import { accountLimits } from "../accountUsage";
-import { Button, Menu, Modal, Switch, TextInput } from "@mantine/core";
+import { Button, Menu, Modal, TextInput } from "@mantine/core";
 import {
   Check,
   ChevronDown,
   ArrowRightLeft,
   Plus,
   RefreshCw,
-  ShieldAlert,
   UserRound,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -15,7 +14,6 @@ import type { Agent, Json } from "../types";
 import "./accounts.css";
 import AccountSignIn, { type LoginReceipt } from "./AccountSignIn";
 import { readBuckets, formatPercent } from "./Usage";
-import AccountProjectRules, { projectRuleSummary } from "./AccountProjectRules";
 
 export interface Account {
   id: string;
@@ -25,13 +23,14 @@ export interface Account {
   accountId?: string | null;
   source?: string;
   status: string;
+  disconnected?: boolean;
   error?: string | null;
-  projectRules?: { allowedProjects: string[] | null; revision: number };
 }
 export interface AccountsState {
   accounts: Account[];
   defaultAccountKey: string;
   logins?: LoginReceipt[];
+  supportsDisconnect?: boolean;
 }
 export function useAccounts(stateDir?: string) {
   const [data, setData] = useState<AccountsState>({
@@ -186,43 +185,131 @@ export function AccountTransferStatus({
   );
 }
 
+export function AccountTransferConfirmation({
+  opened,
+  onClose,
+  target,
+  onConfirm,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  target: Account | null;
+  onConfirm: () => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const lock = useRef(false);
+  useEffect(() => {
+    setError("");
+  }, [target?.id, opened]);
+  return (
+    <Modal
+      opened={opened}
+      onClose={() => {
+        if (!pending) onClose();
+      }}
+      title="Transfer this team"
+      closeOnClickOutside={!pending}
+      closeOnEscape={!pending}
+      withCloseButton={!pending}
+    >
+      <p>
+        Transfer the main agent and all its subagents to{" "}
+        <strong>{target?.email || target?.label}</strong>?
+      </p>
+      <p>
+        Active agents finish their current work first. Each agent keeps its
+        conversation history.
+      </p>
+      <p>
+        This changes the account for this team. It does not change the project
+        default.
+      </p>
+      {error && <p role="alert">{error}</p>}
+      <Button variant="default" disabled={pending} onClick={onClose}>
+        Cancel
+      </Button>
+      <Button
+        loading={pending}
+        disabled={!target || pending}
+        onClick={async () => {
+          if (lock.current) return;
+          lock.current = true;
+          setPending(true);
+          setError("");
+          try {
+            await onConfirm();
+            onClose();
+          } catch (failure) {
+            setError(errorText(failure));
+          } finally {
+            lock.current = false;
+            setPending(false);
+          }
+        }}
+      >
+        Transfer team
+      </Button>
+    </Modal>
+  );
+}
+
 export default function Accounts({
   state,
   agent,
   accountKey,
   changeAccount,
-  lead,
-  teamBusy,
-  changeRuleOverride,
   onError,
+  projectAccountKeys,
+  onModalOpenChange,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
   accountKey: string;
+  projectAccountKeys?: string[];
+  onModalOpenChange?: (opened: boolean) => void;
   changeAccount: (key: string) => Promise<void>;
-  lead?: Agent;
-  teamBusy: boolean;
-  changeRuleOverride: (enabled: boolean) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [opened, setOpened] = useState(false);
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [home, setHome] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [transferChoice, setTransferChoice] = useState<{
+    target: Account;
+    agentId: string;
+    requestId: string;
+  } | null>(null);
+  const [disconnectChoice, setDisconnectChoice] = useState<Account | null>(
+    null,
+  );
   const actionLock = useRef(false);
+  const childModalOpen = opened || !!transferChoice || !!disconnectChoice;
+  useEffect(() => {
+    onModalOpenChange?.(childModalOpen);
+    return () => onModalOpenChange?.(false);
+  }, [childModalOpen, onModalOpenChange]);
   const accounts = state.data.accounts || [];
   const selected = accounts.find((a) => a.id === accountKey);
   const pinned =
     !!agent &&
     (!agent.isLead || !agent.empty || !!agent.threadId || !!agent.inFlight);
-  const owner = lead || (agent?.isLead ? agent : undefined);
+  const owner = agent?.isLead ? agent : undefined;
   const transfer = owner?.accountTransfer;
   const transferring = transfer?.status === "pending";
   const transferTarget = accounts.find(
     (a) => a.id === transfer?.targetAccountKey,
   );
   const title = selected?.email || selected?.label || "Codex account";
-  const skipped = !!lead?.dangerouslySkipAccountRules;
+  const replacement = accounts.find(
+    (account) =>
+      account.id !== disconnectChoice?.id &&
+      !account.disconnected &&
+      account.status === "ready",
+  );
+  const disconnectsDefault =
+    disconnectChoice?.id === state.data.defaultAccountKey;
   const action = async (key: string, run: () => Promise<unknown>) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -252,13 +339,7 @@ export default function Accounts({
             variant="subtle"
             aria-label={`Account: ${title}`}
             title={title}
-            leftSection={
-              skipped ? (
-                <ShieldAlert size={15} className="account-rules-warning" />
-              ) : (
-                <UserRound size={15} />
-              )
-            }
+            leftSection={<UserRound size={15} />}
             rightSection={<ChevronDown size={13} />}
           >
             <span className="account-picker-label">{title}</span>
@@ -275,51 +356,63 @@ export default function Accounts({
               ? "Transfer team to account"
               : "Account for this conversation"}
           </Menu.Label>
-          {accounts.map((account) => (
-            <Menu.Item
-              key={account.id}
-              disabled={
-                !!pending ||
-                account.status !== "ready" ||
-                (pinned && !owner) ||
-                transferring
-              }
-              leftSection={
-                account.id === accountKey ? (
-                  <Check size={14} />
-                ) : (
-                  <span style={{ width: 14 }} />
-                )
-              }
-              onClick={() =>
-                void action(account.id, async () => {
-                  if (pinned && owner) {
-                    await api("/api/agents/account-transfer", {
-                      id: owner.id,
-                      account_key: account.id,
-                      request_id: crypto.randomUUID(),
+          {accounts
+            .filter(
+              (account) => !account.disconnected || account.id === accountKey,
+            )
+            .sort(
+              (a, b) =>
+                Number(projectAccountKeys?.includes(b.id) || false) -
+                Number(projectAccountKeys?.includes(a.id) || false),
+            )
+            .map((account) => (
+              <Menu.Item
+                key={account.id}
+                disabled={
+                  !!pending ||
+                  account.status !== "ready" ||
+                  account.disconnected ||
+                  (pinned && !owner) ||
+                  transferring
+                }
+                leftSection={
+                  account.id === accountKey ? (
+                    <Check size={14} />
+                  ) : (
+                    <span style={{ width: 14 }} />
+                  )
+                }
+                onClick={() => {
+                  if (account.id === accountKey) return;
+                  if (pinned && owner)
+                    setTransferChoice({
+                      target: account,
+                      agentId: owner.id,
+                      requestId: crypto.randomUUID(),
                     });
-                  } else if (!pinned) await changeAccount(account.id);
-                })
-              }
-            >
-              <span className="account-menu-identity">
-                {account.email || account.label}
-                <small>
-                  {[
-                    account.plan,
-                    account.status !== "ready" ? account.status : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ") || "Ready"}
-                  {account.id === state.data.defaultAccountKey
-                    ? " · Default"
-                    : ""}
-                </small>
-                <small>{projectRuleSummary(account)}</small>
-              </span>
-            </Menu.Item>
-          ))}
+                  else if (!pinned)
+                    void action(account.id, () => changeAccount(account.id));
+                }}
+              >
+                <span className="account-menu-identity">
+                  {account.email || account.label}
+                  <small>
+                    {[
+                      projectAccountKeys?.includes(account.id)
+                        ? "Project"
+                        : null,
+                      account.plan,
+                      account.status !== "ready" ? account.status : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ") || "Ready"}
+                    {account.id === state.data.defaultAccountKey
+                      ? " · Application default"
+                      : ""}
+                  </small>
+                </span>
+              </Menu.Item>
+            ))}
           <AccountTransferStatus
             transfer={transfer}
             targetLabel={transferTarget?.email || transferTarget?.label}
@@ -334,31 +427,21 @@ export default function Accounts({
             }
           />
           <Menu.Divider />
-          {lead && (
-            <div className="account-rule-override">
-              <Switch
-                label="Dangerously skip rules"
-                color="orange"
-                checked={skipped}
-                disabled={teamBusy || !!pending || !lead.isLead}
-                onChange={(event) => {
-                  const checked = event.currentTarget.checked;
-                  void action("override", () => changeRuleOverride(checked));
-                }}
-              />
-              <p>For this team only. Codex permissions stay active.</p>
-              {teamBusy && <p>Wait for active turns to finish.</p>}
-            </div>
-          )}
           <Menu.Item
             leftSection={<Plus size={14} />}
-            onClick={() => setOpened(true)}
+            onClick={() => {
+              setAdding(true);
+              setOpened(true);
+            }}
           >
             Add account
           </Menu.Item>
           <Menu.Item
             leftSection={<UserRound size={14} />}
-            onClick={() => setOpened(true)}
+            onClick={() => {
+              setAdding(false);
+              setOpened(true);
+            }}
           >
             Manage accounts{accounts.length ? ` · ${accounts.length}` : ""}
           </Menu.Item>
@@ -369,155 +452,257 @@ export default function Accounts({
           )}
         </Menu.Dropdown>
       </Menu>
-      {skipped && (
-        <Button
-          className="account-rules-badge"
-          size="compact-xs"
-          color="orange"
-          variant="light"
-          leftSection={<ShieldAlert size={12} />}
-          title="Dangerously skip rules is enabled for this team"
-          onClick={() => setOpened(true)}
-        >
-          Rules off
-        </Button>
-      )}
       <Modal
         opened={opened}
         onClose={() => setOpened(false)}
-        title="Accounts"
+        title={adding ? "Add account" : "Accounts"}
+        closeOnEscape={!disconnectChoice}
+        closeOnClickOutside={!disconnectChoice}
         size="lg"
         classNames={{ body: "accounts-manager" }}
       >
-        {lead && (
-          <div className="account-rule-override account-rule-override-panel">
-            <Switch
-              label="Dangerously skip rules"
-              color="orange"
-              checked={skipped}
-              disabled={teamBusy || !!pending || !lead.isLead}
-              onChange={(event) => {
-                const checked = event.currentTarget.checked;
-                void action("override", () => changeRuleOverride(checked));
-              }}
-            />
-            <p>For this team only. Codex permissions stay active.</p>
-            {teamBusy && <p>Wait for active turns to finish.</p>}
-          </div>
-        )}
-        <AccountSignIn state={state} opened={opened} />
-        <div className="accounts-list" aria-label="Saved accounts">
-          {accounts.map((account) => (
-            <section
-              className="account-row"
-              key={account.id}
-              data-account={account.id}
-              aria-label={account.email || account.label}
-            >
-              <div className="account-row-header">
-                <div className="account-identity">
-                  <strong>{account.email || account.label}</strong>
-                  {account.plan && (
-                    <span className="account-plan">{account.plan}</span>
-                  )}
-                  {account.status !== "ready" && (
-                    <small>{account.status}</small>
-                  )}
-                </div>
-                {account.id === state.data.defaultAccountKey ? (
-                  <span className="account-default">
-                    <Check size={12} /> Default
-                  </span>
-                ) : (
-                  <Button
-                    size="compact-xs"
-                    variant="subtle"
-                    disabled={!!pending || account.status !== "ready"}
-                    loading={pending === `default:${account.id}`}
-                    aria-label={`Use ${account.email || account.label} by default`}
-                    onClick={() =>
-                      void action(`default:${account.id}`, async () => {
-                        state.setData(
-                          await api<AccountsState>("/api/accounts/default", {
-                            account_key: account.id,
-                          }),
-                        );
-                      })
-                    }
-                  >
-                    Use by default
-                  </Button>
-                )}
-              </div>
-              {account.error && (
-                <p className="account-action-error" role="alert">
-                  {account.error}
-                </p>
-              )}
-              <AccountCapacity account={account} opened={opened} />
-              <AccountProjectRules account={account} saved={state.setData} />
-            </section>
-          ))}
-        </div>
-        {!accounts.length && (
-          <p className="accounts-intro">
-            No accounts found. Sign in or find profiles on this computer.
-          </p>
-        )}
-        <div className="accounts-actions">
+        {adding ? (
+          <AccountSignIn state={state} opened={opened} />
+        ) : (
           <Button
-            variant="subtle"
-            leftSection={<RefreshCw size={14} />}
-            loading={pending === "discover"}
-            disabled={!!pending}
-            onClick={() =>
-              void action("discover", async () => {
-                state.setData(
-                  await api<AccountsState>("/api/accounts/discover", {}),
-                );
-              })
-            }
+            onClick={() => setAdding(true)}
+            leftSection={<Plus size={14} />}
           >
-            Find existing accounts
+            Add account
           </Button>
-        </div>
-        <details className="account-register">
-          <summary>Add a Codex home directory</summary>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void action("register", async () => {
-                state.setData(
-                  await api<AccountsState>("/api/accounts/register", {
-                    home: home.trim(),
-                  }),
-                );
-                setHome("");
-              });
-            }}
-          >
-            <TextInput
-              label="Codex home"
-              placeholder="/path/to/.codex"
-              value={home}
-              onChange={(e) => setHome(e.target.value)}
-              autoComplete="off"
-            />
-            <Button
-              type="submit"
-              size="compact-sm"
-              disabled={!home.trim() || !!pending}
-              loading={pending === "register"}
+        )}
+        {adding && (
+          <Button variant="subtle" onClick={() => setAdding(false)}>
+            Back to accounts
+          </Button>
+        )}
+        {!adding && (
+          <>
+            <p className="accounts-intro">
+              The application default applies when a project has no default.
+              Existing chats keep their account.
+            </p>
+            <div className="accounts-list" aria-label="Saved accounts">
+              {accounts.map((account) => (
+                <section
+                  className="account-row"
+                  key={account.id}
+                  data-account={account.id}
+                  aria-label={account.email || account.label}
+                >
+                  <div className="account-row-header">
+                    <div className="account-identity">
+                      <strong>{account.email || account.label}</strong>
+                      {account.plan && (
+                        <span className="account-plan">{account.plan}</span>
+                      )}
+                      {account.status !== "ready" && (
+                        <small>{account.status}</small>
+                      )}
+                    </div>
+                    {account.id === state.data.defaultAccountKey ? (
+                      <span className="account-default">
+                        <Check size={12} /> Application default
+                      </span>
+                    ) : (
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        disabled={
+                          !!pending ||
+                          account.status !== "ready" ||
+                          account.disconnected
+                        }
+                        loading={pending === `default:${account.id}`}
+                        aria-label={`Use ${account.email || account.label} by default`}
+                        onClick={() =>
+                          void action(`default:${account.id}`, async () => {
+                            state.setData(
+                              await api<AccountsState>(
+                                "/api/accounts/default",
+                                {
+                                  account_key: account.id,
+                                },
+                              ),
+                            );
+                          })
+                        }
+                      >
+                        Set application default
+                      </Button>
+                    )}
+                  </div>
+                  {account.error && (
+                    <p className="account-action-error" role="alert">
+                      {account.error}
+                    </p>
+                  )}
+                  {account.disconnected && (
+                    <p>
+                      Disconnected from new chat choices. Existing chats keep
+                      this account.
+                    </p>
+                  )}
+                  {!account.disconnected && (
+                    <AccountCapacity account={account} opened={opened} />
+                  )}
+                  {state.data.supportsDisconnect && (
+                    <Button
+                      variant="subtle"
+                      size="compact-xs"
+                      disabled={!!pending}
+                      onClick={() => {
+                        if (account.disconnected)
+                          void action(`reconnect:${account.id}`, async () => {
+                            state.setData(
+                              await api<AccountsState>(
+                                "/api/accounts/reconnect",
+                                { account_key: account.id },
+                              ),
+                            );
+                          });
+                        else setDisconnectChoice(account);
+                      }}
+                    >
+                      {account.disconnected
+                        ? "Reconnect account"
+                        : "Disconnect account"}
+                    </Button>
+                  )}
+                </section>
+              ))}
+            </div>
+            {!accounts.length && (
+              <p className="accounts-intro">
+                No accounts found. Sign in or find profiles on this computer.
+              </p>
+            )}
+            <div className="accounts-actions">
+              <Button
+                variant="subtle"
+                leftSection={<RefreshCw size={14} />}
+                loading={pending === "discover"}
+                disabled={!!pending}
+                onClick={() =>
+                  void action("discover", async () => {
+                    state.setData(
+                      await api<AccountsState>("/api/accounts/discover", {}),
+                    );
+                  })
+                }
+              >
+                Find existing accounts
+              </Button>
+            </div>
+          </>
+        )}
+        {adding && (
+          <details className="account-register">
+            <summary>Add a Codex home directory</summary>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void action("register", async () => {
+                  state.setData(
+                    await api<AccountsState>("/api/accounts/register", {
+                      home: home.trim(),
+                    }),
+                  );
+                  setHome("");
+                });
+              }}
             >
-              Add profile
-            </Button>
-          </form>
-        </details>
+              <TextInput
+                label="Codex home"
+                placeholder="/path/to/.codex"
+                value={home}
+                onChange={(e) => setHome(e.target.value)}
+                autoComplete="off"
+              />
+              <Button
+                type="submit"
+                size="compact-sm"
+                disabled={!home.trim() || !!pending}
+                loading={pending === "register"}
+              >
+                Add profile
+              </Button>
+            </form>
+          </details>
+        )}
         {(error || state.error) && (
           <p className="account-action-error" role="alert">
             {error || state.error}
           </p>
         )}
+      </Modal>
+      <AccountTransferConfirmation
+        opened={!!transferChoice}
+        target={transferChoice?.target || null}
+        onClose={() => setTransferChoice(null)}
+        onConfirm={async () => {
+          if (!transferChoice) return;
+          await api("/api/agents/account-transfer", {
+            id: transferChoice.agentId,
+            account_key: transferChoice.target.id,
+            request_id: transferChoice.requestId,
+          });
+        }}
+      />
+      <Modal
+        opened={!!disconnectChoice}
+        onClose={() => {
+          if (!pending) setDisconnectChoice(null);
+        }}
+        title="Disconnect account"
+        closeOnClickOutside={!pending}
+        closeOnEscape={!pending}
+        withCloseButton={!pending}
+      >
+        <p>
+          Remove{" "}
+          <strong>{disconnectChoice?.email || disconnectChoice?.label}</strong>{" "}
+          from new chat choices?
+        </p>
+        <p>
+          Existing chats continue with this account. This does not sign out of
+          Codex or delete credentials. You can reconnect it here.
+        </p>
+        {disconnectsDefault && (
+          <p>
+            {replacement
+              ? `The application default changes to ${replacement.email || replacement.label}.`
+              : "Connect another account before disconnecting the application default."}
+          </p>
+        )}
+        <p>
+          Projects with this default need another account before new chats can
+          start.
+        </p>
+        <Button
+          variant="default"
+          disabled={!!pending}
+          onClick={() => setDisconnectChoice(null)}
+        >
+          Cancel
+        </Button>
+        <Button
+          loading={pending === "disconnect"}
+          disabled={!!pending || (disconnectsDefault && !replacement)}
+          onClick={() =>
+            void action("disconnect", async () => {
+              state.setData(
+                await api<AccountsState>("/api/accounts/disconnect", {
+                  account_key: disconnectChoice?.id,
+                }),
+              );
+              setDisconnectChoice(null);
+            })
+          }
+        >
+          Disconnect account
+        </Button>
+        {error && <p role="alert">{error}</p>}
       </Modal>
     </>
   );

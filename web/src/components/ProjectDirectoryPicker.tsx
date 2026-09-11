@@ -12,11 +12,9 @@ type Directory = {
 
 export default function ProjectDirectoryPicker({
   initialPath,
-  suggestedPaths = [],
   onSelect,
 }: {
   initialPath?: string;
-  suggestedPaths?: string[];
   onSelect: (path: string) => Promise<void>;
 }) {
   const [path, setPath] = useState(initialPath);
@@ -63,22 +61,6 @@ export default function ProjectDirectoryPicker({
   );
   return (
     <div className="directory-picker" aria-busy={loading || saving}>
-      {!!suggestedPaths.length && (
-        <div className="directory-suggestions">
-          <small>Allowed projects</small>
-          {suggestedPaths.map((folder) => (
-            <Button
-              key={folder}
-              variant="light"
-              disabled={saving}
-              title={folder}
-              onClick={() => navigate(folder)}
-            >
-              {folder}
-            </Button>
-          ))}
-        </div>
-      )}
       <form
         className="directory-path-entry"
         onSubmit={(event) => {

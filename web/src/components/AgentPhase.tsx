@@ -10,6 +10,8 @@ import {
   Wrench,
 } from "lucide-react";
 import type { Agent } from "../types";
+import { currentCapacityRetry } from "../capacityRetry";
+import { nativeThreadError } from "../nativeErrors";
 export default function AgentPhase({
   agent,
   connection,
@@ -18,15 +20,30 @@ export default function AgentPhase({
   connection: string;
 }) {
   if (!agent) return null;
+  const safety = agent.nativeSafetyBuffering;
+  if (
+    safety?.showBufferingUi &&
+    !safety.dismissed &&
+    !safety.responseStarted &&
+    safety.turnId === agent.turnId &&
+    agent.inFlight
+  )
+    return null;
+  // The terminal error appears in the transcript and the account notice.
+  if (agent.status === "failed" && agent.error) return null;
   const active = ["running", "starting"].includes(agent.status);
   const awaitingResponse =
     active &&
     (agent.startAttempt?.prepareError || agent.startAttempt?.responseError);
-  const phase = awaitingResponse
-    ? "acknowledgement"
-    : active
-      ? agent.activity?.phase || agent.status
-      : agent.status;
+  const phase = nativeThreadError(agent)
+    ? "blocked"
+    : currentCapacityRetry(agent)?.status === "scheduled"
+      ? "capacity-retry"
+      : awaitingResponse
+        ? "acknowledgement"
+        : active
+          ? agent.activity?.phase || agent.status
+          : agent.status;
   const names: Record<string, string> = {
     thinking: "Thinking",
     writing: "Writing",
@@ -34,8 +51,11 @@ export default function AgentPhase({
     running: "Working",
     starting: "Starting",
     acknowledgement: "Waiting for Codex",
-    retrying: "Codex is reconnecting",
+    retrying: "Codex is retrying",
+    "capacity-retry": "Waiting to retry model",
+    blocked: "Chat stopped as a precaution",
     auth: "Restoring sign-in",
+    safety: "Codex is checking this request",
     error: "Codex reported an error",
     queued: "Queued",
     waiting: "Waiting for agents or commands",
@@ -57,27 +77,39 @@ export default function AgentPhase({
     waiting: Clock3,
     acknowledgement: Clock3,
     retrying: LoaderCircle,
+    "capacity-retry": Clock3,
     auth: Clock3,
+    safety: Clock3,
     error: CircleAlert,
+    blocked: CircleAlert,
     approval: Clock3,
     failed: CircleAlert,
     interrupted: CircleAlert,
     paused: Pause,
   };
   const Icon = connection === "reconnecting" ? WifiOff : icons[phase] || Circle;
+  const native = ["retrying", "auth", "safety"].includes(phase)
+    ? agent.nativeStatus
+    : null;
+  const message =
+    native?.message || native?.error?.message || names[phase] || "Working";
+  const details = native?.error?.additionalDetails;
   return (
     <div
       className={`agent-phase ${active ? "active" : ""}`}
       role="status"
       data-phase={phase}
-      title={agent.nativeStatus?.message || agent.nativeStatus?.error?.message}
     >
       <Icon size={15} />
-      <span>
-        {connection === "reconnecting"
-          ? "Connection lost. Reconnecting…"
-          : names[phase] || "Working"}
-      </span>
+      <div className="agent-phase-copy">
+        <span>
+          {connection === "reconnecting"
+            ? "Connection lost. Reconnecting…"
+            : message}
+        </span>
+        {connection === "reconnecting" && native && <p>{message}</p>}
+        {typeof details === "string" && details && <pre>{details}</pre>}
+      </div>
       {active && connection !== "reconnecting" && (
         <span className="phase-dots" aria-hidden="true">
           <i />

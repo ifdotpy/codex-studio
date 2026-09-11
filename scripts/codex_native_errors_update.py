@@ -1,4 +1,5 @@
 """Install reviewed error handlers without stopping native turns or commands."""
+from codex_capacity_retry import CapacityRetryMixin
 from pathlib import Path
 import types
 
@@ -14,18 +15,23 @@ BASE = {
     'send': '4008e181798dec99e04358dee571fc851edc259410468239676565216e5b106e',
     'dispatch': '3ced83fd48ff8da3d9c312fbd715977eb8c217a807b6a070ffa04a93f8ec1ed0',
 }
+POLICY_GUARDS = ('start', 'answer', 'dynamic', 'native_action', 'run_native_action', 'limits')
 
 
 def apply(runtime):
+    if not isinstance(runtime, CapacityRetryMixin):
+        raise RuntimeError('Capacity retry requires current source; no update applied')
     source = Path(__file__).with_name('codex_runtime.py')
     module = compile(source.read_text(), str(source), 'exec', dont_inherit=True)
     cls = next(c for c in module.co_consts if isinstance(c, types.CodeType) and c.co_name == 'Runtime')
     replacements = {}
-    for name in BASE:
+    for name in (*BASE, *POLICY_GUARDS):
         previous = getattr(runtime, name).__func__
         scope = previous.__globals__.copy()
         for symbol in ('NativeRpcError', 'SUPPORTED_REQUESTS', 'consume_native_notification',
-                       'advance_native_status', 'notice', 'error_message', 'account_notices'):
+                       'advance_native_status', 'notice', 'error_message', 'account_notices',
+                       'native_thread_block', 'assert_native_thread_open', 'THREAD_BLOCK_MESSAGE',
+                       'refresh_native_limits', 'native_request_thread', 'LEGACY_APPROVAL_REQUESTS'):
             scope[symbol] = getattr(errors, symbol)
         code = next(c for c in cls.co_consts if isinstance(c, types.CodeType) and c.co_name == name)
         if 'SubmissionRejected' in code.co_names and 'SubmissionRejected' not in scope:
@@ -38,6 +44,13 @@ def apply(runtime):
     try:
         if runtime.closed:
             raise RuntimeError('Runtime closed; no update applied')
+        # The old update cannot install only part of the native thread precaution.
+        # Start the current source when the submission and answer guards are absent.
+        for name in POLICY_GUARDS:
+            if fingerprint(getattr(runtime, name)) != fingerprint(replacements[name]):
+                raise RuntimeError('Native policy guard ' + name + ' requires current source; no update applied')
+        for name in POLICY_GUARDS:
+            replacements.pop(name)
         for name, value in replacements.items():
             if fingerprint(getattr(runtime, name)) not in {BASE[name], fingerprint(value)}:
                 raise RuntimeError('Unknown runtime method ' + name + '; no update applied')

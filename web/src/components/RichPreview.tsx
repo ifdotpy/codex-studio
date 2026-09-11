@@ -103,6 +103,11 @@ export default memo(function RichPreview({
   const [svg, setSvg] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
+  useEffect(() => {
+    setCopied(false);
+    setCopyError("");
+  }, [source]);
   useEffect(() => {
     if (kind !== "mermaid") return;
     let active = true;
@@ -195,8 +200,11 @@ export default memo(function RichPreview({
             try {
               await navigator.clipboard.writeText(source);
               setCopied(true);
+              setCopyError("");
             } catch {
-              setError("Cannot copy. Select the source text to copy it.");
+              setCopyError(
+                "Cannot copy. Open Source and select the text to copy it.",
+              );
             }
           }}
         >
@@ -220,6 +228,11 @@ export default memo(function RichPreview({
           <Download size={14} />
         </Button>
       </div>
+      {copyError && (
+        <p role="alert" className="rich-preview-error">
+          {copyError}
+        </p>
+      )}
       {mode === "source" ? (
         <pre className="rich-preview-source">
           <code>{source}</code>

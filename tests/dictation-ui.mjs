@@ -27,7 +27,7 @@ const server = await createServer({
       load(id) {
         if (id === root + "/dictation-entry.tsx")
           return `import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import'/src/studio-theme.css';import{theme}from'/src/theme.ts';import{Dictation}from'/src/components/Dictation.tsx';
- window.codexDesktop={requestMicrophone:async()=>true,prepareTranscription:async()=> 'permit',transcribeAudio:async(value)=>{window.audioBytes=value.audio.byteLength;if(window.deferTranscription)return new Promise(resolve=>window.finishTranscription=resolve);if(!window.retryOK)throw Error('Recognition unavailable; recording preserved.');return {text:'Recovered spoken instruction'};}};
+ window.codexDesktop={requestMicrophone:async()=>true,prepareTranscription:async()=> 'permit',onTranscriptionProgress:callback=>{window.speechProgress=callback;return ()=>{};},cancelTranscription:async id=>{window.rejectTranscription?.(Error("Transcription cancelled. Your recording is saved."));return true;},transcribeAudio:async(value)=>{window.attemptId=value.id;window.audioBytes=value.audio.byteLength;if(window.deferTranscription)return new Promise((resolve,reject)=>{window.finishTranscription=resolve;window.rejectTranscription=reject;});if(!window.retryOK)throw Error('Recognition unavailable; recording preserved.');return {text:'Recovered spoken instruction'};}};
  function App(){const[chat,setChat]=useState('first'),[draft,setDraft]=useState('Original draft');return <MantineProvider theme={theme} forceColorScheme="dark"><button onClick={()=>setChat(chat==='first'?'second':'first')}>Switch chat</button><textarea aria-label="Draft" value={draft} onChange={e=>setDraft(e.target.value)}/><Dictation key={chat} chatId={chat} onInsert={text=>setDraft(current=>current+'\\n'+text)}/></MantineProvider>}createRoot(document.getElementById('root')).render(<App/>);`;
         if (id.endsWith("/dictation/capture.ts"))
           return `export async function captureAudio(onChunk){window.emitAudio=()=>onChunk(new Int16Array(16000).fill(12));return {sampleRate:16000,stop:async()=>{window.captureStopped=(window.captureStopped||0)+1;if(window.failStop)throw Error("Final chunk not confirmed. Earlier audio saved.");}}}`;
@@ -60,7 +60,6 @@ try {
   await page.getByRole("button", { name: /Stop ·/ }).waitFor();
   await page.evaluate(() => window.emitAudio());
   await page.getByRole("button", { name: /Stop ·/ }).click();
-  await page.getByRole("button", { name: "Transcribe", exact: true }).click();
   await page
     .getByText("Recognition unavailable; recording preserved.")
     .waitFor();
@@ -78,9 +77,11 @@ try {
   assert.equal(await page.locator("audio").count(), 1);
   await page.evaluate(() => (window.retryOK = true));
   await page.getByRole("button", { name: "Retry transcription" }).click();
-  await page
-    .getByText("Recovered spoken instruction", { exact: true })
-    .waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('textarea[aria-label="Review dictated text"]')
+        ?.value === "Recovered spoken instruction",
+  );
   assert.equal(
     await page.getByRole("textbox", { name: "Draft" }).inputValue(),
     "Original draft",
@@ -103,6 +104,20 @@ try {
   await page.getByRole("button", { name: "Switch chat" }).click();
   await page.waitForFunction(() => window.captureStopped >= 1);
   await page.getByRole("button", { name: "Dictation", exact: true }).click();
+  await page.getByRole("textbox", { name: "Review dictated text" }).fill("Corrected spoken instruction");
+  await page.getByRole("button", { name: "Delete recording" }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("audio").length === 0,
+  );
+  await page.getByRole("button", { name: "Undo delete" }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll("audio").length === 1,
+  );
+  assert.equal(
+    await page.getByRole("textbox", { name: "Review dictated text" }).inputValue(),
+    "Corrected spoken instruction",
+    "Delete and Undo preserve reviewed text",
+  );
   await page.getByRole("button", { name: "Delete recording" }).click();
   await page.waitForFunction(
     () => document.querySelectorAll("audio").length === 0,
@@ -195,6 +210,23 @@ try {
       exact: true,
     })
     .waitFor();
+  await page.evaluate(() => {
+    window.deferTranscription = true;
+    window.finishTranscription = null;
+  });
+  await page.getByRole("button", { name: "Retry transcription" }).click();
+  await page.waitForFunction(() => !!window.finishTranscription);
+  await page.evaluate(() =>
+    window.speechProgress({ id: window.attemptId, completed: 1, total: 3 }),
+  );
+  await page.getByText("Transcribing… 1 of 3 parts", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Cancel transcription" }).click();
+  await page
+    .getByText("Transcription cancelled. Your recording is saved.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await page.locator("audio").count(), 1);
   assert.deepEqual(errors, []);
   console.log(
     "PASS: recording chunks, WAV, failure, reload, retry, explicit draft insertion, chat isolation, unmount stop, deletion. No microphone or recognition calls.",

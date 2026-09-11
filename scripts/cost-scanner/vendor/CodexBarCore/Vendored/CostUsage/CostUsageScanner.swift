@@ -267,7 +267,11 @@ enum CostUsageScanner {
         private func indexRoots() throws {
             self.didIndexRoots = true
             guard !self.roots.isEmpty else { return }
-            for root in self.roots {
+            // Imported ancestors provide fork baselines without contributing billed usage.
+            let lineageRoots = self.roots + self.roots.map {
+                $0.appendingPathComponent(".studio-imports", isDirectory: true)
+            }
+            for root in lineageRoots {
                 try self.checkCancellation?()
                 guard let enumerator = FileManager.default.enumerator(
                     at: root,

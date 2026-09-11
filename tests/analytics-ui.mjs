@@ -312,7 +312,9 @@ try {
   await page.goto(`http://127.0.0.1:${port}`);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   assert.equal(observed.length, 0, "Closed analytics must not fetch");
-  await page.getByRole("button", { name: "Open context analytics" }).click();
+  await page.getByRole("button", { name: "Chat context", exact: true }).click();
+  assert.equal(observed.length, 0, "Simple context does not fetch analytics");
+  await page.getByRole("button", { name: "Advanced analytics" }).click();
   const dialog = page.getByRole("dialog", { name: "Context analytics" });
   await dialog.getByText("128,000", { exact: true }).waitFor();
   assert.equal(
@@ -409,6 +411,7 @@ try {
   assert.equal(observed.at(-1).export, "1");
   assert.equal(observed.at(-1).tool, longName);
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: join(root, "resize-390.png") });
   await dialog.locator(".analytics-call-row").first().click();
   await dialog.locator(".analytics-call-detail summary").click();
   const noOverflow = () =>
@@ -477,10 +480,11 @@ try {
     .getByRole("alert")
     .getByText("Analytics storage unavailable")
     .waitFor();
-  assert.equal(
-    await dialog.getByText("128,000", { exact: true }).count(),
-    0,
-    "Stale success not shown after failure",
+  assert.ok(
+    await dialog
+      .getByRole("tab", { name: "Activity", exact: true })
+      .isVisible(),
+    "Refresh failure preserves the report and tab",
   );
   mode = "empty";
   await dialog.getByRole("button", { name: "Refresh analytics" }).click();
@@ -493,6 +497,12 @@ try {
   mode = "defer";
   await dialog.getByRole("button", { name: "Refresh analytics" }).click();
   await poll(() => !!deferred, "Pending request");
+  assert.ok(
+    await dialog
+      .getByText("No context-window measurements in this period.")
+      .isVisible(),
+    "Refresh keeps the previous report visible",
+  );
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   await deferred.fulfill({ json: report });

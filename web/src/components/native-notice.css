@@ -13,6 +13,32 @@
   margin-top: 4px;
   color: var(--mantine-color-dimmed);
 }
+.native-error.warning {
+  border-color: color-mix(
+    in srgb,
+    var(--mantine-color-yellow-4) 30%,
+    transparent
+  );
+  color: var(--mantine-color-yellow-3);
+}
+.native-error.info {
+  border-color: color-mix(
+    in srgb,
+    var(--mantine-color-blue-4) 30%,
+    transparent
+  );
+  color: var(--mantine-color-blue-3);
+}
+.native-error-links,
+.native-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 8px;
+}
+.native-error > button {
+  margin-top: 8px;
+}
 .native-error details {
   margin-top: 6px;
   color: var(--mantine-color-dimmed);
@@ -39,9 +65,109 @@
 .native-notice.error {
   color: var(--mantine-color-red-3);
 }
+.native-notice.warning {
+  color: var(--mantine-color-yellow-3);
+}
+.native-notice.info {
+  color: var(--mantine-color-blue-3);
+}
+.native-notice > small {
+  display: block;
+  margin-top: 4px;
+  color: var(--mantine-color-dimmed);
+}
+
+.native-limit-notice {
+  padding: 12px 0;
+  border-block: 1px solid var(--mantine-color-dark-4);
+  color: var(--mantine-color-text);
+}
+.native-limit-notice-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mantine-color-red-3);
+}
+.native-limit-notice-heading > svg {
+  flex-shrink: 0;
+}
+.native-limit-notice-heading > strong {
+  font-weight: 600;
+}
+.native-limit-notice > p {
+  margin: 6px 0 0 24px;
+  line-height: 1.5;
+}
+.native-limit-notice > details {
+  margin: 8px 0 0 24px;
+  color: var(--mantine-color-dimmed);
+  font-size: 12px;
+}
 
 .native-account-notices {
   margin: 8px 20px;
   max-height: 180px;
   overflow: auto;
 }
+
+.capacity-retry p {
+  margin: 6px 0;
+  color: var(--mantine-color-dimmed);
+}
+.account-limit-recovery small {
+  display: block;
+  margin-top: 6px;
+  color: var(--mantine-color-dimmed);
+}
+.account-limit-recovery .mantine-Button-root {
+  max-width: 100%;
+  height: auto;
+  min-height: 26px;
+  padding-block: 4px;
+}
+.account-limit-recovery .mantine-Button-label {
+  white-space: normal;
+  text-align: left;
+}
+
+.native-error.usage-limit {
+  padding: 14px 16px;
+  border-color: var(--mantine-color-dark-4);
+  background: var(--mantine-color-dark-7);
+  color: var(--mantine-color-text);
+}
+.native-error.usage-limit .account-limit-recovery.inline {
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.native-error.usage-limit .account-limit-recovery > strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.native-error.usage-limit .account-limit-recovery > p {
+  margin: 5px 0 0;
+  color: var(--mantine-color-dimmed);
+  line-height: 1.5;
+}
+.native-error.usage-limit > button {
+  margin-top: 10px;
+}
+.native-error.usage-limit > details {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.native-safety {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 10px;
+  color: var(--mantine-color-text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.native-safety-title { display: flex; align-items: center; gap: 8px; }
+.native-safety-title svg { flex-shrink: 0; color: var(--mantine-color-dimmed); }
+.native-safety p { margin: 6px 0 0; color: var(--mantine-color-dimmed); line-height: 1.5; }
+.native-safety .native-error-actions { align-items: center; }

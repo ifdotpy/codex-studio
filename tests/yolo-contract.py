@@ -130,12 +130,6 @@ class Yolo(f.WorkerDefaults):
         self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
         self.assertIs(self.runtime.agent(self.lead['id'])['yoloMode'], False)
 
-    def test_yolo_does_not_bypass_account_rules(self):
-        self.runtime.accounts.check_project = lambda *a, **kw: (_ for _ in ()).throw(ValueError('Restricted project'))
-        with self.assertRaisesRegex(ValueError, 'Restricted project'):
-            self.runtime.prepare(self.lead)
-        self.assertFalse(self.lead['dangerouslySkipAccountRules'])
-
     def test_new_lead_reuse_and_request_identity(self):
         lead = self.runtime.new_lead({'cwd': str(self.root), 'yolo_mode': False})
         reused = self.runtime.new_lead({'previous': lead['id'], 'yolo_mode': True})

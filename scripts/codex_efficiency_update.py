@@ -69,7 +69,7 @@ def replacements(runtime):
         or (isinstance(n, ast.For) and isinstance(n.iter, ast.Name) and n.iter.id == 'TOOLS')]
     exec(compile(ast.Module(body=definitions, type_ignores=[]), str(source), 'exec'), scope)
     methods = {}
-    names = set(BASE) - {'transcript_tool_result'} | {'tool_definitions'}
+    names = set(BASE) - {'transcript_tool_result'} | {'tool_definitions', 'role_guidance'}
     for node in cls_node.body:
         if not isinstance(node, ast.FunctionDef) or node.name not in names:
             continue

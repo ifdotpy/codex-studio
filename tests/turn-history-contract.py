@@ -42,4 +42,20 @@ class TurnHistoryContract(unittest.TestCase):
             self.runtime.item(db, actor["id"], "old", "assistant", "Old report", turnId="old-turn")
             db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (actor["id"]+":old-turn",))
         self.assertEqual(self.runtime.transcript(actor["id"])["items"][0]["turnStatus"], "ended")
+
+    def test_historical_error_arrives_with_transcript_without_extra_rows(self):
+        actor = self.start(self.lead())
+        error = {'message': 'Usage limit reached', 'codexErrorInfo': 'usageLimitExceeded'}
+        self.notify(actor, 'item/completed', item={'id': 'command', 'type': 'commandExecution', 'command': 'true', 'status': 'completed', 'exitCode': 0})
+        self.notify(actor, 'turn/completed', turn={'id': actor['turnId'], 'status': 'failed', 'error': error})
+        with self.runtime.db() as db:
+            # Reproduce an older transcript with the native error only in analytics.
+            db.execute("DELETE FROM runtime_items WHERE agent=? AND json_extract(record,'$.nativeNotice')='error'", (actor['id'],))
+            count = db.execute('SELECT count(*) FROM runtime_items').fetchone()[0]
+        transcript = self.runtime.transcript(actor['id'])
+        command = next(item for item in transcript['items'] if item['id'].endswith(':command'))
+        self.assertEqual(command['turnError'], error)
+        self.assertTrue(command['turnErrorResolved'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_items').fetchone()[0], count)
 if __name__ == "__main__": unittest.main()

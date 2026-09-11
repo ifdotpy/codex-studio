@@ -20,7 +20,7 @@
   font-size: 12px;
 }
 .user-tasks-summary > svg:first-child {
-  color: #a6a8df;
+  color: var(--accent);
   flex-shrink: 0;
 }
 .user-tasks-summary > svg:last-child {
@@ -112,7 +112,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin: 6px 0 0 26px;
+  margin: 6px 0 0 0;
   color: var(--muted);
   font-size: 11px;
 }
@@ -127,7 +127,7 @@
   color: #e4b880;
 }
 .user-task-reason {
-  margin: 9px 0 0 26px;
+  margin: 9px 0 0 0;
   padding-left: 10px;
   border-left: 2px solid #b48c55;
   font-size: 12px;
@@ -138,7 +138,7 @@
 .user-task-details {
   display: grid;
   gap: 12px;
-  margin: 14px 0 0 26px;
+  margin: 14px 0 0 0;
   font-size: 12px;
   line-height: 1.6;
 }
@@ -177,7 +177,7 @@
   margin-top: 2px;
 }
 .user-task-delivery {
-  margin: 9px 0 0 26px;
+  margin: 9px 0 0 0;
   font-size: 11px;
   color: #a0c8b8;
 }
@@ -272,4 +272,14 @@
   .user-tasks-counts {
     font-size: 10px;
   }
+}
+
+[data-mantine-color-scheme="light"] .user-task-return-label {
+  color: #805412;
+}
+[data-mantine-color-scheme="light"] .user-task-delivery {
+  color: #236238;
+}
+[data-mantine-color-scheme="light"] .user-task-error {
+  color: #92363d;
 }

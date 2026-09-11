@@ -11,7 +11,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const { chromium } = createRequire(join(root, "web/package.json"))(
   "playwright-core",
 );
-const evidence = await mkdtemp(join(tmpdir(), "codex-account-rules-ui-"));
+const evidence = await mkdtemp(join(tmpdir(), "codex-project-account-ui-"));
 const accounts = [
   {
     id: "default",
@@ -38,10 +38,25 @@ const accounts = [
     status: "ready",
   },
 ];
-accounts[1].projectRules = {
-  allowedProjects: ["/projects/Lumina"],
-  revision: 1,
-};
+const projects = [
+  {
+    id: "/tmp/fixture",
+    path: "/tmp/fixture",
+    name: "fixture",
+    created: 1,
+    accountKey: "work",
+    accountRevision: 1,
+  },
+  {
+    id: "/projects/Lumina",
+    path: "/projects/Lumina",
+    name: "Lumina",
+    created: 1,
+    accountKey: "other",
+    accountRevision: 1,
+  },
+];
+let loseCreation = false;
 let defaultAccountKey = "default";
 let conflict = false;
 const makeLead = (id, name, accountKey, empty) => ({
@@ -134,6 +149,7 @@ const server = createServer(async (req, res) => {
       chats: [],
       runtime: {
         agents,
+        projects,
         rooms: [],
         complaints: [],
         requests: [],
@@ -153,34 +169,38 @@ const server = createServer(async (req, res) => {
     if (url.pathname.endsWith("/discover")) discoverCount++;
     return json({ accounts, defaultAccountKey });
   }
-  if (url.pathname === "/api/accounts/rules") {
-    const account = accounts.find((a) => a.id === body.account_key);
-    if (
-      conflict ||
-      body.expected_revision !== (account.projectRules?.revision || 0)
-    ) {
+  if (url.pathname === "/api/projects") {
+    let project = projects.find((item) => item.path === body.path);
+    if (conflict) {
       res.statusCode = 409;
-      return json({ error: "Project rules changed. Reload before saving." });
+      return json({
+        error: "Project account changed. Reopen to load the current account.",
+      });
     }
-    account.projectRules = {
-      allowedProjects: body.allowed_projects,
-      revision: body.expected_revision + 1,
-    };
-    return json({ accounts, defaultAccountKey });
+    if (!project) {
+      project = {
+        id: body.path,
+        path: body.path,
+        name: body.path.split("/").at(-1),
+        created: 1,
+        accountRevision: 0,
+      };
+      projects.push(project);
+    }
+    assert.equal(body.expected_revision, project.accountRevision);
+    project.accountKey = body.account_key;
+    project.accountKeys = body.account_keys;
+    project.accountRevision++;
+    return json(project);
   }
   if (url.pathname === "/api/conversation") {
     const agent = agents.find((a) => a.id === body.id);
-    agent.dangerouslySkipAccountRules = body.dangerously_skip_rules;
+    agent.cwd = body.cwd;
     return json(agent);
   }
   if (url.pathname === "/api/agents/account") {
-    if (body.account_key === "work" && body.cwd !== "/projects/Lumina") {
-      res.statusCode = 403;
-      return json({ error: "Project /tmp/fixture is not allowed for Work." });
-    }
     const agent = agents.find((a) => a.id === body.id);
     agent.accountKey = body.account_key;
-    if (body.cwd) agent.cwd = body.cwd;
     return json(agent);
   }
   if (url.pathname === "/api/directories") {
@@ -199,14 +219,31 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/api/costs")
     return json({ data: { todayUSD: 12, last30DaysUSD: 40 } });
   if (url.pathname === "/api/leads") {
-    const lead = makeLead(
-      body.id,
-      "Created conversation",
-      body.account_key,
-      true,
-    );
-    agents.push(lead);
+    let lead = agents.find((item) => item.id === body.id);
+    if (!lead) {
+      lead = makeLead(
+        body.id,
+        "Created conversation",
+        body.account_key ||
+          projects.find((item) => item.path === body.cwd)?.accountKey ||
+          defaultAccountKey,
+        true,
+      );
+      lead.cwd = body.cwd;
+      agents.push(lead);
+    }
+    if (loseCreation) {
+      loseCreation = false;
+      res.statusCode = 503;
+      return json({ error: "Response lost" });
+    }
     return json(lead);
+  }
+  if (url.pathname === "/api/voice/records")
+    return json({ records: [], delivered: [], cursor: 0 });
+  if (url.pathname.startsWith("/api/sync/")) {
+    res.statusCode = 404;
+    return json({ error: "Fixture uses HTTP snapshots" });
   }
   if (url.pathname === "/api/accounts/login") {
     accounts.push({
@@ -271,229 +308,280 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   const picker = page.locator(".account-picker");
+  const settings = page.getByRole("dialog", {
+    name: "Chat settings",
+    exact: true,
+  });
+  const openSettings = async () => {
+    if (!(await settings.isVisible()))
+      await page
+        .getByRole("button", { name: "Chat settings", exact: true })
+        .click();
+  };
+  const closeSettings = async () => {
+    if (await settings.isVisible()) {
+      await settings.locator(".mantine-Modal-close").click();
+      await settings.waitFor({ state: "hidden" });
+    }
+  };
+  await openSettings();
   await picker.waitFor();
   await page.waitForFunction(() =>
     document
       .querySelector(".account-picker")
       ?.textContent.includes("personal@example.com"),
   );
-  const manage = async () => {
+  const choose = async (email) => {
+    await openSettings();
     await picker.click();
-    await page
-      .getByRole("menuitem", { name: "Manage accounts · 3", exact: true })
-      .click();
+    await page.getByRole("menuitem").filter({ hasText: email }).click();
   };
-  await manage();
-  const dialog = page.getByRole("dialog", { name: "Accounts", exact: true });
-  const work = dialog.locator('[data-account="work"]');
-  await work.getByText("/projects/Lumina", { exact: true }).waitFor();
-  await work
-    .getByRole("button", { name: "Edit rules for work@example.com" })
-    .click();
-  await work
-    .getByRole("textbox", { name: "Allowed project folders" })
-    .fill("/projects/Lumina\n/projects/Lumina-tools");
-  await work.getByRole("button", { name: "Save rules", exact: true }).click();
-  await work.getByText("/projects/Lumina-tools", { exact: true }).waitFor();
-  assert.deepEqual(accounts[1].projectRules, {
-    allowedProjects: ["/projects/Lumina", "/projects/Lumina-tools"],
-    revision: 2,
-  });
-  await page.keyboard.press("Escape");
-  await page.reload();
-  await picker.waitFor();
-  await manage();
-  await work.getByText("/projects/Lumina-tools", { exact: true }).waitFor();
-  await work
-    .getByRole("button", { name: "Edit rules for work@example.com" })
-    .click();
-  await work
-    .getByRole("textbox", { name: "Allowed project folders" })
-    .fill("/projects/draft");
-  conflict = true;
-  await work.getByRole("button", { name: "Save rules", exact: true }).click();
-  await work
-    .getByRole("alert")
-    .filter({ hasText: "Project rules changed" })
-    .waitFor();
-  assert.equal(
-    await work
-      .getByRole("textbox", { name: "Allowed project folders" })
-      .inputValue(),
-    "/projects/draft",
+  await choose("work@example.com");
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-picker")
+      ?.textContent.includes("work@example.com"),
   );
-  assert.equal(accounts[1].projectRules.revision, 2);
-  conflict = false;
-  await work.getByRole("button", { name: "Cancel", exact: true }).click();
-  await work
-    .getByRole("button", { name: "Edit rules for work@example.com" })
-    .click();
-  await work.getByRole("textbox", { name: "Allowed project folders" }).fill("");
-  await work.getByRole("button", { name: "Save rules", exact: true }).click();
-  await work.getByText("No projects allowed", { exact: true }).waitFor();
-  assert.deepEqual(accounts[1].projectRules.allowedProjects, []);
-  await work
-    .getByRole("button", { name: "Edit rules for work@example.com" })
-    .click();
-  await work.getByRole("radio", { name: "All projects", exact: true }).check();
-  await work.getByRole("button", { name: "Save rules", exact: true }).click();
-  await work
-    .locator(".account-rules-summary")
-    .getByText("All projects", { exact: true })
-    .waitFor();
-  assert.equal(accounts[1].projectRules.allowedProjects, null);
-  await page.keyboard.press("Escape");
-  await picker.click();
+  assert.equal(agents.find((a) => a.id === "empty").cwd, "/tmp/fixture");
+  assert.equal(
+    await page
+      .getByRole("dialog", { name: "Choose project folder", exact: true })
+      .count(),
+    0,
+    "Account choice does not force folder choice",
+  );
   await page
-    .getByRole("menuitem")
-    .filter({ hasText: "work@example.com" })
+    .getByRole("button", { name: "Choose project folder", exact: true })
     .click();
-  await picker.click();
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Project /tmp/fixture is not allowed" })
-    .waitFor();
-  assert.ok(!agents.find((a) => a.id === "empty").dangerouslySkipAccountRules);
-  const toggle = page.getByRole("switch", {
-    name: "Dangerously skip rules",
+  const folder = page.getByRole("dialog", {
+    name: "Choose project folder",
     exact: true,
   });
-  await toggle.click();
-  await page.locator(".account-rules-badge").waitFor();
-  assert.deepEqual(bodies.find((r) => r.path === "/api/conversation").body, {
-    id: "empty",
-    dangerously_skip_rules: true,
-  });
-  await page.reload();
-  await page.locator(".account-rules-badge").waitFor();
-  await manage();
-  assert.equal(
-    await dialog
-      .getByRole("switch", { name: "Dangerously skip rules" })
-      .isChecked(),
-    true,
-  );
-  await page.screenshot({
-    path: join(evidence, "rules-desktop.png"),
-    animations: "disabled",
-  });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await work
-    .getByRole("button", { name: "Edit rules for work@example.com" })
-    .click();
-  await work
-    .getByRole("radio", { name: "Only these projects", exact: true })
-    .check();
-  await work
-    .getByRole("textbox", { name: "Allowed project folders" })
-    .fill(
-      "/projects/a-very-long-project-folder-name/another-really-long-nested-directory",
-    );
-  await page.screenshot({
-    path: join(evidence, "rules-mobile.png"),
-    animations: "disabled",
-  });
-  assert.ok(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-    "No page overflow",
-  );
-  const bounds = await dialog.boundingBox();
-  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
-  await page.setViewportSize({ width: 320, height: 720 });
-  await page.screenshot({
-    path: join(evidence, "rules-320.png"),
-    animations: "disabled",
-  });
-  assert.ok(
-    await dialog.evaluate(
-      (element) => element.scrollWidth <= element.clientWidth,
-    ),
-    "Rule editor does not overflow at 320px",
-  );
-  await dialog.getByRole("switch", { name: "Dangerously skip rules" }).click();
-  await page.locator(".account-rules-badge").waitFor({ state: "hidden" });
-  await page.keyboard.press("Escape");
-  accounts[1].projectRules.allowedProjects = ["/projects/Lumina"];
-  await page.reload();
-  await page.locator("#project").waitFor();
-  assert.ok(
-    (await page.locator("#project").boundingBox()).y < 300,
-    "Project picker is in the header",
-  );
-  const chooseWork = async () => {
-    await picker.click();
-    await page
-      .getByRole("menuitem")
-      .filter({ hasText: "work@example.com" })
-      .click();
-  };
-  await chooseWork();
-  const folderDialog = page.getByRole("dialog", {
-    name: "Choose project for work@example.com",
-    exact: true,
-  });
-  await folderDialog.getByLabel("Folder path").waitFor();
-  assert.equal(agents.find((a) => a.id === "empty").accountKey, "default");
-  await page.keyboard.press("Escape");
-  assert.equal(agents.find((a) => a.id === "empty").accountKey, "default");
-  await chooseWork();
-  await folderDialog.getByLabel("Folder path").fill("/projects/Denied");
-  await folderDialog.getByRole("button", { name: "Go", exact: true }).click();
-  await folderDialog
+  await folder.getByLabel("Folder path").fill("/anywhere/arbitrary");
+  await folder.getByRole("button", { name: "Go", exact: true }).click();
+  await folder
     .getByRole("button", { name: "Use this folder", exact: true })
     .click();
-  await folderDialog.getByRole("alert").waitFor();
-  assert.equal(agents.find((a) => a.id === "empty").accountKey, "default");
-  await folderDialog
-    .getByRole("button", { name: "/projects/Lumina", exact: true })
-    .click();
-  await folderDialog
-    .getByRole("button", { name: "Use this folder", exact: true })
-    .click();
-  await folderDialog.waitFor({ state: "hidden" });
+  await folder.waitFor({ state: "hidden" });
+  assert.equal(agents.find((a) => a.id === "empty").cwd, "/anywhere/arbitrary");
   assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
-  assert.equal(agents.find((a) => a.id === "empty").cwd, "/projects/Lumina");
-  assert.ok(!agents.find((a) => a.id === "empty").dangerouslySkipAccountRules);
-  await page.screenshot({ path: join(evidence, "project-recovery.png") });
+  const newChat = async (name) => {
+    await closeSettings();
+    const button = page.getByRole("button", {
+      name: `New chat in ${name}`,
+      exact: true,
+    });
+    await button.locator("..").hover();
+    await button.click();
+  };
+  const openProject = async (name) => {
+    await closeSettings();
+    const button = page.getByRole("button", {
+      name: `Options for project ${name}`,
+      exact: true,
+    });
+    await button.locator("..").hover();
+    await button.click();
+    await page
+      .getByRole("menuitem", { name: "Project account", exact: true })
+      .click();
+  };
+  const dialog = page.getByRole("dialog", {
+    name: "Project account",
+    exact: true,
+  });
+  await closeSettings();
+  await page.locator('[data-chat="started"]').click();
+  agents[0].status = "running";
+  agents[0].inFlight = true;
+  await openProject("fixture");
+  const selection = dialog.getByLabel("Default account for new chats");
+  assert.equal(await selection.inputValue(), "work");
+  await dialog
+    .getByRole("checkbox", {
+      name: "another.long.account@example.com",
+      exact: true,
+    })
+    .check();
+  await selection.selectOption("other");
+  conflict = true;
+  await dialog
+    .getByRole("button", { name: "Save accounts", exact: true })
+    .click();
+  await dialog.getByRole("alert").waitFor();
+  assert.equal(
+    await selection.inputValue(),
+    "other",
+    "Conflict keeps selected account",
+  );
+  assert.equal(projects[0].accountKey, "work");
+  conflict = false;
+  await dialog
+    .getByRole("button", { name: "Save accounts", exact: true })
+    .click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(projects[0].accountKey, "other");
+  assert.deepEqual(
+    new Set(projects[0].accountKeys),
+    new Set(["work", "other"]),
+  );
+  assert.equal(
+    agents[0].accountKey,
+    "default",
+    "Existing running session keeps its account",
+  );
+  const saves = bodies.filter((r) => r.path === "/api/projects");
+  assert.deepEqual(
+    saves[0].body,
+    saves[1].body,
+    "Retry keeps account and revision",
+  );
+  await openProject("arbitrary");
+  await dialog
+    .getByRole("checkbox", { name: "work@example.com", exact: true })
+    .check();
+  await selection.selectOption("work");
+  await dialog
+    .getByRole("button", { name: "Save accounts", exact: true })
+    .click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(
+    bodies.filter((r) => r.path === "/api/projects").at(-1).body
+      .expected_revision,
+    0,
+    "Virtual project uses revision zero",
+  );
+  await newChat("fixture");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#conversation-title")?.textContent ===
+      "Created conversation",
+  );
+  assert.equal(agents.at(-1).accountKey, "other");
+  assert.equal(
+    bodies.filter((r) => r.path === "/api/leads").at(-1).body.account_key,
+    "other",
+  );
+  await choose("personal@example.com");
+  await newChat("arbitrary");
+  await openSettings();
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".account-picker")
+      ?.textContent.includes("work@example.com"),
+  );
+  assert.equal(
+    agents.at(-1).accountKey,
+    "work",
+    "Project choice overrides previous empty chat account",
+  );
+  const before = agents.length;
+  await newChat("arbitrary");
+  await page.waitForFunction(
+    (before) => document.querySelectorAll("[data-chat]").length > before,
+    before,
+  );
+  assert.equal(
+    agents.length,
+    before + 1,
+    "Explicit New chat creates a new chat",
+  );
+  loseCreation = true;
+  await newChat("Lumina");
+  await page
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .waitFor();
+  projects[1].accountKey = "default";
+  await page
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .waitFor({ state: "hidden" });
+  const creates = bodies.filter((r) => r.path === "/api/leads");
+  assert.deepEqual(
+    creates.at(-1).body,
+    creates.at(-2).body,
+    "Lost response retains exact request identity",
+  );
+  assert.equal(
+    agents.at(-1).accountKey,
+    "other",
+    "Committed request retains selected server account",
+  );
+  await openSettings();
   await picker.click();
   await page
-    .getByRole("menuitem")
-    .filter({ hasText: "personal@example.com" })
+    .getByRole("menuitem", { name: "Manage accounts · 3", exact: true })
     .click();
-  agents.push({
-    ...makeLead("worker", "Busy worker", "default", false),
-    rootId: "empty",
-    isLead: false,
-    inFlight: true,
-    status: "running",
-  });
-  await page.reload();
-  await picker.waitFor();
-  await manage();
+  const manager = page.getByRole("dialog", { name: "Accounts", exact: true });
   assert.equal(
-    await dialog
-      .getByRole("switch", { name: "Dangerously skip rules" })
-      .isDisabled(),
-    true,
+    await manager.getByText("Edit rules", { exact: true }).count(),
+    0,
   );
-  await dialog.getByText("Wait for active turns to finish.").waitFor();
+  assert.equal(
+    await manager
+      .getByRole("switch", { name: "Dangerously skip rules" })
+      .count(),
+    0,
+  );
+  await manager.locator(".mantine-Modal-close").click();
+  await manager.waitFor({ state: "hidden" });
+  await closeSettings();
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page
+      .getByRole("button", { name: "Toggle conversations", exact: true })
+      .click();
+    await openProject("fixture");
+    assert.equal(
+      await selection.inputValue(),
+      width === 390 ? "other" : "work",
+    );
+    await page.waitForFunction(
+      (element) => getComputedStyle(element).opacity === "1",
+      await dialog.elementHandle(),
+    );
+    await page.screenshot({
+      path: join(evidence, `project-account-${width}.png`),
+      animations: "disabled",
+    });
+    const bounds = await dialog.boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
+    assert.ok(
+      await dialog.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    );
+    await dialog
+      .getByRole("checkbox", {
+        name:
+          width === 390
+            ? "work@example.com"
+            : "another.long.account@example.com",
+        exact: true,
+      })
+      .check();
+    await selection.selectOption(width === 390 ? "work" : "other");
+    await dialog
+      .getByRole("button", { name: "Save accounts", exact: true })
+      .click();
+    await dialog.waitFor({ state: "hidden" });
+  }
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
       ok: true,
       cases: [
-        "rule persistence",
-        "revision conflict keeps draft",
-        "empty list denies all",
-        "explicit all projects",
-        "denial visible",
-        "explicit team override",
-        "loaded override badge",
-        "busy worker disables override",
-        "Codex and Spark dual-window quotas",
-        "390px and 320px layouts",
+        "arbitrary account and folder",
+        "project default",
+        "running chat identity",
+        "conflict retry",
+        "virtual project",
+        "new chats across projects",
+        "lost response identity",
+        "obsolete rules removed",
+        "390px and 320px project settings",
       ],
       evidence,
     }),

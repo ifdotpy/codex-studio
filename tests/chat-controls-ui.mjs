@@ -246,7 +246,9 @@ try {
     "Second queued instruction",
   ]) {
     await page.locator("#message").fill(text);
-    await page.locator("#message").press("Tab");
+    await page
+      .getByRole("button", { name: "Queue after turn", exact: true })
+      .click();
     await poll(
       async () => (await queue()).items.some((item) => item.text === text),
       "message enters durable queue",
@@ -328,6 +330,14 @@ try {
     "empty Tab retains keyboard navigation",
   );
   await page.locator("#message").fill("Keyboard check");
+  const priorQueueLength = (await queue()).items.length;
+  await page.locator("#message").press("Tab");
+  assert.equal(await page.locator("#message").inputValue(), "Keyboard check");
+  assert.equal(
+    (await queue()).items.length,
+    priorQueueLength,
+    "Tab does not send a nonempty draft",
+  );
   await page.locator("#message").press("Shift+Tab");
   assert.equal(
     await page

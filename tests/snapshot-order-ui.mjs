@@ -97,6 +97,7 @@ try {
   });
   await page.goto(origin);
   await page.locator(`[data-chat="${lead.id}"]`).click();
+  await page.locator("#team-toggle").click();
   const workerButton = page.locator(`[data-worker="${worker.id}"]`);
   await workerButton.getByText("Worker revision 0", { exact: true }).waitFor();
 

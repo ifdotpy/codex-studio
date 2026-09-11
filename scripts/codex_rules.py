@@ -17,7 +17,7 @@ def rule_tools(tool, text):
     return [
         tool(
             "orchestration_watch",
-            "Manage durable file or event watches and scheduled commands. No model runs while waiting. A script exit other than zero does not wake you. A final JSON line with wakeAgent:false also suppresses a wake. Use bounded schedules, not model polling.",
+            "Manage durable file or event watches and scheduled commands. No model runs while waiting. A script exit other than zero does not wake you. A final JSON line with wakeAgent:false also suppresses a wake. Use bounded schedules, not model polling. A lead can enable low_workers to receive one alert when active subagents stay below minimumWorkers (default 8) for durationMinutes (default 30). Recovery to the threshold arms it again. Active means starting, running, or executing a command monitor; queued or idle workers without active commands do not count. Panel feeds do not count.",
             {
                 "action": {
                     "type": "string",
@@ -27,7 +27,7 @@ def rule_tools(tool, text):
                 "name": text,
                 "kind": {
                     "type": "string",
-                    "enum": ["interval", "once", "file", "event"],
+                    "enum": ["interval", "once", "file", "event", "low_workers"],
                 },
                 "intervalSeconds": {"type": "integer", "minimum": 10},
                 "at": {"type": "number"},
@@ -41,6 +41,8 @@ def rule_tools(tool, text):
                         "complaint",
                     ],
                 },
+                "minimumWorkers": {"type": "integer", "minimum": 1, "maximum": 255},
+                "durationMinutes": {"type": "integer", "minimum": 1, "maximum": 525600},
                 "command": text,
                 "text": text,
             },
@@ -80,6 +82,10 @@ class RulesMixin:
             "CREATE TABLE IF NOT EXISTS runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL)"
         )
         for r in self.records(db, "rules"):
+            if r.get("kind") == "low_workers":
+                # Offline time cannot prove a continuous shortage. Keep a sent alert latched.
+                r.update(lowSince=None, nextAt=time.time())
+                self.put(db, "rules", r)
             if r.get("inFlight"):
                 r.update(
                     inFlight=False,
@@ -130,6 +136,10 @@ class RulesMixin:
                 if action == "delete":
                     db.execute("DELETE FROM runtime_rules WHERE id=?", (key,))
                     return {"deleted": key}
+                if old.get("kind") == "low_workers":
+                    if old["status"] == ("active" if action == "resume" else "paused") and old["epoch"] == a["epoch"]:
+                        return old
+                    old.update(lowSince=None, alerted=False)
                 old.update(
                     status="active" if action == "resume" else "paused",
                     epoch=a["epoch"],
@@ -147,8 +157,18 @@ class RulesMixin:
                     "Pause the rule and wait for its current check before editing"
                 )
             kind = data.get("kind", "interval")
-            if kind not in {"interval", "once", "file", "event"}:
-                raise ValueError("Choose interval, once, file, or event")
+            if kind not in {"interval", "once", "file", "event", "low_workers"}:
+                raise ValueError("Choose interval, once, file, event, or low_workers")
+            minimum, duration = data.get("minimumWorkers", 8), data.get("durationMinutes", 30)
+            if kind == "low_workers":
+                if not a.get("isLead"):
+                    raise ValueError("Only an orchestrator can own a low-worker alert")
+                if type(minimum) is not int or not 1 <= minimum <= 255:
+                    raise ValueError("Minimum subagents must be 1 to 255")
+                if type(duration) is not int or not 1 <= duration <= 525600:
+                    raise ValueError("Duration must be 1 to 525600 minutes")
+                if data.get("command"):
+                    raise ValueError("A low-worker alert does not run a command")
             interval = data.get("intervalSeconds", 60)
             if not isinstance(interval, int) or not 10 <= interval <= 31536000:
                 raise ValueError("Interval must be 10 seconds to one year")
@@ -202,6 +222,12 @@ class RulesMixin:
                 "wakes": old.get("wakes", 0) if old else 0,
                 "fingerprint": self.file_fingerprint(path) if path else None,
             }
+            if kind == "low_workers":
+                rule.update(minimumWorkers=minimum, durationMinutes=duration,
+                            lowSince=None, alerted=False, nextAt=time.time())
+                fields = ("kind", "name", "text", "minimumWorkers", "durationMinutes", "epoch")
+                if old and all(old.get(k) == rule.get(k) for k in fields):
+                    return old
             self.put(db, "rules", rule)
             self.changed.set()
             return rule
@@ -230,11 +256,8 @@ class RulesMixin:
                     )
                     self.put(db, "rules", r)
                     continue
-                try:
-                    self.check_account_project(a, db)
-                except ValueError as error:
-                    r.update(status="paused", error=str(error))
-                    self.put(db, "rules", r)
+                if r["kind"] == "low_workers":
+                    self.low_workers_tick(db, r, a, now)
                     continue
                 if r["kind"] == "event" or r["nextAt"] > now:
                     continue
@@ -250,6 +273,32 @@ class RulesMixin:
                 self.put(db, "rules", r)
         for r in launch:
             self.pool.submit(self.run_rule, r)
+
+    def low_workers_tick(self, db, rule, lead, now):
+        workers = [a for a in self.records(db, "agents")
+                   if a["rootId"] == lead["id"] and not a.get("isLead") and not a.get("deletedAt")]
+        commands = {m["agent"] for m in self.records(db, "monitors")
+                    if m.get("status") == "running" and not m.get("cancelRequested") and not m.get("panelFeed")}
+        count = sum(a["status"] in {"starting", "running"} or a["id"] in commands for a in workers)
+        previous = (rule.get("lowSince"), rule.get("alerted"), rule.get("activeWorkers"))
+        rule["activeWorkers"] = count
+        if count >= rule["minimumWorkers"]:
+            rule.update(lowSince=None, alerted=False)
+        else:
+            if rule.get("lowSince") is None or now < rule["lowSince"]:
+                rule["lowSince"] = now
+            elapsed = now - rule["lowSince"]
+            if not rule.get("alerted") and elapsed > rule["durationMinutes"] * 60:
+                # Store the event and latch in one transaction. No command or model polls.
+                rule.update(alerted=True, lastAt=now, checks=rule.get("checks", 0) + 1)
+                output = json.dumps({"activeSubagents": count, "minimumSubagents": rule["minimumWorkers"],
+                                     "belowThresholdSince": rule["lowSince"], "elapsedMinutes": elapsed / 60})
+                self.put(db, "rules", rule)
+                self.rule_finished(rule["id"], 0, None, output, db=db)
+                return
+        current = (rule.get("lowSince"), rule.get("alerted"), rule.get("activeWorkers"))
+        if previous != current:
+            self.put(db, "rules", rule)
 
     def rule_event(self, db, a, kind, text, event_key):
         # Rules are same-agent subscriptions. Rule wakes never re-enter this hook.
@@ -393,7 +442,6 @@ class RulesMixin:
                 or a["epoch"] != m["epoch"]
             ):
                 raise ValueError("This interactive monitor is not active")
-            self.check_account_project(a, db)
             server = self.connect(a.get("accountKey", "default"))
             close = False
             if "rows" in data or "cols" in data:

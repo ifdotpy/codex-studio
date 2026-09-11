@@ -1,6 +1,7 @@
 import { accountLimits } from "./accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
-import { chatSnapshot, roomLeadIds } from "./chatScope";
+import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
+import { nativeThreadError } from "./nativeErrors";
 import {
   ActionIcon,
   Button,
@@ -8,6 +9,7 @@ import {
   Modal,
   Menu,
   NativeSelect,
+  useMantineColorScheme,
   TextInput,
   UnstyledButton,
 } from "@mantine/core";
@@ -18,7 +20,6 @@ import {
   CheckCheck,
   Clock3,
   FileDiff,
-  Inbox,
   Minimize2,
   MoreHorizontal,
   ShieldCheck,
@@ -27,7 +28,6 @@ import {
   ListTodo,
   ArrowLeft,
   Folder,
-  Maximize2,
   MessageSquare,
   PanelLeft,
   Search,
@@ -51,21 +51,12 @@ import {
   type OutgoingMessage,
 } from "./sync/send";
 import { useSyncedDrafts } from "./sync/drafts";
-import {
-  busy,
-  statusLabel,
-  complaintNeedsUserResponse,
-  type Agent,
-  type Json,
-} from "./types";
+import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
-import TeamChats from "./components/TeamChats";
+import ProjectAccount from "./components/ProjectAccount";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
-import Accounts, {
-  useAccounts,
-  AccountTransferStatus,
-} from "./components/Accounts";
+import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import TerminalDock from "./components/TerminalDock";
@@ -77,8 +68,6 @@ import WorkerCard, {
   workerState,
 } from "./components/WorkerOverview";
 import Workspace from "./components/Workspace";
-import Canvas from "./components/Canvas";
-import ComplaintBook from "./components/ComplaintBook";
 import BackgroundTasks, {
   activeTask,
   backgroundTasks,
@@ -130,8 +119,31 @@ export default function App() {
   );
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [accountChanging, setAccountChanging] = useState(false);
+  const chatActionsButton = useRef<HTMLButtonElement>(null);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
+  const [subagentSettingsOpen, setSubagentSettingsOpen] = useState(false);
+  const { colorScheme, setColorScheme } = useMantineColorScheme();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    saved("codex-sidebar-collapsed", false),
+  );
+  const [wideTeamOpen, setWideTeamOpen] = useState(() =>
+    saved("codex-team-open", false),
+  );
+  const [jumpTarget, setJumpTarget] = useState<{
+    chatId: string;
+    messageId: string;
+    requestId: string;
+  }>();
+  const [workspaceFocus, setWorkspaceFocus] = useState<{
+    id: string;
+    requestId: string;
+  }>();
+  const [limitsLoading, setLimitsLoading] = useState<Record<string, boolean>>(
+    {},
+  );
   const selectionScope = useRef("");
+  const createdSelection = useRef<string | null>(null);
   useMobileViewport(mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
   const { data, error, refresh } = useSnapshot(),
@@ -141,11 +153,9 @@ export default function App() {
         : null,
     ),
     [roomContext, setRoomContext] = useState<string | null>(null),
-    [view, setView] = useState("chat"),
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
-    [agentChatsOpen, setAgentChatsOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [workspaceSection, setWorkspaceSection] = useState("work"),
     [workerQuery, setWorkerQuery] = useState(""),
@@ -234,12 +244,7 @@ export default function App() {
   }, [agent?.id, agent?.status]);
   useEffect(() => {
     if (!mobileClient) return;
-    setView("chat");
-    setTeamOpen(false);
-    setWorkspaceOpen(false);
-    setTasksOpen(false);
-    setAgentChatsOpen(false);
-    if (opened && (agent || room || legacy) && !agent?.isLead)
+    if (opened && (room || legacy) && !agent)
       setOpened(lead?.id || leads.at(-1)?.id || null);
   }, [mobileClient, opened, agent?.isLead, lead?.id]);
   const accounts = useAccounts(data?.stateDir);
@@ -271,18 +276,7 @@ export default function App() {
       ? matchingSnapshot
       : cachedLimits || null;
   const chatData = chatSnapshot(data, lead?.id);
-  const attentionCount =
-    (chatData?.runtime.requests.filter((request) => !request.deferred).length ||
-      0) +
-    (chatData?.runtime.userTasks?.filter((task) => task.status === "open")
-      .length || 0) +
-    (chatData?.runtime.complaints.filter(complaintNeedsUserResponse).length ||
-      0) +
-    (chatData?.runtime.work?.filter((w: Json) => w.status === "review")
-      .length || 0) +
-    (chatData?.threads || []).filter((a) =>
-      ["failed", "interrupted"].includes(a.status),
-    ).length;
+  const attentionCount = messageAttentionCount(chatData);
   const taskCount = backgroundTasks(chatData).filter(activeTask).length;
   const setDraft = (
     text: string | ((current: string) => string),
@@ -296,18 +290,18 @@ export default function App() {
       save("codex-agent-drafts", next);
       return next;
     });
-  const open = (id: string) => {
+  const open = (id: string, messageId?: string) => {
+    setJumpTarget(
+      messageId
+        ? { chatId: id, messageId, requestId: crypto.randomUUID() }
+        : undefined,
+    );
     if (mobileClient) {
       const target = agents.find((item) => item.id === id);
-      const root = target?.isLead
-        ? target
-        : agents.find((item) => item.id === target?.rootId && item.isLead);
-      if (!root) return;
-      id = root.id;
+      if (!target) return;
     }
     setRoomContext(lead?.id || null);
     setOpened(id);
-    setView("chat");
     setSidebar(false);
     setTeamOpen(false);
   };
@@ -322,9 +316,7 @@ export default function App() {
       const selected = saved<string | null>(key, null);
       if (
         selected &&
-        (data.threads.some(
-          (item) => item.id === selected && (!mobileClient || item.isLead),
-        ) ||
+        (data.threads.some((item) => item.id === selected) ||
           (!mobileClient &&
             (data.runtime.rooms.some((item) => item.id === selected) ||
               data.chats.some((item) => item.id === selected))))
@@ -333,6 +325,14 @@ export default function App() {
         return;
       }
     }
+    // The create response can arrive before the replicated chat projection.
+    if (
+      createdSelection.current &&
+      opened === createdSelection.current &&
+      !agent
+    )
+      return;
+    if (agent?.id === createdSelection.current) createdSelection.current = null;
     if (!opened || (!agent && !room && !legacy))
       setOpened(leads.at(-1)?.id || null);
     else save(key, opened);
@@ -343,6 +343,48 @@ export default function App() {
     window.addEventListener("desktop-error", onError);
     return () => window.removeEventListener("desktop-error", onError);
   }, [notify]);
+  const [navigationTarget, setNavigationTarget] = useState<{
+    agentId: string;
+    section: "messages";
+    itemId?: string;
+    requestId: string;
+  }>();
+  useEffect(() => {
+    const navigate = (target: {
+      agentId: string;
+      section: "messages";
+      itemId?: string;
+    }) => {
+      setNavigationTarget({ ...target, requestId: crypto.randomUUID() });
+    };
+    const unsubscribe = window.codexDesktop?.onNavigate?.(navigate);
+    const onNavigate = (event: Event) =>
+      navigate((event as CustomEvent<Parameters<typeof navigate>[0]>).detail);
+    window.addEventListener("studio-navigate", onNavigate);
+    return () => {
+      unsubscribe?.();
+      window.removeEventListener("studio-navigate", onNavigate);
+    };
+  }, []);
+  useEffect(() => {
+    if (!navigationTarget || !data) return;
+    if (!agents.some((item) => item.id === navigationTarget.agentId)) {
+      notify("This chat is no longer available.");
+    } else {
+      setOpened(navigationTarget.agentId);
+      setWorkspaceSection("messages");
+      setWorkspaceFocus(
+        navigationTarget.itemId
+          ? {
+              id: navigationTarget.itemId,
+              requestId: navigationTarget.requestId,
+            }
+          : undefined,
+      );
+      setWorkspaceOpen(true);
+    }
+    setNavigationTarget(undefined);
+  }, [navigationTarget, data, agents, notify]);
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
   const reloadLimits = useCallback(
@@ -365,6 +407,7 @@ export default function App() {
         accountKey === "default"
           ? ""
           : `?account_key=${encodeURIComponent(accountKey)}`;
+      setLimitsLoading((old) => ({ ...old, [accountKey]: true }));
       const request = api("/api/limits" + query, undefined, {
         timeoutMs: 25000,
       })
@@ -393,6 +436,7 @@ export default function App() {
         })
         .finally(() => {
           limitsRequests.current.delete(accountKey);
+          setLimitsLoading((old) => ({ ...old, [accountKey]: false }));
         });
       limitsRequests.current.set(accountKey, request);
       return request;
@@ -447,10 +491,8 @@ export default function App() {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setSidebar(true);
-        requestAnimationFrame(() =>
-          document.querySelector<HTMLInputElement>("#chat-search")?.focus(),
-        );
+        setWorkspaceSection("search");
+        setWorkspaceOpen(true);
       }
       if (e.key === "Escape") {
         setModal(null);
@@ -469,7 +511,7 @@ export default function App() {
       notify(errorText(e));
     }
   };
-  const newChat = async (cwd?: string) => {
+  const newChat = async (cwd?: string, projectFolder?: string) => {
     if (creationLock.current) return null;
     try {
       const pending = JSON.parse(localStorage.getItem(creationKey) || "null");
@@ -480,9 +522,14 @@ export default function App() {
       notify("Cannot read the saved chat request: " + errorText(error));
       return null;
     }
-    if (creation.current && cwd && creation.current.cwd !== cwd) {
+    if (
+      creation.current &&
+      cwd &&
+      (creation.current.cwd !== cwd ||
+        (creation.current.project_folder || undefined) !== projectFolder)
+    ) {
       notify(
-        "Retry the previous chat request before you start a chat in another project.",
+        "Retry the previous chat request before you start a chat in another project or folder.",
       );
       return null;
     }
@@ -493,26 +540,41 @@ export default function App() {
         data?.runtime.projects?.[0]?.path ||
         leads.find((item) => item.cwd)?.cwd;
       if (!cwd) {
-        notify("Add a project on your Mac before you start a chat.");
+        setSidebar(false);
+        setModal({
+          title: "Choose project folder",
+          body: (
+            <ProjectDirectoryPicker
+              onSelect={async (path) => {
+                await api("/api/projects", { path });
+                setModal(null);
+                await refresh();
+                await newChat(path);
+              }}
+            />
+          ),
+        });
         return null;
       }
-    }
-    if (
-      agent?.isLead &&
-      agent.empty &&
-      !creation.current &&
-      (!cwd || cwd === agent.cwd)
-    ) {
-      setView("chat");
-      return agent.id;
     }
     creationLock.current = true;
     setCreating(true);
     creation.current ||= {
       id: crypto.randomUUID(),
       previous: lead?.id || null,
+      reuse_empty: false,
       model: "gpt-6-astra",
       ...(cwd ? { cwd } : {}),
+      ...(projectFolder ? { project_folder: projectFolder } : {}),
+      ...(cwd &&
+      data?.runtime.projects?.find((project) => project.path === cwd)
+        ?.accountKey
+        ? {
+            account_key: data.runtime.projects.find(
+              (project) => project.path === cwd,
+            )!.accountKey,
+          }
+        : {}),
     };
     if (!opened && drafts.new) setDraft(drafts.new, creation.current.id);
     try {
@@ -527,9 +589,9 @@ export default function App() {
       if (!opened && drafts.new) setDraft(drafts.new, a.id);
       setToast("");
       creation.current = null;
+      createdSelection.current = a.id;
       await refresh();
       setOpened(a.id);
-      setView("chat");
       setSidebar(false);
       setTeamOpen(false);
       return a.id as string;
@@ -733,76 +795,15 @@ export default function App() {
         </>
       ),
     });
-  const folders = (target: Agent, nextAccount?: string) => {
-    const account = accounts.data.accounts.find(
-      (a) => a.id === (nextAccount || target.accountKey || "default"),
-    );
-    const suggested = account?.projectRules?.allowedProjects || [];
-    if (mobileClient) {
-      const paths = [
-        ...new Set([
-          ...(data?.runtime.projects || []).map((item) => item.path),
-          ...leads
-            .map((item) => item.cwd)
-            .filter((path): path is string => !!path),
-        ]),
-      ].filter(
-        (path) =>
-          !nextAccount ||
-          target.dangerouslySkipAccountRules ||
-          !suggested.length ||
-          suggested.some(
-            (allowed) =>
-              path === allowed ||
-              path.startsWith(allowed.replace(/\/$/, "") + "/"),
-          ),
-      );
-      setModal({
-        title: "Choose existing project",
-        body: (
-          <div className="mobile-project-list">
-            {paths.map((cwd) => (
-              <Button
-                key={cwd}
-                onClick={() =>
-                  void run(async () => {
-                    await api(
-                      nextAccount ? "/api/agents/account" : "/api/conversation",
-                      nextAccount
-                        ? { id: target.id, account_key: nextAccount, cwd }
-                        : { id: target.id, cwd },
-                    );
-                    setModal(null);
-                  })
-                }
-              >
-                {cwd}
-              </Button>
-            ))}
-            {!paths.length && (
-              <p>No available projects. Add a project on your Mac.</p>
-            )}
-          </div>
-        ),
-      });
-      return;
-    }
+  const folders = (target: Agent) => {
+    setSidebar(false);
     setModal({
-      title: nextAccount
-        ? "Choose project for " +
-          (account?.email || account?.label || "account")
-        : "Choose project folder",
+      title: "Choose project folder",
       body: (
         <ProjectDirectoryPicker
-          initialPath={nextAccount ? suggested[0] || target.cwd : target.cwd}
-          suggestedPaths={suggested}
+          initialPath={target.cwd}
           onSelect={async (cwd) => {
-            await api(
-              nextAccount ? "/api/agents/account" : "/api/conversation",
-              nextAccount
-                ? { id: target.id, account_key: nextAccount, cwd }
-                : { id: target.id, cwd },
-            );
+            await api("/api/conversation", { id: target.id, cwd });
             setModal(null);
             await refresh();
           }}
@@ -841,12 +842,10 @@ export default function App() {
     return (
       <div className="startup">{error || "Connecting to Codex Studio…"}</div>
     );
-  const title =
-    view === "canvas"
-      ? "All agents"
-      : view === "complaints"
-        ? "Complaint book"
-        : agent?.name || room?.name || legacy?.name || "New conversation";
+  const title = agent?.name || room?.name || legacy?.name || "New conversation";
+  const projectName =
+    data.runtime.projects?.find((item) => item.path === agent?.cwd)?.name ||
+    agent?.cwd?.split("/").filter(Boolean).at(-1);
   const answerIds = awaitingAnswerIds(chatData?.runtime.requests || []);
   const deferredIds = new Set<string>(
     (chatData?.runtime.requests || [])
@@ -895,65 +894,92 @@ export default function App() {
   const completed = shown.filter(
     (a) => workerState(a, answerIds, deferredIds) === "completed",
   );
+  const smallTeam = workers.length <= 3;
+  const showTeamFilters = !smallTeam || !!workerQuery || workerFilter !== "all";
   const teamPanel = (
-    <aside id="team" aria-label="Team">
+    <aside
+      id="team"
+      aria-label="Team"
+      className={smallTeam ? "team-compact" : undefined}
+    >
       <div className="team-heading">
         <h2>Team</h2>
         <ActionIcon
           aria-label="Close team"
           id="team-close"
-          onClick={() => setTeamOpen(false)}
+          onClick={() => {
+            setTeamOpen(false);
+            setWideTeamOpen(false);
+            save("codex-team-open", false);
+          }}
         >
           <X size={16} />
         </ActionIcon>
-        <span>{workers.length} workers</span>
+        <span>
+          {workers.length} {workers.length === 1 ? "subagent" : "subagents"}
+        </span>
       </div>
-      <TeamSummary
-        workers={workers}
-        answers={answerIds}
-        deferred={deferredIds}
-      />
+      {!smallTeam && (
+        <TeamSummary
+          workers={workers}
+          answers={answerIds}
+          deferred={deferredIds}
+        />
+      )}
       <Button
         id="lead-row"
         aria-current={opened === lead?.id ? "page" : undefined}
         leftSection={<ArrowLeft size={13} />}
         onClick={() => lead && open(lead.id)}
       >
-        {lead?.name || "Lead"}
+        {lead?.name || "Main agent"}
       </Button>
-      <TextInput
-        leftSection={<Search size={14} />}
-        id="worker-search"
-        type="search"
-        aria-label="Find a worker"
-        placeholder="Find a worker"
-        value={workerQuery}
-        onChange={(e) => setWorkerQuery(e.target.value)}
-      />
-      {query ? (
-        <p className="team-search-count" role="status">
-          {shown.length} {shown.length === 1 ? "match" : "matches"} in this team
-        </p>
-      ) : (
-        <div className="team-filters" role="group" aria-label="Filter workers">
-          {[
-            ["all", "All", workers.length],
-            [
-              "active",
-              "Active",
-              workers.filter((a) => busy.has(a.status)).length,
-            ],
-            ["attention", "Attention", workers.filter(needsAttention).length],
-          ].map(([value, label, count]) => (
-            <UnstyledButton
-              key={value}
-              aria-pressed={workerFilter === value}
-              onClick={() => setWorkerFilter(String(value))}
+      {showTeamFilters && (
+        <>
+          <TextInput
+            leftSection={<Search size={14} />}
+            id="worker-search"
+            type="search"
+            aria-label="Find a subagent"
+            placeholder="Find a subagent"
+            value={workerQuery}
+            onChange={(e) => setWorkerQuery(e.target.value)}
+          />
+          {query ? (
+            <p className="team-search-count" role="status">
+              {shown.length} {shown.length === 1 ? "match" : "matches"} in this
+              team
+            </p>
+          ) : (
+            <div
+              className="team-filters"
+              role="group"
+              aria-label="Filter subagents"
             >
-              {label} <span>{count}</span>
-            </UnstyledButton>
-          ))}
-        </div>
+              {[
+                ["all", "All", workers.length],
+                [
+                  "active",
+                  "Active",
+                  workers.filter((a) => busy.has(a.status)).length,
+                ],
+                [
+                  "attention",
+                  "Attention",
+                  workers.filter(needsAttention).length,
+                ],
+              ].map(([value, label, count]) => (
+                <UnstyledButton
+                  key={value}
+                  aria-pressed={workerFilter === value}
+                  onClick={() => setWorkerFilter(String(value))}
+                >
+                  {label} <span>{count}</span>
+                </UnstyledButton>
+              ))}
+            </div>
+          )}
+        </>
       )}
       <div id="workers">
         {groups.map((group) =>
@@ -963,10 +989,12 @@ export default function App() {
               aria-label={group.name}
               key={group.name}
             >
-              <h3>
-                {group.name}
-                <span>{group.workers.length}</span>
-              </h3>
+              {!smallTeam && (
+                <h3>
+                  {group.name}
+                  <span>{group.workers.length}</span>
+                </h3>
+              )}
               {group.workers.map(worker)}
             </section>
           ) : null,
@@ -986,8 +1014,8 @@ export default function App() {
         {!shown.length && (
           <p className="team-empty" role="status">
             {query
-              ? "No workers match your search."
-              : "No workers in this group."}
+              ? "No subagents match your search."
+              : "No subagents in this group."}
           </p>
         )}
       </div>
@@ -999,10 +1027,10 @@ export default function App() {
         data={data}
         opened={opened}
         lead={lead}
-        view={view}
         open={open}
-        newChat={(path) => void newChat(path)}
-        addProject={() =>
+        newChat={(path, folder) => void newChat(path, folder)}
+        addProject={() => {
+          setSidebar(false);
           setModal({
             title: "Add project",
             body: (
@@ -1014,169 +1042,122 @@ export default function App() {
                 }}
               />
             ),
-          })
-        }
-        changeProject={folders}
-        creating={creating}
-        complaints={() => {
-          setView("complaints");
-          setSidebar(false);
-          setTeamOpen(false);
+          });
         }}
+        changeProject={folders}
+        projectAccount={(path) => {
+          setSidebar(false);
+          setModal({
+            title: "Project account",
+            body: (
+              <ProjectAccount
+                path={path}
+                project={data.runtime.projects?.find(
+                  (item) => item.path === path,
+                )}
+                accounts={accounts.data}
+                defaultAccountKey={
+                  data.runtime.projects
+                    ?.filter(
+                      (item) =>
+                        path === item.path ||
+                        path.startsWith(item.path.replace(/\/$/, "") + "/"),
+                    )
+                    .sort((a, b) => b.path.length - a.path.length)[0]
+                    ?.accountKey || accounts.data.defaultAccountKey
+                }
+                saved={async () => {
+                  await refresh();
+                  setModal(null);
+                }}
+              />
+            ),
+          });
+        }}
+        creating={creating}
         refresh={refresh}
         notify={notify}
         rename={rename}
         remove={remove}
         mobile={sidebar}
-        close={() => setSidebar(false)}
+        collapsed={sidebarCollapsed}
+        onSearch={() => {
+          setSidebar(false);
+          setWorkspaceSection("search");
+          setWorkspaceOpen(true);
+        }}
+        close={() => {
+          if (mobileClient) setSidebar(false);
+          else {
+            setSidebarCollapsed(true);
+            save("codex-sidebar-collapsed", true);
+          }
+        }}
       />
       <main className="workspace">
-        <header className="workspace-header">
+        <header className="workspace-header simple-workspace-header">
           <ActionIcon
             id="sidebar-toggle"
             aria-label="Toggle conversations"
-            onClick={() => setSidebar(!sidebar)}
+            aria-expanded={mobileClient ? sidebar : !sidebarCollapsed}
+            onClick={() => {
+              if (mobileClient) setSidebar(!sidebar);
+              else {
+                setSidebarCollapsed(!sidebarCollapsed);
+                save("codex-sidebar-collapsed", !sidebarCollapsed);
+              }
+            }}
           >
             <PanelLeft size={18} />
           </ActionIcon>
           <div className="conversation-heading">
-            {view === "chat" && lead && agent?.id !== lead.id && (
+            {lead && agent?.id !== lead.id && (
               <Button
                 size="compact-xs"
                 leftSection={<ArrowLeft size={13} />}
                 id="back-lead"
                 onClick={() => open(lead.id)}
               >
-                Back to lead
+                Back to main agent
               </Button>
             )}
             <h1 id="conversation-title" title={title}>
               {title}
             </h1>
             <span id="conversation-status">
-              {mobileClient && agent?.cwd
-                ? `${agent.cwd.split("/").filter(Boolean).at(-1)} · `
-                : ""}
-              {view === "canvas"
-                ? `${leads.length} leads · ${agents.length} agents`
-                : view === "complaints"
-                  ? "Your inbox and orchestrator follow-up"
-                  : agent
-                    ? livePhase?.id === agent.id
-                      ? livePhase.label
-                      : statusLabel(agent.status, agent.activity?.phase)
-                    : room?.kind === "private"
-                      ? "Private between agents · Visible to you"
-                      : room
-                        ? "Broadcast"
-                        : ""}
+              {mobileClient && agent?.cwd ? `${projectName} · ` : ""}
+              {agent
+                ? livePhase?.id === agent.id
+                  ? livePhase.label
+                  : statusLabel(agent.status, agent.activity?.phase)
+                : room?.kind === "private"
+                  ? "Private between agents · Visible to you"
+                  : room
+                    ? "Broadcast"
+                    : ""}
             </span>
           </div>
-          {mobileClient && (
+          {
             <ActionIcon
               aria-label="Chat settings"
               onClick={() => setSettingsOpen(true)}
             >
               <Settings size={20} />
             </ActionIcon>
-          )}
-          {!mobileClient && (
-            <div
-              className="conversation-settings"
-              aria-label="Conversation settings"
-            >
-              <Accounts
-                state={accounts}
-                agent={agent || lead}
-                accountKey={accountKey}
-                onError={notify}
-                lead={lead || (agent?.isLead ? agent : undefined)}
-                teamBusy={
-                  team.some(
-                    (member) =>
-                      !!member.inFlight ||
-                      busy.has(member.status) ||
-                      member.status === "queued",
-                  ) ||
-                  !!agent?.inFlight ||
-                  (!!agent && busy.has(agent.status))
-                }
-                changeRuleOverride={async (enabled) => {
-                  const root = lead || (agent?.isLead ? agent : undefined);
-                  if (!root) return;
-                  await api("/api/conversation", {
-                    id: root.id,
-                    dangerously_skip_rules: enabled,
-                  });
-                  await refresh();
-                }}
-                changeAccount={async (key) => {
-                  if (agent?.isLead) {
-                    const allowed = accounts.data.accounts.find(
-                      (a) => a.id === key,
-                    )?.projectRules?.allowedProjects;
-                    if (
-                      allowed &&
-                      !agent.dangerouslySkipAccountRules &&
-                      !allowed.some(
-                        (path) =>
-                          agent.cwd === path ||
-                          agent.cwd?.startsWith(path.replace(/\/$/, "") + "/"),
-                      )
-                    ) {
-                      folders(agent, key);
-                      return;
-                    }
-                    await api("/api/agents/account", {
-                      id: agent.id,
-                      account_key: key,
-                    });
-                    await refresh();
-                  } else {
-                    accounts.setData(
-                      await api("/api/accounts/default", {
-                        account_key: key,
-                      }),
-                    );
-                  }
-                }}
-              />
-              {view === "chat" && agent?.cwd && (
-                <Button
-                  id="project"
-                  className="project-picker"
-                  leftSection={<Folder size={15} />}
-                  aria-label="Choose project folder"
-                  title={agent.cwd}
-                  onClick={project}
-                >
-                  {agent.cwd.split("/").filter(Boolean).at(-1)}
-                </Button>
-              )}
-              {view === "chat" && agent?.source === "managed" && (
-                <ExecutionSettings
-                  key={"execution:" + agent.id}
-                  agent={agent}
-                  catalog={workerModels}
-                  refresh={refresh}
-                />
-              )}
-              {view === "chat" && lead?.isLead && (
-                <ExecutionSettings
-                  key={"defaults:" + lead.id}
-                  agent={lead}
-                  catalog={workerModels}
-                  refresh={refresh}
-                  teamDefaults
-                />
-              )}
-            </div>
-          )}
-          {!mobileClient && view === "chat" && !!workers.length && (
+          }
+          {!!workers.length && (
             <Button
               leftSection={<Users size={16} />}
               id="team-toggle"
-              onClick={() => setTeamOpen(!teamOpen)}
+              aria-label="Team"
+              aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
+              onClick={() => {
+                if (narrowTeam) setTeamOpen(!teamOpen);
+                else {
+                  setWideTeamOpen(!wideTeamOpen);
+                  save("codex-team-open", !wideTeamOpen);
+                }
+              }}
             >
               Team
               {workers.length > 0 && (
@@ -1187,40 +1168,66 @@ export default function App() {
               )}
             </Button>
           )}
-          {!mobileClient && view === "chat" && agent?.source === "managed" && (
-            <div
-              className="conversation-quick-actions"
-              aria-label="Agent actions"
-            >
-              <Menu position="bottom-end" withinPortal>
-                <Menu.Target>
-                  <ActionIcon
-                    aria-label="Chat actions"
-                    title="Chat actions"
-                    variant="subtle"
-                  >
-                    <MoreHorizontal size={18} />
-                  </ActionIcon>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  {(
-                    [
-                      ["plan", "Plan", BookOpen],
-                      ["rules", "Rules", Clock3],
-                    ] as const
-                  ).map(([section, label, Icon]) => (
-                    <Menu.Item
-                      key={section}
-                      data-workspace-section={section}
-                      leftSection={<Icon size={14} />}
-                      onClick={() => {
-                        setWorkspaceSection(section);
-                        setWorkspaceOpen(true);
-                      }}
-                    >
-                      {label}
-                    </Menu.Item>
-                  ))}
+          <Button
+            id="messages-toggle"
+            leftSection={<MessageSquare size={16} />}
+            disabled={!lead}
+            onClick={() => {
+              setWorkspaceSection("messages");
+              setWorkspaceFocus(undefined);
+              setWorkspaceOpen(true);
+            }}
+          >
+            Messages{" "}
+            {attentionCount > 0 && (
+              <span className="attention-count">{attentionCount}</span>
+            )}
+          </Button>
+          <Menu position="bottom-end" withinPortal>
+            <Menu.Target>
+              <ActionIcon
+                ref={chatActionsButton}
+                aria-label="Chat actions"
+                title="Chat actions"
+              >
+                <MoreHorizontal size={18} />
+              </ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown>
+              {(
+                [
+                  ["work", "Agent tasks", ListTodo],
+                  ["user-tasks", "Your tasks", CheckCheck],
+                  ["changes", "Changes", FileDiff],
+                  ["plan", "Plan", BookOpen],
+                  ["rules", "Rules", Clock3],
+                  ["search", "Search", Search],
+                ] as const
+              ).map(([section, label, Icon]) => (
+                <Menu.Item
+                  key={section}
+                  id={section === "work" ? "workspace-toggle" : undefined}
+                  aria-label={section === "work" ? "Agent tasks" : label}
+                  data-workspace-section={section}
+                  leftSection={<Icon size={14} />}
+                  onClick={() => {
+                    setWorkspaceSection(section);
+                    setWorkspaceOpen(true);
+                  }}
+                >
+                  {label}
+                </Menu.Item>
+              ))}
+              <Menu.Item
+                id="tasks-toggle"
+                aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
+                leftSection={<Activity size={14} />}
+                onClick={() => setTasksOpen(true)}
+              >
+                Background {taskCount || ""}
+              </Menu.Item>
+              {agent?.source === "managed" && (
+                <>
                   <Menu.Divider />
                   {(
                     [
@@ -1231,12 +1238,13 @@ export default function App() {
                     <Menu.Item
                       key={action}
                       data-action={action}
+                      leftSection={<Icon size={14} />}
                       disabled={
                         busy.has(agent.status) ||
                         !!agent.inFlight ||
+                        !!nativeThreadError(agent) ||
                         !agent.threadId
                       }
-                      leftSection={<Icon size={14} />}
                       onClick={() => {
                         void run(() =>
                           api("/api/action", { id: agent.id, action }),
@@ -1246,118 +1254,34 @@ export default function App() {
                       {label}
                     </Menu.Item>
                   ))}
-                </Menu.Dropdown>
-              </Menu>
-              {(!!agent.inFlight ||
-                team.some(
-                  (member) =>
-                    busy.has(member.status) ||
-                    member.status === "queued" ||
-                    member.inFlight,
-                )) && (
-                <Button
-                  data-action="stop-team"
-                  size="compact-xs"
-                  variant="subtle"
-                  color="red"
-                  leftSection={<Square size={14} />}
-                  onClick={() => {
-                    void run(() =>
-                      api("/api/stop", { id: agent.rootId, descendants: true }),
-                    );
-                  }}
-                >
-                  Stop team
-                </Button>
-              )}
-            </div>
-          )}
-        </header>
-        {!mobileClient && (
-          <nav className="workspace-shortcuts" aria-label="Workspace shortcuts">
-            <Button
-              id="workspace-toggle"
-              leftSection={<ListTodo size={16} />}
-              onClick={() => {
-                setWorkspaceSection("work");
-                setWorkspaceOpen(true);
-              }}
-              aria-label={`Work workspace${attentionCount ? `, ${attentionCount} need attention` : ""}`}
-            >
-              <span className="workspace-button-label">Work</span>
-              {attentionCount > 0 && (
-                <span className="attention-count">{attentionCount}</span>
-              )}
-            </Button>
-            {(
-              [
-                ["user-tasks", "Your tasks", CheckCheck],
-                ["inbox", "Inbox", Inbox],
-                ["changes", "Changes", FileDiff],
-                ["search", "Search", Search],
-              ] as const
-            ).map(([section, label, Icon]) => (
-              <Button
-                key={section}
-                data-workspace-section={section}
-                leftSection={<Icon size={14} />}
-                onClick={() => {
-                  setWorkspaceSection(section);
-                  setWorkspaceOpen(true);
-                }}
-              >
-                {label}
-                {section === "user-tasks" &&
-                  !!chatData?.runtime.userTasks?.some(
-                    (t) => t.status === "open",
-                  ) && (
-                    <span className="attention-count">
-                      {
-                        chatData!.runtime.userTasks!.filter(
-                          (t) => t.status === "open",
-                        ).length
-                      }
-                    </span>
+                  {(!!agent.inFlight ||
+                    team.some(
+                      (member) =>
+                        busy.has(member.status) ||
+                        member.status === "queued" ||
+                        member.inFlight,
+                    )) && (
+                    <Menu.Item
+                      data-action="stop-team"
+                      color="red"
+                      leftSection={<Square size={14} />}
+                      onClick={() => {
+                        void run(() =>
+                          api("/api/stop", {
+                            id: agent.rootId,
+                            descendants: true,
+                          }),
+                        );
+                      }}
+                    >
+                      Stop team
+                    </Menu.Item>
                   )}
-              </Button>
-            ))}
-            <Button
-              id="agent-chats-toggle"
-              leftSection={<MessageSquare size={16} />}
-              disabled={!lead}
-              onClick={() => setAgentChatsOpen(true)}
-            >
-              Agent chats
-            </Button>
-            <Button
-              id="tasks-toggle"
-              aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
-              leftSection={<Activity size={16} />}
-              onClick={() => {
-                setTasksOpen(true);
-              }}
-            >
-              Background{" "}
-              {taskCount > 0 && (
-                <span className="tasks-count">{taskCount}</span>
+                </>
               )}
-            </Button>
-            <Button
-              id="view-toggle"
-              leftSection={
-                view === "canvas" ? (
-                  <MessageSquare size={15} />
-                ) : (
-                  <Maximize2 size={15} />
-                )
-              }
-              aria-pressed={view === "canvas"}
-              onClick={() => setView(view === "canvas" ? "chat" : "canvas")}
-            >
-              {view === "canvas" ? "Chat" : "Canvas"}
-            </Button>
-          </nav>
-        )}
+            </Menu.Dropdown>
+          </Menu>
+        </header>
         {error && (
           <div id="error" role="alert">
             {error}
@@ -1384,55 +1308,54 @@ export default function App() {
             </p>
           )}
         </div>
-        {view === "chat" && (
-          <Conversation
-            id={opened}
-            agent={agent}
-            room={room}
-            legacy={legacy}
-            data={data}
-            draft={drafts[opened || "new"] || ""}
-            setDraft={setDraft}
-            draftConflicts={draftConflicts.filter(
-              (version) => version.session === (opened || "new"),
-            )}
-            dismissDraft={dismissDraft}
-            send={send}
-            sending={sending}
-            outgoing={visibleOutgoing}
-            onObserved={observeSends}
-            onOutgoingEdit={editSend}
-            refresh={refresh}
-            notify={notify}
-            limits={visibleLimits}
-            limitsAccountLabel={
-              selectedAccount?.email || selectedAccount?.label
-            }
-            reloadLimits={forceReloadLimits}
-            onPhase={onPhase}
-            onSelect={open}
-          />
-        )}
-        {view === "canvas" && (
-          <Canvas
-            agents={agents}
-            stateDir={data.stateDir}
-            opened={opened}
-            open={open}
-          />
-        )}
-        {view === "complaints" && (
-          <ComplaintBook
-            data={data}
-            leadId={lead?.id}
-            refresh={refresh}
-            notify={notify}
-          />
-        )}
+        <Conversation
+          id={opened}
+          agent={agent}
+          room={room}
+          legacy={legacy}
+          data={data}
+          draft={drafts[opened || "new"] || ""}
+          setDraft={setDraft}
+          draftConflicts={draftConflicts.filter(
+            (version) => version.session === (opened || "new"),
+          )}
+          dismissDraft={dismissDraft}
+          send={send}
+          sending={sending}
+          outgoing={visibleOutgoing}
+          onObserved={observeSends}
+          onOutgoingEdit={editSend}
+          refresh={refresh}
+          notify={notify}
+          limits={visibleLimits}
+          limitsLoading={!!limitsLoading[accountKey]}
+          jumpTarget={jumpTarget?.chatId === opened ? jumpTarget : undefined}
+          limitsAccountLabel={selectedAccount?.email || selectedAccount?.label}
+          reloadLimits={forceReloadLimits}
+          onPhase={onPhase}
+          onSelect={open}
+          onBranchCreated={(id) => {
+            createdSelection.current = id;
+            setOpened(id);
+            setSidebar(false);
+            setTeamOpen(false);
+          }}
+          onNewChat={() => void newChat(agent?.cwd || lead?.cwd)}
+          onChooseChat={() => {
+            setSidebar(true);
+            setSidebarCollapsed(false);
+            save("codex-sidebar-collapsed", false);
+            requestAnimationFrame(() =>
+              document
+                .querySelector<HTMLInputElement>(
+                  '#sidebar [aria-label="Filter projects and chats"]',
+                )
+                ?.focus(),
+            );
+          }}
+        />
       </main>
-      {!mobileClient &&
-        view === "chat" &&
-        !!workers.length &&
+      {!!workers.length &&
         (narrowTeam ? (
           <Drawer
             opened={teamOpen}
@@ -1446,9 +1369,9 @@ export default function App() {
           >
             {teamPanel}
           </Drawer>
-        ) : (
+        ) : wideTeamOpen ? (
           teamPanel
-        ))}
+        ) : null)}
       {!mobileClient && (
         <TerminalDock data={data} agent={agent || lead} notify={notify} />
       )}
@@ -1456,6 +1379,7 @@ export default function App() {
         allRequests={data.runtime.requests}
         key={`workspace:${lead?.id || "none"}`}
         initialSection={workspaceSection}
+        initialFocus={workspaceFocus}
         opened={workspaceOpen}
         onClose={() => setWorkspaceOpen(false)}
         agent={agent || lead}
@@ -1464,34 +1388,13 @@ export default function App() {
         refresh={refresh}
         notify={notify}
       />
-      <Drawer
-        opened={agentChatsOpen}
-        closeButtonProps={{ "aria-label": "Close" }}
-        onClose={() => setAgentChatsOpen(false)}
-        position="right"
-        size={940}
-        padding={0}
-        title={
-          <div className="tasks-title">
-            <MessageSquare size={19} />
-            <strong>Agent chats</strong>
-          </div>
-        }
-        classNames={{
-          content: "tasks-drawer",
-          body: "tasks-drawer-body",
-          header: "tasks-drawer-header",
-        }}
-      >
-        <p className="activity-team-name">{lead?.name}</p>
-        {agentChatsOpen && (
-          <TeamChats key={lead?.id} data={chatData!} leadId={lead?.id} />
-        )}
-      </Drawer>
       <BackgroundTasks
         key={`background:${lead?.id || "none"}`}
         opened={tasksOpen}
         close={() => setTasksOpen(false)}
+        afterClose={() =>
+          requestAnimationFrame(() => chatActionsButton.current?.focus())
+        }
         data={chatData!}
         leadId={lead?.id}
         openAgent={open}
@@ -1499,92 +1402,82 @@ export default function App() {
         notify={notify}
       />
       <Modal
-        opened={mobileClient && settingsOpen}
+        opened={settingsOpen}
+        closeOnEscape={
+          !accountModalOpen && !mainSettingsOpen && !subagentSettingsOpen
+        }
+        closeOnClickOutside={
+          !accountModalOpen && !mainSettingsOpen && !subagentSettingsOpen
+        }
         onClose={() => setSettingsOpen(false)}
         title="Chat settings"
       >
-        <div className="mobile-chat-settings">
-          <Button
-            leftSection={<MessageSquare size={16} />}
-            disabled={!lead}
-            onClick={() => {
-              setSettingsOpen(false);
-              setAgentChatsOpen(true);
-            }}
-          >
-            Agent chats
-          </Button>
-          {agent?.cwd && <p className="mobile-project-path">{agent.cwd}</p>}
+        <div className="chat-settings-panel">
           <NativeSelect
-            label="Account"
-            aria-label="Chat account"
-            value={accountKey}
-            disabled={
-              accountChanging || agent?.accountTransfer?.status === "pending"
+            label="Appearance"
+            aria-label="Appearance"
+            value={colorScheme}
+            data={[
+              { value: "auto", label: "System" },
+              { value: "light", label: "Light" },
+              { value: "dark", label: "Dark" },
+            ]}
+            onChange={(event) =>
+              setColorScheme(
+                event.currentTarget.value as "auto" | "light" | "dark",
+              )
             }
-            data={accounts.data.accounts.map((account) => ({
-              value: account.id,
-              label: account.email || account.label || account.id,
-            }))}
-            onChange={(event) => {
-              const key = event.currentTarget.value;
-              setAccountChanging(true);
-              void run(async () => {
-                if (agent?.isLead) {
-                  const allowed = accounts.data.accounts.find(
-                    (account) => account.id === key,
-                  )?.projectRules?.allowedProjects;
-                  if (
-                    allowed &&
-                    !agent.dangerouslySkipAccountRules &&
-                    !allowed.some(
-                      (path) =>
-                        agent.cwd === path ||
-                        agent.cwd?.startsWith(path.replace(/\/$/, "") + "/"),
-                    )
-                  ) {
-                    setSettingsOpen(false);
-                    folders(agent, key);
-                    return;
-                  }
-                  await api(
-                    agent.empty && !agent.threadId
-                      ? "/api/agents/account"
-                      : "/api/agents/account-transfer",
-                    {
-                      id: agent.id,
-                      account_key: key,
-                      request_id: crypto.randomUUID(),
-                    },
-                  );
-                } else
-                  accounts.setData(
-                    await api("/api/accounts/default", { account_key: key }),
-                  );
-              }).finally(() => setAccountChanging(false));
-            }}
           />
-          <AccountTransferStatus
-            transfer={agent?.accountTransfer}
-            targetLabel={
-              accounts.data.accounts.find(
-                (a) => a.id === agent?.accountTransfer?.targetAccountKey,
-              )?.email || undefined
+          <Accounts
+            onModalOpenChange={setAccountModalOpen}
+            projectAccountKeys={
+              data.runtime.projects
+                ?.filter(
+                  (project) =>
+                    (agent || lead)?.cwd === project.path ||
+                    (agent || lead)?.cwd?.startsWith(project.path + "/"),
+                )
+                .sort((a, b) => b.path.length - a.path.length)[0]?.accountKeys
             }
-            pending={accountChanging}
-            onAction={(action) => {
-              setAccountChanging(true);
-              void run(async () => {
-                await api("/api/agents/account-transfer", {
-                  action,
-                  request_id: agent?.accountTransfer?.id,
+            state={accounts}
+            agent={agent || lead}
+            accountKey={accountKey}
+            onError={notify}
+            changeAccount={async (key) => {
+              if (agent?.isLead) {
+                await api("/api/agents/account", {
+                  id: agent.id,
+                  account_key: key,
                 });
-              }).finally(() => setAccountChanging(false));
+                await refresh();
+              } else {
+                accounts.setData(
+                  await api("/api/accounts/default", {
+                    account_key: key,
+                  }),
+                );
+              }
             }}
           />
+          {agent?.cwd && (
+            <Button
+              id="project"
+              className="project-picker"
+              leftSection={<Folder size={15} />}
+              aria-label="Choose project folder"
+              title={agent.cwd}
+              onClick={() => {
+                setSettingsOpen(false);
+                project();
+              }}
+            >
+              {projectName}
+            </Button>
+          )}
           {agent?.source === "managed" && (
             <ExecutionSettings
-              key={agent.id}
+              key={"execution:" + agent.id}
+              onOpenChange={setMainSettingsOpen}
               agent={agent}
               catalog={workerModels}
               refresh={refresh}
@@ -1592,7 +1485,8 @@ export default function App() {
           )}
           {lead?.isLead && (
             <ExecutionSettings
-              key={"mobile-defaults:" + lead.id}
+              key={"defaults:" + lead.id}
+              onOpenChange={setSubagentSettingsOpen}
               agent={lead}
               catalog={workerModels}
               refresh={refresh}

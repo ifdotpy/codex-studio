@@ -12,6 +12,9 @@ const { chromium } = createRequire(join(repo, "web/package.json"))(
   "playwright-core",
 );
 const root = await mkdtemp(join(tmpdir(), "codex-file-links-ui-"));
+const outsideRoot = await mkdtemp(join(tmpdir(), "codex-file-links-outside-"));
+const outside = join(outsideRoot, "outside-project.md");
+await writeFile(outside, "Outside project content");
 const report = join(root, "official-build.md");
 await writeFile(
   report,
@@ -81,8 +84,8 @@ try {
     `[File URL](${pathToFileURL(report)}#L12)`,
     "[Encoded](report%20with%20spaces.md)",
     "[Missing](missing.md)",
-    "[Outside](/etc/hosts)",
-    "[Zero width outside](\u200b/etc/hosts)",
+    `[Outside](${outside})`,
+    `[Zero width outside](\u200b${outside})`,
     "[Sandbox](sandbox:/mnt/data/report.md)",
     "[Remote file](file://remote.invalid/report.md)",
     "[External](https://example.com/report)",
@@ -138,11 +141,13 @@ try {
   await check("Anchor", /Report line 25/, 25);
   await check("File URL", /Report line 12/, 12);
   await check("Encoded", /Encoded file content/);
+  await check("Outside", /Outside project content/);
+  assert.equal(requests.at(-1).searchParams.get("path"), outside);
+  await check("Zero width outside", /Outside project content/);
+  assert.equal(requests.at(-1).searchParams.get("path"), outside);
   for (const [name, message] of [
     ["Missing", /does not exist/],
-    ["Outside", /outside this agent workspace/],
-    ["Zero width outside", /outside this agent workspace/],
-    ["Sandbox", /outside this agent workspace/],
+    ["Sandbox", /does not exist/],
     ["Remote file", /Remote file links are not supported/],
   ]) {
     await page.getByRole("link", { name, exact: true }).click();
@@ -166,7 +171,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "File links UI: PASS (official-build absolute line, boundary zero-width cleanup, encoded zero-width cleanup, interior character preserved, relative, anchors, file URL, encoded name, visible missing/containment errors, sandbox, external preservation, unsafe URL sanitation)",
+    "File links UI: PASS (official-build absolute line, boundary zero-width cleanup, encoded zero-width cleanup, interior character preserved, relative, anchors, file URL, encoded name, outside project preview, visible missing file errors, sandbox, remote file rejection, external preservation, unsafe URL sanitation)",
   );
   console.log("Evidence:", root);
 } catch (error) {

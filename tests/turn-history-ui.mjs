@@ -70,6 +70,19 @@ try {
       }),
       { turnId: "one", turnStatus: "completed", toolStatus: "completed" },
     ),
+    ...["check1", "check2"].map((id) =>
+      item(
+        id,
+        "output",
+        JSON.stringify({
+          type: "commandExecution",
+          command: `verify ${id}`,
+          status: "completed",
+          exitCode: 0,
+        }),
+        { turnId: "one", turnStatus: "completed", toolStatus: "completed" },
+      ),
+    ),
     item(
       "result1",
       "assistant",
@@ -79,12 +92,21 @@ try {
     item("ask2", "user", "Run acceptance", {
       turnId: "two",
       turnStatus: "failed",
+      turnError: null,
+      turnErrorResolved: true,
     }),
     item(
       "result2",
       "assistant",
       "Acceptance failed. The executable exited with code 1.",
-      { turnId: "two", turnStatus: "failed", phase: "final_answer" },
+      {
+        turnId: "two",
+        turnStatus: "failed",
+        phase: "final_answer",
+        // The native history lookup completed without a recorded error.
+        turnError: null,
+        turnErrorResolved: true,
+      },
     ),
     item("ask3", "user", "Investigate the failure", { turnId: "three" }),
     item("live3", "assistant", "Inspecting the error.\n\nMore", {
@@ -111,6 +133,7 @@ try {
       ...initial.agent,
       status: "running",
       inFlight: true,
+      turnId: "three",
       activity: { phase: "tool" },
     },
   };
@@ -123,6 +146,17 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  page.on("requestfailed", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/assets/"))
+      console.error("Asset request failed:", request.url(), request.failure());
+  });
+  page.on("response", (response) => {
+    if (
+      !response.ok() &&
+      new URL(response.url()).pathname.startsWith("/assets/")
+    )
+      console.error("Asset response:", response.status(), response.url());
+  });
   page.setDefaultTimeout(12000);
   let fileReads = 0;
   page.on("request", (r) => {
@@ -152,11 +186,31 @@ try {
     "active turn has one work log",
   );
   assert.equal(await first.locator(".turn-work").getAttribute("open"), null);
+  assert.equal(
+    await first.locator(".turn-work").evaluate((element) => element.tagName),
+    "DETAILS",
+  );
+  assert.equal(
+    await first.locator(".tool-card").count(),
+    0,
+    "three historical tools stay lazy while collapsed",
+  );
+  const activeWork = page.locator('[data-turn="three"] .turn-work');
+  assert.equal(
+    await activeWork.evaluate((element) => element.tagName),
+    "DETAILS",
+  );
+  assert.equal(await activeWork.locator(":scope > summary").count(), 1);
+  assert.equal(
+    await activeWork.locator('[data-message="tool3"]').isVisible(),
+    true,
+    "one active tool is visible without a group click",
+  );
   assert.match(await first.innerText(), /Build checks passed/);
   assert.equal(await page.locator('[data-message="note1"]').isVisible(), true);
   assert.match(
     await page.locator('[data-turn="two"]').innerText(),
-    /Turn failed/,
+    /The error reason is not available in this history/,
   );
   await first
     .locator('.turn-answer [data-message="result1"]')
@@ -177,7 +231,7 @@ try {
     "file preview loads on selection",
   );
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
-  await first.getByRole("button", { name: /Build image/ }).click();
+  await first.getByRole("button", { name: "Build image", exact: true }).click();
   await page.getByRole("dialog").locator("img").waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await first.getByRole("button", { name: /Patch/ }).click();

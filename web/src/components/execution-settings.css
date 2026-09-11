@@ -11,7 +11,7 @@
 }
 .workspace-header .execution-menu:hover,
 .workspace-header .execution-menu[aria-expanded="true"] {
-  background: var(--mantine-color-dark-6);
+  background: var(--hover);
   border-color: var(--line);
 }
 .execution-menu .mantine-Button-section[data-position="right"] {
@@ -35,7 +35,7 @@
   font-size: 11px;
 }
 .execution-error {
-  color: var(--mantine-color-red-5);
+  color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-5));
   overflow-wrap: anywhere;
 }
 .worker-model-summary {
@@ -52,4 +52,13 @@
   flex-wrap: wrap;
   padding-top: 12px;
   padding-bottom: 12px;
+}
+
+.execution-permissions summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.execution-permissions p {
+  color: var(--muted);
+  font-size: 12px;
 }

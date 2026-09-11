@@ -330,8 +330,11 @@ class AccountContracts(unittest.TestCase):
     def test_new_chat_uses_saved_default_without_changing_existing_chat(self):
         previous = self.runtime.new_lead({})
         self.runtime.accounts.default(self.other_key)
-        new = self.runtime.new_lead({})
+        new_project = self.root / "new-project"
+        new_project.mkdir()
+        new = self.runtime.new_lead({"cwd": str(new_project)})
         self.assertEqual(new["accountKey"], self.other_key)
+        self.assertEqual(self.runtime.new_lead({"cwd": previous["cwd"]})["accountKey"], "default")
         self.assertEqual(self.runtime.agent(previous["id"])["accountKey"], "default")
 
     def test_same_native_credit_retries_across_profiles_with_one_idempotency_key(self):

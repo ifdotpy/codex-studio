@@ -12,7 +12,6 @@ export interface Agent extends Json {
   cwd?: string;
   model: string;
   accountKey?: string;
-  dangerouslySkipAccountRules?: boolean;
   yoloMode?: boolean | null;
   canSend?: boolean;
   threadId?: string;
@@ -88,8 +87,19 @@ export interface Snapshot {
   threads: Agent[];
   chats: Json[];
   runtime: {
+    projectOrganizationVersion?: number;
     agents: Agent[];
-    projects?: { id: string; path: string; name: string; created: number }[];
+    projects?: {
+      id: string;
+      path: string;
+      name: string;
+      created: number;
+      accountKey?: string;
+      accountRevision?: number;
+      accountKeys?: string[];
+      organizationRevision?: number;
+      folders?: { id: string; name: string; parentId: string | null }[];
+    }[];
     rooms: Room[];
     complaints: Complaint[];
     monitors: Json[];
@@ -125,7 +135,7 @@ export const statusLabel = (status: string, phase?: string) =>
         thinking: "Thinking",
         writing: "Writing",
         tool: "Using tools",
-        retrying: "Codex is reconnecting",
+        retrying: "Codex is retrying",
         auth: "Restoring sign-in",
         error: "Codex reported an error",
       } as Record<string, string>

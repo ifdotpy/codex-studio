@@ -31,7 +31,7 @@ Backend logs and its PID remain in `canvas.log` and `canvas.pid` under the state
 npm run package
 ```
 
-The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. The package includes Electron, Python source files, and the compiled web assets. Python and Codex remain installed prerequisites. The package uses no checkout paths at runtime. It is unsigned and not notarized; this build is for local use.
+The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. The package includes Electron, Python source files, role skills, and the compiled web assets. Python and Codex remain installed prerequisites. The package uses no checkout paths at runtime. It is unsigned and not notarized; this build is for local use.
 
 ## Native bridge
 
@@ -43,8 +43,8 @@ The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. The packa
 | `pickFiles()`               | Up to 20 files, with name, path, MIME type, and base64 data; 20 MB total limit |
 | `revealPath(path)`          | Reveal an existing absolute path in Finder                                     |
 | `openExternal(url)`         | Open an HTTP or HTTPS URL in the default browser                               |
-| `setNotifications(enabled)` | Set notification permission for this app session                               |
-| `notify({title, body})`     | Send a silent notification if permission is enabled                            |
+| `setNotifications(enabled)` | Save the notification setting for this app profile                               |
+| `notify({title, body, target})`     | Send a silent notification if permission is enabled                            |
 
 Call the first five methods directly from a user click or keyboard handler, before an `await`. The isolated preload accepts a trusted input event for 1.2 seconds and consumes it once. Native notifications require explicit permission first. Other Chromium permissions are denied.
 
@@ -107,3 +107,7 @@ checks that its frameworks load without requesting either permission.
 API references: [Apple Speech file requests](https://developer.apple.com/documentation/speech/sfspeechurlrecognitionrequest),
 [on-device recognition](https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/requiresondevicerecognition),
 and [Electron permissions](https://www.electronjs.org/docs/latest/api/session).
+
+`getNotifications()` reads the saved notification setting. `onNavigate()` receives the exact chat and optional item from a notification click. It returns an unsubscribe function.
+
+Native transcription accepts an attempt `id`. `onTranscriptionProgress()` reports completed and total audio parts for that ID. `cancelTranscription(id)` stops that attempt after a user action. The saved recording remains on the device.

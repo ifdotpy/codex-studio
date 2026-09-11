@@ -186,10 +186,9 @@ try {
     1,
   );
   await page.locator('[data-answer="blocking-question"]').click();
-  const modal = page.getByRole("dialog", {
-    name: "Reply to the agent",
-    exact: true,
-  });
+  const modal = page
+    .locator('[data-request="blocking-question"]')
+    .getByRole("form");
   await modal
     .getByRole("textbox", { name: "Blocking tool question?" })
     .waitFor();
@@ -358,25 +357,27 @@ try {
       .inputValue(),
     "Keep this answer",
   );
-  await otherForm.getByRole("button", { name: "Cancel", exact: true }).click();
+  await otherForm
+    .getByRole("button", { name: "Close reply", exact: true })
+    .click();
   assert.equal(
     await page
       .locator('[data-answer="other-question"]')
       .evaluate((el) => el === document.activeElement),
     true,
   );
-  assert.equal(answers.length, 2, "Cancel never sends an answer");
+  assert.equal(answers.length, 2, "Hide never sends an answer");
   await page.locator('[data-answer="other-question"]').click();
   assert.equal(
     await otherForm
       .getByRole("textbox", { name: "Other project question?" })
       .inputValue(),
-    "",
-    "Explicit Cancel discards the answer draft",
+    "Keep this answer",
+    "Hide preserves the answer draft",
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Question UX: PASS (inline choices, custom text, draft preservation, explicit cancel, explicit submit, failed retry, exact ID, stale response, blocking input, narrow layout)",
+    "Question UX: PASS (inline choices, custom text, draft preservation, explicit hide, explicit submit, failed retry, exact ID, stale response, blocking input, narrow layout)",
   );
   console.log("Browser evidence:", root);
 } catch (error) {

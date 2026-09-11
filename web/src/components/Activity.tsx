@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { Json, Message } from "../types";
 import "./read-activity.css";
+import { toolLimitNotice } from "./toolLimitNotice";
 
 const names: Record<string, string> = {
   commandExecution: "Run command",
@@ -49,7 +50,7 @@ const toolNames: Record<string, string> = {
   orchestration_message: "Message agents",
   orchestration_peers: "Find agents",
   orchestration_chat_read: "Read agent chat",
-  orchestration_complaint: "Complaint book",
+  orchestration_complaint: "Message",
   orchestration_title: "Name the conversation",
 };
 const pretty = (value: unknown) =>
@@ -179,7 +180,8 @@ export function ToolCard({ item }: { item: Message }) {
           : kind === "fileChange"
             ? FileDiff
             : Wrench;
-  const label = read.label;
+  const limit = toolLimitNotice(item);
+  const label = limit?.title || read.label;
   const args = p.arguments;
   const [open, setOpen] = useState(false);
   const output = open
@@ -201,8 +203,11 @@ export function ToolCard({ item }: { item: Message }) {
         <span className="tool-icon">
           <Icon size={15} />
         </span>
-        <span className="tool-title">
-          <span>{label}</span>
+        <span className={`tool-title${limit ? " tool-title-limit" : ""}`}>
+          <span className={limit ? "activity-limit" : undefined}>{label}</span>
+          {limit && (
+            <small className="tool-limit-message">{limit.message}</small>
+          )}
           {!read.targets.length &&
             (typeof p.command === "string" || typeof p.query === "string") && (
               <small className="tool-read-summary" title={p.command || p.query}>
@@ -374,8 +379,9 @@ export default function Activity({ items }: { items: Message[] }) {
   const running = summary.running;
   const reads = items.flatMap((item) => readActivity(payload(item)).targets);
   const failed = summary.failed;
-  const [open, setOpen] = useState(false);
-  const [visited, setVisited] = useState(false);
+  const [open, setOpen] = useState(() => items.length < 3);
+  const [visited, setVisited] = useState(open);
+  const hasLimit = items.some((item) => toolLimitNotice(item));
   return (
     <details
       className="tool-group"
@@ -396,6 +402,9 @@ export default function Activity({ items }: { items: Message[] }) {
           <Wrench size={13} />
         )}
         <span>
+          {hasLimit && (
+            <strong className="activity-limit">Account limit reached · </strong>
+          )}
           {items.length === 1
             ? describe(items[0], payload(items[0])).label
             : summary.label}

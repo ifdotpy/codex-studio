@@ -46,8 +46,13 @@ export default function ComposerAttachments(p: {
   remove: (id: string) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   return (
     <div className="composer-attachments">
+      <FilePreview
+        target={preview ? { asset: preview } : null}
+        onClose={() => setPreview(null)}
+      />
       <input
         ref={input}
         type="file"
@@ -103,12 +108,19 @@ export default function ComposerAttachments(p: {
               key={asset.id}
               title={`${asset.name} · ${Math.ceil(asset.size / 1024)} KiB`}
             >
-              {asset.preview ? (
-                <img src={asset.preview} alt="" />
-              ) : (
-                <File size={15} />
-              )}
-              <span>{asset.name}</span>
+              <button
+                type="button"
+                className="attachment-preview-button"
+                aria-label={`Preview ${asset.name}`}
+                onClick={() => setPreview(asset.id)}
+              >
+                {asset.preview ? (
+                  <img src={asset.preview} alt="" />
+                ) : (
+                  <File size={15} />
+                )}
+                <span>{asset.name}</span>
+              </button>
               <ActionIcon
                 type="button"
                 size="xs"
@@ -125,10 +137,13 @@ export default function ComposerAttachments(p: {
   );
 }
 
-function AttachmentImage(p: { asset: Attachment }) {
+function AttachmentImage(p: { asset: Attachment; onPreview: () => void }) {
   const [src, setSrc] = useState<string>();
+  const [error, setError] = useState("");
   useEffect(() => {
     let live = true;
+    setSrc(undefined);
+    setError("");
     api(`/api/file?asset=${encodeURIComponent(p.asset.id)}`)
       .then((file) => {
         if (
@@ -138,13 +153,34 @@ function AttachmentImage(p: { asset: Attachment }) {
           )
         )
           setSrc(`data:${file.mime};base64,${file.base64}`);
+        else if (live) setError("This image type has no preview.");
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (live) setError(errorText(error));
+      });
     return () => {
       live = false;
     };
   }, [p.asset.id]);
-  return src ? <img src={src} alt={p.asset.name} loading="lazy" /> : null;
+  return error ? (
+    <p role="alert">{error}</p>
+  ) : src ? (
+    <button
+      type="button"
+      className="image-preview-button"
+      aria-label={`Preview ${p.asset.name}`}
+      onClick={p.onPreview}
+    >
+      <img
+        src={src}
+        alt={p.asset.name}
+        loading="lazy"
+        onError={() => setError("Cannot load this image.")}
+      />
+    </button>
+  ) : (
+    <span role="status">Load image…</span>
+  );
 }
 
 export function MessageAttachments(p: {
@@ -165,7 +201,12 @@ export function MessageAttachments(p: {
             key={asset.id}
             className={asset.image ? "message-attachment-image" : ""}
           >
-            {asset.image && <AttachmentImage asset={asset} />}
+            {asset.image && (
+              <AttachmentImage
+                asset={asset}
+                onPreview={() => setPreview(asset.id)}
+              />
+            )}
             <Button
               variant="default"
               size="compact-sm"

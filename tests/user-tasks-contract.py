@@ -39,6 +39,14 @@ class UserTasksContract(unittest.TestCase):
             },
         )
 
+    def legacy_worker_task(self, worker):
+        task = self.create(self.runtime.agent(worker['rootId']))
+        task['agent'] = worker['id']
+        task['history'][0]['actor'] = worker['id']
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, 'user_tasks', task)
+            return self.runtime.user_task_view(db, task)
+
     def complete(self, task, **data):
         return self.runtime.complete_user_task(
             {
@@ -103,24 +111,79 @@ class UserTasksContract(unittest.TestCase):
         )
         self.assertEqual(reopened["status"], "open")
 
-    def test_only_owner_and_lead_manage_tasks(self):
+    def test_only_lead_manages_legacy_worker_tasks(self):
         lead = self.lead()
         owner = self.worker(lead)
         peer = self.worker(lead)
         other = self.lead("Other")
-        task = self.create(owner)
-        for actor in [peer, other]:
+        task = self.legacy_worker_task(owner)
+        for actor in [owner, peer, other]:
             with self.assertRaises(ValueError):
                 self.action(actor, task, "cancel", reason="No longer needed")
         self.assertEqual(len(self.runtime.user_tasks(peer["id"])["items"]), 1)
         self.assertEqual(self.runtime.user_tasks(other["id"])["items"], [])
         reviewed = self.complete(task)
+        with self.runtime.db() as db:
+            self.assertIn(task["id"], self.runtime.user_task_review_context(db, lead["id"]))
+            self.assertEqual(self.runtime.user_task_review_context(db, owner["id"]), "")
         accepted = self.action(
             lead, reviewed, "accept", reason="Lead verified the result"
         )
         self.assertEqual(accepted["agent"], owner["id"])
-        self.assertEqual(len(self.events(owner, "user_task_completed")), 1)
-        self.assertEqual(len(self.events(lead, "user_task_completed")), 0)
+        self.assertEqual(len(self.events(owner, "user_task_completed")), 0)
+        self.assertEqual(len(self.events(lead, "user_task_completed")), 1)
+
+    def test_worker_cannot_create_or_change_user_tasks(self):
+        lead = self.lead(); worker = self.worker(lead)
+        task = self.legacy_worker_task(worker)
+        for action in ['create', 'update', 'accept', 'return', 'cancel']:
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'Ask your orchestrator to contact the user'):
+                self.action(worker, task, action, title='New request', criteria='Done', reason='Next action')
+        listed = self.runtime.user_task_action(worker['id'], {'action': 'list'})
+        self.assertEqual(listed['items'][0]['id'], task['id'])
+        self.assertEqual(listed['items'][0]['history'], task['history'])
+        self.assertEqual(listed['items'][0]['version'], task['version'])
+
+    def test_legacy_worker_receipt_replay_survives_role_policy(self):
+        lead = self.lead(); worker = self.worker(lead)
+        task = self.legacy_worker_task(worker)
+        request = {'action': 'create', 'title': task['title'], 'criteria': task['criteria']}
+        key = 'old-worker-create'
+        with self.runtime.lock, self.runtime.db() as db:
+            signature, prior = self.runtime.operation_receipt(db, key, {'actor': worker['id'], 'userTask': request})
+            self.runtime.save_receipt(db, key, signature, task)
+        self.assertEqual(self.runtime.user_task_action(worker['id'], request, key), task)
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.runtime.user_task_action(worker['id'], {**request, 'title': 'Changed'}, key)
+        with self.assertRaisesRegex(ValueError, 'Ask your orchestrator'):
+            self.runtime.user_task_action(worker['id'], request, 'new-worker-create')
+        self.runtime.close()
+        self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+        self.assertEqual(self.runtime.user_task_action(worker['id'], request, key), task)
+        self.assertEqual(len(self.runtime.user_tasks()['items']), 1)
+
+    def test_legacy_worker_completion_preserves_stopped_lead(self):
+        lead = self.lead(); worker = self.worker(lead)
+        task = self.legacy_worker_task(worker)
+        self.runtime.stop(lead['id'])
+        completed = self.complete(task)
+        self.assertEqual(completed['delivery'], 'cancelled')
+        self.assertEqual(len(self.events(worker, 'user_task_completed')), 0)
+        self.assertFalse(self.runtime.agent(lead['id'])['autoWake'])
+        with self.runtime.db() as db:
+            self.assertIn(task['id'], self.runtime.user_task_review_context(db, lead['id']))
+            self.assertEqual(self.runtime.user_task_review_context(db, worker['id']), '')
+
+    def test_deleted_worker_review_is_not_presented_to_lead(self):
+        lead = self.lead(); worker = self.worker(lead)
+        task = self.legacy_worker_task(worker)
+        self.complete(task)
+        self.runtime.delete_conversation(worker['id'])
+        with self.runtime.db() as db:
+            self.assertEqual(self.runtime.user_task_review_context(db, lead['id']), '')
+            stored = next(t for t in self.runtime.records(db, 'user_tasks') if t['id'] == task['id'])
+            self.assertEqual(stored['status'], 'review')
+            self.assertEqual(stored['history'][0], task['history'][0])
 
     def test_concurrent_retry_commits_one_event(self):
         a = self.lead()
@@ -184,6 +247,27 @@ class UserTasksContract(unittest.TestCase):
         self.assertIn(task["id"], json.dumps(params))
         self.assertIn("User tasks awaiting your review", json.dumps(params))
 
+    def test_restart_reroutes_only_unsent_legacy_completions(self):
+        lead = self.lead(); worker = self.worker(lead)
+        task = self.legacy_worker_task(worker)
+        task.update(status="review", delivery="pending")
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "user_tasks", task)
+            event_id = self.runtime.enqueue(db, self.runtime.agent(worker["id"], db), "user_task_completed", json.dumps({"task_id": task["id"]}), "legacy-completion")
+            self.runtime.enqueue(db, self.runtime.agent(worker["id"], db), "user_task_completed", json.dumps({"task_id": task["id"]}), "uncertain-completion")
+            db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='uncertain-completion'")
+        self.runtime.close()
+        self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+        lead_events = self.events(lead, "user_task_completed")
+        self.assertEqual([event["id"] for event in lead_events], [event_id])
+        self.assertEqual(lead_events[0]["epoch"], self.runtime.agent(lead["id"])["epoch"])
+        worker_events = self.events(worker, "user_task_completed")
+        self.assertEqual([(event["id"], event["status"]) for event in worker_events], [("uncertain-completion", "uncertain")])
+        self.assertEqual(self.runtime.user_tasks()["items"][0]["agent"], worker["id"])
+        self.runtime.close()
+        self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+        self.assertEqual(len(self.events(lead, "user_task_completed")), 1)
+
     def test_restart_keeps_tasks_receipts_and_pending_event(self):
         a = self.lead()
         task = self.create(a)
@@ -237,8 +321,25 @@ class UserTasksContract(unittest.TestCase):
         )
         self.assertTrue(second["success"])
         self.assertIn("Connect account", json.dumps(second))
-        schemas = self.tool(a, "orchestration_status", {})
+        schemas = self.tool(a, "orchestration_context", {"topic": "tools"})
+        self.assertTrue(schemas['success'])
+        content = json.loads(schemas['contentItems'][0]['text'])
+        if content.get('outputRef'):
+            schemas = self.tool(a, 'orchestration_read', {'output_ref': content['outputRef'], 'contains': 'orchestration_user_task'})
+            self.assertTrue(schemas['success'])
         self.assertIn("orchestration_user_task", json.dumps(schemas))
+
+    def test_worker_dynamic_and_legacy_route_cannot_request_user_action(self):
+        worker = self.worker(self.lead())
+        arguments = {'action': 'create', 'title': 'Worker request', 'criteria': 'Done'}
+        direct = self.tool(worker, 'orchestration_user_task', arguments)
+        self.assertFalse(direct['success'])
+        self.assertIn('Ask your orchestrator to contact the user', json.dumps(direct))
+        fallback = self.tool(worker, 'orchestration_send', {'agent_id': 'workspace', 'text': json.dumps({
+            'tool': 'orchestration_user_task', 'arguments': arguments})})
+        self.assertFalse(fallback['success'])
+        self.assertIn('Ask your orchestrator to contact the user', json.dumps(fallback))
+        self.assertEqual(self.runtime.user_tasks()['items'], [])
 
     def test_http_completion_requires_token_and_preserves_agent_control(self):
         from codex_canvas import Canvas, make_server

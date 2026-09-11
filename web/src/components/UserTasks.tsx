@@ -2,7 +2,6 @@ import {
   Avatar,
   Badge,
   Button,
-  Checkbox,
   NativeSelect,
   Textarea,
   TextInput,
@@ -179,8 +178,8 @@ export default function UserTasks(p: Props) {
       {(!p.compact || expanded) && (
         <>
           <p className="user-tasks-help">
-            Complete a task to notify its agent. The agent can accept it or ask
-            for more.
+            Send your result for review. The agent can accept it or request
+            changes.
           </p>
           <div className="user-tasks-list">
             {filtered.map((task) => (
@@ -294,14 +293,6 @@ function UserTaskRow(p: {
       data-user-task={task.id}
     >
       <div className="user-task-head">
-        <Checkbox
-          aria-label={`Complete ${task.title}`}
-          checked={task.status === "review" || task.status === "accepted"}
-          disabled={task.status !== "open" || pending}
-          onChange={() => void complete()}
-          size="sm"
-          mt={3}
-        />
         <UnstyledButton
           className="user-task-toggle"
           onClick={() => setDetails(!details)}
@@ -355,7 +346,7 @@ function UserTaskRow(p: {
           {task.status === "open" && (
             <div className="user-task-completion">
               <Textarea
-                label="Completion note (optional)"
+                label="Result note (optional)"
                 placeholder="What you did, a link, or a result"
                 value={note}
                 onChange={(e) => setNote(e.currentTarget.value)}
@@ -372,7 +363,7 @@ function UserTaskRow(p: {
                 loading={pending}
                 onClick={() => void complete()}
               >
-                Complete and notify agent
+                Send for review
               </Button>
             </div>
           )}

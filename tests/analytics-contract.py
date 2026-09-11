@@ -44,6 +44,19 @@ class AnalyticsContract(unittest.TestCase):
     def data(self, **options):
         return self.runtime.analytics(self.agent['id'], **options)
 
+    def test_compact_turn_errors_keep_exact_agent_thread_and_turn(self):
+        turn = self.agent['turnId']
+        thread = self.agent['threadId']
+        error = {'message': 'Usage limit reached', 'codexErrorInfo': 'usageLimitExceeded'}
+        self.event('turn/completed', {'turn': {'id': turn, 'status': 'failed', 'error': error}})
+        self.event('turn/completed', {'threadId': 'another-thread', 'turn': {'id': turn, 'status': 'failed', 'error': {'message': 'Unrelated error'}}})
+        result = self.data(view='turn-errors', thread=thread, turns=turn)
+        self.assertEqual(result, {'turns': [{'agentId': self.agent['id'], 'threadId': thread,
+                                           'turnId': turn, 'status': 'failed', 'error': error}]})
+        self.assertEqual(self.data(view='turn-errors', thread=thread, turns='absent'), {'turns': []})
+        with self.assertRaises(ValueError):
+            self.data(view='turn-errors', thread=thread, turns=','.join(str(i) for i in range(121)))
+
     def test_usage_duplicate_equal_sized_requests_and_subsets(self):
         one = {'inputTokens': 80, 'cachedInputTokens': 60, 'cacheWriteInputTokens': 5, 'outputTokens': 20, 'reasoningOutputTokens': 10, 'totalTokens': 100}
         self.usage(one, one)

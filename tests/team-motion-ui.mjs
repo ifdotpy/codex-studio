@@ -67,6 +67,10 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 980 },
   });
+  // Keep the status fixture on HTTP snapshots; sync has separate coverage.
+  await page.route("**/api/sync/**", (route) =>
+    route.fulfill({ status: 503, body: "Fixture uses HTTP snapshots" }),
+  );
   await page.route("**/api/state", async (route) => {
     const response = await route.fetch();
     const data = await response.json();
@@ -106,6 +110,11 @@ try {
   );
   await page.goto(origin);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  assert.equal(
+    await page.locator("#team-toggle").getAttribute("aria-expanded"),
+    "false",
+  );
+  await page.locator("#team-toggle").click();
   const card = page.locator(`[data-worker="${target.id}"]`).locator("..");
   const details = card.locator(".worker-excerpt");
   await details.locator("summary").click();

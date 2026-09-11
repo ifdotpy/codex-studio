@@ -14,6 +14,7 @@ import time
 import uuid
 
 from codex_native_errors import NativeRpcError
+from codex_safety_buffering import active as safety_retry_active
 from codex_work import text_field
 
 
@@ -31,8 +32,10 @@ class WorkspaceMixin:
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_projects (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_workspace_migrations (id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
         """)
+        self.migrate_project_accounts(db)
         active = {
             operation["id"]: operation
             for operation in self.records(db, "workspace_operations")
@@ -219,11 +222,69 @@ class WorkspaceMixin:
 
     @staticmethod
     def project_directory(value, require_existing=True):
+        if isinstance(value, Path):
+            value = str(value)
         text_field(value, "a project path", 4096)
         path = Path(value).expanduser().resolve()
         if require_existing and not path.is_dir():
             raise ValueError("Select an existing project directory")
         return str(path)
+
+    def migrate_project_accounts(self, db):
+        marker = "project-account-defaults-v1"
+        if db.execute("SELECT 1 FROM runtime_workspace_migrations WHERE id=?", (marker,)).fetchone():
+            return
+        legacy = self.accounts.legacy_project_defaults()
+        leads = {}
+        for agent in self.records(db, "agents"):
+            if not agent.get("isLead") or agent.get("deletedAt") or not agent.get("cwd"):
+                continue
+            key = agent.get("accountKey", "default")
+            try:
+                self.accounts.get(key)
+            except ValueError:
+                continue
+            path = self.project_directory(agent["cwd"], require_existing=False)
+            previous = leads.get(path)
+            if previous is None or (agent.get("created", 0), agent["id"]) > (previous.get("created", 0), previous["id"]):
+                leads[path] = agent
+        projects = self.records(db, "projects")
+        registered = {self.project_directory(p["path"], require_existing=False) for p in projects}
+        for path in sorted((set(leads) | set(legacy)) - registered):
+            projects.append({"id": path, "path": path, "name": Path(path).name or path,
+                             "created": leads.get(path, {}).get("created", time.time())})
+        for project in projects:
+            if not project.get("accountKey"):
+                path = self.project_directory(project["path"], require_existing=False)
+                project["accountKey"] = leads[path].get("accountKey", "default") if path in leads else legacy.get(path, self.accounts.default())
+                project["accountRevision"] = 1
+            else:
+                project.setdefault("accountRevision", 1)
+            self.put(db, "projects", project)
+        db.execute("INSERT INTO runtime_workspace_migrations(id) VALUES (?)", (marker,))
+
+    def project_account(self, cwd, db=None):
+        if db is None:
+            with self.lock, self.db() as connection:
+                return self.project_account(cwd, db=connection)
+        directory = Path(self.project_directory(cwd, require_existing=False))
+        matches = [p for p in self.records(db, "projects")
+                   if p.get("accountKey") and directory.is_relative_to(Path(p["path"]).expanduser().resolve())]
+        if matches:
+            return max(matches, key=lambda p: len(Path(p["path"]).parts))["accountKey"]
+        return self.accounts.default()
+
+    def ensure_project(self, path, account_key, db):
+        """Register a chat project in its transaction; preserve an existing choice."""
+        path = self.project_directory(path, require_existing=False)
+        existing = db.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
+        if existing:
+            return json.loads(existing[0])
+        self.accounts.get(account_key)
+        project = {"id": path, "path": path, "name": Path(path).name or path,
+                   "created": time.time(), "accountKey": account_key, "accountRevision": 1}
+        self.put(db, "projects", project)
+        return project
 
     def projects(self, data=None, db=None):
         if data is None:
@@ -232,29 +293,55 @@ class WorkspaceMixin:
                     return self.projects(db=connection)
             return {"items": sorted(self.records(db, "projects"), key=lambda p: (p["created"], p["id"]))}
         action = data.get("action", "register")
-        if action not in ("register", "remove"):
+        if action in ('rename', 'add_folder', 'rename_folder', 'remove_folder'):
+            from codex_project_folders import organize_project
+            return organize_project(self, data)
+        if action == "set_accounts":
+            from codex_project_accounts import set_project_accounts
+            return set_project_accounts(self, data)
+        if action not in ("register", "remove", "set_account"):
             raise ValueError("Unknown project action")
         path = self.project_directory(data.get("path"), require_existing=action == "register")
         name = text_field(data["name"], "a project name", 255) if "name" in data else Path(path).name or path
+        if action == "set_account":
+            revision = data.get("expected_revision")
+            if type(revision) is not int or revision < 0:
+                raise ValueError("Supply the current project account revision")
         with self.lock, self.db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             if action == "remove":
                 removed = connection.execute("DELETE FROM runtime_projects WHERE id=?", (path,)).rowcount
                 return {"id": path, "removed": bool(removed)}
             existing = connection.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
-            if existing:
-                return json.loads(existing[0])
-            project = {"id": path, "path": path, "name": name, "created": time.time()}
+            project = json.loads(existing[0]) if existing else None
+            if action == "register" and project:
+                return project
+            if action == "set_account":
+                current = project.get("accountRevision", 0) if project else 0
+                desired = data["account_key"]
+                if project and project.get("accountKey") == desired and revision in (current, current - 1):
+                    return project
+                if revision != current:
+                    raise ValueError("Project account changed. Reload it before saving")
+                if self.accounts.get(desired).get("disconnected"):
+                    raise ValueError("Reconnect this account before selecting it")
+            else:
+                current = 0
+                desired = data.get("account_key") or self.project_account(path, db=connection)
+                self.accounts.get(desired)
+            if project is None:
+                project = {"id": path, "path": path, "name": name, "created": time.time()}
+            project.update(accountKey=desired, accountRevision=current + 1)
+            if project.get("accountKeys") and desired not in project["accountKeys"]:
+                project["accountKeys"] = sorted([*project["accountKeys"], desired])
             self.put(connection, "projects", project)
             return project
 
     def workspace_path(self, agent_id, path):
         a = self.agent(agent_id)
-        self.check_account_project(a)
         root = Path(a["cwd"]).resolve()
         supplied = Path(text_field(path, "a path", 4096)).expanduser()
         resolved = (supplied if supplied.is_absolute() else root / supplied).resolve()
-        if not resolved.is_relative_to(root):
-            raise ValueError("The file is outside this agent workspace")
         return resolved
 
     def upload_asset(self, data):
@@ -372,7 +459,6 @@ class WorkspaceMixin:
         return file.read_bytes(), mime, file.name
 
     def git(self, a, args, env=None, input=None):
-        self.check_account_project(a)
         result = subprocess.run(
             ["git", "-C", a["cwd"], *args],
             input=input,
@@ -640,7 +726,6 @@ class WorkspaceMixin:
         files_already_restored = False
         with self.lock:
             a = self.checked_actor_in_own_db(key)
-            self.check_account_project(a)
             if not a.get("worktreeReady"):
                 raise ValueError(
                     "Restore is available only in an isolated worker worktree"
@@ -892,6 +977,8 @@ class WorkspaceMixin:
             return self.branch_locked(key, data)
 
     def branch_locked(self, key, data):
+        if "before" in data and type(data["before"]) is not bool:
+            raise ValueError("before must be a boolean")
         operation_id = self._workspace_operation_id("branch", key, data)
         body = {"agent": key, **data}
         with self.lock, self.db() as db:
@@ -906,6 +993,8 @@ class WorkspaceMixin:
                         a["workspaceOperation"] = None
                         self.put(db, "agents", a)
                 return prior
+            if self.accounts.get(a.get("accountKey", "default")).get("disconnected"):
+                raise ValueError("Reconnect this account before creating a branch")
             operation = self._workspace_operation(db, operation_id)
             resume_local = False
             retry_failed = False
@@ -933,13 +1022,9 @@ class WorkspaceMixin:
                     raise ValueError(
                         "Workspace recovery is required before retrying this operation"
                     )
-            row = db.execute(
-                "SELECT record FROM runtime_items WHERE id=? AND agent=?",
-                (data.get("message_id"), key),
-            ).fetchone()
-            if not row:
-                raise ValueError("Unknown message")
-            item = json.loads(row[0])
+            from codex_transcript_history import resolve_item
+            row = resolve_item(db, key, data.get("message_id"))
+            item = json.loads(row["record"])
             turn_id = item.get("turnId")
             if not turn_id or item.get("afterRestore"):
                 raise ValueError("This message has no active native turn reference")
@@ -947,7 +1032,6 @@ class WorkspaceMixin:
                 self.assert_workspace_available(db, a)
             if turn_id == a.get("turnId"):
                 raise ValueError("Wait for this turn to finish before branching")
-            self.accounts.check_project(a.get("accountKey", "default"), a["cwd"])
             if operation is None:
                 operation = {
                     "id": operation_id,
@@ -977,23 +1061,41 @@ class WorkspaceMixin:
                     operation = self._workspace_operation(db, operation_id)
                 response = operation["provider"]
             else:
+                provider_dispatched = False
                 try:
-                    response = self.connect(a.get("accountKey", "default")).call(
-                        "thread/fork",
-                        {
-                            "threadId": a["threadId"],
-                            "lastTurnId": turn_id,
-                            "cwd": a["cwd"],
-                            "config": self.thread_config(),
-                            **{k: v for k, v in self.new_thread_params(a).items() if k in {"approvalPolicy", "sandbox"}},
-                            "model": a["model"] if a.get("isLead") else "gpt-5.6-sol",
-                            "developerInstructions": self.new_thread_params(a, inherit_account_rule_override=False)[
-                                "developerInstructions"
-                            ],
-                        },
-                    )
+                    branch_params = self.new_thread_params({**a, "isLead": True,
+                        "model": a["model"] if a.get("isLead") else "gpt-5.6-sol", "needsTitle": False})
+                    fork_turn = turn_id
+                    if data.get("before"):
+                        native = self.connect(a.get("accountKey", "default")).call(
+                            "thread/read", {"threadId": a["threadId"], "includeTurns": True})
+                        turns = native.get("thread", {}).get("turns", [])
+                        index = next((i for i, turn in enumerate(turns) if turn.get("id") == turn_id), None)
+                        if index is None:
+                            raise ValueError("The selected turn is absent from native history")
+                        fork_turn = turns[index - 1]["id"] if index else None
+                    self._update_workspace_operation(operation_id, forkTurnId=fork_turn)
+                    provider_dispatched = True
+                    if fork_turn is None:
+                        response = self.connect(a.get("accountKey", "default")).call(
+                            "thread/start", branch_params)
+                    else:
+                        response = self.connect(a.get("accountKey", "default")).call(
+                            "thread/fork",
+                            {
+                                "threadId": a["threadId"],
+                                "lastTurnId": fork_turn,
+                                "cwd": a["cwd"],
+                                "config": self.thread_config(),
+                                **{k: v for k, v in branch_params.items() if k in {"approvalPolicy", "sandbox"}},
+                                "model": a["model"] if a.get("isLead") else "gpt-5.6-sol",
+                                "developerInstructions": branch_params[
+                                    "developerInstructions"
+                                ],
+                            },
+                        )
                 except Exception as error:
-                    if self._workspace_provider_rejected(error):
+                    if not provider_dispatched or self._workspace_provider_rejected(error):
                         self._finish_workspace_operation(operation_id, key, error=error)
                     else:
                         self._require_workspace_recovery(operation_id, key, error)
@@ -1002,6 +1104,8 @@ class WorkspaceMixin:
                 self._assert_workspace_source(operation, self.agent(key, db))
             try:
                 response = self._workspace_provider_result(response)
+                if response["thread"]["id"] == a.get("threadId"):
+                    raise ValueError("The native branch did not create a new thread")
             except Exception as error:
                 self._require_workspace_recovery(operation_id, key, error)
                 raise
@@ -1033,8 +1137,6 @@ class WorkspaceMixin:
             )
             with self.lock, self.db() as db:
                 self._assert_workspace_source(operation, self.agent(key, db))
-                # A new team never inherits the source team's project exception.
-                self.accounts.check_project(a.get("accountKey", "default"), a["cwd"])
                 lead.update(
                     yoloMode=a.get("yoloMode"),
                     sandbox=response.get("sandbox", a.get("sandbox")),
@@ -1052,11 +1154,10 @@ class WorkspaceMixin:
                     "SELECT record,created FROM runtime_items WHERE agent=? AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created",
                     (key,),
                 ).fetchall()
-                cutoff = max(
-                    r["created"]
-                    for r in rows
-                    if json.loads(r["record"]).get("turnId") == turn_id
-                )
+                operation = self._workspace_operation(db, operation_id)
+                fork_turn = operation.get("forkTurnId", turn_id)
+                cutoff = max((r["created"] for r in rows
+                    if json.loads(r["record"]).get("turnId") == fork_turn), default=float("-inf"))
                 assets = {}
 
                 def copy_assets(records):
@@ -1080,6 +1181,8 @@ class WorkspaceMixin:
                     if r["created"] > cutoff:
                         break
                     record = json.loads(r["record"])
+                    if data.get("before") and record.get("turnId") == turn_id:
+                        continue
                     inputs = record.get("inputs")
                     if inputs is not None:
                         inputs = [
@@ -1098,6 +1201,26 @@ class WorkspaceMixin:
                         streaming=False,
                         assets=copy_assets(record.get("assets", [])),
                     )
+                if data.get("before"):
+                    prompt = item
+                    if item.get("inputs"):
+                        prompt = next((entry for index, entry in enumerate(item["inputs"])
+                            if data.get("message_id") == (key + ":" + entry['id'] if entry.get('id') else item['id'] + ':' + str(index))), item["inputs"][0])
+                    event = db.execute("SELECT text FROM runtime_events WHERE id=? AND agent=?", (prompt.get("id", "").removeprefix(key + ":"), key)).fetchone()
+                    full = db.execute("SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid FROM runtime_search_rows WHERE id=?)", (item["id"],)).fetchone() if not item.get("inputs") else None
+                    preceding = []
+                    prefix_assets = []
+                    for entry in item.get("inputs", []):
+                        if entry is prompt:
+                            break
+                        if entry.get("kind") != "user":
+                            continue
+                        prior_event = db.execute("SELECT text FROM runtime_events WHERE id=? AND agent=?", (entry.get("id"), key)).fetchone()
+                        preceding.append(prior_event[0] if prior_event else entry.get("text", ""))
+                        prefix_assets.extend(entry.get("assets", []))
+                    lead = {**lead, "draft": {"text": event[0] if event else full[0] if full else prompt.get("text", ""),
+                        "prefixText": "\n\n".join(preceding),
+                        "assets": copy_assets([*prefix_assets, *prompt.get("assets", [])])}}
                 result = self.save_receipt(db, data.get("id"), signature, lead)
             self.loaded.discard(lead["id"])
             self._finish_workspace_operation(operation_id, key, result=result)
@@ -1154,7 +1277,6 @@ class WorkspaceMixin:
 
     def capabilities(self, key):
         a = self.checked_actor_in_own_db(key)
-        self.check_account_project(a)
         cache = self.capability_cache.get(key)
         if cache and time.time() - cache["at"] < 30:
             return cache
@@ -1180,7 +1302,7 @@ class WorkspaceMixin:
                 }
             )
         for label, method, params in [
-            ("skills", "skills/list", {"cwds": [a["cwd"]]}),
+            ("skills", "skills/list", {"cwds": [a["cwd"]], "forceReload": True}),
             (
                 "servers",
                 "mcpServerStatus/list",
@@ -1394,10 +1516,12 @@ class WorkspaceMixin:
                 for other in self.records(db, "agents")
                 if other.get("workspaceOperation") and Path(other["cwd"]).resolve() == cwd]
 
+
     def assert_workspace_available(self, db, a):
+        if safety_retry_active(a):
+            raise ValueError('Wait for the model change before another workspace operation')
         if a.get("accountTransferId") and not a.get("inFlight"):
             raise ValueError("Wait for this agent's account transfer to finish")
-        self.check_account_project(a, db)
         blockers = self.workspace_blockers(db, a)
         if blockers:
             raise ValueError("A workspace operation is active in this directory: "

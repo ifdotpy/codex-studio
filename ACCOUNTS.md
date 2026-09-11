@@ -5,14 +5,14 @@ different accounts until their active work ends. Different teams can run
 at the same time with different accounts. Each account has its own app-server
 process, limits cache, approvals, and native profile directory.
 
-Use the account menu beside the model to choose an account for an empty chat.
-If its rules exclude the current folder, choose an allowed project in the folder dialog.
-The server applies the account and folder together. Cancel or rejection preserves both.
-For an existing chat, select another account to transfer the team. The chat keeps
-its identity. Set the default in **Manage accounts** for new chats.
-A new chat uses the destination project's saved account, or the global default
-when the project has no choice. It does not inherit another chat's account.
-An explicit account choice still takes priority and remains subject to project rules.
+Each project has one default account. Open the project's menu and select
+**Project account** to change it. New chats in that project use this account.
+The setting is available on desktop and mobile. Existing chats keep their account.
+
+Use the account menu in Settings to select any available account for an empty
+chat. This choice affects that chat only. For an existing chat, select another
+account to transfer its team with the saved context.
+The global default in **Manage accounts** applies to projects without a saved choice.
 
 The application finds native profiles in `~/.codex`, `~/Projects/*/.codex-profile`,
 `~/Projects/*/.codex`, `~/.codex/profiles/*`, and `~/.codex-profiles/*`.
@@ -37,44 +37,37 @@ not an account invoice. The application does not rotate accounts automatically.
 
 Use `codex-control accounts` to list account keys from the terminal.
 `codex-control create`, `models`, and `limits` accept `--account KEY`.
-Without that option, these commands use the saved default account.
+Without that option, `create` uses the project account. `models` and `limits` use
+the global default account.
 
-## Project rules
+## Project accounts
 
-Each account can use all projects, a list of project directories, or no projects.
-Edit this list in **Manage accounts**. Rules include subdirectories and registered
-Git worktrees of the same repository. A rule for a repository subdirectory grants
-only that subtree in a linked worktree. Sibling path prefixes and symlink escapes
-do not match. Rule edits use a revision to prevent conflicting saves.
+Studio uses the project path to select a default account and group chats.
+Models can use files and skills outside that path. Account selection adds no
+folder allowlist. Native sandbox and approval settings still apply.
 
-The server checks the project before new work, resumed turns, agent delegation,
-and managed project operations. Empty chats can exist outside the allowed list
-so the user can choose another project. Updated rules apply to subsequent
-operations. They do not terminate a model request or command already in progress.
+Project defaults use canonical paths. A nested directory uses the nearest saved
+ancestor until it has its own setting. Account changes use a revision to detect
+conflicting edits. A repeated successful save preserves the same revision.
 
-**Dangerously skip rules** is an explicit exception for the current team.
-Workers inherit it from their lead and cannot enable it themselves. The exception
-can change only when the team is idle. New teams and conversation branches do
-not inherit the exception. An orange **Rules off** badge shows an active exception.
-The switch does not disable Codex sandboxing, approvals, or account identity checks.
-
-These are account/project admission rules, not operating-system file isolation.
-They do not prevent a native command from accessing another directory that its
-Codex permissions allow. They do not change vanilla Codex CLI profiles or other
-applications. Native filesystem permissions remain a separate boundary.
+The update preserves existing project and chat identities. It keeps an explicit
+project default when one exists. Otherwise it selects the latest non-deleted lead's
+account for that exact project, an unambiguous old account rule, or the global default.
+Old account rules remain only as migration data. They no longer restrict operations
+or appear in model instructions. Existing native profiles and credentials remain unchanged.
 
 From the command line:
 
 ```sh
-codex-control account-rules ACCOUNT --allow /path/to/project
-codex-control account-rules ACCOUNT --deny-all
-codex-control account-rules ACCOUNT --allow-all
-codex-control create 'Task' --account ACCOUNT --cwd /path/to/project --dangerously-skip-rules
+codex-control project-account /path/to/project
+codex-control project-account /path/to/project --account ACCOUNT
+codex-control create 'Task' --cwd /path/to/project
+codex-control create 'Task' --cwd /path/to/project --account ACCOUNT
 ```
 
-Checks: `tests/accounts-contract.py`, `tests/runtime-accounts-contract.py`, and
-`tests/accounts-ui-smoke.mjs`. Fixture checks do not make paid model requests
-or redeem real reset credits.
+Checks: `tests/project-accounts-contract.py`, `tests/account-project-runtime.py`,
+`tests/runtime-accounts-contract.py`, and `tests/account-project-ui.mjs`.
+Fixture checks do not make paid model requests or redeem real reset credits.
 
 ## Add an account
 
@@ -90,6 +83,14 @@ ID does not start another login. An existing native account appears only once.
 
 Checks: `tests/account-login-contract.py`, `tests/runtime-accounts-contract.py`,
 and `tests/accounts-ui-smoke.mjs`. These checks use isolated fixtures.
+
+## Multiple project accounts
+
+Select project accounts in **Project account** and choose one default. Linked accounts
+appear first in the chat account menu with a **Project** label. Other accounts remain
+available. This selection adds no folder restrictions or automatic account rotation.
+Existing chats keep their account. For parallel work, create separate chats and select
+a linked account before the first message.
 
 ## Transfer an existing team
 

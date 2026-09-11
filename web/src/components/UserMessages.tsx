@@ -4,12 +4,11 @@ import {
   Modal,
   NativeSelect,
   Textarea,
-  Tabs,
   UnstyledButton,
 } from "@mantine/core";
-import { BookOpen, Plus } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText } from "../api";
+import { api, errorText, save, saved } from "../api";
 import {
   complaintLabel,
   type Snapshot,
@@ -18,13 +17,17 @@ import {
 } from "../types";
 import "./complaint-book.css";
 
+// Keep unsent replies in memory, separate from durable retry receipts.
+const replyDrafts = new Map<string, { text: string; status: string }>();
+
 const recipient = (c: Json) =>
   c.recipient || (c.author === c.leadId ? "user" : "lead");
 
-function ComplaintResponse({
+function MessageResponse({
   detail,
   token,
   requests,
+  pendingKey,
   refresh,
   notify,
   onResponse,
@@ -32,19 +35,25 @@ function ComplaintResponse({
   detail: Json;
   token: string;
   requests: Map<string, Json>;
+  pendingKey: string;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
   onResponse: (c: Json) => void;
 }) {
+  const draftKey = JSON.stringify([pendingKey, detail.id]);
+  const draft = replyDrafts.get(draftKey);
   const previous = requests.get(detail.id);
-  const [text, setText] = useState(previous?.text || "");
-  const [status, setStatus] = useState(previous?.status || "in_progress");
+  const [text, setText] = useState(previous?.text || draft?.text || "");
+  const [status, setStatus] = useState(
+    previous?.status || draft?.status || "in_progress",
+  );
+  const [resolution, setResolution] = useState(false);
   const [sending, setSending] = useState(false);
   const [retry, setRetry] = useState(!!previous);
   const [error, setError] = useState("");
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (sending || !text.trim()) return;
+    if (sending || !text.trim() || text.length > 12000) return;
     const payload = requests.get(detail.id) || {
       id: crypto.randomUUID(),
       action: "respond",
@@ -54,6 +63,7 @@ function ComplaintResponse({
       status,
     };
     requests.set(detail.id, payload);
+    save(pendingKey, Object.fromEntries(requests));
     setSending(true);
     setError("");
     try {
@@ -69,13 +79,14 @@ function ComplaintResponse({
       if (!response.ok) {
         if (response.status >= 400 && response.status < 500) {
           requests.delete(detail.id);
+          save(pendingKey, Object.fromEntries(requests));
           setRetry(false);
           if (
             response.status === 409 ||
             /version|changed|stale/i.test(result.error || "")
           ) {
             setError(
-              "This complaint changed. Review the latest response before you send again.",
+              "This message changed. Review the latest response before you send again.",
             );
             await refresh();
             onResponse(
@@ -91,7 +102,9 @@ function ComplaintResponse({
         );
       }
       requests.delete(detail.id);
+      save(pendingKey, Object.fromEntries(requests));
       setRetry(false);
+      replyDrafts.delete(draftKey);
       setText("");
       onResponse(result);
       try {
@@ -111,27 +124,49 @@ function ComplaintResponse({
   };
   return (
     <form className="complaint-reply" onSubmit={submit}>
-      <h3>Your response</h3>
-      <NativeSelect
-        label="Action"
-        value={status}
-        disabled={sending || retry}
-        onChange={(event) => setStatus(event.target.value)}
+      <h3>Your reply</h3>
+      <Button
+        type="button"
+        variant="subtle"
+        size="compact-xs"
+        onClick={() => setResolution(!resolution)}
+        aria-expanded={resolution}
       >
-        <option value="in_progress">I'll handle it</option>
-        <option value="resolved">Resolved</option>
-        <option value="declined">Declined</option>
-      </NativeSelect>
+        Change message status (optional)
+      </Button>
+      {(resolution || status !== "in_progress") && (
+        <NativeSelect
+          label="Message status"
+          value={status}
+          disabled={sending || retry}
+          onChange={(event) => {
+            setStatus(event.target.value);
+            replyDrafts.set(draftKey, { text, status: event.target.value });
+          }}
+        >
+          <option value="in_progress">Keep open</option>
+          <option value="resolved">Resolved</option>
+          <option value="declined">Declined</option>
+        </NativeSelect>
+      )}
       <Textarea
-        label="Action or reason"
+        label="Reply"
+        aria-label="Reply"
         value={text}
         required
-        maxLength={12000}
+        error={
+          text.length > 12000
+            ? "The reply exceeds 12,000 characters. Shorten it before you send."
+            : undefined
+        }
         autosize
         minRows={3}
         maxRows={8}
         disabled={sending || retry}
-        onChange={(event) => setText(event.target.value)}
+        onChange={(event) => {
+          setText(event.target.value);
+          replyDrafts.set(draftKey, { text: event.target.value, status });
+        }}
       />
       {error && (
         <p className="complaint-reply-error" role="alert">
@@ -143,39 +178,41 @@ function ComplaintResponse({
         variant="filled"
         color="indigo"
         loading={sending}
-        disabled={!text.trim()}
+        disabled={!text.trim() || text.length > 12000}
       >
-        {retry ? "Retry response" : "Send response"}
+        {retry ? "Retry response" : "Send reply"}
       </Button>
-      <p className="notice">
-        The orchestrator receives your response as a message.
-      </p>
+      <p className="notice">The agent receives your response as a message.</p>
     </form>
   );
 }
 
-export default function ComplaintBook({
+export default function UserMessages({
   data,
-  leadId,
+  target = "user",
+  hideEmpty = false,
+  focusId,
+  focusRequestId,
   refresh,
   notify,
 }: {
   data: Snapshot;
-  leadId?: string;
+  target?: "user" | "lead";
+  hideEmpty?: boolean;
+  focusId?: string;
+  focusRequestId?: string;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
-  const [tab, setTab] = useState<string | null>("user");
-  const responseRequests = useRef(new Map<string, Json>());
-  const [filter, setFilter] = useState("pending"),
+  const pendingKey = `studio-message-responses:${data.stateDir}`;
+  const responseRequests = useRef(
+    new Map<string, Json>(Object.entries(saved(pendingKey, {}))),
+  );
+  const [filter, setFilter] = useState(target === "lead" ? "all" : "pending"),
     [detail, setDetail] = useState<Json | null>(null),
     [detailId, setDetailId] = useState<string | null>(null),
     [detailError, setDetailError] = useState(""),
-    [detailAttempt, setDetailAttempt] = useState(0),
-    [create, setCreate] = useState(false),
-    [text, setText] = useState(""),
-    [selected, setSelected] = useState(leadId || ""),
-    [sending, setSending] = useState(false);
+    [detailAttempt, setDetailAttempt] = useState(0);
   const activeDetailId = useRef(detailId);
   activeDetailId.current = detailId;
   const changeDetail = (id: string | null) => {
@@ -183,13 +220,16 @@ export default function ComplaintBook({
     setDetailError("");
     setDetailId(id);
   };
-  const request = useRef<Json | null>(null),
-    leads = data.threads.filter((a) => a.source === "managed" && a.isLead),
-    records = (data.runtime.complaints || []).map((complaint) =>
-      !complaint.recipient && complaint.author === complaint.leadId
-        ? { ...complaint, needsResponse: true, status: "open", readAt: null }
-        : complaint,
-    );
+  const records = data.runtime.complaints || [];
+  useEffect(() => {
+    if (
+      !focusId ||
+      !records.some((item) => item.id === focusId && recipient(item) === target)
+    )
+      return;
+    setDetail(null);
+    changeDetail(focusId);
+  }, [focusId, focusRequestId]);
   useEffect(() => {
     if (!detailId) return;
     let live = true;
@@ -210,116 +250,44 @@ export default function ComplaintBook({
       live = false;
     };
   }, [detailId, detailAttempt, data]);
-  const createDraft = useRef({ text, selected });
-  createDraft.current = { text, selected };
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (sending) return;
-    const lead = selected || leads[0]?.id;
-    if (!lead || !text.trim()) return;
-    if (request.current?.text !== text.trim() || request.current?.lead !== lead)
-      request.current = { id: crypto.randomUUID(), text: text.trim(), lead };
-    setSending(true);
-    try {
-      await api("/api/complaints", request.current);
-      request.current = null;
-      const current = createDraft.current;
-      if (
-        current.text.trim() === text.trim() &&
-        (current.selected || leads[0]?.id) === lead
-      ) {
-        setText("");
-        setCreate(false);
-      } else {
-        notify("Complaint sent. Your new edits remain in the form.");
-      }
-      setTab("lead");
-      setFilter("pending");
-      await refresh();
-    } catch (e) {
-      notify(errorText(e));
-    } finally {
-      setSending(false);
-    }
-  };
   const shown = records.filter(
-    (c) => recipient(c) === tab && (filter === "all" || c.needsResponse),
+    (c) => recipient(c) === target && (filter === "all" || c.needsResponse),
   );
-  const pending = (target: string) =>
-    records.filter((c) => recipient(c) === target && c.needsResponse).length;
   const summary = records.find((c) => c.id === detailId);
   const recipientName = (c: Json) =>
     recipient(c) === "user"
       ? "You"
-      : c.leadName || summary?.leadName || "Orchestrator";
+      : c.leadName || summary?.leadName || "Main agent";
   const authorName = (c: Json) =>
     c.author === "user"
       ? "You"
       : data.threads.find((a) => a.id === c.author)?.name ||
         c.authorName ||
         c.author;
+  if (
+    target === "lead" &&
+    !records.some((record) => recipient(record) === "lead")
+  )
+    return null;
   return (
-    <section id="complaint-book">
-      <div className="book-toolbar">
-        <p>
-          Orchestrator complaints need your response. Worker complaints go to
-          their orchestrator.
-        </p>
-        <Button
-          id="new-complaint"
-          variant="light"
-          color="indigo"
-          leftSection={<Plus size={16} />}
-          onClick={() => setCreate(true)}
-          disabled={!leads.length}
-        >
-          New complaint
-        </Button>
-      </div>
-      <Tabs value={tab} onChange={setTab} className="complaint-owner-tabs">
-        <Tabs.List>
-          <Tabs.Tab
-            value="user"
-            rightSection={
-              <Badge
-                size="xs"
-                variant="light"
-                color={pending("user") ? "orange" : "gray"}
-              >
-                {pending("user")}
-              </Badge>
+    <section className="user-message-list">
+      {records.some((c) => recipient(c) === target) && (
+        <div className="book-filter">
+          <NativeSelect
+            aria-label={
+              target === "user"
+                ? "Show messages to you"
+                : "Show messages to main agent"
             }
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
           >
-            For you
-          </Tabs.Tab>
-          <Tabs.Tab
-            value="lead"
-            rightSection={
-              <Badge
-                size="xs"
-                variant="light"
-                color={pending("lead") ? "orange" : "gray"}
-              >
-                {pending("lead")}
-              </Badge>
-            }
-          >
-            For orchestrator
-          </Tabs.Tab>
-        </Tabs.List>
-      </Tabs>
-      <div className="book-filter">
-        <NativeSelect
-          aria-label="Show complaints"
-          id="complaint-filter"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        >
-          <option value="pending">Needs a response</option>
-          <option value="all">All complaints</option>
-        </NativeSelect>
-      </div>
-      <div id="complaint-list">
+            <option value="pending">Needs a response</option>
+            <option value="all">All messages</option>
+          </NativeSelect>
+        </div>
+      )}
+      <div className="user-message-rows">
         {shown.map((c: Complaint) => (
           <UnstyledButton
             className="complaint-card"
@@ -345,42 +313,42 @@ export default function ComplaintBook({
             <small>
               {new Date(c.created * 1000).toLocaleString()} ·{" "}
               {recipient(c) === "user"
-                ? c.readAt
+                ? !c.needsResponse
                   ? "Responded by you"
                   : "Awaiting your response"
                 : c.readAt
-                  ? "Read by orchestrator"
-                  : "Not read by orchestrator"}
+                  ? "Read by main agent"
+                  : "Not read by main agent"}
               {recipient(c) === "lead" && c.leadDeleted
-                ? " · Lead deleted"
+                ? " · Main agent deleted"
                 : recipient(c) === "lead" && c.leadStopped
-                  ? " · Lead stopped"
+                  ? " · Main agent stopped"
                   : ""}
             </small>
           </UnstyledButton>
         ))}
       </div>
-      {!shown.length && (
+      {!hideEmpty && !shown.length && (
         <div className="book-empty">
-          <BookOpen size={26} />
+          <MessageSquare size={26} />
           <h2>
-            No complaints {filter === "pending" ? "need a response" : "yet"}
+            No messages {filter === "pending" ? "need a response" : "yet"}
           </h2>
           <p>
-            {tab === "user"
-              ? "Your orchestrators can ask you to resolve a problem here."
-              : "Worker and user complaints appear here for the orchestrator."}
+            {target === "user"
+              ? "The main agent can send you a message here."
+              : "Subagent requests appear here for the main agent."}
           </p>
         </div>
       )}
       <Modal
         opened={!!detailId}
         onClose={() => changeDetail(null)}
-        title="Complaint"
+        title={target === "user" ? "Message to you" : "Message to main agent"}
       >
         {detailError && (
           <div role="alert">
-            <p>Could not load the complaint: {detailError}</p>
+            <p>Could not load the message: {detailError}</p>
             <Button
               onClick={() => {
                 setDetailError("");
@@ -400,13 +368,15 @@ export default function ComplaintBook({
             <p className="complaint-text">{detail.text}</p>
             <p className="notice">
               {recipient(detail) === "user"
-                ? detail.recipient === "user" && detail.readAt
-                  ? "You responded to this complaint."
+                ? detail.responses.some(
+                    (response: Json) => response.author === "user",
+                  )
+                  ? "You responded to this message."
                   : "Your response is required."
                 : detail.readAt
-                  ? "Read by orchestrator: " +
+                  ? "Read by main agent: " +
                     new Date(detail.readAt * 1000).toLocaleString()
-                  : "The orchestrator has not read this complaint."}
+                  : "The main agent has not read this message."}
             </p>
             {detail.responses.map((r: Json) => (
               <article className="complaint-response" key={r.id}>
@@ -419,15 +389,16 @@ export default function ComplaintBook({
               </article>
             ))}
             {recipient(detail) === "lead" && !detail.responses.length && (
-              <p>A response from the orchestrator is required.</p>
+              <p>A response from the main agent is required.</p>
             )}
             {detail.recipient === "user" &&
               Number.isInteger(detail.version) && (
-                <ComplaintResponse
+                <MessageResponse
                   key={detail.id}
                   detail={detail}
                   token={data.token}
                   requests={responseRequests.current}
+                  pendingKey={pendingKey}
                   refresh={refresh}
                   notify={notify}
                   onResponse={(result) => {
@@ -456,48 +427,6 @@ export default function ComplaintBook({
         ) : !detailError ? (
           <p role="status">Loading…</p>
         ) : null}
-      </Modal>
-      <Modal
-        opened={create}
-        onClose={() => setCreate(false)}
-        title="New complaint"
-      >
-        <form id="complaint-form" onSubmit={submit}>
-          <NativeSelect
-            label="Responsible orchestrator"
-            id="complaint-lead"
-            value={selected || leads[0]?.id}
-            onChange={(e) => setSelected(e.target.value)}
-          >
-            {leads.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </NativeSelect>
-          <Textarea
-            label="What went wrong?"
-            id="complaint-text"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            maxLength={12000}
-            rows={6}
-            required
-          />
-          <p className="notice">
-            The orchestrator receives a message and must respond. A stopped
-            orchestrator waits until you resume it.
-          </p>
-          <Button
-            id="submit-complaint"
-            variant="filled"
-            color="indigo"
-            type="submit"
-            disabled={sending}
-          >
-            Submit complaint
-          </Button>
-        </form>
       </Modal>
     </section>
   );

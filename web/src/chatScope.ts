@@ -1,4 +1,9 @@
-import type { Agent, Room, Snapshot } from "./types";
+import {
+  complaintNeedsUserResponse,
+  type Agent,
+  type Room,
+  type Snapshot,
+} from "./types";
 
 // Private rooms predate rootId metadata. Their participants define the scope.
 // A direct cross-team conversation appears only in its participants' lead chats.
@@ -51,4 +56,14 @@ export function chatSnapshot(
       rules: data.runtime.rules?.filter((rule) => owns(rule.agent)),
     },
   };
+}
+
+export function messageAttentionCount(data: Snapshot | null): number {
+  if (!data) return 0;
+  return (
+    data.runtime.requests.filter((request) => !request.deferred).length +
+    (data.runtime.userTasks || []).filter((task) => task.status === "open")
+      .length +
+    data.runtime.complaints.filter(complaintNeedsUserResponse).length
+  );
 }

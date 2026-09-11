@@ -206,15 +206,11 @@ class TurnRecoveryContract(unittest.TestCase):
         import codex_runtime
         from codex_turn_recovery_update import apply, BASE_DISPATCH, BASE_PREPARE
         from codex_efficiency_update import fingerprint
-        source = Path(codex_runtime.__file__).read_text().replace('            self.queue_turn_recovery(agents)\n', '')
-        # Reconstruct the pre-watchdog dispatcher, before native failure holds existed.
-        source = source.replace('                    and not a.get("nativeFailureHold")\n', '')
-        source = source.replace('''        if previous and previous.get("connectionId") != self.connection_ids.get(a.get("accountKey", "default")):
-            # Disconnect persistence can fail when storage is unavailable. An old
-            # process's loaded cache and preparation future cannot survive replacement.
-            self.loaded.discard(a["id"])
-            previous = None
-''', '')
+        import subprocess
+        # Exact source before the watchdog, verified by both unchanged hash guards.
+        source = subprocess.check_output(
+            ['git', 'show', '03f8b2e^:scripts/codex_runtime.py'],
+            cwd=Path(__file__).resolve().parents[1], text=True)
         module = compile(source, codex_runtime.__file__, 'exec', dont_inherit=True)
         cls = next(c for c in module.co_consts if isinstance(c, types.CodeType) and c.co_name == 'Runtime')
         code = next(c for c in cls.co_consts if isinstance(c, types.CodeType) and c.co_name == 'dispatch')

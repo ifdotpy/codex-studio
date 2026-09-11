@@ -13,6 +13,7 @@ import re
 import secrets
 import signal
 import shlex
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -538,7 +539,7 @@ def make_server(canvas, port=0, public_origin=None):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com; img-src 'self' data: blob:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
             )
             self.end_headers()
             self.wfile.write(data)
@@ -699,6 +700,14 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.changes(agent, scope=q.get("scope")))
                     if path.path == "/api/plan":
                         return self.send(runtime.plan_action(agent))
+                    if path.path == "/api/transcript/page":
+                        return self.send(runtime.transcript(q.get("id"), before=q.get("before"), around=q.get("around"), after=q.get("after"), limit=q.get("limit", 120)))
+                    if path.path == "/api/transcript/item":
+                        from codex_transcript_history import history_item
+                        return self.send(history_item(runtime, q.get("id"), q.get("message_id")))
+                    if path.path == "/api/transcript/search":
+                        from codex_transcript_history import search_history
+                        return self.send(search_history(runtime, q.get("id"), q.get("q"), q.get("limit", 100)))
                     if path.path == "/api/search/item":
                         return self.send(runtime.search_item(q.get("id")))
                     if path.path == "/api/search":
@@ -845,13 +854,14 @@ def make_server(canvas, port=0, public_origin=None):
                     if self.path == "/api/accounts/default":
                         runtime.accounts.default(body.get("account_key"))
                         return self.send(runtime.accounts.snapshot())
-                    if self.path == "/api/accounts/rules":
-                        if "allowed_projects" not in body:
-                            raise ValueError("Supply allowed_projects, or null for all projects")
-                        runtime.accounts.set_project_rules(body.get("account_key"), body["allowed_projects"], body.get("expected_revision"))
-                        return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/login/cancel":
                         return self.send(runtime.accounts.cancel_login(runtime, body.get("request_id")))
+                    if self.path == "/api/accounts/disconnect":
+                        runtime.accounts.disconnect(body.get("account_key"))
+                        return self.send(runtime.accounts.snapshot())
+                    if self.path == "/api/accounts/reconnect":
+                        runtime.accounts.reconnect(body.get("account_key"))
+                        return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/login":
                         return self.send(runtime.accounts.start_login(runtime, body.get("request_id")))
                     if self.path == "/api/agents/account-transfer":
@@ -956,6 +966,8 @@ def make_server(canvas, port=0, public_origin=None):
                         )
                     if self.path == "/api/configure":
                         return self.send(canvas.runtime.configure(body.get("id"), body))
+                    if self.path == "/api/capacity-retry":
+                        return self.send(canvas.runtime.capacity_retry(body.get("id"), body.get("retry_id"), body.get("action")))
                     if self.path == "/api/action":
                         return self.send(canvas.runtime.native_action(body.get("id"), body.get("action")))
                     if self.path == "/api/import":
@@ -979,6 +991,8 @@ def make_server(canvas, port=0, public_origin=None):
                 return self.send({"error": str(error)}, 400)
 
     class LocalServer(ThreadingHTTPServer):
+        # A diagram can request many module chunks while transcript streams stay open.
+        request_queue_size = socket.SOMAXCONN
         voice_pruned_at = 0
 
         def service_actions(self):

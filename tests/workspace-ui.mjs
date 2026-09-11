@@ -88,12 +88,27 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(origin);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
-  await page.locator("#workspace-toggle").click();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page.locator('[data-workspace-section="work"]').click();
   const drawer = page.locator(".workspace-drawer .mantine-Drawer-content");
   const section = async (name) => {
+    if (
+      !(await page
+        .getByRole("navigation", { name: "Workspace sections" })
+        .isVisible())
+    ) {
+      await drawer.locator(".mantine-Drawer-close").click();
+      await page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .click();
+      await page.locator('[data-workspace-section="work"]').click();
+    }
     await page
       .getByRole("navigation", { name: "Workspace sections" })
-      .getByRole("button", { name, exact: true })
+      .getByRole("button", {
+        name: name === "Work" ? "Agent tasks" : name,
+        exact: true,
+      })
       .click();
   };
   await drawer.getByRole("button", { name: "New work", exact: true }).click();
@@ -176,17 +191,70 @@ try {
     fullPage: true,
   });
   await section("Plan");
-  await drawer
-    .getByLabel("Shared plan")
-    .fill("1. Inspect evidence\n2. Accept the release");
-  await drawer.getByRole("button", { name: "Save plan", exact: true }).click();
+  await drawer.getByText("This agent has not reported a plan.").waitFor();
+  assert.equal(await drawer.getByRole("textbox").count(), 0);
+  assert.equal(
+    await drawer
+      .getByRole("button", { name: "Save plan", exact: true })
+      .count(),
+    0,
+  );
+  const legacyPlan = await post("/api/plan", {
+    agent: lead.id,
+    text: "Legacy saved plan remains in storage.",
+    version: 0,
+  });
+  await drawer.getByRole("button", { name: "Refresh workspace" }).click();
+  await drawer.getByText("This agent has not reported a plan.").waitFor();
+  assert.equal(await drawer.getByText(legacyPlan.text).count(), 0);
+  let planAgent;
+  await poll(async () => {
+    planAgent = (await get("/api/state")).runtime.agents.find(
+      (agent) => agent.id === lead.id,
+    );
+    return !!planAgent.threadId;
+  }, "plan agent has a native thread");
+  proc.stdin.write(
+    JSON.stringify({
+      method: "turn/plan/updated",
+      params: {
+        threadId: planAgent.threadId,
+        turnId: planAgent.turnId,
+        explanation: "Inspect the evidence before release.",
+        plan: [
+          { step: "Inspect evidence", status: "completed" },
+          { step: "Accept the release", status: "in_progress" },
+        ],
+      },
+    }) + "\n",
+  );
   await poll(
     async () =>
-      (await get("/api/plan?agent=" + lead.id)).text.includes(
-        "Accept the release",
-      ),
-    "plan persisted",
+      (await get("/api/plan?agent=" + lead.id)).native?.plan?.length === 2,
+    "agent plan persisted",
   );
+  await drawer.getByRole("button", { name: "Refresh workspace" }).click();
+  await drawer.getByText("Inspect evidence", { exact: true }).waitFor();
+  await drawer.getByText("Accept the release", { exact: true }).waitFor();
+  await drawer
+    .getByText("Inspect the evidence before release.", { exact: true })
+    .waitFor();
+  assert.equal(await drawer.getByRole("textbox").count(), 0);
+  await drawer
+    .getByRole("button", { name: "Change plan in chat", exact: true })
+    .click();
+  await drawer.waitFor({ state: "hidden" });
+  assert.equal(
+    await page
+      .locator(".sidebar-row.selected [data-chat]")
+      .getAttribute("data-chat"),
+    lead.id,
+  );
+  const unchangedPlan = await get("/api/plan?agent=" + lead.id);
+  assert.equal(unchangedPlan.text, legacyPlan.text);
+  assert.equal(unchangedPlan.version, legacyPlan.version);
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page.locator('[data-workspace-section="work"]').click();
   await section("Search");
   await drawer
     .getByRole("textbox", { name: "Search all conversations" })
@@ -230,6 +298,92 @@ try {
     async () => (await get("/api/rules")).rules.length === 0,
     "rule deleted",
   );
+  const desktopViewport = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(500);
+  if (!(await drawer.isVisible())) {
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.locator('[data-workspace-section="work"]').click();
+  }
+  await drawer.waitFor();
+  await section("Rules");
+  await drawer.getByRole("button", { name: "New rule", exact: true }).click();
+  modal = page.locator(".mantine-Modal-content:visible").last();
+  await modal.getByLabel("Script check (optional)").fill("exit 1");
+  await modal.getByLabel("Trigger").selectOption("low_workers");
+  assert.equal(
+    await modal.getByLabel("Minimum active subagents").inputValue(),
+    "8",
+  );
+  assert.equal(await modal.getByLabel("Duration (minutes)").inputValue(), "30");
+  assert.equal(
+    await modal.getByLabel("Name").inputValue(),
+    "Too few active subagents",
+  );
+  assert.ok(
+    (await modal.getByLabel("Message to the main agent").inputValue()).trim(),
+  );
+  assert.equal(await modal.getByLabel("Script check (optional)").count(), 0);
+  await modal.getByLabel("Minimum active subagents").fill("3");
+  await modal.getByLabel("Duration (minutes)").fill("2");
+  await page.screenshot({
+    path: join(root, "low-workers-mobile.png"),
+    fullPage: true,
+    animations: "disabled",
+  });
+  assert.ok(
+    await modal.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+    "low worker alert modal does not overflow at 390px",
+  );
+  await modal.getByRole("button", { name: "Save rule", exact: true }).click();
+  await poll(
+    async () => (await get("/api/rules")).rules.length === 1,
+    "low worker alert persisted",
+  );
+  const lowWorkers = (await get("/api/rules")).rules[0];
+  assert.equal(lowWorkers.kind, "low_workers");
+  assert.equal(lowWorkers.agent, lead.id);
+  assert.equal(lowWorkers.minimumWorkers, 3);
+  assert.equal(lowWorkers.durationMinutes, 2);
+  assert.equal(lowWorkers.command, "");
+  assert.ok(lowWorkers.text.trim());
+  await page.setViewportSize(desktopViewport);
+  await page.waitForTimeout(500);
+  if (!(await drawer.isVisible())) {
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.locator('[data-workspace-section="work"]').click();
+  }
+  await drawer.waitFor();
+  await section("Rules");
+  await drawer
+    .getByText("Fewer than 3 active subagents for more than 2 minutes", {
+      exact: true,
+    })
+    .waitFor();
+  await drawer.getByRole("button", { name: "Pause", exact: true }).click();
+  await poll(
+    async () => (await get("/api/rules")).rules[0].status === "paused",
+    "low worker alert paused",
+  );
+  await drawer.getByRole("button", { name: "Resume", exact: true }).click();
+  await poll(
+    async () => (await get("/api/rules")).rules[0].status === "active",
+    "low worker alert resumed",
+  );
+  await drawer.getByRole("button", { name: "Delete", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .last()
+    .getByRole("button", { name: "Delete rule", exact: true })
+    .click();
+  await poll(
+    async () => (await get("/api/rules")).rules.length === 0,
+    "low worker alert deleted",
+  );
   await section("Profiles");
   await drawer
     .getByRole("button", { name: "New profile", exact: true })
@@ -248,14 +402,14 @@ try {
     "profile persisted",
   );
   await drawer
-    .getByRole("button", { name: "Start worker", exact: true })
+    .getByRole("button", { name: "Start subagent", exact: true })
     .click();
   modal = page.locator(".mantine-Modal-content:visible").last();
   await modal
-    .getByLabel("Task for this worker")
+    .getByLabel("Task for this subagent")
     .fill("Review the release evidence using the saved profile.");
   await modal
-    .getByRole("button", { name: "Start worker", exact: true })
+    .getByRole("button", { name: "Start subagent", exact: true })
     .click();
   await poll(
     async () =>
@@ -393,7 +547,7 @@ try {
     .last()
     .getByRole("button", { name: "Close", exact: true })
     .click();
-  for (const name of ["Tools", "Resources", "Inbox"]) {
+  for (const name of ["Tools", "Resources", "Messages"]) {
     await section(name);
     await drawer.getByRole("heading", { name, exact: true }).waitFor();
   }
@@ -403,6 +557,15 @@ try {
     .filter({ hasText: "Verify release" })
     .click();
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(500);
+  if (!(await drawer.isVisible())) {
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.locator('[data-workspace-section="work"]').click();
+  }
+  await drawer.waitFor();
+  await section("Work");
   await page.screenshot({
     path: join(root, "work-mobile.png"),
     fullPage: true,
@@ -417,7 +580,7 @@ try {
     "Profiles",
     "Rules",
     "Resources",
-    "Inbox",
+    "Messages",
   ]) {
     await section(name);
     assert.ok(

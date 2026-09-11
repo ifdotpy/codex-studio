@@ -210,9 +210,17 @@ class EfficiencyContract(unittest.TestCase):
             row = {'kind': 'agent_message', 'text': packed({'importance': importance}), 'created': time.time()}
             self.assertTrue(EfficiencyMixin.progress_batch_ready([row]))
 
+    def report_plan(self, lead, text, status='pending', explanation=''):
+        with self.runtime.lock, self.runtime.db() as db:
+            row = db.execute('SELECT record FROM runtime_plans WHERE id=?', (lead['id'],)).fetchone()
+            plan = json.loads(row[0]) if row else {'id': lead['id'], 'rootId': lead['rootId'], 'text': '', 'version': 0}
+            steps = [{'step': text, 'status': status}] if text else []
+            plan.update(native={'plan': steps, 'explanation': explanation}, steps=steps, updated=time.time())
+            self.runtime.put(db, 'plans', plan)
+
     def test_context_versions_need_confirmed_delivery_and_reset_after_compaction(self):
         lead = self.lead(); worker = self.worker(lead)
-        self.runtime.plan_action(lead['id'], {'text': 'Exact plan content', 'version': 0})
+        self.report_plan(lead, 'Exact plan content')
         self.runtime.complaint(worker['id'], {'action': 'submit', 'text': 'Exact complaint content'}, 'complaint')
         def context(event, delivered=False, **changes):
             with self.runtime.lock, self.runtime.db() as db:
@@ -231,10 +239,10 @@ class EfficiencyContract(unittest.TestCase):
         self.assertIn('still requiring a response', unchanged)
         compacted = context('fourth', compactions=1)
         self.assertIn('Exact plan content', compacted); self.assertIn('Exact complaint content', compacted)
-        self.runtime.plan_action(lead['id'], {'text': 'Changed plan', 'version': 1})
+        self.report_plan(lead, 'Changed plan')
         self.assertIn('Changed plan', context('fifth'))
         on_demand = self.runtime.model_context(lead['id'], {'topic': 'plan'})
-        self.assertEqual(on_demand['content']['text'], 'Changed plan')
+        self.assertEqual(on_demand['content']['steps'][0]['step'], 'Changed plan')
         params = self.runtime.new_thread_params(self.runtime.agent(lead['id']))
         self.assertNotIn('[Studio panel guidance:', params['developerInstructions'])
         self.assertIn('150px', params['developerInstructions'])
@@ -243,8 +251,7 @@ class EfficiencyContract(unittest.TestCase):
     def test_context_uses_delivery_order_when_urgent_events_overtake_progress(self):
         lead = self.lead(); worker = self.worker(lead)
         def delivered(event, created, plan, expected):
-            current = self.runtime.plan_action(lead['id'])
-            self.runtime.plan_action(lead['id'], {'text': plan, 'version': current['version']})
+            self.report_plan(lead, plan)
             with self.runtime.lock, self.runtime.db() as db:
                 actor = self.runtime.agent(worker['id'], db)
                 self.runtime.enqueue(db, actor, 'user', 'Continue', event)
@@ -255,7 +262,38 @@ class EfficiencyContract(unittest.TestCase):
         delivered('urgent', 200, 'Plan A', 'Plan A')
         delivered('older-progress', 100, 'Plan B', 'Plan B')
         delivered('next', 300, 'Plan A', 'Plan A')
-        delivered('clear', 400, '', 'Discard the previous shared plan')
+        delivered('clear', 400, '', 'Discard the previous agent plan')
+
+    def test_plan_context_excludes_legacy_text_and_tracks_native_steps(self):
+        lead = self.lead(); worker = self.worker(lead); other = self.lead('Other')
+        legacy = self.runtime.plan_action(lead['id'], {'text': 'Old editable plan', 'version': 0})
+        self.assertIsNone(self.runtime.model_context(worker['id'], {'topic': 'plan'})['content'])
+        self.report_plan(other, 'Other team plan')
+        self.report_plan(lead, 'Current step', explanation='Current reason')
+        first = self.runtime.model_context(worker['id'], {'topic': 'plan'})
+        self.assertNotIn('Old editable plan', packed(first))
+        self.assertNotIn('Other team plan', packed(first))
+        self.assertEqual(first['content']['steps'][0]['status'], 'pending')
+        self.assertEqual(first['content']['explanation'], 'Current reason')
+        self.assertEqual(self.runtime.plan_action(lead['id'])['text'], legacy['text'])
+        self.report_plan(lead, 'Current step', status='completed', explanation='Current reason')
+        changed = self.runtime.model_context(worker['id'], {'topic': 'plan'})
+        self.assertNotEqual(first['version'], changed['version'])
+        self.report_plan(lead, 'Current step', status='completed', explanation='New reason')
+        explained = self.runtime.model_context(worker['id'], {'topic': 'plan'})
+        self.assertNotEqual(changed['version'], explained['version'])
+        with self.runtime.lock, self.runtime.db() as db:
+            actor = self.runtime.agent(worker['id'], db)
+            for event in ('plan-first', 'plan-second'):
+                self.runtime.enqueue(db, actor, 'user', 'Continue', event)
+                context = self.runtime.model_turn_context(db, actor, event)
+                if event == 'plan-first':
+                    self.assertIn('New reason', context)
+                    self.assertNotIn('Old editable plan', context)
+                    self.assertNotIn('Other team plan', context)
+                    db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?", (event,))
+                else:
+                    self.assertNotIn('Current step', context)
 
     def test_completed_tool_transcript_keeps_existing_ui_content_allowance(self):
         lead = self.runtime.prepare(self.lead())

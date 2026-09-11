@@ -185,7 +185,8 @@ try {
         heading: box(".conversation-heading"),
         account: box(".account-picker"),
         project: box("#project"),
-        settings: box(".conversation-settings"),
+        settings: box(".chat-settings-panel"),
+        settingsModal: box(".mantine-Modal-content"),
         messages,
         transcript,
         panel: box(".agent-panel"),
@@ -220,18 +221,6 @@ try {
       current.title?.width >= 180,
       `${prefix}: title width ${current.title?.width}`,
     );
-    if (viewport.width > 760) {
-      assert.equal(
-        current.account?.text,
-        longAccount,
-        `${prefix}: account label`,
-      );
-      assert.equal(
-        current.project?.text,
-        longProjectName,
-        `${prefix}: project label`,
-      );
-    }
     assert.ok(
       current.document.scrollWidth <= current.viewport.width + 1 &&
         current.document.bodyScrollWidth <= current.viewport.width + 1,
@@ -270,9 +259,9 @@ try {
       `${prefix}: tasks do not reserve transcript space`,
     );
     assert.equal(
-      await page.locator("#composer .prompt-navigation").count(),
+      await page.locator(".conversation-navigation .prompt-navigation").count(),
       1,
-      `${prefix}: prompt history shares the composer toolbar`,
+      `${prefix}: prompt history uses the transcript navigation row`,
     );
     assert.ok(current.panel, `${prefix}: active panel is present`);
     assert.ok(
@@ -303,6 +292,61 @@ try {
         Math.abs(current.panel.right - current.composer.right) <= 1,
       `${prefix}: panel and composer share their edges`,
     );
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    const settingsModal = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    await settingsModal.getByTestId("account-picker").waitFor();
+    await page.screenshot({
+      path: join(root, `workspace-settings-${viewport.name}.png`),
+      animations: "disabled",
+    });
+    const settings = await measure();
+    current.chatSettings = {
+      modal: settings.settingsModal,
+      panel: settings.settings,
+      account: settings.account,
+      project: settings.project,
+    };
+    assert.equal(
+      settings.account?.text,
+      longAccount,
+      `${prefix}: account label`,
+    );
+    assert.equal(
+      settings.project?.text,
+      longProjectName,
+      `${prefix}: project label`,
+    );
+    assert.equal(
+      await settingsModal.getByTestId("account-picker").getAttribute("title"),
+      longAccount,
+    );
+    assert.equal(
+      await settingsModal.locator("#project").getAttribute("title"),
+      longProject,
+    );
+    assert.ok(
+      settings.settingsModal.x >= -1 &&
+        settings.settingsModal.right <= viewport.width + 1 &&
+        settings.settingsModal.scrollWidth <=
+          settings.settingsModal.clientWidth + 1 &&
+        settings.settings.scrollWidth <= settings.settings.clientWidth + 1,
+      `${prefix}: settings with long labels fit the viewport`,
+    );
+    for (const field of [settings.account, settings.project])
+      assert.ok(
+        field.x >= settings.settingsModal.x - 1 &&
+          field.right <= settings.settingsModal.right + 1,
+        `${prefix}: account and project controls fit the settings modal`,
+      );
+    await settingsModal
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    await settingsModal.waitFor({ state: "hidden" });
     if (viewport.width === 1024) {
       await page.getByRole("button", { name: /^Team/ }).click();
       const drawer = page.locator(".mantine-Drawer-content:visible");

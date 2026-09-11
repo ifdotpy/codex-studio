@@ -38,6 +38,8 @@ class FakeServer:
 
     def call(self, method, params, timeout=60):
         self.calls.append((method, params))
+        if method == 'skills/extraRoots/set':
+            return {}
         if method == 'config/read':
             # Fake commands have no host shell setup. Native parity is covered
             # by monitor-shell-native.py with snapshots both enabled and disabled.
@@ -344,7 +346,7 @@ class RuntimeContract(unittest.TestCase):
     def test_no_complaint_book_check_for_normal_turns(self):
         lead = self.lead()
         first = [p for method, p in self.runtime.server.calls if method == 'turn/start'][-1]['input'][0]['text']
-        self.assertNotIn('complaint', first.lower())
+        self.assertNotIn('complaint', first.replace(self.runtime.role_guidance(lead), '').lower())
         self.complete(lead)
         self.runtime.send(lead['id'], 'Continue the work')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
@@ -470,7 +472,7 @@ class RuntimeContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not available'):
             self.runtime.conversation_settings(worker['id'], {'model': 'hidden'})
         self.assertEqual(self.runtime.agent(worker['id'])['model'], worker['model'])
-        self.assertFalse(self.runtime.agent(worker['id'])['dangerouslySkipAccountRules'])
+        self.assertNotIn('dangerouslySkipAccountRules', self.runtime.agent(worker['id']))
         self.assertFalse(self.runtime.agent(worker['id'])['isLead'])
 
     def test_subagent_model_rechecks_active_turn_after_catalog_read(self):

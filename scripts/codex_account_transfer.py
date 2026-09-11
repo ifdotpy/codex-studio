@@ -95,6 +95,8 @@ class AccountTransfers:
                 if old['targetAccountKey'] == target:
                     return self.get(db, old['id'])
                 raise ValueError('Finish or cancel the current transfer first')
+            if rt.accounts.get(target).get("disconnected"):
+                raise ValueError("Reconnect this account before transferring a team to it")
             members = [a for a in rt.records(db, 'agents') if a['rootId'] == key and not a.get('deletedAt')]
             for a in members:
                 self.check_destination(a, target, db)
@@ -161,7 +163,9 @@ class AccountTransfers:
                         dirty = True
                     if member['phase'] not in {'waiting', 'ready'} or aid in self.running:
                         continue
-                    if member.get('nextCheck', 0) > time.time() or len(self.running) >= 2:
+                    # Keep the slot until the native receipt, not only submission.
+                    # Paginated forks import into one SQLite history database.
+                    if member.get('nextCheck', 0) > time.time() or self.running or self.futures:
                         continue
                     reason = self.local_blocker(db, a)
                     if reason:
@@ -193,15 +197,22 @@ class AccountTransfers:
         prep = rt.preparations.get(a['id'])
         if prep and not prep['future'].done():
             return 'Waiting for the native thread receipt'
-        if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
-                      (a['id'], a['epoch'])).fetchone():
+        # A previous backend cannot still deliver its RPC. Carry its uncertainty
+        # unchanged; it is not an active operation and must never be replayed.
+        boot = getattr(rt, 'started_at', 0)
+        if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND "
+                      "(status IN ('reserved','dispatching') OR (status='uncertain' AND created>=?)) LIMIT 1",
+                      (a['id'], a['epoch'], boot)).fetchone():
             return 'Waiting for confirmed message delivery'
         for table, statuses in [('monitors', ACTIVE), ('tasks', ACTIVE | {'pending', 'unknown'}), ('requests', {'pending'})]:
             if db.execute(f"SELECT 1 FROM runtime_{table} WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status') IN ({','.join('?' for _ in statuses)}) LIMIT 1",
                           (a['id'], *statuses)).fetchone():
                 return 'Waiting for background work or a tool response'
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_tool_requests'").fetchone():
-            if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? AND (json_extract(record,'$.stage') IN ('queued','running') OR json_extract(record,'$.outcome')='unknown') LIMIT 1", (a['id'],)).fetchone():
+            if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? AND "
+                          "(json_extract(record,'$.stage') IN ('queued','running') OR "
+                          "(json_extract(record,'$.outcome')='unknown' AND coalesce(json_extract(record,'$.created'),?)>=?)) LIMIT 1",
+                          (a['id'], boot, boot)).fetchone():
                 return 'Waiting for the tool receipt'
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='voice_sessions'").fetchone():
             columns = {r[1] for r in db.execute('PRAGMA table_info(voice_sessions)')}
@@ -244,10 +255,10 @@ class AccountTransfers:
                 native = source.call('thread/read', {'threadId': a['threadId'], 'includeTurns': False}, timeout=10)['thread']
                 if native.get('id') != a['threadId']:
                     raise ValueError('Source native thread identity changed')
-                if native.get('status', {}).get('type') not in {'idle', 'notLoaded'}:
+                if native.get('status', {}).get('type') not in {'idle', 'notLoaded', 'systemError'}:
                     self.update(key, aid, phase='waiting', waiting='Waiting for the native turn')
                     return
-                if native['status']['type'] == 'idle':
+                if native['status']['type'] in {'idle', 'systemError'}:
                     jobs = source.call('thread/backgroundTerminals/list', {'threadId': a['threadId']}, timeout=10)
                     if jobs.get('data') or jobs.get('nextCursor'):
                         self.update(key, aid, phase='waiting', waiting='Waiting for native background commands')
@@ -331,12 +342,42 @@ class AccountTransfers:
                 if op['status'] == 'pending' and not rt.closed:
                     self.commit(db, op, rt.agent(aid, db))
         except Exception as error:
+            if self.retry_preparation(key, aid, error):
+                return
             # Protocol validation rejects before execution. Internal failures may apply.
             from codex_native_errors import NativeRpcError
             self.update(key, aid, phase='blocked' if isinstance(error, NativeRpcError) and error.code in {-32601, -32602} else 'unknown', error=str(error))
         finally:
             self.futures.pop((key, aid), None)
             rt.changed.set()
+
+    def retry_preparation(self, key, aid, error):
+        from codex_native_errors import NativeRpcError
+        # Codex 0.153.4 returns this before fork_thread. Other internal errors
+        # can follow creation and must retain their unknown outcome.
+        message = error.error.get('message', '') if isinstance(error, NativeRpcError) else ''
+        if not (isinstance(error, NativeRpcError) and error.code == -32603
+                and message.startswith('failed to prepare paginated fork:')
+                and 'database is locked' in message):
+            return False
+        with self.rt.lock, self.rt.db() as db:
+            op = self.get(db, key)
+            member = op['members'][aid]
+            if op['status'] != 'pending' or member['phase'] not in {'submitted', 'unknown'}:
+                return False
+            rejections = member.setdefault('preparationRejections', [])
+            if not any(r['submittedAt'] == member.get('submittedAt') for r in rejections):
+                rejections.append({'submittedAt': member.get('submittedAt'),
+                                   'at': time.time(), 'error': error.error,
+                                   'outcome': 'fork_not_created'})
+            if len(rejections) > 3:
+                member.update(phase='blocked', error=message, waiting=None)
+            else:
+                member.update(phase='waiting', error=None,
+                              waiting='Codex history database is busy; retrying',
+                              nextCheck=time.time() + 2 ** len(rejections))
+            self.save(db, op)
+        return True
 
     def commit(self, db, op, a):
         rt = self.rt

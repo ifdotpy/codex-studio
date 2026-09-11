@@ -30,13 +30,31 @@ if your shell does not include it. Use `--bin-dir` for another directory.
 It refuses to replace unrelated files or links. To update links from the old
 checkout, pass `--replace-from /path/to/previous-checkout`.
 
+For browser tasks, Studio uses the installed OpenAI Chrome plugin by default.
+Set up the ChatGPT browser extension and browser runtime in ChatGPT Desktop first.
+Studio registers the installed Chrome skill with native `skills/extraRoots/set`.
+It passes the browser runtime to native `thread/start` and `thread/resume`. Codex
+advertises the skill with its path and exposes MCP tools to leads and workers.
+Studio does not copy skill text, browser code, or another account’s marketplace.
+Each account keeps its own credentials and browser turn history. Explicit plugin
+or MCP disable settings and custom runtime commands remain in effect.
+Already loaded threads can retain their previous browser runtime. To reconnect an
+idle session, unsubscribe and resume that same native thread with the current
+configuration. A resume while still subscribed can ignore changed settings.
+Active work is not interrupted. Browser website permissions remain native.
+Studio detects native Chrome discovery failures and makes one automatic recovery
+at an idle turn boundary. It waits for active commands and monitors, preserves
+the native thread, and sends a read-only verification instruction. It never
+replays a browser action. A failed probe or unknown reconnect response stops
+automatic retries; exact request IDs remain in the session recovery record.
+
 For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.
 Run `npm --prefix desktop run package` to build the desktop application.
 
 ## iPhone access
 
-The mobile layout shows orchestrator chats, existing projects, account selection,
+The mobile layout shows orchestrator chats, team agents, existing projects, account selection,
 and chat settings. Add the page to the iPhone home screen for a standalone window.
 The Mac remains the server. SQLite remains the authoritative store.
 
@@ -96,20 +114,62 @@ start voice again after their current work finishes.
 - [Context analytics](ANALYTICS.md): response tokens, tool payloads, history, and measurement limits.
 - [Extraction record](EXTRACTION.md): source history and local migration checks.
 
-## Team conversations
+## Projects
 
-Open **Agent chats** beside **Background** in the selected chat's toolbar.
-The panel shows that team's broadcast channel and private conversations between its members.
-Search the room list, select a conversation, or load earlier messages.
-The main conversation and its draft stay open. On mobile, use **Chat settings → Agent chats**.
-The sidebar contains project conversations only.
+Use **Rename project** to change the project label. The directory path stays the same.
+Use **New folder** and **New subfolder** to add folders for chats.
+Use **Move to folder** in the chat menu. These folders exist only in Studio.
+A chat keeps its directory and account.
+
+Each project has one default account. Use **Project account** in the project menu
+to select it on desktop or mobile. New chats use that account. Existing chats
+keep their native account identity. An empty chat can use any available account.
+Models can use files and skills outside the project directory. Native sandbox and
+approval settings still apply.
+
+## Messages and agent roles
+
+Open **Messages** in the chat header on a computer or phone.
+
+- **For you** opens first. It contains questions, permissions, your tasks, and messages from the main agent.
+- **Team** contains **To orchestrator**, **Team broadcast**, and **Between agents**.
+
+The main agent has the orchestrator role. Subagents ask it for help.
+Only the main agent sends conversational messages or tasks to you.
+Native tool permissions still require your approval.
+Messages replace the separate Inbox, Agent chats, and Complaint book screens.
+The main conversation and its draft stay open.
+You can close a reply and return to its draft.
+**Send for review** submits a task result to the main agent.
+
+The harness reads the repository's `codex-orchestrator` or `codex-subagent` skill
+from the server's `isLead` identity. It adds that skill to the native thread
+instructions. Existing threads receive it on their next turn. The versioned turn
+context repeats it after a skill change or context compaction.
+Workers cannot create or change user tasks or send spoken responses to the user.
+
+**Team** shows subagent status and opens subagent chats.
+**Back to main agent** returns to the main agent.
+The sidebar and Team panel can collapse at any window width.
+
+**Chat settings** contains the account, project, model, permissions, and appearance.
+Appearance supports **System**, **Light**, and **Dark**.
+**Chat actions** contains agent tasks, your tasks, changes, plan, rules, search, and background tasks.
+**Search chats** searches full history. **Filter projects and chats** filters the sidebar list.
+The search control above the transcript searches the current chat.
+**Edit** and **Another answer** prepare a draft in a new branch. They do not send it automatically.
+
+On a phone, **Add project** opens the server's folder list.
+The first **New chat** opens this list when no project exists.
+**Plan** shows only the plan reported by the agent. Use **Change plan in chat**
+to send instructions. Historical saved plan text remains in storage.
 
 ## State
 
 Existing chats, receipts, and agent state remain in
 `~/.local/state/codex-agents/canvas.sqlite3`. Source extraction does not move state.
 `CODEX_AGENTS_STATE_DIR`, `CODEX_BOARD_STATE_DIR`, and `CODEX_HOME` retain their meanings.
-Canvas positions and drafts belong to each browser profile.
+Historical Canvas positions remain in each browser profile. Message drafts remain available.
 Closing Electron leaves the backend active.
 
 ## Checks
@@ -121,6 +181,7 @@ node tests/portable-smoke.mjs
 node tests/state-contract-smoke.mjs
 python3 -B tests/daemon-contract.py
 python3 -B tests/runtime-contract.py
+python3 -B tests/role-skills-contract.py
 python3 -B tests/turn-start-contract.py
 python3 -B tests/prepare-steer-contract.py
 python3 -B tests/monitor-lifecycle-contract.py

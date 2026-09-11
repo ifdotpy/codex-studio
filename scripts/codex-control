@@ -12,19 +12,15 @@ p.add_argument('--url', default=os.environ.get('CODEX_CANVAS_URL', 'http://127.0
 s = p.add_subparsers(dest='command', required=True)
 s.add_parser('list')
 s.add_parser('accounts')
-c = s.add_parser('account-rules')
-c.add_argument('account')
-rules = c.add_mutually_exclusive_group()
-rules.add_argument('--allow', action='append', metavar='PROJECT')
-rules.add_argument('--allow-all', action='store_true')
-rules.add_argument('--deny-all', action='store_true')
+c = s.add_parser('project-account', help='Read or set the default account for a project')
+c.add_argument('path')
+c.add_argument('--account', help='Set the account key from codex-control accounts')
 for command in ('models', 'limits'):
     c = s.add_parser(command)
     c.add_argument('--account', help='Account key from codex-control accounts')
 c = s.add_parser('create')
 c.add_argument('task')
 c.add_argument('--account', help='Account key from codex-control accounts')
-c.add_argument('--dangerously-skip-rules', action='store_true', help='Skip account/project rules for this team; keep Codex permissions')
 c.add_argument('--cwd', default=os.getcwd())
 c.add_argument('--name', default='Lead')
 c.add_argument('--model')
@@ -83,23 +79,27 @@ try:
                 raise
             error.close()
             result = recover_legacy_requests(a.url, a.agent, a.request_id)
-    elif a.command == 'account-rules':
-        account = next((v for v in request('/api/accounts')['accounts'] if v['id'] == a.account), None)
-        if account is None:
-            raise ValueError('Unknown Codex account')
-        if a.allow is not None or a.allow_all or a.deny_all:
-            allowed = None if a.allow_all else ([] if a.deny_all else a.allow)
-            result = request('/api/accounts/rules', dict(account_key=a.account, allowed_projects=allowed, expected_revision=account['projectRules']['revision']), token)
+    elif a.command == 'project-account':
+        from pathlib import Path
+        path = str(Path(a.path).expanduser().resolve())
+        project = next((v for v in request('/api/projects')['items'] if v['path'] == path), None)
+        if a.account:
+            result = request('/api/projects', dict(action='set_account', path=path, account_key=a.account,
+                expected_revision=project.get('accountRevision', 0) if project else 0), token)
+        elif project:
+            result = project
         else:
-            result = account['projectRules']
+            raise ValueError('Project is not registered. Supply --account to register its default')
     elif a.command in ('models', 'limits'):
         account = a.account or request('/api/accounts')['defaultAccountKey']
         result = request('/api/' + a.command + '?account_key=' + quote(account))
     elif a.command == 'create':
-        result = request('/api/agents', dict(id=str(uuid.uuid4()), name=a.name, cwd=a.cwd, prompt=a.task,
-            account_key=a.account or request('/api/accounts')['defaultAccountKey'],
-            dangerously_skip_rules=a.dangerously_skip_rules,
-            model=a.model, effort=a.effort, concurrency=a.concurrency, maxAgents=a.max_agents, tokenBudget=a.token_budget), token)
+        body = dict(id=str(uuid.uuid4()), name=a.name, cwd=a.cwd, prompt=a.task,
+            concurrency=a.concurrency, maxAgents=a.max_agents, tokenBudget=a.token_budget)
+        for key, value in (('account_key', a.account), ('model', a.model), ('effort', a.effort)):
+            if value is not None:
+                body[key] = value
+        result = request('/api/agents', body, token)
     elif a.command == 'send':
         result = request('/api/messages', dict(id=str(uuid.uuid4()), room=a.agent, text=a.text), token)
     elif a.command == 'stop':

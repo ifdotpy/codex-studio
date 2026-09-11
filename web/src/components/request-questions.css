@@ -1,5 +1,8 @@
 #requests .request-card {
   display: block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
 }
 .request-summary {
   display: flex;
@@ -17,7 +20,7 @@
   font-size: 11px;
 }
 .request-async .request-status {
-  color: #b9b6ed;
+  color: var(--accent);
 }
 .request-card .request-copy .request-prompt {
   color: var(--text);
@@ -32,7 +35,7 @@
 .request-inline-answer {
   margin-top: 14px;
   padding-top: 14px;
-  border-top: 1px solid #ffffff16;
+  border-top: 1px solid var(--line);
 }
 .request-answer-fields {
   min-width: 0;
@@ -57,7 +60,7 @@
   flex-direction: column;
   gap: 4px;
   max-width: 100%;
-  border: 1px solid #ffffff24;
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 11px;
   font-size: 12px;
@@ -68,14 +71,14 @@
   font-size: 11px;
 }
 .request-answer-option:hover {
-  background: #ffffff08;
+  background: var(--raised);
 }
 .request-answer-option[aria-pressed="true"] {
   background: #8075ff25;
-  border-color: #a29bf0;
+  border-color: var(--accent);
 }
 .request-answer-option:focus-visible {
-  outline: 2px solid #b9b6ed;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .request-answer-actions {

@@ -10,9 +10,10 @@ def user_task_tools(tool, text):
     return [
         tool(
             "orchestration_user_task",
-            "Manage things the user must do for your work. Create a clear title and completion criteria. "
+            "Only the orchestrator can create or change requests for user action. Workers can list the team tasks. "
+            "Workers ask their orchestrator to contact the user. Create a clear title and completion criteria. "
             "The user checks the task, which changes it to review and wakes you automatically, even after your final answer. "
-            "Read the result, then accept it or return it with a concrete reason. You and your team lead can manage your tasks. "
+            "The orchestrator reads the result, then accepts it or returns it with a concrete reason. "
             "list returns the team's tasks with versions. update, accept, return, and cancel require the current version. "
             "accept, return, and cancel also require a reason. "
             "Do not use the agent work board for user actions. Do not poll while waiting.",
@@ -41,6 +42,33 @@ class UserTasksMixin:
         db.execute(
             "CREATE INDEX IF NOT EXISTS runtime_user_task_owner ON runtime_user_tasks(json_extract(record,'$.agent'),json_extract(record,'$.status'))"
         )
+
+        # Only unsent legacy completions can change recipient. Keep their identities.
+        for event in db.execute("SELECT * FROM runtime_events WHERE kind='user_task_completed' AND status='pending'").fetchall():
+            try:
+                task_id = json.loads(event["text"])["task_id"]
+            except (ValueError, TypeError, KeyError):
+                continue
+            row = db.execute("SELECT record FROM runtime_user_tasks WHERE id=?", (task_id,)).fetchone()
+            if not row:
+                continue
+            task = json.loads(row[0])
+            if event["agent"] != task["agent"] or task["agent"] == task["rootId"]:
+                continue
+            owner, lead = self.agent(task["agent"], db), self.agent(task["rootId"], db)
+            if owner.get("deletedAt") or lead.get("deletedAt") or not lead.get("isLead"):
+                continue
+            status = "pending" if lead["autoWake"] else "cancelled"
+            db.execute("UPDATE runtime_events SET agent=?,epoch=?,status=? WHERE id=?",
+                       (lead["id"], lead["epoch"], status, event["id"]))
+            task["delivery"] = status
+            self.put(db, "user_tasks", task)
+            if lead["autoWake"] and not lead.get("nativeFailureHold") and lead["status"] not in {"running", "starting", "approval"}:
+                lead["status"] = "queued"
+                self.put(db, "agents", lead)
+            if owner["status"] == "queued" and not db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending'", (owner["id"],)).fetchone():
+                owner["status"] = "waiting"
+                self.put(db, "agents", owner)
 
     def user_task_view(self, db, task):
         owner = self.agent(task["agent"], db)
@@ -84,6 +112,8 @@ class UserTasksMixin:
                 return prior
             if action == "list":
                 return self.user_tasks(actor_id, db)
+            if not actor.get("isLead") or actor["id"] != actor["rootId"]:
+                raise ValueError("Only the orchestrator can change user tasks. Ask your orchestrator to contact the user.")
             now = time.time()
             if action == "create":
                 task = {
@@ -199,6 +229,7 @@ class UserTasksMixin:
             )
             if prior is not None:
                 return prior
+            reviewer = self.checked_actor(db, task["rootId"])
             self.check_user_task_version(task, data)
             if task["status"] != "open":
                 raise ValueError("This task is no longer awaiting your action")
@@ -218,7 +249,7 @@ class UserTasksMixin:
             )
             event = self.enqueue(
                 db,
-                owner,
+                reviewer,
                 "user_task_completed",
                 json.dumps(
                     {
@@ -238,15 +269,18 @@ class UserTasksMixin:
             ).fetchone()[0]
             self.put(db, "user_tasks", task)
             self.touch_ui(owner["id"])
+            if reviewer["id"] != owner["id"]:
+                self.touch_ui(reviewer["id"])
             return self.save_receipt(
                 db, request, signature, self.user_task_view(db, task)
             )
 
     def user_task_review_context(self, db, agent_id):
+        owners = {a["id"] for a in self.records(db, "agents") if not a.get("deletedAt")}
         pending = [
             t
             for t in self.records(db, "user_tasks")
-            if t["agent"] == agent_id and t["status"] == "review"
+            if t["rootId"] == agent_id and t["agent"] in owners and t["status"] == "review"
         ]
         if not pending:
             return ""

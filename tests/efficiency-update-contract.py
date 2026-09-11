@@ -25,6 +25,13 @@ class UpdateContract(unittest.TestCase):
 
     def legacy(self):
         originals = {}
+        # Historical methods still call the removed Studio account allowlist.
+        # Reconstruct that dependency only in this legacy fixture.
+        self.runtime.check_account_project = lambda *args, **kwargs: None
+        current_account = self.runtime.accounts.get
+        self.runtime.accounts.get = lambda key: {
+            **current_account(key), "projectRules": {"allowedProjects": None},
+        }
         baseline_globals = self.runtime.dynamic.__func__.__globals__.copy()
         baseline_globals['TOOLS'] = [d for d in baseline_globals['TOOLS'] if d['name'] not in {'orchestration_read', 'orchestration_context'}]
         for revision in ['30acccdb5fd7aecbc92d6ff0ef3ea2d1dcbf8160', '568abb63e3167eb655aab918d5f8ba7c33b39796']:
@@ -54,7 +61,9 @@ class UpdateContract(unittest.TestCase):
         f.f.eventually(lambda: any(method == 'command/exec' for method, _ in self.runtime.server.calls))
         identities = {name: getattr(self.runtime, name) for name in ['servers', 'server', 'pool', 'coordination_pool', 'recovery_pool', 'index_item']}
         turn = self.runtime.agent(lead['id'])['turnId']
+        self.runtime.role_guidance = None
         result = update.apply(self.runtime)
+        self.assertTrue(callable(self.runtime.role_guidance))
         self.assertEqual(result['status'], 'applied')
         for name, value in identities.items():
             self.assertEqual(getattr(self.runtime, name), value)

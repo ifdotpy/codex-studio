@@ -147,6 +147,7 @@ try {
     await route.fulfill({ json: value });
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
   const drawer = page.getByRole("dialog", { name: /Background tasks/ });
   assert.equal(
@@ -276,6 +277,7 @@ try {
   await page.reload();
   await page.locator('[data-chat="lead"]').click();
   await page.locator('.agent-phase[data-phase="acknowledgement"]').waitFor();
+  await page.getByRole("button", { name: "Team", exact: true }).click();
   await page.locator('[data-worker="pending-review"] .worker-error').waitFor();
   assert.equal(
     await page

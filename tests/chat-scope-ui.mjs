@@ -90,10 +90,20 @@ try {
     await page.getByRole("heading", { name, exact: true }).waitFor();
   };
   const openSection = async (section) => {
-    await page.locator(`[data-workspace-section="${section}"]`).click();
+    if (section !== "messages")
+      await page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .click();
+    await page
+      .locator(
+        section === "messages"
+          ? "#messages-toggle"
+          : `[data-workspace-section="${section}"]`,
+      )
+      .click();
     await drawer
       .getByRole("heading", {
-        name: section === "inbox" ? "Inbox" : "Changes",
+        name: section === "messages" ? "Messages" : "Changes",
         exact: true,
       })
       .waitFor();
@@ -102,9 +112,9 @@ try {
     await page.keyboard.press("Escape");
     await drawer.waitFor({ state: "hidden" });
   };
-  const checkOtherInbox = async () => {
+  const checkOtherMessages = async () => {
     await drawer
-      .getByText("No questions or unresolved problems.", { exact: true })
+      .getByText("No messages need your attention.", { exact: true })
       .waitFor();
     assert.equal(await drawer.locator("[data-answer]").count(), 0);
     assert.equal(
@@ -132,12 +142,13 @@ try {
 
   await selectChat("Other project");
   assert.equal(
-    await page.locator("#workspace-toggle .attention-count").count(),
+    await page.locator("#messages-toggle .attention-count").count(),
     0,
   );
   assert.equal(await page.locator("#tasks-toggle .tasks-count").count(), 0);
-  await openSection("inbox");
-  await checkOtherInbox();
+  await openSection("messages");
+  await checkOtherMessages();
+  assert.equal(await drawer.getByLabel("Agent", { exact: true }).count(), 0);
   await closeWorkspace();
   let changesScope;
   const legacyChanges = async (route) => {
@@ -176,13 +187,15 @@ try {
 
   await selectChat("Release lead");
   assert.equal(
-    await page.locator("#workspace-toggle .attention-count").innerText(),
-    "3",
+    await page.locator("#messages-toggle .attention-count").innerText(),
+    "2",
   );
-  assert.equal(
-    await page.locator("#tasks-toggle .tasks-count").innerText(),
-    "1",
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  assert.match(
+    await page.locator("#tasks-toggle").getAttribute("aria-label"),
+    /1 active/,
   );
+  await page.keyboard.press("Escape");
   await openSection("changes");
   const members = initial.runtime.agents.filter(
     (agent) => agent.id === lead.id || agent.rootId === lead.id,
@@ -192,12 +205,15 @@ try {
   await drawer.getByLabel("Agent", { exact: true }).selectOption(worker.id);
   await drawer.getByRole("button", { name: "Open chat", exact: false }).click();
   await drawer.waitFor({ state: "hidden" });
-  await openSection("inbox");
+  await openSection("messages");
   await drawer
     .locator(".workspace-inbox-group .workspace-row")
     .filter({ hasText: "Worker 07" })
     .waitFor();
-  assert.equal(await drawer.locator(".workspace-count").innerText(), "2");
+  assert.equal(
+    await page.locator("#messages-toggle .attention-count").innerText(),
+    "2",
+  );
   await drawer.locator('[data-answer="async-question"]').click();
   const answer = drawer.getByRole("form", {
     name: "Reply to the agent",
@@ -206,10 +222,11 @@ try {
   await answer.getByText("Which scope?", { exact: true }).waitFor();
   await selectChat("Other project", true);
   await answer.waitFor({ state: "hidden" });
-  await checkOtherInbox();
+  await checkOtherMessages();
   await closeWorkspace();
 
   await selectChat("Release lead");
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
   await background
     .locator("[data-task]")
@@ -253,10 +270,10 @@ try {
     delivered = true;
   });
   await selectChat("Release lead");
-  await openSection("inbox");
+  await openSection("messages");
   await poll(() => captured, "capture Release lead workspace response");
   await selectChat("Other project", true);
-  await checkOtherInbox();
+  await checkOtherMessages();
   releaseResponse();
   await poll(() => delivered, "deliver obsolete workspace response");
   await page.evaluate(
@@ -265,14 +282,14 @@ try {
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       ),
   );
-  await checkOtherInbox();
+  await checkOtherMessages();
   assert.equal(
-    await page.locator("#workspace-toggle .attention-count").count(),
+    await page.locator("#messages-toggle .attention-count").count(),
     0,
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS chat scope: same folder/account isolation, 41-member agent selector, legacy changes rejection, descendant Inbox, scoped counters, modal/detail reset, stale workspace response. Evidence: " +
+    "PASS chat scope: same folder/account isolation, 41-member agent selector, legacy changes rejection, descendant Messages, scoped counters, modal/detail reset, stale workspace response. Evidence: " +
       root,
   );
 } catch (error) {

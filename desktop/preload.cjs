@@ -17,6 +17,12 @@ if (process.isMainFrame) {
     }
     return ipcRenderer.invoke("codex-desktop", { method, value });
   };
+  const subscribe = (channel, callback) => {
+    if (typeof callback !== "function") throw new Error("Expected a callback.");
+    const listener = (_event, value) => callback(value);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  };
   contextBridge.exposeInMainWorld(
     "codexDesktop",
     Object.freeze({
@@ -24,6 +30,11 @@ if (process.isMainFrame) {
       requestMicrophone: () => invoke("requestMicrophone"),
       prepareTranscription: () => invoke("prepareTranscription"),
       transcribeAudio: (value) => invoke("transcribeAudio", value, false),
+      cancelTranscription: (id) => invoke("cancelTranscription", id),
+      onTranscriptionProgress: (callback) =>
+        subscribe("codex-desktop-transcription-progress", callback),
+      onNavigate: (callback) => subscribe("codex-desktop-navigate", callback),
+      getNotifications: () => invoke("getNotifications", undefined, false),
       pickDirectory: () => invoke("pickDirectory"),
       pickFiles: () => invoke("pickFiles"),
       revealPath: (value) => invoke("revealPath", value),

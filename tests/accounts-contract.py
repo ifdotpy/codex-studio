@@ -132,6 +132,23 @@ class AccountsContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.home("default")
 
+    def test_old_directory_rules_are_only_migration_hints(self):
+        self.store.data["accounts"]["default"]["projectRules"] = {
+            "allowedProjects": [str(self.root / "old-project")], "revision": 3,
+        }
+        self.store._save()
+        self.assertNotIn("projectRules", self.store.get("default"))
+        self.assertNotIn("projectRules", self.store.refresh("default"))
+        self.assertEqual(self.store.legacy_project_defaults(), {str((self.root / "old-project").resolve()): "default"})
+        self.assertEqual(self.store.home("default"), self.primary.resolve())
+        other = self.home / "other"
+        auth(other, "account-two")
+        key = self.store.register(str(other))
+        self.store.data["accounts"][key]["projectRules"] = {
+            "allowedProjects": [str(self.root / "old-project")], "revision": 1,
+        }
+        self.assertEqual(self.store.legacy_project_defaults(), {})
+
     def test_login_uses_new_home_and_reuses_request_receipt(self):
         (self.primary / "config.toml").write_text(
             'model = "gpt-5.6-sol"\nforced_chatgpt_account_id = "account-one"\n[features]\ntime_awareness = true\n'
@@ -252,70 +269,10 @@ class AccountsContract(unittest.TestCase):
             self.assertEqual(limits["accountKey"], key)
             self.assertEqual(request("/api/limits?account_key=missing")[0], 400)
             self.assertNotIn("SECRET", json.dumps(request("/api/accounts")[1]))
-            status, policy = request(
-                "/api/accounts/rules",
-                {
-                    "account_key": key,
-                    "allowed_projects": [str(other)],
-                    "expected_revision": 0,
-                },
-            )
-            self.assertEqual(status, 200)
-            rules = next(
-                a["projectRules"] for a in policy["accounts"] if a["id"] == key
-            )
-            self.assertEqual(rules["allowedProjects"], [str(other.resolve())])
+            self.assertTrue(all("projectRules" not in account for account in result["accounts"]))
             self.assertEqual(
-                request(
-                    "/api/accounts/rules",
-                    {
-                        "account_key": key,
-                        "allowed_projects": None,
-                        "expected_revision": 0,
-                    },
-                )[0],
-                400,
-            )
-            self.assertEqual(
-                request(
-                    "/api/accounts/rules", {"account_key": key, "expected_revision": 1}
-                )[0],
-                400,
-            )
-            self.assertEqual(
-                request("/api/agents/account", {"id": lead["id"], "account_key": key})[
-                    0
-                ],
-                400,
-            )
-            self.assertTrue(
-                request(
-                    "/api/conversation",
-                    {"id": lead["id"], "dangerously_skip_rules": True},
-                )[1]["dangerouslySkipAccountRules"]
-            )
-            self.assertEqual(
-                request("/api/agents/account", {"id": lead["id"], "account_key": key})[
-                    0
-                ],
+                request("/api/agents/account", {"id": lead["id"], "account_key": key})[0],
                 200,
-            )
-            self.assertFalse(
-                request(
-                    "/api/conversation",
-                    {"id": lead["id"], "dangerously_skip_rules": False},
-                )[1]["dangerouslySkipAccountRules"]
-            )
-            self.assertEqual(
-                request(
-                    "/api/messages",
-                    {
-                        "id": str(uuid.uuid4()),
-                        "room": lead["id"],
-                        "text": "blocked task",
-                    },
-                )[0],
-                400,
             )
         finally:
             server.shutdown()

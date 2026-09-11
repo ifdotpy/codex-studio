@@ -88,8 +88,8 @@ try {
       .locator("#messages .prose")
       .filter({ hasText: "First paragraph" })
       .count(),
-    0,
-    "hold unfinished paragraph",
+    1,
+    "show unfinished paragraph",
   );
   event("item/agentMessage/delta", {
     itemId: "live-text",
@@ -137,7 +137,7 @@ try {
     .evaluate((el) => (el.dataset.retained = "yes"));
   assert.equal(
     await page.getByText("Second paragraph", { exact: true }).count(),
-    0,
+    1,
   );
   event("item/agentMessage/delta", {
     itemId: "live-text",
@@ -146,8 +146,8 @@ try {
   await page.getByText("Second paragraph.", { exact: true }).waitFor();
   assert.equal(
     await page.locator("#messages .prose pre").count(),
-    0,
-    "hold open fenced code",
+    1,
+    "show open fenced code",
   );
   event("item/agentMessage/delta", {
     itemId: "live-text",

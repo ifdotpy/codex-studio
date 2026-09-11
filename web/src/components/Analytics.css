@@ -85,7 +85,7 @@
   margin: 0 0 16px;
 }
 .analytics-filter-note {
-  color: #e2b479;
+  color: light-dark(#8a5700, #e2b479);
 }
 .analytics-metrics {
   display: grid;
@@ -240,7 +240,7 @@
   overflow-wrap: anywhere;
 }
 .analytics-tool-name:hover {
-  color: #b8afff;
+  color: var(--accent);
 }
 .analytics-bar {
   height: 3px;
@@ -250,7 +250,7 @@
 .analytics-bar i {
   display: block;
   height: 100%;
-  background: #a59bff;
+  background: var(--accent);
   border-radius: 3px;
   opacity: 0.7;
 }
@@ -265,7 +265,7 @@
   overflow: hidden;
 }
 .analytics-call.is-selected {
-  border-color: #5c547d;
+  border-color: var(--accent);
 }
 .analytics-call-row {
   width: 100%;
@@ -306,7 +306,7 @@
   overflow-wrap: anywhere;
 }
 .analytics-status.is-failed {
-  color: #eda7a3;
+  color: light-dark(#b42622, #eda7a3);
 }
 .analytics-call-detail {
   border-top: 1px solid var(--line);
@@ -433,7 +433,7 @@
 .analytics-error {
   padding: 12px 24px;
   margin: 0;
-  color: #eda7a3;
+  color: light-dark(#b42622, #eda7a3);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -534,7 +534,7 @@
   }
 }
 .analytics-chart .analytics-compaction-marker {
-  stroke: #e2b479;
+  stroke: light-dark(#8a5700, #e2b479);
   stroke-dasharray: 2 5;
   opacity: 0.6;
 }

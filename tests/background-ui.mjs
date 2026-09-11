@@ -127,6 +127,7 @@ try {
     );
     return monitor?.status === "running";
   }, "agent monitor starts");
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
   const drawer = page.getByRole("dialog", { name: /Background tasks/ });
   await drawer.waitFor();
@@ -295,6 +296,7 @@ try {
   );
   await page.keyboard.press("Escape");
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
   await drawer.waitFor();
   await poll(
@@ -336,12 +338,19 @@ try {
   await page.screenshot({ path: join(root, "tasks-empty.png") });
   await page.keyboard.press("Escape");
   await drawer.waitFor({ state: "hidden" });
+  await poll(
+    () =>
+      page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .evaluate((element) => element === document.activeElement),
+    "focus returns after the drawer exit transition",
+  );
   assert.equal(
     await page
-      .locator("#tasks-toggle")
+      .getByRole("button", { name: "Chat actions", exact: true })
       .evaluate((el) => el === document.activeElement),
     true,
-    "focus returns to Tasks",
+    "focus returns to Chat actions",
   );
   assert.deepEqual(errors, []);
   console.log(

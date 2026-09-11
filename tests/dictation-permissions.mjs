@@ -55,6 +55,8 @@ const electron = {
     },
   },
 };
+let ready;
+const started = new Promise((resolve) => { ready = resolve; });
 const context = vm.createContext({
   require: (name) =>
     name === "electron"
@@ -64,7 +66,7 @@ const context = vm.createContext({
         : require(name),
   module: { exports: {} },
   process: { argv: [], env: {}, platform: "darwin" },
-  console: { log() {} },
+  console: { log: ready, error: console.error },
   __dirname: "/tmp",
   Date,
   Map,
@@ -77,7 +79,7 @@ vm.runInContext(
     "})()",
   context,
 );
-await new Promise((resolve) => setImmediate(resolve));
+await started;
 const event = {
   sender: window.webContents,
   senderFrame: window.webContents.mainFrame,

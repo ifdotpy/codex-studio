@@ -212,7 +212,7 @@ try {
     const start = async (text, queue = false) => {
       const count = posts.length;
       await input.fill(text);
-      if (queue) await input.press("Tab");
+      if (queue) await page.getByRole("button", { name: "Queue after turn", exact: true }).click();
       else await page.locator("#send").click();
       await until(
         () => posts.length === count + 1,

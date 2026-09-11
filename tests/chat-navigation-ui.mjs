@@ -38,6 +38,7 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(url);
+  await page.locator(".project-tree-heading").first().hover();
   await page
     .getByRole("button", { name: /^New chat in / })
     .first()
@@ -55,11 +56,14 @@ try {
     0,
     "idle has no loading status below messages",
   );
-  assert.equal(
-    await page.locator(".conversation-quick-actions").count(),
-    0,
-    "empty chats have no compact, review, or stop actions",
-  );
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  for (const action of ["compact", "review"])
+    assert.ok(
+      await page.locator(`[data-action="${action}"]`).isDisabled(),
+      "empty chat cannot run " + action,
+    );
+  assert.equal(await page.locator('[data-action="stop-team"]').count(), 0);
+  await page.keyboard.press("Escape");
   const emptyId = state.runtime.agents.find((a) => a.name === "New chat").id;
   let failed = true;
   await page.route("**/api/directories?**", async (route) => {
@@ -97,8 +101,14 @@ try {
     selections.push(body);
     await route.fulfill({ json: { ok: true } });
   });
+  await page
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
   await page.locator("#project").click();
-  const picker = page.getByRole("dialog", { name: "Project folder" });
+  const picker = page.getByRole("dialog", {
+    name: "Choose project folder",
+    exact: true,
+  });
   await picker.getByLabel("Folder path", { exact: true }).fill("/projects");
   await picker.getByRole("button", { name: "Go", exact: true }).click();
   await picker.getByRole("button", { name: "Alpha", exact: true }).waitFor();
@@ -133,13 +143,19 @@ try {
   await page.locator("#message").fill("Keep my draft");
   for (const [section, title] of [
     ["user-tasks", "Your tasks"],
-    ["inbox", "Inbox"],
+    ["messages", "Messages"],
     ["changes", "Changes"],
     ["search", "Search"],
     ["plan", "Plan"],
     ["rules", "Rules"],
   ]) {
-    await page.locator(`[data-workspace-section="${section}"]`).click();
+    if (section === "messages") await page.locator("#messages-toggle").click();
+    else {
+      await page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .click();
+      await page.locator(`[data-workspace-section="${section}"]`).click();
+    }
     const drawer = page.locator(".workspace-drawer");
     await drawer.getByRole("heading", { name: title, exact: true }).waitFor();
     await page.keyboard.press("Escape");
@@ -152,6 +168,7 @@ try {
   );
   const background = page.getByRole("dialog", { name: /Background tasks/ });
   assert.equal(await page.locator("#message").inputValue(), "Keep my draft");
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
   assert.equal(
     await background.getByLabel("Command", { exact: true }).count(),
@@ -168,15 +185,20 @@ try {
   await background.waitFor({ state: "hidden" });
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
-    const nav = page.getByRole("navigation", { name: "Workspace shortcuts" });
-    for (const button of await nav.getByRole("button").all()) {
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.getByRole("menu").waitFor();
+    for (const button of await page.getByRole("menuitem").all()) {
       const r = await button.boundingBox();
       assert.ok(
         r && r.x >= 0 && r.x + r.width <= width + 1,
-        "named shortcut fits " + width,
+        "named action fits " + width,
       );
       assert.ok((await button.innerText()).trim().length, "label is visible");
     }
+    await page.keyboard.press("Escape");
+    await page.getByRole("menu").waitFor({ state: "hidden" });
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth + 1,

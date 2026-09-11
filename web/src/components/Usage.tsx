@@ -1,9 +1,13 @@
 import { accountLimits } from "../accountUsage";
 import { useEffect, useRef, useState } from "react";
-import { Button, Popover, Progress, Tooltip } from "@mantine/core";
-import { ChevronUp, Gauge, RefreshCw, RotateCcw } from "lucide-react";
+import { Button, Popover, Progress } from "@mantine/core";
+import { ChevronUp, Gauge, RefreshCw } from "lucide-react";
 import type { Agent, Json } from "../types";
 import { api, errorText } from "../api";
+import { useRecoveredLimit } from "./useRecoveredLimit";
+import { limitRecovery } from "../limitRecovery";
+import LimitRecoveryNotice from "./LimitRecoveryNotice";
+export { limitRecovery } from "../limitRecovery";
 import "./Usage.css";
 import Analytics from "./Analytics";
 
@@ -125,14 +129,38 @@ export default function Usage({
   limits: reportedLimits,
   accountLabel,
   reload,
+  opened,
+  onChange,
+  limitsLoading,
 }: {
   agent: Agent;
   limits: Json | null;
   accountLabel?: string;
-  reload: () => void;
+  reload: () => void | Promise<void>;
+  opened?: boolean;
+  onChange?: (opened: boolean) => void;
+  limitsLoading?: boolean;
 }) {
+  const [localOpened, setLocalOpened] = useState(false);
+  const limitsOpened = opened ?? localOpened;
+  const changeOpened = (value: boolean) => {
+    setLocalOpened(value);
+    onChange?.(value);
+  };
   const limits = accountLimits(reportedLimits, agent.accountKey || "default");
+  const loadingLimits = limitsLoading ?? !reportedLimits;
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshLimits = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await reload();
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const [confirmReset, setConfirmReset] = useState<string | null>(null);
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState("");
@@ -253,46 +281,63 @@ export default function Usage({
   const buckets = readBuckets(limits, now);
   const selected = selectedBucket(buckets, agent.model || "");
   const windows = selected?.windows.slice(0, 2) || [];
-  const stale = windows.some((window) => window.expired);
-  const summary = windows.length
-    ? windows
-        .map(
-          (window) =>
-            `${window.label} ${window.expired ? "refresh needed" : window.remaining === null ? "unavailable" : `${formatPercent(window.remaining)} left`}`,
-        )
-        .join(" · ")
-    : buckets.length
-      ? `${buckets.length} ${buckets.length === 1 ? "pool" : "pools"}`
-      : "Unavailable";
+  const recovered = useRecoveredLimit(agent, limits, now);
+  const recovery = recovered ? null : limitRecovery(agent, limits, now);
   return (
     <div
       className="usage-footer"
       id="usage-footer"
       data-account-key={agent.accountKey || "default"}
     >
-      <Tooltip
-        label={
-          known
-            ? `${c!.tokens!.toLocaleString()} / ${c!.window!.toLocaleString()} tokens. Last reported context. Click for analytics.`
-            : "Codex has not reported context use yet. Click for analytics."
-        }
+      <Popover
+        opened={contextOpen}
+        onChange={setContextOpen}
+        position="top-start"
+        width="min(340px, calc(100vw - 24px))"
+        trapFocus
+        returnFocus
       >
-        <button
-          type="button"
-          className="context-use"
-          aria-label="Open context analytics"
-          onClick={() => setAnalyticsOpen(true)}
-        >
-          <Progress
-            size={3}
-            w={28}
-            value={Math.min(100, percent || 0)}
-            color={percent !== null && percent >= 85 ? "orange" : "gray"}
-            aria-label="Context used"
-          />
-          {percent === null ? "Context unavailable" : `Context ${percent}%`}
-        </button>
-      </Tooltip>
+        <Popover.Target>
+          <button
+            type="button"
+            className="context-use"
+            aria-label="Chat context"
+            aria-expanded={contextOpen}
+            onClick={() => setContextOpen(!contextOpen)}
+          >
+            {percent === null ? "Context" : `Context ${percent}%`}
+          </button>
+        </Popover.Target>
+        <Popover.Dropdown>
+          <strong>Chat context</strong>
+          <p>
+            The context is the information the model can use in one response.
+          </p>
+          <p>
+            {known
+              ? `${c!.tokens!.toLocaleString()} of ${c!.window!.toLocaleString()} tokens used (${percent}%).`
+              : "Codex has not reported context use yet."}
+          </p>
+          <p>
+            Long chats can be shortened automatically. The conversation history
+            remains available.
+          </p>
+          <small>
+            {agent.compactions === undefined
+              ? "No summary count reported."
+              : `${agent.compactions} automatic context summaries${agent.compactionsObservedOnly ? " observed" : ""}.`}
+          </small>
+          <Button
+            variant="subtle"
+            onClick={() => {
+              setContextOpen(false);
+              setAnalyticsOpen(true);
+            }}
+          >
+            Advanced analytics
+          </Button>
+        </Popover.Dropdown>
+      </Popover>
       {analyticsOpen && (
         <Analytics
           key={agent.id}
@@ -300,13 +345,9 @@ export default function Usage({
           onClose={() => setAnalyticsOpen(false)}
         />
       )}
-      <span className="compactions">
-        <RotateCcw size={12} />
-        {agent.compactions === undefined
-          ? "Compactions unavailable"
-          : `${agent.compactions} ${agent.compactionsObservedOnly ? "observed " : ""}compactions`}
-      </span>
       <Popover
+        opened={limitsOpened}
+        onChange={changeOpened}
         position="top-end"
         width="min(370px, calc(100vw - 24px))"
         withArrow
@@ -319,30 +360,19 @@ export default function Usage({
             variant="subtle"
             size="compact-xs"
             aria-label="Account limits"
+            onClick={() => changeOpened(!limitsOpened)}
             leftSection={<Gauge size={13} />}
             rightSection={<ChevronUp size={12} />}
           >
             <span className="account-limits-summary">
               <span className="account-limits-label">Limits</span>
-              <span
-                className={
-                  limits?.error || stale ? "account-limits-warning" : ""
-                }
-              >
-                {summary}
-              </span>
-              {resetCount !== null && resetCount > 0 && (
-                <span className="account-reset-summary">
-                  {resetCount} {resetCount === 1 ? "reset" : "resets"}
-                </span>
-              )}
-              {number(costs?.data?.todayUSD) && (
-                <span
-                  className="account-cost-summary"
-                  title="API cost estimate for this account"
-                >
-                  ≈{dollars(costs?.data?.todayUSD)} today
-                </span>
+              {windows.some(
+                (window) =>
+                  window.remaining !== null &&
+                  window.remaining <= 15 &&
+                  !window.expired,
+              ) && (
+                <span className="account-limits-warning">Low allowance</span>
               )}
             </span>
           </Button>
@@ -360,12 +390,19 @@ export default function Usage({
               <Button
                 size="compact-xs"
                 variant="subtle"
-                onClick={reload}
+                loading={refreshing || loadingLimits}
+                onClick={() => void refreshLimits()}
                 leftSection={<RefreshCw size={13} />}
               >
                 Refresh
               </Button>
             </header>
+            {recovery && (
+              <LimitRecoveryNotice
+                key={JSON.stringify(recovery)}
+                recovery={recovery}
+              />
+            )}
             <div className="account-limits-groups">
               {buckets.map((bucket) => (
                 <section
@@ -474,7 +511,9 @@ export default function Usage({
               ))}
               {!buckets.length && (
                 <p className="account-limits-empty">
-                  Codex has not supplied account limits.
+                  {loadingLimits
+                    ? "Loading account limits…"
+                    : "Codex has not supplied account limits."}
                 </p>
               )}
             </div>

@@ -70,15 +70,18 @@ export default function StreamingText({
           };
         }
       }
-      if (token.type === "html")
+      if (token.type === "html" && !streaming)
         return { kind: "html" as const, source: token.text };
       return {
         html: DOMPurify.sanitize(
           marked.parser(Object.assign([token], { links: tokens.links })),
           {
-            ALLOWED_URI_REGEXP: markdownUriPattern,
+            USE_PROFILES: { html: true },
+            ALLOWED_URI_REGEXP: new RegExp(
+              `(?:${markdownUriPattern.source})|^data:image/(?:png|jpeg|gif|webp);base64,`,
+              "i",
+            ),
             FORBID_TAGS: [
-              "img",
               "form",
               "input",
               "button",
@@ -88,12 +91,12 @@ export default function StreamingText({
               "video",
               "audio",
             ],
-            FORBID_ATTR: ["style"],
+            FORBID_ATTR: ["style", "background"],
           },
         ),
       };
     });
-  }, [visible]);
+  }, [visible, streaming]);
   // History is immediately readable. New sentences retain existing DOM nodes.
   const [initialBlockCount] = useState(blocks.length);
   return (
@@ -129,13 +132,14 @@ export default function StreamingText({
       {blocks.map((block, i) =>
         block.kind ? (
           <RichPreview key={i} kind={block.kind} source={block.source} />
-        ) : !live.current ? (
+        ) : !live.current && !/<(?:img|pre)[\s>]/i.test(block.html!) ? (
           <StaticBlock key={i} html={block.html!} />
         ) : (
           <SentenceMarkup
             key={i}
             html={block.html!}
-            enter={i >= initialBlockCount}
+            enter={streaming && i >= initialBlockCount}
+            agentId={agentId}
           />
         ),
       )}

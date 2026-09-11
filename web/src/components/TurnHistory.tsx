@@ -7,12 +7,16 @@ import {
   Wrench,
 } from "lucide-react";
 import { save, saved } from "../api";
-import type { Message } from "../types";
+import type { Agent, Message } from "../types";
+import { useTurnErrors } from "./useTurnErrors";
 import Activity, { ToolCard, activitySummary } from "./Activity";
+import { toolLimitNotice } from "./toolLimitNotice";
+import { turnFailureReason } from "./turnFailureReason";
 import ConversationResults from "./ConversationResults";
 import { historyGroups, type HistoryGroup } from "./turnHistoryModel";
 import "./turn-history.css";
 import { messageRenderKey } from "./messageDelivery";
+import ReasoningDuration from "./ReasoningDuration";
 
 function messageGroups(items: Message[]) {
   const groups: (Message | Message[])[] = [];
@@ -31,7 +35,13 @@ function messages(items: Message[], render: (message: Message) => ReactNode) {
     Array.isArray(item) ? (
       <Activity key={item[0].id} items={item} />
     ) : (
-      <Fragment key={messageRenderKey(item)}>{render(item)}</Fragment>
+      <Fragment key={messageRenderKey(item)}>
+        {item.role === "reasoning" ? (
+          <ReasoningDuration item={item} />
+        ) : (
+          render(item)
+        )}
+      </Fragment>
     ),
   );
 }
@@ -46,11 +56,14 @@ function WorkBlock({
   const key = `${storageKey}:tools-v3`;
   const id = items[0].id;
   const [open, setOpen] = useState(
-    () => saved<Record<string, boolean>>(key, {})[id] ?? false,
+    () => saved<Record<string, boolean>>(key, {})[id] ?? items.length < 3,
   );
+  const [visited, setVisited] = useState(open);
   const summary = activitySummary(items);
+  const hasLimit = items.some((item) => toolLimitNotice(item));
   const update = (value: boolean) => {
     setOpen(value);
+    if (value) setVisited(true);
     save(
       key,
       Object.fromEntries([
@@ -88,6 +101,9 @@ function WorkBlock({
           <Wrench size={14} />
         )}
         <span className="turn-work-label">
+          {hasLimit && (
+            <strong className="activity-limit">Account limit reached · </strong>
+          )}
           {summary.label || "Agent updates"}
         </span>
         {!!summary.running && (
@@ -100,7 +116,7 @@ function WorkBlock({
       </summary>
       <div className="turn-work-body">
         {items.map((item) =>
-          open ? (
+          visited ? (
             <ToolCard key={item.id} item={item} />
           ) : (
             <span
@@ -122,14 +138,27 @@ function Turn({
   render,
   agentId,
   onJump,
+  failureReason,
+  failurePending,
+  failureLookupFailed,
+  retryFailure,
 }: {
   group: HistoryGroup;
   storageKey: string;
   render: (message: Message) => ReactNode;
   agentId?: string;
   onJump: (id: string) => void;
+  failureReason: string;
+  failurePending: boolean;
+  failureLookupFailed: boolean;
+  retryFailure: () => void;
 }) {
   const result = group.result;
+  const visibleError = group.items.some(
+    (item) =>
+      item.nativeNotice === "error" ||
+      (item.nativeError && !["tool", "output"].includes(item.role)),
+  );
   return (
     <section
       className="turn-history"
@@ -144,16 +173,41 @@ function Turn({
             key={item.id}
             className={item.id === result?.id ? "turn-answer" : undefined}
           >
-            {render(item)}
+            {item.role === "reasoning" ? (
+              <ReasoningDuration item={item} />
+            ) : (
+              render(item)
+            )}
           </div>
         ),
       )}
-      {group.outcome === "failed" && (
-        <p className="turn-problem" role="status">
-          <CircleAlert size={14} />
-          Turn failed
-        </p>
-      )}
+      {group.outcome === "failed" &&
+        !visibleError &&
+        (failurePending ? (
+          <div
+            className="turn-error-pending"
+            role="status"
+            aria-label="Loading error details"
+          >
+            <span />
+            <span />
+            <span />
+          </div>
+        ) : (
+          <p className="turn-problem" role="status">
+            <CircleAlert size={14} />
+            <span>
+              {failureLookupFailed
+                ? "Could not load error details."
+                : failureReason}
+            </span>
+            {failureLookupFailed && (
+              <button className="turn-error-retry" onClick={retryFailure}>
+                Retry
+              </button>
+            )}
+          </p>
+        ))}
       {group.outcome === "interrupted" && (
         <p className="turn-problem">
           <CircleStop size={14} />
@@ -170,15 +224,17 @@ function Turn({
 }
 
 export default function TurnHistory({
-  items,
+  items: sourceItems,
   currentTurn,
   enabled,
   storageKey,
   renderMessage,
   agentId,
   onJump,
+  agent,
 }: {
   items: Message[];
+  agent?: Agent;
   currentTurn?: string;
   enabled: boolean;
   storageKey: string;
@@ -186,6 +242,11 @@ export default function TurnHistory({
   agentId?: string;
   onJump: (id: string) => void;
 }) {
+  const { items, loading, failed, retry } = useTurnErrors(
+    sourceItems,
+    enabled ? agent : undefined,
+    storageKey,
+  );
   if (!enabled) return <>{messages(items, renderMessage)}</>;
   return (
     <>
@@ -198,6 +259,12 @@ export default function TurnHistory({
           <Turn
             key={group.id}
             group={group}
+            failurePending={loading.has(group.items[0].turnId)}
+            failureLookupFailed={failed.has(group.items[0].turnId)}
+            retryFailure={() => retry(group.items[0].turnId)}
+            failureReason={turnFailureReason(
+              items.filter((item) => item.turnId === group.items[0].turnId),
+            )}
             storageKey={storageKey}
             render={renderMessage}
             agentId={agentId}

@@ -144,6 +144,15 @@ export default function WorkerCard({
   open: () => void;
 }) {
   const overview = agent.overview;
+  const error = agent.error ? agentErrorLabel(agent) : "";
+  const errorSummary =
+    /worktree[\s\S]*add[\s\S]*(?:exit status|exit code|failed)/i.test(error)
+      ? "Could not prepare the project folder."
+      : error.length > 160 ||
+          /[\r\n]/.test(error) ||
+          /^Command [\["']/.test(error)
+        ? "The agent stopped with an error."
+        : error;
   return (
     <div className={`worker-entry ${selected ? "selected" : ""}`}>
       <UnstyledButton
@@ -181,11 +190,15 @@ export default function WorkerCard({
               {agent.fastMode ? " · Fast" : ""}
             </span>
           </span>
-          {agent.error && (
-            <span className="worker-error">{agentErrorLabel(agent)}</span>
-          )}
+          {agent.error && <span className="worker-error">{errorSummary}</span>}
         </span>
       </UnstyledButton>
+      {agent.error && (
+        <details className="worker-error-details">
+          <summary>Error details</summary>
+          <pre>{agent.error}</pre>
+        </details>
+      )}
       {overview?.task ? (
         <WorkerExcerpt
           agentId={agent.id}

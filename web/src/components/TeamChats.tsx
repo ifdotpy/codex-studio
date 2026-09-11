@@ -13,7 +13,7 @@ import {
   MessageCircle,
   Search,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { errorText, save, saved } from "../api";
 import { useMessages } from "../hooks";
 import type { Room, Snapshot } from "../types";
@@ -32,10 +32,20 @@ const time = (value?: number) =>
 export default function TeamChats({
   data,
   leadId,
+  forYou,
+  forLead,
+  focusRequestId,
 }: {
   data: Snapshot;
   leadId?: string;
+  forYou: ReactNode;
+  forLead: ReactNode;
+  focusRequestId?: string;
 }) {
+  const [view, setView] = useState("you");
+  useEffect(() => {
+    if (focusRequestId) setView("you");
+  }, [focusRequestId]);
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(60);
   const [selected, setSelected] = useState<string | null>(null);
@@ -84,102 +94,189 @@ export default function TeamChats({
     )
     .sort(
       (a, b) =>
-        Number(b.kind === "broadcast") - Number(a.kind === "broadcast") ||
         (b.lastMessage?.created || b.updated) -
-          (a.lastMessage?.created || a.updated),
+        (a.lastMessage?.created || a.updated),
     );
-  const room = rooms.find((item) => item.id === selected) || filtered[0];
+  const room = rooms.find((item) => item.id === selected);
+  const groups = [
+    {
+      id: "orchestrator",
+      title: "To orchestrator",
+      rooms: filtered.filter(
+        (room) =>
+          room.kind === "private" && room.members.includes(leadId || ""),
+      ),
+    },
+    {
+      id: "broadcast",
+      title: "Team broadcast",
+      rooms: filtered.filter((room) => room.kind === "broadcast"),
+    },
+    {
+      id: "agents",
+      title: "Between agents",
+      rooms: filtered.filter(
+        (room) =>
+          room.kind === "private" && !room.members.includes(leadId || ""),
+      ),
+    },
+  ];
+  const visibleRooms = new Set(
+    groups
+      .flatMap((group) => group.rooms)
+      .slice(0, limit)
+      .map((room) => room.id),
+  );
   return (
-    <div className={`team-chats ${detail && room ? "show-room" : ""}`}>
-      <section className="team-room-list" aria-label="Team conversations">
-        <div className="team-room-search">
-          <TextInput
-            aria-label="Search team chats"
-            placeholder="Search team chats"
-            leftSection={<Search size={15} />}
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setLimit(60);
-            }}
-          />
-        </div>
-        <div className="team-room-rows">
-          {filtered.slice(0, limit).map((item) => {
-            const unread =
-              !!item.lastMessage && (seen[item.id] || 0) < item.lastMessage.seq;
-            return (
-              <UnstyledButton
-                key={item.id}
-                data-room={item.id}
-                className={`team-room-row ${room?.id === item.id ? "selected" : ""}`}
-                aria-pressed={room?.id === item.id}
-                onClick={() => {
-                  setSelected(item.id);
-                  setDetail(true);
-                }}
-              >
-                <Avatar
-                  size={38}
-                  radius="xl"
-                  color={item.kind === "broadcast" ? "indigo" : "gray"}
-                >
-                  {item.kind === "broadcast" ? (
-                    <Megaphone size={18} />
-                  ) : (
-                    <MessageCircle size={18} />
-                  )}
-                </Avatar>
-                <span className="team-room-copy">
-                  <span className="team-room-title">
-                    <strong>{name(item)}</strong>
-                    <time>{time(item.lastMessage?.created)}</time>
-                  </span>
-                  <span className="team-room-preview">
-                    <span>{item.lastMessage?.text || "No messages yet"}</span>
-                    {unread && (
-                      <i
-                        className="team-room-unread"
-                        aria-label="Unread messages"
-                      />
-                    )}
-                  </span>
-                </span>
-              </UnstyledButton>
-            );
-          })}
-          {filtered.length > limit && (
-            <Button
-              variant="subtle"
-              fullWidth
-              onClick={() => setLimit(limit + 60)}
-            >
-              Show more chats
-            </Button>
-          )}
-          {!filtered.length && (
-            <p className="team-chat-empty">
-              {query
-                ? "No matching chats."
-                : "Agent conversations appear here when this team exchanges messages."}
-            </p>
-          )}
-        </div>
-      </section>
-      {room ? (
-        <RoomMessages
-          key={room.id}
-          room={room}
-          data={data}
-          visible={detail}
-          markRead={markRead}
-          back={() => setDetail(false)}
-        />
+    <div className="messages-views">
+      <div
+        className="messages-view-tabs"
+        role="tablist"
+        aria-label="Message recipients"
+      >
+        <Button
+          role="tab"
+          aria-selected={view === "you"}
+          variant={view === "you" ? "light" : "subtle"}
+          onClick={() => setView("you")}
+        >
+          For you
+        </Button>
+        <Button
+          role="tab"
+          aria-selected={view === "team"}
+          variant={view === "team" ? "light" : "subtle"}
+          onClick={() => setView("team")}
+        >
+          Team
+        </Button>
+      </div>
+      {view === "you" ? (
+        <section className="messages-for-you for-you" aria-label="For you">
+          {forYou}
+        </section>
       ) : (
-        <div className="team-chat-placeholder">
-          <MessageCircle size={30} />
-          <strong>No team conversations yet</strong>
-          <p>Broadcasts and private messages stay with this chat.</p>
+        <div className={`team-chats ${detail && room ? "show-room" : ""}`}>
+          <section className="team-room-list" aria-label="Team conversations">
+            <div className="team-room-search">
+              <TextInput
+                aria-label="Search team chats"
+                placeholder="Search team chats"
+                leftSection={<Search size={15} />}
+                value={query}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setLimit(60);
+                }}
+              />
+            </div>
+            <div className="team-room-rows">
+              {groups
+                .filter(
+                  (group) =>
+                    group.rooms.length > 0 ||
+                    (group.id === "orchestrator" &&
+                      data.runtime.complaints.some(
+                        (item) => item.recipient === "lead",
+                      )),
+                )
+                .map((group) => (
+                  <details
+                    className="message-group"
+                    key={group.id}
+                    data-message-group={group.id}
+                    open
+                  >
+                    <summary>
+                      {group.title} <span>{group.rooms.length}</span>
+                    </summary>
+                    {group.id === "orchestrator" && forLead}
+                    {group.rooms
+                      .filter((item) => visibleRooms.has(item.id))
+                      .map((item) => {
+                        const unread =
+                          !!item.lastMessage &&
+                          (seen[item.id] || 0) < item.lastMessage.seq;
+                        return (
+                          <UnstyledButton
+                            key={item.id}
+                            data-room={item.id}
+                            className={`team-room-row ${room?.id === item.id ? "selected" : ""}`}
+                            aria-pressed={room?.id === item.id}
+                            onClick={() => {
+                              setSelected(item.id);
+                              setDetail(true);
+                            }}
+                          >
+                            <Avatar
+                              size={38}
+                              radius="xl"
+                              color={
+                                item.kind === "broadcast" ? "indigo" : "gray"
+                              }
+                            >
+                              {item.kind === "broadcast" ? (
+                                <Megaphone size={18} />
+                              ) : (
+                                <MessageCircle size={18} />
+                              )}
+                            </Avatar>
+                            <span className="team-room-copy">
+                              <span className="team-room-title">
+                                <strong>{name(item)}</strong>
+                                <time>{time(item.lastMessage?.created)}</time>
+                              </span>
+                              <span className="team-room-preview">
+                                <span>
+                                  {item.lastMessage?.text || "No messages yet"}
+                                </span>
+                                {unread && (
+                                  <i
+                                    className="team-room-unread"
+                                    aria-label="Unread messages"
+                                  />
+                                )}
+                              </span>
+                            </span>
+                          </UnstyledButton>
+                        );
+                      })}
+                  </details>
+                ))}
+              {filtered.length > limit && (
+                <Button
+                  variant="subtle"
+                  fullWidth
+                  onClick={() => setLimit(limit + 60)}
+                >
+                  Show more chats
+                </Button>
+              )}
+              {!filtered.length && (
+                <p className="team-chat-empty">
+                  {query
+                    ? "No matching chats."
+                    : "Agent conversations appear here when this team exchanges messages."}
+                </p>
+              )}
+            </div>
+          </section>
+          {room ? (
+            <RoomMessages
+              key={room.id}
+              room={room}
+              data={data}
+              visible={detail}
+              markRead={markRead}
+              back={() => setDetail(false)}
+            />
+          ) : (
+            <div className="team-chat-placeholder">
+              <MessageCircle size={30} />
+              <strong>Select a conversation</strong>
+              <p>Select a team conversation to read its messages.</p>
+            </div>
+          )}
         </div>
       )}
     </div>

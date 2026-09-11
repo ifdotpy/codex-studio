@@ -357,9 +357,26 @@ class AnalyticsMixin:
             record['durationSource'] = 'observed_wall_time'
         self.analytics_store_item(db, record)
 
+    def analytics_turn_errors(self, db, agent, thread, turns):
+        keys = [':'.join((agent, thread, turn)) for turn in turns]
+        if not keys:
+            return []
+        rows = db.execute('SELECT record FROM analytics_turns WHERE id IN ('
+                          + ','.join('?' for _ in keys) + ')', keys).fetchall()
+        return [{key: record.get(key) for key in ('agentId', 'threadId', 'turnId', 'status', 'error')}
+                for record in (json.loads(row[0]) for row in rows)]
+
     def analytics(self, agent=None, scope='agent', **options):
         if scope not in {'agent', 'team', 'all'}:
             raise ValueError('Unknown analytics scope')
+        if options.get('view') == 'turn-errors':
+            self.agent(agent)
+            thread = options.get('thread')
+            turns = list(dict.fromkeys((options.get('turns') or '').split(',')))
+            if scope != 'agent' or not thread or not all(turns) or len(turns) > 120:
+                raise ValueError('Select one thread and up to 120 turns')
+            with self.db() as db:
+                return {'turns': self.analytics_turn_errors(db, agent, thread, turns)}
         def timestamp(key):
             if options.get(key) in (None, ''):
                 return None

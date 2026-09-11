@@ -1,4 +1,4 @@
-import { ActionIcon, Button, TextInput } from "@mantine/core";
+import { Button, TextInput } from "@mantine/core";
 import {
   ChevronDown,
   ChevronUp,
@@ -7,7 +7,6 @@ import {
   Search,
   Square,
   Terminal as TerminalIcon,
-  X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
@@ -63,6 +62,7 @@ export default function TerminalDock({
   const [renaming, setRenaming] = useState(false);
   const [title, setTitle] = useState("");
   const [pending, setPending] = useState(false);
+  const [endTarget, setEndTarget] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const listingRevision = useRef(0);
   const notifyRef = useRef(notify);
@@ -97,6 +97,7 @@ export default function TerminalDock({
     };
   }, [opened, load]);
   useEffect(() => {
+    if (!opened) setEndTarget(null);
     const update = () =>
       document.documentElement.style.setProperty(
         "--terminal-dock-height",
@@ -121,6 +122,7 @@ export default function TerminalDock({
   useEffect(() => {
     save("codex.terminal.selected", selected);
     setRenaming(false);
+    setEndTarget(null);
   }, [selected]);
   const entries: Entry[] = shells
     .filter((shell) => shell.status !== "closed")
@@ -250,6 +252,15 @@ export default function TerminalDock({
           <span className="terminal-dock-current">{current.title}</span>
         )}
         <span className="terminal-dock-spacer" />
+        {opened && (
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            onClick={() => setOpened(false)}
+          >
+            Hide panel
+          </Button>
+        )}
         <Button
           size="compact-xs"
           aria-label="New terminal"
@@ -392,17 +403,51 @@ export default function TerminalDock({
                       : ""}
                   </span>
                   <span className="terminal-dock-spacer" />
-                  <ActionIcon
-                    aria-label="Close terminal session"
-                    title="Close terminal session"
+                  <Button
+                    size="compact-xs"
+                    color="red"
+                    variant="subtle"
                     disabled={pending}
-                    onClick={() =>
-                      void action("/api/terminals/close", { id: current.id })
-                    }
+                    onClick={() => {
+                      if (running(current.status)) setEndTarget(current.id);
+                      else
+                        void action("/api/terminals/close", { id: current.id });
+                    }}
                   >
-                    <X size={14} />
-                  </ActionIcon>
+                    End session
+                  </Button>
                 </div>
+                {endTarget === current.id && (
+                  <div
+                    className="terminal-end-confirm"
+                    role="alertdialog"
+                    aria-label="End terminal session"
+                  >
+                    <p>
+                      End this session? This stops the shell and its active
+                      processes.
+                    </p>
+                    <Button
+                      size="compact-xs"
+                      disabled={pending}
+                      onClick={() => setEndTarget(null)}
+                    >
+                      Keep session
+                    </Button>
+                    <Button
+                      size="compact-xs"
+                      color="red"
+                      loading={pending}
+                      onClick={() => {
+                        const id = current.id;
+                        setEndTarget(null);
+                        void action("/api/terminals/close", { id });
+                      }}
+                    >
+                      End session and stop processes
+                    </Button>
+                  </div>
+                )}
                 <div className="terminal-detail-path" title={current.cwd}>
                   {current.cwd || owner(current.agent)}
                 </div>

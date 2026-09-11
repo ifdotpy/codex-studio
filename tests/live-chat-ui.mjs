@@ -88,8 +88,8 @@ try {
       .locator("#messages .prose")
       .filter({ hasText: "First paragraph" })
       .count(),
-    0,
-    "hold unfinished paragraph",
+    1,
+    "show unfinished paragraph",
   );
   event("item/agentMessage/delta", {
     itemId: "live-text",
@@ -101,7 +101,7 @@ try {
     .evaluate((el) => (el.dataset.retained = "yes"));
   assert.equal(
     await page.getByText("Second paragraph", { exact: true }).count(),
-    0,
+    1,
   );
   event("item/agentMessage/delta", {
     itemId: "live-text",
@@ -110,8 +110,8 @@ try {
   await page.getByText("Second paragraph.", { exact: true }).waitFor();
   assert.equal(
     await page.locator("#messages .prose pre").count(),
-    0,
-    "hold open fenced code",
+    1,
+    "show open fenced code",
   );
   event("item/agentMessage/delta", {
     itemId: "live-text",
@@ -142,10 +142,8 @@ try {
   event("item/started", { item: command });
   await page.locator('[data-phase="tool"]').waitFor();
   const card = page.locator(".tool-card").filter({ hasText: "npm run test" });
-  const group = page.locator(".tool-group").last();
-  await group.waitFor();
-  assert.equal(await group.getAttribute("open"), null);
-  await group.locator(":scope > summary").click();
+  await card.waitFor();
+  assert.equal(await card.getAttribute("open"), null);
   await card.locator(":scope > summary").click();
   await card.waitFor();
   event("item/commandExecution/outputDelta", {
@@ -210,7 +208,8 @@ try {
     },
   });
   event("turn/completed", { turn: { id: agent.turnId, status: "completed" } });
-  await page.locator('[data-phase="completed"]').waitFor();
+  await poll(async () => (await state()).runtime.agents.find((a) => a.id === agent.id).status === "completed", "turn completes");
+  await page.locator('.agent-phase.active').waitFor({ state: "detached" });
   assert.equal(
     await page.locator('.tool-card[data-tool-status="running"]').count(),
     0,
@@ -227,8 +226,9 @@ try {
     () =>
       page
         .locator(".agent-phase")
-        .textContent()
-        .then((t) => !t.includes("Reconnecting")),
+        .filter({ hasText: "Reconnecting" })
+        .count()
+        .then((count) => count === 0),
     "stream reconnects",
   );
   assert.equal(

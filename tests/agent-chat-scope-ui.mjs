@@ -56,17 +56,17 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(origin);
-  const dialog = page.getByRole("dialog", { name: "Agent chats", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Messages", exact: true });
   const close = async () => {
-    if (await dialog.isVisible())
-      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    if (await dialog.isVisible()) await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
   };
   const select = async (id) => {
     await close();
     await page.locator(`[data-chat="${id}"]`).click();
-    await page.locator("#agent-chats-toggle").click();
+    await page.locator("#messages-toggle").click();
     await dialog.waitFor();
+    await dialog.getByRole("tab", { name: "Team", exact: true }).click();
   };
   const room = (id) => dialog.locator(`[data-room="${id}"]`);
   await select(other.id);
@@ -81,6 +81,7 @@ try {
     0,
     "cross-team room stays outside a single team's conversations",
   );
+  await room(`broadcast:${other.id}`).click();
   await dialog
     .getByText("Only the second conversation", { exact: true })
     .last()
@@ -125,16 +126,11 @@ try {
     ),
   );
   assert.equal(overflow, false, "room layout contains long content");
+  await close();
   await page.setViewportSize({ width: 600, height: 900 });
-  await dialog.waitFor({ state: "hidden" });
-  await page
-    .getByRole("button", { name: "Chat settings", exact: true })
-    .click();
-  await page
-    .getByRole("dialog", { name: "Chat settings" })
-    .getByRole("button", { name: "Agent chats", exact: true })
-    .click();
+  await page.locator("#messages-toggle").click();
   await dialog.waitFor();
+  await dialog.getByRole("tab", { name: "Team", exact: true }).click();
   await room(`broadcast:${lead.id}`).click();
   await dialog.getByRole("button", { name: "Back to team chats" }).click();
   await dialog.getByRole("textbox", { name: "Search team chats" }).waitFor();
@@ -143,6 +139,7 @@ try {
   await page.screenshot({ path: join(root, "narrow-room.png") });
   await close();
   await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
   await page.getByRole("dialog", { name: /Background tasks/ }).waitFor();
   assert.deepEqual(errors, []);

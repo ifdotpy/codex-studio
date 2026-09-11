@@ -61,14 +61,11 @@ try {
     await page.evaluate(async () => {
       await new Promise(requestAnimationFrame);
       await new Promise(requestAnimationFrame);
-      await Promise.all(
-        document
-          .getAnimations()
-          .filter((a) => a.effect?.getTiming().iterations !== Infinity)
-          .map((a) => a.finished.catch(() => {})),
-      );
     });
-    await page.screenshot({ path: join(root, name + ".png") });
+    await page.screenshot({
+      path: join(root, name + ".png"),
+      animations: "disabled",
+    });
   };
   page.on("pageerror", (e) => errors.push(e.message));
   globalThis.testPage = page;
@@ -77,12 +74,18 @@ try {
   assert.equal(await page.locator("[data-chat]").count(), 2);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await page.getByText("I assigned 40 workers", { exact: false }).waitFor();
+  assert.equal(await page.locator("[data-worker]").count(), 0);
+  await page.locator("#team-toggle").click();
   assert.equal(await page.locator("[data-worker]").count(), 40);
   await page
-    .getByRole("button", { name: "Lead settings", exact: true })
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Main agent settings", exact: true })
     .click();
   await page.locator("#model").waitFor();
   assert.equal(await page.locator("#model option").count(), 2);
+  await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   assert.equal(
     await page
@@ -92,11 +95,12 @@ try {
   );
   assert.ok(await page.locator("#messages .prose strong").count());
   const activity = page.locator(".tool-group").first();
-  await activity.locator(":scope > summary").click();
-  assert.ok(
-    await activity.locator("pre").count(),
-    "group keeps the tool output",
-  );
+  if (!(await activity.evaluate((node) => node.open)))
+    await activity.locator(":scope > summary").click();
+  const tool = activity.locator(".tool-card").first();
+  if (!(await tool.evaluate((node) => node.open)))
+    await tool.locator(":scope > summary").click();
+  await activity.getByText("Hidden tool fixture", { exact: false }).waitFor();
   await activity.locator(":scope > summary").click();
   await page.locator("#requests [data-answer]").click();
   const answerDialog = page.getByRole("form", { name: "Reply to the agent" });
@@ -129,10 +133,11 @@ try {
     await page.locator("#usage-footer").textContent(),
     /Context 40%/,
   );
-  assert.match(
-    await page.locator("#usage-footer").textContent(),
-    /2 compactions/,
-  );
+  await page.getByRole("button", { name: "Chat context", exact: true }).click();
+  await page
+    .getByText("2 automatic context summaries.", { exact: true })
+    .waitFor();
+  await page.keyboard.press("Escape");
   await page.screenshot({ path: join(root, "ai-conversation.png") });
   assert.equal(
     await page
@@ -148,18 +153,11 @@ try {
   await page.locator("#message").fill("Worker draft");
   await page.locator("#back-lead").click();
   assert.equal(await page.locator("#message").inputValue(), "Lead draft");
-  await page.locator("#view-toggle").click();
-  assert.equal(await page.locator("[data-node]").count(), 43);
-  assert.equal(await page.locator("#edges path").count(), 40);
-  assert.equal(
-    await page.locator("#conversation-title").textContent(),
-    "All agents",
-  );
-  await page.locator("#fit").click();
-  await page.screenshot({ path: join(root, "canvas.png") });
-  await page.locator("#view-toggle").click();
-  assert.equal(await page.locator("#message").inputValue(), "Lead draft");
-  await page.locator("#agent-chats-toggle").click();
+  assert.equal(await page.locator("#view-toggle").count(), 0);
+  assert.equal(await page.locator("[data-node]").count(), 0);
+  assert.equal(await page.locator("#open-complaints").count(), 0);
+  await page.locator("#messages-toggle").click();
+  await page.getByRole("tab", { name: "Team", exact: true }).click();
   assert.equal(
     await page.locator("[data-room]").count(),
     60,
@@ -200,44 +198,7 @@ try {
     el.scrollTop = el.scrollHeight;
   });
   await page.screenshot({ path: join(root, "agent-chat.png") });
-  await page
-    .getByRole("dialog", { name: "Agent chats", exact: true })
-    .getByRole("button", { name: "Close", exact: true })
-    .click();
-  await page.locator("#open-complaints").click();
-  assert.equal(
-    await page
-      .getByRole("tab", { name: /^For you/ })
-      .getAttribute("aria-selected"),
-    "true",
-  );
-  await page.locator("#new-complaint").click();
-  await page
-    .locator("#complaint-text")
-    .fill("Fixture complaint: the test log is missing.");
-  await page.locator("#submit-complaint").click();
-  await page
-    .locator('[role="tab"][aria-selected="true"]')
-    .filter({ hasText: "For orchestrator" })
-    .waitFor();
-  await page
-    .getByText("Fixture complaint: the test log is missing.", { exact: true })
-    .waitFor();
-  await page
-    .locator("[data-complaint]")
-    .filter({ hasText: "Fixture complaint" })
-    .click();
-  await page
-    .getByText("The orchestrator has not read this complaint.", { exact: true })
-    .waitFor();
-  await visibleInViewport(
-    page.getByRole("dialog", { name: "Complaint", exact: true }),
-  );
-  await shot("complaint");
-  await page
-    .getByRole("dialog", { name: "Complaint", exact: true })
-    .getByRole("button", { name: "Close", exact: true })
-    .click();
+  await page.keyboard.press("Escape");
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   // Creation reply lost after the database commit.
   let lose = true;
@@ -248,11 +209,13 @@ try {
       await route.abort("failed");
     } else await route.fulfill({ response });
   });
+  await page.locator(".project-tree-heading").first().hover();
   await page
     .getByRole("button", { name: /^New chat in / })
     .first()
     .click();
   await page.locator("#toast").waitFor();
+  await page.locator(".project-tree-heading").first().hover();
   await page
     .getByRole("button", { name: /^New chat in / })
     .first()
@@ -262,26 +225,42 @@ try {
       (await page.locator("#conversation-title").textContent()) === "New chat",
     "creation retry",
   );
+  const afterRetry = await (await fetch(origin + "/api/state")).json();
+  const retryLeads = afterRetry.runtime.agents.filter((a) => a.quickCreate);
+  assert.equal(retryLeads.length, 1, "creation retry retains one chat");
+  const newLead = retryLeads[0];
   await page.locator("#message").fill("Keep this draft");
+  await page.locator(".project-tree-heading").first().hover();
   await page
     .getByRole("button", { name: /^New chat in / })
     .first()
     .click();
-  assert.equal(await page.locator("#message").inputValue(), "Keep this draft");
+  await poll(
+    async () => (await page.locator("#message").inputValue()) === "",
+    "new chat has a separate draft",
+  );
   const afterCreate = await (await fetch(origin + "/api/state")).json();
   assert.equal(
     afterCreate.runtime.agents.filter((a) => a.quickCreate).length,
-    1,
+    2,
+    "a new action creates a separate chat",
   );
-  const newLead = afterCreate.runtime.agents.find((a) => a.quickCreate);
+  await page.locator(`[data-chat="${newLead.id}"]`).click();
+  assert.equal(await page.locator("#message").inputValue(), "Keep this draft");
   await page
-    .getByRole("button", { name: "Lead settings", exact: true })
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Main agent settings", exact: true })
     .click();
   await page.locator("#model").selectOption("gpt-5.6-sol");
   await page.keyboard.press("Escape");
-  let loseMessage = true;
+  await page.keyboard.press("Escape");
+  let loseMessage = true,
+    messageAttempts = 0;
   await page.route("**/api/messages", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
+    messageAttempts++;
     const response = await route.fetch();
     if (loseMessage) {
       loseMessage = false;
@@ -290,18 +269,19 @@ try {
   });
   await page.locator("#message").fill("First task");
   await page.locator("#send").click();
+  await poll(() => !loseMessage, "message response was lost after commit");
   await poll(
-    async () => (await page.locator("#toast").count()) > 0,
-    "lost send visible",
+    async () => (await page.locator("#message").inputValue()) === "",
+    "message retained in the outbox",
   );
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await page.locator(`[data-chat="${newLead.id}"]`).click();
-  assert.equal(await page.locator("#message").inputValue(), "First task");
-  await page.locator("#send").click();
-  await poll(
-    async () => (await page.locator("#message").inputValue()) === "",
-    "message retry",
-  );
+  assert.equal(await page.locator("#message").inputValue(), "");
+  await page
+    .locator("#messages")
+    .getByText("First task", { exact: true })
+    .waitFor();
+  await poll(() => messageAttempts >= 2, "outbox retried the lost response");
   assert.equal(
     (await (await fetch(origin + "/api/messages?room=" + newLead.id)).json())
       .length,
@@ -330,6 +310,7 @@ try {
       ),
     "agent monitor completes",
   );
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
   await page.getByText("History", { exact: true }).click();
   await page
@@ -357,18 +338,14 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
   await page.screenshot({ path: join(root, "mobile.png") });
-  await page.locator("#tasks-toggle").click();
-  await page
-    .locator("[data-task]")
-    .filter({ hasText: "fixture-command" })
-    .click();
+  await page.locator("#messages-toggle").click();
   await visibleInViewport(
-    page.getByRole("dialog", { name: /Background tasks/ }),
+    page.getByRole("dialog", { name: "Messages", exact: true }),
   );
-  await shot("mobile-tasks");
+  await shot("mobile-messages");
   await page.keyboard.press("Escape");
   await page
-    .getByRole("dialog", { name: /Background tasks/ })
+    .getByRole("dialog", { name: "Messages", exact: true })
     .waitFor({ state: "hidden" });
   await page.locator("#sidebar-toggle").click();
   await page
@@ -386,8 +363,12 @@ try {
   await visibleInViewport(page.locator("#message"));
   await shot("narrow-draft");
   await page.locator("#message").fill("Lead draft");
-  await page.locator(".limits-toggle").click();
-  await visibleInViewport(page.getByRole("dialog"));
+  await page
+    .getByRole("button", { name: "Account limits", exact: true })
+    .click();
+  await visibleInViewport(
+    page.getByRole("region", { name: "Account limits details", exact: true }),
+  );
   await shot("narrow-limits");
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 1440, height: 960 });
@@ -395,6 +376,7 @@ try {
   const leadRow = page
     .locator(".sidebar-row")
     .filter({ has: page.locator(`[data-chat="${newLead.id}"]`) });
+  await leadRow.hover();
   await leadRow.locator(".row-actions").click();
   await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
   await leadRow
@@ -407,6 +389,7 @@ try {
       "Renamed lead",
     "lead rename",
   );
+  await leadRow.hover();
   await leadRow.locator(".row-actions").click();
   await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
   await page.locator("[data-delete-chat]").click();
@@ -430,7 +413,7 @@ try {
   await shot("empty-chat");
   assert.deepEqual(errors, [], "no React errors");
   console.log(
-    "React product UI: PASS (production build, sidebar rename/delete, agent chat, history, complaint book, model, agent monitor, limits, desktop/mobile)",
+    "React product UI: PASS (production build, sidebar rename/delete, agent chat, history, unified messages, model, agent monitor, limits, desktop/mobile)",
   );
   console.log("Browser evidence:", root);
 } catch (error) {

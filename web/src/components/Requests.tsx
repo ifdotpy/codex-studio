@@ -1,15 +1,10 @@
-import {
-  Button,
-  Modal,
-  NativeSelect,
-  TextInput,
-  UnstyledButton,
-} from "@mantine/core";
+import { Button, TextInput, Textarea, UnstyledButton } from "@mantine/core";
 import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import type { Json, Agent } from "../types";
 import "./request-questions.css";
+import { nativeThreadError } from "../nativeErrors";
 
 type Props = {
   requests: Json[];
@@ -121,7 +116,7 @@ function AnswerForm({
       aria-label="Reply to the agent"
       onSubmit={submit}
       onKeyDown={(e) => {
-        if (asynchronous && e.key === "Escape") {
+        if (e.key === "Escape") {
           e.stopPropagation();
           if (!sending) close();
         }
@@ -134,54 +129,48 @@ function AnswerForm({
               {questions.length > 1 && <span>{index + 1}. </span>}
               {q.question}
             </p>
-            {q.options?.length > 0 &&
-              (asynchronous ? (
-                <div
-                  className="request-answer-options"
-                  role="group"
-                  aria-label={`${q.question} options`}
-                >
-                  {q.options.map((option: Json) => (
-                    <UnstyledButton
-                      key={option.label}
-                      type="button"
-                      className="request-answer-option"
-                      aria-pressed={values[q.id] === option.label}
-                      onClick={() => setValue(q.id, option.label)}
-                    >
-                      <span>{option.label}</span>
-                      {option.description && (
-                        <small>{option.description}</small>
-                      )}
-                    </UnstyledButton>
-                  ))}
-                </div>
-              ) : (
-                <NativeSelect
-                  aria-label={`${q.question} options`}
-                  value={values[q.id] || ""}
-                  onChange={(e) => setValue(q.id, e.target.value)}
-                >
-                  <option value="">Choose an answer</option>
-                  {q.options.map((option: Json) => (
-                    <option key={option.label} value={option.label}>
-                      {option.label}
-                      {option.description ? " · " + option.description : ""}
-                    </option>
-                  ))}
-                </NativeSelect>
-              ))}
-            <TextInput
-              aria-label={q.question}
-              type={q.isSecret ? "password" : "text"}
-              value={values[q.id] || ""}
-              onChange={(e) => setValue(q.id, e.target.value)}
-              placeholder={
-                asynchronous && q.options?.length
-                  ? "Or write your own answer"
-                  : "Your answer"
-              }
-            />
+            {q.options?.length > 0 && (
+              <div
+                className="request-answer-options"
+                role="group"
+                aria-label={`${q.question} options`}
+              >
+                {q.options.map((option: Json) => (
+                  <UnstyledButton
+                    key={option.label}
+                    type="button"
+                    className="request-answer-option"
+                    aria-pressed={values[q.id] === option.label}
+                    onClick={() => setValue(q.id, option.label)}
+                  >
+                    <span>{option.label}</span>
+                    {option.description && <small>{option.description}</small>}
+                  </UnstyledButton>
+                ))}
+              </div>
+            )}
+            {q.isSecret ? (
+              <TextInput
+                aria-label={q.question}
+                autoFocus={index === 0}
+                type="password"
+                value={values[q.id] || ""}
+                onChange={(e) => setValue(q.id, e.target.value)}
+              />
+            ) : (
+              <Textarea
+                aria-label={q.question}
+                autoFocus={index === 0}
+                value={values[q.id] || ""}
+                autosize
+                minRows={2}
+                maxRows={8}
+                onChange={(e) => setValue(q.id, e.target.value)}
+                placeholder={
+                  q.options?.length ? "Or write your own answer" : "Your answer"
+                }
+              />
+            )}
           </div>
         ))}
       </fieldset>
@@ -191,11 +180,10 @@ function AnswerForm({
           variant="subtle"
           disabled={sending}
           onClick={() => {
-            answerDrafts.delete(draftKey);
             close();
           }}
         >
-          Cancel
+          Close reply
         </Button>
         <Button
           type="submit"
@@ -219,6 +207,14 @@ function RequestCard({
   scope,
 }: Omit<Props, "requests" | "allRequests"> & { request: Json }) {
   const draftKey = answerKey(scope, r);
+  const owner = agents.find((a) => a.id === r.agent);
+  const requestThread = ["execCommandApproval", "applyPatchApproval"].includes(
+    r.method,
+  )
+    ? r.params?.conversationId
+    : r.params?.threadId;
+  const blocked =
+    !!nativeThreadError(owner) && requestThread === owner?.threadId;
   const [open, setOpen] = useState(false),
     [sending, setSending] = useState(false);
   const pending = useRef(false),
@@ -235,6 +231,10 @@ function RequestCard({
     trigger.current?.focus();
   };
   const post = async (body: Json) => {
+    if (blocked) {
+      notify("This chat stopped as a precaution. Open another chat.");
+      return;
+    }
     if (pending.current) return;
     pending.current = true;
     setSending(true);
@@ -337,7 +337,11 @@ function RequestCard({
           )}
         </div>
         <div className="request-actions">
-          {question ? (
+          {blocked ? (
+            <p>
+              This chat stopped as a precaution. This request cannot resume it.
+            </p>
+          ) : question ? (
             <>
               <Button
                 variant="subtle"
@@ -350,11 +354,11 @@ function RequestCard({
                 ref={trigger}
                 data-answer={r.id}
                 disabled={sending}
-                aria-expanded={asynchronous ? open : undefined}
-                aria-controls={asynchronous ? `answer-${r.id}` : undefined}
+                aria-expanded={open}
+                aria-controls={`answer-${r.id}`}
                 onClick={() => setOpen(!open)}
               >
-                {open && asynchronous ? "Hide" : "Answer"}
+                {open ? "Hide" : "Answer"}
               </Button>
             </>
           ) : approval ? (
@@ -377,39 +381,18 @@ function RequestCard({
           )}
         </div>
       </div>
-      {asynchronous
-        ? open && (
-            <div id={`answer-${r.id}`} className="request-inline-answer">
-              <AnswerForm
-                request={r}
-                draftKey={draftKey}
-                sending={sending}
-                post={post}
-                close={close}
-                notify={notify}
-              />
-            </div>
-          )
-        : question && (
-            <Modal
-              opened={open}
-              onClose={() => {
-                if (!sending) close();
-              }}
-              title="Reply to the agent"
-            >
-              {open && (
-                <AnswerForm
-                  request={r}
-                  draftKey={draftKey}
-                  sending={sending}
-                  post={post}
-                  close={close}
-                  notify={notify}
-                />
-              )}
-            </Modal>
-          )}
+      {!blocked && question && open && (
+        <div id={`answer-${r.id}`} className="request-inline-answer">
+          <AnswerForm
+            request={r}
+            draftKey={draftKey}
+            sending={sending}
+            post={post}
+            close={close}
+            notify={notify}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -420,7 +403,8 @@ export default function Requests({ requests, allRequests, ...props }: Props) {
       allRequests.map((request) => answerKey(props.scope, request)),
     );
     for (const key of answerDrafts.keys())
-      if (!active.has(key)) answerDrafts.delete(key);
+      if (JSON.parse(key)[0] === props.scope && !active.has(key))
+        answerDrafts.delete(key);
   }, [allRequests, props.scope]);
   const deferred = requests.filter((r) => r.deferred);
   return (

@@ -59,23 +59,23 @@ class WorkspaceReviewContract(unittest.TestCase):
             self.runtime.branch_conversation(lead['id'], request)
         self.assertEqual(sum(method == 'thread/fork' for method, _ in self.runtime.server.calls), 2)
 
-    def test_project_revocation_during_fork_cannot_publish_branch(self):
+    def test_legacy_rule_change_during_fork_preserves_one_branch(self):
         lead, request = self.branch_point()
         original = self.runtime.server.call
-        policy = self.runtime.accounts.get('default')['projectRules']
-        def revoke_during_fork(method, params, timeout=60):
+        def change_legacy_rules(method, params, timeout=60):
             result = original(method, params, timeout)
             if method == 'thread/fork':
-                self.runtime.accounts.set_project_rules('default', [], policy['revision'])
+                self.runtime.accounts.data['accounts']['default']['projectRules'] = {
+                    'allowedProjects': [], 'revision': 1,
+                }
             return result
-        with patch.object(self.runtime.server, 'call', revoke_during_fork):
-            with self.assertRaisesRegex(ValueError, 'cannot use project'):
-                self.runtime.branch_conversation(lead['id'], request)
-        self.assertEqual(len(self.runtime.snapshot()['agents']), 1)
-        current = self.runtime.accounts.get('default')['projectRules']
-        self.runtime.accounts.set_project_rules('default', policy['allowedProjects'], current['revision'])
-        result = self.runtime.branch_conversation(lead['id'], request)
+        with patch.object(self.runtime.server, 'call', change_legacy_rules):
+            result = self.runtime.branch_conversation(lead['id'], request)
+        repeated = self.runtime.branch_conversation(lead['id'], request)
+        self.assertEqual(result['id'], repeated['id'])
         self.assertEqual(result['forkedFrom'], lead['id'])
+        self.assertEqual(result['accountKey'], lead['accountKey'])
+        self.assertEqual(len(self.runtime.snapshot()['agents']), 2)
         self.assertEqual(sum(method == 'thread/fork' for method, _ in self.runtime.server.calls), 1)
 
     def test_concurrent_restore_uses_one_native_result(self):

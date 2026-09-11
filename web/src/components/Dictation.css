@@ -17,11 +17,43 @@
   color: #e29898;
 }
 .dictation-popover {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   max-width: calc(100vw - 24px);
   background: var(--surface) !important;
   color: var(--text) !important;
   border-color: var(--line) !important;
   padding: 14px !important;
+}
+.dictation-review {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+.dictation-review textarea {
+  width: 100%;
+  min-height: 100px;
+  resize: vertical;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+}
+.dictation-undo,
+.dictation-progress {
+  margin-top: 10px;
+  font-size: 12px;
+}
+.dictation-undo button,
+.dictation-progress button {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface);
 }
 .dictation-popover header {
   display: flex;

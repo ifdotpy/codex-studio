@@ -138,7 +138,7 @@ class CriticalSteerContract(unittest.TestCase):
         self.assertEqual(self.transcript_count(agent, message_id), 1)
         self.assertFalse(self.metadata(message_id).get("notSubmitted", False))
 
-    def test_unsent_retry_rechecks_current_turn_and_project(self):
+    def test_unsent_retry_rechecks_turn_identity_without_project_restrictions(self):
         agent = self.lead()
         message_id = "steer-permission"
         with patch.object(
@@ -172,15 +172,16 @@ class CriticalSteerContract(unittest.TestCase):
             current = self.runtime.agent(agent, db)
             current["turnId"] = "turn-1"
             self.runtime.put(db, "agents", current)
-        rules = self.runtime.accounts.get("default")["projectRules"]
-        self.runtime.accounts.set_project_rules("default", [], rules["revision"])
-        with self.assertRaisesRegex(ValueError, "cannot use project"):
-            self.runtime.send(agent, "Correction", message_id, delivery="steer")
-        self.assertEqual(self.runtime.delivery_receipt(message_id)["status"], "failed")
+        self.runtime.accounts.data["accounts"]["default"]["projectRules"] = {
+            "allowedProjects": [], "revision": 1,
+        }
+        result = self.runtime.send(agent, "Correction", message_id, delivery="steer")
+        self.assertEqual(result["status"], "delivered")
         self.assertEqual(
             len([method for method, _ in self.server.calls if method == "turn/steer"]),
-            0,
+            1,
         )
+        self.assertEqual(self.transcript_count(agent, message_id), 1)
 
     def test_unknown_write_stays_nonretryable(self):
         agent = self.lead()

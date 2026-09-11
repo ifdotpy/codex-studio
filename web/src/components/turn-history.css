@@ -58,12 +58,53 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  color: #e5a0a0;
+  color: light-dark(var(--mantine-color-red-8), var(--mantine-color-red-3));
   font-size: 12px;
   margin: 8px 0 12px;
 }
+.turn-problem > svg {
+  flex-shrink: 0;
+}
+.turn-problem > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.turn-error-pending {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  min-height: 110px;
+  padding: 12px 24px;
+}
+.turn-error-pending > span {
+  height: 8px;
+  width: min(160px, 65%);
+  border-radius: 4px;
+  background: light-dark(
+    var(--mantine-color-gray-2),
+    var(--mantine-color-dark-5)
+  );
+}
+.turn-error-pending > span:nth-child(2) {
+  width: min(260px, 90%);
+}
+.turn-error-pending > span:last-child {
+  width: 42px;
+}
+.turn-error-retry {
+  color: inherit;
+  font: inherit;
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .turn-history[data-outcome="interrupted"] .turn-problem {
-  color: #d6bf8b;
+  color: light-dark(
+    var(--mantine-color-yellow-9),
+    var(--mantine-color-yellow-3)
+  );
 }
 @media (prefers-reduced-motion: reduce) {
   .turn-expand-icon {

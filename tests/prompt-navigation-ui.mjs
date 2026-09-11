@@ -71,6 +71,18 @@ try {
   await page.route("**/api/transcript**", async (route) => {
     if (new URL(route.request().url()).searchParams.get("id") !== lead.id)
       return route.continue();
+    if (new URL(route.request().url()).pathname === "/api/transcript/search") {
+      const query = new URL(route.request().url()).searchParams
+        .get("q")
+        .toLowerCase();
+      return route.fulfill({
+        json: {
+          results: items.filter((item) =>
+            item.text.toLowerCase().includes(query),
+          ),
+        },
+      });
+    }
     if (route.request().url().includes("/stream?"))
       return route.fulfill({
         contentType: "text/event-stream",
@@ -219,8 +231,12 @@ try {
     "true",
   );
   await history
-    .getByRole("textbox", { name: "Find a prompt" })
+    .getByRole("textbox", { name: "Search this chat" })
     .fill("component 6");
+  await history
+    .locator(".prompt-history-entry")
+    .filter({ hasText: "Question 6" })
+    .waitFor();
   assert.equal(await history.locator(".prompt-history-entry").count(), 1);
   await history.locator(".prompt-history-entry").click();
   await page.waitForFunction(

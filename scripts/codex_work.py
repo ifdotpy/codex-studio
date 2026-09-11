@@ -24,7 +24,12 @@ def work_tools(tool, text):
     return management_tools(tool, text) + [
         tool(
             "orchestration_task",
-            "Manage your team's work board. list returns brief items with nextCursor; get reads one task; history pages older evidence. Mutations return brief receipts. Claim ready work atomically. Submit evidence for review; only the lead can accept it. Dependencies unblock only after acceptance.",
+            "Manage team assignments and review decisions. list returns brief items with nextCursor; get reads one task; history pages earlier evidence. "
+            "claim reserves ready work atomically. submit saves evidence, sets review, and notifies the lead. "
+            "Only the lead reviews results. accept records approval and releases dependent work. "
+            "reject takes the reason and required corrections in result, sets ready, and delivers those instructions to the owner as work_decision. "
+            "The owner continues from that event when automatic continuation is enabled. Explicit stops and native failure holds remain in effect. "
+            "Mutations return brief receipts; the server owns state changes and event delivery.",
             {
                 "action": {
                     "type": "string",
@@ -59,7 +64,7 @@ def work_tools(tool, text):
         ),
         tool(
             "orchestration_result",
-            "Submit or inspect evidence for a work item. A final answer does not accept work. Include source revision, checks, and file paths; the lead accepts with orchestration_task.",
+            "Submit evidence for lead review, or read earlier evidence. submit saves result, checks, revision, and files; sets the task to review; and notifies the lead. The lead records acceptance or required corrections with orchestration_task.",
             {
                 "action": {"type": "string", "enum": ["submit", "read"]},
                 "task_id": text,
@@ -454,6 +459,21 @@ class WorkMixin:
     def chat_organization(self, key, data):
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
+            if 'project_folder' in data:
+                from codex_project_folders import folder_for
+                if not a.get('isLead') or data.get('project_path') != a.get('cwd'):
+                    raise ValueError('Select a chat in this project')
+                desired = folder_for(self, db, a['cwd'], data['project_folder'])
+                revision = data.get('expected_revision')
+                current = a.get('projectFolderRevision', 0)
+                if type(revision) is not int or revision < 0:
+                    raise ValueError('Supply the current chat folder revision')
+                replay = a.get('projectFolder') == desired and revision in (current, current - 1)
+                if not replay and (revision != current or data.get('expected_folder') != a.get('projectFolder')):
+                    raise ValueError('The chat folder changed. Reload it before moving')
+                if a.get('projectFolder') != desired:
+                    a['projectFolderRevision'] = current + 1
+                a['projectFolder'] = desired
             for field in ("pinned", "archived"):
                 if field in data:
                     if not isinstance(data[field], bool):

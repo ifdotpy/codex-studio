@@ -1,3 +1,4 @@
+import { messageAttentionCount } from "../chatScope";
 import { complaintNeedsUserResponse } from "../types";
 import {
   Badge,
@@ -35,18 +36,20 @@ import { api, errorText, save, saved } from "../api";
 import type { Agent, Json, Snapshot } from "../types";
 import Requests from "./Requests";
 import UserTasks from "./UserTasks";
-import ComplaintBook from "./ComplaintBook";
+import UserMessages from "./UserMessages";
+import TeamChats from "./TeamChats";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
 import "./Workspace.css";
 
 type Props = {
   initialSection?: string;
+  initialFocus?: { id: string; requestId: string };
   opened: boolean;
   onClose: () => void;
   agent?: Agent;
   data: Snapshot;
   allRequests: Json[];
-  onSelect: (id: string) => void;
+  onSelect: (id: string, messageId?: string) => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 };
@@ -62,10 +65,10 @@ type Context = Props & {
   toggleNotifications: () => Promise<void>;
 };
 const sections = [
-  ["work", "Work", ListTodo],
+  ["work", "Agent tasks", ListTodo],
   ["user-tasks", "Your tasks", CheckCheck],
   ["changes", "Changes", FileDiff],
-  ["inbox", "Inbox", Inbox],
+  ["messages", "Messages", Inbox],
   ["search", "Search", Search],
   ["plan", "Plan", BookOpen],
   ["checkpoints", "Checkpoints", GitBranch],
@@ -80,14 +83,14 @@ const descriptions: Record<string, string> = {
     "Tasks agents need you to complete. Each result goes back to its agent for review.",
   changes:
     "Latest changes reported by this agent. File previews show the current files.",
-  inbox: "Questions, approvals, and problems in this chat.",
+  messages: "Your messages and this team’s conversations.",
   search: "Find messages, work, plans, and agent conversations.",
-  plan: "A shared plan for this agent. Saved edits remain separate from its reported plan.",
+  plan: "The agent reports its plan here. Request changes in its chat.",
   checkpoints:
     "Save a point in the work. Preview file changes before a restore.",
   tools:
     "Tools available through orchestration, connected services, and observed native calls.",
-  profiles: "Reusable instructions and model choices for workers.",
+  profiles: "Reusable instructions and model choices for subagents.",
   rules:
     "Wait for a time, file change, or event. Script checks can prevent unnecessary agent turns.",
   resources: "Shared resource leases from the existing resource board.",
@@ -105,30 +108,42 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 function useResource(path: string | null, revision: number) {
   const [state, setState] = useState<{
+    path: string | null;
     data: Json | null;
     error: string;
     loading: boolean;
-  }>({ data: null, error: "", loading: false });
+  }>({ path, data: null, error: "", loading: !!path });
   useEffect(() => {
     if (!path) {
-      setState({ data: null, error: "", loading: false });
+      setState({ path, data: null, error: "", loading: false });
       return;
     }
     let active = true;
-    setState((old) => ({ ...old, error: "", loading: true }));
+    setState((old) =>
+      old.path === path
+        ? { ...old, loading: old.data === null }
+        : { path, data: null, error: "", loading: true },
+    );
     api(path)
       .then((data) => {
-        if (active) setState({ data, error: "", loading: false });
+        if (active) setState({ path, data, error: "", loading: false });
       })
       .catch((e) => {
         if (active)
-          setState({ data: null, error: errorText(e), loading: false });
+          setState((old) => ({
+            path,
+            data: old.path === path ? old.data : null,
+            error: errorText(e),
+            loading: false,
+          }));
       });
     return () => {
       active = false;
     };
   }, [path, revision]);
-  return state;
+  return state.path === path
+    ? state
+    : { path, data: null, error: "", loading: !!path };
 }
 function ResourceState({
   state,
@@ -169,30 +184,71 @@ function ownerName(data: Snapshot, id?: string) {
 }
 
 export function Workspace(props: Props) {
-  const [section, setSection] = useState("work"),
+  const [section, setSection] = useState(props.initialSection || "work"),
     [agentId, setAgentId] = useState(props.agent?.id || ""),
     [revision, setRevision] = useState(0),
     [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [pending, setPending] = useState(0),
     [focusId, setFocusId] = useState("");
   const [notifications, setNotifications] = useState(() =>
-    window.codexDesktop ? false : saved("workspace-notifications", false),
+    saved("workspace-notifications", false),
   );
+  useEffect(() => {
+    if (props.opened && props.initialFocus) setFocusId(props.initialFocus.id);
+  }, [props.opened, props.initialFocus?.requestId]);
+  const navRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (props.opened)
+      navRef.current
+        ?.querySelector('[aria-current="page"]')
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [section, props.opened]);
+  useEffect(() => {
+    let active = true;
+    if (window.codexDesktop?.getNotifications)
+      void window.codexDesktop
+        .getNotifications()
+        .then((enabled) => {
+          if (active) setNotifications(enabled);
+        })
+        .catch((error) => props.notify(errorText(error)));
+    return () => {
+      active = false;
+    };
+  }, []);
   const dataRef = useRef(props.data);
   dataRef.current = props.data;
   const refreshRef = useRef(props.refresh),
     notifyRef = useRef(props.notify);
   refreshRef.current = props.refresh;
   notifyRef.current = props.notify;
-  useEffect(() => {
-    if (props.opened) setAgentId(props.agent?.id || "");
-  }, [props.opened, props.agent?.id]);
-  useEffect(() => {
-    if (props.opened && props.initialSection) {
-      setSection(props.initialSection);
-      setFocusId("");
+  const [previousEntry, setPreviousEntry] = useState({
+    opened: props.opened,
+    agent: props.agent?.id,
+    section: props.initialSection,
+  });
+  if (
+    previousEntry.opened !== props.opened ||
+    previousEntry.agent !== props.agent?.id ||
+    previousEntry.section !== props.initialSection
+  ) {
+    setPreviousEntry({
+      opened: props.opened,
+      agent: props.agent?.id,
+      section: props.initialSection,
+    });
+    if (props.opened) {
+      setAgentId(props.agent?.id || "");
+      if (
+        props.initialSection &&
+        (!previousEntry.opened ||
+          previousEntry.section !== props.initialSection)
+      ) {
+        setSection(props.initialSection);
+        setFocusId("");
+      }
     }
-  }, [props.opened, props.initialSection]);
+  }
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   useEffect(() => {
     if (!props.opened) return;
@@ -286,6 +342,10 @@ export function Workspace(props: Props) {
             await window.codexDesktop.notify({
               title: "Codex Studio needs attention",
               body,
+              target: {
+                agentId: props.agent.rootId || props.agent.id,
+                section: "messages",
+              },
             });
             return;
           }
@@ -296,8 +356,14 @@ export function Workspace(props: Props) {
           notification.onclick = () => {
             notification.close();
             window.focus();
-            setSection("inbox");
-            document.getElementById("workspace-toggle")?.click();
+            window.dispatchEvent(
+              new CustomEvent("studio-navigate", {
+                detail: {
+                  agentId: props.agent!.rootId || props.agent!.id,
+                  section: "messages",
+                },
+              }),
+            );
           };
         }
       } catch {
@@ -342,47 +408,57 @@ export function Workspace(props: Props) {
   return (
     <Drawer
       opened={props.opened}
+      closeButtonProps={{ "aria-label": "Close" }}
       onClose={props.onClose}
       position="right"
       size="min(1180px, 100vw)"
       title={
         <span className="workspace-drawer-title">
-          <Layers3 size={19} /> Workspace
+          <Layers3 size={19} />{" "}
+          {section === "messages" ? "Messages" : "Workspace"}
         </span>
       }
       className="workspace-drawer"
     >
-      <div className="workspace-shell">
-        <nav className="workspace-nav" aria-label="Workspace sections">
-          {sections.map(([id, label, Icon]) => (
-            <UnstyledButton
-              key={id}
-              className={`workspace-nav-item ${section === id ? "selected" : ""}`}
-              onClick={() => setSection(id)}
-              aria-current={section === id ? "page" : undefined}
-            >
-              <Icon size={17} />
-              <span>{label}</span>
-              {id === "inbox" &&
-                !!props.data.runtime.requests.filter(
-                  (request) => !request.deferred,
-                ).length && (
+      <div
+        className={`workspace-shell ${section === "messages" ? "workspace-focused-messages" : ""}`}
+      >
+        {section !== "messages" && (
+          <nav
+            ref={navRef}
+            className="workspace-nav"
+            aria-label="Workspace sections"
+          >
+            {sections.map(([id, label, Icon]) => (
+              <UnstyledButton
+                key={id}
+                className={`workspace-nav-item ${section === id ? "selected" : ""}`}
+                onClick={() => setSection(id)}
+                aria-current={section === id ? "page" : undefined}
+              >
+                <Icon size={17} />
+                <span>{label}</span>
+                {id === "messages" && messageAttentionCount(props.data) > 0 && (
                   <span className="workspace-count">
-                    {
-                      props.data.runtime.requests.filter(
-                        (request) => !request.deferred,
-                      ).length
-                    }
+                    {messageAttentionCount(props.data)}
                   </span>
                 )}
-            </UnstyledButton>
-          ))}
-        </nav>
-        <main className="workspace-content">
+              </UnstyledButton>
+            ))}
+          </nav>
+        )}
+        <main
+          className={`workspace-content ${section === "messages" ? "workspace-messages" : ""}`}
+        >
           <header className="workspace-heading">
             <div>
-              <h2>{title}</h2>
-              <p>{descriptions[section]}</p>
+              {section !== "messages" && <h2>{title}</h2>}
+              <p>
+                {section === "messages"
+                  ? props.data.threads.find((agent) => agent.isLead)?.name ||
+                    descriptions[section]
+                  : descriptions[section]}
+              </p>
             </div>
             <Button
               variant="subtle"
@@ -393,7 +469,7 @@ export function Workspace(props: Props) {
               <RefreshCw size={16} />
             </Button>
           </header>
-          {section !== "user-tasks" && (
+          {!["user-tasks", "messages"].includes(section) && (
             <div className="workspace-scope">
               <NativeSelect
                 label="Agent"
@@ -405,7 +481,7 @@ export function Workspace(props: Props) {
                   .filter((a) => a.source === "managed")
                   .map((a) => (
                     <option key={a.id} value={a.id}>
-                      {a.isLead ? "Lead · " : ""}
+                      {a.isLead ? "Main agent · " : ""}
                       {a.name}
                     </option>
                   ))}
@@ -428,7 +504,12 @@ export function Workspace(props: Props) {
           {needAgent && !selected ? (
             <Empty>Select an agent to view its {title?.toLowerCase()}.</Empty>
           ) : (
-            <div key={`${section}:${selected?.id || "all"}`}>
+            <div
+              className={
+                section === "messages" ? "workspace-message-body" : undefined
+              }
+              key={`${section}:${section === "messages" ? "team" : selected?.id || "all"}`}
+            >
               {section === "work" && <Work {...context} />}
               {section === "user-tasks" && (
                 <UserTasks
@@ -444,7 +525,26 @@ export function Workspace(props: Props) {
               )}
 
               {section === "changes" && <Changes {...context} />}
-              {section === "inbox" && <Attention {...context} />}
+              {section === "messages" && (
+                <TeamChats
+                  data={props.data}
+                  focusRequestId={props.initialFocus?.requestId}
+                  leadId={
+                    props.agent?.rootId ||
+                    (props.agent?.isLead ? props.agent.id : undefined)
+                  }
+                  forYou={<Attention {...context} />}
+                  forLead={
+                    <UserMessages
+                      data={props.data}
+                      target="lead"
+                      hideEmpty
+                      refresh={props.refresh}
+                      notify={props.notify}
+                    />
+                  }
+                />
+              )}
               {section === "search" && <Find {...context} />}
               {section === "plan" && <Plan {...context} />}
               {section === "checkpoints" && <Checkpoints {...context} />}
@@ -556,7 +656,7 @@ function Work(c: Context) {
                 </small>
               </UnstyledButton>
             ))}
-          {!tasks.length && !state.loading && !state.error && (
+          {!tasks.length && state.data !== null && (
             <Empty>No work yet. Create the first task for this team.</Empty>
           )}
         </div>
@@ -1068,8 +1168,7 @@ function Changes(c: Context) {
               ))}
             </div>
           ) : (
-            !state.loading &&
-            !state.error && (
+            state.data !== null && (
               <Empty>
                 {files.length
                   ? "Select a file to inspect its contents. No tracked text diff is available."
@@ -1206,11 +1305,18 @@ function Attention(c: Context) {
             ))}
         </section>
       ))}
-      <ComplaintBook data={c.data} refresh={c.refresh} notify={c.notify} />
-      {!items.length &&
+      <UserMessages
+        data={c.data}
+        refresh={c.refresh}
+        notify={c.notify}
+        hideEmpty
+        focusId={c.focusId}
+        focusRequestId={c.initialFocus?.requestId}
+      />
+      {!groups.length &&
         !c.data.runtime.requests.length &&
         !c.data.runtime.complaints.some(complaintNeedsUserResponse) &&
-        !state.loading && <Empty>No questions or unresolved problems.</Empty>}
+        state.data && <Empty>No messages need your attention.</Empty>}
     </>
   );
 }
@@ -1337,7 +1443,7 @@ function Find(c: Context) {
                 else if (source.kind === "plan")
                   c.navigate("plan", source.agent);
                 else {
-                  c.onSelect(source.room || source.agent);
+                  c.onSelect(source.room || source.agent, source.id);
                   c.onClose();
                 }
                 setSource(null);
@@ -1358,92 +1464,42 @@ function Find(c: Context) {
 }
 
 function Plan(c: Context) {
-  const state = useResource(endpoint("plan", c.selected), c.revision),
-    [draft, setDraft] = useState(""),
-    [version, setVersion] = useState<number | null>(null),
-    [dirty, setDirty] = useState(false),
-    [saving, setSaving] = useState(false);
-  useEffect(() => {
-    if (state.data && !dirty) {
-      setDraft(state.data.text || "");
-      setVersion(state.data.version || 0);
-    }
-  }, [state.data, dirty]);
+  const state = useResource(endpoint("plan", c.selected), c.revision);
+  const native = state.data?.native;
+  const steps: Json[] = Array.isArray(native?.plan) ? native.plan : [];
+  const explanation =
+    typeof native?.explanation === "string" ? native.explanation : "";
   return (
     <>
       <ResourceState state={state} />
-      {state.data && (
-        <form
-          className="workspace-form"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            setSaving(true);
-            try {
-              const result = await c.run("/api/plan", {
-                agent: c.selected!.id,
-                text: draft,
-                version,
-              });
-              setVersion(result.version);
-              setDirty(false);
-            } catch {
-            } finally {
-              setSaving(false);
-            }
+      <div className="workspace-actions">
+        <Button
+          variant="light"
+          disabled={!c.selected}
+          onClick={() => {
+            if (!c.selected) return;
+            c.onSelect(c.selected.id);
+            c.onClose();
           }}
         >
-          <Textarea
-            label="Shared plan"
-            description="Edits use a version check so concurrent changes are not overwritten."
-            autosize
-            minRows={12}
-            maxRows={28}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              setDirty(true);
-            }}
-          />
-          <div className="workspace-actions">
-            <Button
-              variant="filled"
-              type="submit"
-              loading={saving}
-              disabled={!dirty}
-            >
-              Save plan
-            </Button>
-            {dirty && (
-              <Button
-                variant="subtle"
-                onClick={() => {
-                  setDirty(false);
-                  c.reload();
-                }}
-              >
-                Discard edits
-              </Button>
-            )}
-            <span className="workspace-muted">Version {version}</span>
-          </div>
-        </form>
-      )}
-      {state.data?.native && (
+          Change plan in chat
+        </Button>
+      </div>
+      {steps.length || explanation ? (
         <section className="workspace-result">
-          <h3>Agent's reported plan</h3>
-          {Array.isArray(state.data.native.plan) ? (
-            state.data.native.plan.map((step: Json, i: number) => (
-              <div className="workspace-plan-step" key={i}>
-                <Status value={step.status || "pending"} />
-                <span>{step.step}</span>
-              </div>
-            ))
-          ) : (
-            <pre className="workspace-code">
-              {JSON.stringify(state.data.native, null, 2)}
-            </pre>
-          )}
+          <h3>Agent plan</h3>
+          {explanation && <p className="workspace-prose">{explanation}</p>}
+          {steps.map((step: Json, i: number) => (
+            <div className="workspace-plan-step" key={i}>
+              <Status value={step.status || "pending"} />
+              <span>{step.step}</span>
+            </div>
+          ))}
         </section>
+      ) : (
+        state.data !== null && (
+          <Empty>This agent has not reported a plan.</Empty>
+        )
       )}
     </>
   );
@@ -1524,7 +1580,7 @@ function Checkpoints(c: Context) {
           </small>
         </div>
       ))}
-      {!state.data?.checkpoints?.length && !state.loading && !state.error && (
+      {!state.data?.checkpoints?.length && state.data !== null && (
         <Empty>No checkpoints yet.</Empty>
       )}
       <Modal
@@ -1693,7 +1749,7 @@ function Profiles(c: Context) {
       <ResourceState state={state} />
       <div className="workspace-toolbar">
         <span className="workspace-muted">
-          Apply profiles when you create workers.
+          Apply profiles when you create subagents.
         </span>
         <Button
           size="xs"
@@ -1733,7 +1789,7 @@ function Profiles(c: Context) {
                   })
                 }
               >
-                Start worker
+                Start subagent
               </Button>
               <Button
                 size="compact-xs"
@@ -1758,16 +1814,16 @@ function Profiles(c: Context) {
           <p className="workspace-clamp">{profile.instructions}</p>
         </div>
       ))}
-      {!state.data?.profiles?.length && !state.loading && !state.error && (
-        <Empty>No saved worker profiles.</Empty>
+      {!state.data?.profiles?.length && state.data !== null && (
+        <Empty>No saved subagent profiles.</Empty>
       )}
       <Modal
         opened={!!draft}
         onClose={() => !busy && setDraft(null)}
         title={
           draft?.id && !draft.isNew
-            ? "Edit worker profile"
-            : "New worker profile"
+            ? "Edit subagent profile"
+            : "New subagent profile"
         }
         size="lg"
       >
@@ -1857,7 +1913,7 @@ function Profiles(c: Context) {
       <Modal
         opened={!!launch}
         onClose={() => !busy && setLaunch(null)}
-        title={`Start ${launch?.name || "worker"}`}
+        title={`Start ${launch?.name || "subagent"}`}
         size="lg"
       >
         {launch && (
@@ -1881,18 +1937,18 @@ function Profiles(c: Context) {
             }}
           >
             <p className="workspace-muted">
-              Lead: {lead?.name}. The worker uses this profile's model and
-              instructions.
+              Main agent: {lead?.name}. The subagent uses this profile's model
+              and instructions.
             </p>
             <Textarea
-              label="Task for this worker"
+              label="Task for this subagent"
               required
               minRows={5}
               value={launch.prompt}
               onChange={(e) => setLaunch({ ...launch, prompt: e.target.value })}
             />
             <Button variant="filled" type="submit" loading={busy}>
-              Start worker
+              Start subagent
             </Button>
           </form>
         )}
@@ -1935,6 +1991,8 @@ function Rules(c: Context) {
               name: "",
               kind: "interval",
               intervalSeconds: 300,
+              minimumWorkers: 8,
+              durationMinutes: 30,
               at: "",
               path: "",
               event: "worker_completed",
@@ -1959,9 +2017,15 @@ function Rules(c: Context) {
               />
             </div>
             <small>
-              {rule.kind}
-              {rule.intervalSeconds ? ` · every ${rule.intervalSeconds}s` : ""}
-              {rule.nextAt ? ` · next ${date(rule.nextAt)}` : ""}
+              {rule.kind === "low_workers"
+                ? `Fewer than ${rule.minimumWorkers ?? 8} active subagents for more than ${rule.durationMinutes ?? 30} minutes`
+                : rule.kind}
+              {rule.kind !== "low_workers" && rule.intervalSeconds
+                ? ` · every ${rule.intervalSeconds}s`
+                : ""}
+              {rule.kind !== "low_workers" && rule.nextAt
+                ? ` · next ${date(rule.nextAt)}`
+                : ""}
             </small>
             {rule.path && (
               <p>
@@ -2035,8 +2099,7 @@ function Rules(c: Context) {
       {!(state.data?.rules || []).some(
         (rule: Json) => rule.agent === c.selected?.id,
       ) &&
-        !state.loading &&
-        !state.error && <Empty>No rules for this agent.</Empty>}
+        state.data !== null && <Empty>No rules for this agent.</Empty>}
       <Modal
         opened={!!draft}
         onClose={() => !busy && setDraft(null)}
@@ -2054,6 +2117,7 @@ function Rules(c: Context) {
                   ...draft,
                   agent: c.selected!.id,
                   action: "save",
+                  command: draft.kind === "low_workers" ? "" : draft.command,
                   at:
                     draft.kind === "once"
                       ? new Date(draft.at).getTime() / 1000
@@ -2075,14 +2139,75 @@ function Rules(c: Context) {
             <NativeSelect
               label="Trigger"
               value={draft.kind}
-              onChange={(e) => setDraft({ ...draft, kind: e.target.value })}
+              onChange={(e) => {
+                const kind = e.target.value;
+                setDraft({
+                  ...draft,
+                  kind,
+                  ...(kind === "low_workers"
+                    ? {
+                        minimumWorkers: draft.minimumWorkers ?? 8,
+                        durationMinutes: draft.durationMinutes ?? 30,
+                        name: draft.name.trim()
+                          ? draft.name
+                          : "Too few active subagents",
+                        text: draft.text.trim()
+                          ? draft.text
+                          : "The active subagent count stayed below the minimum. Review the team workload and assign independent work where useful.",
+                      }
+                    : {}),
+                });
+              }}
               data={[
                 { value: "interval", label: "Repeat at an interval" },
                 { value: "once", label: "Once at a time" },
                 { value: "file", label: "File changes" },
                 { value: "event", label: "Runtime event" },
+                ...(c.selected?.isLead
+                  ? [
+                      {
+                        value: "low_workers",
+                        label: "Too few active subagents",
+                      },
+                    ]
+                  : []),
               ]}
             />
+            {draft.kind === "low_workers" && (
+              <>
+                <NumberInput
+                  label="Minimum active subagents"
+                  min={1}
+                  max={255}
+                  allowDecimal={false}
+                  allowNegative={false}
+                  required
+                  value={draft.minimumWorkers ?? 8}
+                  onChange={(value) =>
+                    setDraft({ ...draft, minimumWorkers: value })
+                  }
+                />
+                <NumberInput
+                  label="Duration (minutes)"
+                  min={1}
+                  max={525600}
+                  allowDecimal={false}
+                  allowNegative={false}
+                  required
+                  value={draft.durationMinutes ?? 30}
+                  onChange={(value) =>
+                    setDraft({ ...draft, durationMinutes: value })
+                  }
+                />
+                <p className="workspace-muted">
+                  Counts subagents that start, run, or have active command
+                  monitors. Queued or idle subagents without active monitors do
+                  not count. Alerts the main agent once per continuous period
+                  below the minimum. The alert resets when the count reaches the
+                  minimum.
+                </p>
+              </>
+            )}
             {draft.kind === "interval" && (
               <NumberInput
                 label="Interval (seconds)"
@@ -2120,24 +2245,35 @@ function Rules(c: Context) {
                 onChange={(e) => setDraft({ ...draft, event: e.target.value })}
                 data={[
                   { value: "", label: "Select an event" },
-                  "worker_completed",
+                  {
+                    value: "worker_completed",
+                    label: "Subagent completes a task",
+                  },
                   "monitor_exit",
                   "complaint",
                   "work_review",
                 ]}
               />
             )}
+            {draft.kind !== "low_workers" && (
+              <Textarea
+                label="Script check (optional)"
+                description={
+                  'Run under the agent permissions. Exit 0 wakes the agent unless the output contains {"wakeAgent":false}.'
+                }
+                minRows={3}
+                value={draft.command}
+                onChange={(e) =>
+                  setDraft({ ...draft, command: e.target.value })
+                }
+              />
+            )}
             <Textarea
-              label="Script check (optional)"
-              description={
-                'Run under the agent permissions. Exit 0 wakes the agent unless the output contains {"wakeAgent":false}.'
+              label={
+                draft.kind === "low_workers"
+                  ? "Message to the main agent"
+                  : "Message to the agent"
               }
-              minRows={3}
-              value={draft.command}
-              onChange={(e) => setDraft({ ...draft, command: e.target.value })}
-            />
-            <Textarea
-              label="Message to the agent"
               required
               minRows={3}
               value={draft.text}

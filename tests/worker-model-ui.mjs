@@ -82,15 +82,35 @@ try {
   });
   if (process.env.CODEX_TEST_DESKTOP) await page.reload();
   else await page.goto(url);
+  const settings = page.getByRole("dialog", {
+    name: "Chat settings",
+    exact: true,
+  });
+  const openSettings = async (name) => {
+    if (!(await settings.isVisible()))
+      await page
+        .getByRole("button", { name: "Chat settings", exact: true })
+        .click();
+    await page.getByRole("button", { name, exact: true }).click();
+  };
+  const closeSettings = async () => {
+    await page.keyboard.press("Escape");
+    await settings.locator(".mantine-Modal-close").click();
+    await settings.waitFor({ state: "hidden" });
+  };
+  const openWorker = async (id) => {
+    const row = page.locator(`[data-worker="${id}"]`);
+    if (!(await row.isVisible()))
+      await page.getByRole("button", { name: "Team", exact: true }).click();
+    await row.click();
+  };
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   const initialState = await (await fetch(url + "/api/state")).json();
   const worker = initialState.runtime.agents.find(
     (agent) => agent.name === "Worker 07",
   );
-  await page.locator(`[data-worker="${worker.id}"]`).click();
-  await page
-    .getByRole("button", { name: "Subagent settings", exact: true })
-    .click();
+  await openWorker(worker.id);
+  await openSettings("Subagent settings");
   await page.getByRole("button", { name: "Retry model list" }).waitFor();
   assert.ok(await page.locator("#model").isDisabled());
   await page.getByRole("button", { name: "Retry model list" }).click();
@@ -130,17 +150,33 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 960 });
   const busyWorker = state.runtime.agents.find((a) => a.name === "Worker 01");
-  await page.keyboard.press("Escape");
-  await page.locator(`[data-worker="${busyWorker.id}"]`).click();
+  await closeSettings();
+  await openWorker(busyWorker.id);
+  await openSettings("Subagent settings");
+  assert.equal(await page.locator("#model").isDisabled(), false);
   await page
-    .getByRole("button", { name: "Subagent settings", exact: true })
-    .click();
-  assert.ok(await page.locator("#model").isDisabled());
-  await page.keyboard.press("Escape");
+    .getByText("Model settings apply to the next turn.", { exact: false })
+    .waitFor();
+  await page.locator("#model").selectOption("test-model");
+  await page.waitForFunction(async (id) => {
+    const snapshot = await fetch("/api/state").then((response) =>
+      response.json(),
+    );
+    return (
+      snapshot.runtime.agents.find((agent) => agent.id === id)?.pendingSettings
+        ?.model === "test-model"
+    );
+  }, busyWorker.id);
+  const queuedState = await (await fetch(url + "/api/state")).json();
+  assert.equal(
+    queuedState.runtime.agents.find((agent) => agent.id === busyWorker.id)
+      .model,
+    busyWorker.model,
+    "The active worker keeps its current model",
+  );
+  await closeSettings();
   await page.locator("#back-lead").click();
-  await page
-    .getByRole("button", { name: "Lead settings", exact: true })
-    .click();
+  await openSettings("Main agent settings");
   await page.locator("#model").waitFor();
   assert.deepEqual(
     await page
@@ -155,7 +191,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS worker model UI: catalog retry, hidden models, persisted worker selection, rejected stale model, busy guard, lead restrictions, shared catalog, responsive layouts. Evidence " +
+    "PASS worker model UI: catalog retry, hidden models, persisted worker selection, rejected stale model, next-turn selection preserves active model, lead restrictions, shared catalog, responsive layouts. Evidence " +
       root,
   );
 } finally {

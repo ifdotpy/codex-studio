@@ -6,8 +6,10 @@ export type Recording = {
   samples: number;
   state: "recording" | "ready";
   transcript?: string;
+  reviewedText?: string;
   transcriptionAttempt?: string;
   error?: string;
+  deletedAt?: number;
 };
 const database = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
@@ -43,7 +45,7 @@ export async function listRecordings(chatId: string) {
     tx.objectStore("recordings").getAll(),
   );
   return all
-    .filter((row) => row.chatId === chatId)
+    .filter((row) => row.chatId === chatId && !row.deletedAt)
     .sort((a, b) => b.created - a.created);
 }
 export async function saveRecording(row: Recording) {
@@ -68,6 +70,33 @@ export async function deleteRecording(id: string) {
     );
     return tx.objectStore("recordings").delete(id);
   });
+}
+// Keep deleted audio for one day so Undo also survives a reload.
+export async function trashRecording(row: Recording) {
+  await updateRecording({
+    id: row.id,
+    chatId: row.chatId,
+    deletedAt: Date.now(),
+    transcriptionAttempt: crypto.randomUUID(),
+  });
+}
+export async function restoreRecording(row: Recording) {
+  await updateRecording({ id: row.id, chatId: row.chatId, deletedAt: undefined });
+}
+export async function deletedRecordings(chatId: string) {
+  const all = await transaction<Recording[]>(["recordings"], "readonly", (tx) =>
+    tx.objectStore("recordings").getAll(),
+  );
+  const expired = all.filter(
+    (row) => row.deletedAt && Date.now() - row.deletedAt >= 86400000,
+  );
+  for (const row of expired) await deleteRecording(row.id);
+  return all.filter(
+    (row) =>
+      row.chatId === chatId &&
+      row.deletedAt &&
+      Date.now() - row.deletedAt < 86400000,
+  );
 }
 export function wav(chunks: Int16Array[], sampleRate: number) {
   const samples = chunks.reduce((sum, part) => sum + part.length, 0);
@@ -114,7 +143,10 @@ export async function recordingAudio(row: Recording) {
 }
 
 // Late transcription responses must not recreate a deleted recording.
-export async function updateRecording(row: Recording, attempt?: string) {
+export async function updateRecording(
+  row: Pick<Recording, "id" | "chatId"> & Partial<Recording>,
+  attempt?: string,
+) {
   await transaction(["recordings"], "readwrite", (tx) => {
     const records = tx.objectStore("recordings");
     const request = records.get(row.id);

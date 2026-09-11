@@ -1,13 +1,17 @@
 import { createElement, memo, useMemo, useState, type ReactNode } from "react";
+import CodeBlock from "./CodeBlock";
+import MarkdownImage from "./MarkdownImage";
 import { sentences } from "./sentenceStream";
 
 // The caller sanitizes HTML. React retains old nodes when a paragraph grows.
 export default memo(function SentenceMarkup({
   html,
   enter,
+  agentId,
 }: {
   html: string;
   enter: boolean;
+  agentId?: string;
 }) {
   const [initialLength] = useState(() => {
     if (enter) return 0;
@@ -38,6 +42,25 @@ export default memo(function SentenceMarkup({
       }
       if (!(node instanceof Element)) return null;
       const tag = node.tagName.toLowerCase();
+      if (tag === "img")
+        return (
+          <MarkdownImage
+            key={key}
+            src={node.getAttribute("src") || ""}
+            alt={node.getAttribute("alt") || ""}
+            agentId={agentId}
+          />
+        );
+      if (tag === "pre" && node.firstElementChild?.tagName === "CODE") {
+        const code = node.firstElementChild;
+        return (
+          <CodeBlock
+            key={key}
+            source={code.textContent || ""}
+            language={code.className.match(/(?:^|\s)language-(\S+)/)?.[1]}
+          />
+        );
+      }
       const props: Record<string, unknown> = { key };
       for (const attr of node.attributes) {
         const name =
@@ -68,6 +91,6 @@ export default memo(function SentenceMarkup({
     return Array.from(template.content.childNodes, (node, i) =>
       render(node, String(i)),
     );
-  }, [html, initialLength]);
+  }, [html, initialLength, agentId]);
   return <div className="markdown-block">{children}</div>;
 });

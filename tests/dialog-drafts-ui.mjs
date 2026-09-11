@@ -19,7 +19,7 @@ import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
 import Picker from '/src/components/ProjectDirectoryPicker.tsx';
 import UserTasks from '/src/components/UserTasks.tsx';
-import ComplaintBook from '/src/components/ComplaintBook.tsx';
+import UserMessages from '/src/components/UserMessages.tsx';
 const lead={id:'lead',rootId:'lead',name:'Lead',isLead:true,source:'managed'};
 const task={id:'task',agent:'lead',rootId:'lead',title:'Check release',description:'Check it',criteria:'Confirmed',status:'open',version:1};
 const complaint={id:'complaint',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'Help needed',status:'open',needsResponse:true,created:1};
@@ -28,7 +28,7 @@ function Fixture(){const [show,setShow]=useState(true),[compact,setCompact]=useS
 return <MantineProvider><button onClick={()=>setShow(!show)}>Toggle tasks</button><button onClick={()=>setCompact(!compact)}>Toggle compact</button><button onClick={()=>setWorkspace(workspace==='workspace-a'?'workspace-b':'workspace-a')}>Switch workspace</button>
 <Picker initialPath='/project' onSelect={async()=>{}}/>
 {show&&<UserTasks data={{...base,stateDir:workspace}} agent={lead} compact={compact} refresh={async()=>{}} notify={()=>{}}/>}
-<ComplaintBook data={base} leadId='lead' refresh={async()=>{}} notify={()=>{}}/>
+<UserMessages data={base} refresh={async()=>{}} notify={()=>{}}/>
 </MantineProvider>}
 createRoot(document.getElementById('root')).render(<Fixture/>);`;
 const server = await createServer({
@@ -75,6 +75,21 @@ try {
     detailReads = 0,
     releaseSend;
   const sent = [];
+  const waitForSent = async (count) => {
+    for (let attempt = 0; attempt < 100 && sent.length < count; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(sent.length, count);
+  };
+  let message = {
+    id: "complaint",
+    recipient: "user",
+    author: "lead",
+    leadId: "lead",
+    version: 1,
+    text: "Please help",
+    responses: [],
+    status: "open",
+  };
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/directories") {
@@ -88,25 +103,30 @@ try {
           status: 503,
           json: { error: "Temporary failure" },
         });
-      return route.fulfill({
-        json: {
-          id: "complaint",
-          recipient: "user",
-          author: "lead",
-          leadId: "lead",
-          version: 1,
-          text: "Please help",
-          responses: [],
-          status: "open",
-        },
-      });
+      return route.fulfill({ json: message });
     }
     if (path === "/api/complaints") {
-      sent.push(route.request().postDataJSON());
+      const body = route.request().postDataJSON();
+      sent.push(body);
       await new Promise((resolve) => {
         releaseSend = resolve;
       });
-      return route.fulfill({ json: { id: "created" } });
+      message = {
+        ...message,
+        version: message.version + 1,
+        status: body.status,
+        responses: [
+          ...message.responses,
+          {
+            id: body.id,
+            author: "user",
+            text: body.text,
+            status: body.status,
+            at: 1,
+          },
+        ],
+      };
+      return route.fulfill({ json: message });
     }
     return route.fulfill({ json: {} });
   });
@@ -133,7 +153,7 @@ try {
       .click();
   await expand();
   await openTask();
-  const note = taskSection.getByLabel("Completion note (optional)");
+  const note = taskSection.getByLabel("Result note (optional)");
   await note.fill("Keep this note");
   await expand();
   await expand();
@@ -162,41 +182,50 @@ try {
     .click();
   assert.equal(await note.inputValue(), "Keep this note");
   await page.locator('[data-complaint="complaint"]').click();
-  const detail = page.getByRole("dialog", { name: "Complaint", exact: true });
+  const detail = page.getByRole("dialog", {
+    name: "Message to you",
+    exact: true,
+  });
   await detail.getByRole("alert").waitFor();
   assert.equal(await detail.getByText("Loading…", { exact: true }).count(), 0);
   await detail.getByRole("button", { name: "Retry", exact: true }).click();
   await detail.getByText("Please help", { exact: true }).waitFor();
   assert.equal(await detail.getByRole("alert").count(), 0);
+  const reply = detail.getByLabel("Reply", { exact: true });
+  await reply.fill("Original text");
   await page.keyboard.press("Escape");
-  await page
-    .getByRole("button", { name: "New complaint", exact: true })
-    .click();
-  const create = page.getByRole("dialog", {
-    name: "New complaint",
-    exact: true,
-  });
-  await create.getByLabel("What went wrong?").fill("Original text");
-  await create
-    .getByRole("button", { name: "Submit complaint", exact: true })
-    .click();
-  await create.getByLabel("What went wrong?").fill("New edits");
+  await detail.waitFor({ state: "hidden" });
+  await page.locator('[data-complaint="complaint"]').click();
+  assert.equal(await reply.inputValue(), "Original text");
+  await detail.getByRole("button", { name: "Send reply", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".complaint-reply textarea")?.disabled,
+  );
+  await waitForSent(1);
+  assert.equal(await reply.isDisabled(), true);
   assert.equal(sent[0].text, "Original text");
   releaseSend();
   await page.waitForFunction(
-    () => !document.querySelector("#submit-complaint")?.disabled,
+    () => !document.querySelector(".complaint-reply textarea")?.disabled,
   );
-  assert.equal(
-    await create.getByLabel("What went wrong?").inputValue(),
-    "New edits",
+  assert.equal(await reply.inputValue(), "");
+  await detail
+    .locator(".complaint-response")
+    .getByText("Original text")
+    .waitFor();
+  await reply.fill("New reply");
+  await detail.getByRole("button", { name: "Send reply", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".complaint-reply textarea")?.disabled,
   );
-  await create
-    .getByRole("button", { name: "Submit complaint", exact: true })
-    .click();
-  await page.waitForTimeout(100);
+  await waitForSent(2);
   releaseSend();
-  await create.waitFor({ state: "hidden" });
-  assert.equal(sent[1].text, "New edits");
+  await detail.locator(".complaint-response").getByText("New reply").waitFor();
+  assert.equal(sent[1].text, "New reply");
+  assert.equal(sent[0].action, "respond");
+  assert.equal(sent[0].complaint_id, "complaint");
+  assert.equal(sent[0].version, 1);
+  assert.equal(sent[1].version, 2);
   assert.notEqual(sent[0].id, sent[1].id);
   assert.deepEqual(pageErrors, []);
   console.log(
@@ -205,8 +234,9 @@ try {
       checks: [
         "same-folder retry",
         "task note collapse, remount, filter, workspace isolation",
-        "complaint inline error and retry",
-        "complaint edits during send",
+        "message detail error and retry",
+        "reply draft retained after reopen",
+        "reply fixed during send, subsequent response uses new identity and version",
       ],
     }),
   );

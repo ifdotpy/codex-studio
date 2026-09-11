@@ -109,17 +109,28 @@ try {
     }
     throw Error("Timed out: " + log);
   };
+  const openSettings = async (name) => {
+    if (!(await page.getByRole("button", { name, exact: true }).isVisible()))
+      await page
+        .getByRole("button", { name: "Chat settings", exact: true })
+        .click();
+    await page.getByRole("button", { name, exact: true }).click();
+  };
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   const lead = (await state()).find((a) => a.name === "Release lead");
+  await openSettings("Main agent settings");
   await page
-    .getByRole("button", { name: "Lead settings", exact: true })
-    .click();
-  await page.getByLabel("Lead reasoning", { exact: true }).selectOption("high");
+    .getByLabel("Main agent reasoning", { exact: true })
+    .selectOption("high");
   await waitFor(
     async () => (await state()).find((a) => a.id === lead.id).effort === "high",
   );
-  const yolo = page.getByRole("switch", { name: "YOLO mode", exact: true });
-  await yolo.uncheck();
+  await page.getByText("Permissions", { exact: true }).click();
+  const yolo = page.getByRole("switch", {
+    name: "Full access without approval",
+    exact: true,
+  });
+  await yolo.click();
   await page
     .getByRole("alert")
     .filter({ hasText: "Wait for every team turn" })
@@ -132,8 +143,15 @@ try {
   );
   await page.keyboard.press("Escape");
   await page
-    .getByRole("button", { name: "Subagent defaults", exact: true })
-    .click();
+    .getByRole("dialog", { name: "Main agent settings", exact: true })
+    .waitFor({ state: "hidden" });
+  assert.ok(
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .isVisible(),
+    "Escape closes only the model popover",
+  );
+  await openSettings("Subagent defaults");
   const dialog = page.getByRole("dialog", {
     name: "Subagent defaults",
     exact: true,
@@ -152,14 +170,7 @@ try {
   await dialog.getByRole("switch", { name: "Fast mode", exact: true }).check();
   for (const width of [1440, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
-    if (width === 390) {
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
-      await page
-        .getByRole("button", { name: "Subagent defaults", exact: true })
-        .click();
-    }
+
     assert.ok(
       await dialog.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
     );
@@ -205,10 +216,7 @@ try {
   assert.equal(overridden.effort, "low");
   assert.equal(overridden.fastMode, false);
   await page.setViewportSize({ width: 1440, height: 960 });
-  await page.keyboard.press("Escape");
-  await page
-    .getByRole("button", { name: "Subagent defaults", exact: true })
-    .click();
+  await openSettings("Subagent defaults");
   assert.equal(
     await dialog.getByLabel("Default subagent model").inputValue(),
     "gpt-5.6-luna",
@@ -225,6 +233,10 @@ try {
       .isChecked(),
     false,
   );
+  await dialog
+    .getByRole("status")
+    .filter({ hasText: "Fast mode is unavailable and was turned off" })
+    .waitFor();
   assert.equal(
     await dialog.getByLabel("Default subagent reasoning").inputValue(),
     "__model_default__",
@@ -256,14 +268,7 @@ try {
   await page.screenshot({ path: join(root, "team-defaults.png") });
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
-    if (width === 390) {
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
-      await page
-        .getByRole("button", { name: "Subagent defaults", exact: true })
-        .click();
-    }
+
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -286,11 +291,10 @@ try {
   const fresh = await freshResponse.json();
   await page.reload();
   await page.locator(`[data-chat="${fresh.id}"]`).click();
-  await page
-    .getByRole("button", { name: "Lead settings", exact: true })
-    .click();
+  await openSettings("Main agent settings");
+  await page.getByText("Permissions", { exact: true }).click();
   const freshYolo = page.getByRole("switch", {
-    name: "YOLO mode",
+    name: "Full access without approval",
     exact: true,
   });
   assert.equal(await freshYolo.isChecked(), true);
@@ -308,9 +312,78 @@ try {
   );
   await waitFor(async () => !(await freshYolo.isDisabled()));
   await page.screenshot({ path: join(root, "lead-yolo.png") });
+  await page.keyboard.press("Escape");
+  const chatSettings = page.getByRole("dialog", {
+    name: "Chat settings",
+    exact: true,
+  });
+  if (await chatSettings.isVisible())
+    await chatSettings.locator(".mantine-Modal-close").click();
+  await page.locator(`[data-chat="${lead.id}"]`).click();
+  const running = (await state()).find((agent) => agent.name === "Worker 00");
+  const openWorker = async () => {
+    const row = page.locator(`[data-worker="${running.id}"]`);
+    if (!(await row.isVisible()))
+      await page.getByRole("button", { name: "Team", exact: true }).click();
+    await row.click();
+  };
+  await openWorker();
+  await openSettings("Subagent settings");
+  const pendingBodies = [];
+  await page.route("**/api/conversation", async (route) => {
+    const body = route.request().postDataJSON();
+    if (!body.next_turn) {
+      await route.continue();
+      return;
+    }
+    pendingBodies.push(body);
+    if (pendingBodies.length === 1) {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      await route.abort("failed");
+    } else await route.continue();
+  });
+  await page
+    .getByLabel("Subagent reasoning", { exact: true })
+    .selectOption("medium");
+  await page
+    .getByRole("button", { name: "Check settings save", exact: true })
+    .waitFor();
+  assert.equal(
+    (await state()).find((agent) => agent.id === running.id).effort,
+    running.effort,
+    "The active turn keeps its reasoning",
+  );
+  assert.equal(
+    (await state()).find((agent) => agent.id === running.id).pendingSettings
+      .effort,
+    "medium",
+  );
+  await page.reload();
+  // The unconfirmed operation survives a reload and return to the same worker.
+  await page.locator(`[data-chat="${lead.id}"]`).click();
+  await openWorker();
+  await openSettings("Subagent settings");
+  await page
+    .getByRole("button", { name: "Check settings save", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Check settings save", exact: true })
+    .waitFor({ state: "hidden" });
+  await waitFor(() => pendingBodies.length === 2);
+  assert.deepEqual(
+    pendingBodies[1],
+    pendingBodies[0],
+    "Recovery uses the same settings and request identity",
+  );
+  assert.match(pendingBodies[0].request_id, /^[0-9a-f-]{36}$/);
+  assert.equal(
+    (await state()).find((agent) => agent.id === running.id).effort,
+    running.effort,
+  );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS execution settings UI: lead reasoning/Fast, per-model choices, persisted defaults, actual child inheritance and orchestrator overrides, unsupported Fast, immediate save, existing worker unchanged, responsive layout. Evidence " +
+    "PASS execution settings UI: main agent reasoning/Fast, model choices, saved defaults, child inheritance and overrides, dependent reset notice, immediate save, permission guards, nested Escape, next-turn settings, lost-response replay across reload, active worker unchanged, responsive layout. Evidence " +
       root,
   );
 } finally {

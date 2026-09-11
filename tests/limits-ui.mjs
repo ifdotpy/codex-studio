@@ -14,7 +14,7 @@ const root = await mkdtemp(join(tmpdir(), "codex-limits-ui-"));
 const fixture = spawn(
   "python3",
   ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-  { stdio: ["ignore", "pipe", "pipe"] },
+  { stdio: ["pipe", "pipe", "pipe"] },
 );
 let log = "",
   browser;
@@ -29,6 +29,7 @@ try {
     response.json(),
   );
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
+  let selectedChat = lead;
   const now = Date.now() / 1000;
   const primary = {
     usedPercent: 42,
@@ -124,16 +125,17 @@ try {
     await page.goto(origin);
     if (page.viewportSize().width <= 600)
       await page.locator("#sidebar-toggle").click();
-    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.locator(`[data-chat="${selectedChat.id}"]`).click();
     await toggle().waitFor();
   };
   await load();
-  assert.match(await toggle().innerText(), /5h 58% left · 7d 79% left/);
+  assert.equal((await toggle().innerText()).trim(), "Limits");
   assert.match(await page.locator("#usage-footer").innerText(), /Context 40%/);
-  assert.match(
-    await page.locator("#usage-footer").innerText(),
-    /2 compactions/,
-  );
+  await page.getByRole("button", { name: "Chat context", exact: true }).click();
+  await page
+    .getByText("2 automatic context summaries.", { exact: true })
+    .waitFor();
+  await page.keyboard.press("Escape");
   await toggle().click();
   await details().waitFor();
   await details().getByText("58% left", { exact: true }).waitFor();
@@ -181,8 +183,8 @@ try {
     .getByText(/^Saved limits/)
     .waitFor();
   assert.match(
-    await toggle().innerText(),
-    /5h 58% left · 7d 79% left/,
+    await details().innerText(),
+    /58% left[\s\S]*79% left/,
     "a failed refresh retains confirmed quota values for this account",
   );
   assert.equal(await details().getByRole("progressbar").count(), 2);
@@ -237,8 +239,8 @@ try {
     });
   });
   await load();
-  assert.match(await toggle().innerText(), /3 resets/);
   await toggle().click();
+  await details().getByText("3 available", { exact: true }).waitFor();
   const resetPanel = () =>
     details().getByRole("region", { name: "Limit reset credits" });
   await resetPanel()
@@ -383,12 +385,13 @@ try {
     at: now + 1,
   };
   await load();
-  assert.match(await toggle().innerText(), /5h 8% left/);
+  assert.match(await toggle().innerText(), /Low allowance/);
   assert.doesNotMatch(await toggle().innerText(), /99%/);
   await toggle().click();
   await details().waitFor();
   assert.equal(await details().locator(".account-limit-group").count(), 3);
   await details().getByText("99% left", { exact: true }).waitFor();
+  await details().getByText("8% left", { exact: true }).waitFor();
   const names = await details()
     .locator(".account-limit-group > header > strong")
     .allTextContents();
@@ -409,8 +412,11 @@ try {
     at: now + 2,
   };
   await load();
-  assert.match(await toggle().innerText(), /2 pools/);
-  assert.doesNotMatch(await toggle().innerText(), /58%/);
+  assert.equal((await toggle().innerText()).trim(), "Limits");
+  await toggle().click();
+  await details().locator(".account-limit-group").nth(1).waitFor();
+  assert.equal(await details().locator(".account-limit-group").count(), 2);
+  assert.doesNotMatch(await details().innerText(), /Codex/);
 
   limits = {
     data: {
@@ -424,8 +430,13 @@ try {
     at: now + 3,
   };
   await load();
-  assert.match(await toggle().innerText(), /5h unavailable · 7d <1% left/);
+  assert.match(await toggle().innerText(), /Low allowance/);
   await toggle().click();
+  await details().getByText("<1% left", { exact: true }).waitFor();
+  assert.match(
+    await details().locator(".account-limit-window").first().innerText(),
+    /Unavailable/,
+  );
   await details().waitFor();
   assert.equal(await details().getByRole("progressbar").count(), 1);
   assert.match(await details().innerText(), /Reset time unavailable/);
@@ -447,12 +458,12 @@ try {
     error: "Account connection failed",
   };
   await load();
-  assert.match(await toggle().innerText(), /5h refresh needed/);
-  assert.match(await toggle().innerText(), /7d 0% left/);
+  assert.match(await toggle().innerText(), /Low allowance/);
   assert.doesNotMatch(await toggle().innerText(), /Update failed/);
   await toggle().click();
   await details().waitFor();
   await details().getByText("Awaiting update", { exact: true }).waitFor();
+  await details().getByText("0% left", { exact: true }).waitFor();
   assert.equal(await details().getByRole("progressbar").count(), 1);
   assert.doesNotMatch(await details().innerText(), /58%/);
   assert.match(await details().innerText(), /Saved limits/);
@@ -475,7 +486,7 @@ try {
   };
   limits = { data: null, at: now + 5 };
   await load();
-  assert.match(await toggle().innerText(), /Unavailable/);
+  assert.equal((await toggle().innerText()).trim(), "Limits");
   await toggle().click();
   await details().waitFor();
   assert.equal(await details().getByRole("progressbar").count(), 0);
@@ -502,7 +513,7 @@ try {
   };
   await page.setViewportSize({ width: 780, height: 844 });
   await load();
-  assert.match(await toggle().innerText(), /5h 58% left/);
+  assert.equal((await toggle().innerText()).trim(), "Limits");
   await toggle().click();
   await details().waitFor();
   await details().waitFor();
@@ -558,7 +569,9 @@ try {
         data: { ...costs.data, todayUSD: 123456.78 },
       },
     });
-    await page.locator(".account-cost-summary").waitFor();
+    await toggle().click();
+    await details().getByText("$123,456.78", { exact: true }).waitFor();
+    await toggle().click();
     assert.deepEqual(
       await page.locator("#usage-footer").boundingBox(),
       before,
@@ -573,6 +586,182 @@ try {
     assert.equal(summaryBox.height, 26, "quota trigger remains a single line");
     deferCosts = false;
   }
+  selectedChat = initial.threads.find(
+    (agent) => agent.name === "Other project",
+  );
+  let previousTurn;
+  for (const [reached, kind, expected] of [
+    [
+      "workspace_owner_credits_depleted",
+      "rateLimitExceeded",
+      "Add credits to continue using Codex.",
+    ],
+    [
+      "workspace_member_credits_depleted",
+      "rateLimitExceeded",
+      "Ask your workspace owner to add credits.",
+    ],
+    [
+      "workspace_owner_credits_depleted",
+      "usageLimitExceeded",
+      "Increase your workspace usage limit",
+    ],
+    [
+      "workspace_member_credits_depleted",
+      "usageLimitExceeded",
+      "Ask your workspace owner to increase your usage limit.",
+    ],
+  ]) {
+    const nativeLimitError = {
+      message: `Usage limit reached: ${reached} (${kind}).`,
+      codexErrorInfo: kind,
+    };
+    limits = {
+      at: Date.now() / 1000,
+      data: {
+        rateLimits: { rateLimitReachedType: reached, primary, secondary },
+      },
+    };
+    fixture.stdin.write(
+      JSON.stringify({ method: "fixture/limits", params: limits.data }) + "\n",
+    );
+    await load();
+    await page.locator("#message").fill("Exercise native usage recovery.");
+    await page.locator("#send").click();
+    let active;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const state = await fetch(`${origin}/api/state`).then((response) =>
+        response.json(),
+      );
+      active = state.runtime.agents.find(
+        (agent) => agent.id === selectedChat.id,
+      );
+      if (
+        active.status === "running" &&
+        active.turnId &&
+        active.turnId !== previousTurn
+      )
+        break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(
+      active.status,
+      "running",
+      "native limit fixture starts a real runtime turn",
+    );
+    assert.ok(
+      active.turnId && active.turnId !== previousTurn,
+      "each recovery case has a new turn identity",
+    );
+    previousTurn = active.turnId;
+    for (const [method, params] of [
+      ["error", { willRetry: false, error: nativeLimitError }],
+      [
+        "turn/completed",
+        {
+          turn: {
+            id: active.turnId,
+            status: "failed",
+            error: nativeLimitError,
+          },
+        },
+      ],
+    ]) {
+      fixture.stdin.write(
+        JSON.stringify({
+          method,
+          params: {
+            threadId: active.threadId,
+            turnId: active.turnId,
+            ...params,
+          },
+        }) + "\n",
+      );
+    }
+    const notice = page.locator(".native-error.usage-limit");
+    // A previous case's notice can remain visible while the new turn ends.
+    // Select this case's recorded error before opening its disclosure.
+    await notice
+      .locator("details pre")
+      .filter({ hasText: nativeLimitError.message })
+      .waitFor({ state: "attached" });
+    await notice.locator(".account-limit-recovery > strong").waitFor();
+    await notice.locator("details summary").click();
+    await notice
+      .locator("details pre")
+      .filter({ hasText: nativeLimitError.message })
+      .waitFor();
+    await notice.locator("details summary").click();
+    assert.equal(
+      await notice.locator(":scope > span").count(),
+      0,
+      "raw error is in Details only",
+    );
+    assert.equal(
+      await notice
+        .locator(".account-limit-recovery")
+        .evaluate((el) => getComputedStyle(el).borderTopWidth),
+      "0px",
+      "one border for the notice",
+    );
+    await page.screenshot({
+      path: join(root, "usage-limit-notice.png"),
+      animations: "disabled",
+    });
+    await page.waitForFunction(async (id) => {
+      const snapshot = await fetch("/api/state").then((response) =>
+        response.json(),
+      );
+      return (
+        snapshot.runtime.agents.find((agent) => agent.id === id)?.status ===
+        "failed"
+      );
+    }, selectedChat.id);
+    assert.equal(
+      await page.locator('[data-phase="failed"]').count(),
+      0,
+      "The terminal error does not need a duplicate phase card",
+    );
+    await toggle().click();
+    await page
+      .locator(".account-limits-panel .account-limit-recovery")
+      .waitFor();
+    const recoveryPanel = page.locator(
+      ".account-limits-panel .account-limit-recovery",
+    );
+    if (reached.includes("owner")) {
+      const link = recoveryPanel.getByRole("link");
+      assert.match(
+        await link.getAttribute("href"),
+        kind === "usageLimitExceeded" ? /usage-limits/ : /admin\/billing/,
+      );
+    } else {
+      await page.evaluate(() =>
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: async (value) => {
+              window.fixtureOwnerRequest = value;
+            },
+          },
+        }),
+      );
+      await recoveryPanel
+        .getByRole("button", { name: "Copy request for owner", exact: true })
+        .click();
+      assert.match(
+        await page.evaluate(() => window.fixtureOwnerRequest),
+        kind === "usageLimitExceeded" ? /increase my limit/ : /add credits/,
+      );
+    }
+    assert.ok(
+      (
+        await page
+          .locator(".account-limits-panel .account-limit-recovery")
+          .innerText()
+      ).includes(expected),
+    );
+  }
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -580,6 +769,7 @@ try {
       evidence: root,
       cases: [
         "visible summary",
+        "native owner/member recovery and usage precedence",
         "context preserved",
         "active model",
         "multiple pools",

@@ -85,11 +85,13 @@ try {
   const group = page.locator(".turn-work").last();
   await group.waitFor();
   assert.equal(
-    await group.getAttribute("open"),
-    null,
-    "active tools start as a compact summary",
+    await group.evaluate((el) => el.tagName),
+    "DETAILS",
+    "one active tool uses the same stable group disclosure",
   );
-  await group.locator(":scope > summary").click();
+  assert.notEqual(await group.getAttribute("open"), null);
+  await fileCard.waitFor({ state: "visible" });
+  await fileCard.evaluate((el) => (el.dataset.retained = "yes"));
 
   await fileCard.locator(":scope > summary").click();
   await fileCard
@@ -202,6 +204,15 @@ try {
   for (const item of cases) {
     const { expected, count, ...payload } = item;
     event("item/completed", { status: "completed", exitCode: 0, ...payload });
+    if (cases.indexOf(item) === 1) {
+      await poll(
+        () => group.evaluate((el) => el.tagName === "DETAILS"),
+        "three tools retain the disclosure",
+      );
+      assert.notEqual(await group.getAttribute("open"), null);
+      assert.notEqual(await fileCard.getAttribute("open"), null);
+      assert.equal(await fileCard.getAttribute("data-retained"), "yes");
+    }
     await poll(
       () =>
         page

@@ -32,6 +32,11 @@
 .project-tree-heading {
   padding: 0 4px;
 }
+#sidebar .project-tree-heading[data-folder-drop="true"] {
+  border-radius: 8px;
+  background: var(--mantine-primary-color-light);
+  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-filled);
+}
 .project-tree-toggle {
   display: flex;
   align-items: center;
@@ -63,6 +68,21 @@
 }
 .project-chats {
   padding-left: 24px;
+}
+.project-folder {
+  margin: 4px 0;
+}
+.project-folder-chats {
+  padding-left: 14px;
+}
+.project-directory {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+#sidebar .project-tree-toggle span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
 }
 .project-chats .sidebar-row {
   margin: 1px 0;
@@ -172,6 +192,7 @@
   position: relative;
 }
 #sidebar .project-tree-action {
+  z-index: 1;
   position: absolute;
   right: 2px;
   opacity: 0;
@@ -246,5 +267,13 @@
   }
   #sidebar .project-tree-toggle {
     padding-right: 42px;
+  }
+  #sidebar .project-tree-action:has(+ .project-tree-action) {
+    right: 44px;
+  }
+  #sidebar
+    .project-tree-heading:has(.project-tree-action + .project-tree-action)
+    .project-tree-toggle {
+    padding-right: 84px;
   }
 }

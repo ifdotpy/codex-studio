@@ -3,7 +3,7 @@ import {
   NativeNotice,
   NativeAccountNotices,
 } from "./NativeNotice";
-import { ActionIcon, Button, Loader, Textarea } from "@mantine/core";
+import { ActionIcon, Button, Loader, Modal, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   ArrowDown,
@@ -16,9 +16,14 @@ import {
   ChevronUp,
   Square,
   Terminal,
+  ListEnd,
+  RotateCcw,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
+import SafetyBuffering from "./SafetyBuffering";
+import { currentCapacityRetry } from "../capacityRetry";
+import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
 import { useMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
@@ -77,10 +82,16 @@ export default function Conversation(p: {
   onObserved?: (ids: string[]) => void;
   onOutgoingEdit?: (id: string, text: string) => void;
   onSelect?: (id: string) => void;
+  onBranchCreated?: (id: string) => void;
+  onNewChat?: () => void;
+  onChooseChat?: () => void;
   sending: boolean;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
   limits: Json | null;
+  limitsLoading?: boolean;
+  jumpTarget?: { messageId: string; requestId: string };
+  onJumpHandled?: (requestId: string) => void;
   limitsAccountLabel?: string;
   reloadLimits: () => void;
   onPhase: (id: string | null, label: string) => void;
@@ -95,6 +106,12 @@ export default function Conversation(p: {
     notice,
     before,
     older,
+    newer,
+    after,
+    historical,
+    pageLoading,
+    showLatest,
+    ensureMessage,
     liveAgent,
     connection,
     loaded,
@@ -118,36 +135,73 @@ export default function Conversation(p: {
   const { scroll, content, follow, setFollow, onScroll, remember } =
     useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
   const input = useRef<HTMLTextAreaElement>(null);
-  const jumpToPrompt = (id: string) => {
+  const navigationAttempt = useRef(0);
+  const handledJump = useRef("");
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+  const navigateToMessage = async (id: string) => {
     const root = scroll.current;
     if (!root) return;
     const chat = p.id;
+    const attempt = ++navigationAttempt.current;
     setFollow(false);
-    const reveal = (attempt = 0) => {
-      if (scroll.current !== root || activeId.current !== chat) return;
-      const target = Array.from(
-        root.querySelectorAll<HTMLElement>("[data-message]"),
-      ).find((element) => element.dataset.message === id);
-      if (!target) return;
-      let container = target.parentElement;
-      while (container && container !== root) {
-        if (container instanceof HTMLDetailsElement) container.open = true;
-        container = container.parentElement;
-      }
-      if (target.hasAttribute("data-lazy-message")) {
-        // A hidden turn can contain a hidden tool group. Reveal each boundary
-        // after its native toggle event mounts the next level of history.
-        if (attempt < 8) requestAnimationFrame(() => reveal(attempt + 1));
+    const available = await ensureMessage(id);
+    if (activeId.current !== chat || navigationAttempt.current !== attempt)
+      return;
+    if (!available)
+      throw new Error("This message is unavailable in this conversation.");
+    for (let frame = 0; frame < 20; frame++) {
+      if (
+        scroll.current !== root ||
+        activeId.current !== chat ||
+        navigationAttempt.current !== attempt
+      )
         return;
+      const target: HTMLElement | undefined = Array.from(
+        root.querySelectorAll<HTMLElement>("[data-message]"),
+      ).find(
+        (element) =>
+          element.dataset.message === id ||
+          element.dataset.sourceMessage === id,
+      );
+      if (target) {
+        let container: HTMLElement | null = target.parentElement;
+        while (container && container !== root) {
+          if (container instanceof HTMLDetailsElement) container.open = true;
+          container = container.parentElement;
+        }
+        if (!target.hasAttribute("data-lazy-message")) {
+          root.scrollTop +=
+            target.getBoundingClientRect().top -
+            root.getBoundingClientRect().top -
+            16;
+          setHighlighted(target.dataset.message || null);
+          remember();
+          return;
+        }
       }
-      root.scrollTop +=
-        target.getBoundingClientRect().top -
-        root.getBoundingClientRect().top -
-        16;
-      remember();
-    };
-    reveal();
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+    }
+    throw new Error("The message could not be displayed. Search again.");
   };
+  const jumpToPrompt = (id: string) => {
+    void navigateToMessage(id).catch((error) => p.notify(errorText(error)));
+  };
+  const returnToLatest = () => {
+    navigationAttempt.current++;
+    showLatest();
+    setHighlighted(null);
+    setFollow(true);
+  };
+  useEffect(() => {
+    if (!p.jumpTarget || handledJump.current === p.jumpTarget.requestId) return;
+    const target = p.jumpTarget;
+    handledJump.current = target.requestId;
+    void navigateToMessage(target.messageId)
+      .catch((error) => p.notify(errorText(error)))
+      .finally(() => p.onJumpHandled?.(target.requestId));
+  }, [p.jumpTarget?.requestId, p.id]);
   const attachmentKey = `codex-agent-attachments:${p.data.stateDir}`;
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>(
     () => saved(attachmentKey, {}),
@@ -165,6 +219,8 @@ export default function Conversation(p: {
   }, [attachments, attachmentKey]);
   const [uploading, setUploading] = useState(false);
   const [queue, setQueue] = useState<Json[]>([]);
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const refreshedFailure = useRef("");
   const [editing, setEditing] = useState<string | null>(null);
   const [queuedText, setQueuedText] = useState("");
   const [queueOriginal, setQueueOriginal] = useState("");
@@ -172,6 +228,14 @@ export default function Conversation(p: {
   const sendLock = useRef(false);
   const branchLock = useRef(false);
   const branchRequests = useRef<Record<string, string>>({});
+  const [branchDraft, setBranchDraft] = useState<{
+    message: Message;
+    before: boolean;
+    text: string;
+  } | null>(null);
+  const [branching, setBranching] = useState(false);
+  const [editLoading, setEditLoading] = useState<string | null>(null);
+  const editAttempt = useRef(0);
   const [dragging, setDragging] = useState(false);
   const [stopping, setStopping] = useState(false);
   const stopAttempt = useRef(0);
@@ -183,35 +247,79 @@ export default function Conversation(p: {
   const activeId = useRef(p.id);
   activeId.current = p.id;
   const assets = attachments[p.id || ""] || [];
+  const draftTooLong = p.draft.length > 12000;
   const agent =
     p.agent && liveAgent?.id === p.id
       ? ({ ...p.agent, ...liveAgent } as Agent)
       : p.agent;
+  const threadBlock = nativeThreadError(agent);
+  const capacityRetry = agent ? currentCapacityRetry(agent) : null;
+  const errorKind = nativeErrorKind(agent?.error);
+  const failureKey = [
+    p.id,
+    agent?.nativeTurnError?.turnId || agent?.turnId || agent?.lastCompletedTurn,
+    errorKind,
+  ].join(":");
+  useEffect(() => {
+    if (!["usageLimitExceeded", "rateLimitExceeded"].includes(errorKind))
+      return;
+    if (refreshedFailure.current === failureKey) return;
+    refreshedFailure.current = failureKey;
+    p.reloadLimits();
+  }, [errorKind, failureKey, p.reloadLimits]);
   const displayPhase = useDisplayPhase(
     p.id,
     agent?.activity?.phase || "thinking",
   );
   const detailedActivity =
+    !!threadBlock ||
+    capacityRetry?.status === "scheduled" ||
     connection === "reconnecting" ||
     !!agent?.error ||
     !!agent?.startAttempt?.prepareError ||
     !!agent?.startAttempt?.responseError ||
-    ["retrying", "auth", "error"].includes(agent?.activity?.phase || "") ||
+    ["retrying", "auth", "safety", "error"].includes(agent?.activity?.phase || "") ||
     !["starting", "running", "queued", "idle", "completed"].includes(
       agent?.status || "idle",
     );
+  const reasoningVisible =
+    agent?.activity?.phase === "thinking" &&
+    items.at(-1)?.turnId === agent?.turnId &&
+    items.at(-1)?.role === "reasoning" &&
+    typeof items.at(-1)?.reasoningSince === "number";
   useEffect(() => {
     p.onPhase(
       p.id,
       connection === "reconnecting"
         ? "Reconnecting"
-        : ["starting", "running"].includes(agent?.status || "")
-          ? "Working"
-          : statusLabel(agent?.status || "idle"),
+        : threadBlock
+          ? "Chat stopped as a precaution"
+          : capacityRetry?.status === "scheduled"
+            ? "Waiting to retry model"
+            : agent?.nativeStatus?.error?.message ||
+              agent?.nativeStatus?.message ||
+              (["starting", "running"].includes(agent?.status || "")
+                ? "Working"
+                : statusLabel(agent?.status || "idle")),
     );
-  }, [p.id, agent?.status, agent?.activity?.phase, connection, p.onPhase]);
+  }, [
+    p.id,
+    agent?.status,
+    agent?.activity?.phase,
+    agent?.nativeStatus?.error?.message,
+    agent?.nativeStatus?.message,
+    threadBlock,
+    capacityRetry?.status,
+    connection,
+    p.onPhase,
+  ]);
   useEffect(() => {
     setEditing(null);
+    setBranchDraft(null);
+    editAttempt.current++;
+    setEditLoading(null);
+    setHighlighted(null);
+    setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
   const loadQueue = async (id: string) => {
@@ -269,7 +377,9 @@ export default function Conversation(p: {
     if (
       sendLock.current ||
       p.sending ||
+      threadBlock ||
       uploading ||
+      draftTooLong ||
       (!p.draft.trim() && !assets.length)
     )
       return;
@@ -277,7 +387,7 @@ export default function Conversation(p: {
     const id = p.id || "";
     // Sending expresses a new scroll intent. Streaming still respects a later
     // manual scroll away from the bottom.
-    setFollow(true);
+    returnToLatest();
     input.current?.focus({ preventScroll: true });
     const sent = new Set(assets.map((asset) => asset.id));
     setAttachments((current) => ({
@@ -309,6 +419,37 @@ export default function Conversation(p: {
       sendLock.current = false;
     }
   };
+  const attachDraft = async () => {
+    if (
+      !p.id ||
+      !managed ||
+      threadBlock ||
+      p.sending ||
+      uploadLock.current ||
+      assets.length >= 8
+    )
+      return;
+    const id = p.id;
+    const text = p.draft;
+    uploadLock.current = true;
+    setUploading(true);
+    try {
+      const asset = await uploadAttachment(
+        id,
+        new File([text], "message.txt", { type: "text/plain" }),
+      );
+      setAttachments((current) => ({
+        ...current,
+        [id]: [...(current[id] || []), asset],
+      }));
+      p.setDraft((current) => (current === text ? "" : current), id);
+    } catch (error) {
+      p.notify(errorText(error));
+    } finally {
+      uploadLock.current = false;
+      setUploading(false);
+    }
+  };
   const queueAction = async (event: Json, action: string) => {
     try {
       await api("/api/queue", {
@@ -327,25 +468,91 @@ export default function Conversation(p: {
       p.notify(errorText(error));
     }
   };
-  const branch = async (message: Message) => {
+  const editMessage = async (message: Message) => {
+    const attempt = ++editAttempt.current;
+    const chat = p.id;
+    setEditLoading(message.id);
+    try {
+      let original = message;
+      if (message.truncated) {
+        const query = new URLSearchParams({
+          id: chat || "",
+          message_id: message.id,
+        });
+        const full = await api(`/api/transcript/item?${query}`, undefined, {
+          timeoutMs: 15000,
+        });
+        if (full.truncated || typeof full.text !== "string")
+          throw new Error(
+            "The full original message is unavailable. Copy the visible text into a new message instead.",
+          );
+        original = { ...message, ...full };
+      }
+      if (activeId.current === chat && attempt === editAttempt.current)
+        setBranchDraft({
+          message: original,
+          before: true,
+          text: original.text,
+        });
+    } catch (error) {
+      if (activeId.current === chat && attempt === editAttempt.current)
+        p.notify(errorText(error));
+    } finally {
+      if (attempt === editAttempt.current) setEditLoading(null);
+    }
+  };
+  const branch = async (
+    message: Message,
+    draft?: { before: boolean; text: string },
+  ) => {
     if (branchLock.current) return;
     branchLock.current = true;
-    const sourceId = message.sourceId || message.id;
-    const key = `${p.id}:${sourceId}`;
+    const sourceId = draft?.before
+      ? message.id
+      : message.sourceId || message.id;
+    const key = `${p.id}:${sourceId}:${draft?.before ? "before" : "after"}`;
     branchRequests.current[key] ||= crypto.randomUUID();
+    setBranching(true);
     try {
       const response = await api("/api/branch", {
         agent: p.id,
         message_id: sourceId,
         id: branchRequests.current[key],
+        ...(draft?.before ? { before: true } : {}),
       });
+      const branchId = response.agent?.id || response.id;
+      if (!branchId)
+        throw new Error("The server did not return the new chat identity.");
+      if (draft) {
+        const reviewedText =
+          draft.before &&
+          draft.text === message.text &&
+          typeof response.draft?.text === "string"
+            ? response.draft.text
+            : draft.text;
+        const prefix =
+          draft.before && typeof response.draft?.prefixText === "string"
+            ? response.draft.prefixText
+            : "";
+        p.setDraft(
+          prefix ? `${prefix}\n\n${reviewedText}` : reviewedText,
+          branchId,
+        );
+        if (draft.before && response.draft?.assets?.length)
+          setAttachments((current) => ({
+            ...current,
+            [branchId]: response.draft.assets,
+          }));
+      }
       await p.refresh();
-      p.onSelect?.(response.agent?.id || response.id);
+      (p.onBranchCreated || p.onSelect)?.(branchId);
+      setBranchDraft(null);
       delete branchRequests.current[key];
     } catch (error) {
       p.notify(errorText(error));
     } finally {
       branchLock.current = false;
+      setBranching(false);
     }
   };
   const copy = async (text: string) => {
@@ -380,7 +587,7 @@ export default function Conversation(p: {
       (!mobileClient && team.some((a) => a.id === r.agent)),
   );
   const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
-  const canSend = !!agent?.canSend || !!p.legacy || !p.id;
+  const canSend = !threadBlock && (!!agent?.canSend || !!p.legacy || !p.id);
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
     for (const item of items)
@@ -471,6 +678,8 @@ export default function Conversation(p: {
     <article
       key={messageRenderKey(m)}
       data-message={m.id}
+      data-source-message={m.sourceId}
+      data-found={highlighted === m.id || undefined}
       className={`message ${m.role === "user" ? "user" : "assistant"} ${p.room ? "bubble " + (m.sender !== first ? "outgoing" : "incoming") : ""}`}
     >
       {["sending", "reserved", "dispatching"].includes(
@@ -639,6 +848,26 @@ export default function Conversation(p: {
               <Quote size={14} />
             </ActionIcon>
             {managed &&
+              m.role === "user" &&
+              m.turnId &&
+              (!m.deliveryStatus || m.deliveryStatus === "accepted") && (
+                <ActionIcon
+                  size="sm"
+                  aria-label="Edit in a new chat"
+                  title="Edit in a new chat"
+                  disabled={
+                    branching || !!editLoading || m.turnId === agent?.turnId
+                  }
+                  onClick={() => void editMessage(m)}
+                >
+                  {editLoading === m.id ? (
+                    <Loader size={14} />
+                  ) : (
+                    <Pencil size={14} />
+                  )}
+                </ActionIcon>
+              )}
+            {managed &&
               m.role === "assistant" &&
               m.turnId &&
               m.turnId !== agent?.turnId &&
@@ -652,6 +881,27 @@ export default function Conversation(p: {
                   <GitBranch size={14} />
                 </ActionIcon>
               )}
+            {managed &&
+              m.role === "assistant" &&
+              m.turnId &&
+              m.turnId !== agent?.turnId &&
+              lastAssistantByTurn.get(m.turnId) === m.id && (
+                <ActionIcon
+                  size="sm"
+                  aria-label="Another answer in a new chat"
+                  title="Another answer in a new chat"
+                  disabled={branching}
+                  onClick={() =>
+                    setBranchDraft({
+                      message: m,
+                      before: false,
+                      text: "Give another answer to my previous request. Use the existing results. Do not run tools or commands unless I explicitly ask.",
+                    })
+                  }
+                >
+                  <RotateCcw size={14} />
+                </ActionIcon>
+              )}
           </>
         )}
       </div>
@@ -662,19 +912,111 @@ export default function Conversation(p: {
       id="conversation"
       className={p.room ? "agent-conversation" : "ai-conversation"}
     >
-      {agent?.error && <NativeError agent={agent} />}
+      <Modal
+        opened={!!branchDraft}
+        onClose={() => {
+          if (!branching) setBranchDraft(null);
+        }}
+        title={
+          branchDraft?.before
+            ? "Edit in a new chat"
+            : "Another answer in a new chat"
+        }
+      >
+        <p>
+          This creates a new chat with a draft. Review the draft before you send
+          it. Your files are not restored.
+        </p>
+        <Textarea
+          label="Draft for the new chat"
+          value={branchDraft?.text || ""}
+          autosize
+          minRows={3}
+          maxRows={10}
+          disabled={branching || !!branchDraft?.message.truncated}
+          onChange={(event) => {
+            const text = event.currentTarget.value;
+            setBranchDraft((current) =>
+              current ? { ...current, text } : current,
+            );
+          }}
+        />
+        {branchDraft?.before && branchDraft.message.truncated && (
+          <p>
+            The preview is clipped. Create the draft to edit the full message.
+          </p>
+        )}
+        <div className="branch-draft-actions">
+          <Button
+            variant="subtle"
+            disabled={branching}
+            onClick={() => setBranchDraft(null)}
+          >
+            Cancel
+          </Button>
+          <Button
+            loading={branching}
+            disabled={!branchDraft?.text.trim()}
+            onClick={() => {
+              if (branchDraft) void branch(branchDraft.message, branchDraft);
+            }}
+          >
+            Create draft in new chat
+          </Button>
+        </div>
+      </Modal>
+      {agent && (agent.error || threadBlock || capacityRetry) && (
+        <NativeError
+          agent={agent}
+          planType={p.limits?.data?.rateLimits?.planType}
+          limits={p.limits}
+          openLimits={() => {
+            setLimitsOpen(true);
+            p.reloadLimits();
+          }}
+          newChat={p.onNewChat}
+          chooseChat={p.onChooseChat}
+        />
+      )}
       {agent && (
         <NativeAccountNotices
           notices={p.data.runtime.nativeNotices}
           accountKey={agent.accountKey || "default"}
         />
       )}
+      <div className="conversation-navigation">
+        {!p.room && p.id && (
+          <PromptNavigator
+            compact
+            key={p.id}
+            messages={items}
+            agentId={managed ? p.id || undefined : undefined}
+            container={scroll}
+            storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+            jump={jumpToPrompt}
+          />
+        )}
+      </div>
       <div id="messages" ref={scroll} onScroll={onScroll}>
         <div ref={content} className="message-content">
           {notice && <p className="notice">{notice}</p>}
+          {historical && (
+            <p className="historical-chat-note">
+              Earlier part of this chat.
+              <Button
+                type="button"
+                size="compact-xs"
+                variant="subtle"
+                onClick={returnToLatest}
+              >
+                Return to latest messages
+              </Button>
+            </p>
+          )}
           {before && (
             <Button
               id="earlier-messages"
+              loading={pageLoading}
               onClick={() => {
                 setFollow(false);
                 void older().catch((e) => p.notify(errorText(e)));
@@ -706,12 +1048,17 @@ export default function Conversation(p: {
           <TurnHistory
             key={`${p.data.stateDir}:${p.id}`}
             items={items}
+            agent={managed && !p.room ? agent : undefined}
             currentTurn={agent?.turnId}
             enabled={managed && !p.room}
             storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
             renderMessage={(item) =>
               item.nativeNotice ? (
-                <NativeNotice key={item.id} item={item} />
+                <NativeNotice
+                  key={item.id}
+                  item={item}
+                  planType={p.limits?.data?.rateLimits?.planType}
+                />
               ) : (
                 renderMessage(item)
               )
@@ -719,12 +1066,24 @@ export default function Conversation(p: {
             agentId={managed ? agent?.id : undefined}
             onJump={jumpToPrompt}
           />
+          {after && (
+            <Button
+              id="newer-messages"
+              loading={pageLoading}
+              onClick={() =>
+                void newer().catch((error) => p.notify(errorText(error)))
+              }
+            >
+              Later messages
+            </Button>
+          )}
+          {!p.room && agent && <SafetyBuffering key={`safety:${agent.id}`} agent={agent} />}
           {!p.room && detailedActivity && (
             <AgentPhase agent={agent} connection={connection} />
           )}
           {mobileClient && agent?.source === "managed" && !p.room && (
             <UserTasks
-              key={agent.rootId || agent.id}
+              key={`tasks:${agent.rootId || agent.id}`}
               data={{
                 ...p.data,
                 runtime: {
@@ -767,7 +1126,7 @@ export default function Conversation(p: {
             variant="default"
             radius="xl"
             leftSection={<ArrowDown size={14} />}
-            onClick={() => setFollow(true)}
+            onClick={returnToLatest}
           >
             Latest
           </Button>
@@ -844,13 +1203,15 @@ export default function Conversation(p: {
                 mobileClient
                   ? "Use the send button to send."
                   : managed
-                    ? "Enter sends after tool calls. Tab queues after the turn. Shift + Enter adds a new line."
+                    ? "Enter sends after tool calls. Use Queue after turn to wait for the current turn. Shift + Enter adds a new line."
                     : "Enter to send. Shift + Enter for a new line."
               }
               placeholder={
-                canSend
-                  ? "What should we work on?"
-                  : "This session has no live mailbox"
+                threadBlock
+                  ? "Start a new chat or open another chat."
+                  : canSend
+                    ? "What should we work on?"
+                    : "This session has no live mailbox"
               }
               disabled={!canSend}
               value={p.draft}
@@ -858,25 +1219,11 @@ export default function Conversation(p: {
                 promptRecall.reset();
                 p.setDraft(e.target.value);
               }}
-              maxLength={12000}
+              error={draftTooLong}
+              aria-describedby={draftTooLong ? "draft-length-error" : undefined}
               rows={1}
               onKeyDown={(e) => {
                 if (promptRecall.onKeyDown(e)) return;
-                if (
-                  managed &&
-                  canSend &&
-                  e.key === "Tab" &&
-                  !e.shiftKey &&
-                  !e.ctrlKey &&
-                  !e.metaKey &&
-                  !e.altKey &&
-                  !e.nativeEvent.isComposing &&
-                  (p.draft.trim() || assets.length)
-                ) {
-                  e.preventDefault();
-                  void submit("queue");
-                  return;
-                }
                 if (
                   !mobileClient &&
                   e.key === "Enter" &&
@@ -888,11 +1235,42 @@ export default function Conversation(p: {
                 }
               }}
             />
+            {draftTooLong && (
+              <div
+                id="draft-length-error"
+                className="draft-length-error"
+                role="alert"
+              >
+                <span>
+                  {p.draft.length.toLocaleString()} characters. The message
+                  limit is 12,000. Your full draft is preserved.
+                </span>
+                {managed && (
+                  <Button
+                    type="button"
+                    size="compact-xs"
+                    variant="subtle"
+                    disabled={
+                      !canSend || p.sending || uploading || assets.length >= 8
+                    }
+                    onClick={() => void attachDraft()}
+                  >
+                    Attach text as a file
+                  </Button>
+                )}
+              </div>
+            )}
             <div className="composer-bar">
               <DraftVersions
                 key={`drafts:${p.id || "new"}`}
                 versions={p.draftConflicts || []}
-                useVersion={(version) => p.setDraft(version.text)}
+                useVersion={(version, mode) =>
+                  p.setDraft((current) =>
+                    mode === "append" && current
+                      ? `${current}\n\n${version.text}`
+                      : version.text,
+                  )
+                }
                 dismiss={(version) => p.dismissDraft?.(version)}
               />
               {managed && (
@@ -910,7 +1288,7 @@ export default function Conversation(p: {
                   }
                 />
               )}
-              {!mobileClient && managed && p.id && (
+              {managed && p.id && (
                 <Dictation
                   key={`${p.data.stateDir}:${p.id}`}
                   chatId={`${p.data.stateDir}:${p.id}`}
@@ -920,17 +1298,11 @@ export default function Conversation(p: {
                       p.draft +
                       (p.draft && !p.draft.endsWith("\n") ? "\n" : "") +
                       text;
-                    if (next.length > 12000) {
-                      p.notify(
-                        "The message exceeds 12,000 characters. Your transcript remains in Dictation.",
-                      );
-                      return;
-                    }
                     p.setDraft(next);
                   }}
                 />
               )}
-              {managed && agent?.isLead && p.id && (
+              {managed && agent?.isLead && p.id && !threadBlock && (
                 <RealtimeVoice
                   key={`voice:${p.id}`}
                   agentId={p.id}
@@ -942,6 +1314,7 @@ export default function Conversation(p: {
               </span>
               <div className="composer-activity">
                 {!detailedActivity &&
+                  !reasoningVisible &&
                   agent &&
                   !(agent.status === "queued" && queue.length > 0) && (
                     <AgentPhase
@@ -956,19 +1329,25 @@ export default function Conversation(p: {
                     />
                   )}
               </div>
-              <div className="prompt-navigation-slot">
-                {!p.room && p.id && (
-                  <PromptNavigator
-                    compact
-                    key={p.id}
-                    messages={items}
-                    container={scroll}
-                    storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
-                    jump={jumpToPrompt}
-                  />
-                )}
-              </div>
               <div className="composer-submit-actions">
+                {managed && (
+                  <ActionIcon
+                    type="button"
+                    variant="subtle"
+                    aria-label="Queue after turn"
+                    title="Queue after the current turn"
+                    disabled={
+                      !canSend ||
+                      p.sending ||
+                      uploading ||
+                      draftTooLong ||
+                      (!p.draft.trim() && !assets.length)
+                    }
+                    onClick={() => void submit("queue")}
+                  >
+                    <ListEnd size={18} />
+                  </ActionIcon>
+                )}
                 {agent && (
                   <ActionIcon
                     type="button"
@@ -1017,13 +1396,12 @@ export default function Conversation(p: {
                     !canSend ||
                     p.sending ||
                     uploading ||
+                    draftTooLong ||
                     (!p.draft.trim() && !assets.length)
                   }
                   aria-label="Send message"
                   title={
-                    managed
-                      ? "Send after tool calls (Enter). Queue after turn (Tab)."
-                      : "Send message"
+                    managed ? "Send after tool calls (Enter)" : "Send message"
                   }
                 >
                   {p.sending ? (
@@ -1035,13 +1413,16 @@ export default function Conversation(p: {
               </div>
             </div>
           </form>
-          {!mobileClient && agent?.source === "managed" && (
+          {agent?.source === "managed" && (
             <Usage
               key={p.agent?.accountKey || "default"}
               agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
               limits={p.limits}
+              limitsLoading={p.limitsLoading}
               accountLabel={p.limitsAccountLabel}
               reload={p.reloadLimits}
+              opened={limitsOpen}
+              onChange={setLimitsOpen}
             />
           )}
         </>

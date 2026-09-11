@@ -1,9 +1,60 @@
 const { execFile } = require("node:child_process");
-const { promisify } = require("node:util");
+const { createInterface } = require("node:readline");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
-const run = promisify(execFile);
+function run(helper, args, { signal, onProgress }) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted)
+      return reject(Error("Transcription canceled. Your recording is saved."));
+    const child = execFile(
+      helper,
+      args,
+      {
+        timeout: 75 * 60 * 1000,
+        maxBuffer: 2 * 1024 * 1024,
+        killSignal: "SIGKILL",
+      },
+      (error, stdout) => {
+        signal?.removeEventListener("abort", cancel);
+        lines.close();
+        if (signal?.aborted)
+          return reject(
+            Error("Transcription canceled. Your recording is saved."),
+          );
+        if (error) {
+          error.stdout = stdout;
+          return reject(error);
+        }
+        resolve({ stdout });
+      },
+    );
+    const cancel = () => child.kill("SIGKILL");
+    signal?.addEventListener("abort", cancel, { once: true });
+    const lines = createInterface({ input: child.stderr });
+    let previous = -1;
+    lines.on("line", (line) => {
+      try {
+        const value = JSON.parse(line);
+        if (
+          value.type === "progress" &&
+          Number.isInteger(value.completed) &&
+          Number.isInteger(value.total) &&
+          value.total > 0 &&
+          value.total <= 37 &&
+          value.completed >= 0 &&
+          value.completed <= value.total &&
+          value.completed > previous
+        ) {
+          previous = value.completed;
+          onProgress?.({ completed: value.completed, total: value.total });
+        }
+      } catch {
+        /* Native diagnostics are not progress events. */
+      }
+    });
+  });
+}
 function validateAudio(value) {
   if (
     !(value instanceof ArrayBuffer) ||
@@ -37,7 +88,7 @@ function validateAudio(value) {
     throw Error("Invalid WAV recording or duration exceeds 30 minutes.");
   return data;
 }
-async function transcribe({ audio, locale }, helper) {
+async function transcribe({ audio, locale }, helper, options = {}) {
   const data = validateAudio(audio);
   if (
     typeof locale !== "string" ||
@@ -57,11 +108,9 @@ async function transcribe({ audio, locale }, helper) {
     await fs.writeFile(file, data, { mode: 0o600 });
     let stdout;
     try {
-      ({ stdout } = await run(helper, [file, locale], {
-        timeout: 75 * 60 * 1000,
-        maxBuffer: 2 * 1024 * 1024,
-      }));
+      ({ stdout } = await run(helper, [file, locale], options));
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       try {
         const detail = JSON.parse(error.stdout);
         if (detail.error) throw Error(detail.error);

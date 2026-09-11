@@ -81,6 +81,10 @@ try {
     )
       transcriptRequests++;
   });
+  // Keep the status fixture on HTTP snapshots; sync has separate coverage.
+  await page.route("**/api/sync/**", (route) =>
+    route.fulfill({ status: 503, body: "Fixture uses HTTP snapshots" }),
+  );
   await page.route("**/api/state", async (route) => {
     const response = await route.fetch();
     const data = await response.json();
@@ -138,6 +142,11 @@ try {
   const selectLead = () =>
     page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await selectLead();
+  assert.equal(
+    await page.locator("#team-toggle").getAttribute("aria-expanded"),
+    "false",
+  );
+  await page.locator("#team-toggle").click();
   const team = page.getByRole("complementary", { name: "Team", exact: true });
   const summary = team.getByLabel("Team status summary");
   const count = async (name) =>
@@ -193,7 +202,7 @@ try {
     true,
   );
   await excerpt.locator("summary").click();
-  const search = team.getByRole("searchbox", { name: "Find a worker" });
+  const search = team.getByRole("searchbox", { name: "Find a subagent" });
   await search.fill("Verified receipt recovery");
   await card(25).waitFor({ state: "visible" });
   assert.equal(
@@ -218,7 +227,9 @@ try {
     await page.locator("#conversation-title").innerText(),
     worker(25).name,
   );
-  await page.getByRole("button", { name: "Back to lead", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Back to main agent", exact: true })
+    .click();
   await search.fill("");
   deferred = true;
   await page.reload();

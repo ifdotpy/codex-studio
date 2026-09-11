@@ -16,6 +16,7 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
     null,
   );
   const [announcement, announce] = useState("");
+  const [destination, setDestination] = useState<string | null>(null);
   useEffect(() => {
     setOrder(saved(key, {}));
   }, [key]);
@@ -45,7 +46,35 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
   const finish = () => {
     drag.current = null;
     setTarget(null);
+    setDestination(null);
   };
+  const dropBindings = (
+    key: string,
+    accepts: (source: Drag) => boolean,
+    dropped: (source: Drag) => void,
+  ) => ({
+    "data-folder-drop": destination === key ? "true" : undefined,
+    onDragOver: (event: DragEvent<HTMLElement>) => {
+      if (!drag.current || !accepts(drag.current)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      setTarget(null);
+      setDestination(key);
+    },
+    onDragLeave: (event: DragEvent<HTMLElement>) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+        setDestination(null);
+    },
+    onDrop: (event: DragEvent<HTMLElement>) => {
+      if (!drag.current || !accepts(drag.current)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const source = drag.current;
+      finish();
+      dropped(source);
+    },
+  });
   const bindings = (group: string, id: string, ids: string[]) => ({
     draggable: true,
     "data-drop-edge":
@@ -65,6 +94,7 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
       event.preventDefault();
       event.stopPropagation();
       event.dataTransfer.dropEffect = "move";
+      setDestination(null);
       const box = event.currentTarget.getBoundingClientRect();
       const after = event.clientY >= box.top + box.height / 2;
       setTarget((old) =>
@@ -107,5 +137,5 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
       if (to) move(group, ids, id, to, after);
     },
   });
-  return { rank, bindings, announcement };
+  return { rank, bindings, dropBindings, announcement, announce };
 }

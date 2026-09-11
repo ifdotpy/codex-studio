@@ -43,12 +43,12 @@ const shortTime = (n: number) =>
     minute: "2-digit",
   });
 const colors = [
-  "#a59bff",
-  "#70c9bd",
-  "#e2b479",
-  "#ec91b2",
-  "#82b4ef",
-  "#c1ca81",
+  "light-dark(#7044bc, #a59bff)",
+  "light-dark(#187c70, #70c9bd)",
+  "light-dark(#8a5700, #e2b479)",
+  "light-dark(#ab3266, #ec91b2)",
+  "light-dark(#286fbf, #82b4ef)",
+  "light-dark(#65751f, #c1ca81)",
 ];
 const tokenFields = [
   ["inputTokens", "Input", "Includes cached input"],
@@ -404,18 +404,18 @@ export default function Analytics({
     if (tool) q.set("tool", tool);
     return q.toString();
   }, [agent.id, scope, period, tool, offset, snapshotAt]);
-  const data = loadedQuery === query ? dataRecord : null;
+  const viewKey = JSON.stringify([agent.id, scope, period, tool, offset]);
+  const data = loadedQuery === viewKey ? dataRecord : null;
   useEffect(() => {
     let active = true;
     setBusy(true);
-    setData(null);
     setError("");
-    setSelected(null);
+    if (loadedQuery !== viewKey) setSelected(null);
     api<Json>(`/api/analytics?${query}`)
       .then((result) => {
         if (!active) return;
         setData(result);
-        setLoadedQuery(query);
+        setLoadedQuery(viewKey);
         setKnownTools(
           (previous) =>
             [
@@ -429,7 +429,6 @@ export default function Analytics({
       .catch((e) => {
         if (active) {
           setError(errorText(e));
-          setData(null);
         }
       })
       .finally(() => {
