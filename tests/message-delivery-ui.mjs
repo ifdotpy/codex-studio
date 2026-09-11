@@ -212,7 +212,10 @@ try {
     const start = async (text, queue = false) => {
       const count = posts.length;
       await input.fill(text);
-      if (queue) await page.getByRole("button", { name: "Queue after turn", exact: true }).click();
+      if (queue)
+        await page
+          .getByRole("button", { name: "Queue after turn", exact: true })
+          .click();
       else await page.locator("#send").click();
       await until(
         () => posts.length === count + 1,
@@ -602,6 +605,46 @@ try {
       posts.length,
       expectedPosts,
       `${mode}: no automatic duplicate delivery`,
+    );
+    // A saved queue receipt can outlive the server transcript and queue row.
+    const staleText = `${mode} stale queue receipt`;
+    const stale = await start(staleText);
+    await accept(stale, "queued");
+    await row(staleText)
+      .getByRole("status")
+      .filter({ hasText: /^Queued$/ })
+      .waitFor();
+    const mutationsBeforeStaleRemoval = mutations.length;
+    await row(staleText)
+      .getByRole("button", { name: "Remove message", exact: true })
+      .click();
+    await row(staleText).waitFor({ state: "hidden" });
+    await page.reload();
+    await page.locator(`[data-chat="${a.id}"]`).click();
+    await page.locator(`[data-message="${a.id}-history-35"]`).waitFor();
+    assert.equal(
+      await row(staleText).count(),
+      0,
+      `${mode}: stale receipt stays removed after reload`,
+    );
+    assert.equal(
+      mutations.length,
+      mutationsBeforeStaleRemoval,
+      `${mode}: removal does not cancel or resend`,
+    );
+    await publish(a.id, [
+      ...history.get(a.id).items,
+      {
+        id: `${a.id}:${stale.body.id}`,
+        clientMessageId: stale.body.id,
+        role: "user",
+        text: staleText,
+      },
+    ]);
+    assert.equal(
+      await row(staleText).count(),
+      0,
+      `${mode}: delayed history does not restore the receipt`,
     );
     // Dismissal hides one receipt on this device without cancelling delivery.
     const dismissedText = `${mode} uncertain message removed from this device`;

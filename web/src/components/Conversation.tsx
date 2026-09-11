@@ -278,7 +278,9 @@ export default function Conversation(p: {
     !!agent?.error ||
     !!agent?.startAttempt?.prepareError ||
     !!agent?.startAttempt?.responseError ||
-    ["retrying", "auth", "safety", "error"].includes(agent?.activity?.phase || "") ||
+    ["retrying", "auth", "safety", "error"].includes(
+      agent?.activity?.phase || "",
+    ) ||
     !["starting", "running", "queued", "idle", "completed"].includes(
       agent?.status || "idle",
     );
@@ -708,9 +710,12 @@ export default function Conversation(p: {
             </span>
             {queueControls(m)}
             {m.role === "user" &&
-              ["uncertain", "failed", "cancelled"].includes(
+              (["uncertain", "failed", "cancelled"].includes(
                 m.deliveryStatus || "",
-              ) && (
+              ) ||
+                (m.localDelivery &&
+                  m.deliveryStatus === "pending" &&
+                  !queueEntry(m))) && (
                 <ActionIcon
                   size="sm"
                   variant="subtle"
@@ -1078,7 +1083,9 @@ export default function Conversation(p: {
               Later messages
             </Button>
           )}
-          {!p.room && agent && <SafetyBuffering key={`safety:${agent.id}`} agent={agent} />}
+          {!p.room && agent && (
+            <SafetyBuffering key={`safety:${agent.id}`} agent={agent} />
+          )}
           {!p.room && detailedActivity && (
             <AgentPhase agent={agent} connection={connection} />
           )}
