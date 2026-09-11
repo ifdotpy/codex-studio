@@ -151,10 +151,11 @@ try {
       await page.route("**/api/sync/pull?*", (route) => {
         const url = new URL(route.request().url());
         const scope = url.searchParams.get("scope");
-        if (scope !== "state" && !scope.startsWith("transcript:"))
+        const stateScope = scope === "state" || scope === "state:chat";
+        if (!stateScope && !scope.startsWith("transcript:"))
           return route.fallback();
         const id = scope.slice("transcript:".length);
-        const seq = scope === "state" ? stateRevision : revisions.get(id);
+        const seq = stateScope ? stateRevision : revisions.get(id);
         const after = Number(url.searchParams.get("after") || 0);
         if (scope.startsWith("transcript:")) transcriptPulls++;
         return route.fulfill({
@@ -166,7 +167,7 @@ try {
                     {
                       id: scope,
                       payload: JSON.stringify(
-                        scope === "state" ? state : history.get(id),
+                        stateScope ? state : history.get(id),
                       ),
                       seq,
                       _deleted: false,

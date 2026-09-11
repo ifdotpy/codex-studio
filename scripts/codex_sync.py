@@ -6,8 +6,9 @@ import uuid
 
 
 class SyncStore:
-    def __init__(self, connect, snapshot, transcript):
+    def __init__(self, connect, snapshot, transcript, chat_snapshot=None):
         self.connect, self.snapshot, self.transcript = connect, snapshot, transcript
+        self.chat_snapshot = chat_snapshot
         self.lock = threading.RLock()
         with self.connect() as db:
             db.executescript('''
@@ -34,7 +35,8 @@ class SyncStore:
 
     def identity(self):
         with self.connect() as db:
-            return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0]}
+            return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
+                    **({'chatState': True} if self.chat_snapshot else {})}
 
     def generation(self):
         with self.connect() as db:
@@ -56,8 +58,8 @@ class SyncStore:
     def pull(self, scope, after=0, limit=100):
         after, limit = max(0, int(after)), min(100, max(1, int(limit)))
         with self.lock:
-            if scope == 'state':
-                payload = dict(self.snapshot())
+            if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
+                payload = dict(self.chat_snapshot() if scope == 'state:chat' else self.snapshot())
                 payload.pop('token', None)
                 payload.pop('at', None)
                 deleted = False

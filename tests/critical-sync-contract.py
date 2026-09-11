@@ -87,7 +87,7 @@ class FakeRuntime:
         self.send_calls = []
         self.receipt_error = None
 
-    def snapshot(self):
+    def snapshot(self, *, include_work=True):
         return {
             "agents": [{
                 "id": "managed-agent",

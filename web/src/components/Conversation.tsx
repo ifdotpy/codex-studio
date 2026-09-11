@@ -1,3 +1,4 @@
+import { onResume } from "../sync/resume";
 import {
   NativeError,
   NativeNotice,
@@ -77,6 +78,7 @@ export default function Conversation(p: {
     assets?: string[];
     delivery?: "queue" | "steer" | "after_tool";
     attachments?: Attachment[];
+    onPersist?: () => void;
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
   onObserved?: (ids: string[]) => void;
@@ -225,7 +227,8 @@ export default function Conversation(p: {
   const [queuedText, setQueuedText] = useState("");
   const [queueOriginal, setQueueOriginal] = useState("");
   const [queueError, setQueueError] = useState("");
-  const sendLock = useRef(false);
+  const sendLock = useRef<symbol | null>(null);
+  const latestSend = useRef<Record<string, symbol>>({});
   const branchLock = useRef(false);
   const branchRequests = useRef<Record<string, string>>({});
   const [branchDraft, setBranchDraft] = useState<{
@@ -333,22 +336,32 @@ export default function Conversation(p: {
     if (!managed || !p.id) return;
     const id = p.id;
     let live = true;
-    const poll = () =>
-      api(`/api/queue?agent=${encodeURIComponent(id)}`)
-        .then((result) => {
-          if (live) {
-            setQueue(result.items || []);
-            setQueueError("");
-          }
-        })
-        .catch((error) => {
-          if (live) setQueueError(errorText(error));
-        });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let polling = false;
+    const poll = async () => {
+      if (!live || polling) return;
+      clearTimeout(timer);
+      if (document.hidden || navigator.onLine === false) return;
+      polling = true;
+      try {
+        const result = await api(`/api/queue?agent=${encodeURIComponent(id)}`);
+        if (live) {
+          setQueue(result.items || []);
+          setQueueError("");
+        }
+      } catch (error) {
+        if (live) setQueueError(errorText(error));
+      } finally {
+        polling = false;
+        if (live) timer = setTimeout(poll, 5000);
+      }
+    };
     void poll();
-    const timer = setInterval(poll, 2000);
+    const stopResume = onResume(() => void poll());
     return () => {
       live = false;
-      clearInterval(timer);
+      clearTimeout(timer);
+      stopResume();
     };
   }, [p.id, managed]);
   const addFiles = async (files: globalThis.File[]) => {
@@ -385,8 +398,13 @@ export default function Conversation(p: {
       (!p.draft.trim() && !assets.length)
     )
       return;
-    sendLock.current = true;
+    const attempt = Symbol();
+    sendLock.current = attempt;
     const id = p.id || "";
+    latestSend.current[id] = attempt;
+    const release = () => {
+      if (sendLock.current === attempt) sendLock.current = null;
+    };
     // Sending expresses a new scroll intent. Streaming still respects a later
     // manual scroll away from the bottom.
     returnToLatest();
@@ -401,24 +419,29 @@ export default function Conversation(p: {
         assets: assets.map((asset) => asset.id),
         attachments: assets.map(({ preview: _preview, ...asset }) => asset),
         delivery,
+        onPersist: release,
       });
       if (p.id && managed)
         void loadQueue(p.id).catch((error) => p.notify(errorText(error)));
     } catch {
-      setAttachments((current) => ({
-        ...current,
-        [id]: Array.from(
-          new Map(
-            [...assets, ...(current[id] || [])].map((asset) => [
-              asset.id,
-              asset,
-            ]),
-          ).values(),
-        ),
-      }));
+      setAttachments((current) =>
+        latestSend.current[id] !== attempt
+          ? current
+          : {
+              ...current,
+              [id]: Array.from(
+                new Map(
+                  [...assets, ...(current[id] || [])].map((asset) => [
+                    asset.id,
+                    asset,
+                  ]),
+                ).values(),
+              ),
+            },
+      );
       // The send owner restores the draft and renders its delivery error.
     } finally {
-      sendLock.current = false;
+      release();
     }
   };
   const attachDraft = async () => {

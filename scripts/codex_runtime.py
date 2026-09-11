@@ -4022,7 +4022,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError("This conversation was deleted")
             return task
 
-    def snapshot(self):
+    def snapshot(self, *, include_work=True):
         with self.lock, self.db() as db:
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
             for a in agents:
@@ -4069,11 +4069,14 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 ],
                 "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
                 "complaints": self.complaint_summaries(db),
-                "work": [
+                # The chat view reads work through /api/work when opened.
+                # Omit it before the database read so old result histories do
+                # not delay every chat update under the shared runtime lock.
+                **({"work": [
                     w
                     for w in self.records(db, "work")
                     if w["rootId"] in {a["id"] for a in agents}
-                ],
+                ]} if include_work else {}),
                 "rules": [
                     r
                     for r in self.records(db, "rules")

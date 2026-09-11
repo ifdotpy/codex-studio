@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { syncApi as api, ApiError, errorText, setToken } from "./api";
-import { subscribeProjection } from "./sync/client";
+import {
+  subscribeProjection,
+  syncDatabase,
+  UnsupportedSyncError,
+} from "./sync/client";
 import { onResume } from "./sync/resume";
 import type { Snapshot, Message, Agent, Json } from "./types";
 export function useSnapshot() {
@@ -10,7 +14,7 @@ export function useSnapshot() {
   const generation = useRef(0);
   const replicated = useRef(false);
   const sessionToken = useRef("");
-  const refresh = useCallback(async (credentialsOnly = false) => {
+  const refresh = useCallback(async (credentialsOnly = replicated.current) => {
     const request = ++generation.current;
     try {
       if (credentialsOnly) {
@@ -56,18 +60,38 @@ export function useSnapshot() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       if (stopped || polling) return;
+      if (document.hidden || navigator.onLine === false) {
+        timer = setTimeout(poll, 30000);
+        return;
+      }
       clearTimeout(timer);
       polling = true;
-      await refresh(replicated.current);
+      try {
+        await syncDatabase();
+        if (stopped) return;
+        await refresh(true);
+      } catch (error) {
+        if (stopped) return;
+        if (error instanceof UnsupportedSyncError) await refresh(false);
+        else {
+          setError(errorText(error));
+          if (!replicated.current) await refresh(false);
+        }
+      }
       polling = false;
-      if (!stopped) timer = setTimeout(poll, 1600);
+      if (!stopped) timer = setTimeout(poll, replicated.current ? 30000 : 1600);
     };
+    const offline = () =>
+      setError("Offline. Saved chats and drafts remain on this device.");
+    window.addEventListener("offline", offline);
+    if (navigator.onLine === false) offline();
     const stopResume = onResume(() => void poll());
     void poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
       stopResume();
+      window.removeEventListener("offline", offline);
     };
   }, [refresh]);
   useEffect(

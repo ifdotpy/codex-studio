@@ -1,0 +1,21 @@
+{
+  "artifactBuild": "c49e52afae84bce8",
+  "network": {
+    "downloadBytesPerSecond": 200000,
+    "uploadBytesPerSecond": 100000,
+    "latencyMs": 100,
+    "cpuRate": 4
+  },
+  "fixture": {
+    "lead": "311c3371-10e7-41fa-ad2f-3e8d27679d76",
+    "workBytes": 6033930,
+    "workCount": 700
+  },
+  "fullStateBytes": 6254237,
+  "fullStateGzipBytes": 4369810,
+  "compactStateBytes": 220298,
+  "compactStateGzipBytes": 15034,
+  "coldComposerMs": 3765,
+  "openSyncStreams": 1,
+  "warmDraftMs": 323
+}

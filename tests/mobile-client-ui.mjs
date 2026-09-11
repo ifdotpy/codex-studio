@@ -63,7 +63,12 @@ try {
       hasWorkers ? 1 : 0,
     );
     assert.equal(await page.locator(".terminal-dock").count(), 0);
-    assert.equal(await page.locator(".usage-footer").count(), 0);
+    const managed =
+      snapshot.threads.find((agent) => agent.id === selected)?.source ===
+      "managed";
+    assert.equal(await page.locator(".usage-footer").count(), managed ? 1 : 0);
+    if (managed)
+      assert.equal(await page.locator(".usage-footer").isVisible(), true);
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -73,14 +78,16 @@ try {
     const composer = await page.locator("#composer").boundingBox();
     assert.ok(composer.x >= 0 && composer.x + composer.width <= width + 1);
     await page.getByLabel("Toggle conversations").click();
-    await page.getByLabel("Search chats", { exact: true }).waitFor();
+    await page
+      .getByRole("button", { name: "Search chats", exact: true })
+      .waitFor();
     assert.equal(
       await page.getByRole("tab", { name: /^Agent chats/ }).count(),
       0,
     );
     assert.equal(
-      await page.getByLabel("Add project", { exact: true }).count(),
-      0,
+      await page.getByLabel("Add project", { exact: true }).isVisible(),
+      true,
     );
     assert.equal(
       await page.getByRole("button", { name: "Complaint book" }).count(),
@@ -108,7 +115,7 @@ try {
   await page
     .getByRole("button", { name: "Chat settings", exact: true })
     .click();
-  await page.getByLabel("Chat account", { exact: true }).waitFor();
+  await page.getByTestId("account-picker").waitFor();
   assert.equal(
     await page.getByRole("button", { name: /Add account/ }).count(),
     0,
@@ -176,10 +183,7 @@ try {
   await page
     .getByRole("button", { name: "Chat settings", exact: true })
     .click();
-  assert.equal(
-    await page.getByLabel("Chat account", { exact: true }).isEnabled(),
-    true,
-  );
+  assert.equal(await page.getByTestId("account-picker").isEnabled(), true);
   await page.keyboard.press("Escape");
   // Use the real runtime to create another chat while the previous chat is empty.
   const post = async (path, body) => {
@@ -223,10 +227,10 @@ try {
   await page
     .getByRole("button", { name: "Chat settings", exact: true })
     .click();
-  await page.getByLabel("Chat account", { exact: true }).waitFor();
+  await page.getByTestId("account-picker").waitFor();
   assert.equal(
-    await page.getByLabel("Chat account", { exact: true }).inputValue(),
-    alternate.id,
+    await page.getByTestId("account-picker").getAttribute("aria-label"),
+    `Account: ${alternate.email || alternate.label}`,
   );
   const nextResponse = page.waitForResponse(
     (response) =>
@@ -241,7 +245,7 @@ try {
   const nextRequest = next.request().postDataJSON();
   const nextChat = await next.json();
   assert.equal(nextRequest.reuse_empty, false);
-  assert.equal(nextRequest.account_key, undefined);
+  assert.equal(nextRequest.account_key, "default");
   assert.equal(nextRequest.previous, created.id);
   assert.equal(nextChat.id, nextRequest.id);
   assert.notEqual(nextChat.id, created.id);
@@ -293,7 +297,7 @@ try {
   );
   // Desktop controls remain available after a viewport change.
   await page.setViewportSize({ width: 1440, height: 960 });
-  await page.locator(".workspace-shortcuts").waitFor();
+  await page.locator(".terminal-dock").waitFor();
   await page.getByLabel("Add project", { exact: true }).waitFor();
   await page.locator("#messages-toggle").waitFor();
   const manifest = await (await fetch(url + "/manifest.webmanifest")).json();

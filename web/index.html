@@ -13,10 +13,44 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Codex Studio</title>
+    <style>
+      .studio-startup {
+        min-height: 100dvh;
+        box-sizing: border-box;
+        display: grid;
+        place-content: center;
+        padding: 24px;
+        margin: 0;
+        background: #171719;
+        color: #ececef;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        text-align: center;
+      }
+      .studio-startup p {
+        margin: 8px 0;
+      }
+      .studio-startup a {
+        color: #bfb4ff;
+      }
+      body:has(.studio-startup) {
+        margin: 0;
+        background: #171719;
+      }
+    </style>
+    <script src="/studio-startup.js" defer></script>
     <link rel="icon" type="image/png" href="/src/assets/codex-studio.png" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="studio-startup" aria-label="Studio startup">
+        <p role="status" id="studio-startup-status">Opening Studio…</p>
+        <p id="studio-startup-help">Connecting to your Mac.</p>
+        <p><a href="/">Reload Studio</a></p>
+        <noscript>Enable JavaScript to open Studio.</noscript>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

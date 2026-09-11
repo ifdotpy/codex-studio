@@ -197,7 +197,8 @@ export default function App() {
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<Json | null>(null),
     sends = useRef<Record<string, Json>>({}),
-    sendingLock = useRef(false),
+    sendingLock = useRef<symbol | null>(null),
+    latestSend = useRef<Record<string, symbol>>({}),
     creationLock = useRef(false),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSendKey = `studio-pending-sends:${data?.stateDir || ""}`;
@@ -607,16 +608,25 @@ export default function App() {
     assets?: string[];
     delivery?: "queue" | "steer" | "after_tool";
     attachments?: Json[];
+    onPersist?: () => void;
   }) => {
     const draftKey = opened || "new",
       text = (drafts[draftKey] || "").trim();
     if ((!text && !options?.assets?.length) || sendingLock.current) return;
-    sendingLock.current = true;
+    const attempt = Symbol();
+    sendingLock.current = attempt;
+    latestSend.current[draftKey] = attempt;
     setSending(true);
+    const release = () => {
+      if (sendingLock.current !== attempt) return;
+      sendingLock.current = null;
+      setSending(false);
+    };
     let request: Json | undefined;
     try {
       const id = opened || (await newChat());
       if (!id) return;
+      latestSend.current[id] = attempt;
       if (
         agent?.source === "managed" &&
         /^\/(compact|review|stop|stop-team)(\s|$)/.test(text)
@@ -649,7 +659,7 @@ export default function App() {
             assets: options?.assets || [],
             delivery: options?.delivery || "after_tool",
           };
-        // Retain the exact request across reloads until acceptance is known.
+        // Retain the exact request until the durable outbox owns its retry.
         // A turn ending can change the default delivery mode, not this receipt.
         persistSends();
         request = sends.current[id];
@@ -670,7 +680,16 @@ export default function App() {
           save("codex-agent-drafts", next);
           return next;
         });
-        const result = await durableSend(request, entry.attachments);
+        const result = await durableSend(request, entry.attachments, () => {
+          // The outbox now owns this immutable request. A new user submission,
+          // including identical text, gets its own identity.
+          if (sends.current[id]?.id === entry.id) {
+            delete sends.current[id];
+            persistSends();
+          }
+          release();
+          options?.onPersist?.();
+        });
         setOutgoing((old) => ({
           ...old,
           [entry.id]: {
@@ -685,7 +704,10 @@ export default function App() {
           },
         }));
         if (result.status === "cancelled") {
-          delete sends.current[id];
+          if (sends.current[id]?.id === entry.id) {
+            delete sends.current[id];
+            persistSends();
+          }
           throw new ApiError(
             "This message was cancelled. Send it again to resume.",
             400,
@@ -698,8 +720,10 @@ export default function App() {
             result.error ||
               "Delivery is uncertain. Inspect the conversation before sending again.",
           );
-        delete sends.current[id];
-        persistSends();
+        if (sends.current[id]?.id === entry.id) {
+          delete sends.current[id];
+          persistSends();
+        }
         if (Object.values(result.deliveries || {}).some((v) => v !== "queued"))
           notify("Message saved. Some deliveries are not confirmed.");
       }
@@ -717,7 +741,11 @@ export default function App() {
         // Never replace text the user typed while this request was in flight.
         const targetKey = request.room || draftKey;
         setDrafts((old) => {
-          if (old[targetKey]?.trim()) return old;
+          if (
+            latestSend.current[targetKey] !== attempt ||
+            old[targetKey]?.trim()
+          )
+            return old;
           const next = { ...old, [targetKey]: text };
           save("codex-agent-drafts", next);
           return next;
@@ -729,6 +757,12 @@ export default function App() {
           ![408, 429].includes(e.status);
         if (rejected && sends.current[request.room]?.id === key)
           delete sends.current[request.room];
+        if (
+          !rejected &&
+          latestSend.current[targetKey] === attempt &&
+          !sends.current[request.room]
+        )
+          sends.current[request.room] = request;
         persistSends();
         setOutgoing((old) =>
           old[key]
@@ -746,8 +780,7 @@ export default function App() {
       if (!request) notify(errorText(e));
       throw e;
     } finally {
-      sendingLock.current = false;
-      setSending(false);
+      release();
     }
   };
   const rename = async (id: string, name: string) => {

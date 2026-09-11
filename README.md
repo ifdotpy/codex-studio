@@ -77,8 +77,24 @@ Tailscale access rules control who can open Studio. Studio adds no separate logi
 RxDB replicates SQLite projections to IndexedDB. It keeps message identities across
 reloads and retries. Different browser drafts remain separate and can be combined.
 A lost response does not authorize another underlying command.
-The page must load before it can work during a connection loss. There is no offline
-application shell. Keep the page open for sync and voice.
+After one complete online load, the browser can cache the interface for later use
+without the Mac connection. Cached chats and drafts can open while the Mac is
+unavailable. Browser storage must still contain that data.
+Text messages for existing chats enter a local queue before the composer clears.
+The queue retries the same message identity when Studio can reach the Mac again.
+New chats, new file uploads, and voice require the Mac connection.
+Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
+is not guaranteed. Keep the page open for voice.
+
+The chat snapshot excludes work result histories. The work view loads those
+histories through its existing API. Mobile sync uses one shared event stream.
+After a network change or a return to Studio, sync replaces the old connection.
+A cached workspace cannot send drafts to a different workspace before verification.
+
+Run `npm --prefix web run test:mobile` for the mobile regression suite.
+Set `BROWSER=webkit` for the WebKit lifecycle and delivery checks.
+The performance fixture uses Chromium network and CPU controls in either run.
+These checks do not replace a test on a physical iPhone.
 
 Start voice inside the selected chat. Native Codex voice uses that chat's
 ChatGPT account through its app-server. No separate API key is required.

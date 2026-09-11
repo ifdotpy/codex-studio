@@ -25,6 +25,15 @@ export type OutgoingMessage = Omit<OutboxEntry, "status"> & {
   status: OutboxEntry["status"] | "sending";
 };
 const active = new Map<string, Promise<any>>();
+const sendingRooms = new Set<string>();
+const queuedDocuments = (docs: any[]) =>
+  docs
+    .filter((doc) => JSON.parse(doc.getLatest().payload).status === "queued")
+    .sort(
+      (a, b) =>
+        JSON.parse(a.payload).created - JSON.parse(b.payload).created ||
+        a.id.localeCompare(b.id),
+    );
 const updateIntention = (doc: any, change: Partial<Intention>) =>
   doc.incrementalModify((record: any) => ({
     ...record,
@@ -38,7 +47,8 @@ const intentionResult = (value: Intention) =>
   };
 async function deliver(doc: any) {
   let value: Intention = JSON.parse(doc.getLatest().payload);
-  if (value.status !== "queued") return intentionResult(value);
+  if (value.status !== "queued" || !navigator.onLine)
+    return intentionResult(value);
   try {
     const { workspaceId } = await syncDatabase();
     const identity = await syncApi<{ workspaceId: string }>(
@@ -99,12 +109,30 @@ async function deliver(doc: any) {
             : "The message was not sent."),
         400,
       );
-    await updateIntention(doc, {
-      status: result.status === "uncertain" ? "uncertain" : "accepted",
-      receipt: result,
-      error: result.error,
+    const current = await doc.incrementalModify((record: any) => {
+      const stored: Intention = JSON.parse(record.payload);
+      // Preserve confirmed delivery against an older queue receipt. A matching
+      // later reply can still resolve queue acceptance or an uncertain outcome.
+      const confirmed = (receipt: any) =>
+        ["delivered", "accepted", "sent"].includes(receipt?.status);
+      if (
+        stored.status === "cancelled" ||
+        (["accepted", "uncertain"].includes(stored.status) &&
+          (confirmed(stored.receipt) ||
+            (!confirmed(result) && result.status !== "uncertain")))
+      )
+        return record;
+      return {
+        ...record,
+        payload: JSON.stringify({
+          ...stored,
+          status: result.status === "uncertain" ? "uncertain" : "accepted",
+          receipt: result,
+          error: result.error,
+        }),
+      };
     });
-    return result;
+    return intentionResult(JSON.parse(current.payload));
   } catch (error) {
     // A lost response is retried only at the existing idempotent message endpoint.
     if (
@@ -113,7 +141,14 @@ async function deliver(doc: any) {
       error.status === 408 ||
       error.status === 429
     ) {
-      const current = await updateIntention(doc, { error: errorText(error) });
+      const current = await doc.incrementalModify((record: any) => {
+        const stored: Intention = JSON.parse(record.payload);
+        if (!["queued", "paused"].includes(stored.status)) return record;
+        return {
+          ...record,
+          payload: JSON.stringify({ ...stored, error: errorText(error) }),
+        };
+      });
       return intentionResult(JSON.parse(current.payload));
     }
     const current = await doc.incrementalModify((record: any) => {
@@ -136,7 +171,28 @@ async function deliver(doc: any) {
 function once(doc: any) {
   let task = active.get(doc.id);
   if (!task) {
-    task = deliver(doc).finally(() => active.delete(doc.id));
+    task = (async () => {
+      const { db, workspaceId } = await syncDatabase();
+      const value: Intention = JSON.parse(doc.getLatest().payload);
+      if (value.status !== "queued" || !navigator.onLine)
+        return intentionResult(value);
+      const room = `${workspaceId}:${JSON.stringify(value.body.room)}`;
+      if (sendingRooms.has(room)) return intentionResult(value);
+      const first = queuedDocuments(await db.outbox.find().exec()).find(
+        (queued) => JSON.parse(queued.payload).body.room === value.body.room,
+      );
+      if (first && first.id !== doc.id) return intentionResult(value);
+      // Serialize each chat on this device, including browsers without Web Locks.
+      if (sendingRooms.has(room)) return intentionResult(value);
+      sendingRooms.add(room);
+      try {
+        // Another tab can retry the same oldest request while this tab is
+        // suspended. The server owns deduplication by immutable message ID.
+        return await deliver(doc);
+      } finally {
+        sendingRooms.delete(room);
+      }
+    })().finally(() => active.delete(doc.id));
     active.set(doc.id, task);
   }
   return task;
@@ -144,6 +200,7 @@ function once(doc: any) {
 export async function durableSend(
   body: Record<string, any>,
   attachments: any[] = [],
+  onPersist?: () => void,
 ) {
   if (typeof body.id !== "string" || !body.id)
     throw new Error("A message identity is required");
@@ -176,7 +233,9 @@ export async function durableSend(
   const old: Intention = JSON.parse(doc.payload);
   if (JSON.stringify(old.body) !== JSON.stringify(body))
     throw new Error("Message identity already has different content");
-  if (old.status === "failed") throw new Error(old.error || "Message failed");
+  if (old.status === "failed")
+    throw new ApiError(old.error || "Message failed", 400);
+  onPersist?.();
   return once(doc);
 }
 export async function acknowledgeOutbox(ids: string[]) {
@@ -224,35 +283,55 @@ export function useOutbox() {
     let stop = false,
       draining = false;
     let unsubscribe = () => {};
+    let queuedIdentity = "";
+    let drainAgain = false;
     const drain = async () => {
-      if (stop || draining || !navigator.onLine) return;
+      if (stop || !navigator.onLine) return;
+      if (draining) {
+        drainAgain = true;
+        return;
+      }
       draining = true;
+      drainAgain = false;
       try {
         const { db } = await syncDatabase();
-        const docs = await db.outbox.find().exec();
-        const queued = docs
-          .filter((doc: any) => JSON.parse(doc.payload).status === "queued")
-          .sort(
-            (a: any, b: any) =>
-              JSON.parse(a.payload).created - JSON.parse(b.payload).created ||
-              a.id.localeCompare(b.id),
-          );
-        if (queued.length) {
-          for (const doc of queued) {
-            if (stop) break;
-            const result = await once(doc).catch((e) => {
-              // Per-message rejection is already stored beside that message.
-              if (!(e instanceof ApiError)) throw e;
-            });
-            if (result?.queued) break;
+        const rooms = [
+          ...new Set<string>(
+            queuedDocuments(await db.outbox.find().exec()).map(
+              (doc) => JSON.parse(doc.payload).body.room,
+            ),
+          ),
+        ];
+        let nextRoom = 0;
+        const worker = async () => {
+          while (!stop && nextRoom < rooms.length) {
+            const room = rooms[nextRoom++];
+            while (!stop) {
+              // Re-read after acceptance so a message saved during HTTP does
+              // not wait for the polling timer. Preserve order within each chat.
+              const doc = queuedDocuments(await db.outbox.find().exec()).find(
+                (queued) => JSON.parse(queued.payload).body.room === room,
+              );
+              if (!doc) break;
+              const result = await once(doc).catch((e) => {
+                // Per-message rejection is already stored beside that message.
+                if (!(e instanceof ApiError)) throw e;
+              });
+              if (result?.queued) break;
+            }
           }
-        }
+        };
+        // Bound reconnect traffic while letting another chat pass a stalled one.
+        await Promise.all(
+          Array.from({ length: Math.min(4, rooms.length) }, worker),
+        );
         if (!stop) setError("");
       } catch (e) {
         if (!stop && !(e instanceof UnsupportedSyncError))
           setError(errorText(e));
       } finally {
         draining = false;
+        if (drainAgain && !stop) void drain();
       }
     };
     let subscribing = false,
@@ -264,6 +343,13 @@ export function useOutbox() {
         const { db } = await syncDatabase();
         if (stop) return;
         const sub = db.outbox.find().$.subscribe((docs: any[]) => {
+          const nextQueued = JSON.stringify(
+            queuedDocuments(docs).map((doc) => doc.id),
+          );
+          if (nextQueued !== queuedIdentity) {
+            queuedIdentity = nextQueued;
+            void drain();
+          }
           setEntries(
             docs
               .map((doc) => ({ id: doc.id, ...JSON.parse(doc.payload) }))

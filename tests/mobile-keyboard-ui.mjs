@@ -82,11 +82,22 @@ try {
       const composer = document
         .querySelector("#composer")
         .getBoundingClientRect();
+      const footerNode = document.querySelector(".usage-footer");
+      const footer = footerNode.getBoundingClientRect();
+      const footerBottomSpace =
+        parseFloat(getComputedStyle(footerNode).marginBottom) +
+        parseFloat(
+          getComputedStyle(document.querySelector("#conversation"))
+            .paddingBottom,
+        );
       return {
         top: root.top,
         height: root.height,
         bottom: root.bottom,
         composerBottom: composer.bottom,
+        footerTop: footer.top,
+        footerBottom: footer.bottom,
+        footerBottomSpace,
         scrollTop: document.scrollingElement.scrollTop,
         scrollY,
         bodyOverflow: getComputedStyle(document.body).overflow,
@@ -109,8 +120,16 @@ try {
     assert.equal(box.bodyOverflow, "hidden");
     assert.ok(box.composerBottom <= box.bottom + 1, JSON.stringify(box));
     assert.ok(
-      box.bottom - box.composerBottom <= 12,
-      `No blank area below composer: ${JSON.stringify(box)}`,
+      box.composerBottom <= box.footerTop + 1,
+      `Composer overlaps usage: ${JSON.stringify(box)}`,
+    );
+    assert.ok(
+      box.footerBottom <= box.bottom + 1,
+      `Usage leaves the viewport: ${JSON.stringify(box)}`,
+    );
+    assert.ok(
+      Math.abs(box.bottom - box.footerBottom - box.footerBottomSpace) <= 1,
+      `No blank area below usage: ${JSON.stringify(box)}`,
     );
     return box;
   };

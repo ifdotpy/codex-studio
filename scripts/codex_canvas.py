@@ -153,7 +153,7 @@ class Canvas:
         finally:
             db.close()
 
-    def threads(self):
+    def threads(self, runtime_agents=None):
         rows = read_threads(self.root)
         for row in rows:
             row["id"] = identity(row["wave"], row.get("runId"), row["threadId"], row["name"])
@@ -165,7 +165,8 @@ class Canvas:
             row["kind"] = "agent"
             row["source"] = "app-server"
         if self.runtime:
-            rows.extend(self.runtime.snapshot()["agents"])
+            rows.extend(dict(agent) for agent in (runtime_agents if runtime_agents is not None
+                                                else self.runtime.snapshot(include_work=False)["agents"]))
         else:
             with self.connect() as db:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
@@ -275,8 +276,8 @@ class Canvas:
                 db.execute('DELETE FROM graph_edges WHERE id=?', (key,))
         return {'id': key, 'connected': connected}
 
-    def snapshot(self):
-        threads = self.threads()
+    def snapshot(self, runtime_snapshot=None):
+        threads = self.threads(runtime_snapshot["agents"] if runtime_snapshot is not None else None)
         board = {"claims": {}, "notes": [], "queue": {}}
         board_error = None
         try:
@@ -502,17 +503,18 @@ def make_server(canvas, port=0, public_origin=None):
                 terminal_manager[0] = TerminalManager(canvas.root)
             return terminal_manager[0]
 
+    def snapshot(include_work=True):
+        with canvas.lock:
+            runtime = canvas.runtime.snapshot(include_work=include_work) if canvas.runtime else None
+            return {**canvas.snapshot(runtime_snapshot=runtime), "runtime": runtime}
+
     def sync():
         with terminal_lock:
             if sync_store[0] is None:
                 from codex_sync import SyncStore
 
-                def snapshot():
-                    with canvas.lock:
-                        return {**canvas.snapshot(),
-                                "runtime": canvas.runtime.snapshot() if canvas.runtime else None}
-
-                sync_store[0] = SyncStore(canvas.connect, snapshot, canvas.transcript)
+                sync_store[0] = SyncStore(canvas.connect, snapshot, canvas.transcript,
+                                          chat_snapshot=lambda: snapshot(include_work=False))
             return sync_store[0]
 
     class Handler(BaseHTTPRequestHandler):
@@ -635,8 +637,8 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/sync/stream":
                     return self.stream_sync()
                 if path.path == "/api/state":
-                    return self.send({**canvas.snapshot(), "token": token,
-                                      "runtime": canvas.runtime.snapshot() if canvas.runtime else None})
+                    return self.send({**snapshot(include_work=parse_qs(path.query).get("view") != ["chat"]),
+                                      "token": token})
                 if path.path == "/api/costs":
                     with terminal_lock:
                         if cost_reader[0] is None:
@@ -770,14 +772,15 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send(canvas.messages(parse_qs(path.query).get("room", [""])[0]))
                 relative = "index.html" if path.path == "/" else path.path.lstrip("/")
                 asset = (WEB / relative).resolve()
-                if asset.is_relative_to(WEB.resolve()) and asset.is_file() and (relative in {"index.html", "manifest.webmanifest", "apple-touch-icon.png", "icon.svg", "icon-192.png", "icon-512.png"} or relative.startswith("assets/")):
+                if asset.is_relative_to(WEB.resolve()) and asset.is_file() and (relative in {"index.html", "studio-sw.js", "manifest.webmanifest", "apple-touch-icon.png", "icon.svg", "icon-192.png", "icon-512.png"} or relative.startswith("assets/")):
                     mime = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".webmanifest": "application/manifest+json", ".png": "image/png", ".svg": "image/svg+xml"}.get(asset.suffix, "application/octet-stream")
                     if HASHED_ASSET.fullmatch(relative):
                         stat = asset.stat()
                         data, compressed = static_content(str(asset), stat.st_mtime_ns, stat.st_size)
                         return self.send(data, content_type=mime, compressed=compressed,
                                          cache_control="private, max-age=31536000, immutable")
-                    return self.send(asset.read_bytes(), content_type=mime)
+                    return self.send(asset.read_bytes(), content_type=mime,
+                                     cache_control="no-cache" if relative == "studio-sw.js" else "no-store")
                 if path.path == "/":
                     return self.send({"error": "Build the interface: cd web && npm ci && npm run build"}, 503)
                 return self.send({"error": "Not found"}, 404)
