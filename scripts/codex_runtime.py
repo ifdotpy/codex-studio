@@ -1990,7 +1990,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         or self.preparation_settings(a) != operation["settings"]
                         or a.get("prepareAttempt") != operation["id"] or a["threadId"] != operation["threadId"]):
                     raise ValueError("Thread preparation belongs to an earlier agent state")
-                a.update(threadId=thread_id, model=result.get("model", a["model"]),
+                # A loaded native thread can return its previous model on resume.
+                # Keep the selected model and send it explicitly with each turn.
+                a.update(threadId=thread_id, model=(result.get("model", a["model"])
+                         if operation["method"] == "thread/start" else a["model"]),
                          sandbox=result.get("sandbox"), approvalPolicy=result.get("approvalPolicy"),
                          profile=result.get("activePermissionProfile"))
                 self.put(db, "agents", a)
@@ -2200,6 +2203,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 )
             params = {
                 "threadId": a["threadId"],
+                "model": a["model"],
                 "clientUserMessageId": rows[0]["id"],
                 "input": self.message_inputs(
                     a["id"], append_message_clocks(text, clocks), asset_ids
@@ -4394,7 +4398,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 params = {"threadId": a["threadId"]}
                 if attempt["action"] == "capacity":
                     method = "turn/start"
-                    params.update(input=[], **self.turn_permissions(a))
+                    params.update(input=[], model=a["model"], **self.turn_permissions(a))
                     params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
                     if a.get("nativeEffort", a.get("effort")) is not None:
                         params["effort"] = a.get("nativeEffort", a.get("effort"))
