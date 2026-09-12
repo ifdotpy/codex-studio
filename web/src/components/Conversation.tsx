@@ -70,6 +70,8 @@ import StreamingText from "./StreamingText";
 import SelectionQuote, { selectedExcerpt } from "./SelectionQuote";
 import AgentPhase from "./AgentPhase";
 import AgentPanel from "./AgentPanel";
+import { ExecutionSettings } from "./ExecutionSettings";
+import { useWorkerModels } from "./WorkerModelPicker";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
@@ -305,6 +307,18 @@ export default function Conversation(p: {
     p.syncWorkspaceId,
   );
   const threadBlock = nativeThreadError(agent);
+  const [modelCommandOpen, setModelCommandOpen] = useState(false);
+  const [modelCommandRequest, setModelCommandRequest] = useState(0);
+  const modelCatalog = useWorkerModels(
+    p.agent?.accountKey || "default",
+    modelCommandOpen,
+  );
+  useEffect(() => {
+    setModelCommandOpen(false);
+    setModelCommandRequest(0);
+  }, [p.id, p.agent?.accountKey, p.syncWorkspaceId, p.data.stateDir]);
+  const modelCommand = /^\/model(?:\s|$)/i.test(p.draft.trim());
+  const exactModelCommand = /^\/model$/i.test(p.draft.trim());
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
   const errorKind = nativeErrorKind(agent?.error);
   const failureKey = [
@@ -435,6 +449,20 @@ export default function Conversation(p: {
     }
   };
   const submit = async (delivery: "queue" | "after_tool" = "after_tool") => {
+    if (modelCommand) {
+      if (!exactModelCommand) {
+        p.notify("Use /model without arguments to choose a model.");
+      } else if (!managed || !agent) {
+        p.notify("Select a managed chat to choose a model.");
+      } else {
+        promptRecall.reset();
+        input.current?.focus({ preventScroll: true });
+        p.setDraft("");
+        setModelCommandOpen(true);
+        setModelCommandRequest((request) => request + 1);
+      }
+      return;
+    }
     if (
       sendLock.current ||
       p.sending ||
@@ -1338,6 +1366,27 @@ export default function Conversation(p: {
                 }
               }}
             />
+            {exactModelCommand && (
+              <Button
+                type="button"
+                variant="subtle"
+                size="compact-sm"
+                aria-label="Choose model with /model"
+                onClick={() => void submit()}
+              >
+                /model · Choose model and reasoning
+              </Button>
+            )}
+            {modelCommandRequest > 0 && p.agent?.source === "managed" && (
+              <ExecutionSettings
+                // Transcript metadata can predate a settings change.
+                agent={p.agent}
+                catalog={modelCatalog}
+                refresh={p.refresh}
+                openRequest={modelCommandRequest}
+                onOpenChange={setModelCommandOpen}
+              />
+            )}
             {draftTooLong && (
               <div
                 id="draft-length-error"

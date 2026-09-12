@@ -44,6 +44,7 @@ type SettingsProps = {
   teamDefaults?: boolean;
   nextTurnSupported?: boolean;
   onOpenChange?: (opened: boolean) => void;
+  openRequest?: number;
 };
 const accountOf = (agent: Agent) => agent.accountKey || "default";
 const settingsFor = (agent: Agent, teamDefaults: boolean) => {
@@ -92,6 +93,7 @@ function ScopedExecutionSettings({
   teamDefaults = false,
   nextTurnSupported,
   onOpenChange,
+  openRequest = 0,
 }: SettingsProps) {
   const mounted = useRef(true);
   useEffect(() => {
@@ -105,6 +107,9 @@ function ScopedExecutionSettings({
     (agent as Agent & { nextTurnSettingsSupported?: boolean })
       .nextTurnSettingsSupported === true;
   const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if (openRequest > 0) setOpened(true);
+  }, [openRequest]);
   useEffect(() => {
     onOpenChange?.(opened);
     return () => onOpenChange?.(false);
@@ -363,7 +368,7 @@ function ScopedExecutionSettings({
     <Popover
       opened={opened}
       onChange={setOpened}
-      position="bottom-end"
+      position={openRequest > 0 ? "top-start" : "bottom-end"}
       width={300}
       shadow="md"
       trapFocus
