@@ -1,0 +1,2845 @@
+{
+  "byModel": {
+    "gpt-5.6-luna": {
+      "baselineMissingSamples": 7,
+      "cacheInputShare": 0.9705171549476042,
+      "cachePairSamples": 35051,
+      "fieldObservations": {
+        "cacheWriteInputTokens": 35051,
+        "cachedInputTokens": 35051,
+        "inputTokens": 35051,
+        "outputTokens": 35051,
+        "reasoningOutputTokens": 35051,
+        "totalTokens": 35051
+      },
+      "perSampleInputTokens": {
+        "count": 35051,
+        "max": 256997,
+        "p50": 169590,
+        "p95": 231582,
+        "sum": 5832781324
+      },
+      "samples": 35051,
+      "tokens": {
+        "cacheWriteInputTokens": 0,
+        "cachedInputTokens": 5660814336,
+        "inputTokens": 5832781324,
+        "outputTokens": 21347576,
+        "reasoningOutputTokens": 8863406,
+        "totalTokens": 5854627540
+      },
+      "uncachedInputTokens": 171966988
+    },
+    "gpt-5.6-sol": {
+      "baselineMissingSamples": 0,
+      "cacheInputShare": 0.9757519177638073,
+      "cachePairSamples": 221,
+      "fieldObservations": {
+        "cacheWriteInputTokens": 221,
+        "cachedInputTokens": 221,
+        "inputTokens": 221,
+        "outputTokens": 221,
+        "reasoningOutputTokens": 221,
+        "totalTokens": 221
+      },
+      "perSampleInputTokens": {
+        "count": 221,
+        "max": 225345,
+        "p50": 169935,
+        "p95": 221718,
+        "sum": 37796886
+      },
+      "samples": 221,
+      "tokens": {
+        "cacheWriteInputTokens": 0,
+        "cachedInputTokens": 36880384,
+        "inputTokens": 37796886,
+        "outputTokens": 94930,
+        "reasoningOutputTokens": 36271,
+        "totalTokens": 37891816
+      },
+      "uncachedInputTokens": 916502
+    },
+    "gpt-6-astra": {
+      "baselineMissingSamples": 1,
+      "cacheInputShare": 0.9665629597397939,
+      "cachePairSamples": 4922,
+      "fieldObservations": {
+        "cacheWriteInputTokens": 4922,
+        "cachedInputTokens": 4922,
+        "inputTokens": 4922,
+        "outputTokens": 4922,
+        "reasoningOutputTokens": 4922,
+        "totalTokens": 4922
+      },
+      "perSampleInputTokens": {
+        "count": 4922,
+        "max": 269333,
+        "p50": 180985.0,
+        "p95": 230229,
+        "sum": 873347963
+      },
+      "samples": 4922,
+      "tokens": {
+        "cacheWriteInputTokens": 0,
+        "cachedInputTokens": 844145792,
+        "inputTokens": 873347963,
+        "outputTokens": 2574248,
+        "reasoningOutputTokens": 850190,
+        "totalTokens": 876344682
+      },
+      "uncachedInputTokens": 29202171
+    }
+  },
+  "collection": {
+    "elapsedSeconds": 1.9292089939117432,
+    "head": "670062f73559459895a7e8b7c76a2e31039ecad7",
+    "installedSha256": {
+      "scripts/codex_analytics.py": "34065c4651856a5cbc51125b49e014143f697b00d5329ba72b91bcdbce2b553d",
+      "scripts/codex_analytics_history.py": "3a4648fd2dbbf7fa91769b9f07e58525ef719655d79f2241454599c6f38c26c5",
+      "scripts/codex_efficiency.py": "55763f7f6b4354d13aa796b3db05084200cd2173a5e2e14cf2ecad226fd2f303",
+      "scripts/codex_runtime.py": "8b7b10e524b043bf9abd9f397a78bb97bf49ee3444d9a576da113e78f1735f14",
+      "scripts/codex_work.py": "969087c108d84cfd071ac51b0bd940d348eb1183c05c6502eec05cc04b506e06"
+    },
+    "queryDeadlineSeconds": 20,
+    "registryAgents": 123,
+    "sha256": {
+      "docs/research/2026-09-12-harness-metrics.py": "4dbb6936cb40bc07cd21c8786a112e292314b241eecb789568fb04b16ad5c2ec",
+      "scripts/codex_analytics.py": "34065c4651856a5cbc51125b49e014143f697b00d5329ba72b91bcdbce2b553d",
+      "scripts/codex_analytics_history.py": "3a4648fd2dbbf7fa91769b9f07e58525ef719655d79f2241454599c6f38c26c5",
+      "scripts/codex_efficiency.py": "55763f7f6b4354d13aa796b3db05084200cd2173a5e2e14cf2ecad226fd2f303",
+      "scripts/codex_runtime.py": "8b7b10e524b043bf9abd9f397a78bb97bf49ee3444d9a576da113e78f1735f14",
+      "scripts/codex_work.py": "969087c108d84cfd071ac51b0bd940d348eb1183c05c6502eec05cc04b506e06"
+    },
+    "snapshotStartedAt": 1789246959.796387,
+    "sqliteMode": "ro; query_only=ON; single read transaction"
+  },
+  "commands": {
+    "above16kCount": 7051,
+    "above64kBytes": 210913599,
+    "above64kCount": 681,
+    "count": 36981,
+    "max": 1048609,
+    "p50": 4893,
+    "p95": 37300,
+    "sum": 525913228
+  },
+  "coverage": {
+    "analyticsMeta": {
+      "captureErrors": {
+        "count": 7,
+        "last": {
+          "at": 1789233643.824995,
+          "error": "disk I/O error",
+          "operation": "analytics_limit"
+        }
+      },
+      "trackingSince": 1788794383.0135648
+    },
+    "counterDomain": {
+      "nativeNotice": 26293,
+      "response": 13901
+    },
+    "exactResponseSamples": 13901,
+    "historyStatus": {
+      "current": 54,
+      "identityChanged": 102
+    },
+    "legacyUsageSamples": 26293,
+    "payloadCoverage": {
+      "model_protocol_payload": 107971,
+      "protocol_payload": 112033,
+      "rollout": 381
+    },
+    "provisionalExcludedSamples": 15136,
+    "rawUsageRows": 55330,
+    "usageSource": {
+      "live": 26293,
+      "rollout": 13901
+    }
+  },
+  "events": {
+    "bytesByKind": {
+      "agent_message": 2703836,
+      "child_result": 734982,
+      "complaint_response": 16283,
+      "followup": 602582,
+      "monitor_exit": 3691331,
+      "rule": 24075,
+      "user": 15095,
+      "work_decision": 386518,
+      "work_ready": 232,
+      "work_review": 1363254
+    },
+    "deliveredByKind": {
+      "agent_message": 2534,
+      "child_result": 1282,
+      "complaint_response": 25,
+      "followup": 733,
+      "monitor_exit": 928,
+      "rule": 28,
+      "user": 68,
+      "work_decision": 350,
+      "work_ready": 2,
+      "work_review": 500
+    },
+    "messageImportance": {
+      "blocker": 121,
+      "missing": 677,
+      "progress": 880,
+      "question": 151,
+      "result": 705
+    },
+    "missingTurnId": 0,
+    "monitorTailBytes": 2681855,
+    "successMonitorEvents": 536,
+    "successMonitorOnlyTurns": 272,
+    "successMonitorOnlyTurnsWithUsage": 272,
+    "successMonitorOnlyUsage": {
+      "all": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9797719714995071,
+        "cachePairSamples": 2246,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 2246,
+          "cachedInputTokens": 2246,
+          "inputTokens": 2246,
+          "outputTokens": 2246,
+          "reasoningOutputTokens": 2246,
+          "totalTokens": 2246
+        },
+        "perSampleInputTokens": {
+          "count": 2246,
+          "max": 245951,
+          "p50": 166916.0,
+          "p95": 217252,
+          "sum": 368277561
+        },
+        "samples": 2246,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 360828032,
+          "inputTokens": 368277561,
+          "outputTokens": 1157875,
+          "reasoningOutputTokens": 418064,
+          "totalTokens": 369515183
+        },
+        "uncachedInputTokens": 7449529
+      },
+      "exact": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.977772229984126,
+        "cachePairSamples": 722,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 722,
+          "cachedInputTokens": 722,
+          "inputTokens": 722,
+          "outputTokens": 722,
+          "reasoningOutputTokens": 722,
+          "totalTokens": 722
+        },
+        "perSampleInputTokens": {
+          "count": 722,
+          "max": 245951,
+          "p50": 163509.0,
+          "p95": 217331,
+          "sum": 114944594
+        },
+        "samples": 722,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 112389632,
+          "inputTokens": 114944594,
+          "outputTokens": 507724,
+          "reasoningOutputTokens": 179535,
+          "totalTokens": 115452318
+        },
+        "uncachedInputTokens": 2554962
+      },
+      "legacy": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9806793128507432,
+        "cachePairSamples": 1524,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 1524,
+          "cachedInputTokens": 1524,
+          "inputTokens": 1524,
+          "outputTokens": 1524,
+          "reasoningOutputTokens": 1524,
+          "totalTokens": 1524
+        },
+        "perSampleInputTokens": {
+          "count": 1524,
+          "max": 232393,
+          "p50": 169200.0,
+          "p95": 216930,
+          "sum": 253332967
+        },
+        "samples": 1524,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 248438400,
+          "inputTokens": 253332967,
+          "outputTokens": 650151,
+          "reasoningOutputTokens": 238529,
+          "totalTokens": 254062865
+        },
+        "uncachedInputTokens": 4894567
+      }
+    },
+    "turnsByEventSet": {
+      "agent_message": 561,
+      "agent_message,child_result": 62,
+      "agent_message,child_result,followup": 1,
+      "agent_message,child_result,followup,monitor_exit": 1,
+      "agent_message,child_result,followup,monitor_exit,work_decision": 1,
+      "agent_message,child_result,monitor_exit": 24,
+      "agent_message,child_result,monitor_exit,rule,user,work_review": 1,
+      "agent_message,child_result,monitor_exit,rule,work_review": 7,
+      "agent_message,child_result,monitor_exit,user,work_review": 2,
+      "agent_message,child_result,monitor_exit,work_review": 36,
+      "agent_message,child_result,rule": 1,
+      "agent_message,child_result,rule,user": 1,
+      "agent_message,child_result,rule,work_review": 10,
+      "agent_message,child_result,user": 3,
+      "agent_message,child_result,user,work_review": 3,
+      "agent_message,child_result,work_decision,work_review": 1,
+      "agent_message,child_result,work_review": 115,
+      "agent_message,complaint_response": 1,
+      "agent_message,followup": 70,
+      "agent_message,followup,monitor_exit": 17,
+      "agent_message,followup,monitor_exit,work_decision": 3,
+      "agent_message,followup,work_decision": 8,
+      "agent_message,monitor_exit": 50,
+      "agent_message,monitor_exit,work_decision": 2,
+      "agent_message,user": 2,
+      "agent_message,work_decision": 21,
+      "agent_message,work_review": 8,
+      "child_result": 122,
+      "child_result,monitor_exit": 11,
+      "child_result,monitor_exit,work_review": 4,
+      "child_result,user": 1,
+      "child_result,work_review": 31,
+      "complaint_response": 3,
+      "complaint_response,monitor_exit": 1,
+      "followup": 445,
+      "followup,monitor_exit": 23,
+      "followup,monitor_exit,work_decision": 1,
+      "followup,user": 1,
+      "followup,work_decision": 16,
+      "monitor_exit": 522,
+      "monitor_exit,rule": 2,
+      "monitor_exit,user": 2,
+      "monitor_exit,work_decision": 5,
+      "monitor_exit,work_decision,work_review": 3,
+      "rule": 6,
+      "user": 38,
+      "work_decision": 284,
+      "work_decision,work_ready": 1,
+      "work_decision,work_review": 2,
+      "work_ready": 1,
+      "work_review": 67
+    },
+    "usageByEventSet": {
+      "agent_message": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9706079966935669,
+        "cachePairSamples": 2364,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 2364,
+          "cachedInputTokens": 2364,
+          "inputTokens": 2364,
+          "outputTokens": 2364,
+          "reasoningOutputTokens": 2364,
+          "totalTokens": 2364
+        },
+        "perSampleInputTokens": {
+          "count": 2364,
+          "max": 249069,
+          "p50": 174637.5,
+          "p95": 226273,
+          "sum": 399642749
+        },
+        "samples": 2364,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 387896448,
+          "inputTokens": 399642749,
+          "outputTokens": 1051925,
+          "reasoningOutputTokens": 415037,
+          "totalTokens": 401111884
+        },
+        "uncachedInputTokens": 11746301
+      },
+      "agent_message,child_result": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9752891398163666,
+        "cachePairSamples": 250,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 250,
+          "cachedInputTokens": 250,
+          "inputTokens": 250,
+          "outputTokens": 250,
+          "reasoningOutputTokens": 250,
+          "totalTokens": 250
+        },
+        "perSampleInputTokens": {
+          "count": 250,
+          "max": 235976,
+          "p50": 190101.5,
+          "p95": 230572,
+          "sum": 46531727
+        },
+        "samples": 250,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 45381888,
+          "inputTokens": 46531727,
+          "outputTokens": 112467,
+          "reasoningOutputTokens": 40002,
+          "totalTokens": 46644194
+        },
+        "uncachedInputTokens": 1149839
+      },
+      "agent_message,child_result,followup": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9708962091207615,
+        "cachePairSamples": 184,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 184,
+          "cachedInputTokens": 184,
+          "inputTokens": 184,
+          "outputTokens": 184,
+          "reasoningOutputTokens": 184,
+          "totalTokens": 184
+        },
+        "perSampleInputTokens": {
+          "count": 184,
+          "max": 244691,
+          "p50": 173581.5,
+          "p95": 240236,
+          "sum": 31886877
+        },
+        "samples": 184,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 30958848,
+          "inputTokens": 31886877,
+          "outputTokens": 125559,
+          "reasoningOutputTokens": 41901,
+          "totalTokens": 32012436
+        },
+        "uncachedInputTokens": 928029
+      },
+      "agent_message,child_result,followup,monitor_exit": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9707896829990111,
+        "cachePairSamples": 542,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 542,
+          "cachedInputTokens": 542,
+          "inputTokens": 542,
+          "outputTokens": 542,
+          "reasoningOutputTokens": 542,
+          "totalTokens": 542
+        },
+        "perSampleInputTokens": {
+          "count": 542,
+          "max": 244473,
+          "p50": 180115.0,
+          "p95": 239513,
+          "sum": 94755288
+        },
+        "samples": 542,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 91987456,
+          "inputTokens": 94755288,
+          "outputTokens": 200603,
+          "reasoningOutputTokens": 79491,
+          "totalTokens": 94955891
+        },
+        "uncachedInputTokens": 2767832
+      },
+      "agent_message,child_result,followup,monitor_exit,work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9744665183555863,
+        "cachePairSamples": 143,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 143,
+          "cachedInputTokens": 143,
+          "inputTokens": 143,
+          "outputTokens": 143,
+          "reasoningOutputTokens": 143,
+          "totalTokens": 143
+        },
+        "perSampleInputTokens": {
+          "count": 143,
+          "max": 243836,
+          "p50": 192517,
+          "p95": 236445,
+          "sum": 26434977
+        },
+        "samples": 143,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 25760000,
+          "inputTokens": 26434977,
+          "outputTokens": 65241,
+          "reasoningOutputTokens": 28552,
+          "totalTokens": 26500218
+        },
+        "uncachedInputTokens": 674977
+      },
+      "agent_message,child_result,monitor_exit": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.972615602557745,
+        "cachePairSamples": 130,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 130,
+          "cachedInputTokens": 130,
+          "inputTokens": 130,
+          "outputTokens": 130,
+          "reasoningOutputTokens": 130,
+          "totalTokens": 130
+        },
+        "perSampleInputTokens": {
+          "count": 130,
+          "max": 230551,
+          "p50": 176068.0,
+          "p95": 227826,
+          "sum": 23019495
+        },
+        "samples": 130,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 22389120,
+          "inputTokens": 23019495,
+          "outputTokens": 50269,
+          "reasoningOutputTokens": 10463,
+          "totalTokens": 23069764
+        },
+        "uncachedInputTokens": 630375
+      },
+      "agent_message,child_result,monitor_exit,rule,user,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9782195999058738,
+        "cachePairSamples": 13,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 13,
+          "cachedInputTokens": 13,
+          "inputTokens": 13,
+          "outputTokens": 13,
+          "reasoningOutputTokens": 13,
+          "totalTokens": 13
+        },
+        "perSampleInputTokens": {
+          "count": 13,
+          "max": 232798,
+          "p50": 214252,
+          "p95": 232798,
+          "sum": 2770748
+        },
+        "samples": 13,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 2710400,
+          "inputTokens": 2770748,
+          "outputTokens": 14447,
+          "reasoningOutputTokens": 6226,
+          "totalTokens": 2785195
+        },
+        "uncachedInputTokens": 60348
+      },
+      "agent_message,child_result,monitor_exit,rule,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9527087532531224,
+        "cachePairSamples": 106,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 106,
+          "cachedInputTokens": 106,
+          "inputTokens": 106,
+          "outputTokens": 106,
+          "reasoningOutputTokens": 106,
+          "totalTokens": 106
+        },
+        "perSampleInputTokens": {
+          "count": 106,
+          "max": 240093,
+          "p50": 171854.5,
+          "p95": 235400,
+          "sum": 18869179
+        },
+        "samples": 106,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 17976832,
+          "inputTokens": 18869179,
+          "outputTokens": 58272,
+          "reasoningOutputTokens": 19134,
+          "totalTokens": 18927451
+        },
+        "uncachedInputTokens": 892347
+      },
+      "agent_message,child_result,monitor_exit,user,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.959883566754855,
+        "cachePairSamples": 57,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 57,
+          "cachedInputTokens": 57,
+          "inputTokens": 57,
+          "outputTokens": 57,
+          "reasoningOutputTokens": 57,
+          "totalTokens": 57
+        },
+        "perSampleInputTokens": {
+          "count": 57,
+          "max": 239587,
+          "p50": 154992,
+          "p95": 236251,
+          "sum": 9404874
+        },
+        "samples": 57,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 9027584,
+          "inputTokens": 9404874,
+          "outputTokens": 20701,
+          "reasoningOutputTokens": 5730,
+          "totalTokens": 9425575
+        },
+        "uncachedInputTokens": 377290
+      },
+      "agent_message,child_result,monitor_exit,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9540902026573571,
+        "cachePairSamples": 468,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 468,
+          "cachedInputTokens": 468,
+          "inputTokens": 468,
+          "outputTokens": 468,
+          "reasoningOutputTokens": 468,
+          "totalTokens": 468
+        },
+        "perSampleInputTokens": {
+          "count": 468,
+          "max": 247449,
+          "p50": 175368.5,
+          "p95": 231913,
+          "sum": 83063207
+        },
+        "samples": 468,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 79249792,
+          "inputTokens": 83063207,
+          "outputTokens": 253009,
+          "reasoningOutputTokens": 77287,
+          "totalTokens": 83316216
+        },
+        "uncachedInputTokens": 3813415
+      },
+      "agent_message,child_result,rule": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9778234437879956,
+        "cachePairSamples": 10,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 10,
+          "cachedInputTokens": 10,
+          "inputTokens": 10,
+          "outputTokens": 10,
+          "reasoningOutputTokens": 10,
+          "totalTokens": 10
+        },
+        "perSampleInputTokens": {
+          "count": 10,
+          "max": 202238,
+          "p50": 190258.0,
+          "p95": 202238,
+          "sum": 1868640
+        },
+        "samples": 10,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 1827200,
+          "inputTokens": 1868640,
+          "outputTokens": 6150,
+          "reasoningOutputTokens": 2326,
+          "totalTokens": 1874790
+        },
+        "uncachedInputTokens": 41440
+      },
+      "agent_message,child_result,rule,user": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9586372419101474,
+        "cachePairSamples": 22,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 22,
+          "cachedInputTokens": 22,
+          "inputTokens": 22,
+          "outputTokens": 22,
+          "reasoningOutputTokens": 22,
+          "totalTokens": 22
+        },
+        "perSampleInputTokens": {
+          "count": 22,
+          "max": 239077,
+          "p50": 216646.0,
+          "p95": 237873,
+          "sum": 4167783
+        },
+        "samples": 22,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 3995392,
+          "inputTokens": 4167783,
+          "outputTokens": 13878,
+          "reasoningOutputTokens": 6153,
+          "totalTokens": 4181661
+        },
+        "uncachedInputTokens": 172391
+      },
+      "agent_message,child_result,rule,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9422752991732515,
+        "cachePairSamples": 127,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 127,
+          "cachedInputTokens": 127,
+          "inputTokens": 127,
+          "outputTokens": 127,
+          "reasoningOutputTokens": 127,
+          "totalTokens": 127
+        },
+        "perSampleInputTokens": {
+          "count": 127,
+          "max": 251934,
+          "p50": 179202,
+          "p95": 233178,
+          "sum": 22749360
+        },
+        "samples": 127,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 21436160,
+          "inputTokens": 22749360,
+          "outputTokens": 72544,
+          "reasoningOutputTokens": 22782,
+          "totalTokens": 22821904
+        },
+        "uncachedInputTokens": 1313200
+      },
+      "agent_message,child_result,user": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9694040636542299,
+        "cachePairSamples": 77,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 77,
+          "cachedInputTokens": 77,
+          "inputTokens": 77,
+          "outputTokens": 77,
+          "reasoningOutputTokens": 77,
+          "totalTokens": 77
+        },
+        "perSampleInputTokens": {
+          "count": 77,
+          "max": 234665,
+          "p50": 187673,
+          "p95": 232857,
+          "sum": 13599976
+        },
+        "samples": 77,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 13183872,
+          "inputTokens": 13599976,
+          "outputTokens": 42068,
+          "reasoningOutputTokens": 14971,
+          "totalTokens": 13642044
+        },
+        "uncachedInputTokens": 416104
+      },
+      "agent_message,child_result,user,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.954816691886619,
+        "cachePairSamples": 74,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 74,
+          "cachedInputTokens": 74,
+          "inputTokens": 74,
+          "outputTokens": 74,
+          "reasoningOutputTokens": 74,
+          "totalTokens": 74
+        },
+        "perSampleInputTokens": {
+          "count": 74,
+          "max": 238798,
+          "p50": 209844.0,
+          "p95": 236868,
+          "sum": 14105895
+        },
+        "samples": 74,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 13468544,
+          "inputTokens": 14105895,
+          "outputTokens": 39862,
+          "reasoningOutputTokens": 13252,
+          "totalTokens": 14145757
+        },
+        "uncachedInputTokens": 637351
+      },
+      "agent_message,child_result,work_decision,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.987516126677564,
+        "cachePairSamples": 11,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 11,
+          "cachedInputTokens": 11,
+          "inputTokens": 11,
+          "outputTokens": 11,
+          "reasoningOutputTokens": 11,
+          "totalTokens": 11
+        },
+        "perSampleInputTokens": {
+          "count": 11,
+          "max": 231226,
+          "p50": 223005,
+          "p95": 231226,
+          "sum": 2438506
+        },
+        "samples": 11,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 2408064,
+          "inputTokens": 2438506,
+          "outputTokens": 7390,
+          "reasoningOutputTokens": 3527,
+          "totalTokens": 2445896
+        },
+        "uncachedInputTokens": 30442
+      },
+      "agent_message,child_result,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.961329149533496,
+        "cachePairSamples": 879,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 879,
+          "cachedInputTokens": 879,
+          "inputTokens": 879,
+          "outputTokens": 879,
+          "reasoningOutputTokens": 879,
+          "totalTokens": 879
+        },
+        "perSampleInputTokens": {
+          "count": 879,
+          "max": 244594,
+          "p50": 178600,
+          "p95": 228735,
+          "sum": 155027493
+        },
+        "samples": 879,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 149032448,
+          "inputTokens": 155027493,
+          "outputTokens": 446907,
+          "reasoningOutputTokens": 155820,
+          "totalTokens": 155474400
+        },
+        "uncachedInputTokens": 5995045
+      },
+      "agent_message,complaint_response": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9897486376789315,
+        "cachePairSamples": 5,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 5,
+          "cachedInputTokens": 5,
+          "inputTokens": 5,
+          "outputTokens": 5,
+          "reasoningOutputTokens": 5,
+          "totalTokens": 5
+        },
+        "perSampleInputTokens": {
+          "count": 5,
+          "max": 232031,
+          "p50": 229451,
+          "p95": 232031,
+          "sum": 1144921
+        },
+        "samples": 5,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 1133184,
+          "inputTokens": 1144921,
+          "outputTokens": 3183,
+          "reasoningOutputTokens": 912,
+          "totalTokens": 1148104
+        },
+        "uncachedInputTokens": 11737
+      },
+      "agent_message,followup": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9648596271486818,
+        "cachePairSamples": 2798,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 2798,
+          "cachedInputTokens": 2798,
+          "inputTokens": 2798,
+          "outputTokens": 2798,
+          "reasoningOutputTokens": 2798,
+          "totalTokens": 2798
+        },
+        "perSampleInputTokens": {
+          "count": 2798,
+          "max": 256997,
+          "p50": 169932.0,
+          "p95": 234427,
+          "sum": 469778197
+        },
+        "samples": 2798,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 453270016,
+          "inputTokens": 469778197,
+          "outputTokens": 2030873,
+          "reasoningOutputTokens": 764254,
+          "totalTokens": 471891333
+        },
+        "uncachedInputTokens": 16508181
+      },
+      "agent_message,followup,monitor_exit": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9766021948211477,
+        "cachePairSamples": 1434,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 1434,
+          "cachedInputTokens": 1434,
+          "inputTokens": 1434,
+          "outputTokens": 1434,
+          "reasoningOutputTokens": 1434,
+          "totalTokens": 1434
+        },
+        "perSampleInputTokens": {
+          "count": 1434,
+          "max": 249919,
+          "p50": 169345.5,
+          "p95": 236514,
+          "sum": 231956030
+        },
+        "samples": 1434,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 226528768,
+          "inputTokens": 231956030,
+          "outputTokens": 883212,
+          "reasoningOutputTokens": 395748,
+          "totalTokens": 232839242
+        },
+        "uncachedInputTokens": 5427262
+      },
+      "agent_message,followup,monitor_exit,work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9663651348876959,
+        "cachePairSamples": 81,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 81,
+          "cachedInputTokens": 81,
+          "inputTokens": 81,
+          "outputTokens": 81,
+          "reasoningOutputTokens": 81,
+          "totalTokens": 81
+        },
+        "perSampleInputTokens": {
+          "count": 81,
+          "max": 219551,
+          "p50": 155095,
+          "p95": 217298,
+          "sum": 12973978
+        },
+        "samples": 81,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 12537600,
+          "inputTokens": 12973978,
+          "outputTokens": 46695,
+          "reasoningOutputTokens": 25670,
+          "totalTokens": 13020673
+        },
+        "uncachedInputTokens": 436378
+      },
+      "agent_message,followup,work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9743753816971472,
+        "cachePairSamples": 506,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 506,
+          "cachedInputTokens": 506,
+          "inputTokens": 506,
+          "outputTokens": 506,
+          "reasoningOutputTokens": 506,
+          "totalTokens": 506
+        },
+        "perSampleInputTokens": {
+          "count": 506,
+          "max": 245956,
+          "p50": 162709.0,
+          "p95": 238012,
+          "sum": 83405457
+        },
+        "samples": 506,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 81268224,
+          "inputTokens": 83405457,
+          "outputTokens": 309802,
+          "reasoningOutputTokens": 143109,
+          "totalTokens": 83715259
+        },
+        "uncachedInputTokens": 2137233
+      },
+      "agent_message,monitor_exit": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9755431705103401,
+        "cachePairSamples": 438,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 438,
+          "cachedInputTokens": 438,
+          "inputTokens": 438,
+          "outputTokens": 438,
+          "reasoningOutputTokens": 438,
+          "totalTokens": 438
+        },
+        "perSampleInputTokens": {
+          "count": 438,
+          "max": 234868,
+          "p50": 191281.5,
+          "p95": 218481,
+          "sum": 74938945
+        },
+        "samples": 438,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 73106176,
+          "inputTokens": 74938945,
+          "outputTokens": 205046,
+          "reasoningOutputTokens": 72671,
+          "totalTokens": 75143991
+        },
+        "uncachedInputTokens": 1832769
+      },
+      "agent_message,monitor_exit,work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9854807292014658,
+        "cachePairSamples": 15,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 15,
+          "cachedInputTokens": 15,
+          "inputTokens": 15,
+          "outputTokens": 15,
+          "reasoningOutputTokens": 15,
+          "totalTokens": 15
+        },
+        "perSampleInputTokens": {
+          "count": 15,
+          "max": 143988,
+          "p50": 106102,
+          "p95": 143988,
+          "sum": 1751121
+        },
+        "samples": 15,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 1725696,
+          "inputTokens": 1751121,
+          "outputTokens": 5256,
+          "reasoningOutputTokens": 1404,
+          "totalTokens": 1756377
+        },
+        "uncachedInputTokens": 25425
+      },
+      "agent_message,user": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9884208707128156,
+        "cachePairSamples": 8,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 8,
+          "cachedInputTokens": 8,
+          "inputTokens": 8,
+          "outputTokens": 8,
+          "reasoningOutputTokens": 8,
+          "totalTokens": 8
+        },
+        "perSampleInputTokens": {
+          "count": 8,
+          "max": 181640,
+          "p50": 173944.5,
+          "p95": 181640,
+          "sum": 1400278
+        },
+        "samples": 8,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 1384064,
+          "inputTokens": 1400278,
+          "outputTokens": 4793,
+          "reasoningOutputTokens": 1940,
+          "totalTokens": 1405071
+        },
+        "uncachedInputTokens": 16214
+      },
+      "agent_message,work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.975886080648747,
+        "cachePairSamples": 541,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 541,
+          "cachedInputTokens": 541,
+          "inputTokens": 541,
+          "outputTokens": 541,
+          "reasoningOutputTokens": 541,
+          "totalTokens": 541
+        },
+        "perSampleInputTokens": {
+          "count": 541,
+          "max": 249193,
+          "p50": 166747,
+          "p95": 233186,
+          "sum": 92430723
+        },
+        "samples": 541,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 90201856,
+          "inputTokens": 92430723,
+          "outputTokens": 256505,
+          "reasoningOutputTokens": 116731,
+          "totalTokens": 92687228
+        },
+        "uncachedInputTokens": 2228867
+      },
+      "agent_message,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9888545637905606,
+        "cachePairSamples": 29,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 29,
+          "cachedInputTokens": 29,
+          "inputTokens": 29,
+          "outputTokens": 29,
+          "reasoningOutputTokens": 29,
+          "totalTokens": 29
+        },
+        "perSampleInputTokens": {
+          "count": 29,
+          "max": 230598,
+          "p50": 192411,
+          "p95": 229702,
+          "sum": 5484487
+        },
+        "samples": 29,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 5423360,
+          "inputTokens": 5484487,
+          "outputTokens": 11957,
+          "reasoningOutputTokens": 2764,
+          "totalTokens": 5496444
+        },
+        "uncachedInputTokens": 61127
+      },
+      "child_result": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9857852086996265,
+        "cachePairSamples": 154,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 154,
+          "cachedInputTokens": 154,
+          "inputTokens": 154,
+          "outputTokens": 154,
+          "reasoningOutputTokens": 154,
+          "totalTokens": 154
+        },
+        "perSampleInputTokens": {
+          "count": 154,
+          "max": 236424,
+          "p50": 189007.5,
+          "p95": 228133,
+          "sum": 28605274
+        },
+        "samples": 154,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 28198656,
+          "inputTokens": 28605274,
+          "outputTokens": 22584,
+          "reasoningOutputTokens": 10144,
+          "totalTokens": 28714958
+        },
+        "uncachedInputTokens": 406618
+      },
+      "child_result,monitor_exit": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9659039263847541,
+        "cachePairSamples": 67,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 67,
+          "cachedInputTokens": 67,
+          "inputTokens": 67,
+          "outputTokens": 67,
+          "reasoningOutputTokens": 67,
+          "totalTokens": 67
+        },
+        "perSampleInputTokens": {
+          "count": 67,
+          "max": 231233,
+          "p50": 174011,
+          "p95": 228327,
+          "sum": 11749740
+        },
+        "samples": 67,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 11349120,
+          "inputTokens": 11749740,
+          "outputTokens": 54823,
+          "reasoningOutputTokens": 19900,
+          "totalTokens": 11804563
+        },
+        "uncachedInputTokens": 400620
+      },
+      "child_result,monitor_exit,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9562903906094086,
+        "cachePairSamples": 24,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 24,
+          "cachedInputTokens": 24,
+          "inputTokens": 24,
+          "outputTokens": 24,
+          "reasoningOutputTokens": 24,
+          "totalTokens": 24
+        },
+        "perSampleInputTokens": {
+          "count": 24,
+          "max": 228805,
+          "p50": 162231.0,
+          "p95": 182508,
+          "sum": 3843251
+        },
+        "samples": 24,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 3675264,
+          "inputTokens": 3843251,
+          "outputTokens": 15242,
+          "reasoningOutputTokens": 5467,
+          "totalTokens": 3858493
+        },
+        "uncachedInputTokens": 167987
+      },
+      "child_result,user": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9979742780421161,
+        "cachePairSamples": 2,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 2,
+          "cachedInputTokens": 2,
+          "inputTokens": 2,
+          "outputTokens": 2,
+          "reasoningOutputTokens": 2,
+          "totalTokens": 2
+        },
+        "perSampleInputTokens": {
+          "count": 2,
+          "max": 169878,
+          "p50": 169816.0,
+          "p95": 169878,
+          "sum": 339632
+        },
+        "samples": 2,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 338944,
+          "inputTokens": 339632,
+          "outputTokens": 471,
+          "reasoningOutputTokens": 122,
+          "totalTokens": 340103
+        },
+        "uncachedInputTokens": 688
+      },
+      "child_result,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9809730896598778,
+        "cachePairSamples": 69,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 69,
+          "cachedInputTokens": 69,
+          "inputTokens": 69,
+          "outputTokens": 69,
+          "reasoningOutputTokens": 69,
+          "totalTokens": 69
+        },
+        "perSampleInputTokens": {
+          "count": 69,
+          "max": 234630,
+          "p50": 184349,
+          "p95": 228049,
+          "sum": 12733544
+        },
+        "samples": 69,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 12491264,
+          "inputTokens": 12733544,
+          "outputTokens": 24246,
+          "reasoningOutputTokens": 7196,
+          "totalTokens": 12757790
+        },
+        "uncachedInputTokens": 242280
+      },
+      "complaint_response": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9961946348037308,
+        "cachePairSamples": 3,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 3,
+          "cachedInputTokens": 3,
+          "inputTokens": 3,
+          "outputTokens": 3,
+          "reasoningOutputTokens": 3,
+          "totalTokens": 3
+        },
+        "perSampleInputTokens": {
+          "count": 3,
+          "max": 221180,
+          "p50": 139992,
+          "p95": 221180,
+          "sum": 488258
+        },
+        "samples": 3,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 486400,
+          "inputTokens": 488258,
+          "outputTokens": 430,
+          "reasoningOutputTokens": 334,
+          "totalTokens": 488688
+        },
+        "uncachedInputTokens": 1858
+      },
+      "complaint_response,monitor_exit": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.98625493133434,
+        "cachePairSamples": 4,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 4,
+          "cachedInputTokens": 4,
+          "inputTokens": 4,
+          "outputTokens": 4,
+          "reasoningOutputTokens": 4,
+          "totalTokens": 4
+        },
+        "perSampleInputTokens": {
+          "count": 4,
+          "max": 126687,
+          "p50": 125887.5,
+          "p95": 126687,
+          "sum": 502653
+        },
+        "samples": 4,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 495744,
+          "inputTokens": 502653,
+          "outputTokens": 2152,
+          "reasoningOutputTokens": 594,
+          "totalTokens": 504805
+        },
+        "uncachedInputTokens": 6909
+      },
+      "followup": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9679249848029174,
+        "cachePairSamples": 14324,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 14324,
+          "cachedInputTokens": 14324,
+          "inputTokens": 14324,
+          "outputTokens": 14324,
+          "reasoningOutputTokens": 14324,
+          "totalTokens": 14324
+        },
+        "perSampleInputTokens": {
+          "count": 14324,
+          "max": 252850,
+          "p50": 169142.0,
+          "p95": 231652,
+          "sum": 2385214396
+        },
+        "samples": 14324,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 2308708608,
+          "inputTokens": 2385214396,
+          "outputTokens": 9333148,
+          "reasoningOutputTokens": 3996174,
+          "totalTokens": 2394706845
+        },
+        "uncachedInputTokens": 76505788
+      },
+      "followup,monitor_exit": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9749277417312674,
+        "cachePairSamples": 497,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 497,
+          "cachedInputTokens": 497,
+          "inputTokens": 497,
+          "outputTokens": 497,
+          "reasoningOutputTokens": 497,
+          "totalTokens": 497
+        },
+        "perSampleInputTokens": {
+          "count": 497,
+          "max": 248171,
+          "p50": 161088,
+          "p95": 223190,
+          "sum": 79207544
+        },
+        "samples": 497,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 77221632,
+          "inputTokens": 79207544,
+          "outputTokens": 293859,
+          "reasoningOutputTokens": 130406,
+          "totalTokens": 79501403
+        },
+        "uncachedInputTokens": 1985912
+      },
+      "followup,monitor_exit,work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9887857169010086,
+        "cachePairSamples": 9,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 9,
+          "cachedInputTokens": 9,
+          "inputTokens": 9,
+          "outputTokens": 9,
+          "reasoningOutputTokens": 9,
+          "totalTokens": 9
+        },
+        "perSampleInputTokens": {
+          "count": 9,
+          "max": 165436,
+          "p50": 159801,
+          "p95": 165436,
+          "sum": 1447529
+        },
+        "samples": 9,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 1431296,
+          "inputTokens": 1447529,
+          "outputTokens": 5925,
+          "reasoningOutputTokens": 1752,
+          "totalTokens": 1453454
+        },
+        "uncachedInputTokens": 16233
+      },
+      "followup,user": {
+        "baselineMissingSamples": 1,
+        "cacheInputShare": 0.9176667193168816,
+        "cachePairSamples": 37,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 37,
+          "cachedInputTokens": 37,
+          "inputTokens": 37,
+          "outputTokens": 37,
+          "reasoningOutputTokens": 37,
+          "totalTokens": 37
+        },
+        "perSampleInputTokens": {
+          "count": 37,
+          "max": 223048,
+          "p50": 96961,
+          "p95": 220471,
+          "sum": 4146865
+        },
+        "samples": 37,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 3805440,
+          "inputTokens": 4146865,
+          "outputTokens": 41095,
+          "reasoningOutputTokens": 30748,
+          "totalTokens": 4187960
+        },
+        "uncachedInputTokens": 341425
+      },
+      "followup,work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9724649302199331,
+        "cachePairSamples": 2157,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 2157,
+          "cachedInputTokens": 2157,
+          "inputTokens": 2157,
+          "outputTokens": 2157,
+          "reasoningOutputTokens": 2157,
+          "totalTokens": 2157
+        },
+        "perSampleInputTokens": {
+          "count": 2157,
+          "max": 252802,
+          "p50": 176209,
+          "p95": 235276,
+          "sum": 371856766
+        },
+        "samples": 2157,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 361617664,
+          "inputTokens": 371856766,
+          "outputTokens": 1102408,
+          "reasoningOutputTokens": 492987,
+          "totalTokens": 372959174
+        },
+        "uncachedInputTokens": 10239102
+      },
+      "monitor_exit": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9749596082558731,
+        "cachePairSamples": 4640,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 4640,
+          "cachedInputTokens": 4640,
+          "inputTokens": 4640,
+          "outputTokens": 4640,
+          "reasoningOutputTokens": 4640,
+          "totalTokens": 4640
+        },
+        "perSampleInputTokens": {
+          "count": 4640,
+          "max": 269333,
+          "p50": 168640.5,
+          "p95": 220224,
+          "sum": 765982026
+        },
+        "samples": 4640,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 746801536,
+          "inputTokens": 765982026,
+          "outputTokens": 2439284,
+          "reasoningOutputTokens": 859726,
+          "totalTokens": 768581983
+        },
+        "uncachedInputTokens": 19180490
+      },
+      "monitor_exit,rule": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.983955754248361,
+        "cachePairSamples": 10,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 10,
+          "cachedInputTokens": 10,
+          "inputTokens": 10,
+          "outputTokens": 10,
+          "reasoningOutputTokens": 10,
+          "totalTokens": 10
+        },
+        "perSampleInputTokens": {
+          "count": 10,
+          "max": 226261,
+          "p50": 221081.5,
+          "p95": 226261,
+          "sum": 2073329
+        },
+        "samples": 10,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 2040064,
+          "inputTokens": 2073329,
+          "outputTokens": 5804,
+          "reasoningOutputTokens": 1497,
+          "totalTokens": 2079133
+        },
+        "uncachedInputTokens": 33265
+      },
+      "monitor_exit,user": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9135721253828188,
+        "cachePairSamples": 21,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 21,
+          "cachedInputTokens": 21,
+          "inputTokens": 21,
+          "outputTokens": 21,
+          "reasoningOutputTokens": 21,
+          "totalTokens": 21
+        },
+        "perSampleInputTokens": {
+          "count": 21,
+          "max": 236032,
+          "p50": 157472,
+          "p95": 234161,
+          "sum": 3383781
+        },
+        "samples": 21,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 3091328,
+          "inputTokens": 3383781,
+          "outputTokens": 8864,
+          "reasoningOutputTokens": 4037,
+          "totalTokens": 3392645
+        },
+        "uncachedInputTokens": 292453
+      },
+      "monitor_exit,work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.968009762215244,
+        "cachePairSamples": 83,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 83,
+          "cachedInputTokens": 83,
+          "inputTokens": 83,
+          "outputTokens": 83,
+          "reasoningOutputTokens": 83,
+          "totalTokens": 83
+        },
+        "perSampleInputTokens": {
+          "count": 83,
+          "max": 245298,
+          "p50": 170177,
+          "p95": 236028,
+          "sum": 14328715
+        },
+        "samples": 83,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 13870336,
+          "inputTokens": 14328715,
+          "outputTokens": 69490,
+          "reasoningOutputTokens": 24545,
+          "totalTokens": 14398205
+        },
+        "uncachedInputTokens": 458379
+      },
+      "monitor_exit,work_decision,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9807678858661445,
+        "cachePairSamples": 3,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 3,
+          "cachedInputTokens": 3,
+          "inputTokens": 3,
+          "outputTokens": 3,
+          "reasoningOutputTokens": 3,
+          "totalTokens": 3
+        },
+        "perSampleInputTokens": {
+          "count": 3,
+          "max": 203763,
+          "p50": 187293,
+          "p95": 203763,
+          "sum": 457568
+        },
+        "samples": 3,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 448768,
+          "inputTokens": 457568,
+          "outputTokens": 528,
+          "reasoningOutputTokens": 386,
+          "totalTokens": 458096
+        },
+        "uncachedInputTokens": 8800
+      },
+      "rule": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9651617829531355,
+        "cachePairSamples": 46,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 46,
+          "cachedInputTokens": 46,
+          "inputTokens": 46,
+          "outputTokens": 46,
+          "reasoningOutputTokens": 46,
+          "totalTokens": 46
+        },
+        "perSampleInputTokens": {
+          "count": 46,
+          "max": 226349,
+          "p50": 195950.0,
+          "p95": 221549,
+          "sum": 8612094
+        },
+        "samples": 46,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 8312064,
+          "inputTokens": 8612094,
+          "outputTokens": 33361,
+          "reasoningOutputTokens": 12592,
+          "totalTokens": 8645455
+        },
+        "uncachedInputTokens": 300030
+      },
+      "user": {
+        "baselineMissingSamples": 7,
+        "cacheInputShare": 0.9588850213499541,
+        "cachePairSamples": 904,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 904,
+          "cachedInputTokens": 904,
+          "inputTokens": 904,
+          "outputTokens": 904,
+          "reasoningOutputTokens": 904,
+          "totalTokens": 904
+        },
+        "perSampleInputTokens": {
+          "count": 904,
+          "max": 249428,
+          "p50": 140986.5,
+          "p95": 228923,
+          "sum": 124885046
+        },
+        "samples": 904,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 119750400,
+          "inputTokens": 124885046,
+          "outputTokens": 479764,
+          "reasoningOutputTokens": 171694,
+          "totalTokens": 125364810
+        },
+        "uncachedInputTokens": 5134646
+      },
+      "work_decision": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.97391321915536,
+        "cachePairSamples": 5360,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 5360,
+          "cachedInputTokens": 5360,
+          "inputTokens": 5360,
+          "outputTokens": 5360,
+          "reasoningOutputTokens": 5360,
+          "totalTokens": 5360
+        },
+        "perSampleInputTokens": {
+          "count": 5360,
+          "max": 249992,
+          "p50": 174230.5,
+          "p95": 232851,
+          "sum": 915513652
+        },
+        "samples": 5360,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 891630848,
+          "inputTokens": 915513652,
+          "outputTokens": 3485288,
+          "reasoningOutputTokens": 1417308,
+          "totalTokens": 919013504
+        },
+        "uncachedInputTokens": 23882804
+      },
+      "work_decision,work_ready": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9327464053265839,
+        "cachePairSamples": 12,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 12,
+          "cachedInputTokens": 12,
+          "inputTokens": 12,
+          "outputTokens": 12,
+          "reasoningOutputTokens": 12,
+          "totalTokens": 12
+        },
+        "perSampleInputTokens": {
+          "count": 12,
+          "max": 221747,
+          "p50": 123583.0,
+          "p95": 221747,
+          "sum": 1790566
+        },
+        "samples": 12,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 1670144,
+          "inputTokens": 1790566,
+          "outputTokens": 4710,
+          "reasoningOutputTokens": 1924,
+          "totalTokens": 1795276
+        },
+        "uncachedInputTokens": 120422
+      },
+      "work_decision,work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9927979929896141,
+        "cachePairSamples": 2,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 2,
+          "cachedInputTokens": 2,
+          "inputTokens": 2,
+          "outputTokens": 2,
+          "reasoningOutputTokens": 2,
+          "totalTokens": 2
+        },
+        "perSampleInputTokens": {
+          "count": 2,
+          "max": 201601,
+          "p50": 169605.5,
+          "p95": 201601,
+          "sum": 339211
+        },
+        "samples": 2,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 336768,
+          "inputTokens": 339211,
+          "outputTokens": 166,
+          "reasoningOutputTokens": 80,
+          "totalTokens": 339377
+        },
+        "uncachedInputTokens": 2443
+      },
+      "work_ready": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9649510013733759,
+        "cachePairSamples": 24,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 24,
+          "cachedInputTokens": 24,
+          "inputTokens": 24,
+          "outputTokens": 24,
+          "reasoningOutputTokens": 24,
+          "totalTokens": 24
+        },
+        "perSampleInputTokens": {
+          "count": 24,
+          "max": 219787,
+          "p50": 190725.5,
+          "p95": 219059,
+          "sum": 4298896
+        },
+        "samples": 24,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 4148224,
+          "inputTokens": 4298896,
+          "outputTokens": 15578,
+          "reasoningOutputTokens": 9028,
+          "totalTokens": 4314474
+        },
+        "uncachedInputTokens": 150672
+      },
+      "work_review": {
+        "baselineMissingSamples": 0,
+        "cacheInputShare": 0.9836411999265096,
+        "cachePairSamples": 220,
+        "fieldObservations": {
+          "cacheWriteInputTokens": 220,
+          "cachedInputTokens": 220,
+          "inputTokens": 220,
+          "outputTokens": 220,
+          "reasoningOutputTokens": 220,
+          "totalTokens": 220
+        },
+        "perSampleInputTokens": {
+          "count": 220,
+          "max": 236197,
+          "p50": 194577.0,
+          "p95": 227090,
+          "sum": 42133347
+        },
+        "samples": 220,
+        "tokens": {
+          "cacheWriteInputTokens": 0,
+          "cachedInputTokens": 41444096,
+          "inputTokens": 42133347,
+          "outputTokens": 105038,
+          "reasoningOutputTokens": 31593,
+          "totalTokens": 42238385
+        },
+        "uncachedInputTokens": 689251
+      }
+    },
+    "versionedProgress": 694
+  },
+  "exactResponseUsage": {
+    "baselineMissingSamples": 0,
+    "cacheInputShare": 0.9725427040975628,
+    "cachePairSamples": 13901,
+    "fieldObservations": {
+      "cacheWriteInputTokens": 13901,
+      "cachedInputTokens": 13901,
+      "inputTokens": 13901,
+      "outputTokens": 13901,
+      "reasoningOutputTokens": 13901,
+      "totalTokens": 13901
+    },
+    "perSampleInputTokens": {
+      "count": 13901,
+      "max": 256997,
+      "p50": 168640,
+      "p95": 232504,
+      "sum": 2294591107
+    },
+    "samples": 13901,
+    "tokens": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 2231587840,
+      "inputTokens": 2294591107,
+      "outputTokens": 9941569,
+      "reasoningOutputTokens": 3761117,
+      "totalTokens": 2304532676
+    },
+    "uncachedInputTokens": 63003267
+  },
+  "legacyUsage": {
+    "baselineMissingSamples": 8,
+    "cacheInputShare": 0.9687408585919252,
+    "cachePairSamples": 26293,
+    "fieldObservations": {
+      "cacheWriteInputTokens": 26293,
+      "cachedInputTokens": 26293,
+      "inputTokens": 26293,
+      "outputTokens": 26293,
+      "reasoningOutputTokens": 26293,
+      "totalTokens": 26293
+    },
+    "perSampleInputTokens": {
+      "count": 26293,
+      "max": 269333,
+      "p50": 172520,
+      "p95": 230665,
+      "sum": 4449335066
+    },
+    "samples": 26293,
+    "tokens": {
+      "cacheWriteInputTokens": 0,
+      "cachedInputTokens": 4310252672,
+      "inputTokens": 4449335066,
+      "outputTokens": 14075185,
+      "reasoningOutputTokens": 5988750,
+      "totalTokens": 4464331362
+    },
+    "uncachedInputTokens": 139082394
+  },
+  "summary": {
+    "activeAgents": 22,
+    "compactions": 825,
+    "payloadBoundaries": {
+      "model": {
+        "calls": 13018,
+        "outputBytes": 103492186
+      },
+      "protocol": {
+        "calls": 52658,
+        "outputBytes": 586612797
+      }
+    },
+    "tokens": {
+      "baselineMissingSamples": 8,
+      "cacheInputShare": 0.9700344197406741,
+      "cachePairSamples": 40194,
+      "fieldObservations": {
+        "cacheWriteInputTokens": 40194,
+        "cachedInputTokens": 40194,
+        "inputTokens": 40194,
+        "outputTokens": 40194,
+        "reasoningOutputTokens": 40194,
+        "totalTokens": 40194
+      },
+      "perSampleInputTokens": {
+        "count": 40194,
+        "max": 269333,
+        "p50": 171325.0,
+        "p95": 231292,
+        "sum": 6743926173
+      },
+      "samples": 40194,
+      "tokens": {
+        "cacheWriteInputTokens": 0,
+        "cachedInputTokens": 6541840512,
+        "inputTokens": 6743926173,
+        "outputTokens": 24016754,
+        "reasoningOutputTokens": 9749867,
+        "totalTokens": 6768864038
+      },
+      "uncachedInputTokens": 202085661
+    },
+    "turnDurationMs": {
+      "count": 2585,
+      "max": 9711871.99997902,
+      "p50": 71069.47588920593,
+      "p95": 1030495.3029155731,
+      "sum": 651851116.3363457
+    },
+    "turnStatus": {
+      "completed": 2580,
+      "failed": 4,
+      "interrupted": 2,
+      "running": 13
+    },
+    "turns": 2599
+  },
+  "tools": [
+    {
+      "above16KiBBytes": 385397348,
+      "above16KiBCount": 6847,
+      "above64KiBBytes": 209683372,
+      "above64KiBCount": 662,
+      "above64kBytes": 210913599,
+      "above64kCount": 681,
+      "boundary": "protocol",
+      "calls": 38723,
+      "durationMs": {
+        "count": 38691,
+        "max": 1394537,
+        "p50": 0,
+        "p95": 1710,
+        "sum": 57154855.711016156
+      },
+      "failed": 2039,
+      "inputBytes": 18408797,
+      "name": "commandExecution",
+      "outputBytes": 525913228,
+      "outputDistribution": {
+        "count": 36981,
+        "max": 1048609,
+        "p50": 4893,
+        "p95": 37300,
+        "sum": 525913228
+      },
+      "truncated": 0,
+      "type": "commandExecution"
+    },
+    {
+      "above16KiBBytes": 70476077,
+      "above16KiBCount": 2248,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "model",
+      "calls": 12930,
+      "durationMs": {
+        "count": 12930,
+        "max": 724009.6650123596,
+        "p50": 8038.933873176575,
+        "p95": 38223.1810092926,
+        "sum": 172261715.4135704
+      },
+      "failed": 0,
+      "inputBytes": 14995932,
+      "name": "exec",
+      "outputBytes": 103443484,
+      "outputDistribution": {
+        "count": 12930,
+        "max": 46747,
+        "p50": 1773.0,
+        "p95": 40693,
+        "sum": 103443484
+      },
+      "truncated": 0,
+      "type": "modelToolCall"
+    },
+    {
+      "above16KiBBytes": 25904001,
+      "above16KiBCount": 121,
+      "above64KiBBytes": 23227104,
+      "above64KiBCount": 39,
+      "above64kBytes": 23356181,
+      "above64kCount": 41,
+      "boundary": "protocol",
+      "calls": 4671,
+      "durationMs": {
+        "count": 4671,
+        "max": 1223740.464925766,
+        "p50": 5.285739898681641,
+        "p95": 36.0112190246582,
+        "sum": 11333365.377902985
+      },
+      "failed": 0,
+      "inputBytes": null,
+      "name": "fileChange",
+      "outputBytes": 34595630,
+      "outputDistribution": {
+        "count": 4671,
+        "max": 4330967,
+        "p50": 1120,
+        "p95": 8876,
+        "sum": 34595630
+      },
+      "truncated": 0,
+      "type": "fileChange"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 1924,
+      "durationMs": {
+        "count": 1924,
+        "max": 964404.9999713898,
+        "p50": 75.0,
+        "p95": 1973,
+        "sum": 2572665.07024765
+      },
+      "failed": 104,
+      "inputBytes": 1289569,
+      "name": "orchestration_task",
+      "outputBytes": 5981072,
+      "outputDistribution": {
+        "count": 1924,
+        "max": 16004,
+        "p50": 644.0,
+        "p95": 12380,
+        "sum": 5981072
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 2725175,
+      "above16KiBCount": 90,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 1428,
+      "durationMs": {
+        "count": 1428,
+        "max": 379152,
+        "p50": 86.0,
+        "p95": 1073,
+        "sum": 1108645
+      },
+      "failed": 27,
+      "inputBytes": 951141,
+      "name": "orchestration_send",
+      "outputBytes": 5611776,
+      "outputDistribution": {
+        "count": 1428,
+        "max": 33938,
+        "p50": 295.0,
+        "p95": 28650,
+        "sum": 5611776
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 3337773,
+      "above16KiBCount": 98,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 133,
+      "durationMs": {
+        "count": 133,
+        "max": 15580,
+        "p50": 706,
+        "p95": 3258,
+        "sum": 143899
+      },
+      "failed": 11,
+      "inputBytes": 90822,
+      "name": "orchestration_panel",
+      "outputBytes": 3689299,
+      "outputDistribution": {
+        "count": 133,
+        "max": 51294,
+        "p50": 31947,
+        "p95": 48240,
+        "sum": 3689299
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 532,
+      "durationMs": {
+        "count": 532,
+        "max": 43707,
+        "p50": 177.5,
+        "p95": 3422,
+        "sum": 466230.884103775
+      },
+      "failed": 0,
+      "inputBytes": 29899,
+      "name": "orchestration_search",
+      "outputBytes": 2569835,
+      "outputDistribution": {
+        "count": 532,
+        "max": 15846,
+        "p50": 4323.0,
+        "p95": 12116,
+        "sum": 2569835
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 460,
+      "durationMs": {
+        "count": 460,
+        "max": 84463,
+        "p50": 121.0,
+        "p95": 2642,
+        "sum": 347980
+      },
+      "failed": 4,
+      "inputBytes": 57600,
+      "name": "orchestration_resource",
+      "outputBytes": 2400662,
+      "outputDistribution": {
+        "count": 460,
+        "max": 6674,
+        "p50": 5185.0,
+        "p95": 5357,
+        "sum": 2400662
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 933,
+      "durationMs": {
+        "count": 932,
+        "max": 316243,
+        "p50": 51.0,
+        "p95": 2534,
+        "sum": 724240
+      },
+      "failed": 2,
+      "inputBytes": 766841,
+      "name": "orchestration_monitor",
+      "outputBytes": 1307158,
+      "outputDistribution": {
+        "count": 932,
+        "max": 12852,
+        "p50": 1046.0,
+        "p95": 3900,
+        "sum": 1307158
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 189,
+      "durationMs": {
+        "count": 189,
+        "max": 488352,
+        "p50": 85,
+        "p95": 2659,
+        "sum": 1029298.8129310608
+      },
+      "failed": 1,
+      "inputBytes": 932,
+      "name": "orchestration_status",
+      "outputBytes": 1149146,
+      "outputDistribution": {
+        "count": 189,
+        "max": 6560,
+        "p50": 6406,
+        "p95": 6554,
+        "sum": 1149146
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 2557,
+      "durationMs": {
+        "count": 2554,
+        "max": 775882.9998970032,
+        "p50": 97.0,
+        "p95": 1710,
+        "sum": 2642190.1643428802
+      },
+      "failed": 66,
+      "inputBytes": 2111324,
+      "name": "orchestration_message",
+      "outputBytes": 1011350,
+      "outputDistribution": {
+        "count": 2554,
+        "max": 1102,
+        "p50": 390.0,
+        "p95": 433,
+        "sum": 1011350
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 302,
+      "durationMs": {
+        "count": 302,
+        "max": 27922,
+        "p50": 33.0,
+        "p95": 1080,
+        "sum": 132290
+      },
+      "failed": 15,
+      "inputBytes": 34866,
+      "name": "orchestration_read",
+      "outputBytes": 769403,
+      "outputDistribution": {
+        "count": 302,
+        "max": 9107,
+        "p50": 3515.5,
+        "p95": 4551,
+        "sum": 769403
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 128,
+      "durationMs": {
+        "count": 128,
+        "max": 13620,
+        "p50": 47.0,
+        "p95": 1549,
+        "sum": 55282.77193260193
+      },
+      "failed": 8,
+      "inputBytes": 11967,
+      "name": "orchestration_chat_read",
+      "outputBytes": 665201,
+      "outputDistribution": {
+        "count": 128,
+        "max": 14959,
+        "p50": 5244.0,
+        "p95": 11826,
+        "sum": 665201
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 80,
+      "durationMs": {
+        "count": 80,
+        "max": 6987,
+        "p50": 36.5,
+        "p95": 2901,
+        "sum": 34074
+      },
+      "failed": 23,
+      "inputBytes": 1536,
+      "name": "orchestration_peers",
+      "outputBytes": 440133,
+      "outputDistribution": {
+        "count": 80,
+        "max": 10020,
+        "p50": 6877.0,
+        "p95": 9300,
+        "sum": 440133
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 384,
+      "durationMs": {
+        "count": 384,
+        "max": 22096,
+        "p50": 132.0,
+        "p95": 3939,
+        "sum": 245279
+      },
+      "failed": 37,
+      "inputBytes": 925584,
+      "name": "orchestration_result",
+      "outputBytes": 252811,
+      "outputDistribution": {
+        "count": 384,
+        "max": 9854,
+        "p50": 593.0,
+        "p95": 641,
+        "sum": 252811
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 31,
+      "durationMs": {
+        "count": 31,
+        "max": 11416,
+        "p50": 56,
+        "p95": 476,
+        "sum": 14362
+      },
+      "failed": 0,
+      "inputBytes": 548,
+      "name": "orchestration_context",
+      "outputBytes": 115369,
+      "outputDistribution": {
+        "count": 31,
+        "max": 14928,
+        "p50": 4887,
+        "p95": 14928,
+        "sum": 115369
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 17,
+      "durationMs": {
+        "count": 17,
+        "max": 3963,
+        "p50": 57,
+        "p95": 3963,
+        "sum": 6019.715139389038
+      },
+      "failed": 0,
+      "inputBytes": 841,
+      "name": "orchestration_request",
+      "outputBytes": 73926,
+      "outputDistribution": {
+        "count": 17,
+        "max": 5817,
+        "p50": 5717,
+        "p95": 5817,
+        "sum": 73926
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 26248,
+      "above16KiBCount": 1,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "model",
+      "calls": 88,
+      "durationMs": {
+        "count": 85,
+        "max": 39067.12102890015,
+        "p50": 33105.1869392395,
+        "p95": 35798.3181476593,
+        "sum": 2209820.732116699
+      },
+      "failed": 0,
+      "inputBytes": 5066,
+      "name": "wait",
+      "outputBytes": 48702,
+      "outputDistribution": {
+        "count": 85,
+        "max": 26248,
+        "p50": 64,
+        "p95": 115,
+        "sum": 48702
+      },
+      "truncated": 0,
+      "type": "modelToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 7,
+      "durationMs": {
+        "count": 7,
+        "max": 11702,
+        "p50": 55,
+        "p95": 11702,
+        "sum": 12600
+      },
+      "failed": 0,
+      "inputBytes": 1994,
+      "name": "orchestration_user_task",
+      "outputBytes": 31201,
+      "outputDistribution": {
+        "count": 7,
+        "max": 6996,
+        "p50": 5275,
+        "p95": 6996,
+        "sum": 31201
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 21,
+      "durationMs": {
+        "count": 21,
+        "max": 3342,
+        "p50": 169,
+        "p95": 532,
+        "sum": 7445
+      },
+      "failed": 1,
+      "inputBytes": 8512,
+      "name": "orchestration_watch",
+      "outputBytes": 21713,
+      "outputDistribution": {
+        "count": 21,
+        "max": 2858,
+        "p50": 1264,
+        "p95": 1439,
+        "sum": 21713
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 23,
+      "durationMs": {
+        "count": 23,
+        "max": 280539,
+        "p50": 81,
+        "p95": 3600,
+        "sum": 286989
+      },
+      "failed": 0,
+      "inputBytes": 1219,
+      "name": "orchestration_cancel_monitor",
+      "outputBytes": 5092,
+      "outputDistribution": {
+        "count": 23,
+        "max": 231,
+        "p50": 231,
+        "p95": 231,
+        "sum": 5092
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 16,
+      "durationMs": {
+        "count": 16,
+        "max": 4901,
+        "p50": 725.0,
+        "p95": 4901,
+        "sum": 14967
+      },
+      "failed": 0,
+      "inputBytes": 4102,
+      "name": "orchestration_panel_feed",
+      "outputBytes": 4724,
+      "outputDistribution": {
+        "count": 16,
+        "max": 309,
+        "p50": 309.0,
+        "p95": 309,
+        "sum": 4724
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 6,
+      "durationMs": {
+        "count": 6,
+        "max": 451,
+        "p50": 84.5,
+        "p95": 451,
+        "sum": 847
+      },
+      "failed": 1,
+      "inputBytes": 7458,
+      "name": "orchestration_spawn",
+      "outputBytes": 3071,
+      "outputDistribution": {
+        "count": 6,
+        "max": 693,
+        "p50": 519.5,
+        "p95": 693,
+        "sum": 3071
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 2,
+      "durationMs": {
+        "count": 2,
+        "max": 22,
+        "p50": 21.5,
+        "p95": 22,
+        "sum": 43
+      },
+      "failed": 2,
+      "inputBytes": 845,
+      "name": "orchestration_complaint",
+      "outputBytes": 408,
+      "outputDistribution": {
+        "count": 2,
+        "max": 204,
+        "p50": 204.0,
+        "p95": 204,
+        "sum": 408
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 2,
+      "durationMs": {
+        "count": 2,
+        "max": 145,
+        "p50": 139.0,
+        "p95": 145,
+        "sum": 278
+      },
+      "failed": 0,
+      "inputBytes": 135,
+      "name": "orchestration_title",
+      "outputBytes": 403,
+      "outputDistribution": {
+        "count": 2,
+        "max": 210,
+        "p50": 201.5,
+        "p95": 210,
+        "sum": 403
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 1,
+      "durationMs": {
+        "count": 1,
+        "max": 165,
+        "p50": 165,
+        "p95": 165,
+        "sum": 165
+      },
+      "failed": 0,
+      "inputBytes": 51,
+      "name": "orchestration_interrupt",
+      "outputBytes": 186,
+      "outputDistribution": {
+        "count": 1,
+        "max": 186,
+        "p50": 186,
+        "p95": 186,
+        "sum": 186
+      },
+      "truncated": 0,
+      "type": "dynamicToolCall"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 29,
+      "durationMs": {
+        "count": 29,
+        "max": 3151.883125305176,
+        "p50": 1661.9999408721924,
+        "p95": 2988.0001544952393,
+        "sum": 50895.606994628906
+      },
+      "failed": 0,
+      "inputBytes": 2078,
+      "name": "webSearch",
+      "outputBytes": null,
+      "outputDistribution": {
+        "count": 0,
+        "max": null,
+        "p50": null,
+        "p95": null,
+        "sum": null
+      },
+      "truncated": 0,
+      "type": "webSearch"
+    },
+    {
+      "above16KiBBytes": 0,
+      "above16KiBCount": 0,
+      "above64KiBBytes": 0,
+      "above64KiBCount": 0,
+      "above64kBytes": 0,
+      "above64kCount": 0,
+      "boundary": "protocol",
+      "calls": 59,
+      "durationMs": {
+        "count": 59,
+        "max": 2662.822961807251,
+        "p50": 7.4901580810546875,
+        "p95": 117.45405197143555,
+        "sum": 3492.92254447937
+      },
+      "failed": 0,
+      "inputBytes": null,
+      "name": "imageView",
+      "outputBytes": null,
+      "outputDistribution": {
+        "count": 0,
+        "max": null,
+        "p50": null,
+        "p95": null,
+        "sum": null
+      },
+      "truncated": 0,
+      "type": "imageView"
+    }
+  ],
+  "window": {
+    "durationSeconds": 86400,
+    "from": 1789160464.813625,
+    "fromUtc": "2026-09-11T21:01:04.813625+00:00",
+    "interval": "[from,to)",
+    "to": 1789246864.813625,
+    "toUtc": "2026-09-12T21:01:04.813625+00:00"
+  }
+}

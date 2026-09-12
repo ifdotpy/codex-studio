@@ -1,0 +1,270 @@
+{
+  "source_commit": "670062f73559459895a7e8b7c76a2e31039ecad7",
+  "unit": "UTF-8 bytes and characters, not model tokens",
+  "path_policy": "source paths are current checkout; progress path uses synthetic state and UUID",
+  "common_instructions": {
+    "utf8_bytes": 7044,
+    "characters": 7044
+  },
+  "roles": {
+    "lead": {
+      "role_guidance": {
+        "utf8_bytes": 5819,
+        "characters": 5819
+      },
+      "progress_guidance": {
+        "utf8_bytes": 1884,
+        "characters": 1884
+      },
+      "tool_count": 23,
+      "tool_catalog": {
+        "utf8_bytes": 14994,
+        "characters": 14994
+      },
+      "tools": [
+        {
+          "name": "orchestration_complaint",
+          "utf8_bytes": 534,
+          "characters": 534
+        },
+        {
+          "name": "orchestration_peers",
+          "utf8_bytes": 431,
+          "characters": 431
+        },
+        {
+          "name": "orchestration_message",
+          "utf8_bytes": 1163,
+          "characters": 1163
+        },
+        {
+          "name": "orchestration_chat_read",
+          "utf8_bytes": 354,
+          "characters": 354
+        },
+        {
+          "name": "orchestration_title",
+          "utf8_bytes": 344,
+          "characters": 344
+        },
+        {
+          "name": "orchestration_interrupt",
+          "utf8_bytes": 312,
+          "characters": 312
+        },
+        {
+          "name": "orchestration_spawn",
+          "utf8_bytes": 1184,
+          "characters": 1184
+        },
+        {
+          "name": "orchestration_send",
+          "utf8_bytes": 822,
+          "characters": 822
+        },
+        {
+          "name": "orchestration_status",
+          "utf8_bytes": 360,
+          "characters": 360
+        },
+        {
+          "name": "orchestration_monitor",
+          "utf8_bytes": 781,
+          "characters": 781
+        },
+        {
+          "name": "orchestration_cancel_monitor",
+          "utf8_bytes": 242,
+          "characters": 242
+        },
+        {
+          "name": "orchestration_speak",
+          "utf8_bytes": 379,
+          "characters": 379
+        },
+        {
+          "name": "orchestration_agent_manage",
+          "utf8_bytes": 792,
+          "characters": 792
+        },
+        {
+          "name": "orchestration_task",
+          "utf8_bytes": 1438,
+          "characters": 1438
+        },
+        {
+          "name": "orchestration_result",
+          "utf8_bytes": 621,
+          "characters": 621
+        },
+        {
+          "name": "orchestration_search",
+          "utf8_bytes": 420,
+          "characters": 420
+        },
+        {
+          "name": "orchestration_watch",
+          "utf8_bytes": 1322,
+          "characters": 1322
+        },
+        {
+          "name": "orchestration_resource",
+          "utf8_bytes": 453,
+          "characters": 453
+        },
+        {
+          "name": "orchestration_monitor_input",
+          "utf8_bytes": 439,
+          "characters": 439
+        },
+        {
+          "name": "orchestration_user_task",
+          "utf8_bytes": 1074,
+          "characters": 1074
+        },
+        {
+          "name": "orchestration_request",
+          "utf8_bytes": 566,
+          "characters": 566
+        },
+        {
+          "name": "orchestration_read",
+          "utf8_bytes": 474,
+          "characters": 474
+        },
+        {
+          "name": "orchestration_context",
+          "utf8_bytes": 465,
+          "characters": 465
+        }
+      ],
+      "first_turn_repeated_role_and_progress_bytes": 7703
+    },
+    "worker": {
+      "role_guidance": {
+        "utf8_bytes": 3164,
+        "characters": 3164
+      },
+      "progress_guidance": {
+        "utf8_bytes": 1884,
+        "characters": 1884
+      },
+      "tool_count": 20,
+      "tool_catalog": {
+        "utf8_bytes": 12779,
+        "characters": 12779
+      },
+      "tools": [
+        {
+          "name": "orchestration_complaint",
+          "utf8_bytes": 567,
+          "characters": 567
+        },
+        {
+          "name": "orchestration_peers",
+          "utf8_bytes": 431,
+          "characters": 431
+        },
+        {
+          "name": "orchestration_message",
+          "utf8_bytes": 1163,
+          "characters": 1163
+        },
+        {
+          "name": "orchestration_chat_read",
+          "utf8_bytes": 354,
+          "characters": 354
+        },
+        {
+          "name": "orchestration_title",
+          "utf8_bytes": 344,
+          "characters": 344
+        },
+        {
+          "name": "orchestration_interrupt",
+          "utf8_bytes": 312,
+          "characters": 312
+        },
+        {
+          "name": "orchestration_spawn",
+          "utf8_bytes": 1184,
+          "characters": 1184
+        },
+        {
+          "name": "orchestration_send",
+          "utf8_bytes": 822,
+          "characters": 822
+        },
+        {
+          "name": "orchestration_status",
+          "utf8_bytes": 360,
+          "characters": 360
+        },
+        {
+          "name": "orchestration_monitor",
+          "utf8_bytes": 781,
+          "characters": 781
+        },
+        {
+          "name": "orchestration_cancel_monitor",
+          "utf8_bytes": 242,
+          "characters": 242
+        },
+        {
+          "name": "orchestration_task",
+          "utf8_bytes": 1438,
+          "characters": 1438
+        },
+        {
+          "name": "orchestration_result",
+          "utf8_bytes": 621,
+          "characters": 621
+        },
+        {
+          "name": "orchestration_search",
+          "utf8_bytes": 420,
+          "characters": 420
+        },
+        {
+          "name": "orchestration_watch",
+          "utf8_bytes": 1322,
+          "characters": 1322
+        },
+        {
+          "name": "orchestration_resource",
+          "utf8_bytes": 453,
+          "characters": 453
+        },
+        {
+          "name": "orchestration_monitor_input",
+          "utf8_bytes": 439,
+          "characters": 439
+        },
+        {
+          "name": "orchestration_request",
+          "utf8_bytes": 566,
+          "characters": 566
+        },
+        {
+          "name": "orchestration_read",
+          "utf8_bytes": 474,
+          "characters": 474
+        },
+        {
+          "name": "orchestration_context",
+          "utf8_bytes": 465,
+          "characters": 465
+        }
+      ],
+      "first_turn_repeated_role_and_progress_bytes": 5048
+    }
+  },
+  "source_hashes": {
+    "scripts/codex_runtime.py": "8b7b10e524b043bf9abd9f397a78bb97bf49ee3444d9a576da113e78f1735f14",
+    "scripts/codex_efficiency.py": "55763f7f6b4354d13aa796b3db05084200cd2173a5e2e14cf2ecad226fd2f303",
+    "scripts/codex_progress.py": "41b857c39a219753855abd1e5c0b9ad8de9ac623e75e8a34d126ead41787b8fe",
+    "scripts/codex_progress_layout.py": "1fece368a3d59e21381eb82d412e7974b3b29cf1490b4e722411237d9d8b0969",
+    ".agents/skills/codex-orchestrator/SKILL.md": "0f9e22a9ad22af93aa0c6e1bfb6c86c8cb90d4540ce6b1f257ace564a79bd619",
+    ".agents/skills/codex-subagent/SKILL.md": "5a63b2743fe606b77c9e3fe2f86e3d059c3e00e7f48e38a6f0e1eed0d56ec2e7"
+  }
+}
