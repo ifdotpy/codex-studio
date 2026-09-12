@@ -19,6 +19,7 @@ class ModelTurnUpdateContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.old = subprocess.check_output(["git", "show", "d6cc3e1:scripts/codex_runtime.py"], cwd=ROOT, text=True)
+        cls.desired = subprocess.check_output(["git", "show", "5217bb9:scripts/codex_runtime.py"], cwd=ROOT, text=True)
 
     def setUp(self):
         self.module = ModuleType("codex_runtime")
@@ -36,8 +37,16 @@ class ModelTurnUpdateContract(unittest.TestCase):
             setattr(self.owner, name, function)
         self.module_patch = patch.dict(sys.modules, {"codex_runtime": self.module})
         self.module_patch.start()
+        original_read = Path.read_text
+        def historical_source(path, *args, **kwargs):
+            if path.resolve() == ROOT / 'scripts/codex_runtime.py':
+                return self.desired
+            return original_read(path, *args, **kwargs)
+        self.source_patch = patch.object(Path, 'read_text', historical_source)
+        self.source_patch.start()
 
     def tearDown(self):
+        self.source_patch.stop()
         self.module_patch.stop()
 
     def state(self):

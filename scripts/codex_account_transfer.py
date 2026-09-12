@@ -12,6 +12,10 @@ TERMINAL = {'completed', 'cancelled'}
 ACTIVE = {'running', 'starting', 'approval'}
 
 
+class TransferSettingsConflict(ValueError):
+    pass
+
+
 def transfer_store(rt):
     with rt.lock:
         if not hasattr(rt, '_account_transfers'):
@@ -236,19 +240,45 @@ class AccountTransfers:
                 m = op['members'][aid]
                 if rt.closed or self.closing or op['status'] != 'pending' or a.get('accountTransferId') != key:
                     return
-                if m['phase'] == 'ready':
-                    self.commit(db, op, a)
-                    return
+                # Restart can move an interrupted validation back to waiting.
+                # A saved native result always forbids another fork.
+                reuse_result = bool(m.get('result'))
+                if reuse_result:
+                    self.assert_source(m, a)
                 if self.local_blocker(db, a):
                     return
                 m.update(phase='reading', source={k: a.get(k) for k in ('epoch', 'accountKey', 'threadId', 'cwd')},
-                         settings=rt.preparation_settings(a), error=None)
+                         settings=rt.preparation_settings(a),
+                         pendingSettings=a.get('pendingSettings'),
+                         pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'), error=None)
                 self.save(db, op)
             target = op['targetAccountKey']
             self.check_destination(a, target)
             server = rt.connect(target)
             catalog = rt.catalog(target)
-            rt.validate_execution(catalog, a['model'], a.get('effort'), a.get('fastMode', False))
+            effort, native_effort = rt.validate_execution(catalog, a['model'], a.get('effort'), a.get('fastMode', False))
+            resolved = dict(effort=effort, nativeEffort=native_effort)
+            if a.get('pendingSettings'):
+                if a.get('pendingSettingsAccountKey', a.get('accountKey', 'default')) != a.get('accountKey', 'default'):
+                    raise ValueError('Queued settings belong to another account. Save them again before transfer')
+                pending = a['pendingSettings']
+                pending_effort, pending_native = rt.validate_execution(
+                    catalog, pending['model'], pending.get('effort'), pending.get('fastMode', False))
+                resolved.update(pendingSettings={**pending, 'effort': pending_effort, 'nativeEffort': pending_native},
+                                pendingSettingsAccountKey=target)
+            # Keep destination-derived values separate until the native receipt.
+            with rt.lock, rt.db() as db:
+                current_op = self.get(db, key)
+                current = rt.agent(aid, db)
+                if rt.closed or self.closing or current_op['status'] != 'pending' or current.get('accountTransferId') != key:
+                    return
+                self.assert_source(current_op['members'][aid], current)
+                self.assert_settings(current_op['members'][aid], current)
+                current_op['members'][aid]['targetSettings'] = resolved
+                self.save(db, current_op)
+                if reuse_result:
+                    self.commit(db, current_op, current)
+                    return
             source_path = None
             if a.get('threadId'):
                 source = rt.connect(a.get('accountKey', 'default'))
@@ -269,6 +299,7 @@ class AccountTransfers:
                         if current_op['status'] != 'pending':
                             return
                         self.assert_source(current_op['members'][aid], rt.agent(aid, db))
+                        self.assert_settings(current_op['members'][aid], rt.agent(aid, db))
                         unsubscribed = rt.submit_reserved(source, 'thread/unsubscribe', {'threadId': a['threadId']})
                     source.wait(unsubscribed, timeout=10)
                     barrier = concurrent.futures.Future()
@@ -279,7 +310,7 @@ class AccountTransfers:
                 if not native.get('path'):
                     raise ValueError('Codex returned no saved context path')
                 source_path = self.copy_history(rt.accounts.home(a.get('accountKey', 'default')), rt.accounts.home(target), native['path'])
-            params = rt.new_thread_params({**a, 'accountKey': target})
+            params = rt.new_thread_params({**a, **resolved, 'accountKey': target})
             params.pop('dynamicTools', None)
             params['excludeTurns'] = True
             if source_path:
@@ -295,6 +326,7 @@ class AccountTransfers:
                 if rt.closed or self.closing or op['status'] != 'pending' or current.get('accountTransferId') != key:
                     return
                 self.assert_source(op['members'][aid], current)
+                self.assert_settings(op['members'][aid], current)
                 if self.local_blocker(db, current):
                     op['members'][aid]['phase'] = 'waiting'
                     self.save(db, op)
@@ -330,6 +362,12 @@ class AccountTransfers:
         if a.get('deletedAt') or any(a.get(k) != v for k, v in m['source'].items()):
             raise ValueError('Agent state changed during transfer. Its original session is preserved.')
 
+    def assert_settings(self, member, agent):
+        if (self.rt.preparation_settings(agent) != member['settings']
+                or agent.get('pendingSettings') != member.get('pendingSettings')
+                or agent.get('pendingSettingsAccountKey') != member.get('pendingSettingsAccountKey')):
+            raise TransferSettingsConflict('Agent settings changed during transfer. The newer choice is preserved')
+
     def received(self, key, aid, future):
         rt = self.rt
         try:
@@ -346,7 +384,8 @@ class AccountTransfers:
                 return
             # Protocol validation rejects before execution. Internal failures may apply.
             from codex_native_errors import NativeRpcError
-            self.update(key, aid, phase='blocked' if isinstance(error, NativeRpcError) and error.code in {-32601, -32602} else 'unknown', error=str(error))
+            rejected = isinstance(error, NativeRpcError) and error.code in {-32601, -32602}
+            self.update(key, aid, phase='blocked' if rejected or isinstance(error, TransferSettingsConflict) else 'unknown', error=str(error))
         finally:
             self.futures.pop((key, aid), None)
             rt.changed.set()
@@ -385,8 +424,9 @@ class AccountTransfers:
         self.assert_source(m, a)
         if rt.closed or self.closing or a.get('accountTransferId') != op['id'] or self.local_blocker(db, a):
             return
-        if rt.preparation_settings(a) != m['settings']:
-            raise ValueError('Agent settings changed during transfer')
+        self.assert_settings(m, a)
+        if not isinstance(m.get('targetSettings'), dict):
+            raise TransferSettingsConflict('Destination settings need validation before this saved transfer can finish')
         target = op['targetAccountKey']
         self.check_destination(a, target, db)
         result = m['result']
@@ -395,6 +435,7 @@ class AccountTransfers:
             'threadId': a.get('threadId'), 'at': time.time()})
         a.update(accountKey=target, threadId=result['thread']['id'], turnId=None,
                  sandbox=result.get('sandbox', a.get('sandbox')), approvalPolicy=result.get('approvalPolicy', a.get('approvalPolicy')))
+        a.update(m['targetSettings'])
         for field in ('accountTransferId', 'prepareAttempt', 'startAttempt', 'nativeFailureHold'):
             a.pop(field, None)
         # Resume a confirmed failed turn from context, never by replaying its input.

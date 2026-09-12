@@ -40,6 +40,8 @@ class FakeServer:
         self.calls.append((method, params))
         if method == 'skills/extraRoots/set':
             return {}
+        if method == 'thread/settings/update':
+            return {}
         if method == 'config/read':
             # Fake commands have no host shell setup. Native parity is covered
             # by monitor-shell-native.py with snapshots both enabled and disabled.

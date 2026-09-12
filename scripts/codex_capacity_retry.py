@@ -152,6 +152,15 @@ class CapacityRetryMixin:
             if retry.get('claimedAt') or retry['status'] not in {'scheduled', 'cancelled', 'exhausted'}:
                 return retry
             self.capacity_check(db, a, retry)
+            if a.get('pendingSettings'):
+                if a.get('pendingSettingsAccountKey', a.get('accountKey', 'default')) != a.get('accountKey', 'default'):
+                    raise ValueError('The account changed. Save the next-turn settings again')
+                # Verify the failed turn first, then bind the owner's queued choice
+                # to this exact continuation in the same transaction as its claim.
+                a.pop('pendingSettingsAccountKey', None)
+                a.update(a.pop('pendingSettings'))
+                retry['settings'] = self.preparation_settings(a)
+                self.loaded.discard(a['id'])
             retry.update(status='starting', dueAt=None, claimedAt=time.time(), reason=None)
             attempt = dict(id='capacity:' + retry_id, epoch=a['epoch'], events=[], action='capacity',
                            submitted=False, capacityRetryId=retry_id, accountKey=retry['accountKey'])

@@ -37,21 +37,69 @@ export function shortModel(model: string) {
   );
 }
 
-export function ExecutionSettings({
-  agent,
-  catalog,
-  refresh,
-  teamDefaults = false,
-  nextTurnSupported,
-  onOpenChange,
-}: {
+type SettingsProps = {
   agent: Agent;
   catalog: Catalog;
   refresh: () => Promise<void>;
   teamDefaults?: boolean;
   nextTurnSupported?: boolean;
   onOpenChange?: (opened: boolean) => void;
-}) {
+};
+const accountOf = (agent: Agent) => agent.accountKey || "default";
+const settingsFor = (agent: Agent, teamDefaults: boolean) => {
+  if (teamDefaults)
+    return {
+      model:
+        agent.workerDefaults?.model === undefined
+          ? "gpt-5.6-luna"
+          : agent.workerDefaults.model,
+      effort:
+        agent.workerDefaults?.effort === undefined
+          ? "max"
+          : agent.workerDefaults.effort,
+      fast_mode: !!agent.workerDefaults?.fastMode,
+    };
+  const queued =
+    agent.pendingSettingsAccountKey &&
+    agent.pendingSettingsAccountKey !== accountOf(agent)
+      ? null
+      : agent.pendingSettings;
+  return {
+    model: queued?.model ?? agent.model,
+    effort: queued ? (queued.effort ?? null) : (agent.effort ?? null),
+    fast_mode: queued ? !!queued.fastMode : !!agent.fastMode,
+  };
+};
+const sameSettings = (left: Json, right: Json) =>
+  left.model === right.model &&
+  left.effort === right.effort &&
+  left.fast_mode === right.fast_mode;
+
+export function ExecutionSettings(props: SettingsProps) {
+  // Account transfers reuse the same agent ID in the conversation view.
+  const scope = JSON.stringify([
+    props.agent.id,
+    accountOf(props.agent),
+    !!props.teamDefaults,
+  ]);
+  return <ScopedExecutionSettings key={scope} {...props} />;
+}
+
+function ScopedExecutionSettings({
+  agent,
+  catalog,
+  refresh,
+  teamDefaults = false,
+  nextTurnSupported,
+  onOpenChange,
+}: SettingsProps) {
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const canQueueSettings =
     nextTurnSupported ??
     (agent as Agent & { nextTurnSettingsSupported?: boolean })
@@ -75,16 +123,32 @@ export function ExecutionSettings({
   }, [opened]);
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
-  const receiptKey = `next-turn-settings:${agent.id}`;
+  const legacyReceiptKey = `next-turn-settings:${agent.id}`;
+  const receiptKey = `next-turn-settings:${JSON.stringify([agent.id, accountOf(agent)])}`;
+  const [legacyReceipt, setLegacyReceipt] = useState(
+    () => !teamDefaults && !!saved<Json | null>(legacyReceiptKey, null),
+  );
   const [unconfirmed, setUnconfirmed] = useState<Json | null>(() => {
     if (teamDefaults) return null;
     const value = saved<Json | null>(receiptKey, null);
     return value?.id === agent.id && value?.next_turn === true ? value : null;
   });
-  const [pendingYolo, setPendingYolo] = useState<boolean | null>(null);
+  const [pendingYolo, setPendingYolo] = useState<{
+    value: boolean;
+    baseline: boolean;
+  } | null>(null);
+  useEffect(() => {
+    if (
+      !saving &&
+      pendingYolo &&
+      (pendingYolo.value === (agent.yoloMode === true) ||
+        pendingYolo.baseline !== (agent.yoloMode === true))
+    )
+      setPendingYolo(null);
+  }, [saving, pendingYolo, agent.yoloMode]);
   const [pending, setPending] = useState<{
-    scope: string;
     values: Json;
+    baseline: Json;
   } | null>(null);
   const [error, setError] = useState("");
   const [adjustment, setAdjustment] = useState("");
@@ -107,37 +171,19 @@ export function ExecutionSettings({
       };
     }
   ).pendingSettings;
-  const stored = teamDefaults
-    ? {
-        model:
-          agent.workerDefaults?.model === undefined
-            ? "gpt-5.6-luna"
-            : agent.workerDefaults.model,
-        effort:
-          agent.workerDefaults?.effort === undefined
-            ? "max"
-            : agent.workerDefaults.effort,
-        fast_mode: !!agent.workerDefaults?.fastMode,
-      }
-    : {
-        model: queued?.model ?? agent.model,
-        effort: queued ? (queued.effort ?? null) : (agent.effort ?? null),
-        fast_mode: queued ? !!queued.fastMode : !!agent.fastMode,
-      };
-  const scope = `${agent.id}:${teamDefaults}`;
-  const current =
-    unconfirmed || (pending?.scope === scope ? pending.values : stored);
+  const stored = settingsFor(agent, teamDefaults);
+  const current = unconfirmed || pending?.values || stored;
   useEffect(() => {
-    // The settings response can arrive before the replicated agent snapshot.
+    // Keep the acknowledged response while replication still has the old values.
+    // A settings change in the snapshot hands ownership back to replication.
     if (
       !saving &&
-      pending?.scope === scope &&
-      pending.values.model === stored.model &&
-      pending.values.effort === stored.effort &&
-      pending.values.fast_mode === stored.fast_mode
+      pending &&
+      (sameSettings(pending.values, stored) ||
+        !sameSettings(pending.baseline, stored))
     )
       setPending(null);
-  }, [saving, pending, scope, stored.model, stored.effort, stored.fast_mode]);
+  }, [saving, pending, stored.model, stored.effort, stored.fast_mode]);
   const selectedModel = current.model || agent.model;
   const info = infoFor(catalog, selectedModel);
   const active = !teamDefaults && (!!agent.inFlight || busy.has(agent.status));
@@ -173,27 +219,46 @@ export function ExecutionSettings({
   const submit = async (request: Json, next: Json, notice = "") => {
     if (saveLock.current) return;
     saveLock.current = true;
-    const previous = request.next_turn ? stored : current;
-    setPending({ scope, values: next });
+    request = { ...request, expected_account_key: accountOf(agent) };
+    const previousPending = unconfirmed ? null : pending;
+    setPending({ values: next, baseline: stored });
     setSaving(true);
     setError("");
     if (request.next_turn) {
       save(receiptKey, request);
       setUnconfirmed(request);
     }
+    const clearReceipt = () => {
+      if (
+        saved<Json | null>(receiptKey, null)?.request_id === request.request_id
+      )
+        save(receiptKey, null);
+    };
     let confirmed = false;
     try {
-      await api(
+      const canonical = await api<Agent>(
         "/api/conversation",
         request,
         request.next_turn ? { timeoutMs: 15000 } : {},
       );
+      if (
+        !canonical ||
+        canonical.id !== agent.id ||
+        accountOf(canonical) !== accountOf(agent)
+      )
+        throw new Error(
+          "The settings account changed. Check the current settings.",
+        );
       confirmed = true;
       if (request.next_turn) {
-        save(receiptKey, null);
-        setUnconfirmed(null);
+        clearReceipt();
+        if (mounted.current) setUnconfirmed(null);
       }
-      setPending({ scope, values: next });
+      if (!mounted.current) return;
+      setPending({
+        values: settingsFor(canonical, teamDefaults),
+        baseline: stored,
+      });
       setAdjustment(notice);
       await refresh();
     } catch (failure) {
@@ -201,12 +266,13 @@ export function ExecutionSettings({
         failure instanceof ApiError &&
         [400, 401, 403, 404, 409, 422].includes(failure.status);
       if (!confirmed && (!request.next_turn || rejected)) {
-        setPending({ scope, values: previous });
+        if (mounted.current) setPending(previousPending);
         if (request.next_turn) {
-          save(receiptKey, null);
-          setUnconfirmed(null);
+          clearReceipt();
+          if (mounted.current) setUnconfirmed(null);
         }
       }
+      if (!mounted.current) return;
       setError(
         confirmed
           ? `Settings saved. ${errorText(failure)}`
@@ -214,7 +280,7 @@ export function ExecutionSettings({
       );
     } finally {
       saveLock.current = false;
-      setSaving(false);
+      if (mounted.current) setSaving(false);
     }
   };
   const change = async (patch: Json) => {
@@ -252,17 +318,45 @@ export function ExecutionSettings({
     await submit(request, next, adjustments.join(" "));
   };
   const changeYolo = async (enabled: boolean) => {
-    setPendingYolo(enabled);
+    if (saveLock.current) return;
+    saveLock.current = true;
+    const previousPending = pendingYolo;
+    setPendingYolo({ value: enabled, baseline: agent.yoloMode === true });
     setSaving(true);
     setError("");
+    let confirmed = false;
     try {
-      await api("/api/conversation", { id: agent.id, yolo_mode: enabled });
+      const canonical = await api<Agent>("/api/conversation", {
+        id: agent.id,
+        yolo_mode: enabled,
+        expected_account_key: accountOf(agent),
+      });
+      if (
+        !canonical ||
+        canonical.id !== agent.id ||
+        accountOf(canonical) !== accountOf(agent)
+      )
+        throw new Error(
+          "The settings account changed. Check the current settings.",
+        );
+      confirmed = true;
+      if (!mounted.current) return;
+      setPendingYolo({
+        value: canonical.yoloMode === true,
+        baseline: agent.yoloMode === true,
+      });
       await refresh();
     } catch (failure) {
-      setError(errorText(failure));
+      if (!mounted.current) return;
+      if (!confirmed) setPendingYolo(previousPending);
+      setError(
+        confirmed
+          ? `Settings saved. ${errorText(failure)}`
+          : errorText(failure),
+      );
     } finally {
-      setPendingYolo(null);
-      setSaving(false);
+      saveLock.current = false;
+      if (mounted.current) setSaving(false);
     }
   };
   return (
@@ -355,7 +449,7 @@ export function ExecutionSettings({
             <Switch
               label="Full access without approval"
               aria-label="Full access without approval"
-              checked={pendingYolo ?? agent.yoloMode === true}
+              checked={pendingYolo?.value ?? agent.yoloMode === true}
               disabled={saving || active || !("yoloMode" in agent)}
               description={
                 !("yoloMode" in agent)
@@ -395,6 +489,22 @@ export function ExecutionSettings({
           <div role="alert">
             <p>{catalog.error}</p>
             <Button onClick={catalog.retry}>Retry model list</Button>
+          </div>
+        )}
+        {legacyReceipt && (
+          <div role="status">
+            <p>
+              Previous settings request has no account identity. Check the
+              current settings.
+            </p>
+            <Button
+              onClick={() => {
+                save(legacyReceiptKey, null);
+                setLegacyReceipt(false);
+              }}
+            >
+              Discard previous settings request
+            </Button>
           </div>
         )}
         {unconfirmed && !saving && (

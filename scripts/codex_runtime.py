@@ -1354,11 +1354,14 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         return {"deleted": sorted(ids)}
 
     def conversation_settings(self, key, data):
+        expected_account = data.get("expected_account_key")
+        if "expected_account_key" in data and (not isinstance(expected_account, str) or not expected_account):
+            raise ValueError("Expected account identity must be a non-empty string")
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         execution_fields = {"model", "effort", "fast_mode"}
         if data.get("next_turn") is True:
-            if set(data) - {"id", "request_id", "next_turn", *execution_fields}:
+            if set(data) - {"id", "request_id", "next_turn", "expected_account_key", *execution_fields}:
                 raise ValueError("Only execution settings can apply to the next turn")
             request_id = data.get("request_id")
             if not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
@@ -1366,6 +1369,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             receipt_body = {"operation": "next_turn_settings", "agent": key, **data}
             with self.lock, self.db() as db:
                 target = self.checked_actor(db, key)
+                if expected_account is not None and target.get("accountKey", "default") != expected_account:
+                    raise ValueError("The account changed. Read the current settings before saving")
                 signature, prior = self.operation_receipt(db, request_id, receipt_body)
                 if prior is not None:
                     return self.agent(key, db)
@@ -1379,7 +1384,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     return a
                 if a.get("accountKey", "default") != target.get("accountKey", "default"):
                     raise ValueError("The account changed. Select the model again")
-                base = {**a, **(a.get("pendingSettings") or {})}
+                pending_settings = (a.get("pendingSettings") or {}) if (
+                    a.get("pendingSettingsAccountKey", a.get("accountKey", "default")) == a.get("accountKey", "default")) else {}
+                base = {**a, **pending_settings}
                 model = data.get("model", base["model"])
                 effort, native_effort = self.validate_execution(
                     catalog, model, data.get("effort", base.get("effort")),
@@ -1396,10 +1403,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if pending and not pending["future"].done() and set(data).intersection(
                     execution_fields | {"cwd", "yolo_mode"}):
                 raise ValueError("Wait for thread preparation before changing execution settings")
-        defaults_only = set(data) <= {"id", "worker_defaults"} and "worker_defaults" in data
+        defaults_only = set(data) <= {"id", "worker_defaults", "expected_account_key"} and "worker_defaults" in data
         with self.lock, self.db() as db:
             target = self.agent(key, db)
-            if not target.get("isLead") and (set(data) - {"id", *execution_fields}):
+            if expected_account is not None and target.get("accountKey", "default") != expected_account:
+                raise ValueError("The account changed. Read the current settings before saving")
+            if not target.get("isLead") and (set(data) - {"id", "expected_account_key", *execution_fields}):
                 raise ValueError("Only a lead can change these settings; a subagent can change only its execution settings")
             if target.get("isLead") and "model" in data and data["model"] not in LEAD_MODELS:
                 raise ValueError("A lead must use Astra or Sol")
@@ -4369,6 +4378,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError("Wait for this agent's current turn before this action")
             if not a["autoWake"]:
                 raise ValueError("Send a new instruction to resume this agent first")
+            if a.get("pendingSettings"):
+                if a.get("pendingSettingsAccountKey", a.get("accountKey", "default")) != a.get("accountKey", "default"):
+                    raise ValueError("The account changed. Save the next-turn settings again")
+                a.pop("pendingSettingsAccountKey", None)
+                a.update(a.pop("pendingSettings"))
+                self.loaded.discard(a["id"])
             self.capacity_reset(db, a, "A native action replaces this retry.")
             a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
                      startAttempt={"id": uid(), "epoch": a["epoch"], "events": [], "action": action, "submitted": False})
@@ -4379,6 +4394,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         try:
             a = self.prepare(self.agent(key))
             server = self.connect(a.get("accountKey", "default"))
+            if attempt["action"] in {"compact", "review"}:
+                from codex_native_action_settings import ensure
+                ensure(self, a, attempt, server)
             with self.lock, self.db() as db:
                 a = self.agent(key, db)
                 if ((a.get("startAttempt") or {}).get("id") != attempt["id"]
@@ -4390,6 +4408,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if a["startAttempt"].get("submitted"):
                         return a.get("capacityRetry")
                     self.capacity_check(db, a, a.get("capacityRetry") or {}, claimed=True)
+                elif a["startAttempt"].get("submitted"):
+                    return {"status": a["status"], "pending": bool(a.get("inFlight"))}
+                attempt = {**a["startAttempt"], **attempt}
                 attempt.update(submitted=True, accountKey=a.get("accountKey", "default"),
                                connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
                 a["startAttempt"] = dict(attempt)
