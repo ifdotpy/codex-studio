@@ -4171,6 +4171,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
             for a in agents:
                 a["nextTurnSettingsSupported"] = True
+                a["readStateSupported"] = True
                 a["empty"] = self.empty_lead(db, a)
                 if not a.get("isLead"):
                     task = str(a.get("prompt") or "")

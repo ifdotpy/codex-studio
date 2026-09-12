@@ -459,6 +459,9 @@ class WorkMixin:
     def chat_organization(self, key, data):
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
+            if 'read_state' in data:
+                from codex_chat_read_state import read_state
+                return read_state(self, db, a, data)
             if 'project_folder' in data:
                 from codex_project_folders import folder_for
                 if not a.get('isLead') or data.get('project_path') != a.get('cwd'):

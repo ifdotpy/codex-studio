@@ -5,6 +5,8 @@ import { save, saved } from "../api";
 import { nativeErrorView } from "../nativeErrors";
 import { shortModel } from "./ExecutionSettings";
 import { agentErrorLabel, statusLabel, type Agent, type Json } from "../types";
+import ChatStatus from "./ChatStatus";
+import type { ChatIndicator } from "./chatStatusModel";
 
 export function awaitingAnswerIds(requests: Json[]) {
   return new Set(
@@ -137,12 +139,14 @@ export default function WorkerCard({
   awaitingAnswer,
   deferred,
   open,
+  indicator,
 }: {
   agent: Agent;
   selected: boolean;
   awaitingAnswer: boolean;
   deferred: boolean;
   open: () => void;
+  indicator?: ChatIndicator;
 }) {
   const overview = agent.overview;
   const errorView = nativeErrorView(agent.error);
@@ -163,22 +167,23 @@ export default function WorkerCard({
         aria-current={selected ? "page" : undefined}
         onClick={open}
       >
-        <span
-          className={`dot ${awaitingAnswer ? "approval" : deferred && agent.status === "approval" ? "waiting" : agent.status}`}
-        />
+        <ChatStatus status={indicator} />
         <span className="worker-text">
           <strong>{agent.name}</strong>
           <span className="worker-meta">
             <small>
-              {awaitingAnswer
-                ? "Needs your answer"
-                : deferred && agent.status === "approval"
-                  ? "Question deferred"
-                  : agent.status === "starting" &&
-                      (agent.startAttempt?.prepareError ||
-                        agent.startAttempt?.responseError)
-                    ? "Waiting for Codex"
-                    : statusLabel(agent.status)}
+              {indicator?.kind === "answer" ||
+              indicator?.label === "Waiting for a monitor"
+                ? indicator.label
+                : awaitingAnswer
+                  ? "Needs your answer"
+                  : deferred && agent.status === "approval"
+                    ? "Question deferred"
+                    : agent.status === "starting" &&
+                        (agent.startAttempt?.prepareError ||
+                          agent.startAttempt?.responseError)
+                      ? "Waiting for Codex"
+                      : statusLabel(agent.status)}
             </small>
             <span
               className="worker-model-summary"

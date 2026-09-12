@@ -23,6 +23,7 @@ import {
   ChevronDown,
   Plus,
   Trash2,
+  Mail,
   X,
 } from "lucide-react";
 import { api, errorText, save, saved } from "../api";
@@ -35,7 +36,9 @@ import {
   type Project,
   type ProjectFolder,
 } from "./ProjectOrganization";
-import { busy, type Agent, type Snapshot } from "../types";
+import { type Agent, type Snapshot } from "../types";
+import ChatStatus from "./ChatStatus";
+import { hasCompletedResult, type ChatIndicator } from "./chatStatusModel";
 type Props = {
   data: Snapshot;
   opened: string | null;
@@ -54,6 +57,9 @@ type Props = {
   close: () => void;
   refresh?: () => Promise<void>;
   notify?: (message: string) => void;
+  indicators: Map<string, ChatIndicator>;
+  markUnread: (agent: Agent) => void;
+  markingRead: Set<string>;
 };
 export default function Sidebar(p: Props) {
   const compact = useMediaQuery("(max-width: 760px)");
@@ -316,11 +322,7 @@ export default function Sidebar(p: Props) {
               {row.name}
             </strong>
           </span>
-          {busy.has(a.status) && (
-            <span className="row-meta">
-              <span className="dot running" />
-            </span>
-          )}
+          <ChatStatus status={p.indicators.get(a.id)} />
         </UnstyledButton>
         {renaming !== row.id && (
           <ActionIcon
@@ -363,6 +365,17 @@ export default function Sidebar(p: Props) {
               </ActionIcon>
             </Menu.Target>
             <Menu.Dropdown>
+              <Menu.Item
+                leftSection={<Mail size={14} />}
+                disabled={
+                  !a.readStateSupported ||
+                  !hasCompletedResult(a) ||
+                  p.markingRead.has(a.id)
+                }
+                onClick={() => p.markUnread(a)}
+              >
+                Mark unread
+              </Menu.Item>
               {a.cwd && (
                 <Menu.Item
                   leftSection={<Folder size={14} />}

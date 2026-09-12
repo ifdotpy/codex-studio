@@ -30,6 +30,7 @@ import {
   ArrowLeft,
   Folder,
   MessageSquare,
+  Mail,
   PanelLeft,
   Search,
   Users,
@@ -55,6 +56,12 @@ import {
 import { useSyncedDrafts } from "./sync/drafts";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
+import ChatStatus from "./components/ChatStatus";
+import {
+  chatIndicators,
+  hasCompletedResult,
+} from "./components/chatStatusModel";
+import { useChatReadState } from "./components/useChatReadState";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
 import { useWorkerModels } from "./components/WorkerModelPicker";
@@ -246,6 +253,17 @@ export default function App() {
     ),
     team = agents.filter((a) => a.rootId === lead?.id),
     workers = team.filter((a) => !a.isLead);
+  const readState = useChatReadState(
+    data,
+    opened,
+    notify,
+    refresh,
+    workspaceId,
+  );
+  const indicators = useMemo(
+    () => (data ? chatIndicators(data, readState.readStateFor) : new Map()),
+    [data, readState.readStateFor],
+  );
   useEffect(() => {
     setWorkerQuery("");
     setWorkerFilter("all");
@@ -935,6 +953,7 @@ export default function App() {
         selected={opened === a.id}
         awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
         deferred={deferredIds.has(a.id)}
+        indicator={indicators.get(a.id)}
         open={() => open(a.id)}
       />
     </UIErrorBoundary>
@@ -1154,6 +1173,9 @@ export default function App() {
         creating={creating}
         refresh={refresh}
         notify={notify}
+        indicators={indicators}
+        markUnread={(a) => void readState.markUnread(a)}
+        markingRead={readState.marking}
         rename={rename}
         remove={remove}
         mobile={sidebar}
@@ -1199,14 +1221,20 @@ export default function App() {
               </Button>
             )}
             <h1 id="conversation-title" title={title}>
+              <ChatStatus
+                status={agent ? indicators.get(agent.id) : undefined}
+              />
               {title}
             </h1>
             <span id="conversation-status">
               {mobileClient && agent?.cwd ? `${projectName} · ` : ""}
               {agent
-                ? livePhase?.id === agent.id
-                  ? livePhase.label
-                  : statusLabel(agent.status, agent.activity?.phase)
+                ? indicators.get(agent.id)?.kind === "answer" ||
+                  indicators.get(agent.id)?.label === "Waiting for a monitor"
+                  ? indicators.get(agent.id)?.label
+                  : livePhase?.id === agent.id
+                    ? livePhase.label
+                    : statusLabel(agent.status, agent.activity?.phase)
                 : room?.kind === "private"
                   ? "Private between agents · Visible to you"
                   : room
@@ -1243,6 +1271,21 @@ export default function App() {
                   {workers.length}
                 </span>
               )}
+            </Button>
+          )}
+          {agent?.source === "managed" && (
+            <Button
+              id="mark-unread"
+              leftSection={<Mail size={15} />}
+              aria-label="Mark chat unread"
+              disabled={
+                !agent.readStateSupported ||
+                !hasCompletedResult(agent) ||
+                readState.marking.has(agent.id)
+              }
+              onClick={() => void readState.markUnread(agent)}
+            >
+              Unread
             </Button>
           )}
           <Button
@@ -1412,6 +1455,7 @@ export default function App() {
             sending={sending}
             outgoing={visibleOutgoing}
             onObserved={observeSends}
+            onReadResult={readState.observeRead}
             onOutgoingEdit={editSend}
             refresh={refresh}
             notify={notify}

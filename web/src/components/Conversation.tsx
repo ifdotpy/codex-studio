@@ -1,4 +1,5 @@
 import { onResume } from "../sync/resume";
+import { useVisibleChatResult, type ChatReadProof } from "./useChatReadState";
 import { displayError } from "../errorPresentation";
 import {
   NativeError,
@@ -106,6 +107,7 @@ export default function Conversation(p: {
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
   onObserved?: (ids: string[]) => void;
+  onReadResult?: (proof: ChatReadProof) => void;
   onOutgoingEdit?: (id: string, text: string) => void;
   onSelect?: (id: string) => void;
   onBranchCreated?: (id: string) => void;
@@ -293,6 +295,14 @@ export default function Conversation(p: {
         ? ({ ...p.agent, ...liveAgent } as Agent)
         : p.agent,
     [p.agent, liveAgent, p.id],
+  );
+  useVisibleChatResult(
+    scroll,
+    p.agent,
+    items,
+    loaded,
+    p.onReadResult,
+    p.syncWorkspaceId,
   );
   const threadBlock = nativeThreadError(agent);
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
