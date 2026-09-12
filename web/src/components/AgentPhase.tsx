@@ -12,6 +12,8 @@ import {
 import type { Agent } from "../types";
 import { currentCapacityRetry } from "../capacityRetry";
 import { nativeThreadError } from "../nativeErrors";
+import { displayError, errorDetails } from "../errorPresentation";
+import ErrorDescription from "./ErrorDescription";
 export default function AgentPhase({
   agent,
   connection,
@@ -92,8 +94,11 @@ export default function AgentPhase({
     ? agent.nativeStatus
     : null;
   const message =
-    native?.message || native?.error?.message || names[phase] || "Working";
-  const details = native?.error?.additionalDetails;
+    displayError(native?.message) ||
+    displayError(native?.error?.message) ||
+    names[phase] ||
+    "Working";
+  const details = errorDetails(native?.error?.additionalDetails);
   return (
     <div
       className={`agent-phase ${active ? "active" : ""}`}
@@ -103,9 +108,14 @@ export default function AgentPhase({
       <Icon size={15} />
       <div className="agent-phase-copy">
         <span>
-          {connection === "reconnecting"
-            ? "Connection lost. Reconnecting…"
-            : message}
+          {connection === "reconnecting" ? (
+            "Connection lost. Reconnecting…"
+          ) : (
+            <ErrorDescription
+              value={native?.message || native?.error?.message || message}
+              role="status"
+            />
+          )}
         </span>
         {connection === "reconnecting" && native && <p>{message}</p>}
         {typeof details === "string" && details && <pre>{details}</pre>}

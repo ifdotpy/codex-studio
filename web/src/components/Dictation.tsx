@@ -1,3 +1,5 @@
+import ErrorDescription from "./ErrorDescription";
+import { errorDetails } from "../errorPresentation";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@mantine/core";
 import { Download, Mic, Square, Trash2 } from "lucide-react";
@@ -17,6 +19,17 @@ import {
 } from "../dictation/storage";
 import "./Dictation.css";
 import { BrowserDictation } from "./BrowserDictation";
+// Older recordings store plain text. New structured diagnostics retain JSON
+// in that same string field; decode only objects and arrays for presentation.
+function recordingDiagnostic(value: unknown): unknown {
+  if (typeof value !== "string" || !/^[\s]*[\[{]/.test(value)) return value;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed !== null && typeof parsed === "object" ? parsed : value;
+  } catch {
+    return value;
+  }
+}
 const duration = (seconds: number) =>
   `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 type DictationProps = {
@@ -42,7 +55,7 @@ function NativeDictation({
 }) {
   const [open, setOpen] = useState(false),
     [rows, setRows] = useState<Recording[]>([]),
-    [error, setError] = useState(""),
+    [error, setError] = useState<unknown>(null),
     [busy, setBusy] = useState("");
   const [locale, setLocale] = useState(navigator.language);
   const [deleted, setDeleted] = useState<Recording[]>([]);
@@ -72,7 +85,7 @@ function NativeDictation({
     }
   };
   const fail = (e: unknown) => {
-    if (mounted.current) setError(e instanceof Error ? e.message : String(e));
+    if (mounted.current) setError(e);
   };
   const stop = async () => {
     let ready: Recording | undefined;
@@ -102,10 +115,7 @@ function NativeDictation({
             state: "ready",
             ...(finalError
               ? {
-                  error:
-                    finalError instanceof Error
-                      ? finalError.message
-                      : String(finalError),
+                  error: errorDetails(finalError),
                 }
               : {}),
           };
@@ -203,7 +213,7 @@ function NativeDictation({
             storageFailed.current = true;
             fail(
               Error(
-                `Recording stopped: ${String(e)}. Saved audio remains available.`,
+                `Recording stopped: ${errorDetails(e)}. Saved audio remains available.`,
               ),
             );
             void stop().catch(fail);
@@ -287,7 +297,7 @@ function NativeDictation({
           ...row,
           transcriptionAttempt: attempt,
           state: "ready",
-          error: e instanceof Error ? e.message : String(e),
+          error: errorDetails(e),
         },
         attempt,
       ).catch(() => {});
@@ -418,9 +428,9 @@ function NativeDictation({
             </button>
           </div>
         )}
-        {error && (
+        {!!error && (
           <p role="alert" className="dictation-error">
-            {error}
+            <ErrorDescription value={error} />
           </p>
         )}
         <div className="dictation-recordings">
@@ -519,7 +529,7 @@ function RecordingItem({
       {url && <audio controls src={url} preload="metadata" />}
       {row.error && (
         <p role="alert" className="dictation-error">
-          {row.error}
+          <ErrorDescription value={recordingDiagnostic(row.error)} />
         </p>
       )}
       {row.transcript && (

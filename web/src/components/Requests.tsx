@@ -1,3 +1,4 @@
+import ErrorDescription from "./ErrorDescription";
 import { Button, TextInput, Textarea, UnstyledButton } from "@mantine/core";
 import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -333,13 +334,17 @@ function RequestCard({
             </span>
           </div>
           <p className="request-prompt">
-            {questions[0]?.question ||
-              p.reason ||
-              p.message ||
-              "Approval required."}
+            {questions[0]?.question || (
+              <ErrorDescription
+                value={p.reason || p.message || "Approval required."}
+                role="status"
+              />
+            )}
           </p>
           {questions[0]?.question && (p.reason || p.message) && (
-            <p>{p.reason || p.message}</p>
+            <p>
+              <ErrorDescription value={p.reason || p.message} role="status" />
+            </p>
           )}
           {questions.length > 1 && <p>{questions.length} questions</p>}
           {(p.command || r.preview?.command) && (

@@ -1,3 +1,5 @@
+import ErrorDescription from "./ErrorDescription";
+import { displayError } from "../errorPresentation";
 import {
   ActionIcon,
   Badge,
@@ -456,7 +458,7 @@ function TaskDetail({
     try {
       const result = await api(path, body);
       await refresh();
-      if (result?.error) throw new Error(result.error);
+      if (result?.error) throw new Error(displayError(result.error));
       return true;
     } catch (error) {
       notify(errorText(error));
@@ -545,12 +547,12 @@ function TaskDetail({
         )}
         {task.error && (
           <p role="alert" className="task-error">
-            {task.error}
+            <ErrorDescription value={task.error} />
           </p>
         )}
         {task.stdinError && (
           <p role="alert" className="task-error">
-            {task.stdinError}
+            <ErrorDescription value={task.stdinError} />
           </p>
         )}
         <div className="task-terminal">

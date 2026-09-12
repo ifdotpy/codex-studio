@@ -1,3 +1,4 @@
+import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -12,7 +13,7 @@ export interface LoginReceipt {
   loginId?: string;
   verificationUrl?: string;
   userCode?: string;
-  error?: string;
+  error?: unknown;
   createdAt?: number;
 }
 const active = (status?: string) =>
@@ -157,7 +158,9 @@ export default function AccountSignIn({
           ) : receipt.status === "cancelled" ? (
             <p role="status">Sign-in cancelled.</p>
           ) : receipt.status === "error" ? (
-            <p role="alert">{receipt.error || "Sign-in failed. Try again."}</p>
+            <ErrorDescription
+              value={receipt.error || "Sign-in failed. Try again."}
+            />
           ) : (
             <>
               {receipt.userCode && url ? (
@@ -201,7 +204,9 @@ export default function AccountSignIn({
                     : "The sign-in response is unconfirmed."}
                 </p>
               )}
-              {receipt.error && <p role="alert">{receipt.error}</p>}
+              {Boolean(receipt.error) && (
+                <ErrorDescription value={receipt.error} />
+              )}
               <div className="account-login-actions">
                 <Button
                   size="compact-xs"

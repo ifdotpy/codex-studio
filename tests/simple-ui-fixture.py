@@ -149,7 +149,7 @@ def fixture_events():
         elif 'id' in message:
             c.runtime.request(message)
         else:
-            c.runtime.notification(message)
+            c.runtime.notification(message, 'default', c.runtime.connection_ids.get('default'))
 threading.Thread(target=fixture_events, daemon=True).start()
 print(server.server_port, flush=True)
 try:

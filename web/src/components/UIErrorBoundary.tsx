@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { displayError } from "../errorPresentation";
 import "./ui-error-boundary.css";
 
 type Props = {
@@ -54,7 +55,7 @@ export default class UIErrorBoundary extends Component<
         )}
         <details>
           <summary>Error details</summary>
-          <pre>{this.state.error.message}</pre>
+          <pre>{displayError(this.state.error)}</pre>
         </details>
       </section>
     );

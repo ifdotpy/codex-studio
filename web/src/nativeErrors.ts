@@ -1,3 +1,5 @@
+import { errorDetails } from "./errorPresentation.ts";
+
 // Codex 0.153.4 CodexErrorInfo, including unknown future variants.
 export const nativeErrorHints: Record<string, string> = {
   contextWindowExceeded: "Compact the context or start a new chat.",
@@ -201,18 +203,7 @@ export function nativeErrorView(value: unknown, planType?: string) {
       typeof value === "string" && value !== message
         ? value
         : structured
-          ? JSON.stringify(
-              data instanceof Error
-                ? {
-                    ...data,
-                    name: data.name,
-                    message: data.message,
-                    stack: data.stack,
-                  }
-                : data,
-              null,
-              2,
-            )
+          ? errorDetails(data)
           : "",
     additionalDetails:
       structured && typeof data.additionalDetails === "string"

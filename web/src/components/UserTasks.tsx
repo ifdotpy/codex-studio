@@ -1,3 +1,5 @@
+import ErrorDescription from "./ErrorDescription";
+import { displayError } from "../errorPresentation";
 import {
   Avatar,
   Badge,
@@ -102,7 +104,13 @@ export default function UserTasks(p: Props) {
         return false;
       const name =
         p.data.threads.find((agent) => agent.id === task.agent)?.name || "";
-      return [task.title, task.description, task.criteria, task.reason, name]
+      return [
+        task.title,
+        task.description,
+        task.criteria,
+        displayError(task.reason),
+        name,
+      ]
         .join(" ")
         .toLocaleLowerCase()
         .includes(query.toLocaleLowerCase());
@@ -329,7 +337,11 @@ function UserTaskRow(p: {
           </span>
         )}
       </div>
-      {returned && <p className="user-task-reason">{task.reason}</p>}
+      {returned && (
+        <p className="user-task-reason">
+          <ErrorDescription value={task.reason} role="status" />
+        </p>
+      )}
       {task.status === "review" && task.agentStopped && (
         <p className="user-task-delivery" role="status">
           Saved; agent stopped. Your result waits for the agent.
@@ -347,7 +359,9 @@ function UserTaskRow(p: {
                   ? "Agent decision"
                   : "Cancellation reason"}
               </strong>
-              <p>{task.reason}</p>
+              <p>
+                <ErrorDescription value={task.reason} role="status" />
+              </p>
             </div>
           )}
           {task.criteria && (
@@ -408,7 +422,11 @@ function UserTaskRow(p: {
                       </strong>
                       <time>{when(event.at)}</time>
                     </span>
-                    {event.text && <p>{event.text}</p>}
+                    {event.text && (
+                      <p>
+                        <ErrorDescription value={event.text} role="status" />
+                      </p>
+                    )}
                   </li>
                 ))}
               </ol>

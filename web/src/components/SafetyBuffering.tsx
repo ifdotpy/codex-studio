@@ -1,3 +1,4 @@
+import ErrorDescription from "./ErrorDescription";
 import { useRef, useState } from "react";
 import { Button, Modal } from "@mantine/core";
 import { Clock3 } from "lucide-react";
@@ -69,13 +70,19 @@ export default function SafetyBuffering({ agent }: { agent: Agent }) {
         </strong>
       </div>
       <p>
-        {active
-          ? "Waiting for Codex to confirm. You can continue in another chat."
-          : failed
-            ? retry.error
-            : "Extra safety checks can take longer. You can keep waiting."}
+        {active ? (
+          "Waiting for Codex to confirm. You can continue in another chat."
+        ) : failed ? (
+          <ErrorDescription value={retry.error} />
+        ) : (
+          "Extra safety checks can take longer. You can keep waiting."
+        )}
       </p>
-      {active && retry.error && <p>{retry.error}</p>}
+      {active && retry.error && (
+        <p>
+          <ErrorDescription value={retry.error} />
+        </p>
+      )}
       {active && retry.rpcMethod !== "turn/start" && (
         <Button
           size="compact-xs"

@@ -1,3 +1,5 @@
+import { Modal } from "@mantine/core";
+import { displayError, errorDetails } from "../errorPresentation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { errorText } from "../api";
 import { panelContentDocument, type PanelCallback } from "./PanelDocument";
@@ -34,6 +36,7 @@ interface Attempt {
   label: string;
   status: "pending" | "accepted" | "error" | "rejected";
   message: string;
+  diagnostic?: unknown;
 }
 interface ActionState {
   attempts: Map<string, Attempt>;
@@ -58,6 +61,7 @@ async function deliver(state: ActionState, attempt: Attempt, token: string) {
   if (attempt.status === "pending") return;
   attempt.status = "pending";
   attempt.message = `Sending ${attempt.label}…`;
+  attempt.diagnostic = undefined;
   state.active = state.latest = attempt;
   changed();
   try {
@@ -68,15 +72,20 @@ async function deliver(state: ActionState, attempt: Attempt, token: string) {
     });
     const result = await response.json();
     if (!response.ok) {
+      attempt.diagnostic = result;
       if (response.status >= 400 && response.status < 500) {
         attempt.status = "rejected";
         attempt.message =
-          result.error || "This panel action is no longer available.";
+          displayError(result?.error ?? result?.message ?? result) ||
+          "This panel action is no longer available.";
         state.blocked = true;
         state.active = undefined;
         return;
       }
-      throw new Error(result.error || `Request failed (${response.status})`);
+      throw new Error(
+        displayError(result?.error ?? result?.message ?? result) ||
+          `Request failed (${response.status})`,
+      );
     }
     if (
       result.id !== attempt.body.id ||
@@ -93,6 +102,7 @@ async function deliver(state: ActionState, attempt: Attempt, token: string) {
     state.active = undefined;
   } catch (error) {
     attempt.status = "error";
+    attempt.diagnostic ??= error;
     attempt.message = `Delivery not confirmed: ${errorText(error)}`;
   } finally {
     changed();
@@ -113,6 +123,9 @@ export default function AgentPanel({
   const [panel, setPanel] = useState<Panel | null>(null);
   const [error, setError] = useState("");
   const [localError, setLocalError] = useState("");
+  const [loadDiagnostic, setLoadDiagnostic] = useState<unknown>(null);
+  const [localDiagnostic, setLocalDiagnostic] = useState<unknown>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [retry, setRetry] = useState(0);
   const [dismissedNotice, setDismissedNotice] = useState("");
@@ -134,6 +147,7 @@ export default function AgentPanel({
   useEffect(() => {
     const controller = new AbortController();
     setError("");
+    setLoadDiagnostic(null);
     if (!version) {
       setPanel(null);
       setLoading(false);
@@ -147,8 +161,13 @@ export default function AgentPanel({
           { signal: controller.signal },
         );
         const next = await response.json();
-        if (!response.ok)
-          throw new Error(next.error || `Request failed (${response.status})`);
+        if (!response.ok) {
+          if (!controller.signal.aborted) setLoadDiagnostic(next);
+          throw new Error(
+            displayError(next?.error ?? next?.message ?? next) ||
+              `Request failed (${response.status})`,
+          );
+        }
         if (
           next.agent !== agentId ||
           !Number.isInteger(next.version) ||
@@ -177,7 +196,11 @@ export default function AgentPanel({
     })();
     return () => controller.abort();
   }, [agentId, version, dataVersion, retry]);
-  useEffect(() => setLocalError(""), [agentId, version]);
+  useEffect(() => {
+    setLocalError("");
+    setLocalDiagnostic(null);
+    setDetailsOpen(false);
+  }, [agentId, version]);
   const current = version > 0 && panel?.agent === agentId ? panel : null;
   const callbacks = current?.callbacks || [];
   const key = JSON.stringify([agentId, current?.version || 0]);
@@ -267,11 +290,13 @@ export default function AgentPanel({
       )
         return;
       if (event.data?.type === "panel-error") {
-        setError(String(event.data.error || "Cannot render panel"));
+        setLoadDiagnostic(event.data.error);
+        setError(displayError(event.data.error) || "Cannot render panel");
         return;
       }
       if (event.data?.type === "panel-local-error") {
-        setLocalError(String(event.data.error || ""));
+        setLocalDiagnostic(event.data.error);
+        setLocalError(displayError(event.data.error));
         return;
       }
       if (event.data?.type === "panel-size") {
@@ -386,6 +411,25 @@ export default function AgentPanel({
       ].includes(current.feed.status)) &&
     !noticeVisible &&
     !error;
+  const diagnostic = error
+    ? loadDiagnostic || error
+    : noticeVisible
+      ? localError
+        ? localDiagnostic || localError
+        : feedback?.diagnostic
+      : feedNoticeVisible
+        ? current?.feed?.error
+        : null;
+  const details = errorDetails(diagnostic);
+  const detailsButton = details ? (
+    <button
+      type="button"
+      aria-label="Show panel error details"
+      onClick={() => setDetailsOpen(true)}
+    >
+      Details
+    </button>
+  ) : null;
   return (
     <>
       <section
@@ -425,7 +469,8 @@ export default function AgentPanel({
             className={`agent-panel-feedback ${current.feed.error || ["failed", "error", "stale", "lost"].includes(current.feed.status) ? "error" : ""}`}
             role="status"
             title={
-              current.feed.error || "The last confirmed data remains visible."
+              errorDetails(current.feed.error) ||
+              "The last confirmed data remains visible."
             }
           >
             <span>
@@ -435,6 +480,7 @@ export default function AgentPanel({
                   ? "Live data ended"
                   : "Live data unavailable"}
             </span>
+            {detailsButton}
           </div>
         )}
         {noticeVisible && (
@@ -451,6 +497,7 @@ export default function AgentPanel({
             <span title={localError || feedback?.message}>
               {localError || feedback?.message}
             </span>
+            {detailsButton}
             {!localError && feedback?.status === "error" && enabled && (
               <button
                 type="button"
@@ -473,6 +520,7 @@ export default function AgentPanel({
         {error && (
           <p className="agent-panel-error" role="alert">
             Cannot load the agent panel: {error}
+            {detailsButton}
             <button
               type="button"
               onClick={() => setRetry((value) => value + 1)}
@@ -482,6 +530,16 @@ export default function AgentPanel({
           </p>
         )}
       </section>
+      <Modal
+        opened={detailsOpen && !!details}
+        onClose={() => setDetailsOpen(false)}
+        title="Panel error details"
+        closeButtonProps={{ "aria-label": "Close panel error details" }}
+      >
+        <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+          {details}
+        </pre>
+      </Modal>
     </>
   );
 }

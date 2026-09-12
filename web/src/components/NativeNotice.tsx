@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { displayError, errorDetails } from "../errorPresentation";
+import ErrorDescription from "./ErrorDescription";
 import { currentCapacityRetry } from "../capacityRetry";
 import { limitRecovery } from "../limitRecovery";
 import { useRecoveredLimit } from "./useRecoveredLimit";
@@ -200,15 +202,9 @@ export function NativeNotice({
         <summary>
           {item.nativeNotice === "error"
             ? failureMessage(item.nativeError || item.text)
-            : error?.title || error?.message || item.text}
+            : error?.title || error?.message || displayError(item.text)}
         </summary>
-        {details && (
-          <pre>
-            {typeof details === "string"
-              ? details
-              : JSON.stringify(details, null, 2)}
-          </pre>
-        )}
+        {details && <pre>{errorDetails(details)}</pre>}
       </details>
       {error && <Guidance error={error} />}
     </div>
@@ -229,8 +225,10 @@ export function NativeAccountNotices({
       <summary>Account notices ({current.length})</summary>
       {current.map((n) => (
         <div key={n.id}>
-          <p>{n.message}</p>
-          {n.details && <pre>{n.details}</pre>}
+          <p>
+            <ErrorDescription value={n.message} role="status" />
+          </p>
+          {n.details && <pre>{errorDetails(n.details)}</pre>}
         </div>
       ))}
     </details>

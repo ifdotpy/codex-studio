@@ -46,7 +46,10 @@ try {
   let limitReads = 0;
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (message) => {
-    if (message.type() === "error" && message.text().includes("Encountered two children"))
+    if (
+      message.type() === "error" &&
+      message.text().includes("Encountered two children")
+    )
       errors.push(message.text());
   });
   page.on("request", (r) => {
@@ -103,6 +106,28 @@ try {
         params: { threadId: agent.threadId, turnId: agent.turnId, ...params },
       }) + "\n",
     );
+  const accountDetails = {
+    code: "fixture_configuration",
+    files: ["first.toml", "second.toml"],
+    retryAllowed: false,
+  };
+  event("configWarning", {
+    threadId: undefined,
+    turnId: undefined,
+    message: "Account configuration needs review",
+    details: accountDetails,
+  });
+  const accountNotice = page.locator(".native-account-notices");
+  await accountNotice.locator("summary").click();
+  assert.deepEqual(
+    JSON.parse(await accountNotice.locator("pre").innerText()),
+    accountDetails,
+    "Account-wide native diagnostics retain object details without removing the UI",
+  );
+  assert.equal(
+    await page.locator("#conversation-title").innerText(),
+    "Other project",
+  );
   event("model/safetyBuffering/updated", {
     model: "gpt-6-astra",
     showBufferingUi: true,
@@ -159,6 +184,32 @@ try {
       exact: true,
     })
     .waitFor();
+  event("error", {
+    willRetry: true,
+    error: {
+      message: { message: "Reconnecting 2/5" },
+      codexErrorInfo: "other",
+      additionalDetails: {
+        message: "The request failed. Another attempt starts in 2 seconds.",
+        httpStatusCode: 503,
+      },
+    },
+  });
+  await page
+    .locator('[data-phase="retrying"]')
+    .getByText("Reconnecting 2/5", { exact: true })
+    .waitFor();
+  assert.deepEqual(
+    JSON.parse(await page.locator('[data-phase="retrying"] pre').innerText()),
+    {
+      message: "The request failed. Another attempt starts in 2 seconds.",
+      httpStatusCode: 503,
+    },
+  );
+  assert.equal(
+    await page.locator("#conversation-status").innerText(),
+    "Reconnecting 2/5",
+  );
   event("item/agentMessage/delta", {
     itemId: "native-text",
     delta: "Connection restored",

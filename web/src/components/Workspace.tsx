@@ -1,3 +1,4 @@
+import ErrorDescription from "./ErrorDescription";
 import { messageAttentionCount } from "../chatScope";
 import { complaintNeedsUserResponse } from "../types";
 import {
@@ -1081,7 +1082,11 @@ function Changes(c: Context) {
       {state.data && !report ? (
         <Empty>Chat changes require the updated server.</Empty>
       ) : report?.git === false ? (
-        <Empty>{report.error || "Could not read reported changes."}</Empty>
+        <Empty>
+          <ErrorDescription
+            value={report.error || "Could not read reported changes."}
+          />
+        </Empty>
       ) : (
         <>
           <div className="workspace-toolbar">
@@ -1646,9 +1651,7 @@ function Tools(c: Context) {
         onChange={(e) => setQuery(e.target.value)}
       />
       {(state.data?.errors || []).map((error: unknown, i: number) => (
-        <p className="workspace-error" key={i}>
-          {typeof error === "string" ? error : JSON.stringify(error)}
-        </p>
+        <ErrorDescription className="workspace-error" key={i} value={error} />
       ))}
       {state.data && (
         <>
@@ -2039,7 +2042,12 @@ function Rules(c: Context) {
                 <code>{rule.path}</code>
               </p>
             )}
-            {rule.error && <p className="workspace-error">{rule.error}</p>}
+            {rule.error && (
+              <ErrorDescription
+                className="workspace-error"
+                value={rule.error}
+              />
+            )}
             <p className="workspace-clamp">{rule.text}</p>
             <p className="workspace-muted">
               {rule.checks || 0} checks · {rule.wakes || 0} agent turns

@@ -1,3 +1,4 @@
+import ErrorDescription from "./ErrorDescription";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
 import { api, errorText } from "../api";
@@ -81,7 +82,11 @@ export default function CapacityRetry({
                     ? "The model retry started."
                     : "Starting the model retry."}
       </p>
-      {current.reason && <p>{current.reason}</p>}
+      {current.reason && (
+        <p>
+          <ErrorDescription value={current.reason} role="status" />
+        </p>
+      )}
       {available && (
         <div className="native-error-actions">
           <Button

@@ -1,3 +1,4 @@
+import ErrorDescription from "./ErrorDescription";
 import { accountLimits } from "../accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
 import {
@@ -24,7 +25,7 @@ export interface Account {
   source?: string;
   status: string;
   disconnected?: boolean;
-  error?: string | null;
+  error?: unknown;
 }
 export interface AccountsState {
   accounts: Account[];
@@ -81,7 +82,7 @@ function AccountCapacity({
         if (live) setLimits(result);
       })
       .catch((error) => {
-        if (live) setLimits({ error: errorText(error) });
+        if (live) setLimits({ error });
       });
     return () => {
       live = false;
@@ -96,9 +97,11 @@ function AccountCapacity({
     >
       {!limits && <small>Reading limits…</small>}
       {limits?.error && (
-        <small className="account-action-error" role="status">
-          {limits.error}
-        </small>
+        <ErrorDescription
+          className="account-action-error"
+          role="status"
+          value={limits.error}
+        />
       )}
       {buckets.map((bucket) => (
         <div key={bucket.id} className="account-capacity-pool">
@@ -445,10 +448,11 @@ export default function Accounts({
           >
             Manage accounts{accounts.length ? ` · ${accounts.length}` : ""}
           </Menu.Item>
-          {(error || selected?.error) && (
-            <p className="account-action-error" role="alert">
-              {error || selected?.error}
-            </p>
+          {Boolean(error || selected?.error) && (
+            <ErrorDescription
+              className="account-action-error"
+              value={error || selected?.error}
+            />
           )}
         </Menu.Dropdown>
       </Menu>
@@ -532,10 +536,11 @@ export default function Accounts({
                       </Button>
                     )}
                   </div>
-                  {account.error && (
-                    <p className="account-action-error" role="alert">
-                      {account.error}
-                    </p>
+                  {Boolean(account.error) && (
+                    <ErrorDescription
+                      className="account-action-error"
+                      value={account.error}
+                    />
                   )}
                   {account.disconnected && (
                     <p>

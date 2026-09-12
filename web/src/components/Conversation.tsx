@@ -1,4 +1,5 @@
 import { onResume } from "../sync/resume";
+import { displayError } from "../errorPresentation";
 import {
   NativeError,
   NativeNotice,
@@ -309,8 +310,8 @@ export default function Conversation(p: {
           ? "Chat stopped as a precaution"
           : capacityRetry?.status === "scheduled"
             ? "Waiting to retry model"
-            : agent?.nativeStatus?.error?.message ||
-              agent?.nativeStatus?.message ||
+            : displayError(agent?.nativeStatus?.error?.message) ||
+              displayError(agent?.nativeStatus?.message) ||
               (["starting", "running"].includes(agent?.status || "")
                 ? "Working"
                 : statusLabel(agent?.status || "idle")),

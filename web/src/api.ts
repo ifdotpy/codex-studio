@@ -1,4 +1,5 @@
 import { onResume } from "./sync/resume";
+import { displayError } from "./errorPresentation";
 
 const deadlines = new Map<
   AbortController,
@@ -19,10 +20,11 @@ export function setWorkspace(value: string) {
 }
 export class ApiError extends Error {
   constructor(
-    message: string,
+    message: unknown,
     public status: number,
+    public readonly details: unknown = message,
   ) {
-    super(message);
+    super(displayError(message) || `Request failed (${status})`);
   }
 }
 export function setToken(value: string) {
@@ -80,8 +82,12 @@ export async function api<T = any>(
     }
     if (!response.ok)
       throw new ApiError(
-        data.error || `Request failed (${response.status})`,
+        data?.error ||
+          data?.message ||
+          (typeof data === "string" ? data : null) ||
+          `Request failed (${response.status})`,
         response.status,
+        data,
       );
     return data;
   } catch (error) {
@@ -99,8 +105,7 @@ export const syncApi = <T = any>(
   options: { workspaceId?: string } = {},
 ) => api<T>(path, body, { ...options, timeoutMs: 15000 });
 
-export const errorText = (e: unknown) =>
-  e instanceof Error ? e.message : String(e);
+export const errorText = displayError;
 export function saved<T>(key: string, fallback: T): T {
   try {
     return JSON.parse(localStorage.getItem(key) || "null") ?? fallback;
