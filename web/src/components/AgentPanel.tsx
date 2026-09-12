@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ApiError, NetworkTimeoutError } from "../api";
+import { NetworkTimeoutError } from "../api";
 import { onResume } from "../sync/resume";
 import ErrorDescription from "./ErrorDescription";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
@@ -8,13 +8,16 @@ import { localFileLink } from "./fileLinks";
 import { relativeToDocument } from "./filePreviewFormats";
 import { progressMarkdown } from "./ProgressMarkdown";
 import { useProgressLayoutReport, type ProgressLayout } from "./progressLayout";
+import {
+  peekProgress,
+  progressScope,
+  readProgress,
+  type CachedProgress,
+} from "./progressCache";
 import "./agent-panel.css";
 
-interface ProgressState {
-  scope: string;
-  markdown: string;
-  path: string;
-  revision: string | null;
+interface ProgressState extends CachedProgress {
+  cached: boolean;
   error: unknown;
 }
 
@@ -28,8 +31,11 @@ export default function AgentPanel({
   agentId: string;
   stateDir?: string;
 }) {
-  const scope = JSON.stringify([stateDir, agentId]);
-  const [state, setState] = useState<ProgressState | null>(null);
+  const scope = progressScope(stateDir, agentId);
+  const [state, setState] = useState<ProgressState | null>(() => {
+    const cached = peekProgress(stateDir, agentId);
+    return cached ? { ...cached, cached: true, error: null } : null;
+  });
   const refresh = useRef<(() => void) | undefined>(undefined);
 
   useEffect(() => {
@@ -46,6 +52,7 @@ export default function AgentPanel({
       path: "",
       revision: null,
       error: null,
+      cached: true,
     });
     const read = async () => {
       clearTimeout(timer);
@@ -70,33 +77,17 @@ export default function AgentPanel({
         current.controller.abort();
       }, readTimeoutMs);
       try {
-        const response = await fetch(
-          `/api/panel?agent=${encodeURIComponent(agentId)}`,
-          {
-            signal: current.controller.signal,
-            cache: "no-store",
-          },
+        const next = await readProgress(
+          stateDir,
+          agentId,
+          current.controller.signal,
         );
-        const next = await response.json();
-        if (!response.ok || next?.error)
-          throw new ApiError(
-            next?.error || `Request failed (${response.status})`,
-            response.status,
-            next,
-          );
-        if (
-          next?.agent !== agentId ||
-          next.format !== "markdown" ||
-          typeof next.markdown !== "string" ||
-          typeof next.path !== "string" ||
-          (next.revision !== null && typeof next.revision !== "string")
-        )
-          throw new Error("The PROGRESS.md response is invalid.");
         if (!active || current.controller.signal.aborted) return;
         setState((previous) => {
           if (
             previous?.scope === scope &&
             !previous.error &&
+            !previous.cached &&
             previous.markdown === next.markdown &&
             previous.path === next.path &&
             previous.revision === next.revision
@@ -108,6 +99,7 @@ export default function AgentPanel({
             path: next.path,
             revision: next.revision,
             error: null,
+            cached: false,
           };
         });
       } catch (error) {
@@ -118,8 +110,11 @@ export default function AgentPanel({
         )
           return;
         setState((previous) => ({
-          ...(previous?.scope === scope ? previous : empty()),
+          ...(previous?.scope === scope
+            ? previous
+            : peekProgress(stateDir, agentId) || empty()),
           error: current.expired ? new NetworkTimeoutError() : error,
+          cached: true,
         }));
       } finally {
         clearTimeout(deadline);
@@ -141,6 +136,19 @@ export default function AgentPanel({
       if (!document.hidden && navigator.onLine !== false) return;
       clearTimeout(timer);
       request?.controller.abort();
+      setState((previous) => {
+        const cached =
+          previous?.scope === scope
+            ? previous
+            : peekProgress(stateDir, agentId);
+        return cached
+          ? {
+              ...cached,
+              cached: true,
+              error: "error" in cached ? cached.error : null,
+            }
+          : previous;
+      });
     };
     document.addEventListener("visibilitychange", visibility);
     window.addEventListener("offline", visibility);
@@ -154,10 +162,17 @@ export default function AgentPanel({
       window.removeEventListener("offline", visibility);
       if (refresh.current === wake) refresh.current = undefined;
     };
-  }, [agentId, scope]);
+  }, [agentId, scope, stateDir]);
 
   // A scope change hides the previous file before effect cleanup or a new read.
-  const current = state?.scope === scope ? state : null;
+  const restored =
+    state?.scope === scope ? null : peekProgress(stateDir, agentId);
+  const current =
+    state?.scope === scope
+      ? state
+      : restored
+        ? { ...restored, cached: true, error: null }
+        : null;
   if (!current || (!current.markdown.trim() && !current.error)) return null;
   return (
     <ProgressDisplay
@@ -195,11 +210,14 @@ function ProgressDisplay({
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [dialogError, setDialogError] = useState<unknown>(null);
   const valid =
-    !current.error &&
     measured?.markdown === current.markdown &&
     measured.layout.revision === current.revision;
   const layout = valid ? measured.layout : null;
-  const reportError = useProgressLayoutReport(agentId, scope, layout);
+  const reportError = useProgressLayoutReport(
+    agentId,
+    scope,
+    current.cached || current.error ? null : layout,
+  );
   const approved = !!layout?.fits;
 
   useLayoutEffect(() => {
@@ -214,11 +232,7 @@ function ProgressDisplay({
     };
     const measure = () => {
       if (!active) return;
-      if (
-        current.error ||
-        !current.revision ||
-        document.fonts.status === "loading"
-      ) {
+      if (!current.revision || document.fonts.status === "loading") {
         invalidate();
         return;
       }
@@ -317,6 +331,7 @@ function ProgressDisplay({
         aria-label="Agent progress"
         data-agent={agentId}
         data-panel-revision={current.revision ?? undefined}
+        data-cached={current.cached ? "yes" : "no"}
         data-fit={approved ? "yes" : "no"}
       >
         <div ref={heading} className="agent-panel-heading">
@@ -328,6 +343,21 @@ function ProgressDisplay({
           >
             <code>PROGRESS.md</code>
           </button>
+          {current.cached && <span>Saved copy</span>}
+          {Boolean(current.error) && current.markdown.trim() && (
+            <>
+              <span>Cannot read PROGRESS.md.</span>
+              <button
+                type="button"
+                onClick={() => setDialogError(current.error)}
+              >
+                Error details
+              </button>
+              <button type="button" onClick={retry}>
+                Retry
+              </button>
+            </>
+          )}
           {Boolean(reportError) && (
             <button type="button" onClick={() => setDialogError(reportError)}>
               Cannot report panel size
@@ -340,7 +370,7 @@ function ProgressDisplay({
           </div>
         </div>
         <div className="agent-panel-content">
-          {Boolean(current.error) ? (
+          {Boolean(current.error) && !current.markdown.trim() ? (
             <div className="agent-panel-notice" role="alert">
               <span>Cannot read PROGRESS.md.</span>
               <button
@@ -364,7 +394,7 @@ function ProgressDisplay({
               </div>
               {approved && (
                 <div
-                  className="agent-panel-current progress-markdown"
+                  className={`${current.cached ? "agent-panel-saved" : "agent-panel-current"} progress-markdown`}
                   onClick={(event) => {
                     const link = (event.target as Element).closest("a[href]");
                     // Portals from nested file previews must never reopen an outer link.

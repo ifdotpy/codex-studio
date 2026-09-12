@@ -180,6 +180,14 @@ background. The response contains `format=markdown`, `markdown`, `path`,
 reads. Old responses from another chat cannot replace the current display.
 File content stays outside shared snapshots. File changes do not wake agents.
 
+On chat switch, Studio restores a bounded local copy before the file request
+finishes. The existing background chat scheduler also prepares likely switch
+targets. Cached content carries a Saved copy label until the server confirms it.
+Read failures retain this labelled copy and show an error. Empty or missing
+files clear it after a successful read. Cache entries use the state directory
+and agent ID; cache eviction does not remove drafts or source files. Cached
+content must still fit the current viewport. Layout reports wait for a live read.
+
 The visible client reports measured dimensions to `POST /api/panel/layout`.
 The server writes revision-specific, expiring feedback to `PROGRESS.layout.json`
 beside the source file. Separate clients retain separate results. Agents use the
