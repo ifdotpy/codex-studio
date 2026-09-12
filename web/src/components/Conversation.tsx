@@ -300,6 +300,7 @@ export default function Conversation(p: {
     loaded,
     p.onReadResult,
     p.syncWorkspaceId,
+    !historical && !after,
   );
   const threadBlock = nativeThreadError(agent);
   const [modelCommandOpen, setModelCommandOpen] = useState(false);

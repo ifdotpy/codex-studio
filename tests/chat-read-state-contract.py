@@ -126,7 +126,8 @@ class ChatReadStateContract(fixture.RuntimeContract):
         fixture.eventually(lambda: self.runtime.agent(agent['id']).get('lastCompletedTurn') == agent['turnId'])
         completed = self.runtime.agent(agent['id'])
         self.runtime.send(agent['id'], 'Continue the work')
-        fixture.eventually(lambda: self.runtime.agent(agent['id'])['inFlight'])
+        fixture.eventually(lambda: self.runtime.agent(agent['id'])['status'] == 'running'
+                           and self.runtime.agent(agent['id']).get('turnId'))
         active = self.runtime.agent(agent['id'])
         native_calls = list(self.runtime.server.calls)
         result = self.apply(completed)

@@ -7,7 +7,7 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { api, errorText } from "../api";
+import { api, ApiError, errorText } from "../api";
 import type { Agent, Message, Snapshot } from "../types";
 
 export type ChatReadState = {
@@ -64,6 +64,7 @@ export function useChatReadState(
     requests: new Map<string, Promise<void>>(),
     suppressed: new Set<string>(),
     attempted: new Set<string>(),
+    uncertain: new Set<string>(),
     opened,
   });
   if (scope.current.key !== key)
@@ -73,6 +74,7 @@ export function useChatReadState(
       requests: new Map(),
       suppressed: new Set(),
       attempted: new Set(),
+      uncertain: new Set(),
       opened,
     };
   if (scope.current.opened !== opened) {
@@ -127,7 +129,8 @@ export function useChatReadState(
     if (
       saved?.threadId === proof.threadId &&
       saved.turnId === proof.turnId &&
-      saved.read === read
+      saved.read === read &&
+      !current.uncertain.has(proof.id)
     )
       return;
     const attempt = JSON.stringify([
@@ -140,19 +143,39 @@ export function useChatReadState(
     if (read) current.attempted.add(attempt);
     const request = (async () => {
       try {
-        const canonical = await api<Agent>(
-          "/api/organization",
-          {
-            id: proof.id,
-            read_state: {
-              thread_id: proof.threadId,
-              turn_id: proof.turnId,
-              read,
-              expected_revision: saved?.revision || 0,
-            },
+        const body = {
+          id: proof.id,
+          read_state: {
+            thread_id: proof.threadId,
+            turn_id: proof.turnId,
+            read,
+            expected_revision: saved?.revision || 0,
           },
-          { workspaceId: latest.current.workspaceId, timeoutMs: 15000 },
-        );
+        };
+        const requestWorkspace = latest.current.workspaceId;
+        let canonical: Agent;
+        for (let retry = 0; ; retry++) {
+          try {
+            canonical = await api<Agent>("/api/organization", body, {
+              workspaceId: requestWorkspace,
+              timeoutMs: 15000,
+            });
+            break;
+          } catch (error) {
+            const transient =
+              error instanceof TypeError ||
+              (error instanceof ApiError &&
+                (error.status >= 500 || [408, 429].includes(error.status)));
+            if (!read || !transient || retry >= 2) throw error;
+            current.uncertain.add(proof.id);
+            await new Promise((resolve) =>
+              setTimeout(resolve, 1000 * (retry + 1)),
+            );
+            // Repeat the same revision. A newer Unread must win over this retry.
+            if (!valid()) return;
+            if (latest.current.opened !== proof.id) throw error;
+          }
+        }
         if (!valid()) return;
         const state = storedState(canonical);
         if (
@@ -167,11 +190,40 @@ export function useChatReadState(
         const known = current.states.get(proof.id);
         if (!known || state.revision >= known.revision)
           current.states.set(proof.id, state);
+        current.uncertain.delete(proof.id);
         changedMetadata((value) => value + 1);
         redraw((value) => value + 1);
         await latest.current.refresh();
       } catch (error) {
-        if (valid()) latest.current.notify(errorText(error));
+        if (valid()) {
+          current.attempted.delete(attempt);
+          current.uncertain.add(proof.id);
+          // Reconcile a lost success before a queued Unread can use local state.
+          // The app's normal refresh can update only credentials during sync.
+          try {
+            const snapshot = await api<Snapshot>("/api/state?view=chat");
+            if (!valid()) return;
+            const canonical = snapshot.threads.find(
+              (value) => value.id === proof.id,
+            );
+            const result = canonical && completed(canonical);
+            if (
+              snapshot.stateDir === latest.current.data?.stateDir &&
+              result &&
+              sameResult(result, proof)
+            ) {
+              const state = storedState(canonical!);
+              const known = current.states.get(proof.id);
+              if (state && (!known || state.revision >= known.revision))
+                current.states.set(proof.id, state);
+              if (state || !known) current.uncertain.delete(proof.id);
+              changedMetadata((value) => value + 1);
+            }
+          } catch {
+            // Keep uncertainty visible; a local no-op cannot confirm this write.
+          }
+          if (valid()) latest.current.notify(errorText(error));
+        }
       }
     })();
     current.requests.set(proof.id, request);
@@ -212,6 +264,7 @@ export function useVisibleChatResult(
   loaded: boolean,
   onReadResult?: (proof: ChatReadProof) => void,
   workspace?: string,
+  latestPage = false,
 ) {
   const proof = agent && completed(agent);
   const finalId = useMemo(() => {
@@ -231,6 +284,15 @@ export function useVisibleChatResult(
       candidates.at(-1)
     )?.id;
   }, [items, proof?.turnId]);
+  const completedTurnVisible =
+    latestPage &&
+    items.some(
+      (item) =>
+        item.turnId === proof?.turnId &&
+        item.turnStatus === "completed" &&
+        !item.pending &&
+        !item.streaming,
+    );
   const callback = useRef(onReadResult);
   useLayoutEffect(() => {
     callback.current = onReadResult;
@@ -242,7 +304,7 @@ export function useVisibleChatResult(
       agent.readStateSupported !== true ||
       !callback.current ||
       !proof ||
-      !finalId
+      (!finalId && !completedTurnVisible)
     )
       return;
     const root = scroll.current;
@@ -257,7 +319,8 @@ export function useVisibleChatResult(
         document.visibilityState !== "visible" ||
         !document.hasFocus() ||
         !target?.isConnected ||
-        target.hasAttribute("data-lazy-message")
+        target.hasAttribute("data-lazy-message") ||
+        (!finalId && target.dataset.outcome !== "completed")
       )
         return;
       const box = target.getBoundingClientRect();
@@ -290,17 +353,18 @@ export function useVisibleChatResult(
       { root },
     );
     const connect = () => {
+      if (target?.isConnected) return;
       const next =
         root.querySelector<HTMLElement>(
-          `[data-message="${CSS.escape(finalId)}"]:not([data-lazy-message])`,
+          finalId
+            ? `[data-message="${CSS.escape(finalId)}"]:not([data-lazy-message])`
+            : `[data-turn="${CSS.escape(proof.turnId)}"][data-outcome="completed"]`,
         ) || undefined;
       if (target !== next) {
         observer.disconnect();
         target = next;
-        if (target) {
-          observer.observe(target);
-          mutations.disconnect();
-        }
+        reported = false;
+        if (target) observer.observe(target);
       }
     };
     const resume = () => {
@@ -308,16 +372,31 @@ export function useVisibleChatResult(
       connect();
       visible();
     };
-    const mutations = new MutationObserver(connect);
-    mutations.observe(root, { childList: true, subtree: true });
+    const mutations = new MutationObserver((records) => {
+      connect();
+      if (
+        records.some(
+          (record) => record.type === "attributes" && record.target === target,
+        )
+      )
+        visible();
+    });
+    mutations.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-outcome"],
+    });
     connect();
     window.addEventListener("focus", resume);
+    window.addEventListener("online", resume);
     document.addEventListener("visibilitychange", resume);
     return () => {
       disposed = true;
       observer.disconnect();
       mutations.disconnect();
       window.removeEventListener("focus", resume);
+      window.removeEventListener("online", resume);
       document.removeEventListener("visibilitychange", resume);
     };
   }, [
@@ -327,6 +406,7 @@ export function useVisibleChatResult(
     proof?.turnId,
     agent?.readStateSupported,
     finalId,
+    completedTurnVisible,
     loaded,
     !!onReadResult,
     workspace,

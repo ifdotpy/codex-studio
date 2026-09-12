@@ -45,8 +45,8 @@ const server = await createServer({
 window.foreground=false;window.visible=true;Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>window.visible?'visible':'hidden'});document.hasFocus=()=>window.foreground;
 const initial={id:'one',threadId:'thread',lastCompletedTurn:'turn',lastCompletedTurnStatus:'completed',source:'managed',status:'completed',name:'One',model:'sol',created:1,readStateSupported:true};
 window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;window.fail=false;window.serverState=JSON.parse(localStorage.getItem('server-read-state')||'null');
-const nativeFetch=window.fetch;window.fetch=async(url,options)=>{if(url!='/api/organization')return nativeFetch(url,options);const body=JSON.parse(options.body);window.calls.push({...body,workspace:options.headers['X-Canvas-Workspace']});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail)return new Response(JSON.stringify({error:'Read state changed'}),{status:409});const value=body.read_state;window.serverState={threadId:value.thread_id,turnId:value.turn_id,read:value.read,revision:value.expected_revision+1};localStorage.setItem('server-read-state',JSON.stringify(window.serverState));return new Response(JSON.stringify({...initial,readState:window.serverState}),{headers:{'Content-Type':'application/json'}})};
-function Fixture(){const[agent,setAgent]=useState({...initial,readState:window.serverState}),[opened,setOpened]=useState('one'),[workspace,setWorkspace]=useState('first'),[loaded,setLoaded]=useState(true),[message,setMessage]=useState('turn'),[offset,setOffset]=useState(900),[streaming,setStreaming]=useState(false),[phase,setPhase]=useState("final_answer");const scroll=useRef(null);const data={stateDir:'/state',threads:[agent],runtime:{agents:[agent]}};const controls=useChatReadState(data,opened,text=>window.notifications.push(text),async()=>{window.refreshes++},workspace);window.controls=controls;window.agent=agent;window.state=controls.readStateFor(agent);window.marking=[...controls.marking];window.markUnread=()=>controls.markUnread(agent);window.setAgent=value=>flushSync(()=>setAgent(value));window.setOpened=value=>flushSync(()=>setOpened(value));window.setWorkspace=value=>flushSync(()=>setWorkspace(value));window.setLoaded=value=>flushSync(()=>setLoaded(value));window.setMessage=value=>flushSync(()=>setMessage(value));window.setOffset=value=>flushSync(()=>setOffset(value));window.setStreaming=value=>flushSync(()=>setStreaming(value));window.setPhase=value=>flushSync(()=>setPhase(value));window.observe=proof=>controls.observeRead(proof);useVisibleChatResult(scroll,agent,[{id:'result',role:'assistant',turnId:message,phase,streaming,text:'Completed result'}],loaded,controls.observeRead,workspace);return <><div id="messages" ref={scroll} style={{height:180,overflow:'auto'}}><div style={{height:offset}}/><article data-message="result" style={{height:80}}>Completed result</article></div><button onClick={()=>void controls.markUnread(agent)}>Unread</button></>};const appRoot=createRoot(document.getElementById('root'));window.unmount=()=>appRoot.unmount();appRoot.render(<Fixture/>);`;
+const nativeFetch=window.fetch;window.fetch=async(url,options)=>{if(url==='/api/state?view=chat')return new Response(JSON.stringify({stateDir:'/state',threads:[{...window.agent,readState:window.serverState}]}),{headers:{'Content-Type':'application/json'}});if(url!='/api/organization')return nativeFetch(url,options);const body=JSON.parse(options.body);window.calls.push({...body,workspace:options.headers['X-Canvas-Workspace']});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail)return new Response(JSON.stringify({error:'Read state changed'}),{status:409});const value=body.read_state;window.serverState={threadId:value.thread_id,turnId:value.turn_id,read:value.read,revision:value.expected_revision+1};localStorage.setItem('server-read-state',JSON.stringify(window.serverState));return new Response(JSON.stringify({...initial,readState:window.serverState}),{headers:{'Content-Type':'application/json'}})};
+function Fixture(){const[agent,setAgent]=useState({...initial,readState:window.serverState}),[opened,setOpened]=useState('one'),[workspace,setWorkspace]=useState('first'),[loaded,setLoaded]=useState(true),[message,setMessage]=useState('turn'),[offset,setOffset]=useState(900),[streaming,setStreaming]=useState(false),[phase,setPhase]=useState("final_answer"),[nodeVersion,setNodeVersion]=useState(0),[turnStatus,setTurnStatus]=useState(undefined),[latestPage,setLatestPage]=useState(true),[resultText,setResultText]=useState("Completed result");const scroll=useRef(null);const data={stateDir:'/state',threads:[agent],runtime:{agents:[agent]}};const controls=useChatReadState(data,opened,text=>window.notifications.push(text),async()=>{window.refreshes++},workspace);window.controls=controls;window.agent=agent;window.state=controls.readStateFor(agent);window.marking=[...controls.marking];window.markUnread=()=>controls.markUnread(agent);window.setAgent=value=>flushSync(()=>setAgent(value));window.setOpened=value=>flushSync(()=>setOpened(value));window.setWorkspace=value=>flushSync(()=>setWorkspace(value));window.setLoaded=value=>flushSync(()=>setLoaded(value));window.setMessage=value=>flushSync(()=>setMessage(value));window.setOffset=value=>flushSync(()=>setOffset(value));window.setStreaming=value=>flushSync(()=>setStreaming(value));window.setPhase=value=>flushSync(()=>setPhase(value));window.replaceResult=()=>flushSync(()=>setNodeVersion(v=>v+1));window.setTurnStatus=value=>flushSync(()=>setTurnStatus(value));window.setLatestPage=value=>flushSync(()=>setLatestPage(value));window.setResultText=value=>flushSync(()=>setResultText(value));window.observe=proof=>controls.observeRead(proof);useVisibleChatResult(scroll,agent,[{id:'result',role:'assistant',turnId:message,phase,streaming,turnStatus,text:resultText}],loaded,controls.observeRead,workspace,latestPage);return <><div id="messages" ref={scroll} style={{height:180,overflow:'auto'}}><div style={{height:offset}}/><section key={nodeVersion} data-turn={message} data-outcome={turnStatus}><article data-message="result" style={{height:80}}>Completed result</article></section></div><button onClick={()=>void controls.markUnread(agent)}>Unread</button></>};const appRoot=createRoot(document.getElementById('root'));window.unmount=()=>appRoot.unmount();appRoot.render(<Fixture/>);`;
       },
     },
   ],
@@ -322,6 +322,137 @@ try {
     [true, false],
   );
   console.log("PASS explicit unread follows in-flight auto-read exactly once");
+  // Earlier history can replace a keyed turn without changing the final message ID.
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await ready();
+  await settle();
+  await page.evaluate(() => {
+    window.foreground = true;
+    window.replaceResult();
+  });
+  await settle();
+  await page.evaluate(() => window.setOffset(0));
+  await page.waitForFunction(() => window.state?.read === true, {
+    timeout: 2000,
+  });
+  console.log("PASS replaced turn still acknowledges its visible result");
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await ready();
+  await page.evaluate(() => {
+    window.foreground = true;
+    window.setPhase("commentary");
+    window.setTurnStatus("completed");
+    window.setLatestPage(false);
+    window.setOffset(0);
+  });
+  await settle();
+  assert.equal(
+    await page.evaluate(() => window.calls.length),
+    0,
+    "Partial history cannot acknowledge an absent final answer",
+  );
+  await page.evaluate(() => window.setLatestPage(true));
+  await page.waitForFunction(() => window.state?.read === true);
+  console.log(
+    "PASS completed turn without a final answer, only on latest page",
+  );
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await ready();
+  await page.evaluate(() => {
+    const fetch = window.fetch;
+    window.transientFailure = true;
+    window.fetch = (url, options) => {
+      if (url === "/api/organization" && window.transientFailure) {
+        window.transientFailure = false;
+        return Promise.reject(new TypeError("Network disconnected"));
+      }
+      return fetch(url, options);
+    };
+    window.foreground = true;
+    window.setOffset(0);
+  });
+  await page.waitForFunction(() => window.state?.read === true);
+  assert.equal(await page.evaluate(() => window.calls.length), 1);
+  console.log("PASS transient read failure recovers without changing chats");
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await ready();
+  await page.evaluate(() => {
+    window.foreground = true;
+    window.setResultText("");
+    window.setTurnStatus("completed");
+    window.setOffset(0);
+  });
+  await page.waitForFunction(() => window.state?.read === true);
+  console.log("PASS empty final uses the visible completed turn");
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await ready();
+  await page.evaluate(() => {
+    window.foreground = true;
+    window.setPhase("commentary");
+    window.setTurnStatus("completed");
+    document.querySelector("[data-turn]").dataset.outcome = "active";
+    window.setOffset(0);
+  });
+  await settle();
+  assert.equal(await page.evaluate(() => window.calls.length), 0);
+  await page.evaluate(() => {
+    document.querySelector("[data-turn]").dataset.outcome = "completed";
+  });
+  await page.waitForFunction(() => window.state?.read === true);
+  console.log("PASS delayed terminal attribute attaches the observer");
+
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await ready();
+  await page.evaluate(() => {
+    const fetch = window.fetch;
+    window.lostWrites = [];
+    window.releaseLost = null;
+    window.fetch = async (url, options) => {
+      if (url !== "/api/organization") return fetch(url, options);
+      const body = JSON.parse(options.body);
+      if (!body.read_state.read) return fetch(url, options);
+      window.lostWrites.push(body);
+      // The first request commits. All three replies are lost.
+      if (window.lostWrites.length === 1) await fetch(url, options);
+      if (window.lostWrites.length === 3)
+        await new Promise((resolve) => (window.releaseLost = resolve));
+      throw new TypeError("Response lost");
+    };
+    window.foreground = true;
+    window.setOffset(0);
+  });
+  await page.waitForFunction(() => !!window.releaseLost);
+  await page.evaluate(() => {
+    void window.markUnread();
+    window.releaseLost();
+  });
+  await page.waitForFunction(
+    () => window.marking.length === 0 && window.state?.read === false,
+  );
+  assert.equal(await page.evaluate(() => window.serverState.read), false);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.lostWrites.map((v) => v.read_state.expected_revision),
+    ),
+    [0, 0, 0],
+  );
+  assert.deepEqual(
+    await page.evaluate(() => window.calls.map((v) => v.read_state.read)),
+    [true, false],
+  );
+  console.log(
+    "PASS lost success reconciles before explicit Unread; retries preserve revision",
+  );
   assert.deepEqual(errors, []);
 } finally {
   await browser?.close();
