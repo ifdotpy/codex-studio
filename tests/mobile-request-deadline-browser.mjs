@@ -71,8 +71,67 @@ try {
       });
       await held.get("/api/held-ordinary").fulfill({ json: { ok: true } });
       await page.waitForFunction(() => window.outcomes.ordinary === "success");
+      await page.evaluate(async () => {
+        const { api } = await import("/src/api.ts");
+        const record = (key, promise) =>
+          promise.then(
+            () => (window.outcomes[key] = "success"),
+            (error) => (window.outcomes[key] = error.name),
+          );
+        window.cancelWithDeadline = new AbortController();
+        window.cancelOnly = new AbortController();
+        const alreadyAborted = new AbortController();
+        alreadyAborted.abort();
+        record(
+          "cancelledRead",
+          api("/api/held-cancel-read", undefined, {
+            signal: window.cancelWithDeadline.signal,
+            timeoutMs: 15000,
+          }),
+        );
+        record(
+          "cancelledPost",
+          api(
+            "/api/held-cancel-post",
+            {},
+            {
+              signal: window.cancelOnly.signal,
+            },
+          ),
+        );
+        record(
+          "alreadyAborted",
+          api(
+            "/api/held-already-aborted",
+            {},
+            {
+              signal: alreadyAborted.signal,
+              timeoutMs: 15000,
+            },
+          ),
+        );
+      });
+      await page.waitForTimeout(100);
+      assert(held.has("/api/held-cancel-read"));
+      assert(held.has("/api/held-cancel-post"));
+      await page.evaluate(() => {
+        window.cancelWithDeadline.abort();
+        window.cancelOnly.abort();
+      });
+      await page.waitForFunction(
+        () => window.outcomes.cancelledRead && window.outcomes.cancelledPost,
+      );
+      assert.deepEqual(
+        await page.evaluate(() => ({
+          read: window.outcomes.cancelledRead,
+          post: window.outcomes.cancelledPost,
+          beforeStart: window.outcomes.alreadyAborted,
+        })),
+        { read: "AbortError", post: "AbortError", beforeStart: "AbortError" },
+      );
+      assert(!held.has("/api/held-already-aborted"));
       console.log(
-        `${name}: expired reads and durable requests release on resume; ordinary mutation stays intact`,
+        `${name}: deadlines release on resume; ordinary mutations stay intact; external cancellation works with or without a deadline`,
       );
     } finally {
       await browser.close();

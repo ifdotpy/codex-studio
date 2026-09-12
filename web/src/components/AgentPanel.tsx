@@ -1,8 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiError, NetworkTimeoutError } from "../api";
 import { onResume } from "../sync/resume";
 import ErrorDescription from "./ErrorDescription";
-import StreamingText from "./StreamingText";
+import FilePreview, { type PreviewTarget } from "./FilePreview";
+import PreviewModal from "./PreviewModal";
+import { localFileLink } from "./fileLinks";
+import { relativeToDocument } from "./filePreviewFormats";
+import { progressMarkdown } from "./ProgressMarkdown";
+import { useProgressLayoutReport, type ProgressLayout } from "./progressLayout";
 import "./agent-panel.css";
 
 interface ProgressState {
@@ -133,11 +138,12 @@ export default function AgentPanel({
     refresh.current = wake;
     const stopResume = onResume(wake);
     const visibility = () => {
-      if (!document.hidden) return;
+      if (!document.hidden && navigator.onLine !== false) return;
       clearTimeout(timer);
       request?.controller.abort();
     };
     document.addEventListener("visibilitychange", visibility);
+    window.addEventListener("offline", visibility);
     wake();
     return () => {
       active = false;
@@ -145,6 +151,7 @@ export default function AgentPanel({
       request?.controller.abort();
       stopResume();
       document.removeEventListener("visibilitychange", visibility);
+      window.removeEventListener("offline", visibility);
       if (refresh.current === wake) refresh.current = undefined;
     };
   }, [agentId, scope]);
@@ -153,29 +160,252 @@ export default function AgentPanel({
   const current = state?.scope === scope ? state : null;
   if (!current || (!current.markdown.trim() && !current.error)) return null;
   return (
-    <section
-      className="agent-panel"
-      aria-label="Agent progress"
-      data-agent={agentId}
-      data-panel-revision={current.revision ?? undefined}
-    >
-      <div className="agent-panel-heading">
-        <code title={current.path}>PROGRESS.md</code>
-      </div>
-      <div className="agent-panel-content">
-        {!!current.markdown.trim() && (
-          <StreamingText text={current.markdown} agentId={agentId} />
-        )}
-        {Boolean(current.error) && (
-          <div className="agent-panel-error">
-            <span>Cannot read PROGRESS.md. </span>
-            <ErrorDescription value={current.error} />
-            <button type="button" onClick={() => refresh.current?.()}>
-              Retry
+    <ProgressDisplay
+      key={scope}
+      current={current}
+      agentId={agentId}
+      scope={scope}
+      retry={() => refresh.current?.()}
+    />
+  );
+}
+
+function ProgressDisplay({
+  current,
+  agentId,
+  scope,
+  retry,
+}: {
+  current: ProgressState;
+  agentId: string;
+  scope: string;
+  retry: () => void;
+}) {
+  const parsed = useMemo(
+    () => progressMarkdown(current.markdown),
+    [current.markdown],
+  );
+  const root = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLDivElement>(null);
+  const candidate = useRef<HTMLDivElement>(null);
+  const [measured, setMeasured] = useState<{
+    markdown: string;
+    layout: ProgressLayout;
+  } | null>(null);
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
+  const [dialogError, setDialogError] = useState<unknown>(null);
+  const valid =
+    !current.error &&
+    measured?.markdown === current.markdown &&
+    measured.layout.revision === current.revision;
+  const layout = valid ? measured.layout : null;
+  const reportError = useProgressLayoutReport(agentId, scope, layout);
+  const approved = !!layout?.fits;
+
+  useLayoutEffect(() => {
+    const container = root.current;
+    const content = candidate.current;
+    const title = heading.current;
+    if (!container || !content || !title) return;
+    let active = true;
+    const invalidate = () => {
+      container.dataset.fit = "no";
+      setMeasured(null);
+    };
+    const measure = () => {
+      if (!active) return;
+      if (
+        current.error ||
+        !current.revision ||
+        document.fonts.status === "loading"
+      ) {
+        invalidate();
+        return;
+      }
+      const viewport = window.visualViewport?.height || window.innerHeight;
+      const budget = Math.min(150, Math.max(80, Math.floor(viewport / 4)));
+      container.style.setProperty("--progress-height", `${budget}px`);
+      const width = Math.max(0, container.clientWidth - 20);
+      const height = Math.max(
+        0,
+        budget - title.getBoundingClientRect().height - 7,
+      );
+      if (!width || !height) {
+        invalidate();
+        return;
+      }
+      const bounds = content.getBoundingClientRect();
+      let contentWidth = parsed.supported
+        ? Math.max(bounds.width, content.scrollWidth)
+        : 0;
+      let contentHeight = parsed.supported
+        ? Math.max(bounds.height, content.scrollHeight)
+        : 0;
+      for (const element of content.querySelectorAll<HTMLElement>("*")) {
+        const rect = element.getBoundingClientRect();
+        contentWidth = Math.max(
+          contentWidth,
+          rect.right - bounds.left,
+          bounds.right - rect.left,
+          element.clientWidth ? element.scrollWidth : 0,
+        );
+        contentHeight = Math.max(
+          contentHeight,
+          rect.bottom - bounds.top,
+          element.clientHeight
+            ? rect.top - bounds.top + element.scrollHeight
+            : 0,
+        );
+      }
+      const fits =
+        parsed.supported &&
+        width > 0 &&
+        height > 0 &&
+        contentWidth <= width + 0.5 &&
+        contentHeight <= height + 0.5;
+      const next: ProgressLayout = {
+        revision: current.revision,
+        width,
+        height,
+        contentWidth,
+        contentHeight,
+        fits,
+        reason: !parsed.supported ? "unsupported" : fits ? null : "overflow",
+      };
+      // ResizeObserver runs before paint. Hide a now-invalid visible copy before
+      // React commits the new notice, including changes in loaded font metrics.
+      container.dataset.fit = fits ? "yes" : "no";
+      setMeasured((previous) =>
+        previous?.markdown === current.markdown &&
+        JSON.stringify(previous.layout) === JSON.stringify(next)
+          ? previous
+          : { markdown: current.markdown, layout: next },
+      );
+    };
+    const observer = new ResizeObserver(measure);
+    // The zero-height measurement layer follows width changes but never changes
+    // height when the visible copy is accepted or rejected.
+    observer.observe(content.parentElement!);
+    observer.observe(title);
+    observer.observe(content);
+    window.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("resize", measure);
+    document.fonts.addEventListener("loading", invalidate);
+    document.fonts.addEventListener("loadingdone", measure);
+    document.fonts.addEventListener("loadingerror", measure);
+    void document.fonts.ready.then(() => {
+      if (active) measure();
+    });
+    measure();
+    return () => {
+      active = false;
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("resize", measure);
+      document.fonts.removeEventListener("loading", invalidate);
+      document.fonts.removeEventListener("loadingdone", measure);
+      document.fonts.removeEventListener("loadingerror", measure);
+    };
+  }, [current.markdown, current.revision, current.error, parsed]);
+
+  const openOriginal = () => setPreview({ agent: agentId, path: current.path });
+  return (
+    <>
+      <section
+        ref={root}
+        className="agent-panel"
+        aria-label="Agent progress"
+        data-agent={agentId}
+        data-panel-revision={current.revision ?? undefined}
+        data-fit={approved ? "yes" : "no"}
+      >
+        <div ref={heading} className="agent-panel-heading">
+          <button
+            type="button"
+            onClick={openOriginal}
+            disabled={!current.path}
+            aria-label="Open PROGRESS.md"
+          >
+            <code>PROGRESS.md</code>
+          </button>
+          {Boolean(reportError) && (
+            <button type="button" onClick={() => setDialogError(reportError)}>
+              Cannot report panel size
             </button>
+          )}
+        </div>
+        <div className="agent-panel-measure" aria-hidden="true" inert>
+          <div ref={candidate} className="progress-markdown">
+            {parsed.nodes}
           </div>
-        )}
-      </div>
-    </section>
+        </div>
+        <div className="agent-panel-content">
+          {Boolean(current.error) ? (
+            <div className="agent-panel-notice" role="alert">
+              <span>Cannot read PROGRESS.md.</span>
+              <button
+                type="button"
+                onClick={() => setDialogError(current.error)}
+              >
+                Error details
+              </button>
+              <button type="button" onClick={retry}>
+                Retry
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="agent-panel-notice" role="status">
+                {!parsed.supported
+                  ? "Progress format is unsupported."
+                  : layout?.fits === false
+                    ? "Progress does not fit."
+                    : "Checking progress layout."}
+              </div>
+              {approved && (
+                <div
+                  className="agent-panel-current progress-markdown"
+                  onClick={(event) => {
+                    const link = (event.target as Element).closest("a[href]");
+                    // Portals from nested file previews must never reopen an outer link.
+                    if (
+                      !(link instanceof HTMLAnchorElement) ||
+                      !event.currentTarget.contains(link)
+                    )
+                      return;
+                    try {
+                      const target = localFileLink(
+                        link.getAttribute("href") || "",
+                      );
+                      if (!target) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setPreview({
+                        agent: agentId,
+                        ...relativeToDocument(target, current.path),
+                      });
+                    } catch (error) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setDialogError(error);
+                    }
+                  }}
+                >
+                  {parsed.nodes}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </section>
+      <FilePreview target={preview} onClose={() => setPreview(null)} />
+      <PreviewModal
+        opened={!!dialogError}
+        onClose={() => setDialogError(null)}
+        title="Progress error"
+      >
+        <ErrorDescription value={dialogError} />
+      </PreviewModal>
+    </>
   );
 }

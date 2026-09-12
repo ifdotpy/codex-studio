@@ -108,6 +108,8 @@ try {
     };
     window.fetch = (input, options) => {
       const url = new URL(String(input), location.href);
+      if (url.pathname === "/api/panel/layout")
+        return Promise.resolve(new Response("{}", { status: 200 }));
       if (url.pathname !== "/api/panel") return original(input, options);
       const call = {
         agent: url.searchParams.get("agent"),
@@ -147,7 +149,8 @@ try {
     { waitUntil: "commit" },
   );
   const panel = page.getByRole("region", { name: "Agent progress" });
-  await panel.getByText("Initial", { exact: false }).waitFor();
+  const current = panel.locator(".agent-panel-current");
+  await current.getByText("Initial", { exact: false }).waitFor();
   await page.locator("#history").evaluate((el) => (el.scrollTop = 321));
   await page.locator("#composer").fill("Keep my draft and focus");
   const next = (markdown, revision = "next", error = null) => ({
@@ -161,7 +164,7 @@ try {
     (value) => window.panelResponse(value),
     next("Updated progress."),
   );
-  await panel.getByText("Updated progress.", { exact: true }).waitFor();
+  await current.getByText("Updated progress.", { exact: true }).waitFor();
   assert.equal(
     await page.locator("#composer").inputValue(),
     "Keep my draft and focus",
@@ -187,15 +190,31 @@ try {
     next("Resumed progress."),
   );
   await page.evaluate(() => window.visibility(false));
-  await panel
+  await current
     .getByText("Resumed progress.", { exact: true })
     .waitFor({ timeout: 900 });
+  const readError = async (message) => {
+    await panel
+      .getByText("Cannot read PROGRESS.md.", { exact: true })
+      .waitFor();
+    assert.equal(
+      await current.count(),
+      0,
+      "An old file must not appear as the current revision after a read error",
+    );
+    await panel
+      .getByRole("button", { name: "Error details", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "Progress error" });
+    await dialog.getByText(message, { exact: true }).waitFor();
+    return dialog;
+  };
+  const closeError = async (dialog) => {
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+  };
   await page.evaluate(() => window.panelMode("offline"));
-  await panel.getByText("Connection interrupted", { exact: true }).waitFor();
-  assert.equal(
-    await panel.getByText("Resumed progress.", { exact: true }).count(),
-    1,
-  );
+  await closeError(await readError("Connection interrupted"));
   const diagnostic = {
     message: "Read denied",
     code: "EACCES",
@@ -205,12 +224,14 @@ try {
     (value) => window.panelResponse(value, 503),
     next("", null, diagnostic),
   );
-  await panel.getByText("Read denied", { exact: true }).waitFor();
-  await panel
+  // Wait for the next failed poll before opening its full diagnostic.
+  await page.waitForTimeout(1100);
+  const dialog = await readError("Read denied");
+  await dialog
     .getByRole("button", { name: "Error details", exact: true })
     .click();
   const details = JSON.parse(
-    await panel
+    await dialog
       .getByRole("button", { name: "Hide error details", exact: true })
       .locator("..")
       .locator(":scope > span")
@@ -219,24 +240,18 @@ try {
   );
   assert.equal(details.status, 503);
   assert.deepEqual(details.details.error, diagnostic);
-  assert.equal(
-    await panel.getByText("Resumed progress.", { exact: true }).count(),
-    1,
-  );
+  await closeError(dialog);
   await page.evaluate(
     (value) => window.panelResponse(value),
     next("", null, "UTF-8 read failed"),
   );
-  await panel.getByText("UTF-8 read failed", { exact: true }).waitFor();
-  assert.equal(
-    await panel.getByText("Resumed progress.", { exact: true }).count(),
-    1,
-  );
+  await page.waitForTimeout(1100);
+  await closeError(await readError("UTF-8 read failed"));
   await page.evaluate(
     (value) => window.panelResponse(value),
     next("Old agent content.", "old"),
   );
-  await panel.getByText("Old agent content.", { exact: true }).waitFor();
+  await current.getByText("Old agent content.", { exact: true }).waitFor();
   await page.evaluate(() => window.panelMode("delay"));
   await page.waitForFunction(() => panelRequests.at(-1)?.mode === "delay");
   await page.evaluate(
@@ -246,15 +261,15 @@ try {
     },
     next("Second agent content.", "second"),
   );
-  await panel.getByText("Second agent content.", { exact: true }).waitFor();
+  await current.getByText("Second agent content.", { exact: true }).waitFor();
   await page.evaluate(() => window.resolvePanel());
   await page.waitForTimeout(50);
   assert.equal(
-    await panel.getByText("Old agent content.", { exact: true }).count(),
+    await current.getByText("Old agent content.", { exact: true }).count(),
     0,
   );
   assert.equal(
-    await panel.getByText("Second agent content.", { exact: true }).count(),
+    await current.getByText("Second agent content.", { exact: true }).count(),
     1,
   );
   await page.evaluate(() => window.panelMode("delay"));
@@ -266,11 +281,13 @@ try {
     },
     next("Other workspace content.", "workspace"),
   );
-  await panel.getByText("Other workspace content.", { exact: true }).waitFor();
+  await current
+    .getByText("Other workspace content.", { exact: true })
+    .waitFor();
   await page.evaluate(() => window.resolvePanel());
   await page.waitForTimeout(50);
   assert.equal(
-    await panel.getByText("Second agent content.", { exact: true }).count(),
+    await current.getByText("Second agent content.", { exact: true }).count(),
     0,
   );
   await page.evaluate(() => window.panelMode("hang"));
@@ -283,12 +300,9 @@ try {
     "One request remains in flight",
   );
   await panel
-    .getByText("The server did not respond in time.", { exact: true })
+    .getByText("Cannot read PROGRESS.md.", { exact: true })
     .waitFor({ timeout: 9000 });
-  assert.equal(
-    await panel.getByText("Other workspace content.", { exact: true }).count(),
-    1,
-  );
+  await closeError(await readError("The server did not respond in time."));
   await page.evaluate((value) => window.panelResponse(value), next(""));
   await panel.waitFor({ state: "hidden" });
   await page.evaluate((value) => window.panelResponse(value), {
@@ -299,10 +313,10 @@ try {
   assert.equal(await panel.count(), 0);
   const long =
     "Long progress.\n\n" +
-    Array.from({ length: 30 }, (_, i) => `- Step ${i}`).join("\n") +
-    "\n\n```html\n<div>Static preview</div>\n```";
+    Array.from({ length: 30 }, (_, i) => `- Step ${i}`).join("\n");
   await page.evaluate((value) => window.panelResponse(value), next(long));
-  await panel.getByText("Long progress.", { exact: true }).waitFor();
+  await panel.getByText("Progress does not fit.", { exact: true }).waitFor();
+  assert.equal(await current.count(), 0);
   const geometry = await panel.evaluate((el) => {
     const content = el.querySelector(".agent-panel-content");
     return {
@@ -312,17 +326,20 @@ try {
     };
   });
   assert.ok(geometry.height <= 150.5);
-  assert.equal(geometry.scroll, true);
-  assert.equal(geometry.overflow, "auto");
+  assert.equal(geometry.scroll, false);
+  assert.notEqual(geometry.overflow, "auto");
   await page.evaluate(
     (value) => window.panelResponse(value),
     next(
       'Safe <img src="bad" onerror="window.executed=true"> [unsafe](javascript:alert(1))',
     ),
   );
-  await panel.getByText("Safe", { exact: true }).waitFor();
+  await panel
+    .getByText("Progress format is unsupported.", { exact: true })
+    .waitFor();
+  assert.equal(await current.count(), 0);
   assert.equal(
-    await panel.locator('[onerror],a[href^="javascript:"]').count(),
+    await panel.locator('[onerror],a[href^="javascript:"],iframe,img').count(),
     0,
   );
   await page.evaluate((value) => window.panelResponse(value), {
@@ -332,9 +349,7 @@ try {
     version: 9,
     agent: "second",
   });
-  await panel
-    .getByText("The PROGRESS.md response is invalid.", { exact: true })
-    .waitFor();
+  await closeError(await readError("The PROGRESS.md response is invalid."));
   assert.equal(
     await panel.getByText("Old callback", { exact: true }).count(),
     0,
@@ -349,7 +364,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    `PASS ${browserType.name()}: file polling, hide/resume, deadlines, scoped late replies, retained errors, empty/removal, safe Markdown, bounded height and unchanged composer/history`,
+    `PASS ${browserType.name()}: file polling, hide/resume, deadlines, scoped late replies, explicit read errors, empty/removal, rejected unsupported/overflow content, bounded height and unchanged composer/history`,
   );
 } finally {
   await browser?.close();

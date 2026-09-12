@@ -53,6 +53,7 @@ def provision_progress(state_dir, agent_id):
 
 
 def progress_context(state_dir, agent_id):
+    from codex_progress_layout import progress_fit_context
     path = progress_path(state_dir, agent_id)
     return (
         f"Your progress file is {path}. Read and edit this plain UTF-8 Markdown file with ordinary file tools. "
@@ -61,7 +62,7 @@ def progress_context(state_dir, agent_id):
         "An empty or missing file clears the display. This file belongs to this agent, even when agents share a working directory. "
         "It persists across restarts. It does not run scripts, read command output, or wake the model. "
         "The orchestration_panel and orchestration_panel_feed tools are retired."
-    )
+    ) + progress_fit_context(state_dir, agent_id)
 
 
 def _revision(info):

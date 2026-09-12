@@ -39,18 +39,28 @@ export class NetworkTimeoutError extends TypeError {
 export async function api<T = any>(
   path: string,
   body?: unknown,
-  options: { timeoutMs?: number; workspaceId?: string } = {},
+  options: {
+    timeoutMs?: number;
+    workspaceId?: string;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<T> {
   const timeoutMs =
     options.timeoutMs ?? (body === undefined ? 15000 : undefined);
-  const controller = timeoutMs ? new AbortController() : undefined;
+  const controller =
+    timeoutMs || options.signal ? new AbortController() : undefined;
+  const cancel = () => controller?.abort(options.signal?.reason);
+  if (options.signal?.aborted) cancel();
+  else options.signal?.addEventListener("abort", cancel, { once: true });
   let timedOut = false;
   const expire = () => {
-    timedOut = true;
-    controller?.abort();
+    if (!controller?.signal.aborted) {
+      timedOut = true;
+      controller?.abort();
+    }
   };
-  const timer = controller ? setTimeout(expire, timeoutMs) : undefined;
-  if (controller)
+  const timer = timeoutMs ? setTimeout(expire, timeoutMs) : undefined;
+  if (controller && timeoutMs)
     deadlines.set(controller, { at: Date.now() + timeoutMs!, expire });
   try {
     const response = await fetch(path, {
@@ -95,6 +105,7 @@ export async function api<T = any>(
     throw error;
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", cancel);
     if (controller) deadlines.delete(controller);
   }
 }

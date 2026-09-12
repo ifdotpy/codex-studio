@@ -159,17 +159,19 @@ The file remains outside Git. Agents that share a working directory have separat
 files. A project's own `PROGRESS.md` does not control this display.
 
 Agents read and edit the file with ordinary file tools. Content must be UTF-8
-Markdown and at most 128 KiB. The display has a maximum height of 150px;
-longer content scrolls. Studio owns the text styles and uses the chat's Markdown
-format and isolated static previews. The display does not execute scripts or
-provide agent callbacks. An update does not require command output or a model
+Markdown and at most 128 KiB. The display has a maximum height of 150px.
+Its current width, font and available height determine fit. Studio uses passive
+Markdown and checks the complete rendered revision before display. Overflow or
+unsupported content produces a compact notice with access to the original file.
+The panel does not scroll, cut content or shrink the font.
+It does not execute scripts or provide agent callbacks. An update does not require command output or a model
 turn. Existing read-only permissions remain unchanged.
 
 The file persists across restarts. Provisioning creates an empty file only if it
 is absent; it never overwrites agent content. An empty or missing file clears the
 display. Read errors, invalid UTF-8, and oversized files produce a visible error.
-The interface retains the last valid content during a read failure. A later
-successful read replaces it. File reads occur outside the global runtime lock.
+A read failure does not present an old revision as current. A later successful
+read checks the new revision. File reads occur outside the global runtime lock.
 Atomic file replacement is supported; the next read observes the new revision.
 
 The selected visible conversation refreshes `GET /api/panel?agent=<id>` in the
@@ -177,6 +179,13 @@ background. The response contains `format=markdown`, `markdown`, `path`,
 `revision`, `updated`, `exists`, and `error`. Hidden and offline views pause these
 reads. Old responses from another chat cannot replace the current display.
 File content stays outside shared snapshots. File changes do not wake agents.
+
+The visible client reports measured dimensions to `POST /api/panel/layout`.
+The server writes revision-specific, expiring feedback to `PROGRESS.layout.json`
+beside the source file. Separate clients retain separate results. Agents use the
+check command in their runtime instructions after edits. The
+[progress guide](.agents/skills/codex-workspace/references/panel.md) defines this workflow.
+An absent or stale measurement means unmeasured, not success.
 
 The old `orchestration_panel` and `orchestration_panel_feed` schemas are no longer
 advertised. New calls, including the workspace fallback, return migration
