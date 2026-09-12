@@ -27,7 +27,7 @@ from codex_shell import monitor_command
 from codex_time import append_message_clocks, message_clock, stamp_tool_result
 from codex_work import WorkMixin, work_tools
 from codex_efficiency import EfficiencyMixin, efficiency_tools
-from codex_workspace import WorkspaceMixin
+from codex_workspace import WorkspaceMixin, active_task_records
 from codex_rules import RulesMixin, rule_tools
 from codex_user_tasks import UserTasksMixin, user_task_tools
 from codex_questions import QuestionsMixin, is_question, answer_signature, record_answer
@@ -728,10 +728,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 ).fetchone():
                     lead["status"] = "waiting"
                     self.put(db, "agents", lead)
-            for task in self.records(db, "tasks"):
-                if task["status"] == "running":
-                    task.update(status="lost", finished=time.time(), error="Server restarted. Tool outcome unknown.")
-                    self.put(db, "tasks", task)
+            for task in active_task_records(db):
+                task.update(status="lost", finished=time.time(), error="Server restarted. Tool outcome unknown.")
+                self.put(db, "tasks", task)
             for m in self.records(db, "monitors"):
                 if m["status"] in {"running", "approval", "starting"}:
                     m.update(status="lost", error="Server restarted. Command outcome unknown; not rerun.")
@@ -915,8 +914,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     a["inFlight"] = False
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
-            for task in self.records(db, "tasks"):
-                if task.get("agent") in ids and task["status"] == "running":
+            for task in active_task_records(db):
+                if task.get("agent") in ids:
                     task.update(status="lost", finished=time.time(), error="Codex disconnected. Tool outcome unknown.")
                     self.put(db, "tasks", task)
             lost_feeds = []
@@ -1431,7 +1430,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     raise ValueError("Wait for every team turn to end before changing YOLO mode")
                 if any(m["agent"] in team_ids and m["status"] in {"starting", "running", "approval"} for m in self.records(db, "monitors")):
                     raise ValueError("Wait for team monitors to end before changing YOLO mode")
-                if any(t["agent"] in team_ids and t["status"] == "running" for t in self.records(db, "tasks")):
+                if any(t["agent"] in team_ids for t in active_task_records(db)):
                     raise ValueError("Wait for team tools to end before changing YOLO mode")
                 a["yoloMode"] = data["yolo_mode"]
             if execution_fields.intersection(data):
@@ -4228,7 +4227,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             }
 
     def team(self, root):
-        state = self.snapshot()
+        state = self.snapshot(include_work=False)
         agents = [a for a in state["agents"] if a["rootId"] == root]
         return {"workerDefaults": self.worker_defaults(self.agent(root)),
                 "agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "effort", "fastMode", "workerDefaults", "tokensUsed", "error")} for a in agents],

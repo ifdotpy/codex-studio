@@ -18,6 +18,20 @@ from codex_safety_buffering import active as safety_retry_active
 from codex_work import text_field
 
 
+def active_task_records(db, statuses=("running",), *, agent=None):
+    """Use the status index before loading task payloads under the runtime lock."""
+    if not statuses:
+        return []
+    values = tuple(statuses)
+    scope = " AND json_extract(record,'$.agent')=?" if agent is not None else ""
+    rows = db.execute(
+        "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.status') IN ("
+        + ",".join("?" for _ in values) + ")" + scope,
+        (*values, agent) if agent is not None else values,
+    )
+    return [json.loads(row[0]) for row in rows]
+
+
 class WorkspaceMixin:
     WORKSPACE_OPERATION_ACTIVE = {
         "provider_pending",
@@ -1037,8 +1051,7 @@ class WorkspaceMixin:
                for m in self.records(db, "monitors")):
             raise ValueError("A monitor is using this workspace")
         peer_ids = {other["id"] for other in peers}
-        if any(t["agent"] in peer_ids and t["status"] == "running"
-               for t in self.records(db, "tasks")):
+        if any(t["agent"] in peer_ids for t in active_task_records(db)):
             raise ValueError("A command or tool is still active")
 
     def branch_conversation(self, key, data):

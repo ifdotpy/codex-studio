@@ -80,6 +80,33 @@ and native error display. The package check preserved its backend after desktop 
 An initial Vite page-load timeout affected queue and mobile-send checks. Both retries passed.
 The unrelated Python turn-history fixture failed before it created a turn; it is not a pass.
 
+## Paired comparison after host recovery
+
+Both fixtures ran sequentially after host load fell. The one-minute load changed
+from 21.80 to 19.18 to 16.19. The old assets came from the saved application.
+Their index hash matches the baseline above. The runner checkout is not the old
+asset source identity. The final assets match the final index hash above.
+
+| p95, milliseconds | Baseline | Final |
+| --- | ---: | ---: |
+| Desktop input | 213.5 | 45.8 |
+| Mobile input | 255.5 | 33.5 |
+| Mobile input, scrolled history | 205.6 | 45.3 |
+| Desktop input during stream | 392.1 | 148.4 |
+| Mobile input during stream | 406.7 | 101.3 |
+| Mobile stream update | 422.8 | 118.2 |
+
+Cached switches changed from 1,167.6 to 566.9 milliseconds desktop and from
+1,157.1 to 620.8 milliseconds mobile. All message and draft checks passed.
+Large histories still require substantial time to open. They are not instant.
+The separate chat-prefetch check failed during host contention, then passed after
+host recovery. It measured 66 milliseconds for a never-opened chat and 45 and
+51 milliseconds for revisits. Its first-frame, scroll, and workspace guards passed.
+
+The installed desktop uses the final index hash. Its current chat and team rendered
+without a page error in the read-only live check. A WindowServer image confirms
+the installed application renders the chat. Backend PID 76342 remained unchanged.
+
 ## Limits
 
 These checks do not measure a physical iPhone, its keyboard, or suspended iOS execution.
