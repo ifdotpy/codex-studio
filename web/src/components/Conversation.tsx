@@ -1,4 +1,5 @@
-import { onResume } from "../sync/resume";
+import MessageQueue from "./MessageQueue";
+import { useMessageQueue } from "./useMessageQueue";
 import { useVisibleChatResult, type ChatReadProof } from "./useChatReadState";
 import { displayError } from "../errorPresentation";
 import {
@@ -16,7 +17,6 @@ import {
   Quote,
   Pencil,
   Trash2,
-  ChevronUp,
   Square,
   Terminal,
   ListEnd,
@@ -260,13 +260,8 @@ export default function Conversation(p: {
     (row) => row.agent === p.id,
   );
   const uploading = addingFiles || pendingFiles.length > 0;
-  const [queue, setQueue] = useState<Json[]>([]);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const refreshedFailure = useRef("");
-  const [editing, setEditing] = useState<string | null>(null);
-  const [queuedText, setQueuedText] = useState("");
-  const [queueOriginal, setQueueOriginal] = useState("");
-  const [queueError, setQueueError] = useState("");
   const sendLock = useRef<symbol | null>(null);
   const latestSend = useRef<Record<string, symbol>>({});
   const branchLock = useRef(false);
@@ -382,7 +377,6 @@ export default function Conversation(p: {
     p.onPhase,
   ]);
   useEffect(() => {
-    setEditing(null);
     setBranchDraft(null);
     editAttempt.current++;
     setEditLoading(null);
@@ -390,43 +384,17 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const loadQueue = async (id: string) => {
-    const result = await api(`/api/queue?agent=${encodeURIComponent(id)}`);
-    if (activeId.current === id) setQueue(result.items || []);
-  };
-  useEffect(() => {
-    setQueue([]);
-    if (!managed || !p.id) return;
-    const id = p.id;
-    let live = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let polling = false;
-    const poll = async () => {
-      if (!live || polling) return;
-      clearTimeout(timer);
-      if (document.hidden || navigator.onLine === false) return;
-      polling = true;
-      try {
-        const result = await api(`/api/queue?agent=${encodeURIComponent(id)}`);
-        if (live) {
-          setQueue(result.items || []);
-          setQueueError("");
-        }
-      } catch (error) {
-        if (live) setQueueError(errorText(error));
-      } finally {
-        polling = false;
-        if (live) timer = setTimeout(poll, 5000);
-      }
-    };
-    void poll();
-    const stopResume = onResume(() => void poll());
-    return () => {
-      live = false;
-      clearTimeout(timer);
-      stopResume();
-    };
-  }, [p.id, managed]);
+  const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
+  const messageQueue = useMessageQueue({
+    id: p.id,
+    enabled: managed,
+    scope: queueScope,
+    workspaceId: p.syncWorkspaceId,
+    observed: p.onObserved,
+    edited: p.onOutgoingEdit,
+    refresh: p.refresh,
+  });
+  const queue = messageQueue.items;
   const addFiles = async (files: globalThis.File[]) => {
     if (!p.id || !managed)
       throw new Error("Select a managed chat before attaching files.");
@@ -498,7 +466,7 @@ export default function Conversation(p: {
         },
       });
       if (p.id && managed)
-        void loadQueue(p.id).catch((error) => p.notify(errorText(error)));
+        void messageQueue.reload().catch((error) => p.notify(errorText(error)));
     } catch {
       setAttachments((current) =>
         latestSend.current[id] !== attempt
@@ -552,24 +520,6 @@ export default function Conversation(p: {
       setUploading(false);
     }
   };
-  const queueAction = useMessageAction(async (event: Json, action: string) => {
-    try {
-      await api("/api/queue", {
-        agent: p.id,
-        id: event.id,
-        action,
-        text: queuedText,
-        expectedText: action === "edit" ? queueOriginal : event.text,
-      });
-      if (action === "cancel") p.onObserved?.([event.id]);
-      if (action === "edit") p.onOutgoingEdit?.(event.id, queuedText);
-      setEditing(null);
-      if (p.id) await loadQueue(p.id);
-      await p.refresh();
-    } catch (error) {
-      p.notify(errorText(error));
-    }
-  });
   const editMessage = useMessageAction(async (message: Message) => {
     const attempt = ++editAttempt.current;
     const chat = p.id;
@@ -705,76 +655,11 @@ export default function Conversation(p: {
             `${p.id}:${event.id}` === m.id,
         )
       : undefined;
-  const queueControls = (m: Message) => {
-    const event = queueEntry(m);
-    if (!event || editing === event.id) return null;
-    const index = queue.findIndex((item) => item.id === event.id);
-    return (
-      <div className="inline-queue-actions" data-queue-position={index + 1}>
-        {queue.length > 1 && index > 0 && (
-          <ActionIcon
-            size="sm"
-            aria-label="Move message first"
-            title="Move message first"
-            onClick={() => void queueAction(event, "first")}
-          >
-            <ChevronUp size={14} />
-          </ActionIcon>
-        )}
-        <ActionIcon
-          size="sm"
-          aria-label="Edit queued message"
-          title="Edit queued message"
-          onClick={() => {
-            setEditing(event.id);
-            setQueuedText(event.text);
-            setQueueOriginal(event.text);
-          }}
-        >
-          <Pencil size={13} />
-        </ActionIcon>
-        <ActionIcon
-          size="sm"
-          aria-label="Cancel queued message"
-          title="Cancel queued message"
-          onClick={() => void queueAction(event, "cancel")}
-        >
-          <Trash2 size={13} />
-        </ActionIcon>
-      </div>
-    );
-  };
-  const userText = (m: Message) => {
-    const event = queueEntry(m);
-    if (!event || editing !== event.id)
-      return <div className="prose plain">{m.text}</div>;
-    return (
-      <div className="queue-editor">
-        <Textarea
-          aria-label="Edit queued message"
-          value={queuedText}
-          onChange={(e) => setQueuedText(e.target.value)}
-          autosize
-          maxRows={5}
-          autoFocus
-        />
-        <Button
-          size="compact-xs"
-          disabled={!queuedText.trim()}
-          onClick={() => void queueAction(event, "edit")}
-        >
-          Save
-        </Button>
-        <Button
-          size="compact-xs"
-          variant="subtle"
-          onClick={() => setEditing(null)}
-        >
-          Cancel
-        </Button>
-      </div>
-    );
-  };
+  const transcriptItems = useMemo(
+    () => items.filter((item) => !queueEntry(item)),
+    [items, queue, p.id],
+  );
+  const userText = (m: Message) => <div className="prose plain">{m.text}</div>;
   const editOutgoing = useMessageAction(async (entry: OutgoingMessage) => {
     if (p.draft.trim() || assets.length)
       throw new Error("Send or clear the current draft first.");
@@ -854,7 +739,6 @@ export default function Conversation(p: {
             >
               {deliveryLabel(m)}
             </span>
-            {queueControls(m)}
             {m.role === "user" &&
               (["uncertain", "failed", "cancelled"].includes(
                 m.deliveryStatus || "",
@@ -1009,7 +893,7 @@ export default function Conversation(p: {
     () => (
       <TurnHistory
         key={`${p.data.stateDir}:${p.id}`}
-        items={items}
+        items={transcriptItems}
         agent={managed && !p.room ? agent : undefined}
         currentTurn={agent?.turnId}
         enabled={managed && !p.room}
@@ -1041,9 +925,8 @@ export default function Conversation(p: {
       p.outgoing,
       p.notify,
       highlighted,
+      transcriptItems,
       queue,
-      editing,
-      queuedText,
       branching,
       editLoading,
       first,
@@ -1052,7 +935,6 @@ export default function Conversation(p: {
       restoreDraft,
       removeMessage,
       jumpToPrompt,
-      queueAction,
       editMessage,
       branch,
       copy,
@@ -1276,17 +1158,42 @@ export default function Conversation(p: {
         </p>
       ) : (
         <>
-          {queueError && (
-            <p className="notice queue-notice">
-              Message queue unavailable: {queueError}
-            </p>
-          )}
           {managed && !p.legacy && agent && (
             <AgentPanel
               key={`${p.data.stateDir}:${agent.id}`}
               agentId={agent.id}
               stateDir={p.data.stateDir}
             />
+          )}
+          {managed && (
+            <>
+              {messageQueue.pending && !messageQueue.busy && (
+                <div className="notice queue-notice" role="status">
+                  The last queue change needs confirmation.
+                  <Button
+                    size="compact-xs"
+                    onClick={() =>
+                      void messageQueue
+                        .retry()
+                        .catch((error) => p.notify(errorText(error)))
+                    }
+                  >
+                    Retry queue change
+                  </Button>
+                </div>
+              )}
+              <MessageQueue
+                loading={messageQueue.loading}
+                items={queue}
+                scope={queueScope}
+                onEdit={messageQueue.edit}
+                onCancel={messageQueue.cancel}
+                onReorder={messageQueue.reorder}
+                canReorder={messageQueue.canReorder}
+                refreshing={messageQueue.busy}
+                error={messageQueue.error}
+              />
+            </>
           )}
           <form
             id="composer"
@@ -1334,7 +1241,7 @@ export default function Conversation(p: {
                 mobileClient
                   ? "Use the send button to send."
                   : managed
-                    ? "Enter sends after tool calls. Use Queue after turn to wait for the current turn. Shift + Enter adds a new line."
+                    ? "Enter sends after tool calls. Tab adds a message to the queue. Shift + Enter adds a new line."
                     : "Enter to send. Shift + Enter for a new line."
               }
               placeholder={
@@ -1354,6 +1261,26 @@ export default function Conversation(p: {
               aria-describedby={draftTooLong ? "draft-length-error" : undefined}
               rows={1}
               onKeyDown={(e) => {
+                if (
+                  e.key === "Tab" &&
+                  managed &&
+                  canSend &&
+                  !modelCommand &&
+                  !e.shiftKey &&
+                  !e.altKey &&
+                  !e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.repeat &&
+                  !e.nativeEvent.isComposing &&
+                  !p.sending &&
+                  !uploading &&
+                  !draftTooLong &&
+                  (p.draft.trim() || assets.length)
+                ) {
+                  e.preventDefault();
+                  void submit("queue");
+                  return;
+                }
                 if (promptRecall.onKeyDown(e)) return;
                 if (
                   !mobileClient &&
@@ -1533,7 +1460,8 @@ export default function Conversation(p: {
                     type="button"
                     variant="subtle"
                     aria-label="Queue after turn"
-                    title="Queue after the current turn"
+                    title="Queue after the current turn (Tab)"
+                    aria-keyshortcuts="Tab"
                     disabled={
                       !canSend ||
                       p.sending ||

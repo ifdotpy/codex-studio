@@ -47,10 +47,7 @@ try {
   page.setDefaultTimeout(12000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  // Exercise direct delivery against servers without the optional sync protocol.
-  await page.route("**/api/sync/identity", (r) =>
-    r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-  );
+  // Durable attachments use the real workspace identity and sync store.
   await page.goto(origin);
   await page.locator("[data-chat]").first().waitFor();
   const initial = await state();
@@ -179,32 +176,48 @@ try {
     true,
     "attachment-only message is enabled",
   );
-  await page.route(
-    "**/api/messages",
-    (route) =>
-      route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "Test transport failure" }),
-      }),
-    { times: 1 },
-  );
+  const attachmentPosts = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/messages"
+    )
+      attachmentPosts.push(request.postDataJSON());
+  });
+  let failAttachments = true;
+  const failAttachmentSend = (route) =>
+    failAttachments
+      ? route.fulfill({
+          status: 503,
+          json: { error: "Test transport failure" },
+        })
+      : route.continue();
+  await page.route("**/api/messages", failAttachmentSend);
   await page.locator("#send").click();
   await page.getByText("Test transport failure", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Stop retries", exact: true }).click();
+  const firstAttempt = attachmentPosts[0];
+  assert.ok(firstAttempt.id, "Failed send has a durable message identity");
+  const failedMessage = page.locator("#messages .message.user").filter({
+    has: page.getByRole("button", { name: "evidence.txt", exact: true }),
+  });
+  for (const name of ["evidence.txt", "dropped.txt"])
+    await failedMessage.getByRole("button", { name, exact: true }).waitFor();
+  await failedMessage.locator('img[alt="pasted.png"]').waitFor();
   assert.equal(
     await page
       .getByRole("button", { name: "Remove evidence.txt", exact: true })
       .count(),
-    1,
-    "failed send retains attachments",
+    0,
+    "The durable outbox owns attachments after the composer clears",
   );
-  await page.locator("#send").click();
+  failAttachments = false;
+  await failedMessage
+    .getByRole("button", { name: "Resume retries", exact: true })
+    .click();
   await poll(
-    async () =>
-      (await page
-        .getByRole("button", { name: "Remove evidence.txt", exact: true })
-        .count()) === 0,
-    "successful retry clears attachments",
+    () => attachmentPosts.length >= 2,
+    "Outbox retries the attachment message",
   );
   await poll(
     async () =>
@@ -212,6 +225,13 @@ try {
       "running",
     "attachment starts actual fixture turn",
   );
+  for (const attempt of attachmentPosts)
+    assert.deepEqual(
+      attempt,
+      firstAttempt,
+      "Retry preserves the message identity and all attachment IDs",
+    );
+  await page.unroute("**/api/messages", failAttachmentSend);
   await page
     .locator("#messages")
     .getByRole("button", { name: "evidence.txt", exact: true })
@@ -254,40 +274,39 @@ try {
       "message enters durable queue",
     );
   }
-  assert.equal(
-    await page.locator(".message-queue").count(),
-    0,
-    "No duplicate queue panel",
-  );
-  const queuedBubble = (text) =>
-    page.locator(".message.user").filter({ hasText: text });
-  await queuedBubble("First queued instruction").waitFor();
-  assert.equal(
-    await page.getByText("First queued instruction", { exact: true }).count(),
-    1,
-  );
-  await page
-    .locator(
-      '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
-    )
-    .getByRole("button", { name: "Edit queued message", exact: true })
+  const queuePanel = page.getByTestId("message-queue");
+  await queuePanel.waitFor();
+  const queueList = queuePanel.getByRole("list", {
+    name: "Queued messages",
+    exact: true,
+  });
+  await queueList
+    .getByText("First queued instruction", { exact: true })
+    .waitFor();
+  for (const text of ["First queued instruction", "Second queued instruction"])
+    assert.equal(
+      await page
+        .locator("#messages .message.user")
+        .filter({ hasText: text })
+        .count(),
+      0,
+      "Queued messages appear only in the queue panel",
+    );
+  await queuePanel
+    .getByRole("button", { name: "Edit queued message 1", exact: true })
     .click();
-  await page
+  await queuePanel
     .getByRole("textbox", { name: "Edit queued message", exact: true })
     .fill("Revised first instruction");
-  await page
-    .locator(".queue-editor")
-    .getByRole("button", { name: "Save", exact: true })
+  await queuePanel
+    .getByRole("button", { name: "Save queued message", exact: true })
     .click();
   await poll(
     async () => (await queue()).items[0].text === "Revised first instruction",
     "queue edit is persisted",
   );
-  await page
-    .locator(
-      '.message.user:has(.inline-queue-actions[data-queue-position="2"])',
-    )
-    .getByRole("button", { name: "Move message first", exact: true })
+  await queuePanel
+    .getByRole("button", { name: "Move queued message 2 up", exact: true })
     .click();
   await poll(
     async () => (await queue()).items[0].text === "Second queued instruction",
@@ -295,20 +314,13 @@ try {
   );
   await poll(
     async () =>
-      (
-        await page
-          .locator(
-            '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
-          )
-          .textContent()
-      ).includes("Second queued instruction"),
+      (await queueList.locator("li").first().textContent()).includes(
+        "Second queued instruction",
+      ),
     "queue UI applies server order",
   );
-  await page
-    .locator(
-      '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
-    )
-    .getByRole("button", { name: "Cancel queued message", exact: true })
+  await queuePanel
+    .getByRole("button", { name: "Delete queued message 1", exact: true })
     .click();
   await poll(
     async () => (await queue()).items.length === 1,
@@ -332,12 +344,15 @@ try {
   await page.locator("#message").fill("Keyboard check");
   const priorQueueLength = (await queue()).items.length;
   await page.locator("#message").press("Tab");
-  assert.equal(await page.locator("#message").inputValue(), "Keyboard check");
-  assert.equal(
-    (await queue()).items.length,
-    priorQueueLength,
-    "Tab does not send a nonempty draft",
+  await poll(
+    async () => (await queue()).items.length === priorQueueLength + 1,
+    "Tab queues a nonempty draft once",
   );
+  await poll(
+    async () => (await page.locator("#message").inputValue()) === "",
+    "Tab clears the accepted draft",
+  );
+  await page.locator("#message").fill("Keyboard navigation draft");
   await page.locator("#message").press("Shift+Tab");
   assert.equal(
     await page
@@ -359,17 +374,28 @@ try {
     .locator("#message")
     .fill("Steering failure keeps this instruction");
   await page.locator("#send").click();
+  const failedSteer = page
+    .locator("#messages .message.user")
+    .filter({ hasText: "Steering failure keeps this instruction" });
+  await failedSteer.waitFor();
   await poll(
-    async () => !(await page.locator("#send").isDisabled()),
-    "failed fixture steer returns control",
+    () => log.includes("AssertionError: turn/steer"),
+    "The fixture rejects the steer attempt",
   );
+  await failedSteer
+    .getByRole("button", { name: "Stop retries", exact: true })
+    .click();
+  await failedSteer
+    .getByRole("button", { name: "Resume retries", exact: true })
+    .waitFor();
   assert.equal(
     await page.locator("#message").inputValue(),
-    "Steering failure keeps this instruction",
+    "",
+    "The durable outbox retains the failed steer outside the composer",
   );
   assert.equal(
     (await queue()).items.length,
-    1,
+    priorQueueLength + 1,
     "steer failure does not silently queue",
   );
 
@@ -389,10 +415,14 @@ try {
     "after_tool",
     "Enter uses after-tool-call delivery",
   );
-  await poll(
-    async () => !(await page.locator("#send").isDisabled()),
-    "Enter failure returns control",
-  );
+  await page
+    .locator("#messages .message.user")
+    .filter({ hasText: "Keyboard instruction" })
+    .waitFor();
+  await page
+    .locator("#message")
+    .fill("Composer remains usable after a failed send");
+  assert.equal(await page.locator("#send").isEnabled(), true);
 
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await page.getByText("I assigned 40 workers", { exact: false }).waitFor();
@@ -412,7 +442,7 @@ try {
     .getByRole("button", { name: "evidence.txt", exact: true })
     .waitFor();
   await page
-    .locator(".message.user")
+    .getByTestId("message-queue")
     .getByText("Revised first instruction", { exact: true })
     .waitFor();
   await page.locator("#toast").waitFor({ state: "hidden" });

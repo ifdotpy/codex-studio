@@ -459,6 +459,15 @@ The composer offers **After tool call** (native steer at the next model step) an
 **After turn** (a queued message starts the next turn). Parallel tools must finish
 before steer input is consumed; compaction can delay it.
 
+Tab queues a nonempty composer draft after the current turn. Shift+Tab and Tab
+in an empty composer retain focus navigation. The `/model` command uses Enter.
+The queue appears once, above the composer. Its numbered rows support edit,
+delete, drag reorder, and up/down controls. Edits preserve attachments and the
+composer draft. Queue revisions reject stale changes. Durable operation receipts
+make retries safe after a lost response. Unconfirmed changes require an explicit
+retry. The server preserves queue order across restart. A message that has left
+the queue cannot be changed; its unfinished edit remains available to copy.
+
 The client exposes model selection, message queues, approvals, synchronous and asynchronous user questions,
 context compaction and a native review of uncommitted changes.
 Account login and advanced configuration remain in Codex CLI or `config.toml`.

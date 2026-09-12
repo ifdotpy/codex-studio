@@ -542,63 +542,129 @@ class WorkMixin:
             return plan
 
     def queue_action(self, agent_id, data=None):
+        import math
+
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id)
-            rows = [
-                dict(r)
-                for r in db.execute(
-                    "SELECT id,text,kind,status,created FROM runtime_events WHERE agent=? AND status='pending' AND kind IN ('user','followup') ORDER BY created",
-                    (agent_id,),
-                )
-            ]
-            if data is None:
-                return {"items": rows}
-            row = next(
-                (
-                    r
-                    for r in rows
-                    if r["id"] == (data.get("message_id") or data.get("id"))
-                ),
-                None,
-            )
-            if not row:
-                raise ValueError("This message already left the queue")
-            if (
-                data.get("expectedText") is not None
-                and data["expectedText"] != row["text"]
-            ):
-                raise ValueError("This queued message changed")
-            if data.get("action") == "cancel":
-                db.execute(
-                    "UPDATE runtime_events SET status='cancelled' WHERE id=?",
-                    (row["id"],),
-                )
-            elif data.get("action") == "edit":
-                db.execute(
-                    "UPDATE runtime_events SET text=? WHERE id=?",
-                    (text_field(data.get("text"), "a message"), row["id"]),
-                )
-                if row["text"] != data.get("text", "").strip():
-                    saved = db.execute(
-                        "SELECT record FROM runtime_event_meta WHERE id=?", (row["id"],)
-                    ).fetchone()
-                    metadata = json.loads(saved[0]) if saved else {}
-                    metadata["acceptedAt"] = time.time()
-                    db.execute(
-                        "INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)",
-                        (row["id"], json.dumps(metadata)),
+
+            def snapshot():
+                rows = []
+                for stored in db.execute(
+                    "SELECT e.id,e.text,e.kind,e.status,e.created,m.record AS metadata "
+                    "FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
+                    "WHERE e.agent=? AND e.epoch=? AND e.status='pending' "
+                    "AND e.kind IN ('user','followup') ORDER BY e.created,e.rowid",
+                    (agent_id, a["epoch"]),
+                ):
+                    row = dict(stored)
+                    metadata = json.loads(row.pop("metadata") or "{}")
+                    row.update(
+                        assets=[self.asset_view(self.asset_record(v)) for v in metadata.get("assets", [])],
+                        delivery=metadata.get("delivery", "queue"),
+                        requestedDelivery=metadata.get("requestedDelivery", metadata.get("delivery", "queue")),
                     )
-            elif data.get("action") == "first":
-                first = min(r["created"] for r in rows)
-                db.execute(
-                    "UPDATE runtime_events SET created=? WHERE id=?",
-                    (first - 0.001, row["id"]),
-                )
+                    if "acceptedAt" in metadata:
+                        row["acceptedAt"] = metadata["acceptedAt"]
+                    rows.append(row)
+                revision = hashlib.sha256(json.dumps(
+                    [a["epoch"], a.get("queueMutationRevision", 0), rows], sort_keys=True,
+                ).encode()).hexdigest()
+                return {"items": rows, "revision": revision,
+                        "capabilities": {"reorder": True, "receipts": True}}
+
+            if data is None:
+                return snapshot()
+            action = data.get("action")
+            request_id = data.get("request_id")
+            if request_id is not None:
+                request_id = text_field(request_id, "a request ID", 200)
+            if action == "reorder" and not request_id:
+                raise ValueError("Supply a request ID to reorder the queue")
+            receipt_key = "queue:" + agent_id + ":" + request_id if request_id else None
+            signature, previous = self.operation_receipt(
+                db, receipt_key, {"agent": agent_id, "body": data},
+            )
+            if previous is not None:
+                return previous
+            current = snapshot()
+            if (("expected_revision" in data or action == "reorder")
+                    and data.get("expected_revision") != current["revision"]):
+                raise ValueError("This queue changed. Reload before editing or reordering")
+            rows = current["items"]
+            if action == "reorder":
+                ordered = data.get("ordered_ids")
+                if (not isinstance(ordered, list) or any(not isinstance(v, str) for v in ordered)
+                        or len(ordered) != len(rows) or len(set(ordered)) != len(ordered)
+                        or set(ordered) != {r["id"] for r in rows}):
+                    raise ValueError("Supply every current queued message ID exactly once")
+                # Keep system events in their slots. Unique queue timestamps also
+                # make dispatch deterministic when old messages have equal clocks.
+                pending = db.execute(
+                    "SELECT id,kind,created FROM runtime_events WHERE agent=? AND epoch=? "
+                    "AND status='pending' ORDER BY created,rowid", (agent_id, a["epoch"]),
+                ).fetchall()
+                slots = []
+                run = []
+                lower = -math.inf
+                for event in [*pending, {"kind": None, "created": math.inf}]:
+                    if event["kind"] in {"user", "followup"}:
+                        run.append(event["created"])
+                        continue
+                    upper = event["created"]
+                    values = []
+                    last = lower
+                    for original in run:
+                        last = max(original, math.nextafter(last, math.inf))
+                        values.append(last)
+                    if values and values[-1] >= upper:
+                        values = []
+                        last = upper
+                        for original in reversed(run):
+                            last = min(original, math.nextafter(last, -math.inf))
+                            values.append(last)
+                        values.reverse()
+                    if values and (values[0] <= lower or values[-1] >= upper
+                                   or any(not math.isfinite(v) for v in values)):
+                        raise ValueError("Queue timestamps overlap. The queue cannot be reordered safely")
+                    slots.extend(values)
+                    run = []
+                    lower = upper
+                for message_id, created in zip(ordered, slots):
+                    db.execute("UPDATE runtime_events SET created=? WHERE id=?", (created, message_id))
             else:
-                raise ValueError("Choose edit, cancel, or first")
-            self.touch_ui(a["id"])
+                row = next((r for r in rows
+                            if r["id"] == (data.get("message_id") or data.get("id"))), None)
+                if not row:
+                    raise ValueError("This message already left the queue")
+                if data.get("expectedText") is not None and data["expectedText"] != row["text"]:
+                    raise ValueError("This queued message changed")
+                if action == "cancel":
+                    db.execute("UPDATE runtime_events SET status='cancelled' WHERE id=?", (row["id"],))
+                elif action == "edit":
+                    text = text_field(data.get("text"), "a message", empty=bool(row["assets"]))
+                    db.execute("UPDATE runtime_events SET text=? WHERE id=?", (text, row["id"]))
+                    if row["text"] != text:
+                        saved = db.execute(
+                            "SELECT record FROM runtime_event_meta WHERE id=?", (row["id"],),
+                        ).fetchone()
+                        metadata = json.loads(saved[0]) if saved else {}
+                        metadata["acceptedAt"] = time.time()
+                        db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)",
+                                   (row["id"], json.dumps(metadata)))
+                elif action == "first":
+                    first = min(r["created"] for r in rows)
+                    db.execute("UPDATE runtime_events SET created=? WHERE id=?", (first - 0.001, row["id"]))
+                else:
+                    raise ValueError("Choose edit, cancel, first, or reorder")
+            a["queueMutationRevision"] = a.get("queueMutationRevision", 0) + 1
+            self.put(db, "agents", a)
+            updated = snapshot()
+            result = self.save_receipt(db, receipt_key, signature, {
+                "status": "updated", "revision": updated["revision"],
+                "capabilities": updated["capabilities"],
+            })
             self.changed.set()
-            return {"status": "updated"}
+            return result
 
     def annotate(self, agent_id, data):
         with self.lock, self.db() as db:
