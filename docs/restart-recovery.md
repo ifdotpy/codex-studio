@@ -16,6 +16,9 @@ menu can disable that service without stopping the server or its active work.
   window reopening follows the macOS preference; the backend still starts after login.
 - The desktop restores normal window bounds and the maximized state. It adjusts
   saved bounds when the available displays change.
+- A subagent card or conversation render error shows a local retry control.
+  Other interface sections remain available. An error outside those sections shows
+  a Studio recovery page. Recovery does not clear saved chats or drafts.
 - The backend restores queued input that was recorded before native submission.
   It retains each original message identity and payload.
 - Previously active work retains its continuation permission, account, epoch,
@@ -88,6 +91,7 @@ python3 -B tests/terminal-history-restart-contract.py
 npm --prefix desktop test
 npm --prefix web run test:restart
 npm --prefix web run test:rxdb-cache
+npm --prefix web run test:display
 ```
 
 These checks exercise abrupt process exit, backend and renderer failure, receipt

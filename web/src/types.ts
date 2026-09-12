@@ -9,6 +9,7 @@ export interface Agent extends Json {
   parentId?: string;
   source: string;
   status: string;
+  error?: unknown;
   cwd?: string;
   model: string;
   accountKey?: string;

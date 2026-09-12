@@ -19,7 +19,8 @@
     "postinstall": "node scripts/patch-rxdb-runtime.cjs",
     "prebuild": "node scripts/patch-rxdb-runtime.cjs",
     "predev": "node scripts/patch-rxdb-runtime.cjs",
-    "test:rxdb-cache": "node ../tests/rxdb-event-cache-gc.mjs"
+    "test:rxdb-cache": "node ../tests/rxdb-event-cache-gc.mjs",
+    "test:display": "npm run build && node ../tests/ui-error-boundary-browser.mjs && node ../tests/worker-overview-ui.mjs"
   },
   "dependencies": {
     "@json-render/core": "0.20.0",

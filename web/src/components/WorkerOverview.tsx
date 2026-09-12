@@ -2,6 +2,7 @@ import { Button, UnstyledButton } from "@mantine/core";
 import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { save, saved } from "../api";
+import { nativeErrorView } from "../nativeErrors";
 import { shortModel } from "./ExecutionSettings";
 import { agentErrorLabel, statusLabel, type Agent, type Json } from "../types";
 
@@ -144,6 +145,7 @@ export default function WorkerCard({
   open: () => void;
 }) {
   const overview = agent.overview;
+  const errorView = nativeErrorView(agent.error);
   const error = agent.error ? agentErrorLabel(agent) : "";
   const errorSummary =
     /worktree[\s\S]*add[\s\S]*(?:exit status|exit code|failed)/i.test(error)
@@ -190,13 +192,15 @@ export default function WorkerCard({
               {agent.fastMode ? " · Fast" : ""}
             </span>
           </span>
-          {agent.error && <span className="worker-error">{errorSummary}</span>}
+          {Boolean(agent.error) && (
+            <span className="worker-error">{errorSummary}</span>
+          )}
         </span>
       </UnstyledButton>
-      {agent.error && (
+      {Boolean(agent.error) && (
         <details className="worker-error-details">
           <summary>Error details</summary>
-          <pre>{agent.error}</pre>
+          <pre>{errorView.details || errorView.message}</pre>
         </details>
       )}
       {overview?.task ? (

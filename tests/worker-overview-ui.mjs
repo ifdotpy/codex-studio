@@ -60,6 +60,12 @@ try {
       .trim();
   const longName =
     "Review the continuation receipt across concurrent requests and uncertain responses";
+  let workerFailure = {
+    additionalDetails: "The account quota is exhausted.",
+    codexErrorInfo: "usageLimitExceeded",
+    message: "The usage limit was reached. Try again after the reset.",
+    misalignment: null,
+  };
   let pending = true;
   let deferred = false;
   let transcriptRequests = 0;
@@ -72,7 +78,10 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
   page.setDefaultTimeout(10000);
   const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => {
+    errors.push(error.message);
+    console.error("Browser error:", error.message);
+  });
   page.on("request", (request) => {
     if (
       /\/api\/(thread|conversation|messages|transcript)/.test(
@@ -101,6 +110,7 @@ try {
                 ? "queued"
                 : "completed";
       }
+      if (agent.id === worker(7).id) agent.error = workerFailure;
       if (agent.id === worker(0).id && deferred) agent.status = "approval";
       if (agent.id === worker(1).id)
         Object.assign(agent, {
@@ -153,6 +163,47 @@ try {
     Number(await summary.locator(`[data-team-count="${name}"] dd`).innerText());
   const card = (n) =>
     team.locator(`[data-worker="${worker(n).id}"]`).locator("..");
+  assert.equal(
+    await page.locator("#conversation-title").innerText(),
+    "Release lead",
+  );
+  assert.equal(
+    await card(7).locator(".worker-error").innerText(),
+    workerFailure.message,
+  );
+  const errorDetails = card(7).locator(".worker-error-details");
+  await errorDetails.locator("summary").click();
+  assert.deepEqual(
+    JSON.parse(await errorDetails.locator("pre").innerText()),
+    workerFailure,
+    "Structured worker errors retain all native details without breaking the shell",
+  );
+  workerFailure = {
+    ...workerFailure,
+    message: "The next account check still reports a usage limit.",
+    additionalDetails: "Updated recovery details.",
+  };
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await page.waitForFunction(
+    ({ id, message }) =>
+      document.querySelector(`[data-worker="${id}"] .worker-error`)
+        ?.textContent === message,
+    { id: worker(7).id, message: workerFailure.message },
+  );
+  assert.deepEqual(
+    JSON.parse(await errorDetails.locator("pre").innerText()),
+    workerFailure,
+    "A later snapshot safely updates the structured error and its details",
+  );
+  assert.equal(
+    await page.locator("#conversation-title").innerText(),
+    "Release lead",
+  );
+  assert.equal(
+    (await page.locator("[data-chat]").count()) > 0,
+    true,
+    "Chat navigation survives error updates",
+  );
   assert.equal(await count("working"), 6);
   assert.equal(await count("answer"), 1);
   assert.equal(await count("completed"), 15);

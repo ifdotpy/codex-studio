@@ -67,6 +67,9 @@ export function NativeError({
   const blocked = nativeThreadError(agent);
   const connectionCheck = matchingConnectionCheck(agent);
   const error = nativeErrorView(blocked || agent.error, planType);
+  const detailView = connectionCheck
+    ? nativeErrorView(agent.error, planType)
+    : error;
   if (!blocked && !retry && recovered) return null;
   return (
     <div
@@ -142,9 +145,7 @@ export function NativeError({
       {(connectionCheck || error.details || (recovery && error.message)) && (
         <details>
           <summary>Details</summary>
-          <pre>
-            {connectionCheck ? agent.error : error.details || error.message}
-          </pre>
+          <pre>{detailView.details || detailView.message}</pre>
         </details>
       )}
     </div>

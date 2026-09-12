@@ -1,0 +1,27 @@
+.ui-error-boundary {
+  padding: 20px;
+  margin: 12px;
+  border: 1px solid var(--border, #777);
+  border-radius: 10px;
+  min-width: 0;
+  overflow: auto;
+  color: var(--text, inherit);
+}
+.ui-error-boundary h2 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+.ui-error-boundary button {
+  padding: 8px 12px;
+  margin: 0 8px 12px 0;
+}
+.ui-error-boundary pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ui-error-page {
+  align-self: center;
+  margin: auto;
+  width: min(600px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+}

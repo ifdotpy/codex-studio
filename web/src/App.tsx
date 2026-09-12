@@ -54,6 +54,7 @@ import {
 import { useSyncedDrafts } from "./sync/drafts";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
+import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
@@ -921,14 +922,15 @@ export default function App() {
       .map((request) => request.agent),
   );
   const worker = (a: Agent) => (
-    <WorkerCard
-      key={a.id}
-      agent={a}
-      selected={opened === a.id}
-      awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
-      deferred={deferredIds.has(a.id)}
-      open={() => open(a.id)}
-    />
+    <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
+      <WorkerCard
+        agent={a}
+        selected={opened === a.id}
+        awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
+        deferred={deferredIds.has(a.id)}
+        open={() => open(a.id)}
+      />
+    </UIErrorBoundary>
   );
   const needsAttention = (a: Agent) =>
     ["attention", "answer"].includes(workerState(a, answerIds, deferredIds));
@@ -1385,53 +1387,57 @@ export default function App() {
             </p>
           )}
         </div>
-        <Conversation
-          syncWorkspaceId={workspaceId}
-          id={opened}
-          agent={agent}
-          room={room}
-          legacy={legacy}
-          data={data}
-          draft={drafts[opened || "new"] || ""}
-          setDraft={setDraft}
-          draftConflicts={draftConflicts.filter(
-            (version) => version.session === (opened || "new"),
-          )}
-          dismissDraft={dismissDraft}
-          send={send}
-          sending={sending}
-          outgoing={visibleOutgoing}
-          onObserved={observeSends}
-          onOutgoingEdit={editSend}
-          refresh={refresh}
-          notify={notify}
-          limits={visibleLimits}
-          limitsLoading={!!limitsLoading[accountKey]}
-          jumpTarget={jumpTarget?.chatId === opened ? jumpTarget : undefined}
-          limitsAccountLabel={selectedAccount?.email || selectedAccount?.label}
-          reloadLimits={forceReloadLimits}
-          onPhase={onPhase}
-          onSelect={open}
-          onBranchCreated={(id) => {
-            createdSelection.current = id;
-            setOpened(id);
-            setSidebar(false);
-            setTeamOpen(false);
-          }}
-          onNewChat={() => void newChat(agent?.cwd || lead?.cwd)}
-          onChooseChat={() => {
-            setSidebar(true);
-            setSidebarCollapsed(false);
-            save("codex-sidebar-collapsed", false);
-            requestAnimationFrame(() =>
-              document
-                .querySelector<HTMLInputElement>(
-                  '#sidebar [aria-label="Filter projects and chats"]',
-                )
-                ?.focus(),
-            );
-          }}
-        />
+        <UIErrorBoundary label="this conversation" resetKey={opened}>
+          <Conversation
+            syncWorkspaceId={workspaceId}
+            id={opened}
+            agent={agent}
+            room={room}
+            legacy={legacy}
+            data={data}
+            draft={drafts[opened || "new"] || ""}
+            setDraft={setDraft}
+            draftConflicts={draftConflicts.filter(
+              (version) => version.session === (opened || "new"),
+            )}
+            dismissDraft={dismissDraft}
+            send={send}
+            sending={sending}
+            outgoing={visibleOutgoing}
+            onObserved={observeSends}
+            onOutgoingEdit={editSend}
+            refresh={refresh}
+            notify={notify}
+            limits={visibleLimits}
+            limitsLoading={!!limitsLoading[accountKey]}
+            jumpTarget={jumpTarget?.chatId === opened ? jumpTarget : undefined}
+            limitsAccountLabel={
+              selectedAccount?.email || selectedAccount?.label
+            }
+            reloadLimits={forceReloadLimits}
+            onPhase={onPhase}
+            onSelect={open}
+            onBranchCreated={(id) => {
+              createdSelection.current = id;
+              setOpened(id);
+              setSidebar(false);
+              setTeamOpen(false);
+            }}
+            onNewChat={() => void newChat(agent?.cwd || lead?.cwd)}
+            onChooseChat={() => {
+              setSidebar(true);
+              setSidebarCollapsed(false);
+              save("codex-sidebar-collapsed", false);
+              requestAnimationFrame(() =>
+                document
+                  .querySelector<HTMLInputElement>(
+                    '#sidebar [aria-label="Filter projects and chats"]',
+                  )
+                  ?.focus(),
+              );
+            }}
+          />
+        </UIErrorBoundary>
       </main>
       {!!workers.length &&
         (narrowTeam ? (
