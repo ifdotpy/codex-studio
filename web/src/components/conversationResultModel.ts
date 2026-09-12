@@ -11,7 +11,13 @@ export type ConversationResult = ResultBase &
   (
     | { kind: "file"; path: string; line?: number; image: boolean }
     | { kind: "asset"; asset: string; image: boolean }
-    | { kind: "patch"; source: string; paths: string[]; truncated: boolean }
+    | {
+        kind: "patch";
+        source: string;
+        paths: string[];
+        truncated: boolean;
+        change?: unknown;
+      }
     | { kind: "html" | "mermaid"; source: string }
   );
 
@@ -165,6 +171,7 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
             ...base(filename(change.path)),
             kind: "patch",
             source: change.diff,
+            change,
             paths: [change.path],
             truncated: !!message.truncated,
           },

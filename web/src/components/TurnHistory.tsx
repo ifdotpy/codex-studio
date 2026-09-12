@@ -16,7 +16,7 @@ import {
 import { save, saved } from "../api";
 import type { Agent, Message } from "../types";
 import { useTurnErrors } from "./useTurnErrors";
-import Activity, { ToolCard, activitySummary } from "./Activity";
+import Activity, { ToolCard, activitySummary, isFileChange } from "./Activity";
 import { toolLimitNotice } from "./toolLimitNotice";
 import { turnFailureReason } from "./turnFailureReason";
 import ConversationResults from "./ConversationResults";
@@ -28,7 +28,8 @@ import ReasoningDuration from "./ReasoningDuration";
 function messageGroups(items: Message[]) {
   const groups: (Message | Message[])[] = [];
   for (const item of items) {
-    if (["tool", "output"].includes(item.role)) {
+    if (isFileChange(item)) groups.push(item);
+    else if (["tool", "output"].includes(item.role)) {
       const last = groups.at(-1);
       if (Array.isArray(last)) last.push(item);
       else groups.push([item]);
@@ -41,13 +42,16 @@ function messages(
   items: Message[],
   render: (message: Message) => ReactNode,
   agentId?: string,
+  cwd?: string,
 ) {
   return messageGroups(items).map((item) =>
     Array.isArray(item) ? (
       <Activity key={item[0].id} items={item} agentId={agentId} />
     ) : (
       <Fragment key={messageRenderKey(item)}>
-        {item.role === "reasoning" ? (
+        {isFileChange(item) ? (
+          <ToolCard item={item} agentId={agentId} cwd={cwd} />
+        ) : item.role === "reasoning" ? (
           <ReasoningDuration item={item} />
         ) : (
           render(item)
@@ -150,6 +154,7 @@ function Turn({
   storageKey,
   render,
   agentId,
+  cwd,
   onJump,
   failureReason,
   failurePending,
@@ -160,6 +165,7 @@ function Turn({
   storageKey: string;
   render: (message: Message) => ReactNode;
   agentId?: string;
+  cwd?: string;
   onJump: (id: string) => void;
   failureReason: string;
   failurePending: boolean;
@@ -195,7 +201,9 @@ function Turn({
             key={item.id}
             className={item.id === result?.id ? "turn-answer" : undefined}
           >
-            {item.role === "reasoning" ? (
+            {isFileChange(item) ? (
+              <ToolCard item={item} agentId={agentId} cwd={cwd} />
+            ) : item.role === "reasoning" ? (
               <ReasoningDuration item={item} />
             ) : (
               render(item)
@@ -307,13 +315,14 @@ export default function TurnHistory({
       ]),
     );
   }, [items, groups]);
-  if (!enabled) return <>{messages(items, renderMessage, agentId)}</>;
+  if (!enabled)
+    return <>{messages(items, renderMessage, agentId, agent?.cwd)}</>;
   return (
     <>
       {groups.map((group) =>
         group.items[0].role === "user" || !group.items[0].turnId ? (
           <Fragment key={messageRenderKey(group.items[0])}>
-            {messages(group.items, renderMessage, agentId)}
+            {messages(group.items, renderMessage, agentId, agent?.cwd)}
           </Fragment>
         ) : (
           <Turn
@@ -326,6 +335,7 @@ export default function TurnHistory({
             storageKey={storageKey}
             render={renderMessage}
             agentId={agentId}
+            cwd={agent?.cwd}
             onJump={onJump}
           />
         ),

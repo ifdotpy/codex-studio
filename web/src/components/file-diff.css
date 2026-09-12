@@ -1,0 +1,164 @@
+.file-change-card {
+  margin: 10px 0;
+  min-width: 0;
+  color: var(--text, var(--mantine-color-text));
+  font-size: 13px;
+}
+.file-change-card > summary {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) auto 13px;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 0;
+}
+.file-change-card > summary::-webkit-details-marker {
+  display: none;
+}
+.file-change-card > summary > svg {
+  align-self: start;
+  margin-top: 2px;
+  color: var(--muted);
+}
+.file-change-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+.file-change-card[data-tool-status="failed"] .file-change-title,
+.file-change-card[data-tool-status="declined"] .file-change-title,
+.file-change-error {
+  color: light-dark(#b42318, #ff9b95);
+}
+.file-change-chevron {
+  grid-column: 4;
+}
+.file-change-card[open] .file-change-chevron {
+  transform: rotate(90deg);
+}
+.file-change-body {
+  padding-left: 20px;
+  min-width: 0;
+}
+.file-diff-list {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.file-diff {
+  min-width: 0;
+}
+.file-diff-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+  margin: 3px 0 6px;
+}
+.file-diff-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.file-diff-counts {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.file-diff-added {
+  color: light-dark(#18713a, #87d7a0);
+}
+.file-diff-removed {
+  color: light-dark(#b42318, #ff9b95);
+}
+.file-diff-lines {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  tab-size: 4;
+}
+.file-diff-line {
+  display: grid;
+  grid-template-columns: 5ch 1.5ch minmax(0, 1fr);
+  padding-right: 5px;
+  min-width: 0;
+}
+.file-diff-number {
+  color: var(--muted);
+  text-align: right;
+  padding-right: 1ch;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.file-diff-sign {
+  user-select: none;
+}
+.file-diff-line .file-diff-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+}
+.file-diff-line[data-kind="add"] {
+  background: light-dark(#eaf6ed, #183329);
+}
+.file-diff-line[data-kind="delete"] {
+  background: light-dark(#fff0ef, #402424);
+}
+.file-diff-line[data-kind="add"] .file-diff-sign {
+  color: light-dark(#18713a, #87d7a0);
+}
+.file-diff-line[data-kind="delete"] .file-diff-sign {
+  color: light-dark(#b42318, #ff9b95);
+}
+.file-diff-line[data-kind="meta"] {
+  color: var(--muted);
+}
+.file-diff-raw,
+.file-change-error {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  max-width: 100%;
+  margin: 8px 0;
+}
+.file-diff-notice {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0;
+}
+.file-diff-expand,
+.file-change-source > summary {
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: 0;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.file-change-source {
+  margin-top: 6px;
+}
+.file-change-card > summary:focus-visible,
+.file-diff-expand:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 2px;
+}
+@media (max-width: 480px) {
+  .file-change-body {
+    padding-left: 8px;
+  }
+  .file-diff-line {
+    grid-template-columns: 4ch 1.5ch minmax(0, 1fr);
+  }
+}

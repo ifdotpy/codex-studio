@@ -17,6 +17,7 @@ import "./read-activity.css";
 import { toolLimitNotice } from "./toolLimitNotice";
 import MarkdownImage from "./MarkdownImage";
 import { toolImages, toolImageDisplayPayload } from "./toolImages";
+import FileChangeCard from "./FileChangeCard";
 
 const names: Record<string, string> = {
   commandExecution: "Run command",
@@ -72,10 +73,17 @@ function status(item: Message, p: Json) {
           p.success === false ||
           (p.exitCode != null && p.exitCode !== 0)
         ? "failed"
-        : p.status === "completed"
-          ? "completed"
-          : "recorded")
+        : ["declined", "cancelled", "interrupted"].includes(p.status)
+          ? p.status
+          : p.status === "completed"
+            ? "completed"
+            : "recorded")
   );
+}
+export function isFileChange(item: Message) {
+  if (!["tool", "output"].includes(item.role)) return false;
+  const p = payload(item);
+  return p.type === "fileChange";
 }
 interface ReadTarget {
   name: string;
@@ -169,9 +177,11 @@ function describe(item: Message, p: Json) {
 export const ToolCard = memo(function ToolCard({
   item,
   agentId,
+  cwd,
 }: {
   item: Message;
   agentId?: string;
+  cwd?: string;
 }) {
   const p = payload(item),
     state = status(item, p),
@@ -201,6 +211,8 @@ export const ToolCard = memo(function ToolCard({
         display.contentItems ?? display.result?.content ?? display.result,
       ))
     : "";
+  if (kind === "fileChange")
+    return <FileChangeCard item={item} payload={p} status={state} cwd={cwd} />;
   return (
     <details
       className="tool-card"
@@ -314,12 +326,13 @@ export const ToolCard = memo(function ToolCard({
               )}
             </div>
           )}
-          {p.changes?.map((change: Json, i: number) => (
-            <div className="tool-section" key={i}>
-              <span>{change.path || "File change"}</span>
-              <pre>{change.diff || pretty(change)}</pre>
-            </div>
-          ))}
+          {Array.isArray(p.changes) &&
+            p.changes.map((change: Json, i: number) => (
+              <div className="tool-section" key={i}>
+                <span>{change?.path || "File change"}</span>
+                <pre>{change?.diff || pretty(change)}</pre>
+              </div>
+            ))}
           {output && (
             <div className="tool-section">
               <span>Output</span>

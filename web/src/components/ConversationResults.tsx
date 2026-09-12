@@ -1,9 +1,17 @@
 import { Button, Modal } from "@mantine/core";
-import { ChevronRight, FileDiff, FileText, Image, Shapes } from "lucide-react";
+import {
+  ChevronRight,
+  FileDiff as FileDiffIcon,
+  FileText,
+  Image,
+  Shapes,
+} from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import type { Message } from "../types";
 import FilePreview from "./FilePreview";
 import RichPreview from "./RichPreview";
+import FileDiff from "./FileDiff";
+import { fileChanges, unifiedDiff } from "./fileChangeModel";
 import {
   conversationResults,
   type ConversationResult,
@@ -38,7 +46,7 @@ export default memo(function ConversationResults({
   if (!results.length) return null;
   const icon = (result: ConversationResult) =>
     result.kind === "patch" ? (
-      <FileDiff size={14} />
+      <FileDiffIcon size={14} />
     ) : result.kind === "html" || result.kind === "mermaid" ? (
       <Shapes size={14} />
     ) : (result.kind === "file" || result.kind === "asset") && result.image ? (
@@ -125,14 +133,18 @@ export default memo(function ConversationResults({
                     Recorded patch from this message.
                     {selected.truncated ? " The saved content is clipped." : ""}
                   </p>
-                  {!!selected.paths.length && (
-                    <p className="conversation-results-paths">
-                      {selected.paths.join("\n")}
-                    </p>
-                  )}
-                  <pre className="conversation-results-patch">
-                    <code>{selected.source}</code>
-                  </pre>
+                  <FileDiff
+                    files={
+                      selected.change
+                        ? fileChanges([selected.change])
+                        : unifiedDiff(selected.source, selected.paths[0])
+                    }
+                    showCounts={!selected.truncated}
+                  />
+                  <details className="file-change-source">
+                    <summary>Original patch</summary>
+                    <pre className="file-diff-raw">{selected.source}</pre>
+                  </details>
                 </>
               ) : (
                 (selected.kind === "html" || selected.kind === "mermaid") && (

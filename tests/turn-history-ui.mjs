@@ -70,7 +70,7 @@ try {
       }),
       { turnId: "one", turnStatus: "completed", toolStatus: "completed" },
     ),
-    ...["check1", "check2"].map((id) =>
+    ...["check1", "check2", "check3"].map((id) =>
       item(
         id,
         "output",
@@ -187,6 +187,11 @@ try {
   );
   assert.equal(await first.locator(".turn-work").getAttribute("open"), null);
   assert.equal(
+    await first.locator('.file-change-card[data-message="patch1"]').isVisible(),
+    true,
+    "file changes stay visible outside the collapsed command log",
+  );
+  assert.equal(
     await first.locator(".turn-work").evaluate((element) => element.tagName),
     "DETAILS",
   );
@@ -237,20 +242,27 @@ try {
   await first.getByRole("button", { name: /Patch/ }).click();
   await page
     .getByRole("dialog")
-    .getByText(/historical build result/)
+    .locator(".file-diff-text")
+    .filter({ hasText: /historical build result/ })
     .waitFor();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: /Show message/ })
     .click();
   await page.locator('[data-message="patch1"]').waitFor({ state: "visible" });
-  assert.equal(await first.locator(".turn-work").getAttribute("open"), "");
+  assert.equal(
+    await first.locator(".turn-work").getAttribute("open"),
+    null,
+    "jumping to an inline patch does not open the unrelated command log",
+  );
   await first.getByRole("button", { name: /HTML preview/ }).click();
   await page.getByRole("dialog").locator("iframe").waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await first.getByRole("button", { name: /Mermaid diagram/ }).click();
   await page.getByRole("dialog").locator(".rich-preview-diagram").waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  await first.locator(".turn-work > summary").click();
+  assert.equal(await first.locator(".turn-work").getAttribute("open"), "");
   await first.locator(".turn-work > summary").click();
   await page.reload();
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
