@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "@mantine/core";
 import DOMPurify from "dompurify";
 import { marked, type Token } from "marked";
@@ -12,10 +12,13 @@ import {
 
 import { sentencePrefix } from "./sentenceStream";
 import SentenceMarkup from "./SentenceMarkup";
+import { CompletedMarkdownCache } from "./completedMarkdownCache";
+
+const completedMarkdown = new CompletedMarkdownCache();
 const StaticBlock = memo(({ html }: { html: string }) => (
   <div className="markdown-block" dangerouslySetInnerHTML={{ __html: html }} />
 ));
-export default function StreamingText({
+export default memo(function StreamingText({
   text,
   streaming = false,
   agentId,
@@ -26,10 +29,23 @@ export default function StreamingText({
 }) {
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [linkError, setLinkError] = useState("");
+  const [linkDialogMounted, setLinkDialogMounted] = useState(false);
+  const [linkDialogReady, setLinkDialogReady] = useState(false);
+  // Mantine captures the focus target on false -> true, including first open.
+  useEffect(() => {
+    if (linkDialogMounted) setLinkDialogReady(true);
+  }, [linkDialogMounted]);
   const live = useRef(streaming);
   live.current ||= streaming;
   const visible = sentencePrefix(text, streaming);
+  const sanitized = useRef(new Map<string, string>());
   const blocks = useMemo(() => {
+    const completed = !streaming ? completedMarkdown.get(visible) : undefined;
+    if (completed) {
+      sanitized.current.clear();
+      return completed;
+    }
+    const nextSanitized = new Map<string, string>();
     const tokens = marked.lexer(visible);
     marked.walkTokens(tokens, (token) => {
       if (token.type === "link" && relativeFileLocation(token.href))
@@ -48,7 +64,7 @@ export default function StreamingText({
         };
       } else grouped.push(token);
     }
-    return grouped.map((token) => {
+    const nextBlocks = grouped.map((token) => {
       if (
         token.type === "code" &&
         /^(mermaid|html)$/i.test(token.lang?.trim() || "")
@@ -72,30 +88,37 @@ export default function StreamingText({
       }
       if (token.type === "html" && !streaming)
         return { kind: "html" as const, source: token.text };
-      return {
-        html: DOMPurify.sanitize(
-          marked.parser(Object.assign([token], { links: tokens.links })),
-          {
-            USE_PROFILES: { html: true },
-            ALLOWED_URI_REGEXP: new RegExp(
-              `(?:${markdownUriPattern.source})|^data:image/(?:png|jpeg|gif|webp);base64,`,
-              "i",
-            ),
-            FORBID_TAGS: [
-              "form",
-              "input",
-              "button",
-              "iframe",
-              "style",
-              "script",
-              "video",
-              "audio",
-            ],
-            FORBID_ATTR: ["style", "background"],
-          },
-        ),
-      };
+      // Parse the whole document first: later reference definitions can change
+      // earlier blocks. Reuse only identical final HTML, not Markdown prefixes.
+      const source = marked.parser(
+        Object.assign([token], { links: tokens.links }),
+      );
+      const html =
+        sanitized.current.get(source) ??
+        DOMPurify.sanitize(source, {
+          USE_PROFILES: { html: true },
+          ALLOWED_URI_REGEXP: new RegExp(
+            `(?:${markdownUriPattern.source})|^data:image/(?:png|jpeg|gif|webp);base64,`,
+            "i",
+          ),
+          FORBID_TAGS: [
+            "form",
+            "input",
+            "button",
+            "iframe",
+            "style",
+            "script",
+            "video",
+            "audio",
+          ],
+          FORBID_ATTR: ["style", "background"],
+        });
+      nextSanitized.set(source, html);
+      return { html };
     });
+    if (!streaming) completedMarkdown.set(visible, nextBlocks);
+    sanitized.current = streaming ? nextSanitized : new Map();
+    return nextBlocks;
   }, [visible, streaming]);
   // History is immediately readable. New sentences retain existing DOM nodes.
   const [initialBlockCount] = useState(blocks.length);
@@ -121,6 +144,7 @@ export default function StreamingText({
           setPreview({ agent: agentId, ...target });
         } catch (error) {
           event.preventDefault();
+          setLinkDialogMounted(true);
           setLinkError(
             error instanceof Error
               ? error.message
@@ -146,13 +170,15 @@ export default function StreamingText({
       {preview && (
         <FilePreview target={preview} onClose={() => setPreview(null)} />
       )}
-      <Modal
-        opened={!!linkError}
-        onClose={() => setLinkError("")}
-        title="Cannot open file"
-      >
-        <p role="alert">{linkError}</p>
-      </Modal>
+      {linkDialogMounted && (
+        <Modal
+          opened={!!linkError && linkDialogReady}
+          onClose={() => setLinkError("")}
+          title="Cannot open file"
+        >
+          <p role="alert">{linkError}</p>
+        </Modal>
+      )}
     </div>
   );
-}
+});

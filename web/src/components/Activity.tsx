@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import {
   BookOpen,
   Check,
@@ -163,7 +163,7 @@ function describe(item: Message, p: Json) {
           "Tool activity",
   };
 }
-export function ToolCard({ item }: { item: Message }) {
+export const ToolCard = memo(function ToolCard({ item }: { item: Message }) {
   const p = payload(item),
     state = status(item, p),
     kind = p.type || item.title,
@@ -330,7 +330,8 @@ export function ToolCard({ item }: { item: Message }) {
       )}
     </details>
   );
-}
+});
+
 export function activitySummary(items: Message[]) {
   const files = new Set<string>(),
     skills = new Set<string>(),
@@ -374,7 +375,7 @@ export function activitySummary(items: Message[]) {
       .join(" · "),
   };
 }
-export default function Activity({ items }: { items: Message[] }) {
+export default memo(function Activity({ items }: { items: Message[] }) {
   const summary = activitySummary(items);
   const running = summary.running;
   const reads = items.flatMap((item) => readActivity(payload(item)).targets);
@@ -442,4 +443,4 @@ export default function Activity({ items }: { items: Message[] }) {
       </div>
     </details>
   );
-}
+});

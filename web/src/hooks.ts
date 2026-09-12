@@ -1,3 +1,4 @@
+import { retainTranscriptItems } from "./transcriptIdentity";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { syncApi as api, ApiError, errorText, setToken } from "./api";
 import {
@@ -258,7 +259,14 @@ export function useMessages(
       revision.current++;
       setLoadedId(scope);
       setLiveAgent(d.agent || null);
-      const liveItems = transcriptMessages(d.items || [], id);
+      const priorItems =
+        displayed.current.scope === scope
+          ? displayed.current.items
+          : history.current.get(scope)?.items || [];
+      const liveItems = retainTranscriptItems(
+        priorItems,
+        transcriptMessages(d.items || [], id),
+      );
       let page = pages.current.get(scope);
       if (
         d.unavailable ||

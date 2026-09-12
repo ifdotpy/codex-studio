@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import {
   useCallback,
+  useMemo,
   useEffect,
   useRef,
   useState,
@@ -93,21 +94,23 @@ export default function App() {
     );
     void editOutboxDisplay(id, text).catch(() => {});
   }, []);
-  const visibleSends = new Map(
-    outbox.entries
-      .filter(
-        (entry) =>
-          entry.displayPending === true ||
-          (entry.displayPending !== false && entry.status !== "accepted"),
-      )
-      .map((entry) => [entry.id, entry as OutgoingMessage]),
-  );
-  for (const entry of Object.values(outgoing))
-    if (entry.status === "sending" || !visibleSends.has(entry.id))
-      visibleSends.set(entry.id, entry);
-  const outgoingMessages = [...visibleSends.values()].filter(
-    (entry) => !observedSends.current.has(entry.id),
-  );
+  const outgoingMessages = useMemo(() => {
+    const visibleSends = new Map(
+      outbox.entries
+        .filter(
+          (entry) =>
+            entry.displayPending === true ||
+            (entry.displayPending !== false && entry.status !== "accepted"),
+        )
+        .map((entry) => [entry.id, entry as OutgoingMessage]),
+    );
+    for (const entry of Object.values(outgoing))
+      if (entry.status === "sending" || !visibleSends.has(entry.id))
+        visibleSends.set(entry.id, entry);
+    return [...visibleSends.values()].filter(
+      (entry) => !observedSends.current.has(entry.id),
+    );
+  }, [outbox.entries, outgoing]);
   const [livePhase, setLivePhase] = useState<{
     id: string | null;
     label: string;
@@ -170,8 +173,10 @@ export default function App() {
       null,
     ),
     [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({});
-  const receipts = new Map(
-    (data?.runtime.events || []).map((event) => [event.id, event]),
+  const receipts = useMemo(
+    () =>
+      new Map((data?.runtime.events || []).map((event) => [event.id, event])),
+    [data?.runtime.events],
   );
   useChatPrefetch(data, opened, workspaceId);
   const cancelledSends = outgoingMessages
@@ -181,14 +186,18 @@ export default function App() {
   useEffect(() => {
     if (cancelledSends) observeSends(cancelledSends.split(","));
   }, [cancelledSends, observeSends]);
-  const visibleOutgoing = outgoingMessages
-    .filter((entry) => receipts.get(entry.id)?.status !== "cancelled")
-    .map((entry) => {
-      const receipt = receipts.get(entry.id);
-      return receipt && ["failed", "uncertain"].includes(receipt.status)
-        ? { ...entry, status: receipt.status, error: receipt.error }
-        : entry;
-    });
+  const visibleOutgoing = useMemo(
+    () =>
+      outgoingMessages
+        .filter((entry) => receipts.get(entry.id)?.status !== "cancelled")
+        .map((entry) => {
+          const receipt = receipts.get(entry.id);
+          return receipt && ["failed", "uncertain"].includes(receipt.status)
+            ? { ...entry, status: receipt.status, error: receipt.error }
+            : entry;
+        }),
+    [outgoingMessages, receipts],
+  );
   const {
     drafts,
     setDrafts,
@@ -279,21 +288,23 @@ export default function App() {
     (!cachedLimits || (matchingSnapshot.at || 0) > (cachedLimits.at || 0))
       ? matchingSnapshot
       : cachedLimits || null;
-  const chatData = chatSnapshot(data, lead?.id);
+  const chatData = useMemo(
+    () => chatSnapshot(data, lead?.id),
+    [data, lead?.id],
+  );
   const attentionCount = messageAttentionCount(chatData);
   const taskCount = backgroundTasks(chatData).filter(activeTask).length;
-  const setDraft = (
-    text: string | ((current: string) => string),
-    id = opened || "new",
-  ) =>
-    setDrafts((old) => {
-      const next = {
-        ...old,
-        [id]: typeof text === "function" ? text(old[id] || "") : text,
-      };
-      save("codex-agent-drafts", next);
-      return next;
-    });
+  const setDraft = useCallback(
+    (text: string | ((current: string) => string), id = opened || "new") =>
+      setDrafts((old) => {
+        const next = {
+          ...old,
+          [id]: typeof text === "function" ? text(old[id] || "") : text,
+        };
+        return next;
+      }),
+    [opened, setDrafts],
+  );
   const open = (id: string, messageId?: string) => {
     setJumpTarget(
       messageId
@@ -713,7 +724,6 @@ export default function App() {
               const next = { ...old };
               if (next[draftKey]?.trim() === text) delete next[draftKey];
               if (next[id]?.trim() === text) delete next[id];
-              save("codex-agent-drafts", next);
               return next;
             });
             // The outbox now owns this immutable request. A new user submission,
@@ -768,7 +778,6 @@ export default function App() {
           const next = { ...old };
           if (next[draftKey]?.trim() === text) delete next[draftKey];
           if (next[id]?.trim() === text) delete next[id];
-          save("codex-agent-drafts", next);
           return next;
         });
       void refresh().catch((error) => notify(errorText(error)));
@@ -783,7 +792,6 @@ export default function App() {
           )
             return old;
           const next = { ...old, [targetKey]: text };
-          save("codex-agent-drafts", next);
           return next;
         });
         const key = request.id;
@@ -853,7 +861,6 @@ export default function App() {
                 setDrafts((old) => {
                   const next = { ...old };
                   for (const key of r.deleted) delete next[key];
-                  save("codex-agent-drafts", next);
                   return next;
                 });
               })

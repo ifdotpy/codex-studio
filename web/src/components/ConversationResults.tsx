@@ -1,6 +1,6 @@
 import { Button, Modal } from "@mantine/core";
 import { ChevronRight, FileDiff, FileText, Image, Shapes } from "lucide-react";
-import { useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import type { Message } from "../types";
 import FilePreview from "./FilePreview";
 import RichPreview from "./RichPreview";
@@ -10,7 +10,7 @@ import {
 } from "./conversationResultModel";
 import "./conversation-results.css";
 
-export default function ConversationResults({
+export default memo(function ConversationResults({
   messages,
   agentId,
   onJump,
@@ -22,6 +22,12 @@ export default function ConversationResults({
   const results = useMemo(() => conversationResults(messages), [messages]);
   const [open, setOpen] = useState(true);
   const [all, setAll] = useState(false);
+  const [dialogMounted, setDialogMounted] = useState(false);
+  const [dialogReady, setDialogReady] = useState(false);
+  // Mount closed once so Mantine records the trigger before the first opening.
+  useEffect(() => {
+    if (dialogMounted) setDialogReady(true);
+  }, [dialogMounted]);
   const [selection, setSelection] = useState<{ id: string; agent?: string }>();
   // Selection cannot carry an old conversation's result into another chat.
   const selected =
@@ -71,7 +77,11 @@ export default function ConversationResults({
                     : result.label
               }
               disabled={result.kind === "file" && !agentId}
-              onClick={() => setSelection({ id: result.id, agent: agentId })}
+              onClick={() => {
+                if (result.kind !== "file" && result.kind !== "asset")
+                  setDialogMounted(true);
+                setSelection({ id: result.id, agent: agentId });
+              }}
             >
               {icon(result)}
               <span>{result.label}</span>
@@ -99,50 +109,52 @@ export default function ConversationResults({
           onClose={() => setSelection(undefined)}
         />
       )}
-      <Modal
-        opened={!!selected && !file}
-        onClose={() => setSelection(undefined)}
-        title={selected?.label}
-        size="xl"
-        className="conversation-result-modal"
-      >
-        {selected && !file && (
-          <>
-            {selected.kind === "patch" ? (
-              <>
-                <p className="conversation-results-note">
-                  Recorded patch from this message.
-                  {selected.truncated ? " The saved content is clipped." : ""}
-                </p>
-                {!!selected.paths.length && (
-                  <p className="conversation-results-paths">
-                    {selected.paths.join("\n")}
+      {dialogMounted && (
+        <Modal
+          opened={!!selected && !file && dialogReady}
+          onClose={() => setSelection(undefined)}
+          title={selected?.label}
+          size="xl"
+          className="conversation-result-modal"
+        >
+          {selected && !file && (
+            <>
+              {selected.kind === "patch" ? (
+                <>
+                  <p className="conversation-results-note">
+                    Recorded patch from this message.
+                    {selected.truncated ? " The saved content is clipped." : ""}
                   </p>
-                )}
-                <pre className="conversation-results-patch">
-                  <code>{selected.source}</code>
-                </pre>
-              </>
-            ) : (
-              (selected.kind === "html" || selected.kind === "mermaid") && (
-                <RichPreview kind={selected.kind} source={selected.source} />
-              )
-            )}
-            {onJump && (
-              <Button
-                size="compact-sm"
-                variant="subtle"
-                onClick={() => {
-                  onJump(selected.messageId);
-                  setSelection(undefined);
-                }}
-              >
-                Show message
-              </Button>
-            )}
-          </>
-        )}
-      </Modal>
+                  {!!selected.paths.length && (
+                    <p className="conversation-results-paths">
+                      {selected.paths.join("\n")}
+                    </p>
+                  )}
+                  <pre className="conversation-results-patch">
+                    <code>{selected.source}</code>
+                  </pre>
+                </>
+              ) : (
+                (selected.kind === "html" || selected.kind === "mermaid") && (
+                  <RichPreview kind={selected.kind} source={selected.source} />
+                )
+              )}
+              {onJump && (
+                <Button
+                  size="compact-sm"
+                  variant="subtle"
+                  onClick={() => {
+                    onJump(selected.messageId);
+                    setSelection(undefined);
+                  }}
+                >
+                  Show message
+                </Button>
+              )}
+            </>
+          )}
+        </Modal>
+      )}
     </section>
   );
-}
+});

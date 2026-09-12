@@ -1,9 +1,34 @@
 import type { Message } from "../types";
 import { nativeErrorView } from "../nativeErrors";
 
+type LimitNotice = { title: string; message: string } | null;
+const cached = new WeakMap<
+  Message,
+  { text: string; status: unknown; error: unknown; notice: LimitNotice }
+>();
+
+export function toolLimitNotice(item: Message): LimitNotice {
+  const prior = cached.get(item);
+  if (
+    prior &&
+    prior.text === item.text &&
+    prior.status === item.toolStatus &&
+    prior.error === item.nativeError
+  )
+    return prior.notice;
+  const notice = readToolLimitNotice(item);
+  cached.set(item, {
+    text: item.text,
+    status: item.toolStatus,
+    error: item.nativeError,
+    notice,
+  });
+  return notice;
+}
+
 // Received worker failures use result; native tool failures use error/contentItems.
 // Inspect only failed records. A successful tool can quote an unrelated error.
-export function toolLimitNotice(
+function readToolLimitNotice(
   item: Message,
 ): { title: string; message: string } | null {
   let payload: any;

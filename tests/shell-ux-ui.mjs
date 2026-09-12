@@ -322,10 +322,12 @@ try {
       "Reviewed branch",
   );
   assert.equal(
-    await branchPage.evaluate(
-      (id) => JSON.parse(localStorage.getItem("codex-agent-drafts"))[id],
-      sourceAgent.id,
-    ),
+    await branchPage.evaluate((id) => {
+      const workspace = JSON.parse(
+        localStorage.getItem("codex-sync-workspace") || '"legacy"',
+      );
+      return JSON.parse(localStorage.getItem(`codex-drafts:${workspace}`))[id];
+    }, sourceAgent.id),
     "Preserve source draft",
   );
   await branchPage.close();

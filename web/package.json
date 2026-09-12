@@ -21,7 +21,8 @@
     "predev": "node scripts/patch-rxdb-runtime.cjs",
     "test:rxdb-cache": "node ../tests/rxdb-event-cache-gc.mjs",
     "test:display": "npm run build && node ../tests/ui-error-boundary-browser.mjs && node ../tests/worker-overview-ui.mjs",
-    "test:diagnostics": "npm run build && node --experimental-strip-types ../tests/error-presentation-contract.mjs && node ../tests/http-error-diagnostics-browser.mjs && node ../tests/account-settings-errors-browser.mjs && node ../tests/structured-operational-errors-ui.mjs && node ../tests/native-error-ui.mjs"
+    "test:diagnostics": "npm run build && node --experimental-strip-types ../tests/error-presentation-contract.mjs && node ../tests/http-error-diagnostics-browser.mjs && node ../tests/account-settings-errors-browser.mjs && node ../tests/structured-operational-errors-ui.mjs && node ../tests/native-error-ui.mjs",
+    "test:responsiveness": "npm run build && node --experimental-strip-types ../tests/transcript-identity-contract.mjs && node ../tests/draft-render-performance-browser.mjs && node ../tests/transcript-render-performance-browser.mjs && node ../tests/completed-markdown-cache-browser.mjs && node ../tests/scroll-restart-browser.mjs && node ../tests/ui-responsiveness-browser.mjs"
   },
   "dependencies": {
     "@json-render/core": "0.20.0",

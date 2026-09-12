@@ -108,6 +108,10 @@ Set `BROWSER=webkit` for the WebKit lifecycle and delivery checks.
 The performance fixture uses Chromium network and CPU controls in either run.
 These checks do not replace a test on a physical iPhone.
 
+Run `npm --prefix web run test:responsiveness` for the draft and transcript checks.
+The final fixture measures the production UI with 301 messages and a CPU slowdown of four.
+See [the measurement report](docs/verification/2026-09-12-ui-responsiveness.md) for results and limits.
+
 Start voice inside the selected chat. Native Codex voice uses that chat's
 ChatGPT account through its app-server. No separate API key is required.
 Voice can pass spoken tasks directly to the orchestrator. It does not wait for

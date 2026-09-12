@@ -33,9 +33,10 @@ const server = await createServer({
           createRoot(document.body).render(React.createElement(function Harness() {
             const [id, select] = useState("workspace-a:agent:lead");
             const [ready, setReady] = useState(false);
+            const [revision, redraw] = useState(0);
             const position = useConversationScroll(id, ready);
-            window.fixture = {select, setReady, position};
-            return React.createElement("div", {id: "scroll", ref: position.scroll, onScroll: position.onScroll, style: {height: 300, overflow: "auto"}},
+            window.fixture = {select, setReady, position, redraw};
+            return React.createElement("div", {id: "scroll", "data-revision": revision, ref: position.scroll, onScroll: position.onScroll, style: {height: 300, overflow: "auto"}},
               React.createElement("div", {ref: position.content}, ...Array.from({length: ready ? 80 : 0}, (_, index) =>
                 React.createElement("p", {key: index, "data-message": "message-"+index, style: {height: 60, margin: 0}}, "Message " + index))));
           }));
@@ -95,6 +96,30 @@ try {
   await ready();
   await page.waitForFunction(
     () => document.getElementById("scroll").scrollTop === 900,
+  );
+  await page.evaluate(() => {
+    window.messageMeasurements = 0;
+    const original = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (...args) {
+      if (this.matches("[data-message]")) window.messageMeasurements++;
+      return original.apply(this, args);
+    };
+  });
+  for (let revision = 1; revision <= 20; revision++) {
+    await page.evaluate((value) => window.fixture.redraw(value), revision);
+    await page.waitForFunction(
+      (value) =>
+        document.getElementById("scroll").dataset.revision === String(value),
+      revision,
+    );
+  }
+  assert.ok(
+    (await page.evaluate(() => window.messageMeasurements)) < 100,
+    "Unrelated renders reuse the visible anchor without rescanning earlier messages",
+  );
+  assert.equal(
+    await page.locator("#scroll").evaluate((node) => node.scrollTop),
+    900,
   );
   await page.evaluate(() => window.fixture.select("workspace-b:agent:lead"));
   await page.waitForFunction(

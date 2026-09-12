@@ -1,4 +1,11 @@
-import { Fragment, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  memo,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ChevronRight,
   CircleAlert,
@@ -46,7 +53,7 @@ function messages(items: Message[], render: (message: Message) => ReactNode) {
   );
 }
 
-function WorkBlock({
+const WorkBlock = memo(function WorkBlock({
   items,
   storageKey,
 }: {
@@ -130,7 +137,7 @@ function WorkBlock({
       </div>
     </details>
   );
-}
+});
 
 function Turn({
   group,
@@ -154,6 +161,10 @@ function Turn({
   retryFailure: () => void;
 }) {
   const result = group.result;
+  const groupedMessages = useMemo(
+    () => messageGroups(group.items),
+    [group.items],
+  );
   const visibleError = group.items.some(
     (item) =>
       item.nativeNotice === "error" ||
@@ -165,7 +176,7 @@ function Turn({
       data-turn={group.items[0].turnId}
       data-outcome={group.outcome || "active"}
     >
-      {messageGroups(group.items).map((item) =>
+      {groupedMessages.map((item) =>
         Array.isArray(item) ? (
           <WorkBlock key={item[0].id} items={item} storageKey={storageKey} />
         ) : (
@@ -247,10 +258,48 @@ export default function TurnHistory({
     enabled ? agent : undefined,
     storageKey,
   );
+  const previousGroups = useRef<HistoryGroup[]>([]);
+  const groups = useMemo(() => {
+    const previous = new Map(
+      previousGroups.current.map((group) => [group.id, group]),
+    );
+    const next = historyGroups(items, currentTurn).map((group) => {
+      const prior = previous.get(group.id);
+      return prior &&
+        prior.outcome === group.outcome &&
+        prior.result === group.result &&
+        prior.items.length === group.items.length &&
+        prior.items.every((item, index) => item === group.items[index])
+        ? prior
+        : group;
+    });
+    previousGroups.current = next;
+    return next;
+  }, [items, currentTurn]);
+  const failureReasons = useMemo(() => {
+    const failedTurns = new Set(
+      groups
+        .filter((group) => group.outcome === "failed")
+        .map((group) => group.items[0].turnId),
+    );
+    const byTurn = new Map<string, Message[]>();
+    for (const item of items) {
+      if (!failedTurns.has(item.turnId)) continue;
+      const turn = byTurn.get(item.turnId) || [];
+      turn.push(item);
+      byTurn.set(item.turnId, turn);
+    }
+    return new Map(
+      [...byTurn].map(([turn, messages]) => [
+        turn,
+        turnFailureReason(messages),
+      ]),
+    );
+  }, [items, groups]);
   if (!enabled) return <>{messages(items, renderMessage)}</>;
   return (
     <>
-      {historyGroups(items, currentTurn).map((group) =>
+      {groups.map((group) =>
         group.items[0].role === "user" || !group.items[0].turnId ? (
           <Fragment key={messageRenderKey(group.items[0])}>
             {messages(group.items, renderMessage)}
@@ -262,9 +311,7 @@ export default function TurnHistory({
             failurePending={loading.has(group.items[0].turnId)}
             failureLookupFailed={failed.has(group.items[0].turnId)}
             retryFailure={() => retry(group.items[0].turnId)}
-            failureReason={turnFailureReason(
-              items.filter((item) => item.turnId === group.items[0].turnId),
-            )}
+            failureReason={failureReasons.get(group.items[0].turnId) || ""}
             storageKey={storageKey}
             render={renderMessage}
             agentId={agentId}

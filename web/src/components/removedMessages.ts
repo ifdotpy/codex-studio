@@ -63,9 +63,13 @@ export function useRemovedMessages(
   );
   const serialized = useSyncExternalStore(subscribe, snapshot);
   const keys = useMemo(() => parseKeys(serialized), [serialized]);
-  return {
-    hidden: (message: Message) =>
+  const hidden = useCallback(
+    (message: Message) =>
       messageRemovalKeys(message, chat || "").some((key) => keys.has(key)),
+    [chat, keys],
+  );
+  return {
+    hidden,
     remove: (message: Message) => {
       const next = parseKeys(snapshot());
       for (const key of messageRemovalKeys(message, chat || "")) next.add(key);

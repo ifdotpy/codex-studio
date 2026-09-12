@@ -21,7 +21,14 @@ import {
   ListEnd,
   RotateCcw,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api, errorText, save, saved } from "../api";
 import SafetyBuffering from "./SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
@@ -67,6 +74,19 @@ import ComposerAttachments, {
   type Attachment,
 } from "./ComposerAttachments";
 import "./chat-controls.css";
+// Message controls keep stable identities while their actions read the latest
+// committed draft and chat. These callbacks run from events, never during render.
+function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
+  const current = useRef(action);
+  useLayoutEffect(() => {
+    current.current = action;
+  });
+  return useCallback(
+    ((...args: Parameters<T>) => current.current(...args)) as T,
+    [],
+  );
+}
+
 export default function Conversation(p: {
   id: string | null;
   syncWorkspaceId?: string;
@@ -128,12 +148,19 @@ export default function Conversation(p: {
     p.data.stateDir,
     p.syncWorkspaceId,
   );
-  const delivery = outgoingTranscript(
-    history,
-    (p.outgoing || []).filter((entry) => entry.body.room === p.id),
+  const delivery = useMemo(
+    () =>
+      outgoingTranscript(
+        history,
+        (p.outgoing || []).filter((entry) => entry.body.room === p.id),
+      ),
+    [history, p.outgoing, p.id],
   );
   const removed = useRemovedMessages(p.data.stateDir, kind, p.id);
-  const items = delivery.items.filter((message) => !removed.hidden(message));
+  const items = useMemo(
+    () => delivery.items.filter((message) => !removed.hidden(message)),
+    [delivery.items, removed.hidden],
+  );
   const promptRecall = usePromptRecall(
     `${p.data.stateDir}:${kind}:${p.id}`,
     p.room ? [] : items,
@@ -197,9 +224,9 @@ export default function Conversation(p: {
     }
     throw new Error("The message could not be displayed. Search again.");
   };
-  const jumpToPrompt = (id: string) => {
+  const jumpToPrompt = useMessageAction((id: string) => {
     void navigateToMessage(id).catch((error) => p.notify(errorText(error)));
-  };
+  });
   const returnToLatest = () => {
     navigationAttempt.current++;
     showLatest();
@@ -260,10 +287,13 @@ export default function Conversation(p: {
   activeId.current = p.id;
   const assets = attachments[p.id || ""] || [];
   const draftTooLong = p.draft.length > 12000;
-  const agent =
-    p.agent && liveAgent?.id === p.id
-      ? ({ ...p.agent, ...liveAgent } as Agent)
-      : p.agent;
+  const agent = useMemo(
+    () =>
+      p.agent && liveAgent?.id === p.id
+        ? ({ ...p.agent, ...liveAgent } as Agent)
+        : p.agent,
+    [p.agent, liveAgent, p.id],
+  );
   const threadBlock = nativeThreadError(agent);
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
   const errorKind = nativeErrorKind(agent?.error);
@@ -484,7 +514,7 @@ export default function Conversation(p: {
       setUploading(false);
     }
   };
-  const queueAction = async (event: Json, action: string) => {
+  const queueAction = useMessageAction(async (event: Json, action: string) => {
     try {
       await api("/api/queue", {
         agent: p.id,
@@ -501,8 +531,8 @@ export default function Conversation(p: {
     } catch (error) {
       p.notify(errorText(error));
     }
-  };
-  const editMessage = async (message: Message) => {
+  });
+  const editMessage = useMessageAction(async (message: Message) => {
     const attempt = ++editAttempt.current;
     const chat = p.id;
     setEditLoading(message.id);
@@ -534,70 +564,69 @@ export default function Conversation(p: {
     } finally {
       if (attempt === editAttempt.current) setEditLoading(null);
     }
-  };
-  const branch = async (
-    message: Message,
-    draft?: { before: boolean; text: string },
-  ) => {
-    if (branchLock.current) return;
-    branchLock.current = true;
-    const sourceId = draft?.before
-      ? message.id
-      : message.sourceId || message.id;
-    const key = `${p.id}:${sourceId}:${draft?.before ? "before" : "after"}`;
-    branchRequests.current[key] ||= crypto.randomUUID();
-    setBranching(true);
-    try {
-      const response = await api("/api/branch", {
-        agent: p.id,
-        message_id: sourceId,
-        id: branchRequests.current[key],
-        ...(draft?.before ? { before: true } : {}),
-      });
-      const branchId = response.agent?.id || response.id;
-      if (!branchId)
-        throw new Error("The server did not return the new chat identity.");
-      if (draft) {
-        const reviewedText =
-          draft.before &&
-          draft.text === message.text &&
-          typeof response.draft?.text === "string"
-            ? response.draft.text
-            : draft.text;
-        const prefix =
-          draft.before && typeof response.draft?.prefixText === "string"
-            ? response.draft.prefixText
-            : "";
-        p.setDraft(
-          prefix ? `${prefix}\n\n${reviewedText}` : reviewedText,
-          branchId,
-        );
-        if (draft.before && response.draft?.assets?.length)
-          setAttachments((current) => ({
-            ...current,
-            [branchId]: response.draft.assets,
-          }));
+  });
+  const branch = useMessageAction(
+    async (message: Message, draft?: { before: boolean; text: string }) => {
+      if (branchLock.current) return;
+      branchLock.current = true;
+      const sourceId = draft?.before
+        ? message.id
+        : message.sourceId || message.id;
+      const key = `${p.id}:${sourceId}:${draft?.before ? "before" : "after"}`;
+      branchRequests.current[key] ||= crypto.randomUUID();
+      setBranching(true);
+      try {
+        const response = await api("/api/branch", {
+          agent: p.id,
+          message_id: sourceId,
+          id: branchRequests.current[key],
+          ...(draft?.before ? { before: true } : {}),
+        });
+        const branchId = response.agent?.id || response.id;
+        if (!branchId)
+          throw new Error("The server did not return the new chat identity.");
+        if (draft) {
+          const reviewedText =
+            draft.before &&
+            draft.text === message.text &&
+            typeof response.draft?.text === "string"
+              ? response.draft.text
+              : draft.text;
+          const prefix =
+            draft.before && typeof response.draft?.prefixText === "string"
+              ? response.draft.prefixText
+              : "";
+          p.setDraft(
+            prefix ? `${prefix}\n\n${reviewedText}` : reviewedText,
+            branchId,
+          );
+          if (draft.before && response.draft?.assets?.length)
+            setAttachments((current) => ({
+              ...current,
+              [branchId]: response.draft.assets,
+            }));
+        }
+        await p.refresh();
+        (p.onBranchCreated || p.onSelect)?.(branchId);
+        setBranchDraft(null);
+        delete branchRequests.current[key];
+      } catch (error) {
+        p.notify(errorText(error));
+      } finally {
+        branchLock.current = false;
+        setBranching(false);
       }
-      await p.refresh();
-      (p.onBranchCreated || p.onSelect)?.(branchId);
-      setBranchDraft(null);
-      delete branchRequests.current[key];
-    } catch (error) {
-      p.notify(errorText(error));
-    } finally {
-      branchLock.current = false;
-      setBranching(false);
-    }
-  };
-  const copy = async (text: string) => {
+    },
+  );
+  const copy = useMessageAction(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
       p.notify("Copied.");
     } catch {
       p.notify("Clipboard access failed.");
     }
-  };
-  const quote = (text: string) => {
+  });
+  const quote = useMessageAction((text: string) => {
     const quoted = text
       .split(/\r?\n/)
       .map((line) => `> ${line}`)
@@ -610,7 +639,7 @@ export default function Conversation(p: {
           : "\n\n";
     p.setDraft(`${p.draft}${separator}${quoted}\n\n`);
     input.current?.focus();
-  };
+  });
   const team = p.data.threads.filter(
     (a) => a.rootId === (agent?.rootId || p.room?.rootId),
   );
@@ -708,6 +737,53 @@ export default function Conversation(p: {
       </div>
     );
   };
+  const editOutgoing = useMessageAction(async (entry: OutgoingMessage) => {
+    if (p.draft.trim() || assets.length)
+      throw new Error("Send or clear the current draft first.");
+    await changeOutbox(entry.id, "cancel");
+    p.setDraft(
+      (current) =>
+        current.trim() ? `${current}\n\n${entry.body.text}` : entry.body.text,
+      entry.body.room,
+    );
+    setAttachments((current) => ({
+      ...current,
+      [entry.body.room]: [
+        ...new Map(
+          [
+            ...(current[entry.body.room] || []),
+            ...(entry.attachments || []),
+          ].map((asset: Attachment) => [asset.id, asset]),
+        ).values(),
+      ],
+    }));
+    if (activeId.current === entry.body.room)
+      input.current?.focus({ preventScroll: true });
+  });
+  const restoreDraft = useMessageAction((m: Message) => {
+    const separator =
+      p.draft.trim() && p.draft.trim() !== m.text.trim() ? "\n\n" : "";
+    p.setDraft(separator ? p.draft + separator + m.text : m.text);
+    setAttachments((current) => ({
+      ...current,
+      [p.id || ""]: [
+        ...new Map(
+          [...(current[p.id || ""] || []), ...(m.assets || [])].map(
+            (asset: Attachment) => [asset.id, asset],
+          ),
+        ).values(),
+      ],
+    }));
+    input.current?.focus({ preventScroll: true });
+  });
+  const removeMessage = useMessageAction((m: Message) => {
+    try {
+      removed.remove(m);
+      p.notify("Message removed from this device. Delivery was not cancelled.");
+    } catch (error) {
+      p.notify(`Could not remove this message: ${errorText(error)}`);
+    }
+  });
   const renderMessage = (m: Message) => (
     <article
       key={messageRenderKey(m)}
@@ -753,18 +829,7 @@ export default function Conversation(p: {
                   variant="subtle"
                   aria-label="Remove message"
                   title="Remove from this device. Delivery is not cancelled."
-                  onClick={() => {
-                    try {
-                      removed.remove(m);
-                      p.notify(
-                        "Message removed from this device. Delivery was not cancelled.",
-                      );
-                    } catch (error) {
-                      p.notify(
-                        `Could not remove this message: ${errorText(error)}`,
-                      );
-                    }
-                  }}
+                  onClick={() => removeMessage(m)}
                 >
                   <Trash2 size={14} />
                 </ActionIcon>
@@ -792,31 +857,7 @@ export default function Conversation(p: {
       {m.localDelivery && (
         <OutboxControls
           entry={p.outgoing?.find((entry) => entry.id === m.clientMessageId)}
-          edit={async (entry) => {
-            if (p.draft.trim() || assets.length)
-              throw new Error("Send or clear the current draft first.");
-            await changeOutbox(entry.id, "cancel");
-            p.setDraft(
-              (current) =>
-                current.trim()
-                  ? `${current}\n\n${entry.body.text}`
-                  : entry.body.text,
-              entry.body.room,
-            );
-            setAttachments((current) => ({
-              ...current,
-              [entry.body.room]: [
-                ...new Map(
-                  [
-                    ...(current[entry.body.room] || []),
-                    ...(entry.attachments || []),
-                  ].map((asset: Attachment) => [asset.id, asset]),
-                ).values(),
-              ],
-            }));
-            if (activeId.current === entry.body.room)
-              input.current?.focus({ preventScroll: true });
-          }}
+          edit={editOutgoing}
         />
       )}
       {m.deliveryError &&
@@ -827,25 +868,7 @@ export default function Conversation(p: {
               <Button
                 size="compact-xs"
                 variant="subtle"
-                onClick={() => {
-                  const separator =
-                    p.draft.trim() && p.draft.trim() !== m.text.trim()
-                      ? "\n\n"
-                      : "";
-                  p.setDraft(separator ? p.draft + separator + m.text : m.text);
-                  setAttachments((current) => ({
-                    ...current,
-                    [p.id || ""]: [
-                      ...new Map(
-                        [
-                          ...(current[p.id || ""] || []),
-                          ...(m.assets || []),
-                        ].map((asset: Attachment) => [asset.id, asset]),
-                      ).values(),
-                    ],
-                  }));
-                  input.current?.focus({ preventScroll: true });
-                }}
+                onClick={() => restoreDraft(m)}
               >
                 Restore draft
               </Button>
@@ -943,6 +966,60 @@ export default function Conversation(p: {
         )}
       </div>
     </article>
+  );
+  const transcript = useMemo(
+    () => (
+      <TurnHistory
+        key={`${p.data.stateDir}:${p.id}`}
+        items={items}
+        agent={managed && !p.room ? agent : undefined}
+        currentTurn={agent?.turnId}
+        enabled={managed && !p.room}
+        storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
+        renderMessage={(item) =>
+          item.nativeNotice ? (
+            <NativeNotice
+              key={item.id}
+              item={item}
+              planType={p.limits?.data?.rateLimits?.planType}
+            />
+          ) : (
+            renderMessage(item)
+          )
+        }
+        agentId={managed ? agent?.id : undefined}
+        onJump={jumpToPrompt}
+      />
+    ),
+    [
+      items,
+      agent,
+      managed,
+      p.room,
+      p.id,
+      p.data.stateDir,
+      p.data.threads,
+      p.limits?.data?.rateLimits?.planType,
+      p.outgoing,
+      p.notify,
+      highlighted,
+      queue,
+      editing,
+      queuedText,
+      branching,
+      editLoading,
+      first,
+      lastAssistantByTurn,
+      editOutgoing,
+      restoreDraft,
+      removeMessage,
+      jumpToPrompt,
+      queueAction,
+      editMessage,
+      branch,
+      copy,
+      quote,
+    ],
   );
   return (
     <section
@@ -1083,27 +1160,7 @@ export default function Conversation(p: {
                 </p>
               </div>
             )}
-          <TurnHistory
-            key={`${p.data.stateDir}:${p.id}`}
-            items={items}
-            agent={managed && !p.room ? agent : undefined}
-            currentTurn={agent?.turnId}
-            enabled={managed && !p.room}
-            storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
-            renderMessage={(item) =>
-              item.nativeNotice ? (
-                <NativeNotice
-                  key={item.id}
-                  item={item}
-                  planType={p.limits?.data?.rateLimits?.planType}
-                />
-              ) : (
-                renderMessage(item)
-              )
-            }
-            agentId={managed ? agent?.id : undefined}
-            onJump={jumpToPrompt}
-          />
+          {transcript}
           {after && (
             <Button
               id="newer-messages"

@@ -47,7 +47,11 @@ export function useConversationScroll(id: string, ready: boolean) {
         box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom
       );
     };
+    // Keep the existing visible anchor. Input and stream renders must not
+    // measure every preceding paragraph just to remember the same position.
+    const retained = anchor.current?.element;
     const element =
+      (retained?.isConnected && visible(retained) ? retained : null) ||
       Array.from(
         root.querySelectorAll<HTMLElement>(
           "[data-message] p, [data-message] pre, [data-message] li",

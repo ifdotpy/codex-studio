@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { Agent, Json, Message } from "../types";
 
@@ -15,42 +15,58 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     failed: string[];
     errors: Record<string, unknown>;
   }>({ scope, checked: [], failed: [], errors: {} });
-  const current =
-    result.scope === scope
-      ? result
-      : { scope, checked: [], failed: [], errors: {} };
-  const errors = { ...cachedErrors.get(scope), ...current.errors };
-  const resolved = new Set<string>();
-  for (const item of items) {
-    if (item.turnErrorResolved && item.turnId) resolved.add(item.turnId);
-    if (item.turnError && item.turnId) errors[item.turnId] = item.turnError;
-  }
-  const latest = agent?.nativeTurnError;
-  if (latest?.turnId && latest.error) errors[latest.turnId] = latest.error;
-  else if (
-    agent?.status === "failed" &&
-    !agent.turnId &&
-    agent.lastCompletedTurn &&
-    agent.error
-  )
-    errors[agent.lastCompletedTurn] = agent.error;
-  const existing = new Set(
-    items
-      .filter((item) => item.nativeNotice === "error")
-      .map((item) => item.turnId),
+  const current = useMemo(
+    () =>
+      result.scope === scope
+        ? result
+        : { scope, checked: [], failed: [], errors: {} },
+    [result, scope],
   );
-  const turns = [
-    ...new Set(
+  const cached = cachedErrors.get(scope);
+  const { errors, resolved, existing, turns } = useMemo(() => {
+    const errors = { ...cached, ...current.errors };
+    const resolved = new Set<string>();
+    for (const item of items) {
+      if (item.turnErrorResolved && item.turnId) resolved.add(item.turnId);
+      if (item.turnError && item.turnId) errors[item.turnId] = item.turnError;
+    }
+    const latest = agent?.nativeTurnError;
+    if (latest?.turnId && latest.error) errors[latest.turnId] = latest.error;
+    else if (
+      agent?.status === "failed" &&
+      !agent.turnId &&
+      agent.lastCompletedTurn &&
+      agent.error
+    )
+      errors[agent.lastCompletedTurn] = agent.error;
+    const existing = new Set(
       items
-        .filter(
-          (item) =>
-            item.turnStatus === "failed" &&
-            item.turnId &&
-            !existing.has(item.turnId),
-        )
-        .map((item) => String(item.turnId)),
-    ),
-  ];
+        .filter((item) => item.nativeNotice === "error")
+        .map((item) => item.turnId),
+    );
+    const turns = [
+      ...new Set(
+        items
+          .filter(
+            (item) =>
+              item.turnStatus === "failed" &&
+              item.turnId &&
+              !existing.has(item.turnId),
+          )
+          .map((item) => String(item.turnId)),
+      ),
+    ];
+    return { errors, resolved, existing, turns };
+  }, [
+    items,
+    cached,
+    current.errors,
+    agent?.nativeTurnError,
+    agent?.status,
+    agent?.turnId,
+    agent?.lastCompletedTurn,
+    agent?.error,
+  ]);
   const pending = turns
     .filter(
       (turn) =>
@@ -131,27 +147,34 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
       active = false;
     };
   }, [scope, agent?.id, agent?.threadId, requestKey]);
-  const last = new Map<string, number>();
-  items.forEach((item, index) => {
-    if (item.turnId) last.set(item.turnId, index);
-  });
-  const enriched = items.flatMap((item, index): Message[] => {
-    const error = errors[item.turnId];
-    if (!error || existing.has(item.turnId) || last.get(item.turnId) !== index)
-      return [item];
-    return [
-      item,
-      {
-        id: `turn-error:${agent?.id}:${agent?.threadId}:${item.turnId}`,
-        role: "system",
-        text: "",
-        turnId: item.turnId,
-        turnStatus: "failed",
-        nativeNotice: "error",
-        nativeError: error,
-      },
-    ];
-  });
+  const enriched = useMemo(() => {
+    const last = new Map<string, number>();
+    items.forEach((item, index) => {
+      if (item.turnId) last.set(item.turnId, index);
+    });
+    if (!Object.keys(errors).length) return items;
+    return items.flatMap((item, index): Message[] => {
+      const error = errors[item.turnId];
+      if (
+        !error ||
+        existing.has(item.turnId) ||
+        last.get(item.turnId) !== index
+      )
+        return [item];
+      return [
+        item,
+        {
+          id: `turn-error:${agent?.id}:${agent?.threadId}:${item.turnId}`,
+          role: "system",
+          text: "",
+          turnId: item.turnId,
+          turnStatus: "failed",
+          nativeNotice: "error",
+          nativeError: error,
+        },
+      ];
+    });
+  }, [items, errors, existing, agent?.id, agent?.threadId]);
   const loading = new Set(
     agent?.id && agent.threadId
       ? turns.filter(

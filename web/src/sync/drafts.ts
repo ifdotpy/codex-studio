@@ -69,8 +69,21 @@ export function useSyncedDrafts() {
   const importLegacy = useRef(storageKey.current.endsWith(":legacy"));
   const current = useRef(drafts);
   const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
+  const conflictValues = useRef<DraftVersion[]>([]);
   const [localError, setLocalError] = useState(recovery.error);
   const [syncFailed, setSyncFailed] = useState(false);
+  const localErrorValue = useRef(recovery.error);
+  const syncFailureValue = useRef(false);
+  const reportLocalError = useCallback((message: string) => {
+    if (localErrorValue.current === message) return;
+    localErrorValue.current = message;
+    setLocalError(message);
+  }, []);
+  const reportSyncFailure = useCallback((failed: boolean) => {
+    if (syncFailureValue.current === failed) return;
+    syncFailureValue.current = failed;
+    setSyncFailed(failed);
+  }, []);
   const [syncNotice, setSyncNotice] = useState("");
   useEffect(() => {
     if (!syncFailed) {
@@ -85,6 +98,20 @@ export function useSyncedDrafts() {
     return () => clearTimeout(timer);
   }, [syncFailed]);
   const versions = useRef<DraftVersion[]>([]);
+  const decoded = useRef(new WeakMap<object, DraftVersion>());
+  const decodeDrafts = useCallback(
+    (docs: any[]): DraftVersion[] =>
+      docs.map((doc) => {
+        const latest = doc.getLatest();
+        let version = decoded.current.get(latest);
+        if (!version) {
+          version = JSON.parse(latest.payload) as DraftVersion;
+          decoded.current.set(latest, version);
+        }
+        return version;
+      }),
+    [],
+  );
   const dismissed = useRef<string[]>(
     saved(`${storageKey.current}:dismissed`, []),
   );
@@ -92,10 +119,16 @@ export function useSyncedDrafts() {
     JSON.stringify([version.id, version.text]);
   const reconcile = useCallback((records: DraftVersion[]) => {
     versions.current = records;
-    const next = { ...current.current };
+    let next = current.current;
     const alternatives: DraftVersion[] = [];
-    for (const session of new Set(records.map((version) => version.session))) {
-      const branches = records.filter((version) => version.session === session);
+    const sessions = new Map<string, DraftVersion[]>();
+    for (const version of records) {
+      const branches = sessions.get(version.session);
+      if (branches) branches.push(version);
+      else sessions.set(version.session, [version]);
+    }
+    const dismissedKeys = new Set(dismissed.current);
+    for (const [session, branches] of sessions) {
       const active = branches
         .filter(
           (version) =>
@@ -107,10 +140,17 @@ export function useSyncedDrafts() {
         )
         .sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
       const chosen = active.find(
-        (version) => !dismissed.current.includes(versionKey(version)),
+        (version) =>
+          !dismissedKeys.size || !dismissedKeys.has(versionKey(version)),
       );
-      if (chosen && !pendingEdits.current.has(session))
+      if (
+        chosen &&
+        !pendingEdits.current.has(session) &&
+        next[session] !== chosen.text
+      ) {
+        if (next === current.current) next = { ...next };
         next[session] = chosen.text;
+      }
       if (pendingEdits.current.has(session)) continue;
       for (const branch of active) {
         if (branch.text && branch.text !== next[session])
@@ -120,18 +160,28 @@ export function useSyncedDrafts() {
             alternatives.push({ ...branch, id: `${branch.id}:conflict`, text });
       }
     }
-    current.current = next;
-    update(next);
-    save(storageKey.current, next);
+    if (next !== current.current) {
+      current.current = next;
+      update(next);
+      save(storageKey.current, next);
+    }
     const unique = new Set<string>();
-    setConflicts(
-      alternatives.filter((version) => {
-        const key = versionKey(version);
-        if (dismissed.current.includes(key) || unique.has(key)) return false;
-        unique.add(key);
-        return true;
-      }),
-    );
+    const nextConflicts = alternatives.filter((version) => {
+      const key = versionKey(version);
+      if (dismissedKeys.has(key) || unique.has(key)) return false;
+      unique.add(key);
+      return true;
+    });
+    const previousConflicts = conflictValues.current;
+    if (
+      previousConflicts.length !== nextConflicts.length ||
+      previousConflicts.some(
+        (version, index) => version !== nextConflicts[index],
+      )
+    ) {
+      conflictValues.current = nextConflicts;
+      setConflicts(nextConflicts);
+    }
   }, []);
   const dismissDraft = useCallback(
     (version: DraftVersion) => {
@@ -251,17 +301,13 @@ export function useSyncedDrafts() {
             markPending();
           }
         }
-        setLocalError("");
-        reconcile(
-          (await db.drafts.find().exec()).map((doc: any) =>
-            JSON.parse(doc.payload),
-          ),
-        );
+        reportLocalError("");
+        reconcile(decodeDrafts(await db.drafts.find().exec()));
       } catch (error) {
         if (error instanceof UnsupportedSyncError) unsupported.current = true;
-        else if (connecting) setSyncFailed(true);
+        else if (connecting) reportSyncFailure(true);
         else
-          setLocalError(
+          reportLocalError(
             "Draft changes could not be saved for synchronization. Keep this chat open.",
           );
       }
@@ -269,7 +315,13 @@ export function useSyncedDrafts() {
       flushing.current = null;
     });
     return flushing.current;
-  }, [adoptScope, reconcile]);
+  }, [
+    adoptScope,
+    reconcile,
+    decodeDrafts,
+    reportLocalError,
+    reportSyncFailure,
+  ]);
   const setDrafts = useCallback(
     (value: SetStateAction<Drafts>) => {
       const previous = current.current;
@@ -324,7 +376,7 @@ export function useSyncedDrafts() {
         try {
           writeDraftJournal(entry);
         } catch {
-          setLocalError(
+          reportLocalError(
             "Draft changes are not saved yet. Keep this chat open.",
           );
         }
@@ -332,7 +384,7 @@ export function useSyncedDrafts() {
       save(storageKey.current, next);
       void flushDrafts();
     },
-    [flushDrafts, writer],
+    [flushDrafts, writer, reportLocalError],
   );
   useEffect(() => {
     let stopped = false,
@@ -352,7 +404,7 @@ export function useSyncedDrafts() {
           await flushDrafts();
           cancel = await startDraftReplication((e) => {
             if (!stopped && !(e instanceof UnsupportedSyncError))
-              setSyncFailed(e !== null);
+              reportSyncFailure(e !== null);
           });
           if (stopped) {
             cancel();
@@ -378,7 +430,7 @@ export function useSyncedDrafts() {
           }
           if (stopped) return;
           const sub = db.drafts.find().$.subscribe((docs: any[]) => {
-            reconcile(docs.map((doc) => JSON.parse(doc.payload)));
+            reconcile(decodeDrafts(docs));
           });
           unsubscribe = () => sub.unsubscribe();
           started = true;
@@ -387,7 +439,7 @@ export function useSyncedDrafts() {
         .catch((e) => {
           if (e instanceof UnsupportedSyncError) unsupported.current = true;
           if (!stopped && !(e instanceof UnsupportedSyncError)) {
-            setSyncFailed(true);
+            reportSyncFailure(true);
             unsubscribe();
             cancel();
             retry = setTimeout(start, 3000);
@@ -411,7 +463,7 @@ export function useSyncedDrafts() {
       unsubscribe();
       cancel();
     };
-  }, [reconcile, adoptScope, flushDrafts]);
+  }, [reconcile, adoptScope, flushDrafts, decodeDrafts, reportSyncFailure]);
   return {
     drafts,
     setDrafts,
