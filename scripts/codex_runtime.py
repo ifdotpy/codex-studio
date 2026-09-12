@@ -211,11 +211,10 @@ Older threads can call the workspace tools through orchestration_send with agent
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
 orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task,
-orchestration_panel, orchestration_panel_feed, orchestration_request, orchestration_read, orchestration_context, orchestration_status,
+orchestration_request, orchestration_read, orchestration_context, orchestration_status,
 orchestration_peers, orchestration_message, orchestration_monitor, orchestration_send.
-Use orchestration_panel_feed for live data from a background script, such as EC2 status or build counters.
-It updates structured panel state without model turns, including on command completion or error.
-Set the panel once, start the script, and finish your turn. Do not poll the feed through model calls.
+Use your per-agent PROGRESS.md file for status above the composer. Read and edit it with ordinary file tools.
+A background script can write the file directly. File changes do not wake the model.
 Only the orchestrator uses orchestration_user_task for things the user must do. Supply clear completion criteria.
 Subagents ask their orchestrator to contact the user. Do not create direct user questions or tasks.
 A user check wakes the orchestrator and awaits its review. Accept the result or return
@@ -227,8 +226,7 @@ Task lists are paged summaries. Use action=get for one task and history for olde
 For native command tools, use their exposed output limit and print only the needed fields.
 Large tool responses include outputRef. Read missing details with orchestration_read instead of rerunning the operation.
 Plans and complaints are supplied when changed and after compaction. orchestration_context retrieves full current context.
-Before first panel use, read orchestration_context topic=panel for the component language and Studio style.
-Panel set must pass the 150px height check and return a rendered image. Inspect it before proceeding.
+Read orchestration_context topic=panel for your exact PROGRESS.md path and the file guide.
 Use topic=background for script-driven panels and notification options. Profiles do not add permissions.
 Do not merge work without review. Do not make recurring checks when an event is pending.
 """
@@ -1772,13 +1770,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         shared = path.parent.parent / "codex-workspace" / "SKILL.md"
         return f"[Studio role skill: {name}]\nSource: {path}\nShared tool guidance: {shared}\n{content}\n[End Studio role skill]"
 
-    @staticmethod
-    def turn_permissions(a):
+    def turn_permissions(self, a):
         if a.get("yoloMode") is True:
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
         if a.get("yoloMode") is False:
-            sandbox = {"type": "readOnly"} if a["role"] == "reviewer" else {
-                "type": "workspaceWrite", "writableRoots": [a["cwd"]], "networkAccess": False}
+            sandbox = {"type": "readOnly"}
+            if a["role"] != "reviewer":
+                progress = self.progress_file(a)
+                roots = [a["cwd"]] + ([str(progress.parent)] if progress else [])
+                sandbox = {"type": "workspaceWrite", "writableRoots": roots, "networkAccess": False}
             return {"approvalPolicy": "on-request", "sandboxPolicy": sandbox}
         return {}
 
@@ -1799,13 +1799,25 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             raise ValueError("Studio panel guidance is empty. Update the installed Studio workspace")
         return f"[Studio panel guidance: {guide}]\n{content}"
 
+    def progress_file(self, a):
+        from codex_progress import provision_progress
+        try:
+            return provision_progress(self.root, a["id"])
+        except (OSError, ValueError):
+            # The optional display must not prevent a turn or command. The panel
+            # endpoint reports file errors; do not grant an invalid path access.
+            return None
+
     def new_thread_params(self, a):
+        from codex_progress import progress_context
+        progress = self.progress_file(a)
         params = {
             "cwd": a["cwd"],
             "config": THREAD_CONFIG.copy(),
             "serviceTier": "priority" if a.get("fastMode", False) else "default",
             "developerInstructions": INSTRUCTIONS
             + "\n" + self.role_guidance(a)
+            + "\n" + progress_context(self.root, a["id"])
             + "\n"
             + a.get("profileInstructions", ""),
         }
@@ -1828,6 +1840,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             params.update(approvalPolicy="on-request", sandbox="read-only" if a["role"] == "reviewer" else "workspace-write")
         elif a["role"] == "reviewer":
             params["sandbox"] = "read-only"
+        if progress and a.get("yoloMode") is False and a["role"] != "reviewer":
+            params["config"]["sandbox_workspace_write.writable_roots"] = [str(progress.parent)]
         params["dynamicTools"] = self.tool_definitions(a)
         from codex_browser import configure_browser
         configure_browser(self, a, params)
@@ -2921,9 +2935,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         + voice_tools()
                         + request_tools(tool, TEXT)
                         + efficiency_tools(tool, TEXT)
-                    } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor", "orchestration_send"}:
+                    } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor", "orchestration_send", "orchestration_panel", "orchestration_panel_feed"}:
                         raise ValueError("Unknown workspace tool")
-                panel_capture = {}
                 if name == "orchestration_agent_manage":
                     from codex_agent_management import manage_agent
                     value = manage_agent(self, a["id"], args, a["epoch"])
@@ -2935,10 +2948,13 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     value = self.request_action(a["id"], args)
                 elif name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
-                elif name == "orchestration_panel_feed":
-                    value = self.panel_feed_action(a["id"], args, key=key, epoch=a["epoch"])
-                elif name == "orchestration_panel":
-                    value = self.panel_action(a["id"], args, key, epoch=a["epoch"], capture=panel_capture)
+                elif name in {"orchestration_panel", "orchestration_panel_feed"}:
+                    from codex_progress import progress_context
+                    from codex_tool_requests import operation_receipt_evidence
+                    with self.lock, self.db() as db:
+                        request_outcome = "unknown" if operation_receipt_evidence(db, key) else "not_applied"
+                    self.progress_file(a)
+                    raise ValueError(progress_context(self.root, a["id"]))
                 elif name == "orchestration_user_task":
                     value = self.user_task_action(a["id"], args, key, epoch=a["epoch"])
                 elif name in {"orchestration_task", "orchestration_result"}:
@@ -3025,30 +3041,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     value = self.cancel_monitor(args["monitor_id"], a["id"])
                 else:
                     raise ValueError("Unknown orchestration tool")
-                image = None
-                render_failed = False
-                if name == "orchestration_panel" and args.get("action") in {"set", "get"}:
-                    # Render the accepted input, not a later revision another call may have published.
-                    exact_panel = ({**value,
-                                    **({"format": "json-render", "spec": args["spec"], "html": "", "css": ""}
-                                       if "spec" in args else {"format": "html", "html": args["html"], "css": args.get("css", "")}),
-                                    "callbacks": self.validate_callbacks(args.get("callbacks", []))}
-                                   if args["action"] == "set" else value)
-                    value = dict(value)
-                    try:
-                        capture = panel_capture or self.capture_panel(exact_panel, strict_layout=False)
-                        image = {"type": "inputImage", "imageUrl": capture["data_url"]}
-                        value["render"] = {k: capture[k] for k in ("width", "height", "version")}
-                        if "layout" in capture:
-                            value["layout"] = capture["layout"]
-                    except Exception as error:
-                        render_failed = True
-                        value.update(panelSaved=args["action"] == "set", renderError=str(error),
-                                     recovery="The document is retained. Use action=get with a new tool call to retry its image; do not repeat the write.")
                 operation_failed = name == "orchestration_resource" and value.get("ok") is False
-                result = {"success": not (render_failed or operation_failed), "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
-                if image:
-                    result["contentItems"].append(image)
+                result = {"success": not operation_failed, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
                 result = stamp_tool_result(result, time.time())
                 with self.lock, self.db() as db:
                     db.execute(

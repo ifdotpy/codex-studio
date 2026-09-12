@@ -54,3 +54,14 @@ update, unresolved receipt identities, and the privileged stack capture.
 
 The UI optimization is recorded in
 [the responsiveness report](../verification/2026-09-12-ui-responsiveness.md).
+
+## Live application
+
+The guarded update returned `applied` in backend PID 76342. All three native
+connection IDs and process IDs stayed unchanged. The installed source also
+contains the fix for subsequent starts. The update leaves the startup build
+identity unchanged; its separate receipt identifies the applied methods.
+
+After application, chat state returned HTTP 200 in 84 milliseconds. Remote sync
+returned HTTP 200 in 128 milliseconds. No request was replayed by this update.
+The receipt is `apply-result.json` in the incident evidence directory.

@@ -1,4 +1,4 @@
-"""Persistent, agent-owned structured and HTML panels above the composer."""
+"""Plain progress display and retained legacy panel callbacks and feeds."""
 
 import copy
 import json
@@ -17,63 +17,8 @@ NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 
 
 def panel_tools(tool, text):
-    return [tool(
-        "orchestration_panel",
-        "Display an interactive, persistent 150px-high panel between the chat and composer. "
-        "Prefer structured json-render UI: first call action=catalog for the supported components, props, state, and actions; "
-        "then action=set with spec={root,elements,state?}. Studio renders its own components and theme. "
-        "Compose compact visual progress, steps, measured counters, forms, and useful controls. "
-        "Show the current phase and one bottleneck; avoid paragraphs and repeated chat summaries. Never invent progress. "
-        "For a visualization the catalog cannot express, set html and optional css instead of spec. "
-        "Do not mix spec with html/css. The HTML canvas shares the chat background and has no outer margin; "
-        "include all padding and borders inside its 150px height. "
-        "set replaces the whole panel; get reads it; clear empties it. Each agent owns its own panel. "
-        "Declare callbacks [{id,label,fields:[fieldNames]}] for user actions. For structured UI, follow the catalog action contract. "
-        "For HTML, use data-callback=id on a button or form; use type=button for standalone buttons and type=submit inside forms. "
-        "Declared form values arrive as arrays of strings after a real user click or submit. "
-        "Each callback is accepted once per panel version and wakes you after your final answer; publish a new panel to enable it again. "
-        "set and get return a rendered PNG of the exact revision at 1000x150 CSS pixels. Inspect it and revise unreadable content. "
-        "set validates the components and layout at widths 320, 640, and 1000px before saving. "
-        "Invalid content, overflow, clipping, or renderer failure rejects set and preserves the previous panel and callbacks. "
-        "Use the error details to revise the content; get can still read an older panel. "
-        "Scripts, navigation, and external resources are disabled; the trusted host handles callbacks. "
-        "Keep the panel responsive within 150px. Update on meaningful changes, not by polling.",
-        {
-            "action": {"type": "string", "enum": ["catalog", "get", "set", "clear"]},
-            "spec": {"type": "object", "properties": {
-                "root": {"type": "string"}, "elements": {"type": "object", "additionalProperties": True},
-                "state": {"type": "object", "additionalProperties": True},
-            }, "required": ["root", "elements"], "additionalProperties": False},
-            "html": {**text, "maxLength": 131072},
-            "css": {**text, "maxLength": 32768},
-            "callbacks": {"type": "array", "maxItems": 16, "items": {
-                "type": "object", "properties": {
-                    "id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"},
-                    "label": {"type": "string", "maxLength": 100},
-                    "fields": {"type": "array", "maxItems": 32, "items": {"type": "string"}},
-                }, "required": ["id", "label"], "additionalProperties": False,
-            }},
-        },
-        ["action"],
-    ), tool(
-        "orchestration_panel_feed",
-        "Connect one background script to your structured Agent panel without model calls. "
-        "First set a panel with an initialized object at spec.state.live and state bindings into /live. "
-        "start runs command through the normal monitor environment and permissions. "
-        "Write one complete JSON object per stdout line, at most 64 KiB; each line replaces only statePath. "
-        "Use stderr for diagnostics. The host coalesces updates, validates the 150px layout, and retains the last valid snapshot. "
-        "Updates, command completion, and errors never wake the model or enter the conversation. "
-        "The script continues after your final answer; stop, panel replacement, or agent stop ends its lease. "
-        "No automatic restart or command replay. One feed per panel; starting another replaces the previous feed. "
-        "Keep local form/tab state outside the feed subtree. get reads status; stop stops only this panel's command. "
-        "For EC2, builds, metrics or service status, prefer this API over repeated tool calls.",
-        {
-            "action": {"type": "string", "enum": ["start", "get", "stop"]},
-            "command": {**text, "maxLength": 12000},
-            "statePath": {"type": "string", "default": "/live"},
-            "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 86400000, "default": 86400000},
-        }, ["action"],
-    )]
+    """Legacy callbacks remain readable; new threads use PROGRESS.md."""
+    return []
 
 
 CATALOG_FILE = Path(__file__).resolve().parent.parent / "web/dist/panel-catalog.json"
@@ -106,6 +51,14 @@ def panel_catalog():
 
 
 class PanelMixin:
+    def get_panel(self, agent_id):
+        from codex_progress import read_progress
+        with self.lock, self.db() as db:
+            agent = self.checked_actor(db, agent_id)
+            identity = agent["id"]
+        # File access must not hold the shared runtime or database lock.
+        return read_progress(self.root, identity)
+
     def setup_panels(self, db):
         db.execute("CREATE TABLE IF NOT EXISTS runtime_panels (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
         db.execute("""CREATE TABLE IF NOT EXISTS runtime_panel_callbacks (

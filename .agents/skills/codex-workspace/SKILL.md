@@ -1,6 +1,6 @@
 ---
 name: codex-workspace
-description: Operate Codex Studio managed teams, monitors, agent chats, complaints, user tasks, and visual panels. Use when the session exposes Studio orchestration tools or the user asks to control Studio. Native Codex CLI sessions are outside this skill.
+description: Operate Codex Studio managed teams, monitors, agent chats, complaints, user tasks, and progress files. Use when the session exposes Studio orchestration tools or the user asks to control Studio. Native Codex CLI sessions are outside this skill.
 ---
 
 # Codex Studio workspace
@@ -62,7 +62,7 @@ Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an exit event. Read the exit code, status, and output before
 claiming success. Inspect an uncertain command result before attempting a rerun.
 Use `wake_on=failure` only when a successful exit needs no agent follow-up.
-For display-only counters, use a panel feed instead of status or log polling.
+Record verified status in your PROGRESS.md file. Do not poll through model calls to refresh its display.
 
 For an optional low-worker alert, the orchestrator saves an `orchestration_watch`
 with `kind=low_workers`, a stable `id`, and a `name`. Set `minimumWorkers` (default 8)
@@ -176,24 +176,22 @@ when the task needs them, under the native permission settings.
 The chat renders fenced Mermaid diagrams and isolated static HTML/CSS/SVG.
 Scripts and remote resources do not run in these previews.
 
-## Studio panel
+## Studio progress file
 
-For a persistent visual display or interactive control, read
-[the panel guide](references/panel.md), or use `orchestration_context topic=panel`.
-It defines the 150px content viewport,
-component composition, local state, strict measurement, and callback behavior.
-Use the json-render `spec` mode by default. Read the live catalog with
-`orchestration_panel` and `action=catalog` before composing an unfamiliar panel.
-Studio controls component styles. Use HTML only when the catalog cannot express
-the required visual or interaction. These rules apply only inside Codex Studio.
+Read and edit your `PROGRESS.md` with ordinary file tools. Studio supplies the exact
+path in your runtime instructions and through `orchestration_context topic=panel`.
+Each agent has a separate file outside the project, even when agents share a
+working directory. Do not substitute the project's own `PROGRESS.md`.
 
-Use [the progress example](assets/panel-progress.json) for a complete starting
-structured composition. Its counts and states are sample data. Replace them with verified
-values and adapt the composition to the task. The example is not a required layout.
+Use plain UTF-8 Markdown for current status, verified results, and blockers.
+Keep the file at most 128 KiB. Studio displays it above the composer in an area
+with a maximum height of 150px. Longer content scrolls. An empty or missing file
+clears the display. Update it when the facts change. No special panel tool,
+command output feed, or model wake is required.
 
-For data that changes without agent work, use [a background panel feed](references/panel-feed.md).
-A script supplies state directly to the panel without model calls. Use the EC2
-example for explicit instance IDs and separate machine state from resource claims.
+Read [the progress guide](references/panel.md) for the file contract.
+Existing read-only permissions still apply. The old panel tools are retired;
+[the compatibility note](references/panel-feed.md) describes retained legacy data.
 
 ## Worker cleanup
 

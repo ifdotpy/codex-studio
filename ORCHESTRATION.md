@@ -122,109 +122,43 @@ API still reads the working tree for callers that explicitly need that state.
 An older server without the chat scope shows an update notice instead of an
 unscoped diff.
 
-### Agent display panel
+### Agent progress file
 
-New leads and workers receive the panel height and validation requirements in
-their developer instructions. Before first use, they read the bundled panel guide
-with `orchestration_context` and `topic=panel`, regardless of the project directory.
-The desktop package includes the guide and its examples. The application does not
-install this skill into vanilla Codex CLI profiles.
+Each managed conversation displays its agent's plain `PROGRESS.md` between the
+transcript and composer. The file path is `<stateDir>/progress/<agentId>/PROGRESS.md`.
+Studio supplies the exact path in runtime instructions and through
+`orchestration_context topic=panel`, together with the bundled
+[progress guide](.agents/skills/codex-workspace/references/panel.md).
+The file remains outside Git. Agents that share a working directory have separate
+files. A project's own `PROGRESS.md` does not control this display.
 
-Each managed conversation has a fixed 150px panel between the transcript and
-composer. The calling agent controls it through `orchestration_panel`:
-`catalog` returns the structured component contract. `set` replaces the panel
-with a json-render `spec`, or with HTML and optional CSS. `get` reads the current
-document, and `clear` empties the display. A worker cannot overwrite its lead's panel.
-Agent chat rooms and unmanaged conversations do not have this display.
-Structured specs are the default. Agents compose catalog components; Studio owns
-their typography, colors, spacing, and control styles. The live catalog defines
-the allowed component properties and interactions. Local state can update the
-view without a model call. Explicit callback buttons and forms notify the agent.
-The agent instructions call for visual status: stage tracks, measured counters,
-compact diagrams, and useful controls with short labels. Chat paragraphs
-and invented progress values do not belong in this panel. The composer uses one
-action row for attachments, delivery, and send. The text field grows with its draft;
-context, compactions, and account limits remain directly below it.
+Agents read and edit the file with ordinary file tools. Content must be UTF-8
+Markdown and at most 128 KiB. The display has a maximum height of 150px;
+longer content scrolls. Studio owns the text styles and uses the chat's Markdown
+format and isolated static previews. The display does not execute scripts or
+provide agent callbacks. An update does not require command output or a model
+turn. Existing read-only permissions remain unchanged.
 
-The panel and composer are adjacent siblings. Queued messages, errors, approvals,
-and user tasks appear above the panel. Callback feedback also appears above it.
-Semantic HTML inherits Studio colors, typography, buttons, and form controls.
-Agent CSS can style cards and controls through the `--studio-*` variables.
-The chat and panel share one theme source, `web/src/studio-theme.css`.
-The canvas background stays continuous with the chat. The trusted bridge removes
-the background of a single full-size div/main wrapper; nested card colors remain.
-HTML and body fill the 150px viewport with zero margins. Agent padding and borders
-belong inside that height. A 150px root plus external margins does not fit.
+The file persists across restarts. Provisioning creates an empty file only if it
+is absent; it never overwrites agent content. An empty or missing file clears the
+display. Read errors, invalid UTF-8, and oversized files produce a visible error.
+The interface retains the last valid content during a read failure. A later
+successful read replaces it. File reads occur outside the global runtime lock.
+Atomic file replacement is supported; the next read observes the new revision.
 
-The structured format uses `spec: {root, elements, state?}` with callbacks outside
-the spec. An update cannot combine `spec` with `html` or `css`. Components can use
-json-render state bindings, conditional visibility, and repeated elements. The
-application admits catalog components and local control state changes only;
-agent-supplied scripts and arbitrary action handlers do not run. The server checks
-the spec before rendering it. Schema and layout failures leave the prior panel intact.
+The selected visible conversation refreshes `GET /api/panel?agent=<id>` in the
+background. The response contains `format=markdown`, `markdown`, `path`,
+`revision`, `updated`, `exists`, and `error`. Hidden and offline views pause these
+reads. Old responses from another chat cannot replace the current display.
+File content stays outside shared snapshots. File changes do not wake agents.
 
-HTML remains available for visuals that the catalog cannot express. This mode
-renders inline HTML/CSS/SVG and CSS animations in an opaque sandbox.
-Agent scripts, external requests, navigation, and parent access are disabled.
-Only the fixed host bridge runs. It handles declared buttons and forms after
-trusted user input. HTML accepts up to 128 KiB of UTF-8 text; CSS accepts up to 32 KiB.
-The server stores one current document per agent in `runtime_panels`. Each write
-increments its version. A retry with the same tool identity returns its original
-receipt and cannot replace a newer document. Native tool delivery returns the
-cached result for a repeated call identity; a new update needs a new call identity.
-The document survives a server restart. A new agent starts with an empty panel.
+The old `orchestration_panel` and `orchestration_panel_feed` schemas are no longer
+advertised. New calls, including the workspace fallback, return migration
+instructions without writing legacy panel state. Stored panels, callback receipts,
+and feed records remain intact. Already accepted callbacks and active work can
+finish. No old panel data is copied into or replaces `PROGRESS.md`.
+See the [legacy feed note](.agents/skills/codex-workspace/references/panel-feed.md).
 
-`set` and `get` include a rendered PNG in the native tool result. An isolated,
-hidden Electron process renders the exact accepted revision at 1000x150 CSS pixels
-with the same document builder as the visible panel. The capture does not depend
-on an open chat. Real window widths can differ. At most two captures run together;
-capture waits at most 30 seconds for a slot and has a 15-second process timeout.
-Before `set` saves, Chromium measures the content at widths 320, 640, and 1000px.
-The content must fit within 150px at each width, without nested scrolling or clipping.
-Overflow or renderer failure rejects the update and preserves the previous panel,
-version, and callbacks. Validation holds no runtime or database lock.
-A concurrent panel update or caller change rejects the stale candidate.
-`get` can still capture an older panel without a write.
-HTML validation samples animation keyframes and intermediate positions at the
-three widths. It does not cover every viewport or later HTML form state.
-Structured validation measures up to 32 reachable choice states at all three
-widths, including choices introduced by another control. Later field edits pass
-schema and geometry checks. An edit that overflows restores the last valid state.
-Callback feedback appears above the panel and does not reduce its content height.
-
-`set` can declare up to 16 callbacks, each with `id`, `label`, and up to 32 `fields`.
-Use the catalog Button or Form in a structured spec. In HTML, use
-`data-callback="id"` on a button or form and named form inputs. Field values
-arrive as arrays of strings. The parent verifies the current iframe and channel,
-then posts to `/api/panel/callback` with the local CSRF token. The token never enters
-the iframe. The server checks panel version, declared action/fields, and owner.
-It stores the receipt and `panel_callback` event in one transaction. The owner
-receives that event after its current turn, including after a final answer.
-Stopped or deleted agents do not resume through panel callbacks.
-
-One action is accepted per callback per panel version. Double-clicks and exact
-retries do not enqueue twice. Changed values for an already submitted action or a
-stale panel return HTTP 409. Publish a new panel version to enable the action again.
-Form submissions are limited to 16 KiB, 16 values per field, and 2000 characters
-per value. File fields are not uploaded by this bridge.
-
-For script-driven data, use `orchestration_panel_feed` with `start`, `get`, or `stop`.
-The command writes one JSON object per stdout line. Each object replaces one
-declared top-level state subtree, `/live` by default. Studio validates each changed
-snapshot and retains the last valid display on errors. Frames are limited to
-64 KiB and coalesced, with at most one validation per second.
-The command uses the monitor environment and permissions. It continues after a
-final answer. Data, failures, and completion never enqueue model work or chat
-history. Setup uses model tools once; periodic updates use no model tokens.
-Panel replacement or an explicit stop ends the feed. Restart marks it lost
-without replay. Local controls must bind outside the feed subtree.
-See the [feed API and EC2 example](.agents/skills/codex-workspace/references/panel-feed.md).
-
-Snapshots carry `panelVersion` and `panelDataVersion`. The selected conversation fetches its
-document from `GET /api/panel?agent=<id>` when either version changes. Data updates
-preserve the iframe, local form values, selections, and callback receipts. Full documents
-are excluded from shared snapshots so dozens of agents do not multiply transfer
-size. Older threads use the documented `orchestration_send` workspace fallback.
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
 Team capacity and token budgets remain available through `codex-control configure`.
 One lead can delegate a batch of work to dozens of agents.
@@ -676,9 +610,8 @@ Codex tools such as `exec_command` retain Codex's own output controls.
 - `orchestration_monitor wake_on=failure` retains successful results in the UI and
   suppresses their model notification. Failures still notify the owner. Use this
   option only if success requires no further agent work. The default, `exit`, still
-  notifies on every exit. For live counters and resource displays, use a structured
-  panel and `orchestration_panel_feed`; script updates require no model turns.
-  Panel writes still require layout validation and a rendered image.
+  notifies on every exit. Record verified status in the per-agent `PROGRESS.md`
+  file with ordinary file tools. Its display updates without model turns.
 
 Existing native threads keep their original tool schemas. They can use new fields
 through `orchestration_send` with `agent_id="workspace"` and a JSON `text` value:

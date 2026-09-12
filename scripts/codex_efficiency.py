@@ -297,12 +297,13 @@ class EfficiencyMixin:
                 if value is None or self.agent(value['agent'], db)['rootId'] != actor['rootId']:
                     raise ValueError('Unknown monitor in this team')
             elif topic == 'panel':
-                value = self.panel_guidance()
+                from codex_progress import progress_context
+                value = progress_context(self.root, actor['id']) + '\n\n' + self.panel_guidance()
             elif topic == 'background':
-                value = {'workflow': 'Set a structured panel once, start orchestration_panel_feed with an NDJSON-producing script, then finish the turn. Feed updates and exit status do not wake a model.',
+                from codex_progress import progress_context
+                value = {'workflow': progress_context(self.root, actor['id']),
                          'monitor': 'Use orchestration_monitor for commands needing a result. wake_on=failure suppresses a successful exit notification; errors still wake you.',
-                         'polling': 'Do not poll status, read logs, or get unchanged panel screenshots. Use the event or feed.',
-                         'frames': 'Each complete NDJSON line is the next value at state_path. Write a newline. Keep frames below 65536 bytes.'}
+                         'polling': 'Let a script write PROGRESS.md when its facts change. Do not poll unchanged status through model calls.'}
             elif topic == 'tools':
                 value = self.tool_definitions(actor)
             else:
@@ -315,6 +316,12 @@ class EfficiencyMixin:
         old = json.loads(row[0]).get('contextManifest', {}) if row else {}
         known = old.get('versions', {}) if old.get('epoch') == epoch else {}
         versions, blocks = {}, []
+        from codex_progress import progress_context
+        progress = progress_context(self.root, actor['id'])
+        versions['progressFile'] = digest(progress)
+        if known.get('progressFile') != versions['progressFile']:
+            self.progress_file(actor)
+            blocks.append('[Studio progress file]\n' + progress)
         role_skill = self.role_guidance(actor)
         versions['roleSkill'] = digest(role_skill)
         if known.get('roleSkill') != versions['roleSkill']:

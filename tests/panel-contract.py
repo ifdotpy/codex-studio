@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Panel tool delivery, persistence, ownership, and replay contracts."""
+"""Progress-file delivery and retained legacy panel persistence and replay contracts."""
 
 import importlib.util
 import json
@@ -36,18 +36,20 @@ class PanelContract(unittest.TestCase):
             f.WorkspaceContract.start(self, actor)
         calls = [params for method, params in self.runtime.server.calls if method == "thread/start"]
         self.assertEqual(len(calls), 2)
-        for params in calls:
+        for actor, params in zip((lead, worker), calls):
             self.assertEqual(Path(params["cwd"]).resolve(), self.state.resolve())
             self.assertTrue(params["config"]["features.context_management.experimental_mode"])
             self.assertNotIn(content, params["developerInstructions"])
             self.assertIn("topic=panel", params["developerInstructions"])
-            self.assertIn("150px", params["developerInstructions"])
+            self.assertIn(str(self.state / "progress" / actor["id"] / "PROGRESS.md"), params["developerInstructions"])
+            self.assertTrue((self.state / "progress" / actor["id"] / "PROGRESS.md").is_file())
         for actor in (lead, worker):
             result = self.tool(actor, "orchestration_context", {"topic": "panel"})
             self.assertTrue(result["success"], result)
             text = json.loads(result["contentItems"][0]["text"])["content"]
             self.assertIn(content, text)
             self.assertIn(str(guide), text)
+            self.assertIn(str(self.state / "progress" / actor["id"] / "PROGRESS.md"), text)
 
     def test_missing_bundled_guidance_fails_visibly(self):
         lead = self.lead()
@@ -110,19 +112,30 @@ class PanelContract(unittest.TestCase):
                 self.runtime.panel_action(a["id"], invalid)
         self.assertEqual(self.runtime.panel(a["id"])["version"], 0)
 
-    def test_dynamic_tool_and_legacy_fallback(self):
+    def test_retired_tools_and_workspace_fallback_return_exact_file_path(self):
         a = self.lead()
-        result = self.tool(a, "orchestration_panel", {"action": "set", "html": "Native"})
-        self.assertTrue(result["success"], result)
-        self.assertTrue(any(item["type"] == "inputImage" for item in result["contentItems"]))
-        result = self.tool(a, "orchestration_send", {
-            "agent_id": "workspace",
-            "text": json.dumps({"tool": "orchestration_panel", "arguments": {"action": "set", "html": "Legacy"}}),
-        })
-        self.assertTrue(result["success"], result)
-        self.assertEqual(self.runtime.panel(a["id"])["html"], "Legacy")
+        self.runtime.panel_action(a["id"], {"action": "set", "html": "Retained"})
+        before = self.runtime.panel(a["id"])
+        self.mock_capture.reset_mock()
+        for name in ("orchestration_panel", "orchestration_panel_feed"):
+            for fallback in (False, True):
+                args = {"action": "set", "html": "Must not replace retained data"}
+                tool_name = name
+                if fallback:
+                    tool_name = "orchestration_send"
+                    args = {"agent_id": "workspace", "text": json.dumps({"tool": name, "arguments": args})}
+                result = self.tool(a, tool_name, args)
+                self.assertFalse(result["success"], result)
+                request_id = self.runtime.server.responses[-1]["id"]
+                request_key = self.runtime.agent(a["id"])["threadId"] + ":" + request_id
+                receipt = self.runtime.tool_request(request_key)
+                self.assertEqual(receipt["outcome"], "not_applied")
+                self.assertEqual(receipt["stage"], "failed")
+                self.assertIn(str(self.state / "progress" / a["id"] / "PROGRESS.md"), result["contentItems"][0]["text"])
+                self.assertEqual(self.runtime.panel(a["id"]), before)
+        self.mock_capture.assert_not_called()
         params = self.runtime.new_thread_params(self.runtime.agent(a["id"]))
-        self.assertIn("orchestration_panel", [t["name"] for t in params["dynamicTools"]])
+        self.assertFalse({"orchestration_panel", "orchestration_panel_feed"} & {t["name"] for t in params["dynamicTools"]})
 
     def test_native_cached_identity_never_reapplies_old_or_changed_content(self):
         a = self.runtime.prepare(self.lead())
@@ -130,9 +143,11 @@ class PanelContract(unittest.TestCase):
             "threadId": a["threadId"], "callId": "panel-native",
             "tool": "orchestration_panel", "arguments": {"action": "set", "html": "First"},
         }}
-        self.runtime.dynamic(request)
-        first = self.runtime.server.responses[-1]["result"]
-        self.assertTrue(first["success"], first)
+        # Simulate a successful response accepted before the tool was retired.
+        self.runtime.panel_action(a["id"], {"action": "set", "html": "First"})
+        receipt = self.runtime.reserve_tool_request(request)
+        first = {"success": True, "contentItems": [{"type": "inputText", "text": "retained old response"}]}
+        self.runtime.finish_tool_request(receipt["id"], first, outcome="applied")
         self.runtime.panel_action(a["id"], {"action": "set", "html": "Second"})
         for html in ["First", "Changed retry"]:
             request["params"]["arguments"]["html"] = html
@@ -146,22 +161,19 @@ class PanelContract(unittest.TestCase):
             self.assertEqual(self.runtime.panel(a["id"])["html"], "Second")
             self.assertEqual(self.runtime.panel(a["id"])["version"], 2)
 
-    def test_image_failure_rejects_write_and_preserves_callbacks(self):
+    def test_legacy_image_failure_rejects_write_and_preserves_callbacks(self):
         a = self.lead()
         self.runtime.panel_action(a["id"], {"action": "set", "html": "Accepted",
             "callbacks": [{"id": "go", "label": "Go"}]})
         prior = self.runtime.panel(a["id"])
         self.mock_capture.side_effect = RuntimeError("fixture renderer failed")
-        result = self.tool(a, "orchestration_panel", {"action": "set", "html": "Rejected"})
-        self.assertFalse(result["success"])
-        self.assertIn("fixture renderer failed", result["contentItems"][0]["text"])
+        with self.assertRaisesRegex(RuntimeError, "fixture renderer failed"):
+            self.runtime.panel_action(a["id"], {"action": "set", "html": "Rejected"})
         self.assertEqual(self.runtime.panel(a["id"]), prior)
         self.mock_capture.side_effect = lambda panel, **options: {
             "data_url": "data:image/png;base64,recovered", "width": 1000, "height": 150, "version": panel["version"]}
-        result = self.tool(a, "orchestration_panel", {"action": "get"})
-        self.assertTrue(result["success"])
-        self.assertEqual(self.runtime.panel(a["id"])["version"], 1)
-        self.assertTrue(any(item["type"] == "inputImage" for item in result["contentItems"]))
+        result = self.runtime.capture_panel(self.runtime.panel(a["id"]), strict_layout=False)
+        self.assertEqual(result["version"], 1)
         self.assertFalse(self.mock_capture.call_args.kwargs["strict_layout"])
 
     def test_capture_once_before_commit_and_outside_lock(self):
@@ -176,8 +188,7 @@ class PanelContract(unittest.TestCase):
             self.assertTrue(options["strict_layout"])
             return original(panel)
         self.mock_capture.side_effect = capture
-        result = self.tool(a, "orchestration_panel", {"action": "set", "html": "Accepted"})
-        self.assertTrue(result["success"])
+        self.runtime.panel_action(a["id"], {"action": "set", "html": "Accepted"})
         self.assertEqual(observed, [0])
         self.assertEqual(self.mock_capture.call_count, 1)
         self.assertEqual(self.runtime.panel(a["id"])["version"], 1)
@@ -230,9 +241,6 @@ class PanelContract(unittest.TestCase):
         catalog_path.write_text(json.dumps(expected))
         with patch.object(codex_panel, "CATALOG_FILE", catalog_path):
             self.assertEqual(self.runtime.panel_action(a["id"], {"action": "catalog"}), expected)
-            result = self.tool(a, "orchestration_panel", {"action": "catalog"})
-            self.assertTrue(result["success"], result)
-            self.assertFalse(any(item["type"] == "inputImage" for item in result["contentItems"]))
             with self.assertRaisesRegex(ValueError, "no content"):
                 self.runtime.panel_action(a["id"], {"action": "catalog", "html": "x"})
             catalog_path.unlink()
@@ -291,25 +299,22 @@ class PanelContract(unittest.TestCase):
             "callbacks": [{"id": "go", "label": "Go"}]})
         previous = self.runtime.panel(a["id"])
         self.mock_capture.side_effect = RuntimeError("Unknown component in structured panel")
-        result = self.tool(a, "orchestration_panel", {"action": "set", "spec": self.structured_spec()})
-        self.assertFalse(result["success"], result)
-        self.assertIn("Unknown component", result["contentItems"][0]["text"])
+        with self.assertRaisesRegex(RuntimeError, "Unknown component"):
+            self.runtime.panel_action(a["id"], {"action": "set", "spec": self.structured_spec()})
         self.assertEqual(self.runtime.panel(a["id"]), previous)
 
-    def test_structured_get_captures_exact_revision(self):
+    def test_legacy_structured_capture_uses_exact_revision(self):
         a = self.lead()
         data = {"action": "set", "spec": self.structured_spec()}
-        result = self.tool(a, "orchestration_panel", data)
-        self.assertTrue(result["success"], result)
+        self.runtime.panel_action(a["id"], data)
         self.assertEqual(self.mock_capture.call_args.args[0]["spec"], data["spec"])
         self.assertEqual(self.mock_capture.call_count, 1)
-        result = self.tool(a, "orchestration_panel", {"action": "get"})
-        self.assertTrue(result["success"], result)
+        result = self.runtime.capture_panel(self.runtime.panel(a["id"]), strict_layout=False)
+        self.assertEqual(result["version"], 1)
         self.assertEqual(self.mock_capture.call_args.args[0]["spec"], data["spec"])
         self.assertFalse(self.mock_capture.call_args.kwargs["strict_layout"])
-        self.assertTrue(any(item["type"] == "inputImage" for item in result["contentItems"]))
 
-    def test_structured_receipt_without_cached_tool_response_captures_original(self):
+    def test_retired_call_preserves_uncached_legacy_operation_receipt(self):
         a = self.runtime.prepare(self.lead())
         original = {"action": "set", "spec": self.structured_spec("Original")}
         request_id = "structured-replay"
@@ -321,13 +326,13 @@ class PanelContract(unittest.TestCase):
             "tool": "orchestration_panel", "arguments": original,
         }})
         result = self.runtime.server.responses[-1]["result"]
-        self.assertTrue(result["success"], result)
-        self.mock_capture.assert_called_once()
-        captured = self.mock_capture.call_args.args[0]
-        self.assertEqual(captured["spec"], original["spec"])
-        self.assertEqual(captured["version"], first["version"])
+        self.assertFalse(result["success"], result)
+        self.assertIn("PROGRESS.md", result["contentItems"][0]["text"])
+        receipt = self.runtime.tool_request(a["threadId"] + ":" + request_id)
+        self.assertEqual(receipt["outcome"], "unknown", "A committed legacy operation cannot become not_applied")
+        self.mock_capture.assert_not_called()
+        self.assertEqual(self.runtime.panel_action(a["id"], original, a["threadId"] + ":" + request_id), first)
         self.assertEqual(self.runtime.panel(a["id"])["spec"], self.structured_spec("Newer"))
-        self.assertFalse(self.mock_capture.call_args.kwargs["strict_layout"])
 
     def test_structured_python_render_accepts_no_html_before_queue(self):
         import codex_panel_render
@@ -339,7 +344,7 @@ class PanelContract(unittest.TestCase):
         with self.assertRaisesRegex(codex_panel_render.PanelRenderError, "cannot also contain"):
             codex_panel_render.render_panel({"spec": self.structured_spec(), "html": "Mixed"})
 
-    def test_http_reads_committed_tool_content(self):
+    def test_http_reads_file_changes_without_panel_tools(self):
         from codex_canvas import Canvas, make_server
         canvas = Canvas(self.state)
         canvas.runtime = self.runtime
@@ -348,11 +353,17 @@ class PanelContract(unittest.TestCase):
         thread.start()
         try:
             a = self.lead()
-            self.tool(a, "orchestration_panel", {"action": "set", "html": "<svg></svg>", "css": "body{margin:0}"})
+            from codex_progress import provision_progress
+            path = provision_progress(self.state, a["id"])
+            path.write_text("# Verified progress\n\n- [x] Backend", encoding="utf-8")
             with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/panel?agent={a['id']}") as response:
                 panel = json.load(response)
-            self.assertEqual(panel["html"], "<svg></svg>")
-            self.assertEqual(panel["version"], self.runtime.snapshot()["agents"][0]["panelVersion"])
+            self.assertEqual(panel["format"], "markdown")
+            self.assertEqual(panel["markdown"], path.read_text())
+            self.assertEqual(panel["path"], str(path))
+            self.assertIsNotNone(panel["revision"])
+            self.assertNotIn(panel["markdown"], json.dumps(self.runtime.snapshot()))
+            self.mock_capture.assert_not_called()
         finally:
             server.shutdown()
             server.server_close()

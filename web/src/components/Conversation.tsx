@@ -1245,17 +1245,9 @@ export default function Conversation(p: {
           )}
           {managed && !p.legacy && agent && (
             <AgentPanel
-              key={agent.id}
+              key={`${p.data.stateDir}:${agent.id}`}
               agentId={agent.id}
-              token={p.data.token}
-              dataVersion={Math.max(
-                p.agent?.panelDataVersion || 0,
-                agent.panelDataVersion || 0,
-              )}
-              version={Math.max(
-                p.agent?.panelVersion || 0,
-                agent.panelVersion || 0,
-              )}
+              stateDir={p.data.stateDir}
             />
           )}
           <form
