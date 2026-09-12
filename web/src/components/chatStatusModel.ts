@@ -1,8 +1,4 @@
-import {
-  complaintNeedsUserResponse,
-  type Agent,
-  type Snapshot,
-} from "../types";
+import type { Agent, Snapshot } from "../types";
 
 export type ChatIndicatorKind =
   | "working"
@@ -72,18 +68,6 @@ export function chatIndicators(
       continue;
     if (request.deferred) deferred.add(agent.id);
     else includeLead(answers, agent.id);
-  }
-  for (const complaint of data.runtime.complaints || []) {
-    if (
-      complaint.needsResponse &&
-      complaintNeedsUserResponse(complaint) &&
-      !["resolved", "declined"].includes(complaint.status)
-    )
-      answers.add(complaint.leadId);
-  }
-  for (const task of data.runtime.userTasks || []) {
-    if (["open", "review"].includes(task.status))
-      includeLead(answers, task.agent || task.rootId);
   }
   const currentEpoch = (entry: { agent?: string; epoch?: number }) => {
     const agent = byId.get(entry.agent || "");

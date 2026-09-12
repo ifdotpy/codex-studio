@@ -14,9 +14,11 @@
 .chat-status-unread {
   color: light-dark(#18713a, #6ed491);
 }
-.chat-status-answer,
-.chat-status-error {
+.chat-status-answer {
   color: light-dark(#c32828, #ff8585);
+}
+.chat-status-error {
+  color: light-dark(#956000, #f0bb60);
 }
 .chat-status-dot {
   display: block;

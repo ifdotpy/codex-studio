@@ -95,8 +95,36 @@ try {
   worker(4).status = "paused";
   worker(4).autoWake = false;
   state.runtime.agents = state.threads;
-  state.runtime.complaints = [];
-  state.runtime.userTasks = [];
+  state.runtime.complaints = [
+    {
+      id: "inbox-only-complaint",
+      leadId: lead.id,
+      author: lead.id,
+      recipient: "user",
+      needsResponse: true,
+      status: "open",
+      title: "Inbox item without a question",
+      created: 1,
+      readAt: null,
+    },
+  ];
+  state.runtime.userTasks = [
+    {
+      id: "inbox-only-task",
+      agent: other.id,
+      rootId: other.id,
+      status: "open",
+      title: "User task without a question",
+      description: "A task in the inbox.",
+      criteria: "Complete the task.",
+      reason: "",
+      completionNote: "",
+      history: [],
+      version: 1,
+      created: 1,
+      updated: 1,
+    },
+  ];
   state.runtime.tasks = [];
   state.runtime.requests = [
     {
@@ -220,6 +248,15 @@ try {
   await status(card(worker(2)), "working");
   await status(card(worker(3)), "error");
   await status(card(worker(4)), "paused");
+  assert.notEqual(
+    await card(worker(3))
+      .locator(".chat-status-error")
+      .evaluate((node) => getComputedStyle(node).color),
+    await card(worker(0))
+      .locator(".chat-status-answer")
+      .evaluate((node) => getComputedStyle(node).color),
+    "Only questions use the red status color",
+  );
   assert.equal(
     await card(worker(2))
       .locator('[data-chat-status="working"]')

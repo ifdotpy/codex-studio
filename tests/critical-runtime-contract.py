@@ -227,7 +227,7 @@ class CriticalRuntimeContract(unittest.TestCase):
 
     def test_failed_preparation_commit_does_not_poison_loaded_cache(self):
         a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Task'}, defer=True)
-        operation = {'id': 'prepare', 'agent': a['id'], 'epoch': a['epoch'], 'accountKey': 'default',
+        operation = {'id': 'prepare', 'method': 'thread/start', 'agent': a['id'], 'epoch': a['epoch'], 'accountKey': 'default',
                      'connectionId': self.runtime.connection_ids['default'], 'threadId': None,
                      'cwd': a['cwd'], 'settings': self.runtime.preparation_settings(a),
                      'future': concurrent.futures.Future()}

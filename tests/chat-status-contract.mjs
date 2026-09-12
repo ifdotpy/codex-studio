@@ -129,7 +129,7 @@ assert.equal(
       },
     ],
   }),
-  "answer",
+  "unread",
 );
 assert.equal(
   state(lead, {
@@ -146,7 +146,7 @@ assert.equal(
 );
 assert.equal(
   state(lead, { userTasks: [{ agent: "lead", status: "open" }] }),
-  "answer",
+  "unread",
 );
 assert.equal(
   state(lead, { userTasks: [{ agent: "lead", status: "accepted" }] }),
@@ -182,6 +182,50 @@ assert.equal(
   "none",
   "An old approval status cannot resurrect a stale question",
 );
+const inboxAttention = {
+  complaints: [
+    { leadId: "lead", recipient: "user", needsResponse: true, status: "open" },
+  ],
+  userTasks: [
+    { agent: "lead", status: "open" },
+    { agent: "child", rootId: "lead", status: "review" },
+  ],
+};
+for (const [agent, expected] of [
+  [{ ...lead, status: "running" }, "working"],
+  [lead, "unread"],
+  [
+    {
+      ...lead,
+      readState: {
+        threadId: "thread",
+        turnId: "turn",
+        read: true,
+        revision: 1,
+      },
+    },
+    "none",
+  ],
+]) {
+  assert.equal(
+    state(agent, inboxAttention),
+    expected,
+    "Inbox items cannot replace the chat status",
+  );
+  assert.equal(
+    state(agent, {
+      ...inboxAttention,
+      requests: [{ agent: "lead", status: "pending", epoch: 2 }],
+    }),
+    "answer",
+    "An actual pending question still takes priority over inbox items",
+  );
+}
+assert.equal(
+  chatIndicators(snapshot([lead, child], inboxAttention)).get("lead").kind,
+  "unread",
+  "A child user task cannot mark the lead as awaiting an answer",
+);
 console.log(
-  "PASS chat status precedence, work and monitors, unread identity, pending questions, deferred and stale requests, errors, stopped agents, and team aggregation",
+  "PASS chat status precedence, work and monitors, unread identity, pending questions without inbox escalation, deferred and stale requests, errors, stopped agents, and team aggregation",
 );

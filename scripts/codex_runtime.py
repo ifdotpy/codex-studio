@@ -657,6 +657,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_agent_native_scope ON runtime_agents(
+                    json_extract(record,'$.threadId'),
+                    CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'
+                         ELSE json_extract(record,'$.accountKey') END);
                 CREATE TABLE IF NOT EXISTS runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_events (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,
@@ -2505,12 +2509,18 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.output(p, account_key, connection_id)
             return
         tid = p.get("threadId") or p.get("thread", {}).get("id")
+        if not tid:
+            return
         with self.lock, self.db() as db:
             if not self.connection_current(account_key, connection_id):
                 return
-            a = next((a for a in self.records(db, "agents") if a.get("threadId") == tid and tid and a.get("accountKey", "default") == account_key), None)
-            if not a:
+            row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
+                             "AND CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
+                             "ELSE json_extract(record,'$.accountKey') END=? ORDER BY rowid LIMIT 1",
+                             (tid, account_key)).fetchone()
+            if row is None:
                 return
+            a = json.loads(row[0])
             if a.get("deletedAt"):
                 return
             if method == "thread/closed" or (method == "thread/status/changed"
