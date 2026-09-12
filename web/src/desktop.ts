@@ -17,6 +17,11 @@ export interface DesktopBridge {
     { name: string; path: string; mime: string; data: string }[]
   >;
   revealPath(path: string): Promise<void>;
+  saveFile?(value: { name: string; data: ArrayBuffer }): Promise<boolean>;
+  fileAction?(value: {
+    action: "open" | "reveal" | "preview";
+    target: { agent?: string; path?: string; asset?: string };
+  }): Promise<boolean>;
   openExternal(url: string): Promise<void>;
   setNotifications(enabled: boolean): Promise<boolean>;
   getNotifications(): Promise<boolean>;

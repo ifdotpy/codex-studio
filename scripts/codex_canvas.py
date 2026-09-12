@@ -748,6 +748,8 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.resource_action())
                     if path.path == "/api/monitor/log":
                         return self.send(runtime.monitor_log(q.get("id")))
+                    if path.path == "/api/file-info":
+                        return self.send(runtime.file_info(agent, q.get("path"), q.get("asset")))
                     if path.path == "/api/file":
                         content, mime, name = runtime.file_content(
                             agent, q.get("path"), q.get("asset")

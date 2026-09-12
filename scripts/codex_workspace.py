@@ -472,6 +472,19 @@ class WorkspaceMixin:
                 )
         return inputs
 
+    def file_info(self, agent_id=None, path=None, asset_id=None):
+        if asset_id:
+            asset = self.asset_record(asset_id)
+            file = Path(asset["path"]).resolve()
+            mime = asset["mime"]
+        else:
+            self.checked_actor_in_own_db(agent_id)
+            file = self.workspace_path(agent_id, path)
+            mime = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
+        if not file.is_file():
+            raise ValueError("This file does not exist")
+        return {"path": str(file), "name": file.name, "mime": mime, "size": file.stat().st_size}
+
     def file_content(
         self, agent_id=None, path=None, asset_id=None, limit=20 * 1024 * 1024
     ):

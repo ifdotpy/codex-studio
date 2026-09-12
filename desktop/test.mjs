@@ -223,8 +223,14 @@ try {
     button.id = "native-test";
     button.style.cssText = "position:fixed;top:0;right:0;z-index:2147483647";
     button.textContent = "Native test";
-    button.onclick = () =>
-      window.codexDesktop[button.dataset.method](button.dataset.value)
+    button.onclick = () => {
+      let value = button.dataset.value;
+      if (["saveFile", "fileAction"].includes(button.dataset.method)) {
+        value = JSON.parse(value);
+        if (button.dataset.method === "saveFile")
+          value.data = Uint8Array.from(value.data).buffer;
+      }
+      return window.codexDesktop[button.dataset.method](value)
         .then((value) => {
           document.body.dataset.nativeResult = JSON.stringify({ value });
         })
@@ -233,6 +239,7 @@ try {
             error: e.message,
           });
         });
+    };
     document.body.append(button);
   });
   const invoke = async (method, value) => {
@@ -257,6 +264,64 @@ try {
     "Native attachment",
   );
   assert.equal(files[0].mime, "text/plain");
+  const savedCopy = path.join(temp, "saved-copy.txt");
+  await desktop.evaluate(
+    ({ dialog, shell, BrowserWindow, app }, destination) => {
+      dialog.showSaveDialog = async () => ({
+        canceled: false,
+        filePath: destination,
+      });
+      shell.openPath = async (file) => {
+        app.__testOpen = file;
+        return "";
+      };
+      BrowserWindow.getAllWindows()[0].previewFile = (file) => {
+        app.__testPreview = file;
+      };
+    },
+    savedCopy,
+  );
+  const nativeBytes = [0, 1, 2, 127, 255];
+  assert.equal(
+    (
+      await invoke(
+        "saveFile",
+        JSON.stringify({ name: "copy.txt", data: nativeBytes }),
+      )
+    ).value,
+    true,
+  );
+  assert.deepEqual([...(await readFile(savedCopy))], nativeBytes);
+  await desktop.evaluate(({ dialog }) => {
+    dialog.showSaveDialog = async () => ({ canceled: true });
+  });
+  assert.equal(
+    (await invoke("saveFile", JSON.stringify({ name: "copy.txt", data: [42] })))
+      .value,
+    false,
+  );
+  assert.deepEqual([...(await readFile(savedCopy))], nativeBytes);
+  const resolvedAsset = await (
+    await fetch(`${backend.origin}/api/file-info?asset=${asset.id}`)
+  ).json();
+  for (const action of ["open", "reveal", "preview"])
+    assert.equal(
+      (
+        await invoke(
+          "fileAction",
+          JSON.stringify({ action, target: { asset: asset.id } }),
+        )
+      ).value,
+      true,
+    );
+  assert.deepEqual(
+    await desktop.evaluate(({ app }) => [
+      app.__testOpen,
+      app.__testReveal,
+      app.__testPreview,
+    ]),
+    [resolvedAsset.path, resolvedAsset.path, resolvedAsset.path],
+  );
   assert.match(
     (await invoke("openExternal", "file:///etc/passwd")).error,
     /HTTP/,
@@ -409,6 +474,8 @@ try {
         "gesture",
         "notifications opt-in",
         "native pickers",
+        "native file save bytes and cancel through isolated IPC",
+        "native file metadata and actions through isolated IPC",
         "React project picker",
         "React attachment upload",
         "React notification toggle",

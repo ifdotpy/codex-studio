@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Modal } from "@mantine/core";
+import PreviewModal from "./PreviewModal";
 import { api, errorText } from "../api";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
+import ImageViewer from "./ImageViewer";
+import { relativeToDocument, safeSvg } from "./filePreviewFormats";
 import { localFileLink } from "./fileLinks";
 
 const raster = /^data:image\/(png|jpeg|gif|webp);base64,/i;
@@ -9,10 +11,14 @@ export default function MarkdownImage({
   src,
   alt,
   agentId,
+  basePath,
+  localPath,
 }: {
   src: string;
   alt: string;
   agentId?: string;
+  basePath?: string;
+  localPath?: string;
 }) {
   const [loaded, setLoaded] = useState("");
   const [error, setError] = useState("");
@@ -21,12 +27,20 @@ export default function MarkdownImage({
   const [attempt, setAttempt] = useState(0);
   const target = useMemo((): PreviewTarget | null => {
     try {
-      const local = localFileLink(src);
-      return local && agentId ? { agent: agentId, ...local } : null;
+      const local =
+        localPath !== undefined ? { path: localPath } : localFileLink(src);
+      return local && agentId
+        ? {
+            agent: agentId,
+            ...(localPath !== undefined
+              ? local
+              : relativeToDocument(local, basePath)),
+          }
+        : null;
     } catch {
       return null;
     }
-  }, [src, agentId]);
+  }, [src, agentId, basePath, localPath]);
   const remoteHost = useMemo(() => {
     try {
       const url = new URL(src);
@@ -59,7 +73,18 @@ export default function MarkdownImage({
     api(`/api/file?${query}`)
       .then((file) => {
         if (!active) return;
-        if (!/^image\/(png|jpeg|gif|webp)$/.test(file.mime))
+        if (file.mime === "image/svg+xml") {
+          const svg = safeSvg(
+            new TextDecoder().decode(
+              Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0)),
+            ),
+          );
+          setLoaded(
+            "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg),
+          );
+          return;
+        }
+        if (!/^image\/(png|jpeg|gif|webp|avif|bmp|x-icon)$/.test(file.mime))
           throw new Error("This image type is not supported.");
         setLoaded(`data:${file.mime};base64,${file.base64}`);
       })
@@ -127,19 +152,20 @@ export default function MarkdownImage({
           onClose={() => setPreview(false)}
         />
       ) : (
-        <Modal
+        <PreviewModal
           opened={preview}
           onClose={() => setPreview(false)}
           title={alt || "Image preview"}
           size="xl"
         >
-          <img
-            className="workspace-image"
-            src={preview ? image : undefined}
-            alt={alt}
-            referrerPolicy="no-referrer"
-          />
-        </Modal>
+          {preview && (
+            <ImageViewer
+              src={image}
+              alt={alt}
+              onError={() => setError("Cannot load this image.")}
+            />
+          )}
+        </PreviewModal>
       )}
     </span>
   );

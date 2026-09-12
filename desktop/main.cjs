@@ -15,6 +15,7 @@ const {
 } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 const { ensureBackend, identity, updateStatus } = require("./backend.cjs");
 const {
   configureRecovery,
@@ -82,7 +83,7 @@ function notificationTarget(value) {
 }
 function trusted(event) {
   if (
-    !win ||
+    !win || win.isDestroyed() ||
     event.sender !== win.webContents ||
     event.senderFrame !== win.webContents.mainFrame ||
     event.senderFrame.url !== `${backend.origin}/`
@@ -126,11 +127,111 @@ function mime(file) {
     }[path.extname(file).toLowerCase()] || "application/octet-stream"
   );
 }
+const MAX_SAVE_BYTES = 64 * 1024 * 1024;
+const DOCUMENT_EXTENSIONS = new Set(
+  ".txt .md .markdown .pdf .rtf .csv .tsv .json .xml .yaml .yml .toml .log .diff .patch .png .jpg .jpeg .gif .webp .avif .heic .heif .tif .tiff .bmp .svg .mp3 .m4a .wav .aac .ogg .flac .mp4 .m4v .mov .webm .doc .docx .xls .xlsx .ppt .pptx .odt .ods .odp .pages .numbers .key".split(" "),
+);
+function saveName(value) {
+  const name = path.basename(string(value, 1024).replaceAll("\\", "/"));
+  if (name === "." || name === ".." || /[\x00-\x1f]/.test(name))
+    throw new Error("Invalid file name.");
+  return name;
+}
+async function resolvedFile(event, target) {
+  if (!target || typeof target !== "object" ||
+      Object.keys(target).some((key) => !["agent", "path", "asset"].includes(key)) ||
+      (target.asset ? target.path !== undefined : !target.agent || !target.path))
+    throw new Error("Select a workspace file or attachment.");
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(target))
+    query.set(key, string(value));
+  const response = await fetch(`${backend.origin}/api/file-info?${query}`, {
+    signal: AbortSignal.timeout(15000), redirect: "error",
+  });
+  const info = await response.json();
+  if (!response.ok || info.error)
+    throw new Error(info.error || "Cannot resolve the selected file.");
+  trusted(event);
+  const file = string(info.path);
+  if (!path.isAbsolute(file) || await fs.realpath(file) !== file || !(await fs.stat(file)).isFile())
+    throw new Error("The selected file is no longer available.");
+  return { path: file, name: saveName(info.name) };
+}
+function nativeDownload(event, item, contents) {
+  if (!win || win.isDestroyed()) {
+    event.preventDefault();
+    return;
+  }
+  const url = item.getURL();
+  if (contents !== win.webContents || contents.getURL() !== `${backend.origin}/` ||
+      !(url.startsWith(`blob:${backend.origin}/`) || url.startsWith(`${backend.origin}/`))) {
+    event.preventDefault();
+    return;
+  }
+  try {
+    item.setSaveDialogOptions({
+      title: "Save As",
+      defaultPath: path.join(app.getPath("downloads"), saveName(item.getFilename())),
+      properties: ["createDirectory", "showOverwriteConfirmation"],
+    });
+  } catch (error) {
+    event.preventDefault();
+    dialog.showErrorBox("Cannot save file", error.message);
+    return;
+  }
+  item.once("done", (_event, state) => {
+    if (state !== "completed" && state !== "cancelled")
+      dialog.showErrorBox("Cannot save file", "The file transfer did not complete. Try Save As again.");
+  });
+}
 async function nativeAction(event, request) {
   trusted(event);
   if (!request || typeof request !== "object")
     throw new Error("Invalid native action.");
   switch (request.method) {
+    case "saveFile": {
+      const name = saveName(request.value?.name);
+      const data = request.value?.data;
+      if (!(data instanceof ArrayBuffer) || !Number.isSafeInteger(data.byteLength) || data.byteLength > MAX_SAVE_BYTES)
+        throw new Error("Save accepts at most 64 MiB of file data.");
+      const result = await dialog.showSaveDialog(win, {
+        title: "Save As", defaultPath: path.join(app.getPath("downloads"), name),
+        properties: ["createDirectory", "showOverwriteConfirmation"],
+      });
+      if (result.canceled || !result.filePath) return false;
+      trusted(event);
+      const temporary = path.join(path.dirname(result.filePath), `.studio-save-${randomUUID()}.tmp`);
+      try {
+        await fs.writeFile(temporary, Buffer.from(data), { flag: "wx", mode: 0o600, flush: true });
+        trusted(event);
+        await fs.rename(temporary, result.filePath);
+      } catch (error) {
+        await fs.rm(temporary, { force: true }).catch(() => {});
+        throw error;
+      }
+      return true;
+    }
+    case "fileAction": {
+      const action = request.value?.action;
+      if (!["open", "reveal", "preview"].includes(action))
+        throw new Error("Unknown file action.");
+      const file = await resolvedFile(event, request.value.target);
+      trusted(event);
+      if (action === "reveal") {
+        shell.showItemInFolder(file.path);
+      } else if (action === "preview") {
+        if (process.platform !== "darwin" || typeof win.previewFile !== "function") return false;
+        win.previewFile(file.path, file.name);
+      } else {
+        if (!DOCUMENT_EXTENSIONS.has(path.extname(file.path).toLowerCase()) ||
+            ((await fs.stat(file.path)).mode & 0o111) !== 0)
+          throw new Error("Use Quick Look or Show in Folder for this file type.");
+        trusted(event);
+        const error = await shell.openPath(file.path);
+        if (error) throw new Error(error);
+      }
+      return true;
+    }
     case "requestMicrophone": {
       if (
         process.platform === "darwin" &&
@@ -402,6 +503,7 @@ async function start() {
     rendererRecovery.handleNavigation(event),
   );
   win.webContents.on("will-redirect", (event) => event.preventDefault());
+  win.webContents.session.on?.("will-download", nativeDownload);
   ipcMain.handle("codex-desktop", nativeAction);
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([

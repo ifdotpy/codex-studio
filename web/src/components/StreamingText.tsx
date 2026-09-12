@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Modal } from "@mantine/core";
+import PreviewModal from "./PreviewModal";
 import DOMPurify from "dompurify";
 import { marked, type Token } from "marked";
 import RichPreview from "./RichPreview";
@@ -12,6 +12,7 @@ import {
 
 import { sentencePrefix } from "./sentenceStream";
 import SentenceMarkup from "./SentenceMarkup";
+import { relativeToDocument } from "./filePreviewFormats";
 import { CompletedMarkdownCache } from "./completedMarkdownCache";
 
 const completedMarkdown = new CompletedMarkdownCache();
@@ -22,10 +23,12 @@ export default memo(function StreamingText({
   text,
   streaming = false,
   agentId,
+  basePath,
 }: {
   text: string;
   streaming?: boolean;
   agentId?: string;
+  basePath?: string;
 }) {
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [linkError, setLinkError] = useState("");
@@ -137,13 +140,19 @@ export default memo(function StreamingText({
           const target = localFileLink(link.getAttribute("href") || "");
           if (!target) return;
           event.preventDefault();
+          // React portal events still reach the outer transcript Markdown.
+          event.stopPropagation();
           if (!agentId)
             throw new Error(
               "This conversation has no workspace for file previews.",
             );
-          setPreview({ agent: agentId, ...target });
+          setPreview({
+            agent: agentId,
+            ...relativeToDocument(target, basePath),
+          });
         } catch (error) {
           event.preventDefault();
+          event.stopPropagation();
           setLinkDialogMounted(true);
           setLinkError(
             error instanceof Error
@@ -164,6 +173,7 @@ export default memo(function StreamingText({
             html={block.html!}
             enter={streaming && i >= initialBlockCount}
             agentId={agentId}
+            basePath={basePath}
           />
         ),
       )}
@@ -171,13 +181,13 @@ export default memo(function StreamingText({
         <FilePreview target={preview} onClose={() => setPreview(null)} />
       )}
       {linkDialogMounted && (
-        <Modal
+        <PreviewModal
           opened={!!linkError && linkDialogReady}
           onClose={() => setLinkError("")}
           title="Cannot open file"
         >
           <p role="alert">{linkError}</p>
-        </Modal>
+        </PreviewModal>
       )}
     </div>
   );

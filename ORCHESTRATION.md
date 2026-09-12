@@ -122,6 +122,32 @@ API still reads the working tree for callers that explicitly need that state.
 An older server without the chat scope shows an update notice instead of an
 unscoped diff.
 
+### Files and images
+
+File links open a preview inside Studio. Markdown has rendered and source views.
+Links and images inside a Markdown file resolve relative to that file.
+CSV and TSV have table and source views. JSON has formatted and source views.
+Studio also previews text, PDF, static HTML, raster images, SVG, audio and video.
+Audio and video support depends on the system codecs.
+Image controls provide fit, actual size and zoom.
+Expanded image tool cards show supported image results. A click opens the image viewer.
+Closed tool cards do not load local image files.
+
+On macOS, file actions use the default application, Finder or Quick Look.
+Quick Look can preview additional formats that macOS supports, including office documents.
+The native process resolves file metadata through `/api/file-info` before each action.
+Open refuses executable files. Quick Look and Finder remain available.
+Save a copy uses the system Save dialog and preserves the original bytes.
+Cancel leaves the destination unchanged. A failed save shows an error.
+On iPhone, Save a copy uses the system share sheet when file sharing is available.
+Other browsers use an explicit download fallback.
+
+The existing file API limits inline previews to 20 MiB.
+Native file actions remain available when that limit prevents a preview.
+Table previews show at most 200 rows and 100 columns.
+Their text parser stops after 1,048,576 UTF-16 code units.
+Source and Save a copy retain the complete file within the file API limit.
+
 ### Agent progress file
 
 Each managed conversation displays its agent's plain `PROGRESS.md` between the

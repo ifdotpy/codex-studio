@@ -37,10 +37,14 @@ function messageGroups(items: Message[]) {
   return groups;
 }
 
-function messages(items: Message[], render: (message: Message) => ReactNode) {
+function messages(
+  items: Message[],
+  render: (message: Message) => ReactNode,
+  agentId?: string,
+) {
   return messageGroups(items).map((item) =>
     Array.isArray(item) ? (
-      <Activity key={item[0].id} items={item} />
+      <Activity key={item[0].id} items={item} agentId={agentId} />
     ) : (
       <Fragment key={messageRenderKey(item)}>
         {item.role === "reasoning" ? (
@@ -56,9 +60,11 @@ function messages(items: Message[], render: (message: Message) => ReactNode) {
 const WorkBlock = memo(function WorkBlock({
   items,
   storageKey,
+  agentId,
 }: {
   items: Message[];
   storageKey: string;
+  agentId?: string;
 }) {
   const key = `${storageKey}:tools-v3`;
   const id = items[0].id;
@@ -124,7 +130,7 @@ const WorkBlock = memo(function WorkBlock({
       <div className="turn-work-body">
         {items.map((item) =>
           visited ? (
-            <ToolCard key={item.id} item={item} />
+            <ToolCard key={item.id} item={item} agentId={agentId} />
           ) : (
             <span
               key={item.id}
@@ -178,7 +184,12 @@ function Turn({
     >
       {groupedMessages.map((item) =>
         Array.isArray(item) ? (
-          <WorkBlock key={item[0].id} items={item} storageKey={storageKey} />
+          <WorkBlock
+            key={item[0].id}
+            items={item}
+            storageKey={storageKey}
+            agentId={agentId}
+          />
         ) : (
           <div
             key={item.id}
@@ -296,13 +307,13 @@ export default function TurnHistory({
       ]),
     );
   }, [items, groups]);
-  if (!enabled) return <>{messages(items, renderMessage)}</>;
+  if (!enabled) return <>{messages(items, renderMessage, agentId)}</>;
   return (
     <>
       {groups.map((group) =>
         group.items[0].role === "user" || !group.items[0].turnId ? (
           <Fragment key={messageRenderKey(group.items[0])}>
-            {messages(group.items, renderMessage)}
+            {messages(group.items, renderMessage, agentId)}
           </Fragment>
         ) : (
           <Turn

@@ -39,6 +39,8 @@ if (process.isMainFrame) {
       pickDirectory: () => invoke("pickDirectory"),
       pickFiles: () => invoke("pickFiles"),
       revealPath: (value) => invoke("revealPath", value),
+      saveFile: (value) => invoke("saveFile", value),
+      fileAction: (value) => invoke("fileAction", value),
       openExternal: (value) => invoke("openExternal", value),
       setNotifications: (value) => invoke("setNotifications", value),
       notify: (value) => invoke("notify", value, false),

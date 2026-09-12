@@ -51,7 +51,7 @@ try {
   assert.deepEqual(requests, ["https://external.invalid/pixel.png"]);
   await page.getByRole("button", { name: "Preview Remote", exact: true }).click();
   await page.getByRole("dialog").waitFor();
-  await page.waitForFunction(() => document.querySelector('.workspace-image')?.naturalWidth === 1);
+  await page.waitForFunction(() => document.querySelector('.image-viewer img')?.naturalWidth === 1);
   console.log("PASS: production CSP permits confirmed image loads; Markdown and HTML do not load external images automatically");
 } finally {
   await browser?.close();

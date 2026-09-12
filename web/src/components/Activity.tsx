@@ -15,6 +15,8 @@ import {
 import type { Json, Message } from "../types";
 import "./read-activity.css";
 import { toolLimitNotice } from "./toolLimitNotice";
+import MarkdownImage from "./MarkdownImage";
+import { toolImages, toolImageDisplayPayload } from "./toolImages";
 
 const names: Record<string, string> = {
   commandExecution: "Run command",
@@ -22,6 +24,7 @@ const names: Record<string, string> = {
   mcpToolCall: "Connected tool",
   webSearch: "Search the web",
   fileChange: "File changes",
+  imageView: "View image",
   contextCompaction: "Compact context",
   "turn/plan/updated": "Plan",
   "turn/diff/updated": "Changes",
@@ -163,7 +166,13 @@ function describe(item: Message, p: Json) {
           "Tool activity",
   };
 }
-export const ToolCard = memo(function ToolCard({ item }: { item: Message }) {
+export const ToolCard = memo(function ToolCard({
+  item,
+  agentId,
+}: {
+  item: Message;
+  agentId?: string;
+}) {
   const p = payload(item),
     state = status(item, p),
     kind = p.type || item.title,
@@ -184,9 +193,13 @@ export const ToolCard = memo(function ToolCard({ item }: { item: Message }) {
   const label = limit?.title || read.label;
   const args = p.arguments;
   const [open, setOpen] = useState(false);
+  const images = open ? toolImages(p) : [];
+  const display = open ? toolImageDisplayPayload(p) : p;
   const output = open
-    ? (p.aggregatedOutput ??
-      textResult(p.contentItems ?? p.result?.content ?? p.result))
+    ? (display.aggregatedOutput ??
+      textResult(
+        display.contentItems ?? display.result?.content ?? display.result,
+      ))
     : "";
   return (
     <details
@@ -241,6 +254,19 @@ export const ToolCard = memo(function ToolCard({ item }: { item: Message }) {
       </summary>
       {open && (
         <div className="tool-body">
+          {images.map((image, index) => (
+            <div
+              className="tool-section"
+              key={`${agentId || ""}:${item.id}:${state}:${image.kind}:${image.kind === "path" ? image.source : index}`}
+            >
+              <MarkdownImage
+                src={image.kind === "inline" ? image.source : ""}
+                localPath={image.kind === "path" ? image.source : undefined}
+                alt={image.name}
+                agentId={agentId}
+              />
+            </div>
+          ))}
           {read.targets.length > 0 && (
             <ul className="tool-read-targets" aria-label="Read targets">
               {read.targets.map((target, i) => (
@@ -320,7 +346,7 @@ export const ToolCard = memo(function ToolCard({ item }: { item: Message }) {
                 <Code size={12} />
                 Raw event
               </summary>
-              <pre>{pretty(p)}</pre>
+              <pre>{pretty(display)}</pre>
             </details>
           )}
           {item.truncated && (
@@ -375,7 +401,13 @@ export function activitySummary(items: Message[]) {
       .join(" · "),
   };
 }
-export default memo(function Activity({ items }: { items: Message[] }) {
+export default memo(function Activity({
+  items,
+  agentId,
+}: {
+  items: Message[];
+  agentId?: string;
+}) {
   const summary = activitySummary(items);
   const running = summary.running;
   const reads = items.flatMap((item) => readActivity(payload(item)).targets);
@@ -430,7 +462,7 @@ export default memo(function Activity({ items }: { items: Message[] }) {
       <div className="activity-list">
         {items.map((item) =>
           visited ? (
-            <ToolCard key={item.id} item={item} />
+            <ToolCard key={item.id} item={item} agentId={agentId} />
           ) : (
             <span
               key={item.id}

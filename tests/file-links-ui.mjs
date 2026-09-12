@@ -104,9 +104,12 @@ try {
   const check = async (name, expected, line) => {
     await page.getByRole("link", { name, exact: true }).click();
     const dialog = page.getByRole("dialog");
-    await dialog.locator(".workspace-file-text").waitFor();
+    if (!line) {
+      await dialog.getByRole("button", { name: "Source", exact: true }).click();
+    }
+    await dialog.locator(".file-preview-source").waitFor();
     assert.match(
-      await dialog.locator(".workspace-file-text").textContent(),
+      await dialog.locator(".file-preview-source").textContent(),
       expected,
     );
     if (line) {

@@ -8,10 +8,12 @@ export default memo(function SentenceMarkup({
   html,
   enter,
   agentId,
+  basePath,
 }: {
   html: string;
   enter: boolean;
   agentId?: string;
+  basePath?: string;
 }) {
   const [initialLength] = useState(() => {
     if (enter) return 0;
@@ -49,6 +51,7 @@ export default memo(function SentenceMarkup({
             src={node.getAttribute("src") || ""}
             alt={node.getAttribute("alt") || ""}
             agentId={agentId}
+            basePath={basePath}
           />
         );
       if (tag === "pre" && node.firstElementChild?.tagName === "CODE") {
@@ -91,6 +94,6 @@ export default memo(function SentenceMarkup({
     return Array.from(template.content.childNodes, (node, i) =>
       render(node, String(i)),
     );
-  }, [html, initialLength, agentId]);
+  }, [html, initialLength, agentId, basePath]);
   return <div className="markdown-block">{children}</div>;
 });
