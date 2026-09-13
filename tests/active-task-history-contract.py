@@ -60,9 +60,6 @@ class Fixture:
     def _workspace_operation_busy(self, db, cwd, reservation):
         return False
 
-    def resource_action(self):
-        return {'state': {'claims': {}, 'queue': {}}}
-
 
 class ActiveTasks(unittest.TestCase):
     def setUp(self):

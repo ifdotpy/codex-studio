@@ -45,7 +45,7 @@ class RecoveryTest(unittest.TestCase):
         self.config = {"version": 1, "enabled": True, "stateDir": str(self.state),
                        "port": free_port(), "python": sys.executable,
                        "codex": "/usr/bin/true", "resources": str(HERE.parent),
-                       "environment": {"CODEX_BOARD_STATE_DIR": str(self.state / "board")}}
+                       "environment": {"CODEX_CANVAS_CWD": str(self.state / "workspace")}}
         self.child = None
         self.supervisors = []
         self.recovered_pid = None
@@ -150,7 +150,7 @@ class RecoveryTest(unittest.TestCase):
         with patch.dict(os.environ, {"CODEX_HOME": "/foreign-account"}):
             env = recovery.launch_environment({**self.config, "unsetEnvironment": ["CODEX_HOME"]}, self.state)
             self.assertNotIn("CODEX_HOME", env)
-            self.assertEqual(env["CODEX_BOARD_STATE_DIR"], str(self.state / "board"))
+            self.assertEqual(env["CODEX_CANVAS_CWD"], str(self.state / "workspace"))
 
     def test_configuration_cannot_switch_database(self):
         filename = self.state / "background-recovery.json"

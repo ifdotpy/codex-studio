@@ -48,10 +48,9 @@ The remaining sections describe app-server mode unless they explicitly mention n
 ## Paths and protocol
 
 - State dir: `$CODEX_AGENTS_STATE_DIR`, else `$XDG_STATE_HOME/codex-agents`, else `~/.local/state/codex-agents`. Scripts create it.
-- Board dir: `$CODEX_BOARD_STATE_DIR`, else the state directory's `board/` subdirectory. Use the same directory for every client of a shared resource.
 - `CODEX_HOME` selects the Codex login (default `~/.codex`). Install commands with `python3 scripts/install-cli.py`.
-- Codex state, board, and profile directories must resolve outside `.claude`. Scripts reject these paths and do not discover legacy Claude job directories.
-- Move historical state only with explicit authorization. Preserve claims and messages. Never create a second board for an occupied resource during migration.
+- Codex state and profile directories must resolve outside `.claude`. Scripts reject these paths and do not discover legacy Claude job directories.
+- Move historical state only with explicit authorization. Preserve messages.
 - Schemas move; before depending on a protocol field: `codex --version; codex app-server generate-json-schema --experimental --out /tmp/codex-schema` (drop `--experimental` if it fails; read `v2`). Goal methods need `capabilities.experimentalApi: true` at `initialize`.
 
 ## Model
@@ -124,7 +123,7 @@ Keep its terminal session alive while Studio is in use.
 Agents and chats are separate nodes. Do not use a wave or a visual container as a chat.
 An agent can connect to several chats. Chat connections define membership.
 Creator connections record who started each subagent. They do not grant chat membership.
-Do not infer a creator from a shared wave, directory, model, or resource claim.
+Do not infer a creator from a shared wave, directory, or model.
 
 The default view is a lead conversation. Select **New chat** to create it without a form.
 Only managed records with `isLead=true` appear in the chat list. Leads use Astra or Sol.
@@ -177,7 +176,7 @@ scripts/codex-chat connect CHAT_ID --agent AGENT_ID
 scripts/codex-chat disconnect CHAT_ID --agent AGENT_ID
 scripts/codex-chat list
 scripts/codex-chat read CHAT_ID
-scripts/codex-chat post CHAT_ID "Result or question" --owner "$CODEX_BOARD_OWNER"
+scripts/codex-chat post CHAT_ID "Result or question" --owner "$CODEX_AGENT_OWNER"
 scripts/codex-chat post CHAT_ID "Native agent reply" --agent HOST_CHILD_ID
 ```
 
@@ -203,19 +202,6 @@ scripts/codex-steer --wave parser parser-fix "Limit the change to the parser mod
 - Never start a second app-server to steer a thread it does not own.
 - A steer makes the wave live again: re-read the status file immediately before any launcher stop; never stop on a report older than your last steer.
 
-## Shared resources (board)
-
-```bash
-"$CODEX_BOARD" claim|renew|release product-build "$CODEX_BOARD_OWNER" ["reason"]
-"$CODEX_BOARD" claim product-build "$CODEX_BOARD_OWNER" --wait [--timeout SECONDS]
-"$CODEX_BOARD" show
-"$CODEX_BOARD" takeover product-build "$CODEX_BOARD_OWNER" "old-wave:run-id:worker" "reason"
-```
-
-Implementers claim; reviewers only read. Claims never expire — `takeover` only after verifying the holder is gone. The board stores facts and claims, not design decisions. Set `CODEX_AGENTS_STATE_DIR` when running it outside a worker.
-
-`claim --wait` queues the caller when the resource is held, instead of failing with `HELD`, and blocks in the same process until it is granted in FIFO order. `--timeout SECONDS` gives up after the wait, exit code 3, printing the current holder and the caller's queue position; without `--timeout` it waits indefinitely. A plain `claim` (no `--wait`) on a free resource still defers to a live queue: only the queue head may take it, everyone else gets `QUEUED resource n waiting, head=owner` and exit 1 (same code as `HELD`), so an existing plain-claim poll loop keeps working without a code change. `show` lists `QUEUE resource position owner pid waiting Ns` after the claims. A queued process that dies is dropped by the next claim/renew/takeover/release/show on that resource (liveness check: `kill(pid, 0)`, same as `luna`'s launcher check). Do not add a manual `release` for a dead waiter, it was never holding the claim. Poll interval: `CODEX_BOARD_POLL_MS` (default 500).
-
 ## Capacity and completion
 
 - A capacity error rejects one turn; the launcher retries the same thread with backoff. Do not switch models mid-retry.
@@ -228,7 +214,7 @@ Implementers claim; reviewers only read. Claims never expire — `takeover` only
 - Per branch: read the diff, read the test evidence, run the affected gate if it changes the merge decision, merge only a coherent change. A worker's success claim is not merge evidence.
 - Before merging, personally inspect the diff and evidence when the user requests personal review.
 - Finish after every worker is terminal and every accepted change has a commit and evidence.
-- Release only the wave's own resource claims. Preserve worktrees until their work is integrated or handed off.
+- Preserve worktrees until their work is integrated or handed off.
 - Keep useful logs and evidence. Remove only disposable, verified wave-owned scratch files.
 - Recheck status before `codex-daemon stop --wave <name>`: stopping interrupts active workers.
 
@@ -242,9 +228,8 @@ Implementers claim; reviewers only read. Claims never expire — `takeover` only
 | `codex-watch` | Exit-on-terminal watcher |
 | `codex-report` | Bounded status and answers |
 | `codex-steer` | Mailbox message to one worker |
-| `codex-board` | File-locked resource claims |
 | `codex-stop` | Verified launcher stop |
-| `luna` | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `board`, `waves`, `watch` |
+| `luna` | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `waves`, `watch` |
 | `codex-canvas` | Lead conversations, global canvas, agent chats, approvals, and command monitors |
 | `codex-chat` | Create chat nodes, connect members, read messages, or post replies |
 | `codex-graph` | Register native agents and actual creator relationships |
@@ -254,8 +239,6 @@ For `show`, `tail`, and `say`, use `--wave NAME` when worker names repeat.
 Ambiguous names fail instead of selecting the newest wave.
 Each worker uses its own launcher PID and run log.
 An unfinished worker whose launcher ended is `abandoned`.
-The board marks a known owner's claim `STALE` when its launcher is gone.
-Unknown owners remain claimed; missing local history is not evidence that a resource is free.
 `LUNA_HOME` remains an explicit legacy alias for the state directory, below `CODEX_AGENTS_STATE_DIR` in precedence.
 
 ## Script verification

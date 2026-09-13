@@ -116,7 +116,7 @@ It tests the real HTTP stream and React interface without model inference.
 ## Orchestration workspace
 
 The **Work** button opens the work board, changes, Messages, search, the agent plan,
-checkpoints, tools, profiles, rules, and resource leases. The main screen keeps the
+checkpoints, tools, profiles, and rules. The main screen keeps the
 conversation and worker list. Canvas and the saved-plan editor are removed.
 **Plan** displays native steps and explanation. Changes go through the agent chat.
 
@@ -164,7 +164,7 @@ and instructions. They do not grant additional permissions.
 Search covers stored conversations, tool output, work, plans, complaints, and agent
 rooms. Source previews open records beyond the chat's recent-message window.
 Model search respects room membership and cannot search another agent's private
-transcript. The resource panel uses the existing `codex-board` registry.
+transcript.
 
 Desktop alerts require an explicit browser permission. The inbox remains available
 when that permission is absent. Browser notification delivery depends on system settings.

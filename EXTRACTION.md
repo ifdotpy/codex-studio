@@ -63,7 +63,7 @@ Unrelated old Python cache files remain untouched.
 Owner clarification, 2026-09-06: the native agent skill must work in standard
 Codex CLI without this application. The temporary `codex-board` forwarding entry
 and its global command link were removed. The installer now exports 12 commands.
-The application's resource registry remains an internal application capability.
+Resource reservations have since been removed from the application.
 
 This repository owns `.agents/skills/codex-workspace` for its managed tools and
 workflows. Codex discovers it in this project. Its references resolve inside this

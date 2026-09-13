@@ -4,12 +4,11 @@
 Read wave state from the canonical Codex state directory. Only `say` writes a
 mailbox message; all other commands are read-only.
 
-  luna                      dashboard: live threads, launcher, board, machine
+  luna                      dashboard: live threads, launcher, machine
   luna ls [--all]           one line per thread, every wave
   luna show NAME            one thread in full, with its final answer
   luna tail NAME [-n 20]    what that thread has been doing lately
   luna say NAME "text"      queue a follow-up turn for a live thread
-  luna board                who holds the exclusive slots
   luna waves                threads grouped by wave
   luna watch [-i 20]        dashboard, refreshed until interrupted
 
@@ -30,13 +29,12 @@ from collections import deque
 from pathlib import Path
 # Keep import caches out of the project checkout.
 sys.dont_write_bytecode = True
-from codex_state import ACTIVE, state_dir, board_dir, read_threads, effective_status, process_is_alive, final_answer
+from codex_state import ACTIVE, state_dir, read_threads, effective_status, process_is_alive, final_answer
 
 # ---------------------------------------------------------------- locating
 
 try:
     HOME = str(state_dir("LUNA_HOME"))
-    BOARD = str(board_dir(Path(HOME)) / "codex-board.json")
 except RuntimeError as error:
     sys.exit(f"luna: {error}")
 
@@ -164,22 +162,6 @@ def machine():
     return load, usage.free / 1024 ** 3
 
 
-def board_claims():
-    try:
-        with open(BOARD, encoding="utf-8") as handle:
-            value = json.load(handle)
-        if not isinstance(value, dict) or not isinstance(value.get("claims"), dict):
-            raise RuntimeError(f"invalid board file: {BOARD}")
-        claims = value["claims"]
-        if not all(isinstance(claim, dict) and isinstance(claim.get("worker"), str)
-                   for claim in claims.values()):
-            raise RuntimeError(f"invalid board claims: {BOARD}")
-        return claims
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"cannot read {BOARD}: {error}") from error
-
 # ---------------------------------------------------------------- commands
 
 def cmd_ls(args):
@@ -261,24 +243,6 @@ def cmd_say(args):
     ).returncode
 
 
-def cmd_board(args):
-    claims = board_claims()
-    if not claims:
-        print("no slot is claimed")
-        return 0
-    now = time.time()
-    workers = {t.get("boardOwner"): t for t in load_threads() if t.get("boardOwner")}
-    for slot, claim in sorted(claims.items()):
-        held = human_age(now - claim.get("at", now))
-        holder = claim.get("worker", "?")
-        worker = workers.get(holder)
-        # Nothing releases a claim when a thread dies, so a stale claim blocks
-        # every later thread that waits politely for the slot.
-        stale = paint("  STALE, launcher is not live", "31") if worker and not process_is_alive(worker.get("launcherPid")) else ""
-        print(f"  {slot:<18} {holder:<20} held {held:<5} {paint(claim.get('note',''), DIM)}{stale}")
-    return 0
-
-
 def cmd_waves(args):
     waves = {}
     for thread in load_threads():
@@ -305,10 +269,6 @@ def cmd_dashboard(args):
     print(f"{state}   load {load:.1f}   disk {free:.0f}G free   {HOME}")
     print()
     cmd_ls(argparse.Namespace(all=False))
-    claims = board_claims()
-    if claims:
-        print()
-        cmd_board(args)
     return 0
 
 
@@ -349,9 +309,6 @@ def main():
     p.add_argument("name")
     p.add_argument("message", nargs="+")
     p.set_defaults(func=cmd_say)
-
-    p = sub.add_parser("board", help="who holds the exclusive slots")
-    p.set_defaults(func=cmd_board)
 
     p = sub.add_parser("waves", help="threads grouped by wave")
     p.set_defaults(func=cmd_waves)

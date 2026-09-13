@@ -40,7 +40,6 @@ class InstallContract(unittest.TestCase):
             env = {
                 **os.environ,
                 "CODEX_AGENTS_STATE_DIR": str(root / "state"),
-                "CODEX_BOARD_STATE_DIR": str(root / "board"),
             }
             for name, args in [("luna", ["ls", "--all"])]:
                 result = subprocess.run(

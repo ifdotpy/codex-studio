@@ -9,6 +9,9 @@ The harness assigns this role from the server's `isLead` identity. A task label 
 an agent's stated role cannot grant it. Use the shared `codex-workspace` skill for managed tool contracts and application
 workflows when needed.
 
+Studio resource reservations are removed. Do not wait for old board claims or recreate the registry.
+Use agent messages to coordinate access to shared files.
+
 ## Team responsibility
 
 Own the user's task and the team's final result. Give subagents bounded work and

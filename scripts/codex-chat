@@ -12,8 +12,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("action", choices=["list", "create", "connect", "disconnect", "read", "post"])
 parser.add_argument("chat", nargs="?")
 parser.add_argument("text", nargs="?")
-parser.add_argument("--owner", default=os.environ.get("CODEX_BOARD_OWNER"))
-parser.add_argument("--agent", help="Exact board agent identity for a connection or native author")
+parser.add_argument("--owner", default=os.environ.get("CODEX_AGENT_OWNER") or os.environ.get("CODEX_BOARD_OWNER"))
+parser.add_argument("--agent", help="Exact agent identity for a connection or native author")
 parser.add_argument("--id", help="Stable request identity for creation or message retries")
 args = parser.parse_args()
 try:
@@ -27,7 +27,7 @@ try:
     elif args.action == "read" and args.chat:
         result = canvas.messages(args.chat)
     elif args.action == "post" and args.chat and args.text and (args.owner or args.agent):
-        rows = [t for t in canvas.threads() if (t['id'] == args.agent if args.agent else t.get("boardOwner") == args.owner)]
+        rows = [t for t in canvas.threads() if (t['id'] == args.agent if args.agent else t.get("agentOwner", t.get("boardOwner")) == args.owner)]
         if len(rows) != 1:
             raise ValueError("The owner must identify one current worker.")
         result = canvas.post(args.chat, args.text, args.id or str(uuid.uuid4()), author=rows[0]["id"], notify=False)

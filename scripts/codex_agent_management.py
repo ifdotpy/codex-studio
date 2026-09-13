@@ -61,9 +61,6 @@ def _blockers(rt, db, a):
             "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
             "AND (json_extract(record,'$.stage') IN ('queued','running') OR json_extract(record,'$.outcome')='unknown')",
             (key,))])
-    board = rt.resource_action().get('state', {})
-    add('resource_claims', [name for name, claim in board.get('claims', {}).items() if claim.get('worker') == key])
-    add('resource_queue', [name for name, waiters in board.get('queue', {}).items() if any(w.get('worker') == key for w in waiters)])
     return result
 
 

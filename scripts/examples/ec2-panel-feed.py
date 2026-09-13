@@ -37,37 +37,11 @@ def load_config(path):
             raise ValueError("resource.region must be an AWS region name")
         if resource["profile"].startswith("-") or any(ord(c) < 32 for c in resource["profile"]):
             raise ValueError("resource.profile must be an AWS profile name")
-        if "resource" in resource and (not isinstance(resource["resource"], str) or not resource["resource"].strip()):
-            raise ValueError("resource.resource must be the exact board resource name")
         identity = (resource["profile"], resource["region"], resource["instanceId"])
         if identity in seen:
             raise ValueError("duplicate EC2 instance in the same profile and region")
         seen.add(identity)
     return resources
-
-
-def load_claims(path):
-    if not path:
-        return None
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or not isinstance(data.get("claims"), dict):
-        raise ValueError("the board must contain a claims object")
-    return data["claims"]
-
-
-def reservation(resource, claims):
-    key = resource.get("resource")
-    if claims is None or not key:
-        return {"lease": "Lease unknown", "owner": None}
-    claim = claims.get(key)
-    if claim is None:
-        return {"lease": "No reservation", "owner": None}
-    if not isinstance(claim, dict):
-        raise ValueError(f"invalid claim for {key}")
-    holders = [claim[k] for k in ("worker", "thread") if isinstance(claim.get(k), str) and claim[k].strip()]
-    if not holders or len(set(holders)) != 1:
-        raise ValueError(f"missing or conflicting claim owner for {key}")
-    return {"lease": "Reserved", "owner": holders[0]}
 
 
 def describe(resources, timeout):
@@ -101,35 +75,30 @@ def describe(resources, timeout):
     return instances
 
 
-def snapshot(resources, claims, instances, timestamp=None):
+def snapshot(resources, instances, timestamp=None):
     rows = {}
     running = 0
-    reserved = 0
-    unknown_leases = 0
     for index, resource in enumerate(resources):
         instance = instances.get((resource["profile"], resource["region"], resource["instanceId"]))
         state = instance.get("State", {}).get("Name", "unknown") if instance else "not returned"
         machine = instance.get("InstanceType", "Unknown type") if instance else "Unknown type"
         if not isinstance(state, str) or not isinstance(machine, str):
             raise ValueError("EC2 returned invalid instance state or type")
-        lease = reservation(resource, claims)
         running += state == "running"
-        reserved += lease["lease"] == "Reserved"
-        unknown_leases += lease["lease"] == "Lease unknown"
         rows[str(index)] = {"instanceId": resource["instanceId"], "label": resource["label"],
                             "state": state, "type": machine, "region": resource["region"],
-                            "tone": "success" if state == "running" else "neutral", **lease}
+                            "tone": "success" if state == "running" else "neutral"}
     moment = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    summary = f"{running} running · {reserved} reserved" if not unknown_leases else f"{running} running · lease unknown"
+    summary = f"{running} running"
     return {"instances": rows, "summary": summary,
             "updatedAt": moment, "updatedLabel": "Updated " + moment[11:19] + " UTC"}
 
 
 def panel_spec(resources):
-    initial = snapshot(resources, None, {}, "1970-01-01T00:00:00+00:00")
+    initial = snapshot(resources, {}, "1970-01-01T00:00:00+00:00")
     initial.update(summary="Waiting for EC2", updatedAt=None, updatedLabel="Waiting for first update")
     for row in initial["instances"].values():
-        row.update(state="Not checked", type="", lease="Lease unknown")
+        row.update(state="Not checked", type="")
     elements = {
         "root": {"type": "Stack", "props": {"gap": "xs"},
                  "children": ["heading", "selector", *[f"instance-{i}" for i in range(len(resources))], "updated"]},
@@ -149,10 +118,9 @@ def panel_spec(resources):
                          "visible": {"$state": "/selected", "eq": str(i)},
                          "children": [f"{key}-status", f"{key}-id"]}
         elements[f"{key}-status"] = {"type": "Stack", "props": {"direction": "row", "gap": "sm", "align": "center"},
-                                     "children": [f"{key}-icon", f"{key}-state", f"{key}-lease"]}
+                                     "children": [f"{key}-icon", f"{key}-state"]}
         elements[f"{key}-icon"] = {"type": "Icon", "props": {"name": "server", "size": "sm"}}
         elements[f"{key}-state"] = {"type": "Badge", "props": {"label": {"$state": f"{path}/state"}, "tone": {"$state": f"{path}/tone"}}}
-        elements[f"{key}-lease"] = {"type": "Text", "props": {"text": {"$state": f"{path}/lease"}, "kind": "caption"}}
         elements[f"{key}-id"] = {"type": "Text", "props": {"text": {"$state": f"{path}/instanceId"}, "kind": "caption"}}
     return {"action": "set", "spec": {"root": "root", "elements": elements,
                                         "state": {"selected": "0", "live": initial}}}
@@ -161,7 +129,6 @@ def panel_spec(resources):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="JSON with explicit instance IDs, profiles, and regions")
-    parser.add_argument("--claims-file", help="exact codex-board.json supplied by the project; read only")
     parser.add_argument("--interval", type=int, default=30, help="seconds between reads, minimum 10")
     parser.add_argument("--timeout", type=int, default=15, help="seconds per AWS process, 1 to 60")
     mode = parser.add_mutually_exclusive_group()
@@ -178,12 +145,10 @@ def main():
             print(json.dumps(panel_spec(resources), ensure_ascii=False))
             return 0
         while not STOP.is_set():
-            # Read the reservation source on each tick. Do not manufacture or renew leases.
-            claims = load_claims(args.claims_file)
             instances = describe(resources, args.timeout)
             if instances is None or STOP.is_set():
                 return 0
-            print(json.dumps(snapshot(resources, claims, instances), ensure_ascii=False, separators=(",", ":")), flush=True)
+            print(json.dumps(snapshot(resources, instances), ensure_ascii=False, separators=(",", ":")), flush=True)
             if args.once or STOP.wait(args.interval):
                 return 0
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:

@@ -8,7 +8,6 @@ const { executable, stateDirectory } = require("./backend.cjs");
 const runFile = promisify(execFile);
 const restartKeys = [
   "CODEX_HOME",
-  "CODEX_BOARD_STATE_DIR",
   "CODEX_CANVAS_CWD",
   "CODEX_CANVAS_CONCURRENCY",
   "CODEX_BIN",

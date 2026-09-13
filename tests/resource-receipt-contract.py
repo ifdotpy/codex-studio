@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A rejected resource claim cannot appear as a successful tool operation."""
+"""Retired resource calls cannot mutate state or leave uncertain receipts."""
 import importlib.util
 import json
 import os
@@ -20,34 +20,41 @@ class ResourceReceiptContract(unittest.TestCase):
     tool = f.WorkspaceContract.tool
     agent_update = f.WorkspaceContract.agent_update
 
-    def test_denied_claim_and_release_have_failed_outer_receipts(self):
+    def test_retired_resource_calls_fail_without_writes_or_unknown_receipts(self):
         lead = self.lead()
-        first, second = self.worker(lead), self.worker(lead, 'second')
-        self.runtime.resource_action({'action': 'claim', 'resource': 'fixture-slot'}, first['id'])
-        for action in ('claim', 'renew', 'release'):
-            response = self.tool(second, 'orchestration_resource', {'action': action, 'resource': 'fixture-slot'})
-            self.assertFalse(response['success'], response)
-            value = json.loads(response['contentItems'][0]['text'])
-            self.assertFalse(value['ok'])
-            self.assertFalse(value['ownsResource'])
-            self.assertEqual(value['holder'], first['id'])
-            self.assertEqual(value['outcome'], 'not_applied')
-            with self.runtime.db() as db:
-                receipts = self.runtime.records(db, 'tool_requests')
-            saved = [r for r in receipts if r['tool'] == 'orchestration_resource'][-1]
-            self.assertEqual(saved['outcome'], 'not_applied')
-            self.assertEqual(saved['stage'], 'failed')
-        owned = self.tool(first, 'orchestration_resource', {'action': 'renew', 'resource': 'fixture-slot'})
-        self.assertTrue(owned['success'])
-        self.assertTrue(json.loads(owned['contentItems'][0]['text'])['ownsResource'])
+        board = self.root / 'board' / 'codex-board.json'
+        board.parent.mkdir()
+        original = '{"claims":{"old":{"worker":"old-worker","at":1}}}'
+        board.write_text(original)
+        self.assertNotIn('orchestration_resource', {t['name'] for t in self.runtime.tool_definitions(lead)})
+        for action in ('show', 'claim', 'renew', 'release'):
+            args = {'action': action, 'resource': 'old'}
+            for name, payload in (
+                ('orchestration_resource', args),
+                ('orchestration_send', {'agent_id': 'workspace', 'text': json.dumps({'tool': 'orchestration_resource', 'arguments': args})}),
+            ):
+                response = self.tool(lead, name, payload)
+                self.assertFalse(response['success'], response)
+                self.assertIn('reservations were removed', response['contentItems'][0]['text'])
+                with self.runtime.db() as db:
+                    receipts = self.runtime.records(db, 'tool_requests')
+                saved = receipts[-1]
+                self.assertEqual(saved['outcome'], 'not_applied')
+                self.assertEqual(saved['stage'], 'failed')
+                self.assertEqual(board.read_text(), original)
 
-    def test_process_failure_keeps_unknown_outcome(self):
-        lead = self.lead()
-        import subprocess
-        with patch('codex_rules.subprocess.run', return_value=subprocess.CompletedProcess([], 2, '', 'write failed')):
-            response = self.tool(lead, 'orchestration_resource', {'action': 'claim', 'resource': 'fixture-slot'})
-        self.assertFalse(response['success'])
-        self.assertEqual(json.loads(response['contentItems'][0]['text'])['outcome'], 'unknown')
+    def test_retired_result_classification_preserves_other_uncertainty(self):
+        from codex_tool_requests import request_result_outcome
+        record = {'tool': 'orchestration_resource'}
+        for message, expected in (
+            ('Resource reservations were removed. Continue without a board claim.', 'not_applied'),
+            ('Unknown workspace tool', 'not_applied'),
+            ('write failed', 'unknown'),
+        ):
+            result = {'success': False, 'contentItems': [{'type': 'inputText', 'text': message}]}
+            self.assertEqual(request_result_outcome(record, result), expected)
+        self.assertEqual(request_result_outcome(record, {'success': True}), 'applied')
+        self.assertEqual(request_result_outcome(record, {}), 'unknown')
 
     def test_status_exposes_actual_limits_and_block_reasons(self):
         lead = self.lead()

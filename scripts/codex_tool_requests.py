@@ -103,6 +103,10 @@ def request_result_outcome(record, result):
     if tool == "orchestration_message" and error in _MESSAGE_REJECTIONS:
         return "not_applied"
     rejections = {
+        "orchestration_resource": {
+            "Resource reservations were removed. Continue without a board claim.",
+            "Unknown workspace tool",
+        },
         "orchestration_monitor": {"Command timeout must be 1 second to 24 hours", "Supply a command with 1 to 12000 characters"},
         "orchestration_monitor_input": {"This interactive monitor is not active"},
         "orchestration_user_task": {"Wait for the user to check this task before accepting it"},
@@ -116,6 +120,7 @@ def request_result_outcome(record, result):
     # The legacy workspace bridge routes these errors only from read/validation
     # paths. Do not infer safety from arbitrary exception words or JSON output.
     if tool == "orchestration_send" and error in {
+        "Resource reservations were removed. Continue without a board claim.",
         "Output reference is not owned by this agent", "Unknown context topic",
         "There is no active turn to steer. Choose queue", "A workspace operation is active in this directory",
         "Unknown managed agent", "Unknown workspace tool", "'agent_id'",

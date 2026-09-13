@@ -8,8 +8,7 @@ repository.
 Read README.md and the relevant source before editing. Use the engineering-protocol
 skill for substantive work when it is available. Match checks to the changed scope.
 
-Keep runtime state outside this checkout. Preserve existing state directory and
-board identities. Never start a second backend against an occupied state directory.
+Keep runtime state outside this checkout. Preserve the existing state directory identity. Never start a second backend against an occupied state directory.
 Do not stop active user agents, monitors, terminals, or waves for a source update.
 
 The server owns SQLite and orchestration. The renderer uses its HTTP API. Native

@@ -4,12 +4,9 @@ import base64
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 import threading
 import time
 import uuid
-from codex_state import board_dir
 from codex_work import text_field
 
 
@@ -45,19 +42,6 @@ def rule_tools(tool, text):
                 "durationMinutes": {"type": "integer", "minimum": 1, "maximum": 525600},
                 "command": text,
                 "text": text,
-            },
-            ["action"],
-        ),
-        tool(
-            "orchestration_resource",
-            "Use the existing codex-board resource registry. Claims are atomic. Busy claims return the holder; never assume a stale owner is dead. Owner is always your agent id.",
-            {
-                "action": {
-                    "type": "string",
-                    "enum": ["show", "claim", "renew", "release"],
-                },
-                "resource": text,
-                "note": text,
             },
             ["action"],
         ),
@@ -519,49 +503,3 @@ class RulesMixin:
             server.on_result(submitted, reconcile)
         # The app-server reader must stay free to deliver output before the acknowledgement.
         return server.wait(submitted)
-
-    def resource_action(self, data=None, actor=None, epoch=None):
-        with self.lock:
-            if actor and epoch is not None and self.agent(actor)["epoch"] != epoch:
-                raise ValueError("The caller was stopped")
-            return self.resource_locked(data, actor)
-
-    def resource_locked(self, data=None, actor=None):
-        path = board_dir()
-        if data is None or data.get("action") == "show":
-            try:
-                state = json.loads((path / "codex-board.json").read_text())
-            except FileNotFoundError:
-                state = {"claims": {}, "queue": {}, "notes": []}
-            return {"path": str(path / "codex-board.json"), "state": state}
-        a = self.checked_actor_in_own_db(actor or data.get("agent"), actor)
-        action = data.get("action")
-        if action not in {"claim", "renew", "release"}:
-            raise ValueError("Choose claim, renew, or release")
-        resource = text_field(data.get("resource"), "a resource name", 200)
-        args = [
-            sys.executable,
-            "-B",
-            str(Path(__file__).with_name("codex-board")),
-            action,
-            resource,
-            a["id"],
-        ]
-        if action == "claim":
-            args.append(text_field(data.get("note", ""), "a note", 2000, empty=True))
-        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
-        snapshot = self.resource_action()
-        holder = snapshot["state"].get("claims", {}).get(resource, {}).get("worker")
-        return {
-            **snapshot,
-            "ok": result.returncode == 0,
-            "exitCode": result.returncode,
-            "message": (result.stdout + result.stderr).strip(),
-            "action": action, "resource": resource, "agent": a["id"],
-            "holder": holder,
-            "ownsResource": holder == a["id"],
-            # Exit 1 is the board's explicit claim/renew/release refusal.
-            # A process error or timeout does not prove no board write occurred.
-            "outcome": ("applied" if result.returncode == 0 else
-                        "not_applied" if result.returncode == 1 else "unknown"),
-        }

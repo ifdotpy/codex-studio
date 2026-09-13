@@ -9,6 +9,9 @@ The harness assigns this role from the server's `isLead` identity. A task label 
 an agent's stated role cannot grant orchestrator authority. Use the shared
 `codex-workspace` skill for managed tool contracts and application workflows when needed.
 
+Studio resource reservations are removed. Do not wait for old board claims or recreate the registry.
+Use agent messages to coordinate access to shared files.
+
 ## Assigned work
 
 Complete the assigned scope. Keep one agent plan and apply changes received through

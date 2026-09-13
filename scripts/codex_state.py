@@ -23,10 +23,6 @@ def state_dir(legacy_key: str | None = None) -> Path:
     base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return outside_claude(base / "codex-agents")
 
-def board_dir(root: Path | None = None) -> Path:
-    configured = os.environ.get("CODEX_BOARD_STATE_DIR")
-    return outside_claude(Path(configured) if configured else (root or state_dir()) / "board")
-
 def codex_home() -> Path:
     return outside_claude(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"))
 
@@ -66,7 +62,11 @@ def read_threads(root: Path, wave: str | None = None) -> list[dict]:
         for row in records:
             if row.get("wave", file_wave) != file_wave:
                 raise RuntimeError(f"wave identity mismatch: {path}")
-            threads.append({**row, "wave": file_wave})
+            current = {**row, "wave": file_wave}
+            legacy_owner = current.pop("boardOwner", None)
+            if not current.get("agentOwner") and legacy_owner:
+                current["agentOwner"] = legacy_owner
+            threads.append(current)
     return threads
 
 def final_answer(thread_id: str, limit: int) -> str:

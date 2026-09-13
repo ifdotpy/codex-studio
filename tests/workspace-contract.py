@@ -990,48 +990,6 @@ class WorkspaceContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not active"):
             self.runtime.monitor_input(monitor["id"], {"text": "late"}, lead["id"])
 
-    def test_resource_registry_is_shared_and_tool_cannot_impersonate_a_peer(self):
-        lead = self.lead()
-        first, second = self.worker(lead), self.worker(lead, "Second")
-        claimed = self.runtime.resource_action(
-            {"action": "claim", "resource": "fixture-slot"}, first["id"]
-        )
-        self.assertTrue(claimed["ok"])
-        self.assertEqual(
-            Path(claimed["path"]).resolve(),
-            (self.root / "board" / "codex-board.json").resolve(),
-        )
-        self.assertEqual(
-            claimed["state"]["claims"]["fixture-slot"]["worker"], first["id"]
-        )
-        busy = self.runtime.resource_action(
-            {"action": "claim", "resource": "fixture-slot"}, second["id"]
-        )
-        self.assertFalse(busy["ok"])
-        response = self.tool(
-            second,
-            "orchestration_resource",
-            {"action": "release", "resource": "fixture-slot", "agent": first["id"]},
-        )
-        result = (
-            json.loads(response["contentItems"][0]["text"])
-            if response["success"]
-            else {}
-        )
-        self.assertFalse(
-            result.get("ok", False),
-            "A peer released a resource using another worker identity",
-        )
-        self.assertEqual(
-            self.runtime.resource_action()["state"]["claims"]["fixture-slot"]["worker"],
-            first["id"],
-        )
-        released = self.runtime.resource_action(
-            {"action": "release", "resource": "fixture-slot"}, first["id"]
-        )
-        self.assertTrue(released["ok"])
-        self.assertNotIn("fixture-slot", released["state"]["claims"])
-
     def test_event_rule_deduplicates_same_event_and_stop_prevents_late_wake(self):
         lead = self.lead()
         rule = self.runtime.rules(
@@ -1191,9 +1149,10 @@ class WorkspaceContract(unittest.TestCase):
         self.assertEqual(inventory["servers"][0]["name"], "fixture-mcp")
         names = {t["name"] for t in inventory["managed"]}
         self.assertTrue(
-            {"orchestration_task", "orchestration_watch", "orchestration_resource"}
+            {"orchestration_task", "orchestration_watch"}
             <= names
         )
+        self.assertNotIn("orchestration_resource", names)
         self.assertEqual(inventory["errors"], [])
 
     def test_capability_refresh_discovers_a_new_skill_in_the_same_directory(self):

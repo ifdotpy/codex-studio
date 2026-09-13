@@ -81,12 +81,12 @@ class Contract(unittest.TestCase):
                 with self.rt.db() as db:db.execute(f'DELETE FROM runtime_{table}')
         self.worker(inFlight=True);self.assertFalse(self.call('inspect')['canArchive'])
         self.assertEqual(self.call('archive')['status'],'blocked')
-    def test_unknown_input_and_resource_claim_are_not_discarded(self):
+    def test_unknown_input_blocks_archive_but_legacy_claim_does_not(self):
         with self.rt.db() as db:db.execute("INSERT INTO runtime_events VALUES ('e','worker',1,'uncertain')")
         self.assertEqual(self.call('archive')['status'],'blocked')
         with self.rt.db() as db:db.execute('DELETE FROM runtime_events')
         self.rt.claims={'build':{'worker':'worker'}}
-        self.assertEqual(self.call('archive')['blockers'][0]['kind'],'resource_claims')
+        self.assertEqual(self.call('archive')['status'],'archived')
     def test_descendant_must_be_archived_first(self):
         self.update('agents',{'id':'child','parentId':'worker','rootId':'lead','isLead':False})
         self.assertEqual(self.call('archive')['status'],'blocked')

@@ -33,7 +33,8 @@ function fixture() {
     PATH: process.env.PATH,
     CODEX_BIN: "/usr/bin/true",
     CODEX_HOME: path.join(root, "accounts"),
-    CODEX_BOARD_STATE_DIR: path.join(root, "board"),
+    CODEX_CANVAS_CWD: path.join(root, "workspace"),
+    CODEX_BOARD_STATE_DIR: path.join(root, "legacy-board"),
     OPENAI_API_KEY: "must-not-persist",
   };
   return { root, resources, supervisor, env, home: root, uid: 777 };
@@ -64,10 +65,11 @@ test("register and read back the exact-state launch agent without storing creden
     const config = JSON.parse(readFileSync(result.config, "utf8"));
     assert.equal(config.environment.CODEX_HOME, fixtureData.env.CODEX_HOME);
     assert.equal(
-      config.environment.CODEX_BOARD_STATE_DIR,
-      fixtureData.env.CODEX_BOARD_STATE_DIR,
+      config.environment.CODEX_CANVAS_CWD,
+      fixtureData.env.CODEX_CANVAS_CWD,
     );
     assert.equal(config.environment.OPENAI_API_KEY, undefined);
+    assert.equal(config.environment.CODEX_BOARD_STATE_DIR, undefined);
     assert.equal(statSync(result.config).mode & 0o777, 0o600);
     const plist = JSON.parse(
       execFileSync(
@@ -150,7 +152,6 @@ test("the hidden desktop survives crash loops and resets its recovery budget", a
         env: {
           ...process.env,
           CODEX_AGENTS_STATE_DIR: path.join(temp, "state"),
-          CODEX_BOARD_STATE_DIR: path.join(temp, "board"),
           CODEX_DESKTOP_PROFILE: path.join(temp, "profile"),
           CODEX_DESKTOP_PORT: String(port),
         },
@@ -213,16 +214,18 @@ test("backend restart environment overrides the attaching desktop and preserves 
       enabled: true,
       restartEnvironment: {
         CODEX_BIN: "/usr/bin/true",
-        CODEX_BOARD_STATE_DIR: "/authoritative-board",
+        CODEX_CANVAS_CWD: "/authoritative-workspace",
+        CODEX_BOARD_STATE_DIR: "/legacy-board",
       },
       run: async () => {},
     });
     const config = JSON.parse(readFileSync(result.config));
     assert.equal(
-      config.environment.CODEX_BOARD_STATE_DIR,
-      "/authoritative-board",
+      config.environment.CODEX_CANVAS_CWD,
+      "/authoritative-workspace",
     );
     assert.equal(config.environment.CODEX_HOME, undefined);
+    assert.equal(config.environment.CODEX_BOARD_STATE_DIR, undefined);
     assert.ok(config.unsetEnvironment.includes("CODEX_HOME"));
   } finally {
     rmSync(data.root, { recursive: true, force: true });

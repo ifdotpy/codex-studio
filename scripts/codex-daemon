@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 # Keep import caches out of the project checkout.
 sys.dont_write_bytecode = True
-from codex_state import state_dir, board_dir, codex_home, outside_claude, process_is_alive
+from codex_state import state_dir, codex_home, outside_claude, process_is_alive
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 
@@ -53,7 +53,6 @@ alive = process_is_alive
 
 def cmd_start(args):
     state = str(state_dir())
-    board = str(board_dir())
     profile = str(codex_home())
     configured_tasks = os.environ.get("CODEX_TASKS")
     if configured_tasks:
@@ -75,7 +74,6 @@ def cmd_start(args):
     env = dict(os.environ)
     env["CODEX_WAVE"] = args.wave
     env["CODEX_AGENTS_STATE_DIR"] = state
-    env["CODEX_BOARD_STATE_DIR"] = board
     env["CODEX_HOME"] = profile
     if configured_tasks:
         env["CODEX_TASKS"] = configured_tasks

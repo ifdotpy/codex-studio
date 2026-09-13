@@ -99,10 +99,7 @@ const STDERR = join(STATE, `codex-swarm-stderr.${WAVE}.${RUN_ID}.log`);
 const LAUNCHER_PID_FILE = join(STATE, `codex-swarm-launcher.${WAVE}.pid`);
 const INBOX = join(STATE, `codex-inbox.${WAVE}.${RUN_ID}`);
 const DEAD_LETTER = join(STATE, `codex-dead-letter.${WAVE}.${RUN_ID}`);
-const BOARD_STATE = outsideClaude(process.env.CODEX_BOARD_STATE_DIR
-  ? expandHome(process.env.CODEX_BOARD_STATE_DIR) : join(STATE, "board"));
 const WORKTREE_LOCK_DIR = join(STATE, "worktree-locks");
-const BOARD_COMMAND = resolve(join(SCRIPT_DIR, "codex-board"));
 
 const budgetText = process.env.CODEX_BUDGET;
 const BUDGET = budgetText === undefined || budgetText === "" ? null : Number(budgetText);
@@ -199,12 +196,10 @@ const roleRules = (task) => task.role === "reviewer"
 const verificationRules = (task) => task.role === "reviewer"
   ? "Inspect the supplied diff and evidence. Run only read-only checks. Do not run a check that writes build files."
   : "Run the affected tests. Include one test for the new behavior and one regression test when applicable. Commit before the final report.";
-const workerPrompt = (task, boardOwner) => preambleTemplate
+const workerPrompt = (task, agentOwner) => preambleTemplate
   .replaceAll("{{STATE_DIR}}", shellLiteral(STATE))
-  .replaceAll("{{BOARD_STATE_DIR}}", shellLiteral(BOARD_STATE))
-  .replaceAll("{{BOARD_COMMAND}}", shellLiteral(BOARD_COMMAND))
   .replaceAll("{{WORKER_NAME}}", shellLiteral(task.name))
-  .replaceAll("{{BOARD_OWNER}}", shellLiteral(boardOwner))
+  .replaceAll("{{AGENT_OWNER}}", shellLiteral(agentOwner))
   .replaceAll("{{LOAD_LIMIT}}", String(LOAD_LIMIT))
   .replaceAll("{{ROLE_RULES}}", roleRules(task))
   .replaceAll("{{VERIFICATION_RULES}}", verificationRules(task))
@@ -330,7 +325,6 @@ try {
 }
 mkdirSync(INBOX, { recursive: true });
 mkdirSync(DEAD_LETTER, { recursive: true });
-mkdirSync(BOARD_STATE, { recursive: true });
 
 let proc;
 let shuttingDown = false;
@@ -443,7 +437,7 @@ function sandboxPolicy(mode, cwd) {
   if (mode === "workspace-write") {
     return {
       type: "workspaceWrite",
-      writableRoots: [cwd, BOARD_STATE],
+      writableRoots: [cwd],
       networkAccess: false,
       excludeSlashTmp: true,
       excludeTmpdirEnvVar: true,
@@ -673,7 +667,7 @@ await call("initialize", {
 });
 
 for (const task of tasks) {
-  const boardOwner = `${WAVE}:${RUN_ID}:${task.name}`;
+  const agentOwner = `${WAVE}:${RUN_ID}:${task.name}`;
   const started = await call("thread/start", {
     cwd: task.cwd,
     model: MODEL,
@@ -686,7 +680,7 @@ for (const task of tasks) {
   });
   const threadId = started?.thread?.id;
   if (!threadId) throw new Error(`thread/start returned no thread id for ${task.name}`);
-  const prompt = workerPrompt(task, boardOwner);
+  const prompt = workerPrompt(task, agentOwner);
 
   const state = {
     wave: WAVE,
@@ -696,7 +690,7 @@ for (const task of tasks) {
     role: task.role,
     orchestratorId: task.orchestratorId,
     orchestratorName: ORCHESTRATOR_NAME,
-    boardOwner,
+    agentOwner,
     threadId,
     turnId: null,
     branch: task.branch,

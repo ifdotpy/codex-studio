@@ -17,4 +17,4 @@ they are not the current panel workflow.
 
 Continue to use the existing monitor tools for commands that need a result.
 A resource's service status does not prove that a build or agent uses it.
-Check the actual command result and resource reservation before making that claim.
+Check the actual command result before making that claim.

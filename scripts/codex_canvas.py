@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from codex_backend_identity import BACKEND_BUILD
-from codex_state import state_dir, board_dir, codex_home, read_threads, effective_status, process_is_alive
+from codex_state import state_dir, codex_home, read_threads, effective_status, process_is_alive
 
 SCRIPTS = Path(__file__).resolve().parent
 WEB = SCRIPTS.parent / "web" / "dist"
@@ -279,27 +279,8 @@ class Canvas:
 
     def snapshot(self, runtime_snapshot=None):
         threads = self.threads(runtime_snapshot["agents"] if runtime_snapshot is not None else None)
-        board = {"claims": {}, "notes": [], "queue": {}}
-        board_error = None
-        try:
-            path = board_dir(self.root) / "codex-board.json"
-            if path.exists():
-                board = json.loads(path.read_text())
-                if (not isinstance(board, dict) or not isinstance(board.get("claims"), dict)
-                        or not all(isinstance(c, dict) for c in board["claims"].values())
-                        or not isinstance(board.get("notes", []), list)
-                        or not isinstance(board.get("queue", {}), dict)):
-                    raise ValueError("Invalid board data")
-        except (ValueError, OSError) as error:
-            board = {"claims": {}, "notes": [], "queue": {}}
-            board_error = str(error)
-        owners = {t.get("boardOwner"): t for t in threads}
-        for claim in board["claims"].values():
-            owner = owners.get(claim.get("worker"))
-            claim["stale"] = bool(owner and not owner["launcherAlive"])
         chats = self.chats()
-        return {"threads": threads, "chats": chats, 'nodes': threads + chats, 'edges': self.edges(threads), "board": board,
-                "boardError": board_error, "at": time.time(), "stateDir": str(self.root)}
+        return {"threads": threads, "chats": chats, 'nodes': threads + chats, 'edges': self.edges(threads), "at": time.time(), "stateDir": str(self.root)}
 
     def thread(self, key):
         matches = [t for t in self.threads() if t["id"] == key]
@@ -449,7 +430,7 @@ class Canvas:
                 message = (f"Group chat: {group['name']}\nUser message: {message}\n\n"
                            f"Read the shared chat: {command} read {shlex.quote(room)}\n"
                            f"Post a reply: {command} post {shlex.quote(room)} 'your reply'\n"
-                           "Use your CODEX_BOARD_OWNER for authorship. Read peer replies before coordination decisions. "
+                           "Use your CODEX_AGENT_OWNER for authorship. Read peer replies before coordination decisions. "
                            "Posts are shared, but do not automatically start peer turns.")
             for member in deliveries:
                 if deliveries[member] != "pending":
@@ -660,7 +641,7 @@ def make_server(canvas, port=0, public_origin=None):
                             "liveUpdate": (canvas.runtime.live_updates.status()
                                            if getattr(canvas.runtime, "live_updates", None) else None),
                             "restartEnvironment": {key: os.environ[key] for key in (
-                                "CODEX_HOME", "CODEX_BOARD_STATE_DIR", "CODEX_CANVAS_CWD",
+                                "CODEX_HOME", "CODEX_CANVAS_CWD",
                                 "CODEX_CANVAS_CONCURRENCY", "CODEX_BIN", "SHELL", "LANG", "LC_ALL")
                                 if key in os.environ},
                             "publicOrigin": remote.origin(),
@@ -746,8 +727,6 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.profiles())
                     if path.path == "/api/rules":
                         return self.send(runtime.rules())
-                    if path.path == "/api/resources":
-                        return self.send(runtime.resource_action())
                     if path.path == "/api/monitor/log":
                         return self.send(runtime.monitor_log(q.get("id")))
                     if path.path == "/api/file-info":
@@ -942,8 +921,6 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.profiles(body))
                     if self.path == "/api/rules":
                         return self.send(runtime.rules(body))
-                    if self.path == "/api/resources":
-                        return self.send(runtime.resource_action(body))
                     if self.path == "/api/monitor/input":
                         return self.send(runtime.monitor_input(body.get("id"), body))
                     if self.path == "/api/native-command":

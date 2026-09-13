@@ -6,10 +6,8 @@ Use these values for this worker:
 
 ```bash
 export CODEX_AGENTS_STATE_DIR={{STATE_DIR}}
-export CODEX_BOARD_STATE_DIR={{BOARD_STATE_DIR}}
-export CODEX_BOARD={{BOARD_COMMAND}}
 export WORKER_NAME={{WORKER_NAME}}
-export CODEX_BOARD_OWNER={{BOARD_OWNER}}
+export CODEX_AGENT_OWNER={{AGENT_OWNER}}
 ```
 
 Work only in the assigned worktree. Do not modify another worktree or the main checkout.
@@ -31,26 +29,6 @@ Use a clear timeout for commands that can hang. Preserve the terminal output aft
 Other workers can use the same machine. Check the system load before an expensive command.
 
 If the one-minute load is more than {{LOAD_LIMIT}}, wait before you start another expensive command.
-
-Only implementers write to the board. If an implementer task names an exclusive resource, claim it before use:
-
-```bash
-CODEX_BOARD_STATE_DIR={{BOARD_STATE_DIR}} {{BOARD_COMMAND}} claim "resource-name" {{BOARD_OWNER}} "reason"
-```
-
-Renew a long claim while the resource is still in use:
-
-```bash
-CODEX_BOARD_STATE_DIR={{BOARD_STATE_DIR}} {{BOARD_COMMAND}} renew "resource-name" {{BOARD_OWNER}}
-```
-
-Release the resource after the command finishes:
-
-```bash
-CODEX_BOARD_STATE_DIR={{BOARD_STATE_DIR}} {{BOARD_COMMAND}} release "resource-name" {{BOARD_OWNER}}
-```
-
-Do not use a process-name search as the resource lock. A search can match its own command.
 
 ## Before changes
 

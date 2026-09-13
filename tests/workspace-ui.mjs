@@ -41,7 +41,6 @@ const proc = spawn(
   ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
   {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },
   },
 );
 let log = "",
@@ -85,6 +84,11 @@ try {
   });
   page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
   const errors = [];
+  const resourceRequests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/resources")
+      resourceRequests.push(request.url());
+  });
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(origin);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
@@ -444,24 +448,12 @@ try {
       ),
     "profile worker created in selected team",
   );
-  await section("Resources");
-  await drawer.getByLabel("Resource").fill("fixture-build-slot");
-  await drawer
-    .getByLabel("Purpose", { exact: true })
-    .fill("Workspace browser test");
-  await drawer.getByRole("button", { name: "Claim", exact: true }).click();
-  await poll(
-    async () =>
-      (await get("/api/resources")).state.claims["fixture-build-slot"]
-        ?.worker === lead.id,
-    "resource claimed in isolated board",
-  );
-  await drawer.getByRole("button", { name: "Renew", exact: true }).click();
-  await drawer.getByRole("button", { name: "Release", exact: true }).click();
-  await poll(
-    async () =>
-      !(await get("/api/resources")).state.claims["fixture-build-slot"],
-    "resource released",
+  assert.equal(
+    await drawer
+      .getByRole("button", { name: "Resources", exact: true })
+      .count(),
+    0,
+    "resource reservations are not available in the workspace",
   );
   const changedLead = (await get("/api/state")).runtime.agents.find(
     (agent) => agent.id === lead.id,
@@ -570,7 +562,7 @@ try {
     .last()
     .getByRole("button", { name: "Close", exact: true })
     .click();
-  for (const name of ["Tools", "Resources", "Messages"]) {
+  for (const name of ["Tools", "Messages"]) {
     await section(name);
     await drawer.getByRole("heading", { name, exact: true }).waitFor();
   }
@@ -597,23 +589,21 @@ try {
     await drawer.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
     "drawer does not overflow at 390px",
   );
-  for (const name of [
-    "Changes",
-    "Plan",
-    "Profiles",
-    "Rules",
-    "Resources",
-    "Messages",
-  ]) {
+  for (const name of ["Changes", "Plan", "Profiles", "Rules", "Messages"]) {
     await section(name);
     assert.ok(
       await drawer.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
       name + " no mobile overflow",
     );
   }
+  assert.deepEqual(
+    resourceRequests,
+    [],
+    "workspace never requests reservations",
+  );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS workspace UI: work lifecycle, report, plan, search, rule lifecycle, profile launch, isolated resource leases, exact search source, line comment, safe HTML preview, checkpoint preview, 390px sections. Evidence: " +
+    "PASS workspace UI: work lifecycle, report, plan, search, rule lifecycle, profile launch, exact search source, line comment, safe HTML preview, checkpoint preview, 390px sections. Evidence: " +
       root,
   );
 } catch (error) {

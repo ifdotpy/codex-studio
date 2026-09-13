@@ -34,7 +34,6 @@ try {
       CODEX_AGENTS_STATE_DIR: state,
       CODEX_DESKTOP_PORT: String(port),
       CODEX_DESKTOP_PROFILE: path.join(temp, "profile"),
-      CODEX_BOARD_STATE_DIR: path.join(temp, "board"),
     },
   });
   const page = await desktop.firstWindow();

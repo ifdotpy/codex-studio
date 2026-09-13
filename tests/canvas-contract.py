@@ -200,9 +200,32 @@ class CanvasContract(unittest.TestCase):
 
     def test_cli_agent_reply_and_membership(self):
         room, ids = self.group()
-        result = subprocess.run([str(SCRIPTS / "codex-chat"), "post", room, "ready", "--owner", "one:run-one:worker"], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.canvas.messages(room)[0]["author"], ids[0])
+        legacy_path = self.root / "codex-swarm-status.one.json"
+        legacy_bytes = legacy_path.read_bytes()
+        second_path = self.root / "codex-swarm-status.two.json"
+        current = json.loads(second_path.read_text())
+        current[0]["agentOwner"] = current[0].pop("boardOwner")
+        self.write("two", current)
+        current_bytes = second_path.read_bytes()
+        threads = {t["id"]: t for t in self.canvas.threads()}
+        self.assertEqual(threads[ids[0]]["agentOwner"], "one:run-one:worker")
+        self.assertEqual(threads[ids[1]]["agentOwner"], "two:run-two:worker")
+        self.assertTrue(all("boardOwner" not in t for t in threads.values()))
+        cases = [
+            (["--owner", "one:run-one:worker"], {}, ids[0]),
+            ([], {"CODEX_BOARD_OWNER": "one:run-one:worker"}, ids[0]),
+            ([], {"CODEX_AGENT_OWNER": "two:run-two:worker", "CODEX_BOARD_OWNER": "wrong-owner"}, ids[1]),
+        ]
+        for index, (args, overrides, author) in enumerate(cases):
+            env = {**os.environ, "CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": "", **overrides}
+            result = subprocess.run(
+                [str(SCRIPTS / "codex-chat"), "post", room, f"ready {index}", *args],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.canvas.messages(room)[index]["author"], author)
+        self.assertEqual(legacy_path.read_bytes(), legacy_bytes)
+        self.assertEqual(second_path.read_bytes(), current_bytes)
         with self.assertRaisesRegex(ValueError, "not a member"):
             self.canvas.post(room, "intruder", str(uuid.uuid4()), author="foreign", notify=False)
 
@@ -229,12 +252,13 @@ class CanvasContract(unittest.TestCase):
         self.assertTrue(self.canvas.transcript(key)["truncated"])
         self.assertEqual(self.canvas.transcript(key)["items"][0]["text"], "Tail")
 
-    def test_bad_status_fails_visibly_and_board_override(self):
+    def test_bad_status_fails_visibly_and_legacy_board_is_ignored(self):
         alternate = Path(self.temp.name) / "other-board"
         alternate.mkdir()
         (alternate / "codex-board.json").write_text('{"claims":{"native":{"worker":"unknown","at":1}}}')
         with patch.dict(os.environ, {"CODEX_BOARD_STATE_DIR": str(alternate)}):
-            self.assertIn("native", self.canvas.snapshot()["board"]["claims"])
+            self.assertNotIn("board", self.canvas.snapshot())
+            self.assertNotIn("boardError", self.canvas.snapshot())
         (self.root / "codex-swarm-status.one.json").write_text("broken")
         with self.assertRaises(RuntimeError):
             self.canvas.snapshot()

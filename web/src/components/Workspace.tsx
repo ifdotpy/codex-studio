@@ -80,7 +80,6 @@ const sections = [
   ["tools", "Tools", Wrench],
   ["profiles", "Profiles", Users],
   ["rules", "Rules", Clock3],
-  ["resources", "Resources", Layers3],
 ] as const;
 const descriptions: Record<string, string> = {
   work: "Assign work, track dependencies, and accept results.",
@@ -98,7 +97,6 @@ const descriptions: Record<string, string> = {
   profiles: "Reusable instructions and model choices for subagents.",
   rules:
     "Wait for a time, file change, or event. Script checks can prevent unnecessary agent turns.",
-  resources: "Shared resource leases from the existing resource board.",
 };
 const date = (value: number | string | undefined) =>
   value
@@ -530,7 +528,6 @@ export function Workspace(props: Props) {
               {section === "tools" && <Tools {...context} />}
               {section === "profiles" && <Profiles {...context} />}
               {section === "rules" && <Rules {...context} />}
-              {section === "resources" && <Resources {...context} />}
             </div>
           )}
         </main>
@@ -2307,155 +2304,6 @@ function Rules(c: Context) {
           Delete rule
         </Button>
       </Modal>
-    </>
-  );
-}
-
-function Resources(c: Context) {
-  const state = useResource("/api/resources", c.revision),
-    [resource, setResource] = useState(""),
-    [note, setNote] = useState(""),
-    [busy, setBusy] = useState(false);
-  const board = state.data?.state,
-    claims: Json[] = Array.isArray(board?.claims)
-      ? board.claims
-      : Object.entries(board?.claims || {}).map(([resource, value]) => ({
-          resource,
-          ...(value as Json),
-        }));
-  const act = async (action: string, name: string) => {
-    if (!c.selected) return;
-    setBusy(true);
-    try {
-      const response = await c.run("/api/resources", {
-        agent: c.selected.id,
-        action,
-        resource: name,
-        note,
-      });
-      if (response.ok === false) {
-        c.notify(response.message || "The resource operation failed.");
-        return;
-      }
-      c.notify(
-        action === "claim"
-          ? "Resource claimed."
-          : action === "renew"
-            ? "Resource renewed."
-            : "Resource released.",
-      );
-      if (action === "claim") {
-        setResource("");
-        setNote("");
-      }
-    } catch {
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <>
-      <ResourceState state={state} />
-      {state.data?.path && (
-        <p className="workspace-muted workspace-wrap">
-          Board: <code>{state.data.path}</code>
-        </p>
-      )}
-      {!c.selected && (
-        <p className="workspace-muted">
-          Select an agent to claim or manage its resources.
-        </p>
-      )}
-      <form
-        className="workspace-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void act("claim", resource.trim());
-        }}
-      >
-        <div className="workspace-toolbar">
-          <TextInput
-            className="workspace-grow"
-            label="Resource"
-            placeholder="Existing resource name"
-            required
-            value={resource}
-            onChange={(e) => setResource(e.target.value)}
-          />
-          <Button
-            variant="filled"
-            type="submit"
-            loading={busy}
-            disabled={!c.selected || !resource.trim()}
-          >
-            Claim
-          </Button>
-        </div>
-        <TextInput
-          label="Purpose"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-        />
-      </form>
-      <h3 className="workspace-section-title">Active leases</h3>
-      {claims.map((claim, index) => (
-        <div
-          className="workspace-row"
-          key={claim.id || claim.resource || index}
-        >
-          <div className="workspace-row-head">
-            <strong>{claim.resource || claim.name || claim.slot}</strong>
-            <small>
-              {ownerName(c.data, claim.worker || claim.owner || claim.agent)}
-            </small>
-          </div>
-          <p>{claim.note || claim.purpose}</p>
-          <small>{claim.expires ? `Expires ${date(claim.expires)}` : ""}</small>
-          <div className="workspace-actions">
-            <Button
-              size="compact-xs"
-              variant="light"
-              disabled={
-                !c.selected ||
-                busy ||
-                (claim.worker || claim.owner || claim.agent) !== c.selected.id
-              }
-              onClick={() => void act("renew", claim.resource || claim.name)}
-            >
-              Renew
-            </Button>
-            <Button
-              size="compact-xs"
-              variant="subtle"
-              disabled={
-                !c.selected ||
-                busy ||
-                (claim.worker || claim.owner || claim.agent) !== c.selected.id
-              }
-              onClick={() => void act("release", claim.resource || claim.name)}
-            >
-              Release
-            </Button>
-          </div>
-        </div>
-      ))}
-      {!claims.length && board && <Empty>No active resource leases.</Empty>}
-      {board?.queue && (
-        <details className="workspace-tool">
-          <summary>Wait queue</summary>
-          <pre className="workspace-code">
-            {JSON.stringify(board.queue, null, 2)}
-          </pre>
-        </details>
-      )}
-      {board?.notes && (
-        <details className="workspace-tool">
-          <summary>Board notes</summary>
-          <pre className="workspace-code">
-            {JSON.stringify(board.notes, null, 2)}
-          </pre>
-        </details>
-      )}
     </>
   );
 }

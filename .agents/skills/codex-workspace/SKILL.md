@@ -123,7 +123,6 @@ Use `orchestration_task action=list` to find work. It returns brief tasks and
 `nextCursor`. Use `action=get` for one task and `action=history` for earlier evidence.
 Acceptance belongs to the orchestrator's review decision. A worker's final answer
 reports the outcome of its turn.
-Use the advertised resource tool for shared capacity. Preserve its registry and holder identities.
 
 Leads and workers can call `orchestration_complaint` with `action=submit`.
 This tool records a message that requires the recipient's response.
@@ -165,9 +164,8 @@ A large response includes `outputRef`. Read it with `orchestration_read`, using
 This output limit does not change operation outcomes. Read the exact receipt before
 retrying an uncertain mutation. Full records remain in the server.
 
-Keep existing database, profile, and resource identities. Do not create a second
-registry or move user state to solve a path issue. Effective sandbox and approval
-settings remain authoritative. The user controls YOLO mode for the whole team.
+Keep existing database and profile identities. Do not move user state to solve a
+path issue. Effective sandbox and approval settings remain authoritative. The user controls YOLO mode for the whole team.
 Workers inherit it. Do not change this mode through settings APIs.
 A project selects the default account for new chats. Its path sets the working
 directory and adds no file-access boundary. Use files and skills outside that path
@@ -199,7 +197,7 @@ Only the orchestrator uses `orchestration_agent_manage`. Inspect a worker before
 recovery or archive. `recover` reconciles native turn state; it never replays input.
 Archive only after reviewing the result or assigning its remaining work elsewhere.
 `archive` requires `agent_id` and `reason`. It preserves history and files, and
-refuses active commands, pending or uncertain requests, resource claims, unfinished
+refuses active commands, pending or uncertain requests, unfinished
 assignments, or unarchived children. `list_archived` supports `limit` and `cursor`.
 `restore` returns a worker paused. Use `orchestration_send` for explicit continuation.
 Do not treat silence as proof of failure. Do not archive a worker to hide an error.

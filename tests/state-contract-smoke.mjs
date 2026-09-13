@@ -11,7 +11,7 @@ const root = mkdtempSync(join(tmpdir(), "codex-state-contract-"));
 const state = join(root, "state");
 const profile = join(root, "profile");
 mkdirSync(state);
-const env = { ...process.env, CODEX_AGENTS_STATE_DIR: state, CODEX_BOARD_STATE_DIR: "", CODEX_HOME: profile };
+const env = { ...process.env, CODEX_AGENTS_STATE_DIR: state, CODEX_HOME: profile };
 const json = (path, value) => writeFileSync(path, JSON.stringify(value));
 function run(name, args, extra = {}, status = 0) {
   const result = spawnSync(join(scripts, name), args, {
@@ -44,21 +44,13 @@ try {
   run("luna", ["say", "--wave", "new", "worker", "--", "--wave", "old.wave", "literal"]);
   const routed = join(state, "codex-inbox.new.run-new", "worker.json");
   assert.equal(JSON.parse(readFileSync(routed)).text, "--wave old.wave literal\n");
-  run("codex-board", ["claim", "builder", "old.wave:run:worker", "claim note"]);
-  const board = run("luna", ["board"]);
-  assert.match(board, /builder/);
-  assert.match(board, /old.wave:run:worker/);
-  assert.match(board, /claim note/);
-  assert.doesNotMatch(board, /STALE|no slot/);
-  json(join(state, "codex-swarm-status.dead.json"), [{
-    wave: "dead", name: "finished", threadId: "dead-thread", runId: "dead-run",
-    launcherPid: 0, turnStatus: "completed", boardOwner: "dead:run:finished",
-  }]);
-  run("codex-board", ["claim", "dead-builder", "dead:run:finished"]);
-  assert.match(run("luna", ["board"]), /dead-builder[^\n]+STALE/);
-  const alternateBoard = join(root, "alternate-board");
-  run("codex-board", ["claim", "alternate", "foreign-owner"], { CODEX_BOARD_STATE_DIR: alternateBoard });
-  assert.match(run("luna", ["board"], { CODEX_BOARD_STATE_DIR: alternateBoard }), /alternate/);
+  // Historical claims cannot block the dashboard or change preserved state.
+  const legacyBoard = join(state, "board", "codex-board.json");
+  mkdirSync(join(state, "board"));
+  writeFileSync(legacyBoard, "{invalid historical data");
+  assert.match(run("luna", []), /live launchers/);
+  assert.equal(readFileSync(legacyBoard, "utf8"), "{invalid historical data");
+  assert.match(run("luna", ["board"], {}, 2), /invalid choice/);
 
   const sessions = join(profile, "sessions", "2026", "09", "04");
   mkdirSync(sessions, { recursive: true });
@@ -82,7 +74,7 @@ try {
   symlinkSync(join(root, ".claude"), linked);
   for (const bad of [forbidden, join(linked, "missing")]) {
     for (const [name, args] of [
-      ["codex-board", ["show"]], ["luna", ["ls"]],
+      ["luna", ["ls"]],
       ["codex-report", []], ["codex-steer", ["worker", "text"]],
       ["codex-watch", ["--wave", "test"]], ["codex-stop", ["--wave", "test"]],
       ["codex-daemon", ["start", "--wave", "test"]], ["codex-swarm.mjs", []],
@@ -91,16 +83,9 @@ try {
       assert.match(output, /outside .claude/);
     }
     assert.match(run("codex-models", [], { CODEX_HOME: bad, CODEX_BIN: "/no-such-codex" }, 1), /outside .claude/);
-    assert.match(run("codex-board", ["show"], { CODEX_BOARD_STATE_DIR: bad }, 1), /outside .claude/);
   }
   assert.deepEqual(readdirSync(forbidden), []);
   assert.equal(existsSync(join(linked, "missing")), false);
-  const boardLinkState = join(root, "board-link-state");
-  mkdirSync(boardLinkState);
-  symlinkSync(forbidden, join(boardLinkState, "board"));
-  assert.match(run("codex-board", ["show"], { CODEX_AGENTS_STATE_DIR: boardLinkState }, 1), /outside .claude/);
-  json(join(state, "board", "codex-board.json"), []);
-  assert.match(run("luna", ["board"], {}, 1), /invalid board/);
   passed = true;
   console.log("state contract smoke: PASS");
 } finally {

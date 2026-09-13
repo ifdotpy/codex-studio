@@ -199,7 +199,6 @@ If this older thread lacks orchestration_complaint, use orchestration_send with
 agent_id="complaint" and text containing JSON for the same action and fields.
 Use orchestration_task to track assignments, dependencies, submitted evidence and explicit acceptance.
 Use orchestration_watch for file changes or schedules with a script gate; no model runs during the wait.
-Use orchestration_resource to claim the shared codex-board. Never invent a separate resource registry.
 Read profiles with orchestration_context topic=profiles; pass profile_id to orchestration_spawn.
 Omit model, effort and fast_mode to use the user's current team defaults for each new worker.
 An explicit profile model or effort overrides the team default; explicit spawn fields override the profile.
@@ -210,7 +209,7 @@ Without active voice the text is saved silently. Voice interruption does not sto
 Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
 and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
 Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
-orchestration_watch, orchestration_resource, orchestration_monitor_input, orchestration_user_task,
+orchestration_watch, orchestration_monitor_input, orchestration_user_task,
 orchestration_request, orchestration_read, orchestration_context, orchestration_status,
 orchestration_peers, orchestration_message, orchestration_monitor, orchestration_send.
 Use your per-agent PROGRESS.md file for status above the composer. Read and edit it with ordinary file tools.
@@ -2949,6 +2948,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     payload = json.loads(args["text"])
                     name = payload.get("tool")
                     args = payload.get("arguments", {})
+                    if name == "orchestration_resource":
+                        request_outcome = "not_applied"
+                        raise ValueError("Resource reservations were removed. Continue without a board claim.")
                     if name not in {
                         t["name"]
                         for t in work_tools(tool, TEXT)
@@ -2960,6 +2962,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         + efficiency_tools(tool, TEXT)
                     } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor", "orchestration_send", "orchestration_panel", "orchestration_panel_feed"}:
                         raise ValueError("Unknown workspace tool")
+                if name == "orchestration_resource":
+                    request_outcome = "not_applied"
+                    raise ValueError("Resource reservations were removed. Continue without a board claim.")
                 if name == "orchestration_agent_manage":
                     from codex_agent_management import manage_agent
                     value = manage_agent(self, a["id"], args, a["epoch"])
@@ -2990,9 +2995,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     )
                 elif name == "orchestration_watch":
                     value = self.rules(args, a["id"], a["epoch"])
-                elif name == "orchestration_resource":
-                    value = self.resource_action(args, a["id"], a["epoch"])
-                    request_outcome = value.get("outcome")
                 elif name == "orchestration_monitor_input":
                     value = self.monitor_input(
                         args.get("monitor_id"), args, a["id"], a["epoch"]
@@ -3064,8 +3066,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     value = self.cancel_monitor(args["monitor_id"], a["id"])
                 else:
                     raise ValueError("Unknown orchestration tool")
-                operation_failed = name == "orchestration_resource" and value.get("ok") is False
-                result = {"success": not operation_failed, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
+                result = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
                 result = stamp_tool_result(result, time.time())
                 with self.lock, self.db() as db:
                     db.execute(

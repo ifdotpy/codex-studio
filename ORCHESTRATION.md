@@ -706,7 +706,7 @@ native turn through the existing reconciler; a failed read leaves its outcome un
 
 Archive requires a reason. It hides a worker through the existing tombstone filter
 and stores a separate archive receipt with its actor, time, and epoch. No history,
-worktree, file, native thread, or resource claim is deleted. Active work and uncertain
+worktree, file, or native thread is deleted. Active work and uncertain
 receipts block archive. Archive children before their parent. Restore checks the
 receipt, parent, and team limit; it leaves automatic continuation disabled. A later
 user deletion or stop invalidates that archive receipt. Repeated calls are safe.

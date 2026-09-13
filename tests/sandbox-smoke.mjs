@@ -5,22 +5,16 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
-const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const BOARD_COMMAND = join(dirname(TEST_DIR), "scripts", "codex-board");
 const ROOT = mkdtempSync(join(tmpdir(), "codex-agents-sandbox-"));
 const WORKTREE = join(ROOT, "worktree");
-const BOARD_STATE = join(ROOT, "board");
 const BLOCKED = join(ROOT, "blocked");
 mkdirSync(WORKTREE);
-mkdirSync(BOARD_STATE);
 mkdirSync(BLOCKED);
 
 const proc = spawn(process.env.CODEX_BIN || "codex", ["app-server", "--listen", "stdio://"], {
@@ -75,7 +69,7 @@ proc.on("error", (error) => {
 
 const sandboxPolicy = {
   type: "workspaceWrite",
-  writableRoots: [WORKTREE, BOARD_STATE],
+  writableRoots: [WORKTREE],
   networkAccess: false,
   excludeSlashTmp: true,
   excludeTmpdirEnvVar: true,
@@ -87,15 +81,13 @@ try {
     capabilities: { experimentalApi: true },
   });
   const allowed = await call("command/exec", {
-    command: [BOARD_COMMAND, "claim", "sandbox-build", "smoke:run:worker"],
+    command: ["/usr/bin/touch", join(WORKTREE, "allowed")],
     cwd: WORKTREE,
-    env: { CODEX_BOARD_STATE_DIR: BOARD_STATE },
     sandboxPolicy,
     timeoutMs: 10_000,
   });
   assert.equal(allowed.exitCode, 0, allowed.stderr);
-  assert.match(allowed.stdout, /CLAIMED sandbox-build/);
-  assert.match(readFileSync(join(BOARD_STATE, "codex-board.json"), "utf8"), /sandbox-build/);
+  assert.equal(existsSync(join(WORKTREE, "allowed")), true);
 
   const deniedPath = join(BLOCKED, "denied");
   const denied = await call("command/exec", {

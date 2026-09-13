@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EC2 read scope, reservation semantics, and JSONL process output without AWS."""
+"""EC2 read scope and JSONL process output without AWS."""
 
 import importlib.util
 import json
@@ -17,8 +17,8 @@ spec = importlib.util.spec_from_file_location("ec2_panel_feed", SCRIPT)
 feed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(feed)
 RESOURCES = [
-    {"label": "Primary", "instanceId": "i-0123456789abcdef0", "profile": "project", "region": "eu-north-1", "resource": "aws-builder"},
-    {"label": "Secondary", "instanceId": "i-0fedcba9876543210", "profile": "project", "region": "eu-north-1", "resource": "aws-builder-2"},
+    {"label": "Primary", "instanceId": "i-0123456789abcdef0", "profile": "project", "region": "eu-north-1"},
+    {"label": "Secondary", "instanceId": "i-0fedcba9876543210", "profile": "project", "region": "eu-north-1"},
 ]
 AWS = {"Reservations": [{"Instances": [
     {"InstanceId": RESOURCES[1]["instanceId"], "State": {"Name": "stopped"}, "InstanceType": "c7i.24xlarge"},
@@ -38,25 +38,12 @@ class Ec2PanelFeedContract(unittest.TestCase):
         self.assertEqual(args[args.index("--region") + 1], "eu-north-1")
         self.assertEqual(run.call_args.kwargs["timeout"], 15)
         self.assertEqual(len(rows), 2)
-        live = feed.snapshot(RESOURCES, {"aws-builder-2": {"thread": "build-worker"}}, rows, "2026-09-07T11:15:00+00:00")
+        live = feed.snapshot(RESOURCES, rows, "2026-09-07T11:15:00+00:00")
         self.assertEqual(live["instances"]["0"]["state"], "running")
-        self.assertEqual(live["instances"]["0"]["lease"], "No reservation")
+        self.assertNotIn("lease", live["instances"]["0"])
         self.assertEqual(live["instances"]["1"]["state"], "stopped")
-        self.assertEqual(live["instances"]["1"]["lease"], "Reserved")
-        self.assertEqual(live["summary"], "1 running · 1 reserved")
-
-    def test_missing_board_is_unknown_and_invalid_board_fails(self):
-        self.assertEqual(feed.reservation(RESOURCES[0], None)["lease"], "Lease unknown")
-        self.assertEqual(feed.reservation(RESOURCES[0], {"aws-builder": {"worker": "a"}})["owner"], "a")
-        with self.assertRaises(ValueError):
-            feed.reservation(RESOURCES[0], {"aws-builder": {"worker": "a", "thread": "b"}})
-        with tempfile.TemporaryDirectory() as directory:
-            board = Path(directory) / "board.json"
-            with self.assertRaises(FileNotFoundError):
-                feed.load_claims(board)
-            board.write_text('{"claims": []}')
-            with self.assertRaises(ValueError):
-                feed.load_claims(board)
+        self.assertNotIn("owner", live["instances"]["1"])
+        self.assertEqual(live["summary"], "1 running")
 
     def test_panel_has_no_agent_callbacks_and_selection_outside_feed(self):
         panel = feed.panel_spec(RESOURCES)
@@ -85,7 +72,7 @@ class Ec2PanelFeedContract(unittest.TestCase):
             result = subprocess.run([sys.executable, "-B", str(SCRIPT), "--config", str(config), "--once"], capture_output=True, text=True, env=env, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(len(result.stdout.splitlines()), 1)
-            self.assertEqual(json.loads(result.stdout)["summary"], "1 running · lease unknown")
+            self.assertEqual(json.loads(result.stdout)["summary"], "1 running")
             config.write_text('{"resources": [{"profile": "project", "region": "eu-north-1", "label": "all"}]}')
             result = subprocess.run([sys.executable, "-B", str(SCRIPT), "--config", str(config), "--once"], capture_output=True, text=True, env=env, timeout=5)
             self.assertEqual(result.returncode, 1)

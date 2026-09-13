@@ -2,7 +2,7 @@
 
 A desktop workspace for one lead agent and many workers. The application uses
 Codex app-server for model sessions, tools, and permissions. It adds durable
-orchestration, agent messages, command monitors, user tasks, and shared resources.
+orchestration, agent messages, command monitors, and user tasks.
 
 This repository owns the application, command tools, tests, and runtime prompts.
 Its project-local [codex-workspace skill](.agents/skills/codex-workspace/SKILL.md)
@@ -139,7 +139,7 @@ start voice again after their current work finishes.
 | `tests/` | Backend, protocol, browser, and process contracts |
 
 - [Orchestration](ORCHESTRATION.md): managed agents, messages, monitors, and state.
-- [Command guide](CLI.md): waves, steering, resource claims, and CLI usage.
+- [Command guide](CLI.md): waves, steering, and CLI usage.
 - [Web development](web/README.md): client structure and browser checks.
 - [Desktop](desktop/README.md): native boundaries, launch, and packaging.
 - [Accounts](ACCOUNTS.md): account selection, profile discovery, and isolation.
@@ -207,7 +207,7 @@ to send instructions. Historical saved plan text remains in storage.
 
 Existing chats, receipts, and agent state remain in
 `~/.local/state/codex-agents/canvas.sqlite3`. Source extraction does not move state.
-`CODEX_AGENTS_STATE_DIR`, `CODEX_BOARD_STATE_DIR`, and `CODEX_HOME` retain their meanings.
+`CODEX_AGENTS_STATE_DIR` and `CODEX_HOME` retain their meanings.
 Historical Canvas positions remain in each browser profile. Message drafts remain available.
 Closing Electron leaves the backend active.
 

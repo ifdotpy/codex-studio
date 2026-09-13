@@ -26,7 +26,6 @@ class DaemonContract(unittest.TestCase):
                 (root / "tasks.json").write_text("[]")
                 overrides = {
                     "CODEX_AGENTS_STATE_DIR": "state",
-                    "CODEX_BOARD_STATE_DIR": "board",
                     "CODEX_HOME": "profile",
                     "CODEX_TASKS": "tasks.json",
                 }
