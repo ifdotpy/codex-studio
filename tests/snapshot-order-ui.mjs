@@ -75,7 +75,11 @@ try {
   await page.route("**/api/sync/identity", (route) =>
     route.fulfill({ status: 404, json: { error: "Not found" } }),
   );
-  await page.route("**/api/state", async (route) => {
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
+    assert.equal(
+      new URL(route.request().url()).searchParams.get("view"),
+      "chat",
+    );
     const data = snapshot();
     requests.push({ revision, held: holdNext, failure: currentFailure });
     if (holdNext) {

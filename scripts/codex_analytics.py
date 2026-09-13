@@ -105,6 +105,10 @@ class AnalyticsMixin:
 
     def analytics_safe(self, db, operation, *args, **kwargs):
         """An analytics failure cannot consume a native result or lifecycle notice."""
+        # An outermost SAVEPOINT commits on RELEASE. Keep every sample in the
+        # caller's transaction so a batch needs only one durable commit.
+        if not db.in_transaction:
+            db.execute('BEGIN')
         db.execute('SAVEPOINT analytics_capture')
         try:
             result = operation(db, *args, **kwargs)

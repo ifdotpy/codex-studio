@@ -250,7 +250,7 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
   await stable.route("**/api/sync/identity", (route) =>
     route.fulfill({ status: 404, json: { error: "Fixture uses polling" } }),
   );
-  await stable.route("**/api/state", (route) =>
+  await stable.route(/\/api\/state(?:\?.*)?$/, (route) =>
     route.fulfill({ json: quietState }),
   );
   let releaseFirst;

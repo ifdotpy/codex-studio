@@ -93,7 +93,7 @@ try {
   page = await browser.newPage({ viewport: { width: 1200, height: 950 } });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.route("**/api/state", async (route) => {
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.runtime.complaints = records;

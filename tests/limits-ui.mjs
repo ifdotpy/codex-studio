@@ -111,7 +111,7 @@ try {
     }
     return route.fulfill({ json: { ...costs, accountKey: "default" } });
   });
-  await page.route("**/api/state", async (route) => {
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const state = await response.json();
     state.runtime.rateLimits = limits;

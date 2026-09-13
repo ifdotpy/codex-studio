@@ -62,6 +62,8 @@ try {
     posts = [];
   const pending = new Map();
   let holdSession = false;
+  let legacySession = false;
+  const legacyStateReads = [];
   const sessions = [];
   await context.route("**/check", (route) =>
     route.fulfill({
@@ -75,8 +77,16 @@ try {
     }),
   );
   await context.route("**/api/session", (route) => {
+    if (legacySession)
+      return route.fulfill({ status: 404, json: { error: "Not found" } });
     if (holdSession) sessions.push(route);
     else return route.fulfill({ json: { token: "fixture" } });
+  });
+  await context.route(/\/api\/state(?:\?.*)?$/, (route) => {
+    legacyStateReads.push(
+      new URL(route.request().url()).searchParams.get("view"),
+    );
+    return route.fulfill({ json: { token: "fixture" } });
   });
   await context.route("**/api/messages", (route) => {
     const body = route.request().postDataJSON();
@@ -366,6 +376,15 @@ try {
     async () => (await stored(first, orderedSecond.id)).status === "accepted",
   );
   await first.evaluate(() => window.reactRoot.unmount());
+  // Older servers obtain credentials through the small chat snapshot.
+  legacySession = true;
+  await start(first, body("legacy-session-send"));
+  assert.equal((await settle(first)).status, "delivered");
+  assert.deepEqual(legacyStateReads, ["chat"]);
+  assert.deepEqual(
+    posts.filter((post) => post.id === "legacy-session-send"),
+    [body("legacy-session-send")],
+  );
   assert.deepEqual(errors, []);
   console.log(
     "PASS: offline persistence, immediate callback, reconnect, cancellation boundary, concurrent tabs, late receipt/error guards, immutable IDs, stalled HTTP retry, ordered parallel chat recovery",

@@ -43,7 +43,7 @@ try {
           : { error: "Connection unavailable" },
     }),
   );
-  await page.route("**/api/state", (route) =>
+  await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
     route.fulfill({
       status: identityStatus,
       json:

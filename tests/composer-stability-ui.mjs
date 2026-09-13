@@ -60,7 +60,7 @@ try {
     await page.route("**/api/sync/identity", (route) =>
       route.fulfill({ status: 404, json: { error: "Not found" } }),
     );
-    await page.route("**/api/state", (route) =>
+    await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
       route.fulfill({
         json: {
           ...initial,

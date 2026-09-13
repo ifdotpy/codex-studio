@@ -247,7 +247,7 @@ try {
   // Force the persisted RxDB projection to win the race against fresh auth.
   // Its cache must never persist credentials, and later HTTP must still update them.
   let delayAuth = true;
-  await page.route("**/api/state", async (route) => {
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     if (delayAuth) {
       delayAuth = false;
       await new Promise((resolve) => setTimeout(resolve, 1000));

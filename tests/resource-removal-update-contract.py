@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from types import ModuleType, SimpleNamespace
+from types import FunctionType, ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -49,6 +49,10 @@ class ResourceRemovalUpdateContract(unittest.TestCase):
         self.modules['codex_runtime'].Runtime = self.owner
         self.modules['codex_runtime'].RulesMixin = self.rules
         self.modules['codex_canvas'].Canvas = self.canvas_owner
+        descriptor = codex_canvas.Canvas.runtime
+        self.canvas_owner.runtime = property(
+            FunctionType(descriptor.fget.__code__, vars(self.modules['codex_canvas'])),
+            FunctionType(descriptor.fset.__code__, vars(self.modules['codex_canvas'])))
         self.runtime = self.owner()
         self.runtime.root = Path(self.temporary.name)
         self.runtime.lock = threading.RLock()
@@ -61,6 +65,8 @@ class ResourceRemovalUpdateContract(unittest.TestCase):
         self.board.write_text('{"claims":{"old":{"worker":"active"}},"queue":{},"notes":[]}')
         self.canvas = self.canvas_owner()
         self.canvas.runtime = self.runtime
+        self.assertNotIn('runtime', vars(self.canvas))
+        self.assertIs(self.canvas._runtime, self.runtime)
         self.canvas.root = self.runtime.root
         self.canvas.threads = lambda *args: [{'id': 'active'}]
         self.canvas.chats = lambda: []
@@ -165,6 +171,28 @@ class ResourceRemovalUpdateContract(unittest.TestCase):
             self.assertEqual(request.do_POST(), (404, {'error': 'Not found'}))
         self.assertEqual(before, self.state())
 
+    def test_live_file_viewer_route_baseline_retains_callbacks_and_retires_resources(self):
+        source = subprocess.check_output(
+            ['git', 'show', '193d962:scripts/codex_canvas.py'], cwd=ROOT, text=True)
+        self.handler.do_GET = self.compile('codex_canvas', ('make_server', 'Handler', 'do_GET'), source=source)
+        self.assertEqual(update.signature(self.handler.do_GET),
+                         '42dab8a766ab8a53f7d3dcf4f263f3157ef89a085df1fa35adb541df8bbda88a')
+        before = self.state()
+        callback = self.handler.do_GET
+        self.assertEqual(update.apply(self.runtime, self.handler)['status'], 'applied')
+        self.assertIs(callback, self.handler.do_GET)
+        self.assertEqual(before[3:], self.state()[3:])
+        self.assertEqual(update.signature(callback), update.EXPECTED['codex_canvas.make_server.Handler.do_GET'][1])
+        request = self.handler()
+        request.path = '/api/resources'
+        request.trusted = lambda **kwargs: True
+        request.send = lambda value, status=200: (status, value)
+        self.assertEqual(request.do_GET(), (404, {'error': 'Not found'}))
+        self.assertNotIn('board', self.canvas.snapshot())
+        after = self.state()
+        self.assertEqual(update.apply(self.runtime, self.handler)['status'], 'already_applied')
+        self.assertEqual(after, self.state())
+
     def test_fresh_process_without_retired_methods_is_supported(self):
         update.apply(self.runtime, self.handler)
         for name in update.RETIRED:
@@ -233,7 +261,7 @@ class ResourceRemovalUpdateContract(unittest.TestCase):
             update.apply(self.runtime, self.handler)
         self.assertEqual(before, self.state())
         self.handler.do_POST = original
-        with patch.object(self.canvas, 'runtime', object()), self.assertRaisesRegex(RuntimeError, 'another runtime'):
+        with patch.object(self.canvas, '_runtime', object()), self.assertRaisesRegex(RuntimeError, 'another runtime'):
             update.apply(self.runtime, self.handler)
         with patch.object(self.runtime, 'dynamic', lambda *args: None), self.assertRaisesRegex(RuntimeError, 'override'):
             update.apply(self.runtime, self.handler)
@@ -263,6 +291,7 @@ class ResourceRemovalUpdateContract(unittest.TestCase):
             '__module__': 'codex_canvas', '__qualname__': 'make_server.<locals>.LocalServer'})
         server = server_type.__new__(server_type)
         server.RequestHandlerClass = self.handler
+        self.assertIs(update._canvas_runtime(self.canvas), self.runtime)
         listener = socket.socket()
         self.addCleanup(listener.close)
         server.socket = listener
@@ -270,6 +299,11 @@ class ResourceRemovalUpdateContract(unittest.TestCase):
         with patch.object(update.gc, 'get_objects', return_value=[]):
             with self.assertRaisesRegex(RuntimeError, 'Expected one'):
                 update.apply(self.runtime)
+        self.assertEqual(before, self.state())
+        with patch.object(self.canvas_owner, 'runtime', property(lambda self: self._runtime)):
+            with patch.object(update.gc, 'get_objects', return_value=[server]):
+                with self.assertRaisesRegex(RuntimeError, 'runtime property'):
+                    update.apply(self.runtime)
         self.assertEqual(before, self.state())
         other = server_type.__new__(server_type)
         other.RequestHandlerClass, other.socket = self.handler, listener

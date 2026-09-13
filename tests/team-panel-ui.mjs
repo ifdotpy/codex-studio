@@ -77,7 +77,7 @@ try {
       json: { error: "Fixture uses HTTP snapshots" },
     }),
   );
-  await page.route("**/api/state", (route) =>
+  await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
     route.fulfill({ json: snapshot }),
   );
   await page.goto(origin);

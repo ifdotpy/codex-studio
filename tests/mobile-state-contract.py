@@ -176,9 +176,11 @@ class MobileStateHttpContract(unittest.TestCase):
         chat = self.assert_no_work_reads("/api/state?view=chat")
         self.assertTrue(chat["token"])
         self.assertEqual(chat["token"], full["token"])
+        self.assertNotIn("board", chat)
+        self.assertNotIn("board", full)
         self.assertNotIn("work", chat["runtime"])
         self.assertEqual(full["runtime"]["work"][0]["id"], work["id"])
-        for field in ("threads", "chats", "nodes", "edges", "board", "stateDir"):
+        for field in ("threads", "chats", "nodes", "edges", "stateDir"):
             self.assertEqual(chat[field], full[field], field)
         self.assertEqual(chat["runtime"], {
             key: value for key, value in full["runtime"].items() if key != "work"

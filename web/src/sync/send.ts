@@ -64,7 +64,7 @@ async function deliver(doc: any) {
       session = await syncApi<{ token: string }>("/api/session");
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 404)) throw error;
-      session = await syncApi<{ token: string }>("/api/state");
+      session = await syncApi<{ token: string }>("/api/state?view=chat");
     }
     setToken(session.token);
     // Claim the current content before HTTP. Cancellation uses the same atomic

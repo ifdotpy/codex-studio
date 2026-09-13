@@ -175,7 +175,7 @@ try {
   await firstUse.route("**/api/sync/identity", (route) =>
     route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
   );
-  await firstUse.route("**/api/state", (route) =>
+  await firstUse.route(/\/api\/state(?:\?.*)?$/, (route) =>
     route.fulfill({ json: emptyState }),
   );
   await firstUse.route("**/api/directories*", (route) =>
@@ -249,7 +249,7 @@ try {
   await branchPage.route("**/api/sync/identity", (route) =>
     route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
   );
-  await branchPage.route("**/api/state", (route) =>
+  await branchPage.route(/\/api\/state(?:\?.*)?$/, (route) =>
     route.fulfill({ json: branchState() }),
   );
   await branchPage.route("**/api/transcript/stream*", (route) =>

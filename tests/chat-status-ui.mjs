@@ -170,7 +170,9 @@ try {
       json: { error: "Fixture uses HTTP snapshots" },
     }),
   );
-  await page.route("**/api/state", (route) => route.fulfill({ json: state }));
+  await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
+    route.fulfill({ json: state }),
+  );
   await page.route("**/api/transcript/stream?*", (route) =>
     route.fulfill({
       status: 404,

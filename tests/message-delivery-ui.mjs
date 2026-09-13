@@ -131,7 +131,9 @@ try {
       [a.id, 100],
       [b.id, 100],
     ]);
-    await page.route("**/api/state", (route) => route.fulfill({ json: state }));
+    await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
+      route.fulfill({ json: state }),
+    );
     await page.route("**/api/queue?*", (route) =>
       route.fulfill({ json: { items: [] } }),
     );

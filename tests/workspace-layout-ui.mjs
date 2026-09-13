@@ -80,7 +80,7 @@ try {
       json: { error: "Sync unavailable in fixture" },
     }),
   );
-  await page.route("**/api/state", async (route) => {
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     const target =

@@ -71,7 +71,7 @@ try {
   await page.route("**/api/sync/identity", (route) =>
     route.fulfill({ status: 404, json: { error: "Snapshot fixture" } }),
   );
-  await page.route("**/api/state", async (route) => {
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     for (const agent of data.threads)

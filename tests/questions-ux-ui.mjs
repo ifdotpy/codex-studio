@@ -127,7 +127,7 @@ try {
       );
     return state;
   };
-  await page.route("**/api/state", async (route) => {
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     await route.fulfill({
       response,

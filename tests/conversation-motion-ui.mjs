@@ -87,7 +87,7 @@ try {
     await page.route("**/api/sync/**", (r) =>
       r.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
     );
-    await page.route("**/api/state", (r) =>
+    await page.route(/\/api\/state(?:\?.*)?$/, (r) =>
       r.fulfill({
         json: {
           ...state,

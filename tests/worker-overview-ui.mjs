@@ -94,7 +94,7 @@ try {
   await page.route("**/api/sync/**", (route) =>
     route.fulfill({ status: 503, body: "Fixture uses HTTP snapshots" }),
   );
-  await page.route("**/api/state", async (route) => {
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     for (const agent of data.threads) {

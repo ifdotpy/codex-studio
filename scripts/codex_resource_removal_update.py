@@ -19,7 +19,9 @@ EXPECTED = {'codex_runtime.Runtime.dynamic': ('617f63299f75e37e282c1495d7cfbf115
  'codex_canvas.Canvas.post': ('149607b0c09427105206b061c048f5cf21be694c17c0d692ac188dd13d4bd019',
                               '79c593293f496a1019111051f928a02dddb8aebe3998f083bb9373cf25879a8d'),
  'codex_canvas.make_server.Handler.do_GET': ('de37295ae35715b5fbdd7eba8a1b17e7d2c4283bb8dd59c1fcb8c4ac5cd63ef9',
-                                             '0967520427aa11defca65644d9f19d30ef5f87669a8f7baad04e88b65036b86f'),
+                                             '0967520427aa11defca65644d9f19d30ef5f87669a8f7baad04e88b65036b86f',
+                                             # Live file-viewer route from 193d962, before /api/desktop update metadata.
+                                             '42dab8a766ab8a53f7d3dcf4f263f3157ef89a085df1fa35adb541df8bbda88a'),
  'codex_canvas.make_server.Handler.do_POST': ('495849636d0d7042ea094f0428610b65462e076bb72f30e894ae7cc394e7177d',
                                               'b1ca1845e6a542e241321f2910da4f3edc388711c4268ebed326f7e8a113a7db'),
  'codex_agent_management._blockers': ('0b725c447f7e3d974a46108e55ea23b55c4e7da180fd3777e2759dcc762d05ac',
@@ -61,6 +63,19 @@ def _bound(owner, name, instance):
     return live
 
 
+def _canvas_runtime(canvas):
+    module = sys.modules.get('codex_canvas')
+    if module is None or type(canvas) is not module.Canvas:
+        raise RuntimeError('Unknown reservation canvas')
+    descriptor = vars(type(canvas)).get('runtime')
+    if (type(descriptor) is not property or not isinstance(descriptor.fget, FunctionType)
+            or descriptor.fget.__globals__ is not vars(module)
+            or descriptor.fget.__module__ != 'codex_canvas'
+            or signature(descriptor.fget) != 'b36edea18c490ad7baff4b297756ccd860f91889a8aadb7bb508382dc5a8d041'):
+        raise RuntimeError('Unknown reservation canvas runtime property')
+    return vars(canvas).get('_runtime')
+
+
 def _find_handler(runtime):
     matches = []
     for candidate in gc.get_objects():
@@ -81,7 +96,7 @@ def _find_handler(runtime):
         cells = dict(zip(function.__code__.co_freevars, function.__closure__ or ()))
         try:
             canvas = cells['canvas'].cell_contents
-            if vars(canvas).get('runtime') is runtime:
+            if _canvas_runtime(canvas) is runtime:
                 matches.append(handler)
         except (KeyError, ValueError, TypeError):
             continue
@@ -125,11 +140,11 @@ def apply(runtime, handler_class=None):
     try:
         if runtime.closed:
             raise RuntimeError('Runtime is closed; no reservation update applied')
-        _http_closure(handler_class.do_GET, runtime, handler_class)
         cells = dict(zip(handler_class.do_GET.__code__.co_freevars, handler_class.do_GET.__closure__))
         canvas = cells['canvas'].cell_contents
-        if type(canvas) is not modules['codex_canvas'].Canvas:
-            raise RuntimeError('Unknown reservation canvas')
+        if _canvas_runtime(canvas) is not runtime:
+            raise RuntimeError('Reservation canvas belongs to another runtime')
+        _http_closure(handler_class.do_GET, runtime, handler_class)
         for target, path, module, desired, allowed in replacements:
             if len(path) == 1:
                 live = vars(module).get(path[0])
@@ -143,7 +158,13 @@ def apply(runtime, handler_class=None):
             if (not isinstance(live, FunctionType) or live.__globals__ is not vars(module)
                     or live.__module__ != module.__name__ or signature(live) not in allowed
                     or live.__code__.co_freevars != desired.__code__.co_freevars):
-                raise RuntimeError('Unknown live reservation function: ' + target)
+                details = ({'signature': signature(live),
+                            'module': live.__module__,
+                            'globalsMatch': live.__globals__ is vars(module),
+                            'freevars': list(live.__code__.co_freevars),
+                            'expectedFreevars': list(desired.__code__.co_freevars)}
+                           if isinstance(live, FunctionType) else {'type': type(live).__name__})
+                raise RuntimeError('Unknown live reservation function: ' + target + '; ' + repr(details))
             originals.append((live, live.__code__, desired.__code__))
         rules = modules['codex_rules']
         if codex_runtime.rule_tools is not rules.rule_tools:

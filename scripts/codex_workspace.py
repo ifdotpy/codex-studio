@@ -1392,28 +1392,40 @@ class WorkspaceMixin:
             "role": a["role"],
             "nativeInventory": "Codex selects native tools per model and configuration. Observed calls appear below.",
         }
-        with self.lock, self.db() as db:
-            result["observed"] = sorted(
-                {
-                    t.get("name", t.get("type", ""))
-                    for t in self.records(db, "tasks")
-                    if t["agent"] == key
-                }
-            )
-        for label, method, params in [
+        # The history index contains the agent identity. Filter it before
+        # reading names from selected records; never decode full task history.
+        name = """CASE WHEN json_type(record,'$.name') IS NOT NULL
+                    THEN json_extract(record,'$.name')
+                    WHEN json_type(record,'$.type') IS NOT NULL
+                    THEN json_extract(record,'$.type') ELSE '' END"""
+        with self.db() as db:
+            rows = db.execute(
+                f"""SELECT {name} FROM runtime_tasks INDEXED BY runtime_task_history
+                    WHERE json_extract(record,'$.status')!='running'
+                    AND json_extract(record,'$.agent')=?
+                    UNION SELECT {name} FROM runtime_tasks INDEXED BY runtime_task_status
+                    WHERE (json_extract(record,'$.status')='running'
+                        OR json_extract(record,'$.status') IS NULL)
+                    AND json_extract(record,'$.agent')=?""", (key, key))
+            result["observed"] = sorted(row[0] for row in rows)
+        from concurrent.futures import ThreadPoolExecutor
+        reads = [
             ("skills", "skills/list", {"cwds": [a["cwd"]], "forceReload": True}),
-            (
-                "servers",
-                "mcpServerStatus/list",
-                {"threadId": a.get("threadId"), "limit": 100},
-            ),
-        ]:
-            try:
-                response = self.connect(a.get("accountKey", "default")).call(method, params, timeout=15)
-                result[label] = response.get("data", response.get("servers", []))
-                result[label + "Cursor"] = response.get("nextCursor")
-            except Exception as error:
-                result["errors"].append(label + ": " + str(error))
+            ("servers", "mcpServerStatus/list", {"threadId": a.get("threadId"), "limit": 100}),
+        ]
+        def discover(method, params):
+            return self.connect(a.get("accountKey", "default")).call(method, params, timeout=5)
+        # Independent provider reads share a five-second wait instead of two
+        # sequential waits that can exceed the client's request deadline.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            pending = [(label, executor.submit(discover, method, params)) for label, method, params in reads]
+            for label, future in pending:
+                try:
+                    response = future.result()
+                    result[label] = response.get("data", response.get("servers", []))
+                    result[label + "Cursor"] = response.get("nextCursor")
+                except Exception as error:
+                    result["errors"].append(label + ": " + str(error))
         result.update(observedNative=result["observed"], mcp=result["servers"])
         self.capability_cache[key] = result
         return result

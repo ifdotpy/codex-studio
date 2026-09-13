@@ -38,7 +38,7 @@ export function useSnapshot() {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
         }
       }
-      const next = await api<Snapshot>("/api/state");
+      const next = await api<Snapshot>("/api/state?view=chat");
       if (request !== generation.current) return;
       sessionToken.current = next.token;
       setToken(next.token);

@@ -76,7 +76,9 @@ try {
     })),
     runtime: { ...state.runtime, requests: [] },
   };
-  await page.route("**/api/state", (r) => r.fulfill({ json: snapshot }));
+  await page.route(/\/api\/state(?:\?.*)?$/, (r) =>
+    r.fulfill({ json: snapshot }),
+  );
   const payload = (agent, tag) => ({
     agent: { ...agent, status: "completed", inFlight: false, turnId: null },
     items: Array.from({ length: 30 }, (_, i) => ({
