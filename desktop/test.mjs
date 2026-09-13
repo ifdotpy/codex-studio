@@ -78,18 +78,11 @@ try {
     true,
   );
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await page.locator("[data-backend-update-pending]").waitFor();
-  assert.equal(
-    await page.locator("[data-backend-update-pending]").textContent(),
-    "Server update pending. Active work continues.",
-  );
+  await page.getByRole("button", { name: "New chat", exact: true }).waitFor();
+  assert.equal(await page.locator("[data-backend-update-pending]").count(), 0);
   await desktop.evaluate(() => {
     globalThis.fetch = globalThis.__testOriginalFetch;
   });
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await page
-    .locator("[data-backend-update-pending]")
-    .waitFor({ state: "hidden" });
   const preferences = await desktop.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
     const preferences = window.webContents.getLastWebPreferences();
@@ -468,7 +461,7 @@ try {
         "startup race",
         "attach",
         "backend source identity",
-        "pending update notice and recovery",
+        "backend mismatch without a chat notice",
         "state mismatch",
         "sandbox",
         "gesture",

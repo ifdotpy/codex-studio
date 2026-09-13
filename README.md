@@ -52,9 +52,10 @@ For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.
 Run `npm --prefix desktop run package` to build the desktop application.
 
-The desktop compares its installed backend source with the running server.
-It shows an update notice when they differ. Closing the window preserves the
-server and its active work, so reopening the window does not apply backend changes.
+Closing the window preserves the server and its active work. Backend source
+identity remains available to diagnostics without a persistent notice in chats.
+Reviewed live patches apply in the background without a backend restart.
+See [live updates](docs/live-updates.md) for publication and verification.
 
 The packaged macOS application restores its backend after login or a process
 failure. Saved input and verified interrupted work recover automatically.

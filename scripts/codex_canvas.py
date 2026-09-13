@@ -657,6 +657,8 @@ def make_server(canvas, port=0, public_origin=None):
                             "protocol": 1,
                             "mobileProtocol": 1,
                             "backendBuild": BACKEND_BUILD,
+                            "liveUpdate": (canvas.runtime.live_updates.status()
+                                           if getattr(canvas.runtime, "live_updates", None) else None),
                             "restartEnvironment": {key: os.environ[key] for key in (
                                 "CODEX_HOME", "CODEX_BOARD_STATE_DIR", "CODEX_CANVAS_CWD",
                                 "CODEX_CANVAS_CONCURRENCY", "CODEX_BIN", "SHELL", "LANG", "LC_ALL")
@@ -1050,6 +1052,7 @@ def main():
     signal.signal(signal.SIGTERM, terminate)
     runtime = None
     server = None
+    updates = None
     try:
         from codex_runtime import Runtime
         canvas = Canvas()
@@ -1057,6 +1060,8 @@ def main():
         server = make_server(canvas, args.port)
         runtime = Runtime(canvas.root)
         canvas.runtime = runtime
+        from codex_live_updates import start as start_updates
+        updates = start_updates(runtime)
         print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
@@ -1064,6 +1069,8 @@ def main():
     except (RuntimeError, OSError) as error:
         parser.exit(1, f"codex-canvas: {error}\n")
     finally:
+        if updates:
+            updates.close()
         if server:
             server.server_close()
         if runtime:
