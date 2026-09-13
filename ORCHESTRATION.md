@@ -79,6 +79,29 @@ Versioned turn context supplies it to existing threads and after changes or comp
 The native permission system still owns tool approval.
 
 The conversation header provides context compaction, review, and team stop.
+
+Open **Chat settings > Reviewers** to assign another chat as a reviewer.
+Select the reviewer chat. Set the interval in minutes.
+The default interval is 30 minutes. Each target can have several reviewers.
+
+Use **Discussion** to open their private conversation.
+The conversation also appears under **Messages > Team > Reviews** for both teams.
+Use **Pause**, **Resume**, or **Remove** to control each assignment.
+
+Studio stores the schedule in SQLite. The timer runs while the Mac backend runs.
+After a restart, one check can become due. Missed intervals do not create a backlog.
+Each assignment permits one queued or active review at a time.
+
+The reviewer receives the target's original request, recent requests, and recent outcomes with bounded excerpts.
+If that context has not changed, the timer skips the model request.
+Paused chats and native recovery holds remain stopped.
+
+The reviewer keeps its own model, permissions, and conversation history.
+Review instructions ask it to check evidence and discuss findings, without changing the target's files or task scope.
+The agents use their existing message tools. A busy recipient reads queued feedback on a later turn.
+Pausing or removing an assignment cancels its pending review event. An already submitted turn can finish.
+Timer events are the only automatic review trigger.
+
 The **Projects** sidebar groups lead chats by their actual working directory.
 Use **+** beside Projects to add a folder, including a project with no chats.
 Use **+** beside a folder to start a chat there. An empty current chat is reused.

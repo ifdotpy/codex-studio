@@ -64,6 +64,7 @@ import {
 import { useChatReadState } from "./components/useChatReadState";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
+import ReviewSchedules from "./components/ReviewSchedules";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
 import Accounts, { useAccounts } from "./components/Accounts";
@@ -150,6 +151,7 @@ export default function App() {
   const [workspaceFocus, setWorkspaceFocus] = useState<{
     id: string;
     requestId: string;
+    roomId?: string;
   }>();
   const [limitsLoading, setLimitsLoading] = useState<Record<string, boolean>>(
     {},
@@ -1626,6 +1628,26 @@ export default function App() {
               catalog={workerModels}
               refresh={refresh}
               teamDefaults
+            />
+          )}
+          {agent?.source === "managed" && (
+            <ReviewSchedules
+              key={`reviews:${data.stateDir}:${workspaceId}:${agent.id}`}
+              agent={agent}
+              agents={data.threads}
+              workspaceId={workspaceId}
+              stateDir={data.stateDir}
+              refresh={refresh}
+              openRoom={(roomId) => {
+                setSettingsOpen(false);
+                setWorkspaceSection("messages");
+                setWorkspaceFocus({
+                  id: roomId,
+                  roomId,
+                  requestId: crypto.randomUUID(),
+                });
+                setWorkspaceOpen(true);
+              }}
             />
           )}
           {agent?.cwd && (

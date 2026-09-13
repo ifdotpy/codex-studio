@@ -35,12 +35,14 @@ export default function TeamChats({
   forYou,
   forLead,
   focusRequestId,
+  focusRoomId,
 }: {
   data: Snapshot;
   leadId?: string;
   forYou: ReactNode;
   forLead: ReactNode;
   focusRequestId?: string;
+  focusRoomId?: string;
 }) {
   const [view, setView] = useState("you");
   useEffect(() => {
@@ -50,6 +52,12 @@ export default function TeamChats({
   const [limit, setLimit] = useState(60);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState(false);
+  useEffect(() => {
+    if (!focusRoomId) return;
+    setView("team");
+    setSelected(focusRoomId);
+    setDetail(true);
+  }, [focusRoomId, focusRequestId]);
   const seenKey = `codex-chat-seen:${data.stateDir}`;
   const [seen, setSeen] = useState<Record<string, number>>(() =>
     saved(seenKey, {}),
@@ -82,7 +90,9 @@ export default function TeamChats({
       (room.kind === "broadcast"
         ? room.rootId === leadId
         : room.members.length > 0 &&
-          room.members.every((id) => members.has(id))),
+          (room.members.every((id) => members.has(id)) ||
+            (!!room.reviewTargets?.length &&
+              room.members.some((id) => members.has(id))))),
   );
   const name = (room: Room) =>
     room.kind === "broadcast" ? "Team broadcast" : room.name;
@@ -100,11 +110,18 @@ export default function TeamChats({
   const room = rooms.find((item) => item.id === selected);
   const groups = [
     {
+      id: "reviews",
+      title: "Reviews",
+      rooms: filtered.filter((room) => !!room.reviewTargets?.length),
+    },
+    {
       id: "orchestrator",
       title: "To orchestrator",
       rooms: filtered.filter(
         (room) =>
-          room.kind === "private" && room.members.includes(leadId || ""),
+          room.kind === "private" &&
+          !room.reviewTargets?.length &&
+          room.members.includes(leadId || ""),
       ),
     },
     {
@@ -117,7 +134,9 @@ export default function TeamChats({
       title: "Between agents",
       rooms: filtered.filter(
         (room) =>
-          room.kind === "private" && !room.members.includes(leadId || ""),
+          room.kind === "private" &&
+          !room.reviewTargets?.length &&
+          !room.members.includes(leadId || ""),
       ),
     },
   ];
@@ -337,7 +356,11 @@ function RoomMessages({
             {room.kind === "broadcast" ? "Team broadcast" : room.name}
           </strong>
           <p>
-            {room.kind === "broadcast" ? "Everyone in this team" : participants}
+            {room.kind === "broadcast"
+              ? "Everyone in this team"
+              : room.reviewTargets?.length
+                ? "Review discussion"
+                : participants}
           </p>
         </div>
       </header>

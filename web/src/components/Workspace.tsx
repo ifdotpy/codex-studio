@@ -45,7 +45,7 @@ import "./Workspace.css";
 
 type Props = {
   initialSection?: string;
-  initialFocus?: { id: string; requestId: string };
+  initialFocus?: { id: string; requestId: string; roomId?: string };
   opened: boolean;
   onClose: () => void;
   agent?: Agent;
@@ -531,6 +531,7 @@ export function Workspace(props: Props) {
                 <TeamChats
                   data={props.data}
                   focusRequestId={props.initialFocus?.requestId}
+                  focusRoomId={props.initialFocus?.roomId}
                   leadId={
                     props.agent?.rootId ||
                     (props.agent?.isLead ? props.agent.id : undefined)
