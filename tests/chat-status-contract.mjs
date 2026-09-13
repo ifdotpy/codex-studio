@@ -7,7 +7,7 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { chatIndicators, unreadResult } = await import(
+const { chatIndicators, unreadResult, chatActivities } = await import(
   "../web/src/components/chatStatusModel.ts"
 );
 hooks.deregister();
@@ -228,4 +228,68 @@ assert.equal(
 );
 console.log(
   "PASS chat status precedence, work and monitors, unread identity, pending questions without inbox escalation, deferred and stale requests, errors, stopped agents, and team aggregation",
+);
+
+const pausedChild = {
+  ...child,
+  status: "paused",
+  autoWake: false,
+  inFlight: false,
+};
+const command = {
+  id: "long-command",
+  agent: child.id,
+  status: "running",
+  command: "find /Users/igor",
+  created: 10,
+};
+const activeSnapshot = snapshot([lead, pausedChild], { tasks: [command] });
+const reasons = chatActivities(activeSnapshot);
+assert.equal(reasons.get("lead")[0].id, command.id);
+assert.equal(reasons.get("lead")[0].agentName, child.name);
+assert.equal(reasons.get("lead")[0].command, command.command);
+assert.equal(reasons.get("child")[0].created, 10);
+assert.equal(chatIndicators(activeSnapshot).get("lead").kind, "working");
+assert.equal(
+  chatActivities(
+    snapshot([lead, pausedChild], {
+      tasks: [{ ...command, status: "completed" }],
+    }),
+  ).size,
+  0,
+);
+assert.equal(
+  chatActivities(
+    snapshot([lead, pausedChild], { tasks: [{ ...command, epoch: 1 }] }),
+  ).size,
+  0,
+);
+assert.equal(
+  chatActivities(
+    snapshot([lead], {
+      monitors: [{ ...command, agent: "lead", panelFeed: true }],
+    }),
+  ).size,
+  0,
+);
+const activeChild = { ...child, status: "running", inFlight: true };
+assert.equal(
+  chatActivities(snapshot([lead, activeChild], { tasks: [command] })).get(
+    "lead",
+  ).length,
+  1,
+);
+assert.equal(
+  chatActivities(snapshot([lead, activeChild])).get("lead")[0].kind,
+  "agent",
+);
+const otherRoot = { ...lead, id: "other-root", rootId: "other-root" };
+assert.equal(
+  chatActivities(
+    snapshot([lead, pausedChild, otherRoot], { tasks: [command] }),
+  ).has("other-root"),
+  false,
+);
+console.log(
+  "PASS visible activity reasons match spinner, including live commands from stopped workers and scope boundaries",
 );

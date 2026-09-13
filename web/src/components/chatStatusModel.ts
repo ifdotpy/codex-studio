@@ -17,6 +17,99 @@ export interface ReadState {
   read: boolean;
   revision: number;
 }
+
+export interface ChatActivity {
+  id: string;
+  kind: "task" | "monitor" | "agent";
+  agentId: string;
+  agentName: string;
+  label: string;
+  command?: string;
+  created?: number;
+  status: string;
+}
+
+// The visible reasons and the spinner use the same activity records.
+export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
+  const agents = data.threads.filter((agent) => agent.source === "managed");
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  const result = new Map<string, ChatActivity[]>();
+  const concrete = new Set<string>();
+  const add = (agent: Agent, activity: ChatActivity) => {
+    for (const id of new Set([agent.id, agent.rootId].filter(Boolean))) {
+      if (!byId.has(id!)) continue;
+      result.set(id!, [...(result.get(id!) || []), activity]);
+    }
+  };
+  for (const [kind, entries] of [
+    ["task", data.runtime.tasks || []],
+    ["monitor", data.runtime.monitors || []],
+  ] as const) {
+    for (const record of entries) {
+      const entry = record as typeof record & {
+        epoch?: number;
+        panelFeed?: boolean;
+        type?: string;
+      };
+      const agent = byId.get(entry.agent);
+      if (
+        !agent ||
+        (entry.epoch != null &&
+          agent.epoch != null &&
+          entry.epoch !== agent.epoch) ||
+        (kind === "monitor" && entry.panelFeed) ||
+        !["starting", "running", "approval"].includes(entry.status)
+      )
+        continue;
+      concrete.add(agent.id);
+      add(agent, {
+        id: entry.id,
+        kind,
+        agentId: agent.id,
+        agentName: agent.name,
+        label:
+          kind === "monitor"
+            ? "Background command"
+            : entry.command
+              ? "Command"
+              : "Tool call",
+        command: entry.command || entry.query || entry.name || entry.type,
+        created: entry.created,
+        status: entry.status,
+      });
+    }
+  }
+  for (const agent of agents) {
+    if (concrete.has(agent.id)) continue;
+    if (
+      agent.inFlight ||
+      (agent.autoWake !== false &&
+        ["queued", "starting", "running", "waiting"].includes(agent.status))
+    )
+      add(agent, {
+        id: agent.id,
+        kind: "agent",
+        agentId: agent.id,
+        agentName: agent.name,
+        label:
+          agent.status === "waiting"
+            ? "Waiting for results"
+            : agent.status === "queued"
+              ? "Waiting to start"
+              : agent.status === "starting"
+                ? "Starting"
+                : "Working",
+        status: agent.status,
+      });
+  }
+  for (const entries of result.values())
+    entries.sort(
+      (a, b) =>
+        (a.created ?? Infinity) - (b.created ?? Infinity) ||
+        a.id.localeCompare(b.id),
+    );
+  return result;
+}
 export function hasCompletedResult(agent: Agent) {
   return !!(
     agent.threadId &&
@@ -44,6 +137,7 @@ export function chatIndicators(
   data: Snapshot,
   readStateFor: (agent: Agent) => ReadState | null = (agent) =>
     agent.readState || null,
+  activities = chatActivities(data),
 ): Map<string, ChatIndicator> {
   const agents = data.threads.filter((agent) => agent.source === "managed");
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
@@ -69,37 +163,9 @@ export function chatIndicators(
     if (request.deferred) deferred.add(agent.id);
     else includeLead(answers, agent.id);
   }
-  const currentEpoch = (entry: { agent?: string; epoch?: number }) => {
-    const agent = byId.get(entry.agent || "");
-    return (
-      !!agent &&
-      (entry.epoch == null ||
-        agent.epoch == null ||
-        entry.epoch === agent.epoch)
-    );
-  };
-  for (const monitor of data.runtime.monitors || []) {
-    if (
-      currentEpoch(monitor) &&
-      !monitor.panelFeed &&
-      ["starting", "running", "approval"].includes(monitor.status)
-    )
-      includeLead(monitoring, monitor.agent);
-  }
-  for (const task of data.runtime.tasks || []) {
-    if (
-      currentEpoch(task) &&
-      ["starting", "running", "approval"].includes(task.status)
-    )
-      includeLead(tasks, task.agent);
-  }
-  for (const agent of agents) {
-    if (
-      agent.inFlight ||
-      (agent.autoWake !== false &&
-        ["queued", "starting", "running", "waiting"].includes(agent.status))
-    )
-      includeLead(tasks, agent.id);
+  for (const [id, entries] of activities) {
+    if (entries.some((entry) => entry.kind === "monitor")) monitoring.add(id);
+    if (entries.some((entry) => entry.kind !== "monitor")) tasks.add(id);
   }
   return new Map(
     agents.map((agent) => {

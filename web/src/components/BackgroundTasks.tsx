@@ -114,6 +114,7 @@ export default function BackgroundTasks({
   openAgent,
   refresh,
   notify,
+  initialFocus,
 }: {
   opened: boolean;
   close: () => void;
@@ -123,15 +124,19 @@ export default function BackgroundTasks({
   openAgent: (id: string) => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
+  initialFocus?: { id: string; leadId: string; requestId: string };
 }) {
   const [tab, setTab] = useState("active"),
     [kind, setKind] = useState("all"),
     [query, setQuery] = useState(""),
-    [selection, setSelection] = useState<{ scope?: string; id: string } | null>(
-      null,
-    ),
+    [selection, setSelection] = useState<{
+      scope?: string;
+      id: string;
+      requested?: boolean;
+    } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
+  const appliedFocus = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!opened) return;
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
@@ -206,12 +211,25 @@ export default function BackgroundTasks({
       (a, b) =>
         Number(activeTask(b)) - Number(activeTask(a)) || b.created - a.created,
     );
-  const selectedTask =
-    (selection && selection.scope === leadId
-      ? scoped.find((task) => task.id === selection.id)
-      : undefined) || filtered[0];
+  const pendingFocus =
+    opened &&
+    initialFocus?.leadId === leadId &&
+    initialFocus?.requestId !== appliedFocus.current
+      ? initialFocus
+      : undefined;
+  const explicitId =
+    pendingFocus?.id ||
+    (selection?.scope === leadId && selection?.requested
+      ? selection.id
+      : undefined);
+  const selectedTask = explicitId
+    ? scoped.find((task) => task.id === explicitId)
+    : (selection && selection.scope === leadId
+        ? scoped.find((task) => task.id === selection.id)
+        : undefined) || filtered[0];
   const selectedId = selectedTask?.id;
   useEffect(() => {
+    if (explicitId && !selectedId) return;
     setSelection((previous) =>
       selectedId
         ? previous && previous.scope === leadId && previous.id === selectedId
@@ -219,7 +237,7 @@ export default function BackgroundTasks({
           : { scope: leadId, id: selectedId }
         : null,
     );
-  }, [leadId, selectedId, selection]);
+  }, [leadId, selectedId, selection, explicitId]);
   useEffect(() => {
     setMobileDetail(false);
     setHistoryError("");
@@ -227,6 +245,15 @@ export default function BackgroundTasks({
   useEffect(() => {
     if (!opened) setMobileDetail(false);
   }, [opened]);
+  useEffect(() => {
+    if (!opened || !initialFocus || initialFocus.leadId !== leadId) return;
+    appliedFocus.current = initialFocus.requestId;
+    setSelection({ scope: leadId, id: initialFocus.id, requested: true });
+    setTab("all");
+    setKind("all");
+    setQuery("");
+    setMobileDetail(true);
+  }, [opened, initialFocus?.requestId, leadId]);
   return (
     <Drawer
       opened={opened}
@@ -290,7 +317,7 @@ export default function BackgroundTasks({
         </div>
       </div>
       <div
-        className={`tasks-content ${mobileDetail && selectedTask ? "show-task-detail" : ""}`}
+        className={`tasks-content ${mobileDetail && (selectedTask || explicitId) ? "show-task-detail" : ""}`}
       >
         <section className="tasks-list" aria-label="Task list">
           <div className="tasks-search">
@@ -388,7 +415,20 @@ export default function BackgroundTasks({
         ) : (
           <div className="task-detail-empty">
             <Terminal size={32} />
-            <p>Select a task to inspect its output.</p>
+            <p role="status">
+              {explicitId
+                ? historyError
+                  ? "Could not load the selected task."
+                  : history?.scope === leadId
+                    ? "The selected task is no longer available in this chat."
+                    : "Loading the selected task…"
+                : "Select a task to inspect its output."}
+            </p>
+            {explicitId && (
+              <Button variant="subtle" onClick={() => setMobileDetail(false)}>
+                Back to tasks
+              </Button>
+            )}
           </div>
         )}
       </div>

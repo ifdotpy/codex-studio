@@ -59,12 +59,14 @@ import Sidebar from "./components/Sidebar";
 import ChatStatus from "./components/ChatStatus";
 import {
   chatIndicators,
+  chatActivities,
   hasCompletedResult,
 } from "./components/chatStatusModel";
 import { useChatReadState } from "./components/useChatReadState";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
 import ReviewSchedules from "./components/ReviewSchedules";
+import SessionActivity from "./components/SessionActivity";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
 import Accounts, { useAccounts } from "./components/Accounts";
@@ -152,6 +154,11 @@ export default function App() {
     id: string;
     requestId: string;
     roomId?: string;
+  }>();
+  const [taskFocus, setTaskFocus] = useState<{
+    id: string;
+    leadId: string;
+    requestId: string;
   }>();
   const [limitsLoading, setLimitsLoading] = useState<Record<string, boolean>>(
     {},
@@ -262,9 +269,16 @@ export default function App() {
     refresh,
     workspaceId,
   );
+  const activities = useMemo(
+    () => (data ? chatActivities(data) : new Map()),
+    [data],
+  );
   const indicators = useMemo(
-    () => (data ? chatIndicators(data, readState.readStateFor) : new Map()),
-    [data, readState.readStateFor],
+    () =>
+      data
+        ? chatIndicators(data, readState.readStateFor, activities)
+        : new Map(),
+    [data, readState.readStateFor, activities],
   );
   useEffect(() => {
     setWorkerQuery("");
@@ -1232,7 +1246,8 @@ export default function App() {
               {mobileClient && agent?.cwd ? `${projectName} · ` : ""}
               {agent
                 ? indicators.get(agent.id)?.kind === "answer" ||
-                  indicators.get(agent.id)?.label === "Waiting for a monitor"
+                  (indicators.get(agent.id)?.kind === "working" &&
+                    !agent.inFlight)
                   ? indicators.get(agent.id)?.label
                   : livePhase?.id === agent.id
                     ? livePhase.label
@@ -1344,7 +1359,10 @@ export default function App() {
                 id="tasks-toggle"
                 aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
                 leftSection={<Activity size={14} />}
-                onClick={() => setTasksOpen(true)}
+                onClick={() => {
+                  setTaskFocus(undefined);
+                  setTasksOpen(true);
+                }}
               >
                 Background {taskCount || ""}
               </Menu.Item>
@@ -1404,6 +1422,23 @@ export default function App() {
             </Menu.Dropdown>
           </Menu>
         </header>
+        {agent && (
+          <SessionActivity
+            key={`${data.stateDir}:${agent.id}`}
+            activities={activities.get(agent.id) || []}
+            onOpen={(activity) => {
+              if (activity.kind === "agent") open(activity.agentId);
+              else if (lead) {
+                setTaskFocus({
+                  id: activity.id,
+                  leadId: lead.id,
+                  requestId: crypto.randomUUID(),
+                });
+                setTasksOpen(true);
+              }
+            }}
+          />
+        )}
         {error && (
           <div id="error" role="alert">
             {error}
@@ -1528,9 +1563,18 @@ export default function App() {
       <BackgroundTasks
         key={`background:${lead?.id || "none"}`}
         opened={tasksOpen}
+        initialFocus={taskFocus}
         close={() => setTasksOpen(false)}
         afterClose={() =>
-          requestAnimationFrame(() => chatActionsButton.current?.focus())
+          requestAnimationFrame(() => {
+            const source =
+              taskFocus && taskFocus.leadId === lead?.id
+                ? document.querySelector<HTMLButtonElement>(
+                    `[data-activity-id="${CSS.escape(taskFocus.id)}"]`,
+                  )
+                : null;
+            (source || chatActionsButton.current)?.focus();
+          })
         }
         data={chatData!}
         leadId={lead?.id}
