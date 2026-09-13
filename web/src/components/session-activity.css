@@ -1,10 +1,37 @@
 .session-activity {
   flex: 0 0 auto;
   min-width: 0;
-  padding: 5px 16px;
+  padding: 2px 16px;
   border-bottom: 1px solid var(--line, #d9dde5);
   background: var(--surface, #f6f7f9);
   font-size: 12px;
+}
+.session-activity[data-expanded="false"] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.session-activity[data-expanded="false"] ul {
+  flex: 1;
+  min-width: 0;
+}
+.session-activity[data-expanded="false"] .session-activity-row {
+  min-height: 28px;
+  padding-block: 2px;
+}
+.session-activity[data-expanded="false"] .session-activity-copy {
+  display: block;
+}
+.session-activity[data-expanded="false"] .session-activity-owner {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+.session-activity[data-expanded="false"] .session-activity-more {
+  flex-shrink: 0;
+  padding: 4px;
 }
 .session-activity ul {
   list-style: none;

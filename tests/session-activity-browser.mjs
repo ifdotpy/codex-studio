@@ -70,21 +70,30 @@ try {
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/check`);
   const strip = page.getByRole("region", { name: "Session activity" });
   await strip.waitFor();
-  assert.equal(await strip.locator("[data-activity-id]").count(), 2);
+  assert.equal(await strip.locator("[data-activity-id]").count(), 1);
   await strip.getByText("webcrypto-globals", { exact: true }).waitFor();
-  await strip.getByText("Running command", { exact: true }).waitFor();
-  await strip.getByText("14h 0m", { exact: true }).waitFor();
-  assert(
-    (await strip.locator("code").first().innerText()).startsWith(
-      "find /Users/igor",
-    ),
+  assert.equal(
+    await strip.getByText("Running command", { exact: true }).count(),
+    0,
   );
+  await strip.getByText("14h 0m", { exact: true }).waitFor();
+  assert.equal(await strip.locator("code").count(), 0);
+  assert(
+    await strip.evaluate((node) => node.getBoundingClientRect().height <= 34),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert(
+    await strip.evaluate((node) => node.getBoundingClientRect().height <= 34),
+  );
+  await page.screenshot({
+    path: join(cacheDir, "session-activity-compact.png"),
+  });
   await strip.locator('[data-activity-id="long-command"]').click();
   assert.deepEqual(
     await page.evaluate(() => window.opened[0]),
     await page.evaluate(() => window.activities[0]),
   );
-  await strip.getByRole("button", { name: "Show 2 more", exact: true }).click();
+  await strip.getByRole("button", { name: "Show 3 more", exact: true }).click();
   assert.equal(await strip.locator("[data-activity-id]").count(), 4);
   for (const id of ["monitor-one", "worker-one", "tool-two"])
     await strip.locator(`[data-activity-id="${id}"]`).click();
@@ -121,7 +130,7 @@ try {
       ),
   );
   await strip.getByRole("button", { name: "Show less", exact: true }).click();
-  assert.equal(await strip.locator("[data-activity-id]").count(), 2);
+  assert.equal(await strip.locator("[data-activity-id]").count(), 1);
   await page.evaluate(() => {
     window.time += 120000;
     document.dispatchEvent(new Event("visibilitychange"));
@@ -133,7 +142,7 @@ try {
   await strip.waitFor({ state: "detached" });
   assert.deepEqual(errors, []);
   console.log(
-    `PASS session activity: ${browserType.name()}, owners, command, elapsed, exact actions, first two, expand, 390px, empty state`,
+    `PASS session activity: ${browserType.name()}, owners, command, elapsed, exact actions, one compact row, expand, 390px, empty state`,
   );
   console.log("Screenshot:", join(cacheDir, "session-activity-mobile.png"));
 } finally {

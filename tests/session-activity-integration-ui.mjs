@@ -130,7 +130,10 @@ try {
   await row.waitFor();
   assert.match(await row.innerText(), /webcrypto-globals/);
   assert.match(await row.innerText(), /14h/);
-  assert.match(await row.innerText(), /find \/Users\/igor/);
+  assert.equal(await row.locator("code").count(), 0);
+  assert(
+    await strip.evaluate((node) => node.getBoundingClientRect().height <= 34),
+  );
   assert.equal(
     await page.locator("#conversation-status").innerText(),
     "Working",

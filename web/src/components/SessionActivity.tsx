@@ -51,10 +51,10 @@ export default function SessionActivity({
     };
   }, [timed]);
   useEffect(() => {
-    if (activities.length <= 2) setExpanded(false);
+    if (activities.length <= 1) setExpanded(false);
   }, [activities.length]);
   if (!activities.length) return null;
-  const shown = expanded ? activities : activities.slice(0, 2);
+  const shown = expanded ? activities : activities.slice(0, 1);
   return (
     <section
       className="session-activity"
@@ -88,10 +88,12 @@ export default function SessionActivity({
                   <span className="session-activity-owner">
                     {activity.agentName}
                   </span>
-                  <span className="session-activity-label">
-                    {activity.label}
-                  </span>
-                  {activity.command && (
+                  {expanded && (
+                    <span className="session-activity-label">
+                      {activity.label}
+                    </span>
+                  )}
+                  {expanded && activity.command && (
                     <code className="session-activity-command">
                       {activity.command}
                     </code>
@@ -111,14 +113,17 @@ export default function SessionActivity({
           );
         })}
       </ul>
-      {activities.length > 2 && (
+      {activities.length > 1 && (
         <button
           type="button"
           className="session-activity-more"
           aria-expanded={expanded}
+          aria-label={
+            expanded ? "Show less" : `Show ${activities.length - 1} more`
+          }
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? "Show less" : `Show ${activities.length - 2} more`}
+          {expanded ? "Show less" : `+${activities.length - 1}`}
         </button>
       )}
     </section>
