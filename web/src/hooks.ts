@@ -379,6 +379,7 @@ export function useMessages(
         if (kind === "room") {
           const d = await api(`/api/agent-chat?room=${encodeURIComponent(id)}`);
           if (!current()) return;
+          setNotice("");
           setLoadedId(scope);
           setItems((old) =>
             [
@@ -397,6 +398,7 @@ export function useMessages(
         } else if (kind === "legacy") {
           const d = await api(`/api/messages?room=${encodeURIComponent(id)}`);
           if (!current()) return;
+          setNotice("");
           setLoadedId(scope);
           setItems(
             d.map((m: Message) => ({

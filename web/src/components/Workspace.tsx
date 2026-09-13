@@ -1,4 +1,6 @@
 import ErrorDescription from "./ErrorDescription";
+import { workspaceInbox } from "./workspaceInbox";
+import { useWorkspaceResource as useResource } from "./useWorkspaceResource";
 import { messageAttentionCount } from "../chatScope";
 import { complaintNeedsUserResponse } from "../types";
 import {
@@ -65,6 +67,7 @@ type Context = Props & {
   focusId: string;
   notifications: boolean;
   toggleNotifications: () => Promise<void>;
+  resourceCache: Map<string, Json>;
 };
 const sections = [
   ["work", "Agent tasks", ListTodo],
@@ -108,45 +111,6 @@ const endpoint = (name: string, agent?: Agent) =>
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="workspace-empty">{children}</div>;
 }
-function useResource(path: string | null, revision: number) {
-  const [state, setState] = useState<{
-    path: string | null;
-    data: Json | null;
-    error: string;
-    loading: boolean;
-  }>({ path, data: null, error: "", loading: !!path });
-  useEffect(() => {
-    if (!path) {
-      setState({ path, data: null, error: "", loading: false });
-      return;
-    }
-    let active = true;
-    setState((old) =>
-      old.path === path
-        ? { ...old, loading: old.data === null }
-        : { path, data: null, error: "", loading: true },
-    );
-    api(path)
-      .then((data) => {
-        if (active) setState({ path, data, error: "", loading: false });
-      })
-      .catch((e) => {
-        if (active)
-          setState((old) => ({
-            path,
-            data: old.path === path ? old.data : null,
-            error: errorText(e),
-            loading: false,
-          }));
-      });
-    return () => {
-      active = false;
-    };
-  }, [path, revision]);
-  return state.path === path
-    ? state
-    : { path, data: null, error: "", loading: !!path };
-}
 function ResourceState({
   state,
 }: {
@@ -186,6 +150,7 @@ function ownerName(data: Snapshot, id?: string) {
 }
 
 export function Workspace(props: Props) {
+  const resourceCache = useRef(new Map<string, Json>()).current;
   const [section, setSection] = useState(props.initialSection || "work"),
     [agentId, setAgentId] = useState(props.agent?.id || ""),
     [revision, setRevision] = useState(0),
@@ -392,6 +357,7 @@ export function Workspace(props: Props) {
     focusId,
     notifications,
     toggleNotifications,
+    resourceCache,
     navigate: (section, agent, item) => {
       setSection(section);
       if (agent) setAgentId(agent);
@@ -416,11 +382,11 @@ export function Workspace(props: Props) {
       size="min(1180px, 100vw)"
       title={
         <span className="workspace-drawer-title">
-          <Layers3 size={19} />{" "}
+          {section === "messages" ? <Inbox size={19} /> : <Layers3 size={19} />}{" "}
           {section === "messages" ? "Messages" : "Workspace"}
         </span>
       }
-      className="workspace-drawer"
+      className={`workspace-drawer ${section === "messages" ? "workspace-messages-drawer" : ""}`}
     >
       <div
         className={`workspace-shell ${section === "messages" ? "workspace-focused-messages" : ""}`}
@@ -465,8 +431,18 @@ export function Workspace(props: Props) {
             <Button
               variant="subtle"
               size="compact-sm"
-              aria-label="Refresh workspace"
-              onClick={reload}
+              aria-label={
+                section === "messages"
+                  ? "Refresh messages"
+                  : "Refresh workspace"
+              }
+              onClick={() => {
+                reload();
+                if (section === "messages")
+                  void refreshRef
+                    .current()
+                    .catch((error) => notifyRef.current(errorText(error)));
+              }}
             >
               <RefreshCw size={16} />
             </Button>
@@ -1239,24 +1215,28 @@ function Changes(c: Context) {
 }
 
 function Attention(c: Context) {
-  const state = useResource(
-    c.agent ? endpoint("workspace", c.agent) : null,
+  // Chat projections omit work history. Its read must not delay user messages.
+  const work = useResource(
+    c.data.runtime.work === undefined && c.agent
+      ? endpoint("work", c.agent)
+      : null,
     c.revision,
+    { scope: c.data.stateDir, values: c.resourceCache },
   );
-  const ids = new Set(c.data.threads.map((agent) => agent.id));
-  const items: Json[] = (state.data?.inbox || []).filter((item: Json) =>
-    ids.has(item.agent),
+  const items = workspaceInbox(
+    c.data,
+    c.data.runtime.work || work.data?.tasks || [],
   );
-  const groups = [
-    ...new Set(
-      items
-        .filter((item) => !["request", "complaint"].includes(item.kind))
-        .map((item) => item.kind),
-    ),
-  ];
+  const groups = [...new Set(items.map((item) => item.kind))];
+  const labels: Record<string, string> = {
+    user_task: "Your tasks",
+    work: "Results to review",
+    agent: "Agent issues",
+    monitor: "Command failures",
+    rule: "Rule issues",
+  };
   return (
     <>
-      <ResourceState state={state} />
       <div className="workspace-toolbar">
         <span className="workspace-muted">
           Group new alerts when this browser tab is in the background.
@@ -1278,11 +1258,15 @@ function Attention(c: Context) {
         notify={c.notify}
       />
       {groups.map((kind) => (
-        <section className="workspace-inbox-group" key={kind}>
-          <h3>
-            {String(kind).replaceAll("_", " ")}{" "}
+        <details
+          className="workspace-inbox-group"
+          key={kind}
+          open={kind === "user_task" || kind === "work"}
+        >
+          <summary>
+            {labels[kind] || kind}{" "}
             <span>{items.filter((item) => item.kind === kind).length}</span>
-          </h3>
+          </summary>
           {items
             .filter((item) => item.kind === kind)
             .map((item) => (
@@ -1306,11 +1290,11 @@ function Attention(c: Context) {
                   <strong>{item.title || item.kind}</strong>
                   <ChevronRight size={15} />
                 </div>
-                <p>{item.text}</p>
+                <p>{errorText(item.text)}</p>
                 <small>{ownerName(c.data, item.agent)}</small>
               </UnstyledButton>
             ))}
-        </section>
+        </details>
       ))}
       <UserMessages
         data={c.data}
@@ -1320,10 +1304,18 @@ function Attention(c: Context) {
         focusId={c.focusId}
         focusRequestId={c.initialFocus?.requestId}
       />
+      {work.loading && !work.data ? (
+        <p className="messages-background-load" role="status">
+          <Loader size={12} /> Checking review tasks…
+        </p>
+      ) : (
+        <ResourceState state={work} />
+      )}
       {!groups.length &&
         !c.data.runtime.requests.length &&
         !c.data.runtime.complaints.some(complaintNeedsUserResponse) &&
-        state.data && <Empty>No messages need your attention.</Empty>}
+        !work.loading &&
+        !work.error && <Empty>No messages need your attention.</Empty>}
     </>
   );
 }

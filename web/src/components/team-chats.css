@@ -9,7 +9,7 @@
 }
 .team-chats {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 270px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
@@ -21,7 +21,7 @@
   overflow: hidden;
 }
 .team-room-search {
-  padding: 16px 12px 12px;
+  padding: 12px 10px;
 }
 .team-room-rows {
   flex: 1;
@@ -34,7 +34,7 @@
   align-items: center;
   width: 100%;
   gap: 10px;
-  padding: 13px 10px;
+  padding: 10px 8px;
   border-radius: 10px;
 }
 .team-room-row:hover {
@@ -95,22 +95,24 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 18px 22px;
+  padding: 11px 16px;
   border-bottom: 1px solid var(--line);
   flex: none;
 }
 .team-room-header > div {
   min-width: 0;
+  flex: 1;
 }
 .team-room-header strong {
-  font-size: 14px;
+  display: block;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
-.team-room-header p {
-  margin: 5px 0 0;
-  font-size: 12px;
+.team-room-kind {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
   color: var(--muted);
-  overflow-wrap: anywhere;
 }
 .team-room-back {
   display: none;
@@ -120,7 +122,7 @@
   overflow-anchor: none;
   min-height: 0;
   flex: 1;
-  padding: 20px;
+  padding: 16px;
 }
 .team-room-messages > div {
   display: flex;
@@ -183,7 +185,7 @@
 }
 .team-room-footer {
   flex: none;
-  padding: 12px 20px;
+  padding: 8px 16px;
   border-top: 1px solid var(--line);
   font-size: 11px;
   color: var(--muted);
@@ -276,7 +278,7 @@
   min-height: 0;
 }
 .workspace-messages .team-chats {
-  grid-template-columns: minmax(300px, 38%) minmax(0, 1fr);
+  grid-template-columns: minmax(230px, 32%) minmax(0, 1fr);
 }
 .message-group {
   border-bottom: 1px solid var(--line);
@@ -285,8 +287,8 @@
 .message-group > h3,
 .message-group > summary {
   margin: 0;
-  padding: 14px 10px;
-  font-size: 13px;
+  padding: 11px 8px;
+  font-size: 11px;
   font-weight: 600;
 }
 .message-group > summary {
@@ -358,10 +360,53 @@
   min-height: 0;
 }
 .messages-view-tabs {
-  display: flex;
-  gap: 8px;
-  padding: 12px 20px;
+  flex: none;
+  gap: 4px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--line);
+}
+.messages-view-tabs::before {
+  display: none;
+}
+.messages-view-tabs [role="tab"] {
+  min-height: 44px;
+  padding-inline: 12px;
+  color: var(--muted);
+}
+.messages-view-tabs [role="tab"][data-active] {
+  color: var(--text);
+}
+.messages-tab-count {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--raised, #27272e);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.messages-team-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.team-chat-error {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.team-chat-error p {
+  margin: 0 0 8px;
+}
+@media (max-width: 640px) {
+  .messages-view-tabs {
+    padding-inline: 10px;
+  }
+  .team-room-row {
+    min-height: 64px;
+  }
 }
 .messages-for-you {
   flex: 1;

@@ -248,6 +248,7 @@ export default function UserMessages({
     setDetail(null);
     changeDetail(focusId);
   }, [focusId, focusRequestId]);
+  const detailVersion = records.find((item) => item.id === detailId)?.version;
   useEffect(() => {
     if (!detailId) return;
     let live = true;
@@ -267,7 +268,7 @@ export default function UserMessages({
     return () => {
       live = false;
     };
-  }, [detailId, detailAttempt, data]);
+  }, [detailId, detailAttempt, detailVersion, data.stateDir]);
   const shown = records.filter(
     (c) => recipient(c) === target && (filter === "all" || c.needsResponse),
   );

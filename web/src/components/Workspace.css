@@ -476,5 +476,77 @@ button.workspace-row:hover {
   grid-template-columns: minmax(0, 1fr);
 }
 .workspace-focused-messages .workspace-content.workspace-messages {
-  height: calc(100dvh - 78px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.workspace-messages-drawer .mantine-Drawer-content {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+.workspace-messages-drawer .mantine-Drawer-header {
+  padding: 12px 20px;
+  flex: none;
+}
+.workspace-messages-drawer .mantine-Drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.workspace-shell.workspace-focused-messages {
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+.workspace-messages > .workspace-heading {
+  padding: 8px 20px;
+  align-items: center;
+}
+.workspace-messages > .workspace-heading > div {
+  min-width: 0;
+}
+.workspace-messages > .workspace-heading p {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workspace-messages .workspace-inbox-group {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin: 0 0 14px;
+  overflow: hidden;
+}
+.workspace-messages .workspace-inbox-group > summary {
+  cursor: pointer;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.workspace-messages .workspace-inbox-group > summary > span {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 6px;
+}
+.workspace-messages .workspace-inbox-group .workspace-row {
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  margin: 0;
+  padding: 14px;
+  width: 100%;
+}
+.workspace-messages .workspace-inbox-group .workspace-row p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.messages-background-load {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
 }

@@ -215,22 +215,21 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
   await stable.route("**/api/state", (route) =>
     route.fulfill({ json: quietState }),
   );
-  let releaseFirst;
-  const firstRead = new Promise((resolve) => {
-    releaseFirst = resolve;
-  });
+  quietState.runtime.userTasks = [];
+  quietState.runtime.work = [];
+  quietState.runtime.monitors = [];
+  quietState.runtime.rules = [];
+  quietState.threads = quietState.threads.map((agent) => ({
+    ...agent,
+    status: "completed",
+  }));
   let reads = 0;
-  let inbox = [];
-  let readError = false;
   await stable.route("**/api/workspace?*", async (route) => {
     reads++;
-    if (reads === 1) await firstRead;
-    else await new Promise((resolve) => setTimeout(resolve, 650));
-    await route.fulfill(
-      readError
-        ? { status: 503, json: { error: "Messages read unavailable" } }
-        : { json: { inbox } },
-    );
+    await route.fulfill({
+      status: 503,
+      json: { error: "Unrelated workspace read unavailable" },
+    });
   });
   await stable.goto(origin);
   await stable.locator(`[data-chat="${lead.id}"]`).click();
@@ -243,12 +242,6 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
   const empty = stableDrawer.getByText("No messages need your attention.", {
     exact: true,
   });
-  assert.equal(
-    await empty.count(),
-    0,
-    "no empty claim before the initial read",
-  );
-  releaseFirst();
   await empty.waitFor();
   await stable.evaluate(() => {
     const empty = document.querySelector(".workspace-empty");
@@ -261,61 +254,54 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
       subtree: true,
     });
   });
-  await stable.waitForTimeout(11000);
-  assert.ok(reads >= 3);
+  await stable.waitForTimeout(5500);
+  assert.equal(
+    reads,
+    0,
+    "Messages uses the existing snapshot, not the full workspace API",
+  );
   assert.deepEqual(await stable.evaluate(() => window.stability.failures), []);
   await stable.evaluate(() => window.observer.disconnect());
-  inbox = [
+  quietState.runtime.work = [
     {
-      kind: "work",
       id: "stability-work",
-      agent: lead.id,
+      rootId: lead.id,
+      status: "review",
       title: "Review the new result",
-      text: "A new result needs review.",
     },
   ];
-  await stableDrawer.getByRole("button", { name: "Refresh workspace" }).click();
+  await stableDrawer.getByRole("button", { name: "Refresh messages" }).click();
   await stableDrawer
     .getByText("Review the new result", { exact: true })
     .waitFor();
-  assert.equal(await empty.count(), 0, "real updates replace the empty state");
-  readError = true;
-  await stableDrawer.getByRole("button", { name: "Refresh workspace" }).click();
-  await stableDrawer
-    .getByRole("alert")
-    .filter({ hasText: "Messages read unavailable" })
-    .waitFor();
-  assert.equal(
-    await stableDrawer
-      .getByText("Review the new result", { exact: true })
-      .count(),
-    1,
-    "failed refresh retains the last result",
-  );
   assert.equal(
     await empty.count(),
     0,
-    "a read failure never means an empty inbox",
+    "snapshot updates replace the empty state",
   );
-  readError = false;
-  await stableDrawer.getByRole("button", { name: "Refresh workspace" }).click();
-  await stableDrawer.getByRole("alert").waitFor({ state: "hidden" });
+  assert.equal(reads, 0);
   await stable.screenshot({
     path: join(root, "messages-stable-1280.png"),
     animations: "disabled",
   });
   await stableDrawer.locator(".mantine-Drawer-close").click();
-  let releasePlan;
   let planError = false;
+  let planReads = 0,
+    concurrentPlans = 0,
+    maxPlans = 0;
   await stable.route("**/api/plan?*", async (route) => {
-    await new Promise((resolve) => {
-      releasePlan = resolve;
-    });
+    planReads++;
+    concurrentPlans++;
+    maxPlans = Math.max(maxPlans, concurrentPlans);
+    await new Promise((resolve) =>
+      setTimeout(resolve, planReads === 1 ? 6500 : 400),
+    );
     await route.fulfill(
       planError
         ? { status: 503, json: { error: "Plan read unavailable" } }
         : { json: { plan: [] } },
     );
+    concurrentPlans--;
   });
   await stable.getByRole("button", { name: /^(Chat actions|More)$/ }).click();
   await stable.locator('[data-workspace-section="plan"]').click();
@@ -328,19 +314,26 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     exact: true,
   });
   assert.equal(await noPlan.count(), 0, "initial load does not claim no plan");
-  await stable.waitForTimeout(200);
-  releasePlan();
-  await noPlan.waitFor();
+  await noPlan.waitFor({ timeout: 9000 });
+  assert.equal(
+    maxPlans,
+    1,
+    "slow reads coalesce instead of overlapping or losing results",
+  );
+  await stable.waitForTimeout(500);
   const planNode = await noPlan.elementHandle();
   for (const fail of [false, true]) {
     planError = fail;
+    const planResponse = stable.waitForResponse((response) =>
+      response.url().includes("/api/plan?"),
+    );
     await workDrawer.getByRole("button", { name: "Refresh workspace" }).click();
-    await stable.waitForTimeout(300);
+    await stable.waitForTimeout(100);
     assert.ok(
       await planNode.evaluate((el) => el.isConnected),
       "empty plan survives an in-flight refresh",
     );
-    releasePlan();
+    await planResponse;
     if (fail) await workDrawer.getByRole("alert").waitFor();
     await stable.waitForTimeout(100);
     assert.ok(

@@ -4,6 +4,7 @@ import {
   Button,
   Loader,
   TextInput,
+  Tabs,
   UnstyledButton,
 } from "@mantine/core";
 import {
@@ -15,6 +16,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { errorText, save, saved } from "../api";
+import { useMediaQuery } from "@mantine/hooks";
+import { messageAttentionCount } from "../chatScope";
 import { useMessages } from "../hooks";
 import type { Room, Snapshot } from "../types";
 import StreamingText from "./StreamingText";
@@ -44,20 +47,33 @@ export default function TeamChats({
   focusRequestId?: string;
   focusRoomId?: string;
 }) {
-  const [view, setView] = useState("you");
+  const [view, setView] = useState<string | null>("you");
+  const narrow = useMediaQuery("(max-width: 640px)");
+  const scope = JSON.stringify([data.stateDir, leadId]);
   useEffect(() => {
     if (focusRequestId) setView("you");
   }, [focusRequestId]);
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(60);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{
+    scope: string;
+    id: string;
+  } | null>(null);
+  const selected = selection?.scope === scope ? selection.id : null;
+  const setSelected = (id: string) => setSelection({ scope, id });
   const [detail, setDetail] = useState(false);
+  useEffect(() => {
+    setQuery("");
+    setLimit(60);
+    setDetail(false);
+    setView("you");
+  }, [scope]);
   useEffect(() => {
     if (!focusRoomId) return;
     setView("team");
     setSelected(focusRoomId);
     setDetail(true);
-  }, [focusRoomId, focusRequestId]);
+  }, [focusRoomId, focusRequestId, scope]);
   const seenKey = `codex-chat-seen:${data.stateDir}`;
   const [seen, setSeen] = useState<Record<string, number>>(() =>
     saved(seenKey, {}),
@@ -94,11 +110,17 @@ export default function TeamChats({
             (!!room.reviewTargets?.length &&
               room.members.some((id) => members.has(id))))),
   );
-  const name = (room: Room) =>
-    room.kind === "broadcast" ? "Team broadcast" : room.name;
+  const name = (room: Room) => {
+    if (room.kind === "broadcast") return "Team broadcast";
+    if (room.reviewTargets?.length) return room.name;
+    const peers = room.members.filter((id) => id !== leadId);
+    return peers.length === 1
+      ? data.threads.find((agent) => agent.id === peers[0])?.name || room.name
+      : room.name;
+  };
   const filtered = rooms
     .filter((room) =>
-      `${name(room)} ${room.lastMessage?.text || ""}`
+      `${name(room)} ${room.name} ${room.lastMessage?.text || ""}`
         .toLowerCase()
         .includes(query.toLowerCase()),
     )
@@ -108,6 +130,23 @@ export default function TeamChats({
         (a.lastMessage?.created || a.updated),
     );
   const room = rooms.find((item) => item.id === selected);
+  useEffect(() => {
+    if (
+      view !== "team" ||
+      narrow ||
+      room ||
+      !rooms.length ||
+      (focusRoomId && selected === focusRoomId)
+    )
+      return;
+    const latest = [...rooms].sort(
+      (a, b) =>
+        (b.lastMessage?.created || b.updated) -
+        (a.lastMessage?.created || a.updated),
+    )[0];
+    setSelection({ scope, id: latest.id });
+  }, [view, narrow, room, rooms, scope, focusRoomId, selected]);
+  const attention = messageAttentionCount(data);
   const groups = [
     {
       id: "reviews",
@@ -147,34 +186,31 @@ export default function TeamChats({
       .map((room) => room.id),
   );
   return (
-    <div className="messages-views">
-      <div
-        className="messages-view-tabs"
-        role="tablist"
-        aria-label="Message recipients"
+    <Tabs
+      className="messages-views"
+      value={view}
+      onChange={setView}
+      keepMounted={false}
+    >
+      <Tabs.List className="messages-view-tabs" aria-label="Message recipients">
+        <Tabs.Tab value="you" aria-label="For you">
+          For you{" "}
+          {attention > 0 && (
+            <span className="messages-tab-count">{attention}</span>
+          )}
+        </Tabs.Tab>
+        <Tabs.Tab value="team" aria-label="Team">
+          Team <span className="messages-tab-count">{rooms.length}</span>
+        </Tabs.Tab>
+      </Tabs.List>
+      <Tabs.Panel
+        value="you"
+        className="messages-for-you for-you"
+        aria-label="For you"
       >
-        <Button
-          role="tab"
-          aria-selected={view === "you"}
-          variant={view === "you" ? "light" : "subtle"}
-          onClick={() => setView("you")}
-        >
-          For you
-        </Button>
-        <Button
-          role="tab"
-          aria-selected={view === "team"}
-          variant={view === "team" ? "light" : "subtle"}
-          onClick={() => setView("team")}
-        >
-          Team
-        </Button>
-      </div>
-      {view === "you" ? (
-        <section className="messages-for-you for-you" aria-label="For you">
-          {forYou}
-        </section>
-      ) : (
+        {forYou}
+      </Tabs.Panel>
+      <Tabs.Panel value="team" className="messages-team-panel">
         <div className={`team-chats ${detail && room ? "show-room" : ""}`}>
           <section className="team-room-list" aria-label="Team conversations">
             <div className="team-room-search">
@@ -228,7 +264,7 @@ export default function TeamChats({
                             }}
                           >
                             <Avatar
-                              size={38}
+                              size={32}
                               radius="xl"
                               color={
                                 item.kind === "broadcast" ? "indigo" : "gray"
@@ -242,7 +278,7 @@ export default function TeamChats({
                             </Avatar>
                             <span className="team-room-copy">
                               <span className="team-room-title">
-                                <strong>{name(item)}</strong>
+                                <strong title={item.name}>{name(item)}</strong>
                                 <time>{time(item.lastMessage?.created)}</time>
                               </span>
                               <span className="team-room-preview">
@@ -284,6 +320,7 @@ export default function TeamChats({
             <RoomMessages
               key={room.id}
               room={room}
+              title={name(room)}
               data={data}
               visible={detail}
               markRead={markRead}
@@ -297,31 +334,34 @@ export default function TeamChats({
             </div>
           )}
         </div>
-      )}
-    </div>
+      </Tabs.Panel>
+    </Tabs>
   );
 }
 
 function RoomMessages({
   room,
+  title,
   data,
   back,
   markRead,
   visible,
 }: {
   room: Room;
+  title: string;
   data: Snapshot;
   back: () => void;
   markRead: (id: string, seq: number) => void;
   visible: boolean;
 }) {
-  const { items, loaded, before, older, notice } = useMessages(
+  const { items, loaded, before, older, notice, reload } = useMessages(
     room.id,
     "room",
     false,
     data.stateDir,
   );
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const { scroll, content, follow, setFollow, onScroll } =
     useConversationScroll(`${data.stateDir}:team-room:${room.id}`, loaded);
@@ -352,16 +392,14 @@ function RoomMessages({
           <ArrowLeft size={18} />
         </ActionIcon>
         <div>
-          <strong>
-            {room.kind === "broadcast" ? "Team broadcast" : room.name}
-          </strong>
-          <p>
+          <strong title={participants}>{title}</strong>
+          <span className="team-room-kind">
             {room.kind === "broadcast"
-              ? "Everyone in this team"
+              ? "Team broadcast"
               : room.reviewTargets?.length
                 ? "Review discussion"
-                : participants}
-          </p>
+                : "Agent conversation"}
+          </span>
         </div>
       </header>
       <div
@@ -400,9 +438,24 @@ function RoomMessages({
             </p>
           )}
           {notice && (
-            <p role="alert" className="team-chat-empty">
-              {notice}
-            </p>
+            <div role="alert" className="team-chat-error">
+              <p>{notice}</p>
+              <Button
+                size="compact-xs"
+                variant="light"
+                loading={retrying}
+                onClick={async () => {
+                  setRetrying(true);
+                  try {
+                    await reload();
+                  } finally {
+                    setRetrying(false);
+                  }
+                }}
+              >
+                Retry messages
+              </Button>
+            </div>
           )}
           {!loaded && (
             <div className="team-chat-loading">
@@ -410,7 +463,7 @@ function RoomMessages({
               <span>Loading messages</span>
             </div>
           )}
-          {loaded && !items.length && (
+          {loaded && !items.length && !notice && (
             <p className="team-chat-empty">No messages yet.</p>
           )}
           {items.map((message) => (
