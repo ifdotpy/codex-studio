@@ -4320,14 +4320,19 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 items.append(item)
                 represented[event["id"]] = item
             if represented:
+                for entry in represented.values():
+                    entry['requestedDelivery'] = 'queue'
                 events = db.execute(
-                    "SELECT id,status,error FROM runtime_events WHERE agent=? AND kind='user' "
-                    "AND id IN (" + ",".join("?" for _ in represented) + ")",
+                    "SELECT e.id,e.status,e.error,m.record AS metadata FROM runtime_events e "
+                    "LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=? AND e.kind='user' "
+                    "AND e.id IN (" + ",".join("?" for _ in represented) + ")",
                     (key, *represented),
                 ).fetchall()
                 for event in events:
+                    meta = json.loads(event['metadata']) if event['metadata'] else {}
                     represented[event["id"]].update(
                         clientMessageId=event["id"], deliveryStatus=event["status"],
+                        requestedDelivery=meta.get('requestedDelivery', meta.get('delivery', 'queue')) or 'queue',
                         materialized=represented[event["id"]].get("materialized", True),
                         deliveryError=event["error"], pending=event["status"] == "pending")
             a = self.agent(key, db)

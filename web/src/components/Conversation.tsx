@@ -43,6 +43,9 @@ import {
   outgoingTranscript,
   deliveryLabel,
   messageRenderKey,
+  explicitQueue,
+  dispatchedMessage,
+  mergeQueueOrder,
 } from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
 import { useConversationScroll } from "./useConversationScroll";
@@ -395,7 +398,22 @@ export default function Conversation(p: {
     edited: p.onOutgoingEdit,
     refresh: p.refresh,
   });
-  const queue = messageQueue.items;
+  const queue = useMemo(
+    () =>
+      messageQueue.items.filter(
+        (entry) =>
+          explicitQueue(entry) &&
+          !items.some(
+            (item) =>
+              item.role === "user" &&
+              dispatchedMessage(item) &&
+              (item.clientMessageId === entry.id ||
+                item.id === entry.id ||
+                item.id === `${p.id}:${entry.id}`),
+          ),
+      ),
+    [messageQueue.items, items, p.id],
+  );
   const addFiles = async (files: globalThis.File[]) => {
     if (!p.id || !managed)
       throw new Error("Select a managed chat before attaching files.");
@@ -1189,7 +1207,15 @@ export default function Conversation(p: {
                 scope={queueScope}
                 onEdit={messageQueue.edit}
                 onCancel={messageQueue.cancel}
-                onReorder={messageQueue.reorder}
+                onReorder={(ids) =>
+                  messageQueue.reorder(
+                    mergeQueueOrder(
+                      messageQueue.items.map((item) => item.id),
+                      queue.map((item) => item.id),
+                      ids,
+                    ),
+                  )
+                }
                 canReorder={messageQueue.canReorder}
                 refreshing={messageQueue.busy}
                 error={messageQueue.error}

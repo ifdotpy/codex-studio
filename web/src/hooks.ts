@@ -131,6 +131,7 @@ export function transcriptMessages(
             r.id ||
             (i === 0 ? m.clientMessageId : undefined),
           deliveryStatus: r.deliveryStatus,
+          requestedDelivery: r.requestedDelivery,
           deliveryError: r.deliveryError,
           materialized: r.materialized ?? m.materialized,
           pending: r.pending,

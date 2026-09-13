@@ -235,12 +235,12 @@ try {
   await model.waitFor({ state: "hidden" });
   assert.equal(sent.length, 1);
   await composer.fill("Second queued instruction");
-  await composer.press("Enter");
+  await composer.press("Tab");
   await wait(
     async () => (await queue()).items.length === 2,
-    "Enter keeps after-tool delivery",
+    "Second explicit message enters queue",
   );
-  assert.equal(sent[1].delivery, "after_tool");
+  assert.equal(sent[1].delivery, "queue");
   await composer.fill("Third queued instruction");
   await composer.press("Tab");
   await wait(
@@ -264,7 +264,7 @@ try {
     );
   }
   console.log(
-    "PASS Tab queues once; modifiers/navigation and /model retained; Enter uses after_tool; no duplicate transcript bubbles",
+    "PASS Tab queues once; modifiers/navigation and /model retained; no duplicate transcript bubbles",
   );
   const draft = "Keep this separate composer draft";
   await composer.fill(draft);

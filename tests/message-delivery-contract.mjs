@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { outgoingTranscript } from "../web/src/components/messageDelivery.ts";
+import {
+  outgoingTranscript,
+  deliveryLabel,
+  explicitQueue,
+  dispatchedMessage,
+  mergeQueueOrder,
+} from "../web/src/components/messageDelivery.ts";
 
 const receipt = {
   id: "one",
@@ -74,4 +80,42 @@ assert.deepEqual(
   ).observed,
   [],
 );
-console.log("Message delivery continuity: PASS");
+for (const delivery of ["after_tool", "steer"]) {
+  const local = { ...receipt, body: { ...receipt.body, delivery } };
+  for (const source of [[], [pending]]) {
+    const message = outgoingTranscript(source, [local]).items[0];
+    assert.equal(message.requestedDelivery, delivery);
+    assert.equal(explicitQueue(message), false);
+    assert.equal(deliveryLabel(message), "Sending…");
+    assert.equal(dispatchedMessage(message), false);
+  }
+}
+assert.equal(explicitQueue({}), true);
+assert.equal(explicitQueue({ requestedDelivery: "queue" }), true);
+assert.equal(
+  dispatchedMessage({ ...pending, pending: false, materialized: true }),
+  true,
+);
+assert.equal(
+  dispatchedMessage({
+    ...pending,
+    pending: false,
+    localDelivery: true,
+    deliveryStatus: "accepted",
+  }),
+  false,
+);
+assert.equal(
+  outgoingTranscript([], [{ ...receipt, receipt: { status: "pending" } }])
+    .items[0].deliveryStatus,
+  "pending",
+);
+assert.deepEqual(
+  mergeQueueOrder(["normal", "a", "hidden", "b"], ["a", "b"], ["b", "a"]),
+  ["normal", "b", "hidden", "a"],
+);
+assert.throws(() =>
+  mergeQueueOrder(["normal", "a", "b"], ["a", "b"], ["a", "a"]),
+);
+assert.throws(() => mergeQueueOrder(["normal", "a", "b"], ["a", "b"], ["a"]));
+console.log("Message delivery continuity and queue intent: PASS");

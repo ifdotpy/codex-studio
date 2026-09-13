@@ -1,6 +1,39 @@
 import type { Message } from "../types";
 import type { OutgoingMessage } from "../sync/send";
 
+export function explicitQueue(item: Record<string, unknown>) {
+  const intent = item.requestedDelivery ?? item.delivery;
+  return intent === undefined || intent === "queue";
+}
+
+export function dispatchedMessage(item: Message) {
+  return (
+    item.materialized === true ||
+    ["reserved", "dispatching", "delivered", "sent"].includes(
+      item.deliveryStatus || "",
+    ) ||
+    (!item.localDelivery && item.materialized !== false && !item.pending)
+  );
+}
+
+// Hidden scheduler inputs keep their original slots and the full queue revision.
+export function mergeQueueOrder(
+  raw: string[],
+  visible: string[],
+  ordered: string[],
+) {
+  const selected = new Set(visible);
+  if (
+    new Set(ordered).size !== selected.size ||
+    ordered.length !== visible.length ||
+    ordered.some((id) => !selected.has(id)) ||
+    visible.some((id) => !raw.includes(id))
+  )
+    throw new Error("The queue changed. Reload before reordering.");
+  let index = 0;
+  return raw.map((id) => (selected.has(id) ? ordered[index++] : id));
+}
+
 export const messageRenderKey = (item: Message) =>
   item.role === "user" && item.clientMessageId
     ? `client:${item.clientMessageId}`
@@ -26,12 +59,14 @@ export function outgoingTranscript(
   for (const entry of entries) {
     const present = items.find((item) => receiptMessage(item, entry));
     if (present) {
-      const shown =
+      let shown =
         !present.assets?.length &&
         entry.attachments?.length &&
         (present.pending || present.materialized === false)
           ? { ...present, assets: entry.attachments }
           : present;
+      if (!shown.requestedDelivery && entry.body.delivery)
+        shown = { ...shown, requestedDelivery: entry.body.delivery };
       if (shown !== present) updates.set(present.id, shown);
       if (
         ["failed", "uncertain"].includes(entry.status) &&
@@ -63,12 +98,13 @@ export function outgoingTranscript(
       at: entry.created / 1000,
       deliveryStatus:
         entry.status === "accepted"
-          ? entry.receipt?.status === "queued"
+          ? ["queued", "pending"].includes(entry.receipt?.status)
             ? "pending"
             : "accepted"
           : entry.status,
       deliveryError: entry.error,
       localDelivery: true,
+      requestedDelivery: entry.body.delivery,
     });
   }
   return {
@@ -79,6 +115,7 @@ export function outgoingTranscript(
 
 export function deliveryLabel(item: Message) {
   const status = item.deliveryStatus || (item.pending ? "pending" : "");
+  if (status === "pending" && !explicitQueue(item)) return "Sending…";
   return (
     (
       {
