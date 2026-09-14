@@ -12,6 +12,9 @@ export interface Agent extends Json {
   error?: unknown;
   cwd?: string;
   model: string;
+  agentMode?: "multi" | "single";
+  agentModeRevision?: number;
+  agentModeSupported?: boolean;
   accountKey?: string;
   yoloMode?: boolean | null;
   canSend?: boolean;

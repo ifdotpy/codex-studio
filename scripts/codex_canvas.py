@@ -1029,6 +1029,12 @@ def make_server(canvas, port=0, public_origin=None):
                     if self.path == "/api/leads":
                         return self.send(canvas.runtime.new_lead(body))
                     if self.path == "/api/conversation":
+                        if "agent_mode" in body:
+                            try:
+                                result = canvas.runtime.conversation_settings(body.get("id"), body)
+                            except ValueError as error:
+                                return self.send({"error": str(error), "outcome": "not_applied"}, 400)
+                            return self.send(result)
                         return self.send(canvas.runtime.conversation_settings(body.get("id"), body))
                     if self.path == "/api/agents":
                         return self.send(

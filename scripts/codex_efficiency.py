@@ -163,8 +163,10 @@ class EfficiencyMixin:
                     'help': 'Use orchestration_context for tools, profiles or monitor details. Use orchestration_peers for rooms.'}
 
     def model_tool_result(self, actor, key, result):
+        from codex_agent_modes import tool_mode_context
+        result = tool_mode_context(self, actor, result)
         content = result.get('contentItems', [])
-        texts = [c for c in content if c.get('type') == 'inputText' and not c.get('text', '').startswith('[Time awareness]')]
+        texts = [c for c in content if c.get('type') == 'inputText' and not c.get('text', '').startswith(('[Time awareness]', '[Studio agent mode,'))]
         if len(packed(texts).encode()) <= 16000:
             return result
         # The full result was committed before this projection. Images and
@@ -316,6 +318,11 @@ class EfficiencyMixin:
         old = json.loads(row[0]).get('contextManifest', {}) if row else {}
         known = old.get('versions', {}) if old.get('epoch') == epoch else {}
         versions, blocks = {}, []
+        from codex_agent_modes import guidance
+        mode = guidance(self.agent(actor['rootId'], db))
+        versions['agentMode'] = digest(mode)
+        if known.get('agentMode') != versions['agentMode']:
+            blocks.append(mode)
         from codex_progress import progress_context
         progress = progress_context(self.root, actor['id'])
         versions['progressFile'] = digest(progress)

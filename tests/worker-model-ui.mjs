@@ -182,8 +182,16 @@ try {
     await page
       .locator("#model option")
       .evaluateAll((nodes) => nodes.map((n) => n.value)),
-    ["gpt-6-astra", "gpt-5.6-sol"],
+    ["test-model", "gpt-6-astra", "gpt-5.6-sol", "ui-only"],
   );
+  await page.locator("#model").selectOption("test-model");
+  await page.waitForFunction(() =>
+    !document.querySelector("#model").disabled &&
+    document.querySelector("#model").value === "test-model",
+  );
+  const leadState = await (await fetch(url + "/api/state")).json();
+  const selectedLead = leadState.runtime.agents.find((row) => row.name === "Release lead");
+  assert.equal(selectedLead.pendingSettings?.model || selectedLead.model, "test-model");
   assert.equal(
     requests,
     2,
@@ -191,7 +199,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS worker model UI: catalog retry, hidden models, persisted worker selection, rejected stale model, next-turn selection preserves active model, lead restrictions, shared catalog, responsive layouts. Evidence " +
+    "PASS worker model UI: catalog retry, hidden models, persisted worker selection, rejected stale model, next-turn selection preserves active model, complete lead catalog, shared catalog, responsive layouts. Evidence " +
       root,
   );
 } finally {

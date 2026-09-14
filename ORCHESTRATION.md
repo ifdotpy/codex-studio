@@ -5,14 +5,21 @@ Use the new-chat action inside a project. The server creates an empty lead conve
 If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
 Creation itself does not call the model. A repeated creation request returns the same chat.
-Leads carry an explicit `isLead` marker in SQLite. Only Astra and Sol can be leads.
+Leads carry an explicit `isLead` marker in SQLite. The account's app-server catalog defines available lead models.
 Use the command tools to inspect standalone workers and registered sessions.
 The project defaults to the previous lead's directory, `CODEX_CANVAS_CWD`, or the server's current directory.
 Before the first message, select **Project** beside the account to change the folder.
 Enter a folder path, browse directories, or use the native Finder picker.
-Open **Lead** in the chat header to choose Astra or Sol, its reasoning level, and **Fast**.
-**Lead** and **Subagents** use the same dropdown. Changes save immediately.
-Changes to an agent's execution settings require an idle turn.
+Open **Main agent settings** to choose any available catalog model, its reasoning level, and **Fast**.
+**Main agent** and **Subagents** use the same dropdown. Changes save immediately.
+While an agent runs, model changes apply to its next turn. The current response keeps its model.
+
+The chat header has a **Multi agent** / **Single agent** switch. It applies immediately,
+even during an active response, and remains saved after reload or restart.
+Single agent mode prevents new workers, worker assignments, and messages that start worker work.
+Already accepted worker input and active work continue. Workers can report results to the lead.
+The lead completes new work itself. Multi agent mode permits delegation again; it sends no task by itself.
+Only the user can change this setting. Studio keeps native Codex delegation disabled in both modes.
 
 **Subagents** sets the model, reasoning level, and Fast default for future workers in this team.
 The lead can override each value in `orchestration_spawn`.

@@ -66,7 +66,7 @@ class ComplaintConflict(ValueError):
     """The user response targets an older complaint version."""
 
 
-LEAD_MODELS = ("gpt-6-astra", "gpt-5.6-sol")
+DEFAULT_LEAD_MODEL = "gpt-6-astra"
 TEXT = {"type": "string"}
 TOOLS = [
     tool("orchestration_complaint", "Every agent, including the lead, can submit to the complaint book. "
@@ -691,9 +691,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status IN ('dispatching','reserved')"
             )
             for a in self.records(db, "agents"):
-                # Only existing managed orchestrators with an admitted model become leads.
-                a.setdefault("isLead", not a.get("parentId") and a.get("role") == "orchestrator"
-                             and a.get("model") in LEAD_MODELS)
+                # Role and parent identity determine a managed lead, independently of its model.
+                a.setdefault("isLead", not a.get("parentId") and a.get("role") == "orchestrator")
                 block = native_thread_block(a)
                 if block:
                     a["nativeThreadBlock"] = block
@@ -806,7 +805,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     @staticmethod
     def records(db, table):
-        return [json.loads(r[0]) for r in db.execute(f"SELECT record FROM runtime_{table}")]
+        rows = [json.loads(r[0]) for r in db.execute(f"SELECT record FROM runtime_{table}")]
+        if table == "agents":
+            from codex_agent_modes import mode_fields
+            rows = [mode_fields(row) for row in rows]
+        return rows
 
     def put(self, db, table, record):
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
@@ -836,7 +839,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (key,)).fetchone()
         if not row:
             raise ValueError("Unknown managed agent")
-        return json.loads(row[0])
+        from codex_agent_modes import mode_fields
+        return mode_fields(json.loads(row[0]))
 
     def connect(self, account_key="default"):
         self.accounts.get(account_key)
@@ -1081,6 +1085,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             raise ValueError("Select an available model")
         if parent and "worker_defaults" in data:
             raise ValueError("Only the user can change worker defaults on a lead")
+        if parent:
+            with self.lock, self.db() as db:
+                prior = db.execute("SELECT 1 FROM runtime_agents WHERE id=?", (data.get("id"),)).fetchone()
+                if not prior:
+                    from codex_agent_modes import assert_delegation
+                    assert_delegation(self.agent(self.agent(parent, db)["rootId"], db))
         if data.get("profile_id"):
             with self.lock, self.db() as db:
                 row = db.execute(
@@ -1097,7 +1107,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 }
         # Obtain remote metadata before taking the database write lock. Batch spawn
         # passes one catalogue snapshot for all children and validates under its lock.
-        needs_catalog = parent is not None or any(k in data for k in ("effort", "fast_mode", "worker_defaults"))
+        needs_catalog = parent is not None or any(k in data for k in ("model", "effort", "fast_mode", "worker_defaults"))
         catalog_account = (self.agent(parent).get("accountKey", "default") if parent
                            else data["account_key"] if "account_key" in data
                            else self.project_account(data.get("cwd") or os.getcwd()))
@@ -1129,6 +1139,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 return a
             p = self.agent(parent, db) if parent else None
             root = self.agent(p["rootId"], db) if p else None
+            if root:
+                from codex_agent_modes import assert_delegation
+                assert_delegation(root)
             account_key = p.get("accountKey", "default") if p else catalog_account
             if p and data.get("account_key", account_key) != account_key:
                 raise ValueError("A worker must use its parent account")
@@ -1137,9 +1150,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError("Reconnect this account before creating a chat")
             is_lead = p is None and role == "orchestrator"
             defaults = self.worker_defaults(root or {})
-            model = data.get("model") or ((defaults["model"] or root["model"]) if root else LEAD_MODELS[0])
-            if is_lead and model not in LEAD_MODELS:
-                raise ValueError("A lead must use Astra or Sol")
+            model = data.get("model") or ((defaults["model"] or root["model"]) if root else DEFAULT_LEAD_MODEL)
             if needs_catalog and account_key != catalog_account:
                 raise ValueError("The account changed. Create the worker again")
             effort = data.get("effort", defaults["effort"] if root else "medium")
@@ -1147,7 +1158,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             native_effort = effort
             if catalog is not None:
                 effort, native_effort = self.validate_execution(
-                    catalog, model, effort, fast_mode, fallback_effort=root is not None and "effort" not in data)
+                    catalog, model, effort, fast_mode, fallback_effort="effort" not in data)
             if "worker_defaults" in data:
                 if not is_lead:
                     raise ValueError("Only a lead can store worker defaults")
@@ -1210,6 +1221,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             }
             if is_lead:
                 a["workerDefaults"] = defaults
+                a.update(agentMode="multi", agentModeRevision=0, agentModeSupported=True)
             if catalog is not None:
                 a["nativeEffort"] = native_effort
             if draft:
@@ -1248,10 +1260,30 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         if requested_cwd is not None:
             settings["cwd"] = requested_cwd
         signature = json.dumps(settings, sort_keys=True)
+        catalog = None
+        catalog_account = None
+        if data.get("model"):
+            # Catalog reads cannot hold the runtime lock, including on empty reuse.
+            with self.lock, self.db() as db:
+                alias = db.execute("SELECT agent, signature FROM runtime_lead_requests WHERE id=?", (key,)).fetchone()
+                existing = self.agent(alias["agent"], db) if alias else (
+                    self.agent(key, db) if key and db.execute("SELECT 1 FROM runtime_agents WHERE id=?", (key,)).fetchone() else None)
+                if existing is not None:
+                    saved_signature = alias["signature"] if alias else existing.get("quickCreateRequest")
+                    if saved_signature != signature:
+                        raise ValueError("This creation id has different settings")
+                    if existing.get("deletedAt"):
+                        raise ValueError("This conversation was deleted")
+                    if not existing.get("isLead") or (not alias and not existing.get("quickCreate")):
+                        raise ValueError("This creation id belongs to another agent")
+                    return existing
+                prior = self.agent(data["previous"], db) if data.get("previous") else None
+                directory = requested_cwd or (prior["cwd"] if prior else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
+                catalog_account = data["account_key"] if "account_key" in data else self.project_account(directory, db=db)
+            catalog = self.catalog(catalog_account)
+            self.validate_execution(catalog, data["model"], None, False)
         with self.lock:
             with self.db() as db:
-                if data.get("model") and data["model"] not in LEAD_MODELS:
-                    raise ValueError("A lead must use Astra or Sol")
                 alias = db.execute("SELECT agent, signature FROM runtime_lead_requests WHERE id=?", (key,)).fetchone()
                 if alias:
                     if alias["signature"] != signature:
@@ -1278,11 +1310,18 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     raise ValueError("This conversation was deleted")
                 cwd = requested_cwd or (previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
                 account_key = data["account_key"] if "account_key" in data else self.project_account(cwd, db=db)
+                if catalog_account is not None and account_key != catalog_account:
+                    raise ValueError("The account changed. Select the model again")
                 if self.accounts.get(account_key).get("disconnected"):
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
                 project_folder = folder_for(self, db, cwd, data.get('project_folder'))
                 if previous and data.get("reuse_empty", True) and self.empty_lead(db, previous):
+                    if data.get("model"):
+                        effort, native_effort = self.validate_execution(catalog, data["model"], previous.get("effort"),
+                            previous.get("fastMode", False), fallback_effort=True)
+                        previous.update(model=data["model"], effort=effort, nativeEffort=native_effort)
+                        self.loaded.discard(previous["id"])
                     if "yolo_mode" in data:
                         previous["yoloMode"] = data["yolo_mode"]
                     if previous.get('projectFolder') != project_folder or previous['cwd'] != cwd:
@@ -1298,7 +1337,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                                 "_projectFolder": project_folder,
                                 "_creationSignature": signature, "account_key": account_key,
                                 "yolo_mode": data.get("yolo_mode", previous.get("yoloMode") is not False if previous else True),
-                                "model": data.get("model") or LEAD_MODELS[0]}, draft=True)
+                                **({"model": data["model"]} if data.get("model") else {})}, draft=True, _catalog=catalog)
             # Each new team starts with Studio defaults, independent of the previous chat.
             return created
 
@@ -1357,6 +1396,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         return {"deleted": sorted(ids)}
 
     def conversation_settings(self, key, data):
+        if "agent_mode" in data or "expected_mode_revision" in data:
+            from codex_agent_modes import change_mode
+            return change_mode(self, key, data)
         expected_account = data.get("expected_account_key")
         if "expected_account_key" in data and (not isinstance(expected_account, str) or not expected_account):
             raise ValueError("Expected account identity must be a non-empty string")
@@ -1377,8 +1419,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 signature, prior = self.operation_receipt(db, request_id, receipt_body)
                 if prior is not None:
                     return self.agent(key, db)
-            if target.get("isLead") and "model" in data and data["model"] not in LEAD_MODELS:
-                raise ValueError("A lead must use Astra or Sol")
             catalog = self.catalog(target.get("accountKey", "default"))
             with self.lock, self.db() as db:
                 a = self.checked_actor(db, key)
@@ -1413,8 +1453,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError("The account changed. Read the current settings before saving")
             if not target.get("isLead") and (set(data) - {"id", "expected_account_key", *execution_fields}):
                 raise ValueError("Only a lead can change these settings; a subagent can change only its execution settings")
-            if target.get("isLead") and "model" in data and data["model"] not in LEAD_MODELS:
-                raise ValueError("A lead must use Astra or Sol")
             if not defaults_only and (target.get("inFlight") or target["status"] in {"running", "starting", "approval"}):
                 raise ValueError("Wait for this turn to end before changing execution settings")
         needs_catalog = bool(execution_fields.intersection(data) or "worker_defaults" in data)
@@ -1560,6 +1598,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         "status": old["status"],
                         "error": old["error"],
                     }
+            from codex_agent_modes import assert_worker_input
+            assert_worker_input(self, db, a)
             assert_native_thread_open(a)
             blockers = self.workspace_blockers(db, a)
             if any(b["operation"] not in {"checkpoint", "capture"} for b in blockers):
@@ -2866,6 +2906,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     or not 1 <= len(spec["prompt"].strip()) <= 32000
                     or spec.get("role", "implementer") not in {"implementer", "reviewer"}):
                 raise ValueError("Every worker needs a name, task and valid role")
+        with self.lock, self.db() as db:
+            from codex_agent_modes import assert_delegation
+            assert_delegation(self.agent(actor["rootId"], db))
         catalog = self.catalog(actor.get("accountKey", "default"))
         with self.lock, self.db() as db:
             request = self.tool_request(key, db)
@@ -2876,6 +2919,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     or current.get("accountKey", "default") != actor.get("accountKey", "default")
                     or (request and not self.connection_current(request["accountKey"], request.get("connectionId")))):
                 raise ValueError("The parent or its account connection changed before worker creation")
+            from codex_agent_modes import assert_delegation
+            assert_delegation(self.agent(current["rootId"], db))
             roster = [a for a in self.records(db, "agents") if a["rootId"] == current["rootId"] and not a.get("deletedAt")]
             existing = {a["id"] for a in roster}
             planned = [{**spec, "id": str(uuid.uuid5(uuid.NAMESPACE_URL, key + ":" + str(index)))} for index, spec in enumerate(specs)]
@@ -3478,6 +3523,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if (previous["room"], previous["sender"], previous["text"]) != (room["id"], sender_id, text):
                     raise ValueError("This message id has different content")
                 return {"id": key, "room": room["id"], "deliveries": json.loads(previous["deliveries"])}
+            from codex_agent_modes import assert_worker_input
+            for recipient in recipients:
+                if recipient["id"] != sender_id:
+                    assert_worker_input(self, db, recipient)
             old_room = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room["id"],)).fetchone()
             if old_room:
                 room = {**json.loads(old_room[0]), **room}
@@ -4406,6 +4455,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             raise ValueError("Choose compact or review")
         with self.lock, self.db() as db:
             a = self.agent(key, db)
+            if action == "review":
+                from codex_agent_modes import assert_worker_input
+                assert_worker_input(self, db, a)
             self.assert_workspace_available(db, a)
             assert_native_thread_open(a)
             if a["status"] in {"queued", "starting", "running", "approval"}:

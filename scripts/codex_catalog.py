@@ -38,19 +38,28 @@ class ModelCatalogCache:
             entry = self.entries.get(account)
             same = (entry is not None and entry["server"] is server
                     and entry["connectionId"] == connection_id)
-            if same and entry["expires"] > self.clock():
+            if same and entry.get("completeVersion") == 2 and entry["expires"] > self.clock():
                 result = copy.deepcopy(entry["value"])
                 future = None
             else:
                 if not same or entry["future"].done():
                     entry = {"server": server, "connectionId": connection_id,
                              "future": concurrent.futures.Future(),
-                             "expires": 0, "value": None}
+                             "expires": 0, "value": None, "completeVersion": 2}
                     self.entries[account] = entry
                     start = True
                 future = entry["future"]
         if start:
+            rows, seen_cursors, seen_models = [], set(), set()
+            first_page = None
+
+            def fail(error):
+                if not future.done():
+                    future.set_exception(CatalogUnavailable(
+                        f"Model catalog unavailable; no workers were created: {error}"))
+
             def complete(native_future):
+                nonlocal first_page
                 try:
                     value = native_future.result()
                     if (not isinstance(value, dict) or not isinstance(value.get("data"), list)
@@ -58,32 +67,48 @@ class ModelCatalogCache:
                                    or not isinstance(row.get("model"), str)
                                    or not row["model"].strip() for row in value["data"])):
                         raise ValueError("Invalid model/list response")
-                    value = copy.deepcopy(value)
                     if not current():
                         raise RuntimeError("Model catalog connection changed")
+                    if first_page is None:
+                        first_page = copy.deepcopy(value)
+                    for row in value['data']:
+                        if row['model'] in seen_models:
+                            raise ValueError("Duplicate model in model/list pages")
+                        seen_models.add(row['model'])
+                        rows.append(copy.deepcopy(row))
+                    cursor = value.get('nextCursor')
+                    if cursor is not None:
+                        if (not isinstance(cursor, str) or not cursor or cursor in seen_cursors
+                                or len(seen_cursors) >= 100):
+                            raise ValueError("Invalid or repeated model/list cursor")
+                        seen_cursors.add(cursor)
+                        submit_page(cursor)
+                        return
+                    value = {**first_page, 'data': rows}
+                    if 'nextCursor' in first_page or seen_cursors:
+                        value['nextCursor'] = None
                     with self.lock:
                         if self.entries.get(account) is entry:
                             entry.update(value=value, expires=self.clock() + self.ttl)
                     future.set_result(value)
                 except Exception as error:
-                    future.set_exception(CatalogUnavailable(
-                        f"Model catalog unavailable; no workers were created: {error}"))
+                    fail(error)
 
-            try:
-                submitted = server.submit("model/list", {"limit": 100})
-            except Exception as error:
-                # SubmissionUnknown retains the actual native future even when
-                # its pipe write fails after sending bytes. Do not submit again.
-                submitted = getattr(error, "submitted", None)
-                if submitted is None:
-                    future.set_exception(CatalogUnavailable(
-                        f"Model catalog unavailable; no workers were created: {error}"))
-            if submitted is not None:
-                # Metadata has no ordered runtime side effects. Attach directly
-                # to its native future: an earlier slow notification must not
-                # delay catalog admission or recovery of a late response.
-                native_future = submitted[2] if isinstance(submitted, tuple) else submitted
-                native_future.add_done_callback(complete)
+            def submit_page(cursor=None):
+                try:
+                    if not current():
+                        raise RuntimeError("Model catalog connection changed")
+                    submitted = server.submit("model/list", {"limit": 100, **({'cursor': cursor} if cursor is not None else {})})
+                except Exception as error:
+                    # Retain a submitted read after an unknown pipe-write outcome.
+                    submitted = getattr(error, "submitted", None)
+                    if submitted is None:
+                        fail(error)
+                if submitted is not None:
+                    native_future = submitted[2] if isinstance(submitted, tuple) else submitted
+                    native_future.add_done_callback(complete)
+
+            submit_page()
         if future is not None:
             try:
                 result = copy.deepcopy(future.result(self.wait_seconds))
@@ -93,6 +118,10 @@ class ModelCatalogCache:
                     "The existing metadata request remains available for recovery") from error
         if not current():
             raise CatalogUnavailable("Model catalog connection changed; no workers were created")
+        if entry.get("completeVersion") != 2:
+            # A live update retains a legacy pending read until its exact response.
+            # Its first page cannot serve as a complete catalog after the update.
+            return self.read(account, server, connection_id, current)
         return result
 
 

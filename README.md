@@ -173,6 +173,11 @@ Chats from another team are outside this boundary, even in the same project.
 Review timers also require a reviewer from the same team.
 You can still read historical conversations between teams.
 
+Use **Multi agent** / **Single agent** in the chat header to change delegation immediately.
+Single agent prevents new delegation. Existing subagents finish accepted work and report to the main agent.
+The mode remains saved after a reload or restart.
+The main agent's model selector includes every available model from the selected account's app-server catalog.
+
 The main agent has the orchestrator role. Subagents ask it for help.
 Only the main agent sends conversational messages or tasks to you.
 Native tool permissions still require your approval.

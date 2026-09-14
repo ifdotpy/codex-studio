@@ -233,6 +233,9 @@ class WorkMixin:
                     if data["status"] not in {"ready", "blocked"}:
                         raise ValueError("Choose ready or blocked")
                     w["status"] = data["status"]
+                if w.get("owner") and w["owner"] != a["rootId"]:
+                    from codex_agent_modes import assert_delegation
+                    assert_delegation(self.agent(a["rootId"], db))
                 if "dependencies" in data:
                     deps = data["dependencies"]
                     if (
@@ -261,6 +264,9 @@ class WorkMixin:
             elif action == "claim":
                 claimant = actor or data.get("owner") or a["id"]
 
+                if claimant != a["rootId"] and w.get("owner") != claimant:
+                    from codex_agent_modes import assert_delegation
+                    assert_delegation(self.agent(a["rootId"], db))
                 if self.checked_actor(db, claimant)["rootId"] != a["rootId"]:
                     raise ValueError("Claimant belongs to another team")
                 if (
@@ -317,6 +323,9 @@ class WorkMixin:
                     raise ValueError("This work is already accepted. Create a follow-up task with this task ID and the new evidence")
                 if w["status"] != "review" or not w["results"]:
                     raise ValueError("Submit a result before review")
+                if action == "reject" and w.get("owner") and w["owner"] != a["rootId"]:
+                    from codex_agent_modes import assert_delegation
+                    assert_delegation(self.agent(a["rootId"], db))
                 reason = text_field(data.get("result"), "a review decision")
                 w["decisions"].append(
                     {

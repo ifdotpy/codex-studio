@@ -43,6 +43,9 @@ def review_schedule(runtime, db, target, data):
     same = previous is not None and all(previous.get(key, False) == value for key, value in values.items())
     if same and revision in (current, current - 1):
         return target
+    if enabled and reviewer['id'] != reviewer['rootId']:
+        from codex_agent_modes import assert_worker_input
+        assert_worker_input(runtime, db, reviewer)
     if revision != current:
         raise ValueError('The review schedule changed. Reload the chat')
     now = time.time()
@@ -216,10 +219,18 @@ def review_tick(runtime, db, now):
             same_team = bool(target.get('rootId')) and reviewer and target['rootId'] == reviewer.get('rootId')
             reason = (None if same_team else 'Reviews are limited to agents in the same team')
             reason = reason or _participant_reason(target, 'Target') or _participant_reason(reviewer, 'Reviewer')
-            if not entry['enabled'] or entry.get('removed') or reason:
+            mode_blocked = False
+            if same_team and reviewer['id'] != reviewer['rootId']:
+                mode_blocked = runtime.agent(reviewer['rootId'], db).get('agentMode', 'multi') != 'multi'
+            if entry['enabled'] and not entry.get('removed') and not reason and mode_blocked:
+                # Keep an already queued review. Stop only future timer events.
+                entry.update(status='blocked', reason='Single agent mode disables new worker reviews', modeBlocked=True)
+            elif not entry['enabled'] or entry.get('removed') or reason:
                 _cancel_pending(db, entry, reason or 'The review schedule is paused')
                 entry.update(status='blocked' if reason else 'paused', reason=reason)
             else:
+                if entry.pop('modeBlocked', False):
+                    entry.update(nextAt=now + entry['intervalMinutes'] * 60, status='scheduled', reason=None)
                 outstanding = _outstanding(db, entry, reviewer)
                 if outstanding:
                     entry.update(status='reviewing' if reviewer.get('inFlight') else 'queued', reason=outstanding)

@@ -198,13 +198,7 @@ function ScopedExecutionSettings({
     (active && !canQueueSettings) ||
     catalog.loading ||
     !!catalog.error;
-  const models = catalog.models.filter(
-    (row) =>
-      teamDefaults ||
-      !agent.isLead ||
-      ["gpt-6-astra", "gpt-5.6-sol"].includes(row.model),
-  );
-  const modelOptions = models.map((row) => ({
+  const modelOptions = catalog.models.map((row) => ({
     value: row.model as string,
     label: row.displayName || shortModel(row.model),
   }));

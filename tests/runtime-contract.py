@@ -422,15 +422,19 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(key)['status'], 'idle')
         self.assertIsNone(self.runtime.server)
 
-    def test_lead_model_and_role_are_server_enforced(self):
-        for model in ['gpt-5.6-luna', 'gpt-5.6-terra', 'fake-sol']:
-            with self.assertRaisesRegex(ValueError, 'Astra or Sol'):
-                self.runtime.new_lead({'model': model})
-            with self.assertRaisesRegex(ValueError, 'Astra or Sol'):
-                self.runtime.create({'cwd': str(self.root), 'prompt': 'Task', 'model': model})
+    def test_lead_models_follow_account_catalog_and_role_identity(self):
+        for model in ['gpt-5.6-luna', 'gpt-5.6-terra', 'test-model']:
+            lead = self.runtime.new_lead({'model': model})
+            self.assertTrue(lead['isLead'])
+            self.assertEqual(lead['model'], model)
+            created = self.runtime.create({'cwd': str(self.root), 'prompt': 'Task', 'model': model}, draft=True)
+            self.assertEqual(created['model'], model)
+        with self.assertRaisesRegex(ValueError, 'not available'):
+            self.runtime.new_lead({'model': 'fake-sol'})
+        with self.assertRaisesRegex(ValueError, 'not available'):
+            self.runtime.create({'cwd': str(self.root), 'prompt': 'Task', 'model': 'fake-sol'})
         a = self.runtime.new_lead({'model': 'gpt-5.6-sol'})
-        with self.assertRaisesRegex(ValueError, 'Astra or Sol'):
-            self.runtime.conversation_settings(a['id'], {'model': 'gpt-5.6-luna'})
+        self.assertEqual(self.runtime.conversation_settings(a['id'], {'model': 'gpt-5.6-luna'})['model'], 'gpt-5.6-luna')
         reviewer = self.runtime.create({'cwd': str(self.root), 'prompt': 'Review', 'role': 'reviewer', 'model': 'gpt-5.6-luna'}, defer=True)
         self.assertFalse(reviewer['isLead'])
         with self.assertRaisesRegex(ValueError, 'Select a lead'):

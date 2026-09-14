@@ -25,10 +25,12 @@ CATALOG = {"data": [{"model": "gpt-6-astra", "defaultReasoningEffort": "medium",
 class MetadataServer:
     def __init__(self):
         self.requests = []
+        self.params = []
         self.requested = threading.Event()
 
     def submit(self, method, params):
-        assert method == "model/list" and params == {"limit": 100}
+        assert method == "model/list" and params.get("limit") == 100
+        self.params.append(params)
         future = concurrent.futures.Future()
         self.requests.append(future)
         self.requested.set()
@@ -66,6 +68,50 @@ class CatalogCacheContract(unittest.TestCase):
         result["data"][0]["model"] = "invented"
         self.assertEqual(self.read(), CATALOG)
         self.assertEqual(len(self.server.requests), 1)
+
+    def test_complete_catalog_waits_for_all_pages_and_reuses_late_page(self):
+        with self.assertRaises(CatalogPending):
+            self.read()
+        self.server.requests[0].set_result({**CATALOG, 'nextCursor': 'two'})
+        self.assertEqual(self.server.params[1], {'limit': 100, 'cursor': 'two'})
+        with self.assertRaises(CatalogPending):
+            self.read()
+        self.assertEqual(len(self.server.requests), 2)
+        self.server.requests[1].set_result({'data': [{'model': 'another'}], 'nextCursor': None})
+        result = self.read()
+        self.assertEqual([row['model'] for row in result['data']], ['gpt-6-astra', 'another'])
+        self.assertIsNone(result['nextCursor'])
+
+    def test_cursor_cycles_and_duplicate_models_do_not_publish_partial_catalog(self):
+        for second in [{'data': [{'model': 'another'}], 'nextCursor': 'two'},
+                       {'data': CATALOG['data'], 'nextCursor': None},
+                       {'data': [], 'nextCursor': 4}]:
+            self.cache = ModelCatalogCache(wait_seconds=.01)
+            self.server = MetadataServer()
+            with self.assertRaises(CatalogPending):
+                self.read()
+            self.server.requests[0].set_result({**CATALOG, 'nextCursor': 'two'})
+            pending = self.cache.entries['a']['future']
+            self.server.requests[1].set_result(second)
+            with self.assertRaises(CatalogUnavailable):
+                pending.result()
+            self.assertIsNone(self.cache.entries['a']['value'])
+
+    def test_legacy_pending_catalog_is_retained_then_replaced_with_complete_snapshot(self):
+        self.warm()
+        legacy = self.cache.entries['a']
+        legacy.pop('completeVersion')
+        legacy['future'] = concurrent.futures.Future()
+        with self.assertRaises(CatalogPending):
+            self.read()
+        self.assertEqual(len(self.server.requests), 1)
+        legacy['future'].set_result(CATALOG)
+        with self.assertRaises(CatalogPending):
+            self.read()
+        self.assertEqual(len(self.server.requests), 2)
+        self.server.requests[1].set_result({**CATALOG, 'nextCursor': 'two'})
+        self.server.requests[2].set_result({'data': [{'model': 'new'}], 'nextCursor': None})
+        self.assertEqual(len(self.read()['data']), 2)
 
     def test_expired_success_needs_fresh_read_and_preserves_exact_pending(self):
         self.warm()
@@ -189,7 +235,7 @@ class CatalogRuntimeContract(unittest.TestCase):
         self.runtime._catalog_cache = ModelCatalogCache(wait_seconds=.03)
         self.lead = self.runtime.create({"name": "Lead", "prompt": "Plan", "cwd": self.temp.name}, defer=True)
         with self.runtime.lock, self.runtime.db() as db:
-            self.lead.update(autoWake=True)
+            self.lead.update(autoWake=True, workerDefaults={"model": "gpt-6-astra", "effort": None, "fastMode": False})
             self.runtime.put(db, "agents", self.lead)
         self.server = self.runtime.connect()
 

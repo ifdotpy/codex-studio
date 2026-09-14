@@ -57,6 +57,7 @@ import { useSyncedDrafts } from "./sync/drafts";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
 import ChatStatus from "./components/ChatStatus";
+import AgentModeSwitch from "./components/AgentModeSwitch";
 import {
   chatIndicators,
   chatActivities,
@@ -1229,6 +1230,14 @@ export default function App() {
                     ? "Broadcast"
                     : ""}
             </span>
+            {lead?.source === "managed" && (
+              <AgentModeSwitch
+                lead={lead}
+                stateDir={data.stateDir}
+                workspaceId={workspaceId}
+                refresh={refresh}
+              />
+            )}
           </div>
           {
             <ActionIcon
