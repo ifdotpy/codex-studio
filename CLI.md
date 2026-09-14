@@ -198,13 +198,19 @@ The canvas creates managed leads and their workers. Legacy waves still use the l
 scripts/codex-steer --wave parser parser-fix "Limit the change to the parser module."
 ```
 
-- One message to the run inbox; `turn/steer` on an active turn, `turn/start` on a terminal one; deleted only after the RPC succeeds; failures back off into the dead-letter directory.
+- One message enters the run inbox. The launcher uses `turn/steer` on an active turn and `turn/start` on a terminal turn.
+- The launcher saves a receipt in `codex-submissions/` before the native write. An exact successful reply clears the inbox message.
+- Only confirmed non-submissions receive automatic retries. A timeout, disconnect, unknown native error, or invalid receipt preserves the message as `uncertain`.
+- Late replies update the original receipt. A client message ID provides correlation, not native deduplication. Never copy an uncertain message into another inbox.
+- A restart refuses tasks whose worktrees have unresolved native submissions. The previous status, inbox, and receipt files remain intact.
+- Reconcile an unresolved receipt against its exact native thread and turn before restarting that worktree. Silence does not prove non-submission.
 - Never start a second app-server to steer a thread it does not own.
 - A steer makes the wave live again: re-read the status file immediately before any launcher stop; never stop on a report older than your last steer.
 
 ## Capacity and completion
 
-- A capacity error rejects one turn; the launcher retries the same thread with backoff. Do not switch models mid-retry.
+- A capacity retry continues the same thread with empty input. Its timer belongs to the exact failed turn.
+- A new turn, a new user task, or a terminal goal cancels the old capacity timer. Do not switch models mid-retry.
 - Budget exhaustion is a hard stop — hence "commit each finished part."
 - A terminal turn with an active goal is not a completed worker. Success = completed goal + completed turn. Read `turn.error` on every `turn/completed`.
 

@@ -307,15 +307,16 @@ class WorkMixin:
                 }
                 w["results"].append(result)
                 w["status"] = "review"
-                self.enqueue(
-                    db,
-                    self.agent(a["rootId"], db),
-                    "work_review",
-                    json.dumps(
-                        {"task": w["id"], "title": w["title"], "result": result}
-                    ),
-                    "work-result:" + result["id"],
-                )
+                if actor != a["rootId"]:
+                    self.enqueue(
+                        db,
+                        self.agent(a["rootId"], db),
+                        "work_review",
+                        json.dumps(
+                            {"task": w["id"], "title": w["title"], "result": result}
+                        ),
+                        "work-result:" + result["id"],
+                    )
             elif action in {"accept", "reject"}:
                 if not leader:
                     raise ValueError("Only the lead can accept or reject a result")
@@ -337,7 +338,11 @@ class WorkMixin:
                     }
                 )
                 w["status"] = "accepted" if action == "accept" else "ready"
-                if w.get("owner"):
+                db.execute("UPDATE runtime_events SET status='stored_only',error=? "
+                           "WHERE id=? AND kind='work_review' AND status='pending' AND agent=?",
+                           ('The exact result already has a decision',
+                            "work-result:" + w["results"][-1]["id"], a["rootId"]))
+                if w.get("owner") and w["owner"] != actor:
                     self.enqueue(
                         db,
                         self.agent(w["owner"], db),

@@ -100,6 +100,7 @@ const LAUNCHER_PID_FILE = join(STATE, `codex-swarm-launcher.${WAVE}.pid`);
 const INBOX = join(STATE, `codex-inbox.${WAVE}.${RUN_ID}`);
 const DEAD_LETTER = join(STATE, `codex-dead-letter.${WAVE}.${RUN_ID}`);
 const WORKTREE_LOCK_DIR = join(STATE, "worktree-locks");
+const SUBMISSIONS = join(STATE, "codex-submissions");
 
 const budgetText = process.env.CODEX_BUDGET;
 const BUDGET = budgetText === undefined || budgetText === "" ? null : Number(budgetText);
@@ -317,6 +318,18 @@ function acquireLauncherPid() {
   }
 }
 
+// A new launcher must not repeat work whose native acceptance is unknown.
+// Keep the previous status, inbox, and receipts available for reconciliation.
+mkdirSync(SUBMISSIONS, { recursive: true });
+for (const file of readdirSync(SUBMISSIONS)) {
+  if (!file.endsWith(".json")) continue;
+  const receipt = JSON.parse(readFileSync(join(SUBMISSIONS, file), "utf8"));
+  if (["submitting", "uncertain"].includes(receipt.status)
+      && tasks.some((task) => task.cwd === receipt.cwd)) {
+    throw new Error(`Unresolved native submission ${receipt.messageId} for ${receipt.cwd}; inspect ${join(SUBMISSIONS, file)} before restarting this worktree`);
+  }
+}
+
 acquireLauncherPid();
 try {
   unlinkSync(READY);
@@ -392,29 +405,113 @@ process.on("unhandledRejection", abortLauncher);
 let nextId = 1;
 const pending = new Map();
 
-function call(method, params = {}) {
+function submissionError(message, notSubmitted = false) {
+  return Object.assign(new Error(message), { notSubmitted });
+}
+
+function call(method, params = {}, observe = null) {
   const id = nextId++;
-  proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   return new Promise((resolveCall, rejectCall) => {
+    let settled = false;
+    const finish = (error, result) => {
+      observe?.(error, result, id);
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) rejectCall(error);
+      else resolveCall(result);
+    };
     const timeout = setTimeout(() => {
-      pending.delete(id);
-      rejectCall(new Error(`${method} timed out after ${RPC_TIMEOUT_MS} ms`));
+      // Mutation observers remain registered so an exact late reply can settle
+      // the durable receipt. A clientUserMessageId does not deduplicate native calls.
+      if (!observe) pending.delete(id);
+      finish(submissionError(`${method} timed out after ${RPC_TIMEOUT_MS} ms`));
     }, RPC_TIMEOUT_MS);
-    pending.set(id, {
-      resolveCall: (value) => {
-        clearTimeout(timeout);
-        resolveCall(value);
-      },
-      rejectCall: (error) => {
-        clearTimeout(timeout);
-        rejectCall(error);
-      },
-    });
+    pending.set(id, { resolveCall: (value) => finish(null, value), rejectCall: finish });
+    if (shuttingDown || proc.stdin.destroyed || !proc.stdin.writable) {
+      pending.delete(id);
+      finish(submissionError(`${method} was not written: native input is closed`, true));
+      return;
+    }
+    try {
+      proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n", (error) => {
+        // A write callback error does not prove that no bytes reached native.
+        if (error) finish(submissionError(error.message));
+      });
+    } catch (error) {
+      finish(submissionError(error.message));
+    }
   });
 }
 
+function receiptPath(messageId) {
+  const key = createHash("sha256").update(messageId).digest("hex");
+  return join(SUBMISSIONS, `${key}.json`);
+}
+
+function readReceipt(messageId) {
+  try {
+    return JSON.parse(readFileSync(receiptPath(messageId), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function receiptForMessage(state, message) {
+  const receipt = readReceipt(message.id);
+  if (receipt && (receipt.cwd !== state.cwd || receipt.name !== state.name
+      || receipt.inputHash !== createHash("sha256").update(JSON.stringify([{ type: "text", text: message.text }])).digest("hex"))) {
+    throw submissionError(`message ${message.id} conflicts with its saved submission`);
+  }
+  return receipt;
+}
+
+async function submitTurn(state, method, params, messageId, accepted) {
+  if (state.pendingSubmission) throw submissionError(`worker ${state.name} has an unresolved native submission`);
+  const previous = readReceipt(messageId);
+  const { previousAttempts = [], ...previousAttempt } = previous || {};
+  const receipt = {
+    previousAttempts: previous ? [...previousAttempts, previousAttempt] : [],
+    version: 1, wave: WAVE, runId: RUN_ID, name: state.name, cwd: state.cwd,
+    messageId, threadId: state.threadId, expectedTurnId: params.expectedTurnId ?? null,
+    method, inputHash: createHash("sha256").update(JSON.stringify(params.input)).digest("hex"),
+    status: "submitting", submittedAt: new Date().toISOString(), requestId: nextId,
+  };
+  // Persist before writing. A crash on either side of the write stays uncertain.
+  writeJsonAtomic(receiptPath(messageId), receipt);
+  state.pendingSubmission = messageId;
+  flush();
+  let protocolError = null;
+  await call(method, params, (error, result) => {
+    const turnId = method === "turn/start" ? result?.turn?.id : result?.turnId;
+    const valid = typeof turnId === "string" && turnId
+      && (method !== "turn/steer" || turnId === receipt.expectedTurnId);
+    protocolError = !error && !valid ? submissionError(`${method} returned no exact turn receipt for ${state.name}`) : null;
+    receipt.status = error || protocolError ? (error?.notSubmitted ? "notSubmitted" : "uncertain") : "accepted";
+    receipt.error = (error || protocolError)?.message ?? null;
+    receipt.updatedAt = new Date().toISOString();
+    if (receipt.status === "accepted") receipt.result = result;
+    writeJsonAtomic(receiptPath(messageId), receipt);
+    if (receipt.status !== "uncertain") {
+      if (state.pendingSubmission === messageId) state.pendingSubmission = null;
+    }
+    if (receipt.status === "accepted") {
+      accepted(result);
+      // A capacity timer can expire while this exact submission is uncertain.
+      if (state.capacityRetry && !state.capacityTimer) {
+        const retry = state.capacityRetry;
+        queueMicrotask(() => void retryCapacity(state, retry));
+      }
+    }
+    state.mailboxError = receipt.error;
+    flush();
+  });
+  if (protocolError) throw protocolError;
+}
+
 function publicState(state) {
-  const { prompt, currentInput, ...bounded } = state;
+  const { prompt, currentInput, capacityTimer, ...bounded } = state;
   return bounded;
 }
 
@@ -465,6 +562,7 @@ function turnPolicy(state) {
 }
 
 async function startTurn(state, text, messageId = randomUUID()) {
+  cancelCapacityRetry(state);
   state.currentInput = text;
   state.currentMessageId = messageId;
   const priorStatus = state.turnStatus;
@@ -478,9 +576,8 @@ async function startTurn(state, text, messageId = randomUUID()) {
     const v = readFileSync(tierFile, "utf8").trim();
     if (v) serviceTier = v;
   } catch {}
-  let result;
   try {
-    result = await call("turn/start", {
+    await submitTurn(state, "turn/start", {
       threadId: state.threadId,
       model: state.requestedModel,
       effort: state.effort,
@@ -488,62 +585,89 @@ async function startTurn(state, text, messageId = randomUUID()) {
       ...turnPolicy(state),
       cwd: state.cwd,
       runtimeWorkspaceRoots: [state.cwd],
-      clientUserMessageId: messageId,
-      input: [{ type: "text", text }],
+      ...(text === null ? {} : { clientUserMessageId: messageId }),
+      input: text === null ? [] : [{ type: "text", text }],
+    }, messageId, (result) => {
+      // Notifications can precede even a late response. Preserve newer turns.
+      state.turnId ??= result.turn.id;
+      if (state.turnStatus === "starting" && state.turnId === result.turn.id) {
+        state.turnStatus = "running";
+        state.error = null;
+      }
     });
   } catch (error) {
-    if (state.turnStatus === "starting") state.turnStatus = priorStatus;
+    if (state.turnStatus === "starting") {
+      if (error.notSubmitted) state.turnStatus = priorStatus;
+      state.error = error.message;
+    }
     throw error;
   }
-  // Notifications can arrive in the same chunk as the RPC response, before
-  // this continuation resumes. Do not overwrite their terminal state or a
-  // newer automatically started turn.
-  state.turnId ??= result?.turn?.id ?? null;
-  if (state.turnStatus === "starting") state.turnStatus = "running";
   flush();
 }
 
 async function steerTurn(state, text, messageId) {
-  if (!state.turnId) throw new Error(`worker ${state.name} has no active turn id`);
-  const result = await call("turn/steer", {
+  if (!state.turnId) throw submissionError(`worker ${state.name} has no active turn id`, true);
+  await submitTurn(state, "turn/steer", {
     threadId: state.threadId,
     expectedTurnId: state.turnId,
     clientUserMessageId: messageId,
     input: [{ type: "text", text }],
+  }, messageId, () => {
+    state.lastEvent = new Date().toISOString();
   });
-  if (result?.turnId !== state.turnId) {
-    throw new Error(`turn/steer returned unexpected turn id for ${state.name}`);
-  }
-  state.lastEvent = new Date().toISOString();
-  flush();
 }
 
 async function deliverMessage(state, message) {
+  const receipt = receiptForMessage(state, message);
+  if (receipt?.status === "accepted") return "accepted";
+  if (receipt && receipt.status !== "notSubmitted") {
+    throw submissionError(`message ${message.id} has an unresolved native submission`);
+  }
+  if (state.pendingSubmission) throw submissionError(`worker ${state.name} has an unresolved native submission`);
+  cancelCapacityRetry(state);
   if (state.turnStatus === "running") {
     await steerTurn(state, message.text, message.id);
     return "steered";
   }
   if (["budgetLimited", "usageLimited"].includes(state.goalStatus)) {
-    throw new Error(`worker ${state.name} stopped at goal ${state.goalStatus}`);
+    throw submissionError(`worker ${state.name} stopped at goal ${state.goalStatus}`, true);
   }
   if (!["waiting", "completed", "failed", "interrupted", "blocked", "paused"].includes(state.turnStatus)) {
-    throw new Error(`worker ${state.name} cannot accept a message while ${state.turnStatus}`);
+    throw submissionError(`worker ${state.name} cannot accept a message while ${state.turnStatus}`, true);
   }
   if (["complete", "blocked", "paused"].includes(state.goalStatus)) {
-    await call("thread/goal/set", { threadId: state.threadId, status: "active" });
+    try {
+      await call("thread/goal/set", { threadId: state.threadId, status: "active" });
+    } catch (error) {
+      // No user input has been submitted at this point.
+      throw submissionError(error.message, true);
+    }
     state.goalStatus = "active";
   }
   await startTurn(state, message.text, message.id);
   return "started";
 }
 
-async function retryCapacity(state) {
-  if (["budgetLimited", "usageLimited", "blocked", "paused"].includes(state.goalStatus)) return;
+function cancelCapacityRetry(state) {
+  if (state.capacityTimer) clearTimeout(state.capacityTimer);
+  state.capacityTimer = null;
+  state.capacityRetry = null;
+  if (state.turnStatus === "capacity-retry") state.turnStatus = "failed";
+}
+
+async function retryCapacity(state, retry) {
+  if (state.capacityRetry !== retry || state.threadId !== retry.threadId
+      || state.turnId !== retry.turnId || state.turnStatus !== "capacity-retry"
+      || state.goalStatus !== "active" || state.pendingSubmission || shuttingDown) return;
+  // Claim once before the await. Native history already contains the failed input.
+  cancelCapacityRetry(state);
   try {
-    await startTurn(state, state.currentInput, state.currentMessageId);
+    await startTurn(state, null);
   } catch (error) {
-    state.turnStatus = "failed";
-    state.error = `capacity retry ${state.capacityRetries} failed: ${error?.message ?? error}`;
+    if (!state.pendingSubmission) state.turnStatus = "failed";
+    if (["starting", "failed"].includes(state.turnStatus)) {
+      state.error = `capacity retry ${state.capacityRetries} failed: ${error?.message ?? error}`;
+    }
     flush();
   }
 }
@@ -559,7 +683,8 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
     const request = pending.get(message.id);
     pending.delete(message.id);
     if (message.error) {
-      request.rejectCall(new Error(message.error.message || JSON.stringify(message.error)));
+      request.rejectCall(submissionError(message.error.message || JSON.stringify(message.error),
+        [-32600, -32601, -32602].includes(message.error.code) || message.error.data?.notSubmitted === true));
     } else {
       request.resolveCall(message.result);
     }
@@ -577,7 +702,10 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
   }
   if (message.method === "turn/started") {
     const turn = message.params?.turn || {};
-    if (typeof turn.id === "string" && turn.id) state.turnId = turn.id;
+    if (typeof turn.id === "string" && turn.id) {
+      if (turn.id !== state.turnId) cancelCapacityRetry(state);
+      state.turnId = turn.id;
+    }
     state.lastTurnStatus = turn.status ?? "inProgress";
     if (!["budgetLimited", "usageLimited", "blocked", "paused"].includes(state.goalStatus)) {
       state.turnStatus = "running";
@@ -587,6 +715,7 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
   if (message.method === "thread/goal/updated") {
     const status = message.params?.goal?.status;
     state.goalStatus = status ?? state.goalStatus;
+    if (status && status !== "active") cancelCapacityRetry(state);
     state.tokensUsed = message.params?.goal?.tokensUsed ?? state.tokensUsed;
     if (status === "budgetLimited" || status === "usageLimited") {
       state.turnStatus = "failed";
@@ -606,6 +735,11 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
   }
   if (message.method === "turn/completed") {
     const turn = message.params?.turn || {};
+    // An old completion must not replace a newer turn or schedule its retry.
+    if (typeof turn.id !== "string" || (state.turnId && state.turnId !== turn.id)) return;
+    if (state.lastCompletedTurnId === turn.id) return;
+    state.lastCompletedTurnId = turn.id;
+    state.turnId = turn.id;
     const error = turn.error?.message ?? null;
     state.lastTurnStatus = turn.status ?? "missing";
     const goalStopsTurn = ["budgetLimited", "usageLimited", "blocked", "paused"].includes(
@@ -625,6 +759,8 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
     }
     if (
       !goalStopsTurn
+      && state.goalStatus === "active"
+      && !state.capacityRetry
       && /at capacity/i.test(error ?? "")
       && state.capacityRetries < CAPACITY_RETRY_MAX
     ) {
@@ -633,7 +769,12 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
       state.error = error;
       const waitMs = CAPACITY_BACKOFF_MS * state.capacityRetries;
       appendEvent({ name: state.name, capacityRetry: state.capacityRetries, waitMs });
-      setTimeout(() => void retryCapacity(state), waitMs);
+      const retry = { id: randomUUID(), threadId: state.threadId, turnId: turn.id };
+      state.capacityRetry = retry;
+      state.capacityTimer = setTimeout(() => {
+        state.capacityTimer = null;
+        void retryCapacity(state, retry);
+      }, waitMs);
     }
   }
   if (message.method && !message.method.includes("Delta")) {
@@ -706,6 +847,9 @@ for (const task of tasks) {
     error: null,
     tail: "",
     capacityRetries: 0,
+    capacityRetry: null,
+    capacityTimer: null,
+    pendingSubmission: null,
     lastTurnStatus: null,
     currentInput: null,
     currentMessageId: null,
@@ -721,7 +865,12 @@ for (const task of tasks) {
   if (BUDGET !== null) goalParams.tokenBudget = BUDGET;
   await call("thread/goal/set", goalParams);
   state.goalStatus = "active";
-  await startTurn(state, prompt);
+  try {
+    await startTurn(state, prompt);
+  } catch (error) {
+    if (!state.pendingSubmission) throw error;
+    appendEvent({ name: state.name, submissionUncertain: state.pendingSubmission, error: error.message });
+  }
 }
 
 writeJsonAtomic(READY, {
@@ -763,6 +912,25 @@ setInterval(async () => {
       flush();
       continue;
     }
+    if (message.delivery === "uncertain") {
+      let receipt;
+      try {
+        receipt = receiptForMessage(state, message);
+      } catch {
+        // Preserve a conflicting identity without retrying or stopping other workers.
+        continue;
+      }
+      if (receipt?.status === "accepted") {
+        unlinkSync(path);
+        state.mailboxError = null;
+        appendEvent({ name, mailbox: "accepted", messageId: message.id, lateReceipt: true });
+        flush();
+      } else if (receipt?.status === "notSubmitted") {
+        message.delivery = "queued";
+        writeJsonAtomic(path, message);
+      }
+      continue;
+    }
     if (message.nextAttemptAt > Date.now()) continue;
     inboxBusy.add(name);
     try {
@@ -773,6 +941,15 @@ setInterval(async () => {
       flush();
     } catch (error) {
       const errorMessage = error?.message ?? String(error);
+      if (!error.notSubmitted) {
+        message.delivery = "uncertain";
+        message.lastError = errorMessage;
+        state.mailboxError = errorMessage;
+        writeJsonAtomic(path, message);
+        appendEvent({ name, mailboxUncertain: message.id, error: errorMessage });
+        flush();
+        continue;
+      }
       message.attempts += 1;
       message.lastError = errorMessage;
       state.mailboxError = errorMessage;

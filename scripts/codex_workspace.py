@@ -1639,6 +1639,8 @@ class WorkspaceMixin:
         return blockers
 
     def assert_workspace_available(self, db, a):
+        from codex_context_repair import assert_context_available
+        assert_context_available(a)
         if safety_retry_active(a):
             raise ValueError('Wait for the model change before another workspace operation')
         if a.get("accountTransferId") and not a.get("inFlight"):

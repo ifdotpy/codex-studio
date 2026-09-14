@@ -46,7 +46,12 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/api/action", (route) => {
     actions.push(route.request().postDataJSON());
-    return route.fulfill({ json: { status: "accepted" } });
+    return route.fulfill({
+      json: {
+        receipt: { requestId: route.request().postDataJSON().request_id },
+        outcome: { status: "acknowledged" },
+      },
+    });
   });
   const lead = snapshot.threads.find((agent) => agent.name === "Release lead");
   const member = snapshot.threads.find(

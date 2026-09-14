@@ -1045,10 +1045,27 @@ def make_server(canvas, port=0, public_origin=None):
                     if self.path == "/api/connection-recovery":
                         from codex_connection_recovery import recover
                         return self.send(recover(runtime, body.get("id")))
+                    if self.path == "/api/context-repair":
+                        from codex_context_repair import repair_idle
+                        repaired = repair_idle(runtime, body.get("id"))
+                        return self.send({"id": repaired["id"], "repair": repaired.get("contextRepair")})
                     if self.path == "/api/capacity-retry":
                         return self.send(canvas.runtime.capacity_retry(body.get("id"), body.get("retry_id"), body.get("action")))
                     if self.path == "/api/action":
-                        return self.send(canvas.runtime.native_action(body.get("id"), body.get("action")))
+                        action = body.get("action")
+                        if isinstance(action, dict) and "safety" in action:
+                            return self.send(canvas.runtime.native_action(body.get("id"), action))
+                        request_id = body.get("request_id")
+                        if not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
+                            return self.send({"error": "Reload Studio before Review or Compact. This client has no durable action request ID.",
+                                              "outcome": "not_applied"}, 400)
+                        if set(body) - {"id", "action", "request_id", "context"}:
+                            return self.send({"error": "Invalid native action fields", "outcome": "not_applied"}, 400)
+                        try:
+                            result = canvas.runtime.native_action(body.get("id"), action, request_id, body.get("context", {}))
+                        except ValueError as error:
+                            return self.send({"error": str(error), "outcome": "not_applied"}, 400)
+                        return self.send(result)
                     if self.path == "/api/import":
                         return self.send(canvas.runtime.import_thread(body))
                     if self.path == "/api/stop":

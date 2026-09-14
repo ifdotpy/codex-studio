@@ -194,6 +194,9 @@ class AccountTransfers:
 
     def local_blocker(self, db, a):
         rt = self.rt
+        from codex_context_repair import blocked
+        if blocked(a):
+            return "Waiting for the exact context repair receipt"
         if a.get('inFlight') or a['status'] in ACTIVE:
             return 'Waiting for the current turn'
         if a.get('workspaceOperation'):

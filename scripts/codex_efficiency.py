@@ -19,9 +19,14 @@ def digest(value):
     return hashlib.sha256(packed(value).encode()).hexdigest()[:24]
 
 
+def model_text_bytes(value):
+    # Match the generic tool projection, including JSON escaping inside text.
+    return len(packed([{'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]).encode())
+
+
 def efficiency_tools(tool, text):
     return [tool('orchestration_read',
-        'Read a full saved tool response by output_ref. Offsets are Unicode characters; pages are bounded. '
+        'Read a full saved tool response or orchestration event by output_ref. Offsets are Unicode characters; pages are bounded. '
         'Use contains to locate relevant output. Same-agent records only. Never rerun a mutation to recover its result.',
         {'output_ref': text, 'offset': {'type': 'integer', 'minimum': 0},
          'contains': text}, ['output_ref']),
@@ -33,7 +38,7 @@ def efficiency_tools(tool, text):
 
 
 class EfficiencyMixin:
-    def model_page(self, rows, args, scope):
+    def model_page(self, rows, args, scope, byte_limit=None):
         limit = args.get('limit', 20)
         if type(limit) is not int or not 1 <= limit <= 50:
             raise ValueError('limit must be 1 to 50')
@@ -43,11 +48,14 @@ class EfficiencyMixin:
             try:
                 cursor = json.loads(base64.urlsafe_b64decode(args['cursor']))
                 offset = cursor['offset']
-                if type(offset) is not int or offset < 0 or cursor['revision'] != revision:
+                if type(offset) is not int or not 0 <= offset <= len(rows) or cursor['revision'] != revision:
                     raise ValueError()
             except (ValueError, TypeError, KeyError):
                 raise ValueError('List changed or cursor is invalid. Read the first page again.') from None
         page = rows[offset:offset + limit]
+        if byte_limit:
+            while len(page) > 1 and model_text_bytes(page) > byte_limit:
+                page.pop()
         next_offset = offset + len(page)
         cursor = base64.urlsafe_b64encode(packed({'offset': next_offset, 'revision': revision}).encode()).decode() if next_offset < len(rows) else None
         return {'apiVersion': 2, 'items': page, 'total': len(rows), 'revision': revision, 'nextCursor': cursor}
@@ -94,11 +102,19 @@ class EfficiencyMixin:
                 rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
                         for a in agents if a['rootId'] == actor['rootId']]
                 rows.sort(key=lambda a: a['id'])
-                result = self.model_page(rows, args, [actor_id, scope])
-                # No message bodies, monitor tails, profiles, or schemas here.
+                rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId')}
+                         for r in self.chat_rooms(db, actor_id)]
+                rooms.sort(key=lambda r: r['id'])
+                # One cursor covers both collections. Room discovery continues
+                # after the agents, without repeating rooms on each agent page.
+                entries = [{'entry': 'agent', 'value': r} for r in rows]
+                entries += [{'entry': 'room', 'value': r} for r in rooms]
+                result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000)
+                page = result.pop('items')
                 result.update(self=actor_id, lead=actor['rootId'], parent=actor.get('parentId'),
-                              rooms=[{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId')}
-                                     for r in self.chat_rooms(db, actor_id)])
+                              items=[r['value'] for r in page if r['entry'] == 'agent'],
+                              rooms=[r['value'] for r in page if r['entry'] == 'room'],
+                              total=len(rows), roomTotal=len(rooms), totalRecords=len(entries))
                 return result
             team = [a for a in agents if a['rootId'] == actor['rootId']]
             ids = {a['id'] for a in team}
@@ -164,7 +180,7 @@ class EfficiencyMixin:
 
     def model_tool_result(self, actor, key, result):
         from codex_agent_modes import tool_mode_context
-        result = tool_mode_context(self, actor, result)
+        result = tool_mode_context(self, actor, result, key)
         content = result.get('contentItems', [])
         texts = [c for c in content if c.get('type') == 'inputText' and not c.get('text', '').startswith(('[Time awareness]', '[Studio agent mode,'))]
         if len(packed(texts).encode()) <= 16000:
@@ -184,7 +200,7 @@ class EfficiencyMixin:
             value = json.loads(raw)
             if isinstance(value, dict):
                 preview['summary'] = {k: value[k] for k in
-                    ('id', 'requestId', 'stage', 'outcome', 'status', 'exitCode', 'version', 'nextCursor', 'revision', 'total', 'nextOffset', 'agentIds', 'agent_ids') if k in value}
+                    ('id', 'requestId', 'stage', 'outcome', 'status', 'exitCode', 'version', 'nextCursor', 'nextBefore', 'revision', 'total', 'nextOffset', 'agentIds', 'agent_ids') if k in value}
                 if isinstance(value.get('agents'), list):
                     preview['summary']['agents'] = [{k: a[k] for k in ('id', 'status') if k in a}
                                                     for a in value['agents'] if isinstance(a, dict)]
@@ -203,6 +219,8 @@ class EfficiencyMixin:
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             key = args.get('output_ref')
+            if isinstance(key, str) and key.startswith(('event:', 'chat-message:')):
+                return self.model_saved_message(db, actor, key, args)
             receipt = self.tool_request(key, db)
             native = None
             if receipt is None and isinstance(key, str) and key.startswith(actor['id'] + ':'):
@@ -270,6 +288,107 @@ class EfficiencyMixin:
                     **({'source': 'saved_native_output', 'truncated': bool(native.get('truncated')),
                         'commandStatus': payload.get('status'), 'exitCode': payload.get('exitCode')} if native else {})}
 
+    def model_saved_message(self, db, actor, key, args):
+        source, record_id = key.split(':', 1)
+        if source == 'event':
+            row = db.execute('SELECT * FROM runtime_events WHERE id=? AND agent=?',
+                             (record_id, actor['id'])).fetchone()
+            if row is None:
+                raise ValueError('Event reference is not owned by this agent')
+            from codex_team_isolation import assert_events
+            assert_events(self, db, actor, [row])
+            meta = db.execute('SELECT record FROM runtime_event_meta WHERE id=?', (record_id,)).fetchone()
+            metadata = json.loads(meta[0]) if meta else {}
+            identity = {k: row[k] for k in ('id', 'agent', 'kind', 'created', 'epoch', 'turn_id')}
+            identity['metadata'] = {k: v for k, v in metadata.items() if k != 'contextManifest'}
+        else:
+            row = db.execute('SELECT * FROM runtime_chat_messages WHERE id=?', (record_id,)).fetchone()
+            if row is None or not any(r['id'] == row['room'] for r in self.chat_rooms(db, actor['id'])):
+                raise ValueError('Chat message is unavailable or you are not a participant')
+            identity = {k: row[k] for k in ('id', 'room', 'sender', 'seq', 'created')}
+        text = row['text']
+        offset = args.get('offset', 0)
+        if type(offset) is not int or not 0 <= offset <= len(text):
+            raise ValueError('offset must be within the saved text')
+        if args.get('contains'):
+            found = text.find(args['contains'], offset)
+            if found < 0:
+                return {'outputRef': key, 'found': False, 'source': source, 'identity': identity}
+            offset = max(offset, found - 200)
+        excerpt = clip(text[offset:], 3000)
+        end = offset + len(excerpt)
+        return {'outputRef': key, 'source': source, 'identity': identity, 'offset': offset,
+                'nextOffset': end if end < len(text) else None, 'totalChars': len(text), 'text': excerpt}
+
+    def model_chat_page(self, room, messages, more):
+        # UI reads keep complete pages. Model reads return recent messages first
+        # within the byte budget; every clipped body has an authorized reader.
+        room = {k: room[k] for k in ('id', 'kind', 'rootId', 'name') if k in room}
+        page = []
+        for message in reversed(messages):
+            brief = dict(message)
+            brief.pop('deliveries', None)
+            if len(brief['text'].encode()) > 3000:
+                brief.update(text=clip(brief['text'], 2400), truncated=True,
+                             textChars=len(message['text']),
+                             read={'tool': 'orchestration_read', 'output_ref': 'chat-message:' + message['id']})
+            candidate = [brief, *page]
+            if page and model_text_bytes({'room': room, 'messages': candidate}) > 13000:
+                break
+            page = candidate
+        return {'room': room, 'messages': page,
+                'nextBefore': page[0]['seq'] if page and (more or len(page) < len(messages)) else None}
+
+    def preparation_context_versions(self, actor, params):
+        from codex_progress import progress_context
+        values = {'roleSkill': self.role_guidance(actor),
+                  'progressFile': progress_context(self.root, actor['id'])}
+        # Guidance can change between construction and capture. Only acknowledge
+        # a version whose exact text is present in the submitted instructions.
+        instructions = params.get('developerInstructions', '')
+        return {key: digest(value) for key, value in values.items() if value and value in instructions}
+
+    def model_known_context(self, db, actor):
+        epoch = [actor.get('threadId'), actor.get('compactions', 0)]
+        row = db.execute("SELECT m.record FROM runtime_event_meta m JOIN runtime_events e ON e.id=m.id WHERE e.agent=? AND e.status='delivered' AND json_extract(m.record,'$.contextManifest') IS NOT NULL ORDER BY coalesce(json_extract(m.record,'$.contextManifest.sequence'),0) DESC, e.created DESC LIMIT 1", (actor['id'],)).fetchone()
+        old = json.loads(row[0]).get('contextManifest', {}) if row else {}
+        known = dict(old.get('versions', {})) if old.get('epoch') == epoch else {}
+        prepared = actor.get('preparedContext') or {}
+        if prepared.get('epoch') == epoch:
+            for key, version in prepared.get('versions', {}).items():
+                known.setdefault(key, version)
+        mode = actor.get('deliveredMode') or {}
+        if mode.get('epoch') == epoch:
+            from codex_agent_modes import guidance
+            current = digest(guidance(self.agent(actor['rootId'], db)))
+            if mode.get('version') == current:
+                known['agentMode'] = current
+        return epoch, old, known
+
+    def confirm_model_tool_result(self, actor_id, key, result, delivery_epoch=None):
+        # A projection is not a delivery. Call only after the native response
+        # write succeeds. A failed write leaves the policy eligible for refresh.
+        with self.lock, self.db() as db:
+            actor = self.agent(actor_id, db)
+            epoch = [actor.get('threadId'), actor.get('compactions', 0)]
+            if delivery_epoch is not None and delivery_epoch != epoch:
+                return
+            table = db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_model_modes'").fetchone()
+            if not table:
+                return
+            rows = db.execute('SELECT record FROM runtime_model_modes WHERE agent=? AND request=?',
+                              (actor_id, key)).fetchall()
+            texts = [c.get('text') for c in result.get('contentItems', []) if c.get('type') == 'inputText']
+            for row in rows:
+                record = json.loads(row[0])
+                if record['epoch'] != epoch or not record.get('text') or record['text'] not in texts:
+                    continue
+                previous = actor.get('deliveredMode') or {}
+                if previous.get('epoch') == epoch and previous.get('revision', -1) > record['revision']:
+                    continue
+                actor['deliveredMode'] = {k: record[k] for k in ('epoch', 'version', 'revision')}
+                self.put(db, 'agents', actor)
+
     def reported_plan(self, db, root_id):
         row = db.execute('SELECT record FROM runtime_plans WHERE id=?', (root_id,)).fetchone()
         plan = json.loads(row[0]) if row else None
@@ -313,10 +432,7 @@ class EfficiencyMixin:
         return {'topic': topic, 'version': digest(value), 'content': value}
 
     def model_turn_context(self, db, actor, event_id):
-        epoch = [actor.get('threadId'), actor.get('compactions', 0)]
-        row = db.execute("SELECT m.record FROM runtime_event_meta m JOIN runtime_events e ON e.id=m.id WHERE e.agent=? AND e.status='delivered' AND json_extract(m.record,'$.contextManifest') IS NOT NULL ORDER BY coalesce(json_extract(m.record,'$.contextManifest.sequence'),0) DESC, e.created DESC LIMIT 1", (actor['id'],)).fetchone()
-        old = json.loads(row[0]).get('contextManifest', {}) if row else {}
-        known = old.get('versions', {}) if old.get('epoch') == epoch else {}
+        epoch, old, known = self.model_known_context(db, actor)
         versions, blocks = {}, []
         from codex_agent_modes import guidance
         mode = guidance(self.agent(actor['rootId'], db))
@@ -379,18 +495,51 @@ class EfficiencyMixin:
         return not EfficiencyMixin.progress_only(rows) or now - min(r['created'] for r in rows) >= 1.0
 
     @staticmethod
+    def bounded_event(row, text, byte_limit):
+        if len(text.encode()) <= byte_limit:
+            return text
+        ref = 'event:' + row['id']
+        summary = {'eventId': row['id'], 'kind': row['kind'], 'truncated': True,
+                   'textBytes': len(row['text'].encode()),
+                   'read': {'tool': 'orchestration_read', 'output_ref': ref}}
+        try:
+            value = json.loads(text)
+            if isinstance(value, dict):
+                summary['identity'] = {k: value[k] for k in
+                    ('id', 'agent_id', 'sender', 'room', 'message_id', 'turnId', 'turn_id',
+                     'status', 'exitCode', 'importance', 'progress_key', 'progress_version',
+                     'earlierProgressUpdates', 'complaint_id', 'lead', 'log', 'bytes') if k in value}
+        except (ValueError, TypeError):
+            pass
+        # Preserve exact identities when they fit. The reference always points
+        # to the full, access-checked event and its sender/turn metadata.
+        if len(packed(summary).encode()) > byte_limit:
+            summary.pop('identity', None)
+        if len(packed(summary).encode()) > byte_limit:
+            summary.pop('eventId', None)  # The exact id remains in output_ref.
+        remaining = max(0, byte_limit - len(packed(summary).encode()) - 100)
+        summary['excerpt'] = clip(text, remaining // 2)
+        summary['tail'] = text.encode()[-(remaining // 2):].decode('utf-8', errors='ignore') if remaining > 1 else ''
+        while len(packed(summary).encode()) > byte_limit and (summary['excerpt'] or summary['tail']):
+            summary['excerpt'] = summary['excerpt'][:len(summary['excerpt']) // 2]
+            summary['tail'] = summary['tail'][len(summary['tail']) // 2:] if len(summary['tail']) > 1 else ''
+        return packed(summary)
+
+    @staticmethod
     def model_event_text(rows):
         # Only versioned progress for the same sender, room and topic supersedes an
         # earlier update. Keep every original event and receipt in the database.
         latest, counts, versions, conflicts = {}, {}, {}, set()
         for row in rows:
-            if row['kind'] != 'agent_message':
+            if row['kind'] != 'agent_message' or row.get('preserveProgress'):
                 continue
             try:
                 value = json.loads(row['text'])
                 if (not isinstance(value, dict) or value.get('importance') != 'progress'
-                        or not isinstance(value.get('progress_key'), str)
-                        or type(value.get('progress_version')) is not int):
+                        or not all(isinstance(value.get(k), str) and value[k]
+                                   for k in ('sender', 'room', 'progress_key'))
+                        or type(value.get('progress_version')) is not int
+                        or value['progress_version'] < 0):
                     continue
                 key = (value['sender'], value['room'], value['progress_key'])
             except (ValueError, KeyError, TypeError):
@@ -404,15 +553,26 @@ class EfficiencyMixin:
                 latest[key] = (version, row['id'])
             counts[key] = counts.get(key, 0) + 1
         parts = []
+        synthetic_count = sum(row['kind'] not in {'user', 'followup'} for row in rows)
+        event_limit = min(3000, 24000 // max(1, synthetic_count))
         for row in rows:
-            if row['kind'] == 'complaint':
-                continue
+            if row['kind'] == 'complaint' and not row.get('preserveComplaint'):
+                try:
+                    complaints = json.loads(row['text']).get('complaints')
+                    if (isinstance(complaints, list) and complaints
+                            and all(isinstance(c, dict) and isinstance(c.get('complaint_id'), str) for c in complaints)):
+                        continue
+                except (ValueError, TypeError, AttributeError):
+                    pass
             text = row['text']
-            if row['kind'] == 'agent_message':
+            if row['kind'] == 'agent_message' and not row.get('preserveProgress'):
                 try:
                     value = json.loads(text)
                     key = (value['sender'], value['room'], value.get('progress_key'))
-                    if value.get('importance') == 'progress' and key in latest and key not in conflicts:
+                    if (value.get('importance') == 'progress'
+                            and type(value.get('progress_version')) is int and value['progress_version'] >= 0
+                            and all(isinstance(v, str) and v for v in key)
+                            and key in latest and key not in conflicts):
                         if row['id'] != latest[key][1]:
                             continue
                         if counts[key] > 1:
@@ -420,5 +580,7 @@ class EfficiencyMixin:
                                            'history': 'Read earlier progress with orchestration_chat_read in this room.'})
                 except (ValueError, KeyError, TypeError):
                     pass
+            if row['kind'] not in {'user', 'followup'}:
+                text = EfficiencyMixin.bounded_event(row, text, event_limit)
             parts.append(text if row['kind'] == 'user' else '[Orchestration event: ' + row['kind'] + ']\n' + text)
         return '\n\n'.join(parts)

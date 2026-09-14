@@ -86,6 +86,9 @@ Versioned turn context supplies it to existing threads and after changes or comp
 The native permission system still owns tool approval.
 
 The conversation header provides context compaction, review, and team stop.
+Review and Compact save a request ID before HTTP submission.
+After a lost reply or reload, **Check action request** reads that same request.
+A confirmed request does not execute again. A new explicit action receives a new ID.
 
 Open **Chat settings > Reviewers** to assign an agent from the same team.
 Select the reviewer. Set the interval in minutes.
@@ -102,6 +105,9 @@ Each assignment permits one queued or active review at a time.
 
 The reviewer receives the target's original request, recent requests, and recent outcomes with bounded excerpts.
 If that context has not changed, the timer skips the model request.
+Feedback from a review does not by itself change this snapshot.
+A verified `review_outcome=no_issue` result remains in room history without a target wake.
+Findings, questions, tool results, and new user work retain their normal delivery.
 Paused chats and native recovery holds remain stopped.
 
 The reviewer keeps its own model, permissions, and conversation history.
@@ -320,6 +326,34 @@ retains the input reservation without submitting a turn. A late response resumes
 that exact batch only while its agent, account, connection and settings still match.
 Steer, Compact and Review also retain unknown outcomes after response timeouts.
 Late acknowledgements cannot resume a stopped agent or replace a newer turn.
+
+## Token accounting and saved context
+
+A finite team budget checks durable usage before each new submission.
+This includes queue dispatch, Review, Compact, capacity retries, and voice starts.
+Response IDs identify charges across counter resets and native thread copies.
+An incomplete usage import holds new submissions until accounting catches up.
+The displayed lifetime total does not fall when the native counter resets.
+A submitted request can consume tokens before its usage report reaches Studio.
+Studio cannot return an allowance already consumed by the provider.
+
+Long orchestration events use bounded excerpts with `orchestration_read` references.
+The complete text remains in Studio history. User messages retain their full input.
+Chat and peer pages retain their continuation cursors.
+Confirmed context versions prevent repeated role instructions and mode notices.
+
+Before a new turn, Studio checks for oversized historical orchestration inputs.
+It replaces only text that matches saved event and native turn identities.
+The repair uses a private native history copy at an idle boundary.
+The original history, user input, tool receipts, and output references remain available.
+The fork itself sends no model request and executes no command.
+Active commands, unresolved input, or an unknown fork result hold the repair.
+A lost fork reply cannot cause another automatic fork.
+
+Authenticated `POST /api/context-repair` with `id` requests the same repair for an idle chat.
+Its receipt retains source and copy hashes, event IDs, and the resulting native thread.
+The operation requires free space for the source copy and native fork.
+Unsupported or ambiguous history remains unchanged.
 
 ## Agent chat
 

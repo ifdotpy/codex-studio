@@ -777,6 +777,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(a['id'])['status'], 'completed')
 
     def test_budget_stops_team_and_new_budget_allows_explicit_resume(self):
+        from unittest.mock import patch
         lead = self.lead(tokenBudget=100)
         self.runtime.notification({'method': 'thread/tokenUsage/updated', 'params': {
             'threadId': lead['threadId'], 'tokenUsage': {'total': {'totalTokens': 101}}}})
@@ -784,6 +785,31 @@ class RuntimeContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'budget'):
             self.runtime.send(lead['id'], 'Continue')
         self.runtime.configure(lead['id'], {'tokenBudget': 1000, 'concurrency': 2})
+        with self.assertRaisesRegex(ValueError, 'budget cannot be verified'):
+            self.runtime.send(lead['id'], 'Continue')
+        self.assertFalse(self.runtime.agent(lead['id'])['autoWake'])
+        home = self.root / 'budget-native-home'
+        home.mkdir()
+        path = home / 'rollout-fixture.jsonl'
+        records = [
+            ('session_meta', {'id': lead['threadId']}),
+            ('event_msg', {'type': 'task_started', 'turn_id': lead['turnId']}),
+            ('token_usage_record', {'thread_id': lead['threadId'], 'turn_id': lead['turnId'],
+                'response_id': 'budget-response-exact', 'usage': {'total_tokens': 101},
+                'thread_token_usage': {'total_tokens': 101}}),
+            ('event_msg', {'type': 'turn_aborted', 'turn_id': lead['turnId']}),
+        ]
+        path.write_text(''.join(json.dumps({'timestamp': lead['created'] + .001, 'type': kind,
+                                          'payload': payload}) + '\n' for kind, payload in records))
+        # FakeServer IDs are short; native discovery expects a UUID suffix.
+        with patch.object(self.runtime.accounts, 'home', return_value=home), \
+                patch.object(self.runtime, '_analytics_rollout_path', return_value=(path, None)):
+            self.assertTrue(self.runtime.analytics_history_step())
+        with self.runtime.db() as db:
+            history = json.loads(db.execute('SELECT record FROM analytics_history WHERE agent=?', (lead['id'],)).fetchone()[0])
+        self.assertEqual(history['status'], 'current')
+        self.assertTrue(history['context']['requestUsageAvailable'])
+        self.assertEqual(self.runtime.agent(lead['id'])['tokensUsed'], 101)
         self.runtime.send(lead['id'], 'Continue')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
 

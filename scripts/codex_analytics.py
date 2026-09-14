@@ -9,6 +9,8 @@ import time
 from collections import defaultdict
 import statistics
 
+from codex_budget import budget_capture
+
 TOKEN_FIELDS = ('inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens',
                 'outputTokens', 'reasoningOutputTokens', 'totalTokens')
 NON_TOOLS = {'userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction', 'compactionSnapshot'}
@@ -92,6 +94,7 @@ class AnalyticsMixin:
           CREATE INDEX IF NOT EXISTS analytics_usage_team ON analytics_usage(root,at);
           CREATE INDEX IF NOT EXISTS analytics_usage_response ON analytics_usage(agent,thread,json_extract(record,'$.responseId'));
           CREATE INDEX IF NOT EXISTS analytics_usage_thread ON analytics_usage(agent,thread,seq);
+          CREATE INDEX IF NOT EXISTS analytics_usage_migration ON analytics_usage(agent,seq);
           CREATE TABLE IF NOT EXISTS analytics_items (
             id TEXT PRIMARY KEY, agent TEXT NOT NULL, root TEXT, thread TEXT, turn TEXT,
             at REAL NOT NULL, type TEXT, name TEXT, is_tool INTEGER NOT NULL, record TEXT NOT NULL);
@@ -149,6 +152,7 @@ class AnalyticsMixin:
         turn = p.get('turnId') or (p.get('turn') or {}).get('id') or a.get('turnId')
         meta.update(threadId=p.get('threadId') or a.get('threadId'), turnId=turn)
         if method == 'thread/tokenUsage/updated':
+            budget_capture(db, a, p, at=at, source=source)
             usage = p.get('tokenUsage') or {}
             current, last = usage.get('total') or {}, usage.get('last') or {}
             # Totals identify a request across native notices and rollout records.
@@ -213,9 +217,21 @@ class AnalyticsMixin:
                 if record['finishedAt'] is None:
                     record['status'] = 'running'
             elif method == 'turn/completed':
-                record.update(finishedAt=at, status=(p.get('turn') or {}).get('status', 'unknown'),
-                              error=(p.get('turn') or {}).get('error'),
-                              nativeDurationMs=number(p.get('durationMs')), nativeTimeToFirstTokenMs=number(p.get('timeToFirstTokenMs')))
+                terminal = p.get('turn') or {}
+                error = terminal.get('error')
+                status = 'failed' if error else terminal.get('status', 'unknown')
+                # Terminal failures belong to this exact agent/thread/turn key.
+                # A history projection without an error cannot erase evidence.
+                previous_failure = record.get('error') or record.get('status') == 'failed'
+                incoming_failure = error or status == 'failed'
+                replace = not previous_failure or (incoming_failure and
+                    (not record.get('error') or source == 'live' or record.get('terminalSource', record.get('source')) != 'live'))
+                if replace:
+                    record.update(finishedAt=at, status=status, error=error or record.get('error') if incoming_failure else None,
+                                  terminalSource=source)
+                for field, value in (('nativeDurationMs', p.get('durationMs')), ('nativeTimeToFirstTokenMs', p.get('timeToFirstTokenMs'))):
+                    if number(value) is not None:
+                        record[field] = number(value)
             elif method == 'item/agentMessage/delta' and p.get('delta') or (p.get('item') or {}).get('type') == 'agentMessage' and (p.get('item') or {}).get('text'):
                 if record['firstOutputAt'] is None:
                     record['firstOutputAt'] = at

@@ -48,7 +48,14 @@ class TaskCompletionRecovery(unittest.TestCase):
                 result = self.response(call)
                 self.assertTrue(result['success'], result)
                 self.assertEqual(self.value(result)['status'], 'accepted')
-                self.assertEqual(len(self.value(result)['decisions']), 1)
+                detail = self.value(result)['detail']
+                self.assertEqual(detail, {'tool': 'orchestration_task', 'action': 'get', 'task_id': task['id']})
+                # Mutation replies carry the stable detail route, not full history.
+                self.runtime.request(self.message(call + '-detail', detail['tool'],
+                    {k: v for k, v in detail.items() if k != 'tool'}))
+                saved = self.value(self.response(call + '-detail'))
+                self.assertEqual(saved['history']['decisions'], 1)
+                self.assertEqual(saved['latestDecision']['decision'], 'accept')
                 self.assertTrue(all(not job.done() for job in jobs))
         finally:
             release.set()

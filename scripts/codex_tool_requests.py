@@ -67,6 +67,7 @@ _WORK_REJECTIONS = {
     "Review or accepted work cannot be reassigned; reject a result before editing",
 }
 _MESSAGE_REJECTIONS = {
+    "A no-issue result requires the exact active review event and target",
     "Versioned progress requires a progress_key and nonnegative integer progress_version",
     "Unknown message importance", "Message must have 1 to 12000 characters", "Select another agent",
     "Unknown managed agent",

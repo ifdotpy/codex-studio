@@ -44,18 +44,22 @@ class NativeVoice:
             raise ValueError("Invalid voice session identity")
         if not isinstance(sdp, str) or not sdp.startswith("v=0") or len(sdp) > 100000:
             raise ValueError("Invalid WebRTC offer")
-        with self.native_lock, self.runtime.db() as db:
+        with self.native_lock, self.runtime.lock, self.runtime.db() as db:
             old = db.execute("SELECT * FROM voice_sessions WHERE id=?", (session_id,)).fetchone()
             if old:
                 if old["agent"] != agent or (old["sdp"] is not None and old["sdp"] != sdp):
                     raise ValueError("Voice session identity conflicts with the original offer")
             else:
+                from codex_context_repair import assert_context_available
+                actor = self.runtime.agent(agent, db)
+                assert_context_available(actor)
                 if db.execute("SELECT 1 FROM voice_sessions WHERE agent=? AND state IS NOT NULL AND ended IS NULL", (agent,)).fetchone():
                     raise ValueError("End the existing voice session first")
                 db.execute("INSERT INTO voice_sessions(id,agent,created,sdp,state) VALUES(?,?,?,?,?)",
                            (session_id, agent, time.time(), sdp, "connecting"))
                 db.commit()
-                self.connections[session_id] = {"agent": agent, "epoch": actor.get("epoch"), "cancel": False, "submitted": False, "stopping": False}
+                self.connections[session_id] = {"agent": agent, "epoch": actor.get("epoch"), "account": actor.get("accountKey", "default"),
+                                                "initial_thread": actor.get("threadId"), "cancel": False, "submitted": False, "stopping": False}
                 # Preparation must not occupy the shared coordination executor.
                 threading.Thread(target=self._start_native, args=(agent, session_id, sdp), daemon=True, name="native-voice-start").start()
         return self.session(agent, session_id)
@@ -64,6 +68,9 @@ class NativeVoice:
         try:
             actor = self._agent(agent)
             account = actor.get("accountKey", "default")
+            with self.native_lock:
+                # A queued start from the previous code has no account field yet.
+                self.connections[sid].setdefault("account", account)
             server = self.runtime.connect(account)
             auth = server.call("account/read", {"refreshToken": False}, timeout=10)
             if (auth.get("account") or {}).get("type") != "chatgpt":
@@ -75,28 +82,20 @@ class NativeVoice:
                     return
                 actor = self._agent(agent)
                 connection = self.runtime.connection_ids.get(account)
-                if actor.get("accountKey", "default") != account or self.runtime.connect(account) is not server:
+                if context["account"] != account or actor.get("accountKey", "default") != account or self.runtime.connect(account) is not server:
                     raise ValueError("The chat account changed. Start voice again")
                 context.update(server=server, account=account, connection=connection, thread=actor["threadId"])
                 with self.runtime.db() as db:
                     db.execute("UPDATE voice_sessions SET native_thread=?,account_key=?,connection_id=? WHERE id=?",
                                (actor["threadId"], account, connection, sid))
-                # A user starting voice authorizes native handoffs to this lead.
-                with self.runtime.lock, self.runtime.db() as db:
-                    current = self.runtime.agent(agent, db)
-                    if current.get("deletedAt") or current["epoch"] != context["epoch"]:
-                        raise ValueError("The orchestrator was stopped while voice connected")
-                    current.update(autoWake=True, turnEpoch=current["epoch"])
-                    self.runtime.put(db, "agents", current)
                 self._submit_start(sid, sdp)
         except Exception as error:
             self._state(sid, "failed", str(error), ended=True)
 
     def _submit_start(self, sid, sdp, reloaded=False):
         context = self.connections[sid]
-        if context["cancel"]:
+        if context["cancel"] or context["submitted"]:
             return
-        context["submitted"] = True
         params = {"threadId": context["thread"], "version": "v3", "outputModality": "audio",
                   "realtimeSessionId": sid, "clientManagedHandoffs": False,
                   "flushTranscriptTailOnSessionEnd": False, "transport": {"type": "webrtc", "sdp": sdp}}
@@ -112,7 +111,30 @@ class NativeVoice:
                 else:
                     self._state(sid, "failed", str(error), ended=True)
 
-        self._submit(context["server"], "thread/realtime/start", params, completed)
+        with self.runtime.lock:
+            with self.runtime.db() as db:
+                current = self._assert_start_context(context, db)
+                # Authorize handoffs only after the paid operation passes admission.
+                current.update(autoWake=True, turnEpoch=current["epoch"])
+                self.runtime.put(db, "agents", current)
+            context["submitted"] = True
+            self._submit(context["server"], "thread/realtime/start", params, completed)
+
+    def _assert_start_context(self, context, db):
+        from codex_budget import budget_admission
+        from codex_context_repair import assert_context_available
+        current = self.runtime.agent(context["agent"], db)
+        if (current.get("deletedAt") or current.get("epoch") != context["epoch"]
+                or current.get("accountKey", "default") != context["account"]
+                or current.get("threadId") != context["thread"]
+                or (context.get("initial_thread") and context["initial_thread"] != context["thread"])):
+            raise ValueError("The chat changed while voice connected. Start voice again")
+        if (not self.runtime.connection_current(context["account"], context["connection"])
+                or self.runtime.connect(context["account"]) is not context["server"]):
+            raise ValueError("Codex disconnected while voice connected. Start voice again")
+        assert_context_available(current)
+        budget_admission(self.runtime, db, current)
+        return current
 
     @staticmethod
     def _submit(server, method, params, callback):
@@ -135,14 +157,16 @@ class NativeVoice:
             with self.runtime.lock:
                 guard = self.runtime.prepare_locks.setdefault(agent, threading.Lock())
             with guard:
-                with self.runtime.lock:
-                    actor = self._agent(agent)
+                with self.runtime.lock, self.runtime.db() as db:
+                    actor = self._assert_start_context(context, db)
                     if actor.get("inFlight") or actor.get("status") in {"running", "starting", "approval"}:
                         raise ValueError("This chat needs a voice update. Start voice after its current turn finishes")
                 native = server.call("thread/read", {"threadId": tid}, timeout=5)["thread"]
                 jobs = server.call("thread/backgroundTerminals/list", {"threadId": tid}, timeout=5)
                 if native.get("status", {}).get("type") != "idle" or jobs.get("data") or jobs.get("nextCursor"):
                     raise ValueError("Start voice after this chat's turn and background commands finish")
+                with self.runtime.lock, self.runtime.db() as db:
+                    self._assert_start_context(context, db)
                 server.call("thread/unsubscribe", {"threadId": tid}, timeout=5)
                 with self.runtime.lock:
                     self.runtime.loaded.discard(agent)

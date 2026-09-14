@@ -1,3 +1,4 @@
+import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { accountLimits } from "./accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
@@ -246,6 +247,20 @@ export default function App() {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(""), 5000);
   }, []);
+  const nativeActions = useNativeAction(data?.stateDir, workspaceId, notify);
+  const submitNativeAction = async (
+    target: Agent,
+    action: "compact" | "review",
+  ) => {
+    const response = await nativeActions.submit(target, action);
+    setDrafts((old) => {
+      if (old[target.id]?.trim() !== `/${action}`) return old;
+      const next = { ...old };
+      delete next[target.id];
+      return next;
+    });
+    return response;
+  };
   const agents = data?.threads || [],
     leads = agents.filter((a) => a.source === "managed" && a.isLead),
     agent = agents.find((a) => a.id === opened),
@@ -694,7 +709,11 @@ export default function App() {
             id: command === "/stop-team" ? agent.rootId : id,
             descendants: command === "/stop-team",
           });
-        else await api("/api/action", { id, action: command.slice(1) });
+        else
+          await submitNativeAction(
+            agent,
+            command.slice(1) as "compact" | "review",
+          );
       } else {
         if (
           sends.current[id]?.text !== text ||
@@ -1366,9 +1385,7 @@ export default function App() {
                         !agent.threadId
                       }
                       onClick={() => {
-                        void run(() =>
-                          api("/api/action", { id: agent.id, action }),
-                        );
+                        void run(() => submitNativeAction(agent, action));
                       }}
                     >
                       {label}
@@ -1402,6 +1419,32 @@ export default function App() {
             </Menu.Dropdown>
           </Menu>
         </header>
+        {agent && nativeActions.pending(agent.id) && (
+          <div
+            role="status"
+            className="native-action-pending"
+            style={{ padding: "8px 16px" }}
+          >
+            <span>
+              The {nativeActions.pending(agent.id)!.action} request has no
+              confirmed reply.{" "}
+            </span>
+            <Button
+              size="compact-sm"
+              loading={nativeActions.active}
+              onClick={() =>
+                void run(() =>
+                  submitNativeAction(
+                    agent,
+                    nativeActions.pending(agent.id)!.action,
+                  ),
+                )
+              }
+            >
+              Check action request
+            </Button>
+          </div>
+        )}
         {agent && (
           <SessionActivity
             key={`${data.stateDir}:${agent.id}`}

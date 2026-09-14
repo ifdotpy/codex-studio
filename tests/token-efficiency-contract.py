@@ -173,7 +173,8 @@ class EfficiencyContract(unittest.TestCase):
         text = [p['input'][0]['text'] for method, p in self.runtime.server.calls if method == 'turn/start'][-1]
         self.assertNotIn('Routine 0', text); self.assertIn('Routine 2', text)
         self.assertIn('earlierProgressUpdates', text)
-        self.assertEqual(len([r for r in self.events(lead, 'agent_message') if r['status'] == 'delivered']), 3)
+        self.assertEqual(len([r for r in self.events(lead, 'agent_message') if r['status'] == 'delivered']), 1)
+        self.assertEqual(len([r for r in self.events(lead, 'agent_message') if r['status'] == 'stored_only']), 2)
         room = 'private:' + ':'.join(sorted([lead['id'], worker['id']]))
         self.assertEqual(len(self.runtime.chat_read(room, lead['id'])['messages']), 3)
         with self.assertRaisesRegex(ValueError, 'different content'):

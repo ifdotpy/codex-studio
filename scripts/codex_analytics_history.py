@@ -13,6 +13,8 @@ from pathlib import Path
 import threading
 import time
 
+from codex_budget import budget_migrate, budget_prepare_migration
+
 
 TOKEN_FIELDS = {
     "input_tokens": "inputTokens", "cached_input_tokens": "cachedInputTokens",
@@ -81,7 +83,7 @@ def rollout_actions(record, context, identity, fallback_at):
             if p.get(src) is not None:
                 context[dest] = p[src]
     elif kind == "token_usage_record":
-        if p.get("thread_id") and p["thread_id"] != context["threadId"]:
+        if p.get("thread_id") and p["thread_id"] != context["threadId"] and p["thread_id"] not in context.get("allowedSourceThreadIds", []):
             return [("coverage", "wrongThreadRecord", {}, at)]
         context["pendingUsage"] = {"responseId": p.get("response_id"), "turnId": p.get("turn_id") or context.get("turnId"),
                                    "usage": tokens(p.get("usage"))}
@@ -115,7 +117,7 @@ def rollout_actions(record, context, identity, fallback_at):
                                            "timestamp": record.get("timestamp")}, context, identity + ":usage", at))
     elif kind == "event_msg":
         event = p.get("type")
-        if p.get("thread_id") and p["thread_id"] != context["threadId"]:
+        if p.get("thread_id") and p["thread_id"] != context["threadId"] and p["thread_id"] not in context.get("allowedSourceThreadIds", []):
             return [("coverage", "wrongThreadRecord", {}, at)]
         if event == "task_started":
             context["turnId"] = p.get("turn_id")
@@ -124,8 +126,10 @@ def rollout_actions(record, context, identity, fallback_at):
                 "turnId": p.get("turn_id"), "turn": {"id": p.get("turn_id")}}, at))
         elif event in ("task_complete", "turn_aborted"):
             actions.append(("event", "turn/completed", {"threadId": context["threadId"],
-                "turnId": p.get("turn_id"), "turn": {"id": p.get("turn_id"),
-                "status": "interrupted" if event == "turn_aborted" else "completed"},
+                "turnId": p.get("turn_id") or context.get("turnId"),
+                "turn": {"id": p.get("turn_id") or context.get("turnId"),
+                "status": "failed" if p.get("error") else "interrupted" if event == "turn_aborted" else p.get("status") or "completed",
+                "error": p.get("error")},
                 "durationMs": p.get("duration_ms"), "timeToFirstTokenMs": p.get("time_to_first_token_ms")}, at))
         elif event in ("item_started", "item_completed") and isinstance(p.get("item"), dict):
             item = normalize_item(p["item"])
@@ -166,6 +170,77 @@ def rollout_actions(record, context, identity, fallback_at):
     for _, _, body, event_at in actions:
         body.setdefault("_analyticsTimestampSource", "metadata" if event_at != at else time_source)
     return actions
+
+
+def inherited_usage_threads(agent):
+    """Accept inherited source IDs only through the saved completed repair chain."""
+    receipts = [agent.get('contextRepair') or {}, *(agent.get('contextRepairHistory') or [])]
+    thread, allowed, seen = agent.get('threadId'), set(), set()
+    while thread and thread not in seen:
+        seen.add(thread)
+        receipt = next((r for r in receipts if r.get('phase') == 'completed' and r.get('newThreadId') == thread
+                        and r.get('agent') == agent['id'] and (r.get('source') or {}).get('id') == agent['id']
+                        and (r.get('source') or {}).get('accountKey') == agent.get('accountKey', 'default')), None)
+        if not receipt:
+            break
+        source = receipt['source'].get('threadId')
+        if source:
+            allowed.add(source)
+        copied = (receipt.get('snapshot') or {}).get('importThreadId')
+        if copied:
+            allowed.add(copied)
+        thread = source
+    return sorted(allowed)
+
+
+def repair_terminal_errors(db, limit=64):
+    """Repair old projections from exact saved native errors, one bounded page."""
+    required = {'analytics_meta', 'analytics_turns', 'runtime_items'}
+    present = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not required <= present:
+        return
+    key = 'terminalErrorRepairV1'
+    row = db.execute('SELECT value FROM analytics_meta WHERE key=?', (key,)).fetchone()
+    state = json.loads(row[0]) if row else {'cursor': 0, 'end': db.execute('SELECT COALESCE(MAX(rowid),0) FROM analytics_turns').fetchone()[0],
+                                           'repaired': 0, 'ambiguous': 0}
+    if state['cursor'] >= state['end']:
+        return
+    rows = db.execute('SELECT rowid,id,agent,record FROM analytics_turns WHERE rowid>? AND rowid<=? ORDER BY rowid LIMIT ?',
+                      (state['cursor'], state['end'], limit)).fetchall()
+    for rowid, identity, agent, raw in rows:
+        state['cursor'] = rowid
+        record = json.loads(raw)
+        turn = record.get('turnId')
+        if not turn or record.get('status') == 'failed' and record.get('error'):
+            continue
+        notice = db.execute('SELECT record FROM runtime_items WHERE id=? AND agent=?',
+                            (agent + ':native-notice:error:' + turn, agent)).fetchone()
+        if not notice:
+            continue
+        notice = json.loads(notice[0])
+        if notice.get('turnId') != turn or not notice.get('nativeError'):
+            continue
+        if notice.get('threadId'):
+            matches = notice['threadId'] == record.get('threadId')
+        else:
+            # Older notices lack a thread ID. A duplicate turn across forked
+            # histories does not supply an exact native source identity.
+            matches = db.execute("SELECT COUNT(*) FROM analytics_turns WHERE agent=? AND json_extract(record,'$.turnId')=?",
+                                 (agent, turn)).fetchone()[0] == 1
+        if not matches:
+            state['ambiguous'] += 1
+            continue
+        record.update(status='failed', error=notice['nativeError'], terminalSource='liveNoticeRepair')
+        if isinstance(notice.get('at'), (int, float)):
+            record['finishedAt'] = notice['at']
+            if record.get('startedAt') is not None:
+                record['durationMs'] = max(0, (record['finishedAt'] - record['startedAt']) * 1000)
+        db.execute('UPDATE analytics_turns SET record=? WHERE id=?', (json.dumps(record), identity))
+        state['repaired'] += 1
+    if len(rows) < limit:
+        state['cursor'] = state['end']
+    db.execute('INSERT INTO analytics_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+               (key, json.dumps(state)))
 
 
 class AnalyticsHistoryMixin:
@@ -226,7 +301,9 @@ class AnalyticsHistoryMixin:
         if not self._analytics_history_guard.acquire(blocking=False):
             return False
         try:
+            budget_prepare_migration(self)
             with self.lock, self.db() as db:
+                repair_terminal_errors(db)
                 agents = [a for a in self.records(db, "agents") if a.get("threadId")]
             if not agents:
                 return False
@@ -235,6 +312,7 @@ class AnalyticsHistoryMixin:
             self._analytics_history_cursor = (self._analytics_history_cursor + 1) % len(agents)
             key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
             with self.lock, self.db() as db:
+                budget_migrate(db, a)
                 row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()
             state = json.loads(row[0]) if row else {
                 "id": key, "agent": a["id"], "accountKey": a.get("accountKey", "default"),
@@ -309,6 +387,7 @@ class AnalyticsHistoryMixin:
                 # Parsing and metrics computation can include large results; the
                 # collector runs in bounded record groups to release the writer.
                 context = state["context"]
+                context["allowedSourceThreadIds"] = inherited_usage_threads(a)
                 collected = []
                 for offset, record in records:
                     if record is not None:

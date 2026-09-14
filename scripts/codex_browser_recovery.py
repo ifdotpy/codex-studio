@@ -57,6 +57,9 @@ def same_identity(runtime, actor, recovery):
 
 
 def busy(runtime, db, actor):
+    from codex_context_repair import blocked
+    if blocked(actor):
+        return True
     if (actor.get("inFlight") or actor.get("activeTools") or actor["status"] in BUSY
             or actor.get("workspaceOperation") or actor.get("accountTransferId")):
         return True

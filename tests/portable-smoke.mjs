@@ -211,7 +211,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return send({
         jsonrpc: "2.0",
         id: request.id,
-        error: { code: -32000, message: "steer rejected for smoke test" }
+        error: { code: -32602, message: "steer rejected before submission for smoke test" }
       });
     }
     return send({

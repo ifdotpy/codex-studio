@@ -61,13 +61,33 @@ def guidance(root):
     return f'[Studio agent mode, revision {revision}] {text}'
 
 
-def tool_mode_context(runtime, actor_id, result):
-    # Attach current policy after the immutable mutation receipt. A retried tool
-    # returns its original outcome together with the current user setting.
+def tool_mode_context(runtime, actor_id, result, key=None):
+    # Keep a stable policy attachment for each result, revision and compaction
+    # epoch. Suppress later results only after confirmed response delivery.
     with runtime.lock, runtime.db() as db:
+        import json
+        from codex_efficiency import digest, packed
         actor = runtime.agent(actor_id, db)
         root = runtime.agent(actor['rootId'], db)
         if not root.get('agentModeRevision'):
             return result
+        epoch, _, known = runtime.model_known_context(db, actor)
+        text = guidance(root)
+        version = digest(text)
+        db.execute('CREATE TABLE IF NOT EXISTS runtime_model_modes '
+                   '(agent TEXT, request TEXT, version TEXT, record TEXT, PRIMARY KEY(agent,request,version))')
+        identity = digest([epoch, version])
+        row = db.execute('SELECT record FROM runtime_model_modes WHERE agent=? AND request=? AND version=?',
+                         (actor_id, key, identity)).fetchone() if key else None
+        if row:
+            record = json.loads(row[0])
+        else:
+            record = {'epoch': epoch, 'version': version, 'revision': root['agentModeRevision'],
+                      'text': text if known.get('agentMode') != version else None}
+            if key and record['text']:
+                db.execute('INSERT INTO runtime_model_modes VALUES (?,?,?,?)',
+                           (actor_id, key, identity, packed(record)))
+        if not record['text']:
+            return result
         return {**result, 'contentItems': [*result.get('contentItems', []),
-                {'type': 'inputText', 'text': guidance(root)}]}
+                {'type': 'inputText', 'text': record['text']}]}

@@ -86,7 +86,7 @@ TOOLS = [
          "Broadcasts notify only active agents; other recipients can read them in chat history. "
          "Private chats are visible to their participants and the user. Direct messages wake idle "
          "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
-         {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}}, ["target", "text"]),
+         {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}, "review_event_id": TEXT, "review_outcome": {"type": "string", "enum": ["no_issue"]}}, ["target", "text"]),
     tool("orchestration_chat_read", "Read messages in a chat you belong to within your team. "
          "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
          {"room_id": TEXT, "before": {"type": "integer", "minimum": 1}}, ["room_id"]),
@@ -1607,7 +1607,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if blockers and not retry_not_submitted:
                 # Store the input once. Dispatch waits for the directory reservation.
                 delivery = "queue"
-            if a.get("accountTransferId"):
+            from codex_context_repair import blocked as context_repair_blocked
+            if a.get("accountTransferId") or context_repair_blocked(a):
                 delivery = "queue"
             if delivery == "after_tool":
                 delivery = "steer" if a.get("turnId") and a.get("inFlight") and a["autoWake"] else "queue"
@@ -1615,20 +1616,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 not a.get("turnId") or not a.get("inFlight") or not a["autoWake"]
             ):
                 raise ValueError("There is no active turn to steer. Choose queue")
+            from codex_budget import budget_admission
+            budget_admission(self, db, a)
             if manual or resume:
-                root = self.agent(a["rootId"], db)
-                if (
-                    root["tokenBudget"]
-                    and sum(
-                        t["tokensUsed"]
-                        for t in self.records(db, "agents")
-                        if t["rootId"] == root["id"]
-                    )
-                    >= root["tokenBudget"]
-                ):
-                    raise ValueError(
-                        "Team token budget reached. Increase the budget before resuming"
-                    )
                 a.update(autoWake=True, error=None, complaintMisses=0)
                 a.pop("nativeFailureHold", None)
                 self.capacity_reset(db, a)
@@ -1867,13 +1857,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
     def new_thread_params(self, a):
         from codex_progress import progress_context
         progress = self.progress_file(a)
+        role_text = self.role_guidance(a)
+        progress_text = progress_context(self.root, a["id"])
         params = {
             "cwd": a["cwd"],
             "config": THREAD_CONFIG.copy(),
             "serviceTier": "priority" if a.get("fastMode", False) else "default",
             "developerInstructions": INSTRUCTIONS
-            + "\n" + self.role_guidance(a)
-            + "\n" + progress_context(self.root, a["id"])
+            + "\n" + role_text
+            + "\n" + progress_text
             + "\n"
             + a.get("profileInstructions", ""),
         }
@@ -1948,6 +1940,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "profileInstructions", "role")}
 
     def prepare_locked(self, a):
+        from codex_context_repair import assert_context_available
+        with self.lock:
+            a = self.agent(a["id"])
+            assert_context_available(a)
         if a.get("accountTransferId") and not a.get("inFlight"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
         server = self.connect(a.get("accountKey", "default"))
@@ -1997,6 +1993,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     a.update(effort=effort, nativeEffort=native_effort)
                     self.put(db, "agents", a)
             params = self.new_thread_params(a)
+            context_versions = self.preparation_context_versions(a, params)
             if a["threadId"]:
                 method = "thread/resume"
                 params.pop("dynamicTools", None)
@@ -2006,13 +2003,17 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 params["dynamicTools"] = self.tool_definitions(a)
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
-                if latest["epoch"] != a["epoch"] or latest.get("deletedAt"):
+                assert_context_available(latest)
+                if (latest["epoch"] != a["epoch"] or latest.get("deletedAt")
+                        or latest.get("threadId") != a.get("threadId")
+                        or latest.get("accountKey", "default") != a.get("accountKey", "default")):
                     raise ValueError("Agent changed before thread preparation")
                 operation = {"id": uid(), "agent": a["id"], "epoch": a["epoch"],
                              "accountKey": a.get("accountKey", "default"),
                              "connectionId": self.connection_ids[a.get("accountKey", "default")],
                              "threadId": a["threadId"], "cwd": a["cwd"], "method": method,
                              "settings": self.preparation_settings(a),
+                             "contextVersions": context_versions,
                              "future": concurrent.futures.Future()}
                 latest["prepareAttempt"] = operation["id"]
                 self.put(db, "agents", latest)
@@ -2052,6 +2053,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                          if operation["method"] == "thread/start" else a["model"]),
                          sandbox=result.get("sandbox"), approvalPolicy=result.get("approvalPolicy"),
                          profile=result.get("activePermissionProfile"))
+                a["preparedContext"] = {"epoch": [thread_id, a.get("compactions", 0)],
+                                        "versions": operation.get("contextVersions", {})}
                 self.put(db, "agents", a)
                 db.commit()  # The cache must never outlive a failed thread-identity commit.
                 self.loaded.add(a["id"])
@@ -2107,6 +2110,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if a.get("workspaceOperation")
             }
             active = [a for a in agents if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}]
+            from codex_context_repair import blocked as context_repair_blocked
             candidates = sorted(
                 (
                     a
@@ -2114,6 +2118,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if a["status"] == "queued"
                     and a["autoWake"]
                     and not a.get("nativeFailureHold")
+                    and not context_repair_blocked(a)
                     and not safety_retry_active(a)
                     and a.get("browserRecovery", {}).get("stage") not in {"pending", "reconnecting"}
                     and not a.get("accountTransferId")
@@ -2129,19 +2134,39 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     break
                 if sum(t["rootId"] == a["rootId"] for t in active) >= a["concurrency"]:
                     continue
-                rows = db.execute("SELECT * FROM runtime_events WHERE agent=? AND status='pending' AND epoch=? ORDER BY created LIMIT 32",
-                                  (a["id"], a["epoch"])).fetchall()
+                from codex_budget import budget_admission
+                try:
+                    budget_admission(self, db, a)
+                except ValueError as error:
+                    if a.get("budgetBlocked") != str(error) or a.get("error") != str(error):
+                        a.update(budgetBlocked=str(error), error=str(error))
+                        self.put(db, "agents", a)
+                    continue
+                if a.get("budgetBlocked"):
+                    if a.get("error") == a["budgetBlocked"]:
+                        a["error"] = None
+                    a.pop("budgetBlocked", None)
+                    self.put(db, "agents", a)
+                from codex_budget import claim_budget_wait
+                budget_job = claim_budget_wait(self, db, a)
+                if budget_job:
+                    active.append(budget_job["agent"])
+                    if budget_job["kind"] == "action":
+                        self.pool.submit(self.run_native_action, a["id"], budget_job["attempt"])
+                    else:
+                        self.pool.submit(self.start, budget_job["agent"], budget_job["rows"])
+                    continue
+                a = self.agent(a["id"], db)
+                from codex_wakeups import pending_batch
+                pending = pending_batch(self, db, a)
+                rows = pending[:32]
                 if not rows:
                     a["status"] = "waiting"
                     self.put(db, "agents", a)
                     continue
                 if self.progress_only(rows):
                     # An urgent event beyond this page must not wait behind progress.
-                    urgent = db.execute("""SELECT * FROM runtime_events
-                        WHERE agent=? AND status='pending' AND epoch=?
-                        AND CASE WHEN kind='agent_message' AND json_valid(text)
-                            THEN json_extract(text,'$.importance') ELSE NULL END IS NOT 'progress'
-                        ORDER BY created LIMIT 1""", (a["id"], a["epoch"])).fetchone()
+                    urgent = next((event for event in pending if not self.progress_only([event])), None)
                     if urgent is not None:
                         rows = [urgent] + rows[:31]
                     elif not self.progress_batch_ready(rows):
@@ -2179,6 +2204,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         try:
             with self.lock:
                 current = self.agent(a["id"])
+                if (current.get("startAttempt") or {}).get("notSubmittedReason"):
+                    return
                 if ((current.get("startAttempt") or {}).get("id") != attempt_id
                         or current["epoch"] != epoch or not current["autoWake"] or current.get("deletedAt")):
                     self.start_error(a["id"], attempt_id, ValueError("Agent stopped before turn input submission"))
@@ -2191,6 +2218,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 attempt = current.get("startAttempt") or {}
                 if attempt.get("id") != attempt_id or current["epoch"] != epoch or not current["autoWake"]:
                     return
+                from codex_wakeups import reconcile_start
+                if reconcile_start(self, db, current, rows):
+                    return
                 if not attempt.get("settingsFixed"):
                     if current.get("pendingSettings"):
                         if current.get("pendingSettingsAccountKey", current.get("accountKey", "default")) != current.get("accountKey", "default"):
@@ -2201,6 +2231,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     attempt["settingsFixed"] = True
                     self.put(db, "agents", current)
                 a = current
+            from codex_context_repair import repair_before_start
+            a = repair_before_start(self, a)
             a = self.prepare(a)
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
@@ -2219,10 +2251,27 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
                         (r["id"],),
                     )
-            text = self.model_event_text(rows)
-            asset_ids = []
-            clocks = []
+            server = self.connect(a.get("accountKey", "default"))
             with self.lock, self.db() as db:
+                current = self.agent(a["id"], db)
+                if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
+                    return
+                if not current["autoWake"] or current["epoch"] != epoch:
+                    current["inFlight"] = False
+                    self.put(db, "agents", current)
+                    self.changed.set()
+                    return
+                self.assert_workspace_available(db, current)
+                assert_native_thread_open(current)
+                from codex_team_isolation import assert_events
+                assert_events(self, db, current, rows)
+                from codex_budget import budget_admission
+                budget_admission(self, db, current)
+                if reconcile_start(self, db, current, rows):
+                    return
+                text = self.model_event_text(rows)
+                asset_ids = []
+                clocks = []
                 for event in rows:
                     meta = db.execute(
                         "SELECT record FROM runtime_event_meta WHERE id=?",
@@ -2237,6 +2286,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         ]
                     else:
                         metadata = {}
+                    metadata["modelEventProjection"] = 1
+                    db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)",
+                               (event["id"], json.dumps(metadata)))
                     if (
                         event["kind"] in {"user", "followup"}
                         and "acceptedAt" in metadata
@@ -2244,8 +2296,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         clocks.append(
                             message_clock(event["id"], metadata["acceptedAt"])
                         )
-            with self.lock, self.db() as db:
-                latest = self.agent(a["id"], db)
+                latest = current
                 text += self.user_task_review_context(db, a["id"])
                 required = self.unanswered_complaints(db, a["id"])
                 latest["complaintsPresented"] = [c["id"] for c in required]
@@ -2262,34 +2313,20 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     inputs=rows,
                     assets=[self.asset_view(self.asset_record(v)) for v in asset_ids],
                 )
-            params = {
-                "threadId": a["threadId"],
-                "model": a["model"],
-                "clientUserMessageId": rows[0]["id"],
-                "input": self.message_inputs(
-                    a["id"], append_message_clocks(text, clocks), asset_ids
-                ),
-            }
-            # A subscribed native thread ignores resume overrides. Each turn must
-            # receive the selected policy, including an explicit downgrade from YOLO.
-            params.update(self.turn_permissions(a))
-            params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
-            if a.get("nativeEffort", a.get("effort")) is not None:
-                params["effort"] = a.get("nativeEffort", a.get("effort"))
-            server = self.connect(a.get("accountKey", "default"))
-            with self.lock, self.db() as db:
-                current = self.agent(a["id"], db)
-                if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
-                    return
-                if not current["autoWake"] or current["epoch"] != epoch:
-                    current["inFlight"] = False
-                    self.put(db, "agents", current)
-                    self.changed.set()
-                    return
-                self.assert_workspace_available(db, current)
-                assert_native_thread_open(current)
-                from codex_team_isolation import assert_events
-                assert_events(self, db, current, rows)
+                params = {
+                    "threadId": a["threadId"],
+                    "model": a["model"],
+                    "clientUserMessageId": rows[0]["id"],
+                    "input": self.message_inputs(
+                        a["id"], append_message_clocks(text, clocks), asset_ids
+                    ),
+                }
+                # A subscribed native thread ignores resume overrides. Each turn must
+                # receive the selected policy, including an explicit downgrade from YOLO.
+                params.update(self.turn_permissions(a))
+                params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
+                if a.get("nativeEffort", a.get("effort")) is not None:
+                    params["effort"] = a.get("nativeEffort", a.get("effort"))
                 current["startAttempt"]["submitted"] = True
                 current["startAttempt"].update(accountKey=a.get("accountKey", "default"),
                     connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
@@ -2400,6 +2437,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.start_error(agent_id, attempt["id"], error, unknown=True)
 
     def start_error(self, agent_id, attempt_id, error, *, unknown=False):
+        from codex_budget import defer_budget_start
+        if defer_budget_start(self, agent_id, attempt_id, error, unknown=unknown):
+            return
         from codex_workspace_delivery import defer_workspace_start
         if defer_workspace_start(self, agent_id, attempt_id, error, unknown=unknown):
             return
@@ -2444,11 +2484,17 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     def parent_event(self, db, a, event_id, text):
         if a.get("parentId") and a["autoWake"]:
+            from codex_chat_reviews import parent_review, _save_metadata
+            provenance, no_issue = parent_review(db, a, event_id)
+            if no_issue:
+                return
             parent = self.agent(a["parentId"], db)
+            key = "child:" + a["id"] + ":" + event_id
             self.enqueue(db, parent, "child_result", json.dumps({"agent_id": a["id"],
                 "name": a["name"], "status": a["status"], "cwd": a["cwd"],
-                "branch": a.get("branch"), "result": text[:16000]}, ensure_ascii=False),
-                "child:" + a["id"] + ":" + event_id)
+                "branch": a.get("branch"), "result": text[:16000]}, ensure_ascii=False), key)
+            if provenance:
+                _save_metadata(db, key, reviewFeedback=provenance)
 
     def record_task(self, db, a, method, p, stale):
         """Keep process lifetimes separate from model turns, including late exits."""
@@ -2742,7 +2788,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                           "Plan" if method == "turn/plan/updated" else "Changes", turnId=p.get("turnId") or a.get("turnId"))
             elif method == "thread/tokenUsage/updated":
                 usage = p.get("tokenUsage", {})
-                a["tokensUsed"] = usage.get("total", {}).get("totalTokens", a["tokensUsed"])
+                from codex_budget import budget_capture
+                a["tokensUsed"] = budget_capture(db, a, p)
                 used, window = usage.get("last", {}).get("totalTokens"), usage.get("modelContextWindow")
                 a["contextUsage"] = {"tokens": used, "window": window, "at": time.time()}
             elif method == "turn/completed":
@@ -2758,7 +2805,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
                     refresh_native_limits(self, db, a, turn["error"], turn.get("id"), account_key, connection_id)
                     notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
-                           "error", turnId=turn.get("id"), nativeError=turn["error"])
+                           "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"])
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
                 # Preserve the terminal outcome with the messages. Failed and interrupted
                 # work must never acquire a successful summary label in chat history.
@@ -2812,8 +2859,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.put(db, "agents", a)
             root = self.agent(a["rootId"], db)
             if root.get("tokenBudget") and root["autoWake"]:
-                total = sum(t["tokensUsed"] for t in self.records(db, "agents") if t["rootId"] == root["id"])
-                if total >= root["tokenBudget"]:
+                from codex_budget import budget_status
+                if budget_status(self, db, a, check_coverage=False)["reached"]:
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
 
     @staticmethod
@@ -3081,9 +3128,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 elif name in {"orchestration_status", "orchestration_peers"}:
                     value = self.model_directory(a["id"], name, args)
                 elif name == "orchestration_message":
-                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"))
+                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"), review_event_id=args.get("review_event_id"), review_outcome=args.get("review_outcome"))
                 elif name == "orchestration_chat_read":
-                    value = self.chat_read(args["room_id"], a["id"], args.get("before"))
+                    value = self.chat_read(args["room_id"], a["id"], args.get("before"), model=True)
                 elif name == "orchestration_send" and args.get("agent_id") == "complaint":
                     value = self.complaint(a["id"], json.loads(args["text"]), key, a["epoch"])
                 elif name == "orchestration_send":
@@ -3159,11 +3206,16 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else request_outcome))
             result = receipt.get("result") or result
         if a is not None:
-            result = self.model_tool_result(a["id"], key, result)
+            with self.lock:
+                mode_actor = self.agent(a["id"])
+                mode_epoch = [mode_actor.get("threadId"), mode_actor.get("compactions", 0)]
+                result = self.model_tool_result(a["id"], key, result)
             with self.lock, self.db() as db:
                 self.analytics_safe(db, self.analytics_dynamic, a, p, result)
         try:
             self.reply({"id": message["id"], "result": result}, account_key, connection_id)
+            if a is not None:
+                self.confirm_model_tool_result(a["id"], key, result, mode_epoch)
         except Exception as error:
             # Execution receipts remain authoritative. Never replay a mutation
             # because its response write failed. Record identities, not content.
@@ -3425,6 +3477,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 c["responses"].append(response)
                 c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"], version=c.get("version", 1) + 1)
                 self.put(db, "complaints", c)
+                from codex_wakeups import reconcile_complaints
+                reconcile_complaints(self, db, lead)
                 if c["author"] != "user" and c["author"] != actor_id:
                     reporter = self.agent(c["author"], db)
                     if not reporter.get("deletedAt"):
@@ -3465,7 +3519,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                               for p in self.records(db, "agents") if not p.get("deletedAt") and p["rootId"] == a["rootId"]],
                     "rooms": self.chat_rooms(db, viewer)}
 
-    def chat_read(self, room_id, viewer=None, before=None, limit=100):
+    def chat_read(self, room_id, viewer=None, before=None, limit=100, *, model=False):
         if before is not None and (not isinstance(before, int) or before < 1):
             raise ValueError("Invalid message cursor")
         with self.lock, self.db() as db:
@@ -3478,10 +3532,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             names = {a["id"]: a["name"] for a in self.records(db, "agents")}
             for m in messages:
                 m["senderName"] = names.get(m["sender"], m["sender"])
+            if model:
+                return self.model_chat_page(room, messages, len(rows) > limit)
             return {"room": room, "messages": messages,
                     "nextBefore": messages[0]["seq"] if len(rows) > limit else None}
 
-    def chat_message(self, sender_id, target, text, key, epoch=None, *, importance="message", progress_key=None, progress_version=None):
+    def chat_message(self, sender_id, target, text, key, epoch=None, *, importance="message", progress_key=None, progress_version=None, review_event_id=None, review_outcome=None):
         if importance not in {"message", "progress", "question", "blocker", "result"}:
             raise ValueError("Unknown message importance")
         if progress_key is not None or progress_version is not None:
@@ -3512,8 +3568,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 ids = sorted([sender_id, recipient["id"]])
                 room = {"id": "private:" + ":".join(ids), "kind": "private", "members": ids}
                 recipients = [recipient]
-            signature, saved = self.operation_receipt(db, key, {"sender": sender_id, "room": room["id"], "text": text, "importance": importance,
-                                                               "progress_key": progress_key, "progress_version": progress_version})
+            request = {"sender": sender_id, "room": room["id"], "text": text, "importance": importance,
+                       "progress_key": progress_key, "progress_version": progress_version}
+            if review_event_id is not None or review_outcome is not None:
+                request.update(review_event_id=review_event_id, review_outcome=review_outcome)
+            signature, saved = self.operation_receipt(db, key, request)
             if saved is not None:
                 return saved
             previous = db.execute("SELECT * FROM runtime_chat_messages WHERE id=?", (key,)).fetchone()
@@ -3523,9 +3582,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if (previous["room"], previous["sender"], previous["text"]) != (room["id"], sender_id, text):
                     raise ValueError("This message id has different content")
                 return {"id": key, "room": room["id"], "deliveries": json.loads(previous["deliveries"])}
+            from codex_chat_reviews import message_review, record_review_message, _save_metadata
+            provenance = message_review(db, sender, target, importance, review_event_id, review_outcome)
             from codex_agent_modes import assert_worker_input
             for recipient in recipients:
-                if recipient["id"] != sender_id:
+                if recipient["id"] != sender_id and review_outcome != "no_issue":
                     assert_worker_input(self, db, recipient)
             old_room = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room["id"],)).fetchone()
             if old_room:
@@ -3536,7 +3597,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             for recipient in recipients:
                 if recipient["id"] == sender_id:
                     continue
-                if (not recipient["autoWake"] or self.empty_lead(db, recipient)
+                if (review_outcome == "no_issue" or not recipient["autoWake"] or self.empty_lead(db, recipient)
                         or (room["kind"] == "broadcast" and (recipient.get("nativeFailureHold")
                             or recipient["status"] not in {"queued", "starting", "running", "waiting", "approval"}))):
                     deliveries[recipient["id"]] = "stored_only"
@@ -3548,8 +3609,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if progress_key is not None:
                     payload.update(progress_key=progress_key, progress_version=progress_version)
                 event = json.dumps(payload, ensure_ascii=False)
-                self.enqueue(db, recipient, "agent_message", event, "chat:" + key + ":" + recipient["id"])
+                event_id = "chat:" + key + ":" + recipient["id"]
+                self.enqueue(db, recipient, "agent_message", event, event_id)
+                if provenance:
+                    _save_metadata(db, event_id, reviewFeedback=provenance)
                 deliveries[recipient["id"]] = "queued"
+            record_review_message(db, provenance, key, review_event_id, review_outcome)
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
             return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})
@@ -4447,14 +4512,22 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.changed.set()
             return {"id": key, "concurrency": concurrency, "maxAgents": limit, "tokenBudget": budget}
 
-    def native_action(self, key, action):
+    def native_action(self, key, action, request_id=None, context=None):
         if isinstance(action, dict) and 'safety' in action:
             from codex_safety_buffering import action as safety_action
             return safety_action(self, key, action)
-        if action not in {"compact", "review"}:
+        if not isinstance(action, str) or action not in {"compact", "review"}:
             raise ValueError("Choose compact or review")
+        from codex_native_action_receipts import find, reserve, outcome
+        # Calls without an ID are trusted internal, intentional new actions.
+        durable = request_id is not None
+        context = {} if context is None else context
         with self.lock, self.db() as db:
             a = self.agent(key, db)
+            if durable:
+                receipt = find(db, request_id, key, action, context)
+                if receipt:
+                    return {"receipt": receipt, "outcome": outcome(db, request_id), "replayed": True}
             if action == "review":
                 from codex_agent_modes import assert_worker_input
                 assert_worker_input(self, db, a)
@@ -4470,21 +4543,52 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 a.pop("pendingSettingsAccountKey", None)
                 a.update(a.pop("pendingSettings"))
                 self.loaded.discard(a["id"])
+            from codex_budget import budget_admission
+            budget_admission(self, db, a)
+            attempt_id = uid()
+            if durable:
+                receipt = reserve(db, request_id, a, action, context, attempt_id)
             self.capacity_reset(db, a, "A native action replaces this retry.")
             a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
-                     startAttempt={"id": uid(), "epoch": a["epoch"], "events": [], "action": action, "submitted": False})
+                     startAttempt={"id": attempt_id, "epoch": a["epoch"], "events": [], "action": action, "submitted": False})
+            if durable:
+                a["startAttempt"]["actionRequestId"] = request_id
+                a["startAttempt"]["actionIdentity"] = {name: receipt[name] for name in ("accountKey", "threadId", "epoch")}
             self.put(db, "agents", a)
-        return self.run_native_action(key, dict(a["startAttempt"]))
+        try:
+            result = self.run_native_action(key, dict(a["startAttempt"]))
+        except Exception as error:
+            if not durable:
+                raise
+            # Admission remains durable even when native execution is uncertain.
+            with self.lock, self.db() as db:
+                return {"receipt": receipt, "outcome": outcome(db, request_id), "error": str(error)}
+        if durable:
+            with self.lock, self.db() as db:
+                return {"receipt": receipt, "outcome": outcome(db, request_id), "result": result}
+        return result
 
     def run_native_action(self, key, attempt):
+        from codex_native_action_receipts import record, late_result, assert_identity
         try:
-            a = self.prepare(self.agent(key))
+            a = self.agent(key)
+            assert_identity(a, attempt)
+            from codex_context_repair import repair_before_start
+            a = repair_before_start(self, a)
+            current_attempt = a.get("startAttempt") or {}
+            if current_attempt.get("id") != attempt["id"]:
+                raise ValueError("Native action belongs to an earlier agent state")
+            if current_attempt.get("threadId"):
+                attempt = {**attempt, "threadId": current_attempt["threadId"]}
+            a = self.prepare(a)
+            assert_identity(a, attempt)
             server = self.connect(a.get("accountKey", "default"))
             if attempt["action"] in {"compact", "review"}:
                 from codex_native_action_settings import ensure
                 ensure(self, a, attempt, server)
             with self.lock, self.db() as db:
                 a = self.agent(key, db)
+                assert_identity(a, attempt)
                 if ((a.get("startAttempt") or {}).get("id") != attempt["id"]
                         or a["epoch"] != attempt["epoch"] or not a["autoWake"] or a.get("deletedAt")):
                     raise ValueError("Native action belongs to an earlier agent state")
@@ -4496,6 +4600,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     self.capacity_check(db, a, a.get("capacityRetry") or {}, claimed=True)
                 elif a["startAttempt"].get("submitted"):
                     return {"status": a["status"], "pending": bool(a.get("inFlight"))}
+                from codex_budget import budget_admission
+                budget_admission(self, db, a)
                 attempt = {**a["startAttempt"], **attempt}
                 attempt.update(submitted=True, accountKey=a.get("accountKey", "default"),
                                connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
@@ -4517,17 +4623,26 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 result = server.wait(submitted)
             except ResponseTimeout as error:
                 self.start_error(key, attempt["id"], error, unknown=True)
+                record(self, attempt, "unknown", error)
                 server.on_result(submitted, lambda future: self.pool.submit(
-                    self.native_action_result, key, attempt, future) if not self.closed else None)
+                    late_result, self, key, attempt, future) if not self.closed else None)
                 return {"status": "starting", "pending": True, "error": str(error)}
             self.native_action_accepted(key, attempt, result)
+            record(self, attempt, "acknowledged")
             return result
         except PreparationPending as error:
+            record(self, attempt, "pending", error)
             self.start_error(key, attempt["id"], error, unknown=True)
             self.defer_preparation(error, lambda: self.run_native_action(key, attempt),
-                lambda cause: self.start_error(key, attempt["id"], cause, unknown="outcome unknown" in str(cause)))
+                lambda cause: (record(self, attempt, "unknown" if "outcome unknown" in str(cause) else "failed", cause),
+                    self.start_error(key, attempt["id"], cause, unknown="outcome unknown" in str(cause))))
             return {"status": "starting", "pending": True, "error": str(error)}
         except Exception as error:
+            from codex_budget import defer_budget_start
+            if defer_budget_start(self, key, attempt["id"], error):
+                record(self, attempt, "pending", error)
+                return {"status": "queued", "pending": True, "error": str(error)}
+            record(self, attempt, "unknown" if "outcome unknown" in str(error) else "failed", error)
             self.start_error(key, attempt["id"], error, unknown="outcome unknown" in str(error))
             raise
 
