@@ -87,6 +87,67 @@ class ContextWait(f.NativeActionRepair):
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['clientUserMessageId'], 'wait-user')
 
+    def command(self, **changes):
+        record = {'id':'exact-command', 'agent':self.a['id'], 'kind':'command',
+                  'type':'commandExecution', 'status':'running', 'processId':'27427'}
+        record.update(changes)
+        self.put('tasks', record)
+        return record
+
+    def test_active_command_does_not_block_normal_input_or_change_its_receipt(self):
+        command = self.command()
+        source = self.path.read_bytes()
+        self.runtime.send(self.a['id'], 'Read the existing process result.', message_id='command-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        current = self.runtime.agent(self.a['id'])
+        self.assertFalse(current.get('contextRepairWait'))
+        self.assertEqual(current['threadId'], self.tid)
+        self.assertEqual(self.forks(), [])
+        self.assertEqual(source, self.path.read_bytes())
+        with self.runtime.db() as db:
+            saved = json.loads(db.execute('SELECT record FROM runtime_tasks WHERE id=?', (command['id'],)).fetchone()[0])
+        self.assertEqual(saved, command)
+        self.runtime.dispatch()
+        starts = [p for m,p in self.server.calls if m == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'command-user')
+
+    def test_existing_command_wait_resumes_same_attempt(self):
+        self.command()
+        self.runtime.send(self.a['id'], 'Continue with the existing command.', message_id='command-user')
+        with patch.object(repair, '_optional_monitor_repair', return_value=False):
+            self.runtime.dispatch()
+            eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        waiting = self.runtime.agent(self.a['id'])
+        self.assertIn('tasks: exact-command', waiting['error'])
+        attempt_id = waiting['startAttempt']['id']
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['startAttempt']['id'], attempt_id)
+        self.assertEqual(current['threadId'], self.tid)
+        self.assertEqual(self.forks(), [])
+        self.assertEqual(len([m for m,p in self.server.calls if m == 'turn/start']), 1)
+
+    def test_optional_command_path_preserves_unknown_and_tool_holds(self):
+        self.runtime.send(self.a['id'], 'Preserve uncertain operations.', message_id='unknown-command-user')
+        # Claim the start synchronously to inspect the same pre-submission guard.
+        self.command(status='unknown')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        for changes in ({'status':'unknown'}, {'status':'pending'}, {'processId':None}, {'kind':'tool'}):
+            with self.subTest(changes=changes):
+                self.command(**changes)
+                self.due()
+                self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
+                self.assertEqual(self.forks(), [])
+        self.command()
+        self.put('requests', {'id':'approval','agent':self.a['id'],'status':'pending',
+                              'method':'item/commandExecution/requestApproval'})
+        self.due()
+        self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
+
     def test_optional_monitor_path_preserves_uncertain_input_gate(self):
         self.legacy_uncertain()
         self.monitor()
