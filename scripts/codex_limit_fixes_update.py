@@ -1,6 +1,6 @@
 """Apply the reviewed limit fixes without restarting active Studio work.
 
-Only Python 3.14 and the ccbd147 live baseline are admitted. Existing functions,
+Python 3.14 admits the exact ccbd147 and 7415ada implementations. Existing functions,
 callbacks, HTTP closure cells, tool lists and runtime objects keep their identity.
 Schema changes run lazily through future normal calls, never during this patch.
 """
@@ -18,6 +18,11 @@ from codex_resource_removal_update import _find_handler
 
 BASE_COMMIT = 'ccbd147'
 # BEGIN REVIEWED MANIFEST
+HELPER_BASELINES = {'codex_context_repair': ('7415ada', '200a8196052edd3ced721d8ddfe7511d51a60da180e851e3f2af53fff365ac1f')}
+HELPER_UPGRADES = {'codex_context_repair._native_idle': ('d1a23cf97c939f599747203a6fcdcdc72bc7f54f5483a8752129a6f0d4665d90',
+                                       '9a9678fbef3dc3e8c84d70c1023020ad27adfd5e125eaac9058c2e630a7a91ea'),
+ 'codex_context_repair._repair': ('c614f8410795993560b296e2b1472f1e120620a7aa0efe4de507cecaf077d511',
+                                  '7cd0eb16f58e2d88b8874516912d79a360f0677bf0772c807620ace90f8d81b5')}
 EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680aadd73c306fe2ecc90ad092152c06fd72044b5d9ab7c18dbd40a8c43',
                                                            '1c5eda98a0fe8fd99c6686b176de3f420f7ee439e54a1e36bddfb9f03c5c0ffa'),
  'codex_agent_modes.tool_mode_context': ('c28b40bac6cad47c525c9f6fd9dc749e0cd346ebacfdb6f5d3c934a164faa442',
@@ -26,8 +31,19 @@ EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680a
                                                     '7435557a0dde87aca83f85fa1303712c3e9897e161b12280a0b372094d393e48'),
  'codex_analytics.AnalyticsMixin.analytics_init': ('b98226c3cb96ba4e6910fc55c3318b7541f9b8d293500f6d3d2e7e76a898bc52',
                                                    '75878b56fb3f5211baeb934fd8e845799b9c3738f9d822172cb765bdc23e35e4'),
+ 'codex_analytics_history.AnalyticsHistoryMixin.analytics_history_ensure_running': (None,
+                                                                                    'd6240ac26f8c5bda0f54be70508e763f366758b1fcc91e7157f055bdfcdf7cef'),
+ 'codex_analytics_history.AnalyticsHistoryMixin.analytics_history_init': ('89bff3f0110e6dad34ac8cd2f51a7834db0ca5a1d6338da3182e64b97dc62cf0',
+                                                                          '53911a9ab69c7fa2b679a7d3c94710800e7075e3e7307bfbfa4b94e1b02f2cde'),
+ 'codex_analytics_history.AnalyticsHistoryMixin.analytics_history_start': ('9d03976c5b43d9e29b03545f8d5bb3331ee2819347f365f429f81e39f115c3d4',
+                                                                           '3f12a4186591f17db12c9604575d77b994eb19811e53500887e9c6e82fe3f612'),
  'codex_analytics_history.AnalyticsHistoryMixin.analytics_history_step': ('a38a0d225cd2de7774c1fdfb5f1096d96ef8e42025cfce11f3b613d2a780bede',
-                                                                          'd9bf5ce48fd24be4c80b9ccb51a4c676dca4c8a727560265f865b2edb26f1c6e'),
+                                                                          'd9bf5ce48fd24be4c80b9ccb51a4c676dca4c8a727560265f865b2edb26f1c6e',
+                                                                          'ab84f87911161b69a065be595978eddace26be009be410934e68d2b04363defb'),
+ 'codex_analytics_history._history_worker_error': (None,
+                                                   '5516bb5224ce6219b82f8f3fc4893f42c7d286b964126e8bab2a99a6fc8cd55a'),
+ 'codex_analytics_history._history_worker_state': (None,
+                                                   '0ddf8231c8a22285a56de4ae4fb73724f77b51570ce0b0cd8b38f990980c3f38'),
  'codex_analytics_history.inherited_usage_threads': (None,
                                                      '870310c042f3a103f1bc7bd61bd26e3a77ed45ab1d34339a94b3e996b8af68b6'),
  'codex_analytics_history.repair_terminal_errors': (None,
@@ -101,7 +117,8 @@ EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680a
  'codex_runtime.Runtime.complaint': ('ddfe91b3098f6caefc2dd9c52da2219ef27a13d3d8d4ff6e6c6adc01f9b9610f',
                                      '3d04d12dd474a7be5eead91c68b55b5858ce5a5230769d18d49c99c1fd7394c3'),
  'codex_runtime.Runtime.dispatch': ('d7bb2dfa7d7597681ca39a591b4dd02120db63dabb4ab674f04a3834be798347',
-                                    '14cdf04f11da7b34cb39d462d0fab05744417634a79e79643b94d8e9c8f81505'),
+                                    '14cdf04f11da7b34cb39d462d0fab05744417634a79e79643b94d8e9c8f81505',
+                                    '11ca91182f2554ab678e4660c3b887d079e22ff45c924441008d39ec72c31850'),
  'codex_runtime.Runtime.dynamic': ('a343c4822dc25a246fe4ad0c2bffb287b3941b11b84cd18361367a558968e3b1',
                                    '282a4c1fda1e179c4dd95aa0fb3dc2384d91bc0afd8c4984decc3ecb7732225c'),
  'codex_runtime.Runtime.native_action': ('71c665aa2afec153428aaff002d00a722738acc1c30d2fbd4cf663b7e8e0529c',
@@ -131,16 +148,16 @@ EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680a
 SOURCE_SHA = {'codex_account_transfer': 'd3bb785c611b95b27343d6c4aaaf1b3e811cd2dd9044feaa83efab4a74ae926a',
  'codex_agent_modes': '881bcb2985c283787b937ac06d043df51ba0ee1853063ac941502bbbc0bcba38',
  'codex_analytics': '95d31c3d6122376e08a5ca840fb8ef5dfd2a975dc4d6fc1dafb9cb9653e4720d',
- 'codex_analytics_history': '3e1971092571479439ad50fb8cbc2fa4880af22e059095b52b28be48ea678b84',
+ 'codex_analytics_history': '370ed3699c769dbff9b32baa5a831580d7bb184e88d3d0dee7ed860495a7e352',
  'codex_browser_recovery': 'b212d954451ab92db8ab69fe06e55caaa717dc25f71c21abc2879d3284ea0fc4',
  'codex_budget': 'fb2a9a60065b7278cd4741c8326c6f06cb581950cb29632f3560dee89e5f0359',
  'codex_canvas': '6e9bb7d6d39cb61078cc6ae851aaff54ae8605c906a1d5a4574840a963608d72',
  'codex_chat_reviews': '6f7a6e2f811d5694b908b2f6447cc45d16440d38ea32db9d760e652e4a177df9',
- 'codex_context_repair': '200a8196052edd3ced721d8ddfe7511d51a60da180e851e3f2af53fff365ac1f',
+ 'codex_context_repair': 'ccab4526509a2f72e1965444d538b604c8431f305f28a3a7d2da5671e30138f0',
  'codex_efficiency': '339eb402d4c4666acda6e896e928b9abd12aef3680b0470bbacecb7c2305fecc',
  'codex_native_action_receipts': '902646dd0a63dc51a69191abbe69be2746d51e841baf530965e6d1ff8f2dd1a7',
  'codex_native_voice': '8fbff84260eff954a07552c391b42c26dc75509cce91cb6ed93659a7e2dc89d7',
- 'codex_runtime': '962ec3d516fa8c6af4eb15c2ba06dd2123b989f84aced043c1a494a53e860acb',
+ 'codex_runtime': 'f9ce7bb31f2d211e300660d4eb359f7cad4c6fe4e91d3e4dc248f8e0c495561e',
  'codex_tool_requests': 'd7a08b5539f1192b92438bddc38fd1a7f02052a80dc05b3d033705c47fd23b34',
  'codex_wakeups': 'c4e2c44925d4f7ce971e4cc0f7800df61e19fef55891b38f22d5439f6ed8fa60',
  'codex_work': 'c7f37d9d6f37115b62f790e8d89ddd1c3de99cf3c2713768e78bbc0016fdf5cb',
@@ -214,6 +231,14 @@ CONSTRUCTOR_TRANSITIONS = {'codex_account_transfer.AccountTransfers.__init__': '
                                                      'stores remain absent.',
  'codex_analytics.AnalyticsMixin.analytics_init': 'No replay. budget_prepare_migration creates the new scan '
                                                   'index on the next history step, outside Runtime.lock.',
+ 'codex_analytics_history.AnalyticsHistoryMixin.analytics_history_init': 'No replay. The next worker call '
+                                                                         'initializes missing schema and '
+                                                                         'preserves its existing guard, '
+                                                                         'cursor and path cache.',
+ 'codex_analytics_history.AnalyticsHistoryMixin.analytics_history_start': 'No replay. Existing live workers '
+                                                                          'retain their run callback. Normal '
+                                                                          'dispatch starts the new loop only '
+                                                                          'when no worker is alive.',
  'codex_native_voice.NativeVoice.init_native': 'Unchanged. Existing voice connections and locks are '
                                                'retained; absent stores remain absent.',
  'codex_runtime.Runtime.__init__': 'Unchanged. Lazy helpers create budget, mode and native-action tables '
@@ -295,9 +320,11 @@ def _helper_equal(live, desired):
     for name, value in expected.items():
         previous = actual[name]
         if isinstance(value, FunctionType) and value.__module__ == live.__name__:
-            valid = (isinstance(previous, FunctionType) and previous.__globals__ is vars(live)
+            allowed = HELPER_UPGRADES.get(live.__name__ + '.' + name, (signature(value), signature(value)))
+            valid = (signature(value) == allowed[-1]
+                     and isinstance(previous, FunctionType) and previous.__globals__ is vars(live)
                      and previous.__module__ == live.__name__ and previous.__closure__ is None
-                     and signature(previous) == signature(value))
+                     and signature(previous) in allowed)
         elif type(value) in (str, int, float, bool, type(None), tuple, frozenset, set):
             valid = type(previous) is type(value) and previous == value
         else:
@@ -374,7 +401,7 @@ def apply(runtime, handler_class=None):
         tree = ast.parse(raw)
         compiled_sources[name] = (tree, compile(tree, '<limit-fix-update>', 'exec', dont_inherit=True))
     replacements = []
-    for target, allowed in EXPECTED.items():
+    for target, allowed in (EXPECTED | HELPER_UPGRADES).items():
         name, *path = target.split('.')
         module = modules[name]
         if len(path) == 3:
@@ -390,7 +417,7 @@ def apply(runtime, handler_class=None):
                 raise RuntimeError('Unknown limit-fix owner: ' + target)
         desired, static = source_function(sources[name], tuple(path), vars(module), closure=closure,
                                           compiled_source=compiled_sources[name])
-        if signature(desired) != allowed[1]:
+        if signature(desired) != allowed[-1]:
             raise RuntimeError('Unreviewed limit-fix replacement: ' + target)
         replacements.append((target, module, owner, path[-1], desired, static, allowed))
     if vars(modules['codex_runtime']).get('efficiency_tools') is not vars(modules['codex_efficiency']).get('efficiency_tools'):
@@ -474,7 +501,8 @@ def apply(runtime, handler_class=None):
             for _, live, _, desired in updates:
                 live.__defaults__, live.__kwdefaults__ = desired.__defaults__, desired.__kwdefaults__
                 live.__code__ = desired.__code__
-            tools[:] = desired_tools
+            if digest(tools) != TOOLS_DIGEST[1]:
+                tools[:] = desired_tools
             for live, _, desired in constants:
                 live.symmetric_difference_update(live ^ desired)
             # Check after cutover so no new invocation can enter the old code.
@@ -499,8 +527,9 @@ def apply(runtime, handler_class=None):
                     del sys.modules[name]
             raise
         return {'status': 'applied', 'baseCommit': BASE_COMMIT,
-                'methods': list(EXPECTED), 'helpers': sorted(NEW_MODULES),
+                'methods': list(EXPECTED | HELPER_UPGRADES), 'helpers': sorted(NEW_MODULES),
                 'constants': list(CONSTANTS), 'toolDefinitions': list(TOOL_CHANGES),
+                'helperUpgrades': list(HELPER_UPGRADES),
                 'imports': [name + '.' + key for name, values in GLOBAL_IMPORTS.items() for key in values],
                 'constructorTransitions': CONSTRUCTOR_TRANSITIONS}
     finally:

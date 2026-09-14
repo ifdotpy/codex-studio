@@ -258,14 +258,20 @@ def _hash_file(path):
 
 def _native_idle(server, tid):
     native = server.call('thread/read', {'threadId': tid, 'includeTurns': False}, timeout=10)['thread']
-    if native.get('id') != tid or native.get('status', {}).get('type') not in {'idle', 'notLoaded'}:
-        raise ValueError('Context repair requires a confirmed idle native thread')
+    status = native.get('status', {}).get('type')
+    if native.get('id') != tid or status not in {'idle', 'notLoaded', 'systemError'}:
+        raise ValueError('Context repair requires a confirmed idle native thread; native status: '
+                         + json.dumps(native.get('status'), sort_keys=True))
     for method in ('thread/backgroundTerminals/list', 'thread/queue/list'):
         result = server.call(method, {'threadId': tid}, timeout=10)
         if result.get('data') or result.get('nextCursor'):
             raise ValueError('Context repair waits for native commands and queued input')
     turns = server.call('thread/turns/list', {'threadId': tid, 'limit': 1,
                        'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout=10)
+    # Native systemError is loaded and idle after failure. It still needs the
+    # same queue, command, terminal-turn, and tool-receipt evidence as idle.
+    if status == 'systemError' and not turns.get('data'):
+        raise ValueError('Context repair needs a terminal native turn for systemError')
     if turns.get('data'):
         turn = turns['data'][0]
         if turn.get('status') not in {'completed', 'failed', 'interrupted'}:
@@ -361,7 +367,7 @@ def _repair(rt, key, attempt_id):
         native = _native_idle(server, a['threadId'])
         # Unsubscribe only an idle thread. This flushes its rollout without a model
         # request and leaves the source available for rollback and inspection.
-        if native['status']['type'] == 'idle':
+        if native['status']['type'] in {'idle', 'systemError'}:
             server.call('thread/unsubscribe', {'threadId': a['threadId']}, timeout=10)
         with rt.lock, rt.db() as db:
             current = _current(rt, db, op)

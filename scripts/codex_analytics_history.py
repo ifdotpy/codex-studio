@@ -243,33 +243,97 @@ def repair_terminal_errors(db, limit=64):
                (key, json.dumps(state)))
 
 
+def _history_worker_error(error, prefix):
+    detail = ''.join(character if character.isprintable() else ' ' for character in str(error)[:1000])
+    return f'{prefix} ({type(error).__name__}): {detail}'
+
+
+def _history_worker_state(runtime):
+    """Supply missing worker state without replacing an active import guard."""
+    if getattr(runtime, '_analytics_history_guard', None) is None:
+        runtime._analytics_history_guard = threading.Lock()
+    if not hasattr(runtime, '_analytics_history_cursor'):
+        runtime._analytics_history_cursor = 0
+    if not hasattr(runtime, '_analytics_history_paths'):
+        runtime._analytics_history_paths = {}
+
+
 class AnalyticsHistoryMixin:
     def analytics_history_init(self, db):
         db.execute("CREATE TABLE IF NOT EXISTS analytics_history (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)")
-        self._analytics_history_guard = threading.Lock()
-        self._analytics_history_cursor = 0
-        self._analytics_history_paths = {}
+        _history_worker_state(self)
+        self._analytics_history_schema_ready = True
+
+    def analytics_history_ensure_running(self):
+        # Fake factories opt in explicitly through analytics_history_start.
+        from codex_runtime import AppServer
+        if getattr(self, 'factory', None) is not AppServer or self.closed:
+            return False
+        return self.analytics_history_start()
 
     def analytics_history_start(self):
-        def run():
-            while not self.closed:
-                try:
-                    advanced = self.analytics_history_step()
-                except Exception:
-                    # An importer failure cannot interrupt agents or commands.
-                    # Persist a safe error, without exception text containing data.
-                    with self.lock, self.db() as db:
-                        db.execute("INSERT OR REPLACE INTO analytics_history VALUES (?,?,?)", (
-                            "importer", "", json.dumps({"status": "error", "error": "History importer failed", "updated": time.time()})))
-                    advanced = False
-                if not advanced and self._analytics_history_cursor == 0:
-                    # Small bounded waits permit prompt shutdown.
-                    for _ in range(20):
-                        if self.closed:
-                            return
-                        time.sleep(0.25)
-        self.analytics_history_thread = threading.Thread(target=run, daemon=True, name="analytics-history")
-        self.analytics_history_thread.start()
+        with self.lock:
+            if self.closed:
+                return False
+            _history_worker_state(self)
+            worker = getattr(self, 'analytics_history_thread', None)
+            if worker is not None and worker.is_alive():
+                return False
+
+            def run():
+                failures = 0
+                reported_healthy = False
+                while not self.closed:
+                    try:
+                        advanced = self.analytics_history_step()
+                        if failures or not reported_healthy:
+                            with self.lock, self.db() as db:
+                                row = db.execute("SELECT record FROM analytics_history WHERE id='importer'").fetchone()
+                                if row:
+                                    diagnostic = json.loads(row[0])
+                                    if diagnostic.get('status') == 'error':
+                                        diagnostic.update(status='current', lastError=diagnostic.get('error'),
+                                                          error=None, updated=time.time())
+                                        db.execute("UPDATE analytics_history SET record=? WHERE id='importer'", (json.dumps(diagnostic),))
+                            reported_healthy = True
+                        failures = 0
+                        self.analytics_history_health = {'status': 'running', 'updated': time.time()}
+                    except Exception as error:
+                        # A failed error write must not kill the only importer.
+                        # Keep a safe in-memory diagnostic until storage recovers.
+                        failures += 1
+                        self._analytics_history_schema_ready = False
+                        detail = _history_worker_error(error, 'History importer failed')
+                        self.analytics_history_health = {'status': 'error', 'updated': time.time(),
+                            'error': detail, 'consecutiveFailures': failures,
+                            'errorPersisted': False}
+                        try:
+                            with self.lock, self.db() as db:
+                                db.execute("INSERT OR REPLACE INTO analytics_history VALUES (?,?,?)", (
+                                    'importer', '', json.dumps({'status': 'error', 'error': detail,
+                                                               'updated': time.time()})))
+                            self.analytics_history_health['errorPersisted'] = True
+                        except Exception as persistence_error:
+                            self.analytics_history_health['errorPersistenceError'] = _history_worker_error(
+                                persistence_error, 'Cannot store the history error')
+                        advanced = False
+                    delay = (min(5.0, .25 * 2 ** min(failures - 1, 5)) if failures else
+                             5.0 if not advanced and self._analytics_history_cursor == 0 else 0)
+                    deadline = time.monotonic() + delay
+                    while not self.closed and time.monotonic() < deadline:
+                        time.sleep(min(.25, max(0, deadline - time.monotonic())))
+
+            new_worker = threading.Thread(target=run, daemon=True, name='analytics-history')
+            self.analytics_history_thread = new_worker
+            try:
+                new_worker.start()
+            except Exception as error:
+                if self.analytics_history_thread is new_worker and not new_worker.is_alive():
+                    del self.analytics_history_thread
+                self.analytics_history_health = {'status': 'error', 'updated': time.time(),
+                                                'error': _history_worker_error(error, 'History worker could not start')}
+                return False
+            return True
 
     def _analytics_rollout_path(self, home, thread_id):
         now = time.monotonic()
@@ -301,6 +365,9 @@ class AnalyticsHistoryMixin:
         if not self._analytics_history_guard.acquire(blocking=False):
             return False
         try:
+            if not getattr(self, "_analytics_history_schema_ready", False):
+                with self.lock, self.db() as db:
+                    self.analytics_history_init(db)
             budget_prepare_migration(self)
             with self.lock, self.db() as db:
                 repair_terminal_errors(db)

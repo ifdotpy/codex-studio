@@ -9,7 +9,23 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('primitive', Path(__file__).with_name('native-primitives-integration.py'))
 n = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(n)
-from codex_context_repair import repair_idle
+from codex_context_repair import repair_idle, _native_idle
+
+
+class FailureHandler(n.s.ShellHandler):
+    def do_POST(self):
+        if not getattr(self.server, 'fail_next', False) or self.path != '/v1/responses':
+            return super().do_POST()
+        self.server.fail_next = False
+        request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        self.server.requests.append(request)
+        body = json.dumps({'error': {'message': 'Local fixture quota exhausted.',
+            'type': 'insufficient_quota', 'code': 'insufficient_quota'}}).encode()
+        self.send_response(429)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class NativeContextRepair(unittest.TestCase):
@@ -19,8 +35,21 @@ class NativeContextRepair(unittest.TestCase):
     def test_compacted_context_keeps_summary_and_native_tool_receipts(self):
         self.run_case(True)
 
-    def run_case(self, compacted):
-        with n.native_server(n.s.ShellHandler) as (server, tid, provider, notifications, _):
+    def test_failed_native_turn_repairs_idle_system_error_without_inference(self):
+        self.run_case(False, failed=True)
+
+    def test_active_native_turn_is_rejected(self):
+        with n.native_server() as (server, tid, provider, notifications, _):
+            server.call('turn/start', {'threadId':tid, 'input':[{'type':'text','text':'Hold this isolated response.'}]})
+            self.assertTrue(provider.started.wait(10))
+            with self.assertRaisesRegex(ValueError, 'native status:.*active'):
+                _native_idle(server, tid)
+            self.assertEqual(len(provider.requests), 1)
+            self.assertEqual(provider.unexpected, [])
+            provider.release.set()
+
+    def run_case(self, compacted, failed=False):
+        with n.native_server(FailureHandler) as (server, tid, provider, notifications, _):
             provider.command = 'printf repair-command-receipt-cedar'
             text = json.dumps({'id': 'monitor-repair', 'status': 'exited', 'exitCode': 0,
                                'stdout': 'legacy-payload-marker-' * 3000})
@@ -31,10 +60,19 @@ class NativeContextRepair(unittest.TestCase):
                 return result
             first = turn(tid, 'Preserve user decision birch-192. Run the fixture command once.')
             event_turn = turn(tid, original + '\n\nKeep this appended instruction unchanged.')
-            turn(tid, 'Before repair measurement.')
+            if failed:
+                provider.fail_next = True
+                failed_turn = turn(tid, 'Fail this isolated request without a retry.')
+                completion = next(e for e in notifications if e.get('method') == 'turn/completed' and e['params']['turn']['id'] == failed_turn)
+                self.assertEqual(completion['params']['turn']['status'], 'failed')
+            else:
+                turn(tid, 'Before repair measurement.')
             before = json.dumps(provider.requests[-1])
             native = server.call('thread/read', {'threadId': tid, 'includeTurns': False})['thread']
-            server.call('thread/unsubscribe', {'threadId': tid})
+            if failed:
+                self.assertEqual(native['status']['type'], 'systemError')
+            else:
+                server.call('thread/unsubscribe', {'threadId': tid})
             source = Path(native['path'])
             if compacted:
                 records = [json.loads(line) for line in source.read_text().splitlines()]
@@ -87,7 +125,7 @@ class NativeContextRepair(unittest.TestCase):
             self.assertIn('repair-command-receipt-cedar', resumed)
             self.assertEqual(source.read_bytes(), data)
             print(json.dumps({'beforeBytes': len(before.encode()), 'afterBytes': len(after.encode()),
-                'compacted': compacted, 'savedForkBytes': len(resumed.encode()), 'repairModelRequests': 0, 'externalRequests': provider.unexpected}))
+                'compacted': compacted, 'failedSource': failed, 'savedForkBytes': len(resumed.encode()), 'repairModelRequests': 0, 'externalRequests': provider.unexpected}))
 
 
 if __name__ == '__main__':

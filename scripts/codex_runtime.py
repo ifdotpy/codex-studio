@@ -2089,6 +2089,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 self.scheduler_error = None
 
     def dispatch(self):
+        self.analytics_history_ensure_running()
         self.retry_monitor_results()
         from codex_session_names import session_names
         session_names(self).tick()

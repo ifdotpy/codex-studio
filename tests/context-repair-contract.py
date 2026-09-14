@@ -23,6 +23,9 @@ class Server:
         self.status = 'idle'
         self.items = []
         self.queue = []
+        self.terminals = []
+        self.turn_status = 'completed'
+        self.no_turns = False
         self.before_read = None
 
     def call(self, method, params, timeout=10):
@@ -30,12 +33,12 @@ class Server:
         if method == 'thread/read':
             if self.before_read:
                 self.before_read()
-            return {'thread': {'id': self.tid, 'path': str(self.path), 'status': {'type': self.status}}}
+            return {'thread': {'id': self.tid, 'path': str(self.path), 'status': {'type': self.status} if isinstance(self.status, str) else self.status}}
         if method == 'thread/turns/list':
-            return {'data': [{'id': 'turn', 'status': 'completed'}]}
+            return {'data': [] if self.no_turns else [{'id': 'turn', 'status': self.turn_status}]}
         if method == 'thread/items/list':
             return {'data': self.items}
-        return {'data': self.queue if method == 'thread/queue/list' else []}
+        return {'data': self.queue if method == 'thread/queue/list' else self.terminals if method == 'thread/backgroundTerminals/list' else []}
 
     def submit(self, method, params):
         self.calls.append((method, copy.deepcopy(params)))
@@ -246,6 +249,36 @@ class ContextRepair(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'tool receipts'):
             repair.repair_idle(self.runtime, self.a['id'])
         self.assertEqual(self.forks(), [])
+
+    def test_system_error_needs_no_queue_jobs_or_pending_native_tool_outcomes(self):
+        self.server.status = 'systemError'
+        for field, value, error in [
+            ('queue', [{'id':'queued'}], 'queued input'),
+            ('terminals', [{'id':'active-command'}], 'native commands'),
+            ('turn_status', 'inProgress', 'terminal native turn'),
+            ('no_turns', True, 'terminal native turn'),
+            ('items', [{'item':{'type':'dynamicToolCall','status':'inProgress'}}], 'tool receipts')]:
+            with self.subTest(field=field):
+                original = getattr(self.server, field)
+                setattr(self.server, field, value)
+                with self.assertRaisesRegex(ValueError, error):
+                    repair.repair_idle(self.runtime, self.a['id'])
+                setattr(self.server, field, original)
+                self.assertEqual(self.forks(), [])
+                self.assertFalse(any(m == 'thread/unsubscribe' for m, p in self.server.calls))
+        self.server.turn_status = 'failed'
+        result = repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(result['contextRepair']['phase'], 'completed')
+        self.assertEqual(len(self.forks()), 1)
+        self.assertEqual(sum(m == 'thread/unsubscribe' for m, p in self.server.calls), 1)
+
+    def test_native_pending_permission_and_user_input_are_not_idle(self):
+        for flag in ('waitingOnApproval', 'waitingOnUserInput'):
+            self.server.status = {'type':'active', 'activeFlags':[flag]}
+            with self.assertRaisesRegex(ValueError, 'native status:.*' + flag):
+                repair.repair_idle(self.runtime, self.a['id'])
+            self.assertEqual(self.forks(), [])
+            self.assertFalse(any(m == 'thread/unsubscribe' for m, p in self.server.calls))
 
     def test_monitor_and_unknown_tool_receipts_block(self):
         with self.runtime.db() as db:

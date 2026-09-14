@@ -2,6 +2,7 @@
 """Guard exact baseline code, callback identity, active frames and rollback."""
 import ast
 import copy
+import hashlib
 import importlib
 from pathlib import Path
 import subprocess
@@ -24,6 +25,15 @@ class LimitFixesUpdateContract(unittest.TestCase):
         cls.old = {name: subprocess.check_output(
             ['git', 'show', update.BASE_COMMIT + ':scripts/' + name + '.py'], cwd=ROOT, text=True)
             for name in update.SOURCE_SHA if name not in update.NEW_MODULES}
+        cls.prior_sources = {name: subprocess.check_output(
+            ['git', 'show', '7415ada:scripts/' + name + '.py'], cwd=ROOT)
+            for name in cls.old}
+        cls.helper_old = {}
+        for name, (commit, expected) in update.HELPER_BASELINES.items():
+            raw = subprocess.check_output(['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
+            if hashlib.sha256(raw).hexdigest() != expected:
+                raise AssertionError('Unknown previous helper source: ' + name)
+            cls.helper_old[name] = raw
         # The reviewed fixture stores only changed tool definitions. Reconstruct
         # the previous list from literal baseline definitions in the manifest.
         cls.old_tools = copy.deepcopy(codex_runtime.TOOLS)
@@ -216,7 +226,7 @@ class LimitFixesUpdateContract(unittest.TestCase):
         for target, previous, current in zip(update.EXPECTED, functions, self.functions()):
             if previous is not update.MISSING:
                 self.assertIs(previous, current)
-            self.assertEqual(update.signature(current), update.EXPECTED[target][1])
+            self.assertEqual(update.signature(current), update.EXPECTED[target][-1])
         self.assertEqual(before[6:-1], self.state()[6:-1])
         for (previous, _), (current, value) in zip(before[-1], self.state()[-1]):
             self.assertIs(previous, current)
@@ -317,7 +327,7 @@ class LimitFixesUpdateContract(unittest.TestCase):
                     value = module
                     for part in target.split('.')[1:]:
                         value = getattr(value, part)
-                    self.assertEqual(update.signature(value), allowed[1])
+                    self.assertEqual(update.signature(value), allowed[-1])
         self.assertEqual(self.apply()['status'], 'already_applied')
 
     def test_closed_runtime_version_and_http_closure_reject(self):
@@ -372,6 +382,157 @@ class LimitFixesUpdateContract(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, ['Old call settled'])
         self.assertEqual(self.apply()['status'], 'applied')
+
+    def legacy_context_helper(self):
+        self.apply()
+        name = 'codex_context_repair'
+        helper = update._stage_module(name, self.helper_old[name], ROOT / 'scripts')
+        sys.modules[name] = helper
+        return helper
+
+    def helper_state(self, helper):
+        return tuple((name, value, value.__code__, value.__defaults__, value.__kwdefaults__)
+                     for name, value in vars(helper).items()
+                     if isinstance(value, FunctionType) and value.__module__ == helper.__name__)
+
+    def test_helper_upgrade_manifest_covers_exact_previous_source_delta(self):
+        changed = set()
+        for name, old in self.helper_old.items():
+            current = (ROOT / 'scripts' / (name + '.py')).read_bytes()
+            previous = {node.name: node for node in ast.parse(old).body if isinstance(node, ast.FunctionDef)}
+            desired = {node.name: node for node in ast.parse(current).body if isinstance(node, ast.FunctionDef)}
+            self.assertEqual(previous.keys(), desired.keys())
+            self.assertEqual([ast.dump(node) for node in ast.parse(old).body if not isinstance(node, ast.FunctionDef)],
+                             [ast.dump(node) for node in ast.parse(current).body if not isinstance(node, ast.FunctionDef)])
+            for method, node in desired.items():
+                if ast.dump(node) != ast.dump(previous[method]):
+                    target = name + '.' + method
+                    changed.add(target)
+                    expected = update.HELPER_UPGRADES[target]
+                    for source, digest in zip((old, current), expected):
+                        function, _ = update.source_function(source, (method,), {'__name__': name})
+                        self.assertEqual(update.signature(function), digest)
+        self.assertEqual(changed, set(update.HELPER_UPGRADES))
+
+    def test_exact_7415_implementation_upgrades_with_existing_callbacks(self):
+        helper = self.legacy_context_helper()
+        callbacks = {}
+        for target in update.EXPECTED:
+            name, *path = target.split('.')
+            owner, method = self.target(target)
+            live = getattr(owner, method)
+            try:
+                prior, _ = update.source_function(self.prior_sources[name], tuple(path), vars(self.modules[name]),
+                                                  closure=live.__closure__)
+            except RuntimeError as error:
+                self.assertIn('source structure', str(error))
+                self.assertIsNone(update.EXPECTED[target][0])
+                delattr(owner, method)
+                continue
+            self.assertIn(update.signature(prior), update.EXPECTED[target])
+            live.__code__, live.__defaults__, live.__kwdefaults__ = prior.__code__, prior.__defaults__, prior.__kwdefaults__
+            callbacks[target] = live
+        before = self.state()
+        self.assertEqual(self.apply()['status'], 'applied')
+        self.assertEqual(before[1:], self.state()[1:])
+        for target, previous in callbacks.items():
+            self.assertIs(getattr(*self.target(target)), previous)
+            self.assertEqual(update.signature(previous), update.EXPECTED[target][-1])
+        for target, expected in update.HELPER_UPGRADES.items():
+            self.assertEqual(update.signature(getattr(helper, target.split('.')[-1])), expected[-1])
+        self.assertEqual(self.apply()['status'], 'already_applied')
+
+    def test_previous_live_helper_callbacks_upgrade_without_state_changes(self):
+        helper = self.legacy_context_helper()
+        before, callbacks = self.state(), self.helper_state(helper)
+        self.assertEqual(self.apply()['status'], 'applied')
+        self.assertEqual(before, self.state())
+        for name, previous, code, defaults, kwdefaults in callbacks:
+            current = getattr(helper, name)
+            self.assertIs(current, previous)
+            target = helper.__name__ + '.' + name
+            if target in update.HELPER_UPGRADES:
+                self.assertEqual(update.signature(current), update.HELPER_UPGRADES[target][-1])
+            else:
+                self.assertEqual((current.__code__, current.__defaults__, current.__kwdefaults__),
+                                 (code, defaults, kwdefaults))
+        after = self.helper_state(helper)
+        self.assertEqual(self.apply()['status'], 'already_applied')
+        self.assertEqual(after, self.helper_state(helper))
+
+    def test_previous_helper_unknown_code_or_defaults_reject(self):
+        helper = self.legacy_context_helper()
+        for target in update.HELPER_UPGRADES:
+            method = target.split('.')[-1]
+            function = getattr(helper, method)
+            original = function.__code__, function.__defaults__
+            for kind in ('code', 'defaults'):
+                if kind == 'code':
+                    function.__code__ = function.__code__.replace(co_consts=function.__code__.co_consts + ('unknown',))
+                else:
+                    function.__defaults__ = ('unknown',)
+                before = self.state(), self.helper_state(helper)
+                with self.subTest(target=target, kind=kind), self.assertRaisesRegex(RuntimeError, 'helper member'):
+                    self.apply()
+                self.assertEqual(before, (self.state(), self.helper_state(helper)))
+                function.__code__, function.__defaults__ = original
+
+    def test_previous_helper_partial_assignment_restores_exact_callbacks(self):
+        helper = self.legacy_context_helper()
+        target, armed = helper._repair, [True]
+        def audit(event, args):
+            if armed[0] and event == 'object.__setattr__' and args[0] is target and args[1] == '__code__':
+                armed[0] = False
+                raise RuntimeError('Controlled helper assignment failure')
+        sys.addaudithook(audit)
+        before = self.state(), self.helper_state(helper)
+        try:
+            with self.assertRaisesRegex(RuntimeError, 'Controlled helper assignment'):
+                self.apply()
+        finally:
+            armed[0] = False
+        self.assertEqual(before, (self.state(), self.helper_state(helper)))
+        self.assertEqual(self.apply()['status'], 'applied')
+
+    def test_each_previous_helper_active_frame_blocks_cutover(self):
+        for method in ('_native_idle', '_repair'):
+            helper = self.legacy_context_helper()
+            entered, release = threading.Event(), threading.Event()
+            errors = []
+            def pending():
+                entered.set()
+                if not release.wait(15):
+                    raise AssertionError('Fixture did not release the helper')
+                raise ValueError('Previous helper call settled')
+            class PendingServer:
+                def call(self, *args, **kwargs):
+                    return pending()
+            class PendingRuntime:
+                @property
+                def lock(self):
+                    return pending()
+            def call():
+                try:
+                    if method == '_native_idle':
+                        helper._native_idle(PendingServer(), 'thread')
+                    else:
+                        helper._repair(PendingRuntime(), 'agent', None)
+                except ValueError as error:
+                    errors.append(str(error))
+            thread = threading.Thread(target=call)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                before = self.state(), self.helper_state(helper)
+                with self.subTest(method=method), self.assertRaisesRegex(RuntimeError, 'earlier call.*' + method):
+                    self.apply()
+                self.assertEqual(before, (self.state(), self.helper_state(helper)))
+            finally:
+                release.set()
+                thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, ['Previous helper call settled'])
+            self.assertEqual(self.apply()['status'], 'applied')
 
 
 # BEGIN BASELINE TOOLS
