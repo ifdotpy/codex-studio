@@ -76,11 +76,12 @@ try {
     { stateDir: state.stateDir, id: reviewer.id },
   );
   const writes = [];
+  let expectedTarget = target.id;
   let loseNextReply = false;
   await page.route("**/api/organization", async (route) => {
     const body = route.request().postDataJSON();
     if (!body.review_schedule) return route.continue();
-    assert.equal(body.id, target.id, "The selected chat is the review target");
+    assert.equal(body.id, expectedTarget, "The selected chat is the review target");
     assert.equal(
       body.review_schedule.reviewer_id,
       reviewer.id,
@@ -116,7 +117,7 @@ try {
     .fill("Other project");
   assert.equal(
     await page.getByRole("option", { name: /Other project/ }).count(),
-    0,
+    1,
   );
   await region
     .getByLabel("Chat to review", { exact: true })
@@ -161,7 +162,7 @@ try {
   await page.locator('[data-message-group="reviews"]').waitFor();
   await page.screenshot({ path: join(root, "discussion.png") });
   console.log(
-    "PASS defaults, assign, interval, pause/resume, reviewer-owned assignment, same-team discussion and foreign target exclusion",
+    "PASS defaults, assign, interval, pause/resume, reviewer-owned assignment, same-team discussion and cross-team target selection",
   );
 
   await page.reload();
@@ -175,7 +176,7 @@ try {
     .fill("Other project");
   assert.equal(
     await page.getByRole("option", { name: /Other project/ }).count(),
-    0,
+    1,
   );
   await region
     .getByLabel("Chat to review", { exact: true })
@@ -200,6 +201,21 @@ try {
   console.log(
     "PASS reload, remove/re-add, lost save response without duplicate schedule",
   );
+
+  const foreign = state.threads.find((agent) => agent.name === "Other project");
+  assert(foreign);
+  expectedTarget = foreign.id;
+  await region.getByLabel("Chat to review", { exact: true }).fill("Other project");
+  await page.getByRole("option", { name: /Other project/ }).click();
+  await region.getByRole("button", { name: "Add chat", exact: true }).click();
+  await page.locator(`[data-review-target="${foreign.id}"]`).waitFor();
+  const foreignSchedule = (await snapshot()).threads.find((agent) => agent.id === foreign.id)
+    .reviewSchedules.find((item) => item.reviewerId === reviewer.id);
+  assert.equal(foreignSchedule.enabled, true);
+  assert.deepEqual(foreignSchedule.authorizedRoots, {
+    [foreign.id]: foreign.rootId, [reviewer.id]: reviewer.rootId,
+  });
+  console.log("PASS cross-team assignment saves the exact reviewer and target");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: join(root, "mobile-settings.png") });

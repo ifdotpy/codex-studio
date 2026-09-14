@@ -49,7 +49,9 @@ class RoleSkillsContract(unittest.TestCase):
         turns = [p for method, p in self.runtime.server.calls if method == "turn/start"]
         for actor, role in [(lead, "codex-orchestrator"), (worker, "codex-subagent")]:
             params = next(p for p in turns if p["threadId"] == actor["threadId"])
-            self.assertIn("[Studio role skill: " + role + "]", json.dumps(params["input"]))
+            # thread/start already supplies the role as developer instructions.
+            # Repeating it in user input causes history growth after compaction.
+            self.assertNotIn("[Studio role skill: " + role + "]", json.dumps(params["input"]))
         self.runtime.server.complete(worker["threadId"], worker["turnId"])
         self.runtime.loaded.discard(worker["id"])
         self.runtime.prepare(self.runtime.agent(worker["id"]))

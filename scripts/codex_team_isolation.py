@@ -29,6 +29,7 @@ def _same_team(db, recipient, sender_id):
 
 def validate_event(runtime, db, recipient, event):
     """Return a denial reason, or None. Do not mutate records or call a model."""
+    from codex_chat_reviews import review_pair_allowed
     kind = event['kind']
     if kind not in SENSITIVE_KINDS:
         return None
@@ -66,7 +67,8 @@ def validate_event(runtime, db, recipient, event):
                 members = room.get('members')
                 if (not isinstance(members, list) or sender_id not in members
                         or recipient['id'] not in members
-                        or not all(_same_team(db, recipient, member) for member in members)):
+                        or (not all(_same_team(db, recipient, member) for member in members)
+                            and not (len(members) == 2 and review_pair_allowed(db, *members)))):
                     return DENIED + ': the message room crosses team boundaries'
             else:
                 return DENIED + ': the message room is unavailable'
@@ -87,7 +89,14 @@ def validate_event(runtime, db, recipient, event):
             if complaint.get('leadId') != sender_id:
                 return DENIED + ': the complaint responder does not match'
     if not _same_team(db, recipient, sender_id):
-        return DENIED
+        if kind not in {'agent_message', 'chat_review'} or not review_pair_allowed(db, recipient['id'], sender_id):
+            return DENIED
+        if kind == 'chat_review':
+            target = _agent(db, sender_id)
+            entry = next((s for s in target.get('reviewSchedules', []) if s.get('reviewerId') == recipient['id']), None)
+            if (not entry or not entry.get('enabled') or entry.get('removed')
+                    or str(entry.get('revision')) != parts[3]):
+                return DENIED + ': the review assignment changed'
     return None
 
 

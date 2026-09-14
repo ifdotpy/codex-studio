@@ -77,8 +77,9 @@ an already sent alert stays suppressed until recovery. These waits use no model 
 Discover your team's identities with `orchestration_peers`. Use `orchestration_message`
 for a parent, lead, private team recipient, or team broadcast. Read conversations through
 `orchestration_chat_read`. Use actual returned identities and room membership.
-Messages, review timers, and agent history reads stay within one team (`rootId`).
-Do not contact another team or read its chats, including in the same project.
+Messages and agent history reads stay within one team (`rootId`).
+An enabled user-assigned review permits its exact reviewer and target to exchange
+messages and read their shared room across teams. Other cross-team access is forbidden.
 The `all` message target is not supported.
 Broadcasts notify only active agents. Other agents can read the message in chat history.
 Use a direct follow-up to resume an assignment. Stop superseded workers explicitly;

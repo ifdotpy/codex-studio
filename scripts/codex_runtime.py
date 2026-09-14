@@ -82,12 +82,12 @@ TOOLS = [
          {"scope": {"type": "string", "enum": ["team"]},
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_message", "Share a finding, question, or answer with other agents during work. "
-         "target is an agent id in your team, parent, lead, or broadcast (your team). "
+         "target is a teammate, an assigned review partner, parent, lead, or broadcast (your team). "
          "Broadcasts notify only active agents; other recipients can read them in chat history. "
          "Private chats are visible to their participants and the user. Direct messages wake idle "
          "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
          {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}, "review_event_id": TEXT, "review_outcome": {"type": "string", "enum": ["no_issue"]}}, ["target", "text"]),
-    tool("orchestration_chat_read", "Read messages in a chat you belong to within your team. "
+    tool("orchestration_chat_read", "Read messages in your team rooms or an assigned review pair room. "
          "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
          {"room_id": TEXT, "before": {"type": "integer", "minimum": 1}}, ["room_id"]),
     tool("orchestration_title", "Set a short conversation title from the user's task. "
@@ -179,7 +179,7 @@ Use orchestration_peers to discover agents, then orchestration_message to talk t
 Report useful early progress with importance=progress; questions and blockers use their own importance.
 The server delivers submitted evidence and child completion to the lead.
 Use a same-team agent id for a private chat or broadcast for your team. Communication and
-chat history access are restricted to one team. The user can read these chats. Private means other agents cannot read it through the chat tools.
+chat history access stay within one team, except the exact participants of an enabled user-assigned review. The user can read these chats. Private means other agents cannot read it through the chat tools.
 Direct messages wake recipients automatically. Broadcasts notify only active agents; idle and
 finished agents can read them in history. Use a direct follow-up to resume an assignment.
 Send a message when you have a new finding, question, or answer for its recipient.
@@ -3512,9 +3512,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                        if room["kind"] == "broadcast" else room["members"])
             if any(m not in agents for m in members) or not members or (viewer and viewer not in members):
                 continue
-            if viewer and (not viewer_root or room.get("rootId") == "all"
-                           or any(agents[m].get("rootId") != viewer_root for m in members)):
+            if viewer and (not viewer_root or room.get("rootId") == "all"):
                 continue
+            if viewer and any(agents[m].get("rootId") != viewer_root for m in members):
+                from codex_chat_reviews import review_pair_allowed
+                if room['kind'] != 'private' or len(members) != 2 or not review_pair_allowed(db, *members):
+                    continue
             room["members"] = members
             room["name"] = ("All agents" if room.get("rootId") == "all" else
                             agents[room["rootId"]]["name"] + " · Broadcast" if room["kind"] == "broadcast" else
@@ -3576,7 +3579,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 recipients = [a for a in self.records(db, "agents")
                               if root == a["rootId"] and not a.get("deletedAt")]
             else:
-                recipient = self.checked_actor(db, target, sender_id)
+                from codex_chat_reviews import review_pair_allowed
+                recipient = (self.agent(target, db) if review_pair_allowed(db, sender_id, target)
+                             else self.checked_actor(db, target, sender_id))
                 if recipient.get("deletedAt"):
                     raise ValueError("Recipient conversation was deleted")
                 if recipient["id"] == sender_id:

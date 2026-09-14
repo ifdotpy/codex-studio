@@ -1,4 +1,4 @@
-"""Durable timer assignments between agents in one team.
+"""Durable user assignments between reviewer and target chats.
 
 The scheduler only records ordinary runtime events. Native dispatch retains
 ownership of model access, permissions, turn delivery, and recovery.
@@ -9,6 +9,26 @@ import json
 import time
 
 from codex_native_errors import native_thread_block
+
+
+def review_pair_allowed(db, first_id, second_id):
+    """Allow only the exact user-assigned pair in its recorded teams."""
+    if not first_id or not second_id or first_id == second_id:
+        return False
+    agents = []
+    for key in (first_id, second_id):
+        row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (key,)).fetchone()
+        agent = json.loads(row[0]) if row else {}
+        if agent.get('deletedAt') or not agent.get('rootId'):
+            return False
+        agents.append(agent)
+    roots = {agent['id']: agent['rootId'] for agent in agents}
+    for target, reviewer in (agents, reversed(agents)):
+        for entry in target.get('reviewSchedules', []):
+            if (entry.get('reviewerId') == reviewer['id'] and entry.get('enabled') is True
+                    and not entry.get('removed') and entry.get('authorizedRoots') == roots):
+                return True
+    return False
 
 
 def review_schedule(runtime, db, target, data):
@@ -36,10 +56,11 @@ def review_schedule(runtime, db, target, data):
     if reviewer.get('deletedAt') and (enabled or previous is None):
         raise ValueError('The reviewer chat was deleted')
     same_team = bool(target.get('rootId')) and target['rootId'] == reviewer.get('rootId')
-    if not same_team and (enabled or previous is None):
-        raise ValueError('Reviews are limited to agents in the same team')
+    if (not target.get('rootId') or not reviewer.get('rootId')) and (enabled or previous is None):
+        raise ValueError('Both review chats must have a team identity')
     current = previous['revision'] if previous else 0
-    values = {'reviewerId': reviewer_id, 'intervalMinutes': interval, 'enabled': enabled, 'removed': removed}
+    values = {'reviewerId': reviewer_id, 'intervalMinutes': interval, 'enabled': enabled, 'removed': removed,
+              'authorizedRoots': {target['id']: target.get('rootId'), reviewer_id: reviewer.get('rootId')}}
     same = previous is not None and all(previous.get(key, False) == value for key, value in values.items())
     if same and revision in (current, current - 1):
         return target
@@ -50,7 +71,7 @@ def review_schedule(runtime, db, target, data):
         raise ValueError('The review schedule changed. Reload the chat')
     now = time.time()
     room_id = previous['roomId'] if previous else 'private:' + ':'.join(sorted([target['id'], reviewer_id]))
-    if same_team:
+    if enabled or same_team:
         row = db.execute('SELECT record FROM runtime_rooms WHERE id=?', (room_id,)).fetchone()
         room = json.loads(row[0]) if row else {
             'id': room_id, 'kind': 'private', 'members': sorted([target['id'], reviewer_id]),
@@ -69,6 +90,10 @@ def review_schedule(runtime, db, target, data):
     else:
         schedules.append(entry)
     runtime.put(db, 'agents', target)
+    # Refresh native instructions at the next turn without interrupting work.
+    if enabled:
+        runtime.loaded.discard(reviewer_id)
+        runtime.loaded.discard(target['id'])
     runtime.changed.set()
     return target
 
@@ -322,10 +347,12 @@ def review_tick(runtime, db, now):
                 agents[entry['reviewerId']] = json.loads(row[0]) if row else None
             reviewer = agents.get(entry['reviewerId'])
             same_team = bool(target.get('rootId')) and reviewer and target['rootId'] == reviewer.get('rootId')
-            reason = (None if same_team else 'Reviews are limited to agents in the same team')
+            allowed = same_team or (reviewer and review_pair_allowed(db, target['id'], reviewer['id']))
+            reason = (None if allowed or not entry['enabled'] or entry.get('removed')
+                      else 'The review assignment no longer matches these chats')
             reason = reason or _participant_reason(target, 'Target') or _participant_reason(reviewer, 'Reviewer')
             mode_blocked = False
-            if same_team and reviewer['id'] != reviewer['rootId']:
+            if allowed and reviewer['id'] != reviewer['rootId']:
                 mode_blocked = runtime.agent(reviewer['rootId'], db).get('agentMode', 'multi') != 'multi'
             if entry['enabled'] and not entry.get('removed') and not reason and mode_blocked:
                 # Keep an already queued review. Stop only future timer events.

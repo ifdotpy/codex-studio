@@ -56,26 +56,46 @@ class ChatReviewsContract(unittest.TestCase):
             db.execute('INSERT INTO runtime_completed_turns VALUES (?)', (reviewer + ':' + turn,))
         self.update(reviewer, status='completed', inFlight=False)
 
-    def test_foreign_team_schedule_rejected_before_room_or_event_write(self):
-        target, reviewer = self.pair()
-        outsider = self.lead('Other team')['id']
-        with self.runtime.db() as db:
-            before = db.execute('SELECT id,record FROM runtime_rooms ORDER BY id').fetchall()
-        for changes in [{}, {'enabled': False}]:
-            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, 'same team'):
-                self.configure(target, outsider, **changes)
-        self.assertNotIn('reviewSchedules', self.runtime.agent(target))
-        self.assertEqual(self.events(), [])
-        with self.runtime.db() as db:
-            self.assertEqual(db.execute('SELECT id,record FROM runtime_rooms ORDER BY id').fetchall(), before)
+    def test_explicit_foreign_review_allows_only_the_pair_and_revokes_on_pause(self):
+        target, worker = self.pair()
+        reviewer = self.lead('Reviewer in another team')['id']
+        outsider = self.lead('Unassigned')['id']
         self.configure(target, reviewer)
-        self.assertEqual(self.schedule(target)['reviewerId'], reviewer)
+        schedule = self.schedule(target)
+        self.assertEqual(schedule['authorizedRoots'], {target:target, reviewer:reviewer})
+        self.tick(2800)
+        events = self.events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['agent'], reviewer)
+        from codex_team_isolation import validate_event
+        with self.runtime.db() as db:
+            self.assertIsNone(validate_event(self.runtime, db, self.runtime.agent(reviewer,db), events[0]))
+        message = self.runtime.chat_message(reviewer, target, 'Review finding', 'foreign-review-message')
+        self.assertIn(target, message['deliveries'])
+        self.runtime.chat_message(target, reviewer, 'Review reply', 'foreign-review-reply')
+        self.assertEqual(len(self.runtime.chat_read(schedule['roomId'], reviewer)['messages']), 2)
+        for sender, recipient in [(reviewer, worker), (reviewer, outsider), (outsider, target)]:
+            with self.assertRaisesRegex(ValueError, 'another team'):
+                self.runtime.chat_message(sender, recipient, 'Denied', sender + recipient)
+        with self.assertRaisesRegex(ValueError, 'unavailable'):
+            self.runtime.chat_read(schedule['roomId'], outsider)
+        self.configure(target, reviewer, enabled=False, expected_revision=1)
+        self.tick(3000)
+        self.assertEqual(self.schedule(target)['status'], 'paused')
+        self.assertIsNone(self.schedule(target)['reason'])
+        with self.assertRaisesRegex(ValueError, 'another team'):
+            self.runtime.chat_message(reviewer, target, 'Paused', 'paused-message')
+        with self.assertRaisesRegex(ValueError, 'unavailable'):
+            self.runtime.chat_read(schedule['roomId'], reviewer)
+        with self.runtime.db() as db:
+            self.assertIsNotNone(validate_event(self.runtime, db, self.runtime.agent(reviewer,db), events[0]))
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_chat_messages WHERE room=?', (schedule['roomId'],)).fetchone()[0], 2)
 
     def test_missing_team_identity_fails_closed(self):
         target, reviewer = self.pair()
         self.update(target, rootId=None)
         self.update(reviewer, rootId=None)
-        with self.assertRaisesRegex(ValueError, 'same team'):
+        with self.assertRaisesRegex(ValueError, 'team identity'):
             self.configure(target, reviewer)
         self.assertNotIn('reviewSchedules', self.runtime.agent(target))
 
@@ -95,7 +115,7 @@ class ChatReviewsContract(unittest.TestCase):
                     self.tick(50000)
                 schedule = self.schedule(target)
                 self.assertEqual(schedule['status'], 'blocked')
-                self.assertEqual(schedule['reason'], 'Reviews are limited to agents in the same team')
+                self.assertEqual(schedule['reason'], 'The review assignment no longer matches these chats')
                 self.assertEqual(schedule['lastEventId'], event_id)
                 with self.runtime.db() as db:
                     after = dict(db.execute('SELECT * FROM runtime_events WHERE id=?', (event_id,)).fetchone())
@@ -109,7 +129,7 @@ class ChatReviewsContract(unittest.TestCase):
                 self.tick(60000)
                 self.assertEqual(len(self.events()), count)
 
-    def test_foreign_schedule_can_be_removed_without_room_changes_but_not_enabled(self):
+    def test_foreign_schedule_removal_preserves_room_and_explicit_reassignment_renews_grant(self):
         target, reviewer = self.pair()
         self.configure(target, reviewer)
         self.tick(2800)
@@ -117,18 +137,17 @@ class ChatReviewsContract(unittest.TestCase):
         self.update(reviewer, rootId=reviewer)
         with self.runtime.db() as db:
             before = db.execute('SELECT record FROM runtime_rooms WHERE id=?', (room_id,)).fetchone()[0]
-        with self.assertRaisesRegex(ValueError, 'same team'):
-            self.configure(target, reviewer, expected_revision=1)
         self.configure(target, reviewer, expected_revision=1, enabled=False, removed=True)
         removed = self.schedule(target)
         self.configure(target, reviewer, expected_revision=1, enabled=False, removed=True)
         self.assertEqual(self.schedule(target), removed)
         self.assertTrue(removed['removed'])
         self.assertEqual(self.events()[0]['status'], 'cancelled')
-        with self.assertRaisesRegex(ValueError, 'same team'):
-            self.configure(target, reviewer, expected_revision=2)
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT record FROM runtime_rooms WHERE id=?', (room_id,)).fetchone()[0], before)
+        self.configure(target, reviewer, expected_revision=2)
+        self.assertTrue(self.schedule(target)['enabled'])
+        self.assertEqual(self.schedule(target)['authorizedRoots'], {target:target, reviewer:reviewer})
 
     def test_default_timer_room_and_restart_persistence_without_model_call(self):
         target, reviewer = self.pair()

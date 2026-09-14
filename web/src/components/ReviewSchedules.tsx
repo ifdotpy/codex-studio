@@ -56,15 +56,12 @@ export default function ReviewSchedules({
   for (const [targetId, item] of Object.entries(known))
     if ((schedules.get(targetId)?.revision || 0) < item.revision)
       schedules.set(targetId, item);
-  const teamId = agent.rootId || (agent.isLead ? agent.id : undefined);
-  const sameTeam = (candidate?: Agent) =>
-    !!teamId &&
-    candidate?.source === "managed" &&
-    (candidate.rootId || (candidate.isLead ? candidate.id : undefined)) ===
-      teamId;
+  const availableChat = (candidate?: Agent) =>
+    candidate?.source === "managed" && !candidate.deletedAt &&
+    !!(candidate.rootId || (candidate.isLead ? candidate.id : undefined));
   const choices = agents.filter(
     (candidate) =>
-      sameTeam(candidate) &&
+      availableChat(candidate) &&
       candidate.id !== agent.id &&
       !candidate.deletedAt &&
       (!schedules.has(candidate.id) || schedules.get(candidate.id)?.removed),
@@ -79,9 +76,9 @@ export default function ReviewSchedules({
     if (
       enabled &&
       !removed &&
-      !sameTeam(agents.find((item) => item.id === targetId))
+      !availableChat(agents.find((item) => item.id === targetId))
     ) {
-      setError("The reviewed chat must belong to this team.");
+      setError("The reviewed chat is unavailable.");
       return;
     }
     lock.current = true;
@@ -166,7 +163,7 @@ export default function ReviewSchedules({
             targetId={targetId}
             item={item}
             target={agents.find((candidate) => candidate.id === targetId)}
-            sameTeam={sameTeam(
+            availableChat={availableChat(
               agents.find((candidate) => candidate.id === targetId),
             )}
             pending={pending}
@@ -176,7 +173,7 @@ export default function ReviewSchedules({
         ))}
       <Select
         label="Chat to review"
-        placeholder="Select a chat in this team"
+        placeholder="Select a chat"
         searchable
         clearable
         data={choices.map((candidate) => ({
@@ -186,7 +183,7 @@ export default function ReviewSchedules({
         value={target}
         onChange={setTarget}
         disabled={pending}
-        nothingFoundMessage="No matching agents in this team"
+        nothingFoundMessage="No matching chats"
       />
       <NumberInput
         label="Review interval (minutes)"
@@ -227,7 +224,7 @@ function ReviewRow({
   targetId,
   target,
   pending,
-  sameTeam,
+  availableChat,
   save,
   openRoom,
 }: {
@@ -235,7 +232,7 @@ function ReviewRow({
   targetId: string;
   target?: Agent;
   pending: boolean;
-  sameTeam: boolean;
+  availableChat: boolean;
   save: (
     id: string,
     minutes: number,
@@ -258,13 +255,13 @@ function ReviewRow({
     <div className="review-schedule" data-review-target={targetId}>
       <Text fw={500}>{target?.name || "Unavailable chat"}</Text>
       <Text size="sm" c="dimmed">
-        {!sameTeam
-          ? "Unavailable: outside this team. History remains available."
+        {!availableChat
+          ? "Chat unavailable. History remains available."
           : !item.enabled
             ? "Paused"
             : item.reason || item.status || "Scheduled"}
       </Text>
-      {!!item.nextAt && item.enabled && sameTeam && (
+      {!!item.nextAt && item.enabled && availableChat && (
         <Text size="xs" c="dimmed">
           Next check: {new Date(item.nextAt * 1000).toLocaleString()}
         </Text>
@@ -276,14 +273,14 @@ function ReviewRow({
         allowDecimal={false}
         value={minutes}
         onChange={setMinutes}
-        disabled={pending || !sameTeam}
+        disabled={pending || !availableChat}
       />
       <div className="review-schedule-actions">
         <Button
           size="xs"
           variant="light"
           disabled={
-            pending || !sameTeam || !valid || minutes === item.intervalMinutes
+            pending || !availableChat || !valid || minutes === item.intervalMinutes
           }
           onClick={() => void save(targetId, Number(minutes), item.enabled)}
         >
@@ -292,7 +289,7 @@ function ReviewRow({
         <Button
           size="xs"
           variant="light"
-          disabled={pending || !sameTeam}
+          disabled={pending || !availableChat}
           onClick={() =>
             void save(targetId, item.intervalMinutes, !item.enabled)
           }

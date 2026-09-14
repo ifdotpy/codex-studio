@@ -170,7 +170,9 @@ Open **Messages** in the chat header on a computer or phone.
 Agents can exchange messages and read agent conversations only within their team.
 A team contains one lead and its workers, with the same `rootId`.
 Chats from another team are outside this boundary, even in the same project.
-Review timers also require a reviewer from the same team.
+A user-assigned reviewer can belong to another team. An enabled assignment permits
+messages and a shared room only between that reviewer and target. Pausing or
+removing the assignment revokes this exception. Other team boundaries still apply.
 Configure reviews in the reviewer's chat settings. Select the chats to review
 and the interval, which defaults to 30 minutes. Timer events arrive in the
 reviewer's chat. Existing assignments appear there without migration.
