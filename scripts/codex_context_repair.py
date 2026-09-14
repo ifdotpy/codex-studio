@@ -54,6 +54,9 @@ def _current(rt, db, op):
             or rt.preparation_settings(a) != op['settings']
             or ('connectionId' in op and not rt.connection_current(a.get('accountKey', 'default'), op['connectionId']))):
         raise ValueError('The agent changed during context repair. The original session is preserved.')
+    if ('historicalInputs' in op
+            and _unsettled_inputs(db, a, op['source']['attemptId']) != op['historicalInputs']):
+        raise _waiting('Context repair waits for unchanged historical input receipts')
     return a
 
 
@@ -61,6 +64,29 @@ def _save(rt, db, a, op):
     op['updated'] = time.time()
     a['contextRepair'] = copy.deepcopy(op)
     rt.put(db, 'agents', a)
+
+
+def _unsettled_inputs(db, a, attempt_id):
+    attempt = a.get('startAttempt') or {}
+    permitted = set(attempt.get('events', [])) if attempt_id else set()
+    historical = []
+    rows = db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e "
+        "LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=? AND e.epoch=? "
+        "AND e.status IN ('reserved','dispatching','uncertain') ORDER BY e.id", (a['id'], a['epoch']))
+    for row in rows:
+        if row['id'] in permitted and row['status'] != 'uncertain':
+            continue
+        # AppServer.write rejects offline before writing bytes; submit removes
+        # its pending future. Preserve legacy uncertainty without replay.
+        if (row['status'] == 'uncertain' and row['error'] == 'Codex app-server is offline'
+                and row['turn_id'] is None and row['metadata'] is None
+                and row['id'] not in attempt.get('events', []) and attempt.get('submitted') is False
+                and isinstance(row['created'], (int, float))):
+            historical.append({'id':row['id'], 'created':row['created'],
+                'sha256':hashlib.sha256(json.dumps(dict(row), sort_keys=True).encode()).hexdigest()})
+            continue
+        raise _waiting('Context repair waits for a confirmed input receipt: ' + row['id'])
+    return historical
 
 
 def _local_idle(rt, db, a, attempt_id):
@@ -100,15 +126,12 @@ def _local_idle(rt, db, a, attempt_id):
                          (a['id'], *statuses)).fetchone()
         if row:
             raise _waiting('Context repair waits for ' + table + ': ' + row[0])
-    permitted = set(attempt.get('events', [])) if attempt_id else set()
-    unsettled = db.execute("SELECT id FROM runtime_events WHERE agent=? AND epoch=? "
-                           "AND status IN ('reserved','dispatching','uncertain')", (a['id'], a['epoch']))
-    if any(row[0] not in permitted for row in unsettled):
-        raise _waiting('Context repair waits for a confirmed input receipt')
+    historical = _unsettled_inputs(db, a, attempt_id)
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='voice_sessions'").fetchone():
         columns = {r[1] for r in db.execute('PRAGMA table_info(voice_sessions)')}
         if 'state' in columns and db.execute('SELECT 1 FROM voice_sessions WHERE agent=? AND state IS NOT NULL AND ended IS NULL', (a['id'],)).fetchone():
             raise _waiting('Context repair waits for voice to end')
+    return historical
 
 
 def verified_events(db, a):
@@ -197,7 +220,7 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
         return changed
 
     turn, snapshot = None, False
-    latest_started, latest_terminal = None, None
+    latest_started, latest_terminal, terminal_at = None, None, None
     source_hash, clean_hash = hashlib.sha256(), hashlib.sha256()
     source_bytes, clean_bytes = 0, 0
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -224,6 +247,13 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
                         latest_started = payload.get('turn_id')
                     elif payload.get('type') in {'task_complete', 'turn_aborted'}:
                         latest_terminal = payload.get('turn_id')
+                        terminal_at = payload.get('completed_at')
+                        if not isinstance(terminal_at, (int, float)):
+                            from datetime import datetime
+                            try:
+                                terminal_at = datetime.fromisoformat(record.get('timestamp', '').replace('Z', '+00:00')).timestamp()
+                            except (ValueError, TypeError):
+                                terminal_at = None
                 elif record.get('type') == 'turn_context':
                     turn = payload.get('turn_id')
                     latest_started = turn
@@ -252,7 +282,8 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
         raise
     report = {'sourcePath': str(source), 'sourceSha256': source_hash.hexdigest(),
               'sourceBytes': source_bytes, 'importThreadId': import_id,
-              'savedBytes': saved, 'eventIds': sorted(set(changes)), 'terminalTurnId': latest_terminal}
+              'savedBytes': saved, 'eventIds': sorted(set(changes)), 'terminalTurnId': latest_terminal,
+              'terminalCompletedAt': terminal_at}
     if changes:
         report.update(copyPath=str(destination), copySha256=clean_hash.hexdigest(), copyBytes=clean_bytes)
     else:
@@ -648,15 +679,25 @@ def _repair(rt, key, attempt_id):
         if not a.get('threadId'):
             return a
         events = verified_events(db, a)
-        if not events:
+        has_uncertain = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND status='uncertain' LIMIT 1",
+                                   (a['id'], a['epoch'])).fetchone()
+        if not events and not has_uncertain:
             return a
-        _local_idle(rt, db, a, attempt_id)
+        historical = _local_idle(rt, db, a, attempt_id)
+        checked_thread = old.get('newThreadId') if old.get('phase') == 'completed' else (old.get('source') or {}).get('threadId')
+        previous_proof = old.get('historicalInputProof') or {}
+        if (not events and old.get('phase') in {'completed', 'unchanged'} and checked_thread == a.get('threadId')
+                and old.get('agent') == a['id'] and (old.get('source') or {}).get('accountKey') == a.get('accountKey')
+                and old['source'].get('id') == a['id'] and old['source'].get('epoch') == a['epoch']
+                and previous_proof.get('events') == historical and previous_proof.get('terminalTurnId')):
+            return a
         checked = sorted(e['id'] for e in events)
         checked_thread = old.get('newThreadId') if old.get('phase') == 'completed' else (old.get('source') or {}).get('threadId')
         if checked_thread == a.get('threadId') and old.get('compactions') == a.get('compactions', 0):
             checked = sorted(set(checked) | set(old.get('checkedEventIds', [])))
         op = {'id': str(uuid.uuid4()), 'agent': key, 'source': _identity(a),
               'settings': rt.preparation_settings(a), 'phase': 'preparing', 'created': time.time(),
+              'historicalInputs': historical,
               'checkedEventIds': checked, 'compactions': a.get('compactions', 0),
               'previousRepairedEventIds': old.get('repairedEventIds', []) if old.get('newThreadId') == a.get('threadId') else []}
         if old and (old.get('phase') == 'completed' or old.get('rpcMethod')):
@@ -693,12 +734,23 @@ def _repair(rt, key, attempt_id):
             current = _current(rt, db, op)
             _local_idle(rt, db, current, attempt_id)
             op['snapshot'] = report
+            if historical:
+                completed = report.get('terminalCompletedAt')
+                if (report.get('terminalTurnId') != native.get('repairTerminalTurnId')
+                        or not isinstance(completed, (int, float))
+                        or completed <= max(r['created'] for r in historical)
+                        or not db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                                          (key + ':' + report['terminalTurnId'],)).fetchone()):
+                    raise _waiting('Context repair waits for a later confirmed native terminal turn', 'native')
+                op['historicalInputProof'] = {'events':historical, 'terminalTurnId':report['terminalTurnId'],
+                    'terminalCompletedAt':completed, 'source':copy.deepcopy(op['source']),
+                    'sourceSha256':report['sourceSha256'], 'deliveryOutcome':'unknown'}
+            if source_hash != report['sourceSha256']:
+                raise _waiting('Context repair waits for a stable saved context', 'native')
             if not report['eventIds']:
                 op['phase'] = 'unchanged'
                 _save(rt, db, current, op)
                 return current
-            if source_hash != report['sourceSha256']:
-                raise _waiting('Context repair waits for a stable saved context', 'native')
             params = rt.new_thread_params(current)
             params.pop('dynamicTools', None)
             params.update(threadId=report['importThreadId'], path=report['copyPath'], excludeTurns=True, deferGoalContinuation=True)

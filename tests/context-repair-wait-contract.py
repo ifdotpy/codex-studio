@@ -222,6 +222,81 @@ class ContextWait(f.NativeActionRepair):
         self.assertEqual(len([m for m,p in self.server.calls if m == 'turn/start']), 1)
         self.assertEqual(len([m for m,p in self.server.calls if m == 'thread/unsubscribe']), 1)
 
+    def legacy_uncertain(self, count=1):
+        rows = [('legacy-offline-'+str(i),self.a['id'],'agent_message','Preserve unknown receipt '+str(i),
+                 'uncertain',2,self.a['epoch'],None,'Codex app-server is offline') for i in range(count)]
+        with self.runtime.db() as db:
+            db.executemany('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',rows)
+            db.execute('INSERT INTO runtime_completed_turns VALUES (?)',(self.a['id']+':turn',))
+        self.records[-1]['payload']['completed_at'] = 3
+        self.write_records()
+        return rows
+
+    def test_21_historical_offline_receipts_stay_unknown_and_are_not_replayed(self):
+        original = self.legacy_uncertain(21)
+        self.runtime.send(self.a['id'],'Submit only the new input.',message_id='new-after-offline')
+        self.runtime.dispatch()
+        eventually(lambda:self.runtime.agent(self.a['id']).get('turnId')=='resumed-turn')
+        a = self.runtime.agent(self.a['id'])
+        proof = a['contextRepair']['historicalInputProof']
+        self.assertEqual(len(proof['events']),21)
+        self.assertEqual(proof['deliveryOutcome'],'unknown')
+        self.assertEqual(proof['terminalTurnId'],'turn')
+        with self.runtime.db() as db:
+            for row in original:
+                self.assertEqual(tuple(db.execute('SELECT * FROM runtime_events WHERE id=?',(row[0],)).fetchone()),row)
+        starts = [p for m,p in self.server.calls if m=='turn/start']
+        self.assertEqual(len(starts),1)
+        self.assertNotIn('Preserve unknown receipt',json.dumps(starts))
+        self.assertEqual(a['startAttempt']['events'],['new-after-offline'])
+
+    def test_current_or_identified_uncertain_input_still_blocks(self):
+        rows = self.legacy_uncertain()
+        a = self.agent_update(self.a,startAttempt={'id':'safe-attempt','submitted':False,'events':[]})
+        for mutation in ('metadata','current','other-error','known-turn','reserved','dispatching'):
+            with self.subTest(mutation=mutation):
+                with self.runtime.db() as db:
+                    db.execute('DELETE FROM runtime_event_meta WHERE id=?',(rows[0][0],))
+                    db.execute("UPDATE runtime_events SET error=?,turn_id=NULL,status='uncertain' WHERE id=?",('Codex app-server is offline',rows[0][0]))
+                    if mutation=='metadata':
+                        db.execute('INSERT INTO runtime_event_meta VALUES (?,?)',(rows[0][0],json.dumps({'native':{
+                            'connectionId':self.runtime.connection_ids['default'],'threadId':self.tid}})))
+                    elif mutation=='other-error':
+                        db.execute('UPDATE runtime_events SET error=? WHERE id=?',('Native response timed out; outcome unknown',rows[0][0]))
+                    elif mutation=='known-turn':
+                        db.execute('UPDATE runtime_events SET turn_id=? WHERE id=?',('turn',rows[0][0]))
+                    elif mutation in {'reserved','dispatching'}:
+                        db.execute('UPDATE runtime_events SET status=? WHERE id=?',(mutation,rows[0][0]))
+                a=self.agent_update(a,startAttempt={'id':'safe-attempt','submitted':False,
+                    'events':[rows[0][0]] if mutation=='current' else []})
+                with self.assertRaisesRegex(ValueError,'confirmed input receipt'):
+                    repair.repair_idle(self.runtime,a['id'])
+                self.assertEqual(self.forks(),[])
+
+    def test_historical_receipts_need_later_saved_and_observed_terminal_without_events(self):
+        rows = self.legacy_uncertain()
+        a=self.agent_update(self.a,startAttempt={'id':'safe-attempt','submitted':False,'events':[]})
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_event_meta VALUES (?,?)',(self.event['id'],json.dumps({'modelEventProjection':1})))
+            db.execute('DELETE FROM runtime_completed_turns')
+        with self.assertRaisesRegex(ValueError,'later confirmed native terminal'):
+            repair.repair_idle(self.runtime,a['id'])
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_completed_turns VALUES (?)',(a['id']+':turn',))
+        self.records[-1]['payload']['completed_at']=1
+        self.write_records()
+        with self.assertRaisesRegex(ValueError,'later confirmed native terminal'):
+            repair.repair_idle(self.runtime,a['id'])
+        self.records[-1]['payload']['completed_at']=3
+        self.write_records()
+        result=repair.repair_idle(self.runtime,a['id'])
+        self.assertEqual(result['contextRepair']['phase'],'unchanged')
+        self.assertEqual(result['contextRepair']['historicalInputProof']['events'][0]['id'],rows[0][0])
+        count=len(self.server.calls)
+        repair.repair_idle(self.runtime,a['id'])
+        self.assertEqual(len(self.server.calls),count)
+        self.assertEqual(self.forks(),[])
+
     def test_existing_failed_exact_batch_is_recovered_without_new_ids(self):
         error = 'Context repair waits for commands, monitors, and tool receipts'
         ids = ['old-user-' + str(i) for i in range(19)]

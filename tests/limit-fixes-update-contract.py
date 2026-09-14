@@ -27,7 +27,7 @@ class LimitFixesUpdateContract(unittest.TestCase):
             for name in update.SOURCE_SHA if name not in update.NEW_MODULES}
         cls.prior_sources = {commit: {name: subprocess.check_output(
             ['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
-            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70')}
+            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70', '7f77579')}
         cls.helper_old = {}
         cls.helper_versions = {}
         for name, versions in update.HELPER_BASELINES.items():
@@ -463,6 +463,9 @@ class LimitFixesUpdateContract(unittest.TestCase):
 
     def test_exact_a50_implementation_upgrades_with_existing_callbacks(self):
         self.previous_implementation_upgrades('a50ac70')
+
+    def test_exact_7f_implementation_upgrades_with_existing_callbacks(self):
+        self.previous_implementation_upgrades('7f77579')
 
     def test_a50_recovery_guards_and_rollback(self):
         helper = self.legacy_context_helper('a50ac70')
