@@ -73,6 +73,18 @@ export function NativeError({
     ? nativeErrorView(agent.error, planType)
     : error;
   if (!blocked && !retry && recovered) return null;
+  const wait = agent.contextRepairWait;
+  if (
+    !blocked &&
+    !retry &&
+    !connectionCheck &&
+    agent.status === "queued" &&
+    wait?.scope === "local" &&
+    typeof agent.error === "string" &&
+    agent.error === wait.error &&
+    agent.error.startsWith("Context repair waits for monitors: ")
+  )
+    return null;
   return (
     <div
       className={`native-error ${recovery ? "usage-limit" : retry ? "warning" : error.severity}`}

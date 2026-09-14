@@ -27,7 +27,7 @@ class LimitFixesUpdateContract(unittest.TestCase):
             for name in update.SOURCE_SHA if name not in update.NEW_MODULES}
         cls.prior_sources = {commit: {name: subprocess.check_output(
             ['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
-            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70', '7f77579', '94b72e2', '116ed9c')}
+            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70', '7f77579', '94b72e2', '116ed9c', 'f32804d')}
         cls.helper_old = {}
         cls.helper_versions = {}
         for name, versions in update.HELPER_BASELINES.items():
@@ -530,6 +530,59 @@ class LimitFixesUpdateContract(unittest.TestCase):
 
     def test_exact_116_implementation_upgrades_with_existing_callbacks(self):
         self.previous_implementation_upgrades('116ed9c')
+
+    def test_exact_f328_implementation_upgrades_with_existing_callbacks(self):
+        self.previous_implementation_upgrades('f32804d')
+
+    def test_f328_monitor_patch_late_refusal_removes_new_helper(self):
+        helper = self.legacy_context_helper('f32804d')
+        self.assertFalse(hasattr(helper, '_optional_monitor_repair'))
+        before = self.state(), self.helper_state(helper)
+        with patch.object(update, '_active_frames', side_effect=[None, RuntimeError('Controlled late frame failure')]):
+            with self.assertRaisesRegex(RuntimeError, 'Controlled late frame failure'):
+                self.apply()
+        self.assertEqual(before, (self.state(), self.helper_state(helper)))
+        self.assertFalse(hasattr(helper, '_optional_monitor_repair'))
+        self.assertEqual(self.apply()['status'], 'applied')
+        self.assertTrue(callable(helper._optional_monitor_repair))
+        self.assertEqual(self.apply()['status'], 'already_applied')
+
+    def test_f328_monitor_entry_active_frames_block_cutover(self):
+        for method in ('claim_context_wait', 'repair_before_start'):
+            helper = self.legacy_context_helper('f32804d')
+            entered, release = threading.Event(), threading.Event()
+            errors = []
+            def pending():
+                entered.set()
+                if not release.wait(15):
+                    raise AssertionError('Fixture did not release the context entry')
+                raise ValueError('Previous context entry settled')
+            class PendingAgent:
+                def get(self, *args):
+                    return pending()
+            def call():
+                try:
+                    if method == 'claim_context_wait':
+                        helper.claim_context_wait(None, None, PendingAgent())
+                    else:
+                        helper.repair_before_start(None, PendingAgent())
+                except ValueError as error:
+                    errors.append(str(error))
+            thread = threading.Thread(target=call)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                before = self.state(), self.helper_state(helper)
+                with self.subTest(method=method), self.assertRaisesRegex(RuntimeError, 'earlier call.*' + method):
+                    self.apply()
+                self.assertEqual(before, (self.state(), self.helper_state(helper)))
+                self.assertFalse(hasattr(helper, '_optional_monitor_repair'))
+            finally:
+                release.set()
+                thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, ['Previous context entry settled'])
+            self.assertEqual(self.apply()['status'], 'applied')
 
     def test_94b_active_event_read_and_late_failure_preserve_helper(self):
         helper = self.legacy_context_helper('94b72e2')

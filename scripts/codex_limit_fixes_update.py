@@ -1,7 +1,8 @@
 """Apply the reviewed limit fixes without restarting active Studio work.
 
-Python 3.14 admits the exact ccbd147, 7415ada, f496684, a50ac70, 7f77579, 94b72e2 and 116ed9c implementations. Existing functions,
-callbacks, HTTP closure cells, tool lists and runtime objects keep their identity.
+Python 3.14 admits the exact ccbd147, 7415ada, f496684, a50ac70, 7f77579,
+94b72e2, 116ed9c and f32804d implementations. Existing functions, callbacks,
+HTTP closure cells, tool lists and runtime objects keep their identity.
 Schema changes run lazily through future normal calls, never during this patch.
 """
 import ast
@@ -18,13 +19,15 @@ from codex_resource_removal_update import _find_handler
 
 BASE_COMMIT = 'ccbd147'
 # BEGIN REVIEWED MANIFEST
-HELPER_BASELINES = {'codex_context_repair': {'116ed9c': 'a8db6bf4f3dded0d11ad931feafb60d162c3db32dc61aa9c3dd33af0d9e21d06',
+HELPER_BASELINES = {'codex_context_repair': {'f32804d': 'c8d4f4a77ece8838ab3862eda2e9bf6c64a26407627778a9ca0457e95631efd7',
+                          '116ed9c': 'a8db6bf4f3dded0d11ad931feafb60d162c3db32dc61aa9c3dd33af0d9e21d06',
                           '94b72e2': 'cac82e291be01d0cf7615aa51a51f0814c47a3435db2c0c73026342320e9a445',
                           '7f77579': '59e23131f78a9147be0419e0bcae329e7b982e1ae8db65ed475ac5661a7283f5',
                           '7415ada': '200a8196052edd3ced721d8ddfe7511d51a60da180e851e3f2af53fff365ac1f',
                           'a50ac70': '9eaf690e24068685f0ca61a754101515a4b842fe20dae2d01f053e6fb235ddfe',
                           'f496684': 'ccab4526509a2f72e1965444d538b604c8431f305f28a3a7d2da5671e30138f0'}}
-HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
+HELPER_UPGRADES = {'codex_context_repair._optional_monitor_repair': (None, '8e399bd5fdd73ecb1076d6a2a08bfdf35bf9b05da6725835239c603fbf365962'),
+ 'codex_context_repair._callback_barrier': (None,
                                             'df178aeab1b6d277e4dd28ebe213683423a0cbb495a7a2ff59eff9058359dde0'),
  'codex_context_repair._cleanup_source': (None,
                                           '30cb9e12dc6d08a6df8bd30c4d08b0652c0f9d63a49aa168cc07dfd3c3226792'),
@@ -39,7 +42,8 @@ HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
  'codex_context_repair._local_idle': ('93da65b90f9a4b69260118663a8aa0c226a4e26dd9475fd2588045d0e6fe4595',
                                       'd29466729b24a95874f7bb1fb04c17a430292455013b57dee112b5987eab8c77',
                                       '66d114d58b4b157e4aa5d743c48da6e4a100d6e584bee2c21f5613caa9fb9767',
-                                      'd8cc14644760a2064e5be1e5ed16b7cfac9b2d19c2b6be936c09cbd0b0327ed1'),
+                                      'd8cc14644760a2064e5be1e5ed16b7cfac9b2d19c2b6be936c09cbd0b0327ed1',
+                                      'db33f9769072f8c583a63546088943a02b817fa86a3b97727dacc94b326b1b98'),
  'codex_context_repair._native_idle': ('d1a23cf97c939f599747203a6fcdcdc72bc7f54f5483a8752129a6f0d4665d90',
                                        '9a9678fbef3dc3e8c84d70c1023020ad27adfd5e125eaac9058c2e630a7a91ea',
                                        'd51c58eecb0438ed25d9fa2282016fff195d0d8ca53e4aa25941a666f0b1f932',
@@ -77,14 +81,16 @@ HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
  'codex_context_repair.blocked': ('90fc20953e813d3c023e8c2b06ae0d8b3dd8c1a965e5bf799137a873d4b57182',
                                   '9f69686706d049fea0e9cb369d62813b05b17f50ec6cf61cc7d6a2e8269bac81'),
  'codex_context_repair.claim_context_wait': (None,
-                                             'fc10f342d54e135355f452026b968789f0d1e321da2152cfe45568e3891fce6c'),
+                                             'fc10f342d54e135355f452026b968789f0d1e321da2152cfe45568e3891fce6c',
+                                             '105692a9eda133506c5242640c75cd85deef0957d698284868bf10b634a26e46'),
  'codex_context_repair.defer_context_start': (None,
                                               '3986f18f49d1acb3fb05b60f1f8b3d399b41bab3d95c663bbd714181678abd3e'),
  'codex_context_repair.recover_context_failures': (None,
                                                    '8340e5e37ee3c3cdf6525b91b02c2e099769a9a548125244cf6f23455663f138',
                                                    '2ac7d3b3715debf1fa2bcb1bf4a990753d42d130004ad89f0ff03265a2d82987'),
  'codex_context_repair.repair_before_start': ('a17e5d717d5b75610ad80a14691a415ee923e6a0f81766e191f4bf0628076157',
-                                              '8ea452c0c46969b54cd04b81b458fa1ddbdc57b271abf7d767e0deb59597d0b8'),
+                                              '8ea452c0c46969b54cd04b81b458fa1ddbdc57b271abf7d767e0deb59597d0b8',
+                                              '33292662b7991e95340128702be47436c1d2188409527d35b3b96053a478c0dc'),
  'codex_context_repair.sanitized_rollout': ('8eeaf9cda2fa8020627ab9b6e188b2af99f0fe12ebbfe57fe8f478db6f65ac1e',
                                             'f634364cd9bf36650babe05a16fe82ebbe26fb2992abb48ab636f1f86c9f6646',
                                             'c301b951d82a8fbef79158bc4550e0faf136237c5904f5d9a076d2826538db4a',
@@ -228,7 +234,7 @@ SOURCE_SHA = {'codex_account_transfer': 'd3bb785c611b95b27343d6c4aaaf1b3e811cd2d
  'codex_budget': 'fb2a9a60065b7278cd4741c8326c6f06cb581950cb29632f3560dee89e5f0359',
  'codex_canvas': '6e9bb7d6d39cb61078cc6ae851aaff54ae8605c906a1d5a4574840a963608d72',
  'codex_chat_reviews': '6f7a6e2f811d5694b908b2f6447cc45d16440d38ea32db9d760e652e4a177df9',
- 'codex_context_repair': 'c8d4f4a77ece8838ab3862eda2e9bf6c64a26407627778a9ca0457e95631efd7',
+ 'codex_context_repair': '6d656512e8669dfa88e3361a98dec20285515f0e412438d90df9d29b210944eb',
  'codex_efficiency': '339eb402d4c4666acda6e896e928b9abd12aef3680b0470bbacecb7c2305fecc',
  'codex_native_action_receipts': '902646dd0a63dc51a69191abbe69be2746d51e841baf530965e6d1ff8f2dd1a7',
  'codex_native_voice': '8fbff84260eff954a07552c391b42c26dc75509cce91cb6ed93659a7e2dc89d7',

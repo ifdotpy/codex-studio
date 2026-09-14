@@ -89,7 +89,7 @@ def _unsettled_inputs(db, a, attempt_id):
     return historical
 
 
-def _local_idle(rt, db, a, attempt_id):
+def _local_idle(rt, db, a, attempt_id, *, allow_monitors=False):
     from codex_native_errors import assert_native_thread_open
     from codex_safety_buffering import active as safety_active
     assert_native_thread_open(a)
@@ -119,6 +119,8 @@ def _local_idle(rt, db, a, attempt_id):
         ('requests', 'status', ('pending',)),
         ('tool_requests', 'stage', ('queued', 'running')),
     ):
+        if table == 'monitors' and allow_monitors:
+            continue
         if not db.execute('SELECT 1 FROM sqlite_master WHERE name=?', ('runtime_' + table,)).fetchone():
             continue
         nonblocking = " AND coalesce(json_extract(record,'$.method'),'')!='agent/asyncQuestion'" if table == 'requests' else ''
@@ -779,6 +781,27 @@ def recover_context_failures(rt, db, agents):
                                ('The original unsubmitted context wait was restored', key))
 
 
+def _optional_monitor_repair(rt, db, agent):
+    """Keep normal input on its current thread while a monitor runs.
+
+    Event shortening can wait. Submitted repairs, native actions, and input
+    uncertainty cannot use this path. No history or command receipt changes.
+    """
+    attempt = agent.get('startAttempt') or {}
+    if (rt.closed or not _unsubmitted(agent, attempt.get('id'))
+            or not attempt.get('events') or attempt.get('action')
+            or (agent.get('contextRepair') or {}).get('phase') in ACTIVE):
+        return False
+    if not db.execute("SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.agent')=? "
+                      "AND json_extract(record,'$.status') IN ('starting','running','pending','stopping') LIMIT 1",
+                      (agent['id'],)).fetchone():
+        return False
+    try:
+        return not _local_idle(rt, db, agent, attempt['id'], allow_monitors=True)
+    except ValueError:
+        return False
+
+
 def claim_context_wait(rt, db, agent):
     wait = agent.get('contextRepairWait')
     if not isinstance(wait, dict):
@@ -814,7 +837,11 @@ def claim_context_wait(rt, db, agent):
     if time.time() < wait.get('nextCheckAt', 0):
         return {'waiting':True}
     try:
-        _local_idle(rt, db, agent, attempt['id'])
+        optional_monitor = (wait.get('scope') == 'local'
+                            and str(wait.get('error', '')).startswith('Context repair waits for monitors: ')
+                            and _optional_monitor_repair(rt, db, agent))
+        if not optional_monitor:
+            _local_idle(rt, db, agent, attempt['id'])
     except ValueError as error:
         wait.update(error=str(error), nextCheckAt=time.time() + 2)
         agent['error'] = str(error)
@@ -832,6 +859,11 @@ def claim_context_wait(rt, db, agent):
 
 def repair_before_start(rt, agent):
     try:
+        with rt.lock, rt.db() as db:
+            current = rt.agent(agent['id'], db)
+            if _identity(current) == _identity(agent) and not current.get('contextRepairWait'):
+                if _optional_monitor_repair(rt, db, current):
+                    return current
         if (agent.get('contextRepair') or {}).get('phase') in {'unchanged', 'completed'}:
             _callback_barrier(rt.connect(agent.get('accountKey', 'default')))
         return _repair(rt, agent['id'], _attempt(agent))

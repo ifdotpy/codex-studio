@@ -42,27 +42,71 @@ class ContextWait(f.NativeActionRepair):
         self.agent_update(a, contextRepairWait=a['contextRepairWait'])
         self.runtime.dispatch()
 
-    def test_active_monitor_defers_same_input_then_submits_once(self):
+    def test_active_monitor_does_not_block_normal_input_after_compaction(self):
+        source = self.path.read_bytes()
+        self.agent_update(self.a, compactions=1, contextRepair={
+            'phase':'unchanged', 'source':{'threadId':self.tid},
+            'compactions':0, 'checkedEventIds':[self.event['id']]})
         self.monitor()
         self.runtime.send(self.a['id'], 'Keep one exact request.', message_id='wait-user')
         self.runtime.dispatch()
-        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        current = self.runtime.agent(self.a['id'])
+        self.assertFalse(current.get('contextRepairWait'))
+        self.assertEqual(current['threadId'], self.tid)
+        self.assertEqual(self.forks(), [])
+        self.assertEqual(source, self.path.read_bytes())
+        self.runtime.dispatch()
+        starts = [p for m,p in self.server.calls if m == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'wait-user')
+        with self.runtime.db() as db:
+            monitor = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?',
+                                          ('exact-active-monitor',)).fetchone()[0])
+        self.assertEqual(monitor['status'], 'running')
+
+    def test_existing_monitor_wait_resumes_same_input_without_fork(self):
+        self.monitor()
+        self.runtime.send(self.a['id'], 'Keep one exact request.', message_id='wait-user')
+        # Reproduce the pre-update mandatory maintenance gate.
+        with patch.object(repair, '_optional_monitor_repair', return_value=False):
+            self.runtime.dispatch()
+            eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
         waiting = self.runtime.agent(self.a['id'])
         self.assertEqual(waiting['status'], 'queued')
         self.assertIn('monitors: exact-active-monitor', waiting['error'])
         attempt_id = waiting['startAttempt']['id']
         self.due()
-        self.assertEqual(self.forks(), [])
-        self.clear_monitor()
-        self.due()
         eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
         current = self.runtime.agent(self.a['id'])
         self.assertEqual(current['startAttempt']['id'], attempt_id)
         self.assertEqual(current['startAttempt']['events'], ['wait-user'])
-        self.assertEqual(len(self.forks()), 1)
+        self.assertEqual(len(self.forks()), 0)
+        self.assertEqual(current['threadId'], self.tid)
         starts = [p for m,p in self.server.calls if m == 'turn/start']
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['clientUserMessageId'], 'wait-user')
+
+    def test_optional_monitor_path_preserves_uncertain_input_gate(self):
+        self.legacy_uncertain()
+        self.monitor()
+        self.runtime.send(self.a['id'], 'Preserve all receipts.', message_id='uncertain-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.due()
+        self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
+        self.assertEqual(self.forks(), [])
+
+    def test_optional_monitor_path_preserves_other_local_blockers(self):
+        self.monitor()
+        self.runtime.send(self.a['id'], 'Wait for required approval.', message_id='approval-user')
+        self.put('requests', {'id':'approval','agent':self.a['id'],'status':'pending',
+                              'method':'item/commandExecution/requestApproval'})
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.due()
+        self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
+        self.assertEqual(self.forks(), [])
 
     def test_async_question_survives_fork_and_answer_uses_current_thread_once(self):
         question = {'id':'question-exact','agent':self.a['id'],'epoch':self.a['epoch'],
