@@ -202,6 +202,17 @@ def verified_events(db, a):
         "AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') "
         "AND length(e.text)>3000 AND coalesce(json_extract(m.record,'$.modelEventProjection'),0)!=1 "
         "ORDER BY e.created", (a['id'],)) if r['turn_id'] and r['id'] not in repaired]
+    # Versioned role blocks are generated after the first event in a batch.
+    # Their full text persists as user input across native remote compaction.
+    for row in db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
+                          "WHERE e.agent=? AND e.status='delivered' AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') "
+                          "AND json_extract(m.record,'$.contextManifest.versions.roleSkill') IS NOT NULL", (a['id'],)):
+        row = dict(row)
+        context_id = 'studio-role:' + row['id']
+        if row['turn_id'] and context_id not in repaired:
+            version = json.loads(row['metadata'])['contextManifest']['versions']['roleSkill']
+            events.append({**row, 'id':context_id, 'kind':'studio_role', 'roleVersion':version,
+                           'prefix':'[Orchestration event: ' + row['kind'] + ']\n' + row['text']})
     if not events:
         return []
     # A user can quote an actual event in a mixed native input batch. The exact
@@ -210,7 +221,8 @@ def verified_events(db, a):
     for turn, text in db.execute("SELECT turn_id,text FROM runtime_events WHERE agent=? "
                                  "AND kind IN ('user','followup') AND status='delivered'", (a['id'],)):
         users.setdefault(turn, []).append(text)
-    return [e for e in events if not any('[Orchestration event: ' + e['kind'] + ']\n' + e['text'] in text
+    return [e for e in events if not (e['kind'] == 'studio_role' and users.get(e['turn_id']))
+            and not any('[Orchestration event: ' + e['kind'] + ']\n' + e['text'] in text
                                         for text in users.get(e['turn_id'], []))]
 
 
@@ -329,8 +341,9 @@ def _projected_records(segments):
 def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None, *, segments=None, inherited_empty=False):
     """Change exact event prefixes only, with matching native turn provenance.
 
-    Instructions, user text, attachments, summaries and tool receipts retain their
-    values. Unknown input structures never authorize text replacement.
+    User text, attachments, summaries and tool receipts retain their values.
+    Exact versioned Studio role suffixes can be removed: the fork receives the
+    current role in developer instructions. Unknown structures remain intact.
     """
     source, destination = Path(source), Path(destination)
     first = json.loads(next(_prefix_records(source, source.stat().st_size)))
@@ -352,7 +365,7 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
     destination = destination.with_name(destination.name.replace(thread_id, import_id))
     by_turn = {}
     for event in events:
-        if event.get('kind') in KINDS and event.get('turn_id'):
+        if (event.get('kind') in KINDS or event.get('kind') == 'studio_role') and event.get('turn_id'):
             by_turn.setdefault(event['turn_id'], []).append(event)
     changes, saved, matched_messages = [], 0, {}
 
@@ -368,6 +381,22 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
             if content.get('type') != 'input_text' or not isinstance(content.get('text'), str):
                 continue
             text = content['text']
+            role_start = text.rfind('\n\n[Studio role skill: ')
+            if role_start >= 0 and text.endswith('[End Studio role skill]'):
+                from codex_efficiency import digest
+                role = text[role_start + 2:]
+                role_events = [event for event in by_turn.get(turn, []) if event.get('kind') == 'studio_role'
+                               and digest(role) == event.get('roleVersion')
+                               and text.startswith(event['prefix'] + '\n\n')
+                               and len(event['prefix']) <= role_start]
+                if len(role_events) == 1:
+                    event = role_events[0]
+                    matched_messages.setdefault((turn, event['id']), set()).add(item['id'])
+                    saved += len(text[role_start:].encode())
+                    changes.append(event['id'])
+                    text = text[:role_start]
+                    content['text'] = text
+                    changed = True
             # Synthetic events lead their input block. Never search user prose for
             # matching substrings, even when that prose quotes a real event.
             position, replacements = 0, []

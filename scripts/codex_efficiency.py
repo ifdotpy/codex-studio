@@ -354,7 +354,10 @@ class EfficiencyMixin:
         old = json.loads(row[0]).get('contextManifest', {}) if row else {}
         known = dict(old.get('versions', {})) if old.get('epoch') == epoch else {}
         prepared = actor.get('preparedContext') or {}
-        if prepared.get('epoch') == epoch:
+        # Native compaction retains developer instructions on the same thread.
+        # Only preparation proves these blocks were submitted at that priority.
+        prepared_epoch = prepared.get('epoch') or []
+        if prepared_epoch and prepared_epoch[0] == epoch[0]:
             for key, version in prepared.get('versions', {}).items():
                 known.setdefault(key, version)
         mode = actor.get('deliveredMode') or {}
