@@ -129,7 +129,7 @@ try {
   }, "agent monitor starts");
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
-  const drawer = page.getByRole("dialog", { name: /Background tasks/ });
+  const drawer = page.getByRole("dialog", { name: /Current activity/ });
   await drawer.waitFor();
   assert.equal(
     await drawer
@@ -248,24 +248,16 @@ try {
       aggregatedOutput: "Build failed\npackages/runtime: type check failed",
     },
   });
-  await drawer.getByText("Exit 7", { exact: true }).waitFor();
+  await nativeRow.waitFor({ state: "hidden" });
   assert.equal(
-    await drawer.locator(".task-detail").getAttribute("data-task-detail"),
-    agent.id + ":long-build",
-    "keep selected task open on exit",
+    await drawer.locator(`[data-task-detail="${agent.id}:long-build"]`).count(),
+    0,
+    "the selected command disappears when it exits",
   );
-  await drawer.getByText("History", { exact: true }).click();
-  await drawer
-    .locator("[data-task]")
-    .filter({ hasText: "npm run build" })
-    .click();
-  await drawer.getByText("Exit 7", { exact: true }).waitFor();
-  await drawer
-    .locator(".task-output")
-    .filter({ hasText: "type check failed" })
-    .waitFor();
-  await page.screenshot({ path: join(root, "tasks-failed.png") });
-  await drawer.getByText("Active", { exact: true }).click();
+  assert.equal(await drawer.getByText("History", { exact: true }).count(), 0);
+  assert.equal(await drawer.getByLabel("Task status").count(), 0);
+  assert.equal(await drawer.getByText("Exit 7", { exact: true }).count(), 0);
+  await page.screenshot({ path: join(root, "tasks-completed-hidden.png") });
   await drawer
     .locator("[data-task]")
     .filter({ hasText: "watch-fixture --tests" })
@@ -279,20 +271,13 @@ try {
         .status === "cancelled",
     "monitor cancelled",
   );
-  await drawer.getByText("History", { exact: true }).click();
   await drawer
-    .locator("[data-task]")
-    .filter({ hasText: "watch-fixture --tests" })
-    .click();
-  await drawer
-    .locator(".task-detail-top")
-    .getByText("Cancelled", { exact: true })
-    .waitFor();
+    .locator(`[data-task="${monitor.id}"]`)
+    .waitFor({ state: "hidden" });
   assert.equal(
-    await drawer
-      .getByRole("button", { name: "Cancel monitor", exact: true })
-      .count(),
+    await drawer.locator(`[data-task-detail="${monitor.id}"]`).count(),
     0,
+    "a cancelled monitor has no visual history",
   );
   await page.keyboard.press("Escape");
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
@@ -317,7 +302,6 @@ try {
       .count(),
     0,
   );
-  await drawer.getByText("Active", { exact: true }).click();
   await drawer.locator("[data-task]").filter({ hasText: "production" }).click();
   await drawer
     .getByRole("button", { name: "Approve command", exact: true })
@@ -354,7 +338,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Background UI: PASS (chat isolation, live output after turn, failure, approval, cancellation, history, 320px/390px/1440px, focus, no overflow)",
+    "Background UI: PASS (chat isolation, live output after turn, terminal removal, approval, cancellation, active-only, 320px/390px/1440px, focus, no overflow)",
   );
   console.log(root);
 } finally {

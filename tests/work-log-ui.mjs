@@ -47,6 +47,19 @@ try {
       role: "assistant",
       text: `Progress ${i}.\n\n${"A paragraph with the observed result. ".repeat(8)}`,
     })),
+    ...Array.from({ length: 3 }, (_, i) => ({
+      ...shared(),
+      id: `inspect-${turn}-${i}`,
+      role: "tool",
+      toolStatus: "completed",
+      text: JSON.stringify({
+        type: "dynamicToolCall",
+        tool: "inspect_artifact",
+        status: "completed",
+        success: true,
+        output: `Artifact ${i} is valid`,
+      }),
+    })),
     {
       ...shared(),
       id: `read-${turn}`,
@@ -170,7 +183,16 @@ try {
   await work().waitFor();
   assert.match(
     await work().locator(":scope > summary").innerText(),
-    /Read 2 files · Ran 2 commands/,
+    /3 tool calls/,
+  );
+  assert.equal(
+    await page
+      .locator(
+        `[data-message="read-${turn}"], [data-message="check-${turn}"], [data-message="build-${turn}"]`,
+      )
+      .count(),
+    0,
+    "completed commands have no visual history",
   );
   assert.equal(
     await work().locator(".tool-group").count(),

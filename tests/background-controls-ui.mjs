@@ -149,7 +149,7 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
-  const drawer = page.getByRole("dialog", { name: /Background tasks/ });
+  const drawer = page.getByRole("dialog", { name: /Current activity/ });
   assert.equal(
     await drawer
       .getByRole("button", { name: /^(New monitor|Start monitor)$/ })

@@ -1356,14 +1356,14 @@ export default function App() {
               ))}
               <Menu.Item
                 id="tasks-toggle"
-                aria-label={`Background tasks${taskCount ? `, ${taskCount} active` : ""}`}
+                aria-label={`Current activity${taskCount ? `, ${taskCount} active` : ""}`}
                 leftSection={<Activity size={14} />}
                 onClick={() => {
                   setTaskFocus(undefined);
                   setTasksOpen(true);
                 }}
               >
-                Background {taskCount || ""}
+                Activity {taskCount || ""}
               </Menu.Item>
               {agent?.source === "managed" && (
                 <>

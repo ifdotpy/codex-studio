@@ -61,6 +61,7 @@ export const complaintNeedsUserResponse = (complaint: Complaint) =>
 
 export interface BackgroundTask {
   id: string;
+  turnId?: string;
   agent: string;
   kind: "monitor" | "command" | "tool";
   status: string;

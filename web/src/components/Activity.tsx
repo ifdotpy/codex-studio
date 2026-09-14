@@ -85,6 +85,26 @@ export function isFileChange(item: Message) {
   const p = payload(item);
   return p.type === "fileChange";
 }
+export function isPastCommand(item: Message) {
+  if (!["tool", "output"].includes(item.role)) return false;
+  const p = payload(item);
+  const command =
+    (p.type || item.title) === "commandExecution" ||
+    ["exec_command", "write_stdin", "orchestration_monitor"].includes(p.tool);
+  return (
+    command &&
+    ![
+      "running",
+      "inProgress",
+      "starting",
+      "queued",
+      "pending",
+      "approval",
+      "waiting",
+      "stopping",
+    ].includes(item.toolStatus || p.status || "recorded")
+  );
+}
 interface ReadTarget {
   name: string;
   path: string;

@@ -16,7 +16,12 @@ import {
 import { save, saved } from "../api";
 import type { Agent, Message } from "../types";
 import { useTurnErrors } from "./useTurnErrors";
-import Activity, { ToolCard, activitySummary, isFileChange } from "./Activity";
+import Activity, {
+  ToolCard,
+  activitySummary,
+  isFileChange,
+  isPastCommand,
+} from "./Activity";
 import { toolLimitNotice } from "./toolLimitNotice";
 import { turnFailureReason } from "./turnFailureReason";
 import ConversationResults from "./ConversationResults";
@@ -28,6 +33,7 @@ import ReasoningDuration from "./ReasoningDuration";
 function messageGroups(items: Message[]) {
   const groups: (Message | Message[])[] = [];
   for (const item of items) {
+    if (isPastCommand(item)) continue;
     if (isFileChange(item)) groups.push(item);
     else if (["tool", "output"].includes(item.role)) {
       const last = groups.at(-1);
@@ -182,6 +188,11 @@ function Turn({
       item.nativeNotice === "error" ||
       (item.nativeError && !["tool", "output"].includes(item.role)),
   );
+  if (
+    !groupedMessages.length &&
+    !["failed", "interrupted"].includes(group.outcome || "")
+  )
+    return null;
   return (
     <section
       className="turn-history"

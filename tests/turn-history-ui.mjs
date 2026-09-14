@@ -185,20 +185,20 @@ try {
     1,
     "active turn has one work log",
   );
-  assert.equal(await first.locator(".turn-work").getAttribute("open"), null);
+  assert.equal(
+    await first.locator(".turn-work").count(),
+    0,
+    "completed commands leave no work disclosure",
+  );
   assert.equal(
     await first.locator('.file-change-card[data-message="patch1"]').isVisible(),
     true,
-    "file changes stay visible outside the collapsed command log",
-  );
-  assert.equal(
-    await first.locator(".turn-work").evaluate((element) => element.tagName),
-    "DETAILS",
+    "file changes stay visible after completed commands disappear",
   );
   assert.equal(
     await first.locator(".tool-card").count(),
     0,
-    "three historical tools stay lazy while collapsed",
+    "completed command cards are absent",
   );
   const activeWork = page.locator('[data-turn="three"] .turn-work');
   assert.equal(
@@ -251,9 +251,9 @@ try {
     .click();
   await page.locator('[data-message="patch1"]').waitFor({ state: "visible" });
   assert.equal(
-    await first.locator(".turn-work").getAttribute("open"),
-    null,
-    "jumping to an inline patch does not open the unrelated command log",
+    await first.locator(".turn-work").count(),
+    0,
+    "jumping to an inline patch does not restore completed commands",
   );
   await first.getByRole("button", { name: /HTML preview/ }).click();
   await page.getByRole("dialog").locator("iframe").waitFor();
@@ -261,16 +261,15 @@ try {
   await first.getByRole("button", { name: /Mermaid diagram/ }).click();
   await page.getByRole("dialog").locator(".rich-preview-diagram").waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
-  await first.locator(".turn-work > summary").click();
-  assert.equal(await first.locator(".turn-work").getAttribute("open"), "");
-  await first.locator(".turn-work > summary").click();
+  await activeWork.locator(":scope > summary").click();
+  assert.equal(await activeWork.getAttribute("open"), null);
   await page.reload();
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await first.waitFor();
   assert.equal(
-    await first.locator(".turn-work").getAttribute("open"),
+    await activeWork.getAttribute("open"),
     null,
-    "collapse survives reload",
+    "active command disclosure choice survives reload",
   );
   await page.locator("#messages").evaluate((el) => (el.scrollTop = 0));
   await page.screenshot({ path: join(directory, "turn-history-desktop.png") });

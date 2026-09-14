@@ -7,7 +7,7 @@ import {
   Drawer,
   NativeSelect,
   NumberInput,
-  SegmentedControl,
+  Text,
   TextInput,
   Textarea,
   UnstyledButton,
@@ -33,10 +33,14 @@ import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../types";
 
 export const activeTask = (task: BackgroundTask) =>
-  ["running", "starting", "approval"].includes(task.status);
+  ["running", "starting", "approval", "pending", "stopping"].includes(
+    task.status,
+  );
 const labels: Record<string, string> = {
   running: "Running",
   starting: "Starting",
+  pending: "Pending",
+  stopping: "Stopping",
   approval: "Needs approval",
   completed: "Completed",
   failed: "Failed",
@@ -96,6 +100,18 @@ const iconFor = (task: BackgroundTask) =>
     : task.kind === "command"
       ? Terminal
       : Wrench;
+const taskKindLabel = (task: BackgroundTask, owner?: Agent) => {
+  if (task.kind === "monitor") return "Monitor";
+  if (task.kind !== "command") return "Tool";
+  const outsideTurn =
+    task.turnId &&
+    owner &&
+    (owner.inFlight === false ||
+      (owner.inFlight === true &&
+        owner.turnId &&
+        owner.turnId !== task.turnId));
+  return outsideTurn ? "Background command" : "Command";
+};
 export function backgroundTasks(data: Snapshot | null): BackgroundTask[] {
   return [
     ...(data?.runtime.monitors || []).map(
@@ -126,8 +142,7 @@ export default function BackgroundTasks({
   notify: (s: string) => void;
   initialFocus?: { id: string; leadId: string; requestId: string };
 }) {
-  const [tab, setTab] = useState("active"),
-    [kind, setKind] = useState("all"),
+  const [kind, setKind] = useState("all"),
     [query, setQuery] = useState(""),
     [selection, setSelection] = useState<{
       scope?: string;
@@ -142,54 +157,8 @@ export default function BackgroundTasks({
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [opened]);
-  const [history, setHistory] = useState<Json | null>(null);
-  const [historyError, setHistoryError] = useState("");
-  useEffect(() => {
-    if (!opened || !leadId) return;
-    let active = true;
-    let loading = false;
-    const load = async () => {
-      if (loading) return;
-      loading = true;
-      try {
-        const result = await api(
-          `/api/workspace?agent=${encodeURIComponent(leadId)}`,
-        );
-        if (active) {
-          setHistory({ ...result, scope: leadId });
-          setHistoryError("");
-        }
-      } catch (error) {
-        if (active) setHistoryError(errorText(error));
-      } finally {
-        loading = false;
-      }
-    };
-    void load();
-    const timer = setInterval(() => void load(), 5000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [opened, leadId]);
   const agents = data.threads,
-    // Keep live records from the snapshot; scoped history avoids other chats
-    // consuming this conversation's history limit.
-    tasks = [
-      ...new Map(
-        [
-          ...(history && history.scope === leadId
-            ? history.monitors || []
-            : []
-          ).map(
-            (monitor: Json) =>
-              ({ ...monitor, kind: "monitor" }) as BackgroundTask,
-          ),
-          ...(history && history.scope === leadId ? history.tasks || [] : []),
-          ...backgroundTasks(data),
-        ].map((task: BackgroundTask) => [task.id, task]),
-      ).values(),
-    ],
+    tasks = backgroundTasks(data).filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
     (t) =>
@@ -197,20 +166,14 @@ export default function BackgroundTasks({
       (t.agent === leadId || owner(t.agent)?.rootId === leadId) &&
       (kind === "all" || t.kind === kind),
   );
-  const active = scoped.filter(activeTask).length;
+  const active = scoped.length;
   const filtered = scoped
-    .filter(
-      (t) =>
-        (tab === "all" ||
-          (tab === "active" ? activeTask(t) : !activeTask(t))) &&
-        `${taskName(t)} ${owner(t.agent)?.name} ${t.cwd || ""} ${labels[t.status] || t.status}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
+    .filter((t) =>
+      `${taskName(t)} ${owner(t.agent)?.name} ${t.cwd || ""} ${labels[t.status] || t.status}`
+        .toLowerCase()
+        .includes(query.toLowerCase()),
     )
-    .sort(
-      (a, b) =>
-        Number(activeTask(b)) - Number(activeTask(a)) || b.created - a.created,
-    );
+    .sort((a, b) => b.created - a.created);
   const pendingFocus =
     opened &&
     initialFocus?.leadId === leadId &&
@@ -240,7 +203,6 @@ export default function BackgroundTasks({
   }, [leadId, selectedId, selection, explicitId]);
   useEffect(() => {
     setMobileDetail(false);
-    setHistoryError("");
   }, [leadId]);
   useEffect(() => {
     if (!opened) setMobileDetail(false);
@@ -249,7 +211,6 @@ export default function BackgroundTasks({
     if (!opened || !initialFocus || initialFocus.leadId !== leadId) return;
     appliedFocus.current = initialFocus.requestId;
     setSelection({ scope: leadId, id: initialFocus.id, requested: true });
-    setTab("all");
     setKind("all");
     setQuery("");
     setMobileDetail(true);
@@ -266,7 +227,7 @@ export default function BackgroundTasks({
       title={
         <div className="tasks-title">
           <Activity size={19} />
-          <strong>Background tasks</strong>
+          <strong>Current activity</strong>
           <Badge variant="light" color={active ? "indigo" : "gray"} size="sm">
             {active} active
           </Badge>
@@ -278,25 +239,7 @@ export default function BackgroundTasks({
         header: "tasks-drawer-header",
       }}
     >
-      {historyError && (
-        <p role="alert">Could not refresh chat history: {historyError}</p>
-      )}
       <div className="tasks-toolbar">
-        <SegmentedControl
-          aria-label="Task status"
-          value={tab}
-          onChange={(value) => {
-            setTab(value);
-            setSelection(null);
-            setMobileDetail(false);
-          }}
-          data={[
-            { value: "active", label: "Active" },
-            { value: "history", label: "History" },
-            { value: "all", label: "All" },
-          ]}
-          size="xs"
-        />
         <div className="tasks-filters">
           <NativeSelect
             aria-label="Task type"
@@ -307,9 +250,9 @@ export default function BackgroundTasks({
               setMobileDetail(false);
             }}
             data={[
-              { value: "all", label: "All tools" },
-              { value: "monitor", label: "Monitors" },
+              { value: "all", label: "All" },
               { value: "command", label: "Commands" },
+              { value: "monitor", label: "Monitors" },
               { value: "tool", label: "Other tools" },
             ]}
             size="xs"
@@ -335,53 +278,73 @@ export default function BackgroundTasks({
             />
           </div>
           <div className="tasks-rows">
-            {filtered.map((task) => {
-              const Icon = iconFor(task);
-              return (
-                <UnstyledButton
-                  key={task.id}
-                  data-task={task.id}
-                  className={`task-row ${selectedTask?.id === task.id ? "selected" : ""}`}
-                  aria-pressed={selectedTask?.id === task.id}
-                  onClick={() => {
-                    setSelection({ scope: leadId, id: task.id });
-                    setMobileDetail(true);
-                  }}
-                >
-                  <div className="task-row-heading">
-                    <span
-                      className={`task-kind-icon ${activeTask(task) ? "active" : ""}`}
-                    >
-                      <Icon size={16} />
-                    </span>
-                    <span className="task-row-kind">
-                      {task.kind === "monitor"
-                        ? "Monitor"
-                        : task.kind === "command"
-                          ? "Command"
-                          : "Tool"}
-                    </span>
-                    <span className="task-age">{elapsed(task, now)}</span>
-                  </div>
-                  <strong className={task.command ? "task-command-title" : ""}>
-                    {taskName(task)}
-                  </strong>
-                  <div className="task-row-footer">
-                    <span>{owner(task.agent)?.name || "Agent"}</span>
-                    <TaskStatus task={task} />
-                  </div>
-                </UnstyledButton>
+            {(
+              [
+                ["command", "Commands"],
+                ["monitor", "Monitors"],
+                ["tool", "Other tools"],
+              ] as const
+            ).map(([groupKind, label]) => {
+              const groupTasks = filtered.filter(
+                (task) => task.kind === groupKind,
               );
+              return groupTasks.length ? (
+                <section key={groupKind} aria-label={label}>
+                  <Text
+                    component="h3"
+                    size="xs"
+                    c="dimmed"
+                    fw={600}
+                    px="sm"
+                    py="xs"
+                    m={0}
+                  >
+                    {label}
+                  </Text>
+                  {groupTasks.map((task) => {
+                    const Icon = iconFor(task);
+                    return (
+                      <UnstyledButton
+                        key={task.id}
+                        data-task={task.id}
+                        className={`task-row ${selectedTask?.id === task.id ? "selected" : ""}`}
+                        aria-pressed={selectedTask?.id === task.id}
+                        onClick={() => {
+                          setSelection({ scope: leadId, id: task.id });
+                          setMobileDetail(true);
+                        }}
+                      >
+                        <div className="task-row-heading">
+                          <span
+                            className={`task-kind-icon ${activeTask(task) ? "active" : ""}`}
+                          >
+                            <Icon size={16} />
+                          </span>
+                          <span className="task-row-kind">
+                            {taskKindLabel(task, owner(task.agent))}
+                          </span>
+                          <span className="task-age">{elapsed(task, now)}</span>
+                        </div>
+                        <strong
+                          className={task.command ? "task-command-title" : ""}
+                        >
+                          {taskName(task)}
+                        </strong>
+                        <div className="task-row-footer">
+                          <span>{owner(task.agent)?.name || "Agent"}</span>
+                          <TaskStatus task={task} />
+                        </div>
+                      </UnstyledButton>
+                    );
+                  })}
+                </section>
+              ) : null;
             })}
             {!filtered.length && (
               <div className="tasks-empty">
                 <Check size={24} />
                 <strong>
-                  {query
-                    ? "No matching tasks"
-                    : tab === "active"
-                      ? "No active tasks"
-                      : "No task history"}
+                  {query ? "No matching tasks" : "No active tasks"}
                 </strong>
                 <p>
                   {query
@@ -391,10 +354,6 @@ export default function BackgroundTasks({
               </div>
             )}
           </div>
-          <p className="tasks-footnote">
-            All active · Latest 100 finished monitors · Latest{" "}
-            {data.runtime.tasksHistoryLimit || 100} finished tool calls
-          </p>
         </section>
         {selectedTask ? (
           <TaskDetail
@@ -417,11 +376,7 @@ export default function BackgroundTasks({
             <Terminal size={32} />
             <p role="status">
               {explicitId
-                ? historyError
-                  ? "Could not load the selected task."
-                  : history?.scope === leadId
-                    ? "The selected task is no longer available in this chat."
-                    : "Loading the selected task…"
+                ? "The selected task is no longer active in this chat."
                 : "Select a task to inspect its output."}
             </p>
             {explicitId && (
@@ -529,11 +484,7 @@ function TaskDetail({
         </Button>
         <span>
           <Icon size={15} />
-          {task.kind === "monitor"
-            ? "Command monitor"
-            : task.kind === "command"
-              ? "Command"
-              : "Tool call"}
+          {taskKindLabel(task, owner)}
         </span>
         <TaskStatus task={task} />
       </div>
