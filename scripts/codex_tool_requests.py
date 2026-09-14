@@ -105,7 +105,12 @@ def request_result_outcome(record, result):
         return "not_applied"
     if tool == "orchestration_message" and error in _MESSAGE_REJECTIONS:
         return "not_applied"
+    # Exact pre-write guards. Committed operation receipts still take precedence.
     rejections = {
+        "orchestration_task": {"Supply a review decision with 1 to 32000 characters"},
+        "orchestration_result": {"Supply a review decision with 1 to 32000 characters"},
+        "orchestration_message": {"This record belongs to another team"},
+        "orchestration_agent_manage": {"You can manage only your own descendant workers"},
         "orchestration_resource": {
             "Resource reservations were removed. Continue without a board claim.",
             "Unknown workspace tool",

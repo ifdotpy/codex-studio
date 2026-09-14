@@ -59,6 +59,45 @@ class TransferContract(f.AccountContracts):
             self.runtime.put(db, 'agents', a)
         return a
 
+    def test_terminal_rejection_releases_transfer_without_replay(self):
+        key = 'native-source:rejected-tool'
+        with self.runtime.lock, self.runtime.db() as db:
+            actor = self.runtime.agent(self.lead_agent['id'], db)
+            record = {'id': key, 'agent': actor['id'], 'tool': 'orchestration_task',
+                      'stage': 'failed', 'outcome': 'unknown', 'created': time.time(),
+                      'finished': 123.0, 'result': {'success': False, 'contentItems': [
+                          {'type': 'inputText', 'text': 'Supply a review decision with 1 to 32000 characters'}]}}
+            self.runtime.put(db, 'tool_requests', record)
+        transfer = self.start_transfer()
+        self.tick()
+        self.until(lambda: bool(self.pending))
+        self.complete_fork()
+        with self.runtime.db() as db:
+            receipt = self.runtime.tool_request(key, db)
+        self.assertEqual(receipt['outcome'], 'not_applied')
+        self.assertEqual(receipt['finished'], 123.0)
+        self.assertEqual(receipt['result'], record['result'])
+        self.assertFalse(self.runtime.begin_tool_request(key))
+        self.tick()
+        self.assertEqual(self.receipt(transfer['id'])['status'], 'completed')
+
+    def test_unknown_or_committed_operation_keeps_transfer_blocked(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            actor = self.runtime.agent(self.lead_agent['id'], db)
+            record = {'id': 'native-source:unknown', 'agent': actor['id'], 'tool': 'orchestration_task',
+                      'stage': 'failed', 'outcome': 'unknown', 'created': time.time(),
+                      'result': {'success': False, 'contentItems': [
+                          {'type': 'inputText', 'text': 'Native response timed out; outcome unknown'}]}}
+            self.runtime.put(db, 'tool_requests', record)
+            self.assertEqual(self.store.local_blocker(db, actor), 'Waiting for the tool receipt')
+            record['result']['contentItems'][0]['text'] = 'Supply a review decision with 1 to 32000 characters'
+            self.runtime.put(db, 'tool_requests', record)
+            db.execute('INSERT INTO runtime_operation_receipts VALUES (?,?,?)',
+                       (record['id'], 'signature', json.dumps({'already': 'committed'})))
+            self.assertEqual(self.store.local_blocker(db, actor), 'Waiting for the tool receipt')
+            self.assertEqual(self.runtime.tool_request(record['id'], db)['outcome'], 'unknown')
+        self.assertEqual(self.pending, [])
+
     def start_transfer(self):
         return self.store.request(self.lead_agent['id'], self.other_key, str(uuid.uuid4()))
 

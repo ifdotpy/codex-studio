@@ -216,6 +216,7 @@ class AccountTransfers:
                           (a['id'], *statuses)).fetchone():
                 return 'Waiting for background work or a tool response'
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_tool_requests'").fetchone():
+            rt.reconcile_tool_requests(db, a['id'])
             if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? AND "
                           "(json_extract(record,'$.stage') IN ('queued','running') OR "
                           "(json_extract(record,'$.outcome')='unknown' AND coalesce(json_extract(record,'$.created'),?)>=?)) LIMIT 1",

@@ -12,6 +12,10 @@ from codex_tool_requests import request_result_outcome
 
 
 REJECTIONS = (
+    ('orchestration_task', 'Supply a review decision with 1 to 32000 characters'),
+    ('orchestration_result', 'Supply a review decision with 1 to 32000 characters'),
+    ('orchestration_message', 'This record belongs to another team'),
+    ('orchestration_agent_manage', 'You can manage only your own descendant workers'),
     ('orchestration_message', 'Recipient conversation was deleted'),
     ('orchestration_task', 'Supply up to 50 file paths'),
     ('orchestration_result', 'Supply up to 50 file paths'),
