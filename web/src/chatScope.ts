@@ -6,7 +6,7 @@ import {
 } from "./types";
 
 // Private rooms predate rootId metadata. Their participants define the scope.
-// A direct cross-team conversation appears only in its participants' lead chats.
+// Historical cross-team rooms remain visible to the user in the participant chats.
 export function roomLeadIds(room: Room, agents: Agent[]): string[] {
   if (room.kind === "broadcast")
     return room.rootId && room.rootId !== "all" ? [room.rootId] : [];

@@ -1,4 +1,4 @@
-"""Durable timer assignments between existing chats.
+"""Durable timer assignments between agents in one team.
 
 The scheduler only records ordinary runtime events. Native dispatch retains
 ownership of model access, permissions, turn delivery, and recovery.
@@ -35,6 +35,9 @@ def review_schedule(runtime, db, target, data):
     reviewer = runtime.agent(reviewer_id, db)
     if reviewer.get('deletedAt') and (enabled or previous is None):
         raise ValueError('The reviewer chat was deleted')
+    same_team = bool(target.get('rootId')) and target['rootId'] == reviewer.get('rootId')
+    if not same_team and (enabled or previous is None):
+        raise ValueError('Reviews are limited to agents in the same team')
     current = previous['revision'] if previous else 0
     values = {'reviewerId': reviewer_id, 'intervalMinutes': interval, 'enabled': enabled, 'removed': removed}
     same = previous is not None and all(previous.get(key, False) == value for key, value in values.items())
@@ -43,14 +46,15 @@ def review_schedule(runtime, db, target, data):
     if revision != current:
         raise ValueError('The review schedule changed. Reload the chat')
     now = time.time()
-    room_id = 'private:' + ':'.join(sorted([target['id'], reviewer_id]))
-    row = db.execute('SELECT record FROM runtime_rooms WHERE id=?', (room_id,)).fetchone()
-    room = json.loads(row[0]) if row else {
-        'id': room_id, 'kind': 'private', 'members': sorted([target['id'], reviewer_id]),
-    }
-    room.update(updated=now, userHidden=False,
-                reviewTargets=sorted(set(room.get('reviewTargets', [])) | {target['id']}))
-    runtime.put(db, 'rooms', room)
+    room_id = previous['roomId'] if previous else 'private:' + ':'.join(sorted([target['id'], reviewer_id]))
+    if same_team:
+        row = db.execute('SELECT record FROM runtime_rooms WHERE id=?', (room_id,)).fetchone()
+        room = json.loads(row[0]) if row else {
+            'id': room_id, 'kind': 'private', 'members': sorted([target['id'], reviewer_id]),
+        }
+        room.update(updated=now, userHidden=False,
+                    reviewTargets=sorted(set(room.get('reviewTargets', [])) | {target['id']}))
+        runtime.put(db, 'rooms', room)
     if previous:
         _cancel_pending(db, previous, 'The user changed the review schedule')
     entry = {'lastRunAt': None, 'lastEventId': None, 'lastReviewedSeq': None,
@@ -209,7 +213,9 @@ def review_tick(runtime, db, now):
                 row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (entry['reviewerId'],)).fetchone()
                 agents[entry['reviewerId']] = json.loads(row[0]) if row else None
             reviewer = agents.get(entry['reviewerId'])
-            reason = _participant_reason(target, 'Target') or _participant_reason(reviewer, 'Reviewer')
+            same_team = bool(target.get('rootId')) and reviewer and target['rootId'] == reviewer.get('rootId')
+            reason = (None if same_team else 'Reviews are limited to agents in the same team')
+            reason = reason or _participant_reason(target, 'Target') or _participant_reason(reviewer, 'Reviewer')
             if not entry['enabled'] or entry.get('removed') or reason:
                 _cancel_pending(db, entry, reason or 'The review schedule is paused')
                 entry.update(status='blocked' if reason else 'paused', reason=reason)

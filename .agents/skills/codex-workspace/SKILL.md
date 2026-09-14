@@ -74,9 +74,12 @@ with the same rule ID to control it. Resume starts a new observation period.
 Server restart starts a fresh duration check;
 an already sent alert stays suppressed until recovery. These waits use no model calls.
 
-Discover managed identities with `orchestration_peers`. Use `orchestration_message`
-for a parent, lead, private recipient, or broadcast. Read conversations through
+Discover your team's identities with `orchestration_peers`. Use `orchestration_message`
+for a parent, lead, private team recipient, or team broadcast. Read conversations through
 `orchestration_chat_read`. Use actual returned identities and room membership.
+Messages, review timers, and agent history reads stay within one team (`rootId`).
+Do not contact another team or read its chats, including in the same project.
+The `all` message target is not supported.
 Broadcasts notify only active agents. Other agents can read the message in chat history.
 Use a direct follow-up to resume an assignment. Stop superseded workers explicitly;
 an information broadcast does not assign new work.

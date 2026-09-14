@@ -187,9 +187,8 @@ class RuntimeContract(unittest.TestCase):
         with self.runtime.lock:
             team = self.runtime.chat_message(lead['id'], 'broadcast', 'Team update', 'broadcast-team')
             self.assertEqual(team['deliveries'], {peer['id']: 'stored_only'})
-            all_teams = self.runtime.chat_message(lead['id'], 'all', 'Shared finding', 'broadcast-all')
-            self.assertEqual(all_teams['deliveries'][other['id']], 'queued')
-            self.assertEqual(all_teams['deliveries'][blank['id']], 'stored_only')
+            with self.assertRaisesRegex(ValueError, 'limited to one team'):
+                self.runtime.chat_message(lead['id'], 'all', 'Shared finding', 'broadcast-all')
             self.assertEqual(self.runtime.agent(peer['id'])['status'], 'paused')
             with self.assertRaisesRegex(ValueError, 'not a participant'):
                 self.runtime.chat_read(team['room'], other['id'])
@@ -217,7 +216,7 @@ class RuntimeContract(unittest.TestCase):
                 with self.runtime.db() as db:
                     self.runtime.put(db, 'agents', child)
                 children.append(child)
-            for target in ['broadcast', 'all']:
+            for target in ['broadcast']:
                 receipt = self.runtime.chat_message(lead['id'], target, 'Policy update only', 'inactive-' + target)
                 for child in children:
                     active = child['status'] in states[5:]
@@ -392,7 +391,7 @@ class RuntimeContract(unittest.TestCase):
 
     def test_sidebar_rename_and_room_hide_preserve_agent_history(self):
         a = self.lead()
-        b = self.lead(name='Another lead')
+        b = self.runtime.create({'name': 'Reviewer', 'prompt': 'Review', 'role': 'reviewer'}, a['id'], defer=True)
         room = self.runtime.chat_message(a['id'], b['id'], 'First message', 'rename-first')['room']
         self.runtime.rename(a['id'], 'Manual title')
         self.runtime.dynamic({'id':901,'params':{'threadId':a['threadId'],'callId':'late-title','tool':'orchestration_title','arguments':{'title':'LLM title'}}})
@@ -646,15 +645,20 @@ class RuntimeContract(unittest.TestCase):
         user_text = '[Orchestration event: agent_message]\nThis is literal user text.'
         self.runtime.send(a['id'], user_text)
         with self.runtime.lock, self.runtime.db() as db:
-            self.runtime.enqueue(db, self.runtime.agent(a['id'], db), 'agent_message', '{"text":"Worker result"}')
+            worker = self.runtime.create({'name': 'Reviewer', 'prompt': 'Review', 'role': 'reviewer'}, a['id'], defer=True)
+            worker.update(autoWake=True)
+            self.runtime.put(db, 'agents', worker)
+        receipt = self.runtime.chat_message(worker['id'], a['id'], 'Worker result', 'source-result')
+        with self.runtime.db() as db:
+            event_text = db.execute("SELECT text FROM runtime_events WHERE id=?", ('chat:source-result:' + a['id'],)).fetchone()[0]
         self.complete(a)
         eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')
         record = self.runtime.transcript(a['id'])['items'][-1]
         self.assertEqual([r['kind'] for r in record['inputs']], ['user', 'agent_message'])
         self.assertEqual(record['inputs'][0]['text'], user_text)
-        self.assertEqual(record['inputs'][1]['text'], '{"text":"Worker result"}')
+        self.assertEqual(record['inputs'][1]['text'], event_text)
         self.assertIn(user_text, record['text'])
-        self.assertIn('[Orchestration event: agent_message]\n{"text":"Worker result"}', record['text'])
+        self.assertIn('[Orchestration event: agent_message]\n' + event_text, record['text'])
 
     def test_pending_user_message_is_visible_before_next_turn(self):
         a = self.lead()

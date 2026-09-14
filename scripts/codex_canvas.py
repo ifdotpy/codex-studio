@@ -261,6 +261,66 @@ class Canvas:
                        (key, json.dumps(record)))
         return record
 
+    def _team_id(self, key, agents=None):
+        agents = agents if agents is not None else {t["id"]: t for t in self.threads()}
+        seen = set()
+        while key and key not in seen:
+            seen.add(key)
+            agent = agents.get(key, {})
+            if agent.get("rootId"):
+                return ("managed", agent["rootId"])
+            if agent.get("source") == "app-server" and agent.get("wave") and agent.get("runId"):
+                return ("wave", agent["wave"], agent["runId"])
+            if agent.get("source") == "registered":
+                if not agent.get("parentId"):
+                    return ("registered", key)
+                key = agent["parentId"]
+                continue
+            break
+        raise ValueError("The agent team cannot be verified. Use the current team's runtime tools.")
+
+    def _check_chat_team(self, room, members, actor=None):
+        # Historical participants bind the room too. Removing an edge must not
+        # transfer old messages to another team.
+        participants = set(members)
+        with self.connect() as db:
+            group = db.execute("SELECT members FROM groups WHERE id=?", (room,)).fetchone()
+            if group:
+                participants.update(json.loads(group["members"]))
+            for row in db.execute("SELECT author, deliveries FROM messages WHERE room=?", (room,)):
+                if row["author"] != "user":
+                    participants.add(row["author"])
+                participants.update(json.loads(row["deliveries"]))
+        if actor:
+            participants.add(actor)
+        agents = {t["id"]: t for t in self.threads()}
+        teams = {self._team_id(member, agents) for member in participants}
+        if len(teams) > 1:
+            raise ValueError("Communication is limited to one team. This chat contains another team.")
+        return next(iter(teams), None)
+
+    def agent_messages(self, room, actor):
+        with self.lock:
+            group = next((g for g in self.chats() if g["id"] == room), None)
+            members = group["members"] if group else [room]
+            if actor not in members:
+                raise ValueError("The author is not a member of this group.")
+            self._check_chat_team(room, members, actor)
+            return self.messages(room)
+
+    def agent_chats(self, actor):
+        self._team_id(actor)
+        result = []
+        for group in self.chats():
+            if actor not in group["members"]:
+                continue
+            try:
+                self._check_chat_team(group["id"], group["members"], actor)
+            except ValueError:
+                continue
+            result.append(group)
+        return result
+
     def connect_chat(self, source, target, connected=True):
         if not isinstance(connected, bool):
             raise ValueError('connected must be a boolean')
@@ -270,6 +330,9 @@ class Canvas:
                 raise ValueError('The target must be a chat.')
             if connected and not any(t['id'] == source for t in self.threads()):
                 raise ValueError('The source must be a current agent.')
+            if connected:
+                members = next(c["members"] for c in self.chats() if c["id"] == target)
+                self._check_chat_team(target, [*members, source])
             key = identity('chat', source, target)
             if connected:
                 db.execute('INSERT OR IGNORE INTO graph_edges VALUES (?,?,?,?)', (key, source, target, 'chat'))
@@ -353,6 +416,7 @@ class Canvas:
         if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9-]{36}", key):
             raise ValueError("Invalid request identity")
         with self.lock, self.connect() as db:
+            self._check_chat_team(key, members)
             if any(t['id'] == key for t in self.threads()):
                 raise ValueError('This identity belongs to an agent.')
             existing = db.execute("SELECT * FROM groups WHERE id=?", (key,)).fetchone()
@@ -402,6 +466,11 @@ class Canvas:
                 if (previous["room"], previous["author"], previous["text"]) != (room, author, text.strip()):
                     raise ValueError("The request identity already has different content.")
                 deliveries = json.loads(previous["deliveries"])
+                group = next((g for g in self.chats() if g["id"] == room), None)
+                members = group["members"] if group else [room]
+                if author != "user" and author not in members:
+                    raise ValueError("The author is not a member of this group.")
+                self._check_chat_team(room, [*members, *deliveries], None if author == "user" else author)
                 row = {**dict(previous), "deliveries": deliveries}
                 if not any(status == "pending" for status in deliveries.values()):
                     return row
@@ -418,6 +487,7 @@ class Canvas:
                     raise ValueError("This chat is no longer available.")
                 if author != "user" and author not in members:
                     raise ValueError("The author is not a member of this group.")
+                self._check_chat_team(room, members, None if author == "user" else author)
                 deliveries = {m: "pending" for m in members if notify and m != author}
                 row = {"id": key, "room": room, "author": author, "text": text.strip(), "at": time.time(), "deliveries": deliveries}
                 db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (key, room, author, row["text"], row["at"], json.dumps(deliveries)))

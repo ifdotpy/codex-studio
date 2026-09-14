@@ -17,9 +17,12 @@ class ChatReviewsContract(unittest.TestCase):
     setUp = f.WorkspaceContract.setUp
     tearDown = f.WorkspaceContract.tearDown
     lead = f.WorkspaceContract.lead
+    worker = f.WorkspaceContract.worker
+    agent_update = f.WorkspaceContract.agent_update
 
     def pair(self):
-        target, reviewer = self.lead('Target'), self.lead('Reviewer')
+        target = self.lead('Target')
+        reviewer = self.worker(target, 'Reviewer', prompt='')
         with self.runtime.lock, self.runtime.db() as db:
             self.runtime.item(db, target['id'], 'request', 'user', 'Build the exact requested interface')
         return target['id'], reviewer['id']
@@ -53,13 +56,91 @@ class ChatReviewsContract(unittest.TestCase):
             db.execute('INSERT INTO runtime_completed_turns VALUES (?)', (reviewer + ':' + turn,))
         self.update(reviewer, status='completed', inFlight=False)
 
+    def test_foreign_team_schedule_rejected_before_room_or_event_write(self):
+        target, reviewer = self.pair()
+        outsider = self.lead('Other team')['id']
+        with self.runtime.db() as db:
+            before = db.execute('SELECT id,record FROM runtime_rooms ORDER BY id').fetchall()
+        for changes in [{}, {'enabled': False}]:
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, 'same team'):
+                self.configure(target, outsider, **changes)
+        self.assertNotIn('reviewSchedules', self.runtime.agent(target))
+        self.assertEqual(self.events(), [])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT id,record FROM runtime_rooms ORDER BY id').fetchall(), before)
+        self.configure(target, reviewer)
+        self.assertEqual(self.schedule(target)['reviewerId'], reviewer)
+
+    def test_missing_team_identity_fails_closed(self):
+        target, reviewer = self.pair()
+        self.update(target, rootId=None)
+        self.update(reviewer, rootId=None)
+        with self.assertRaisesRegex(ValueError, 'same team'):
+            self.configure(target, reviewer)
+        self.assertNotIn('reviewSchedules', self.runtime.agent(target))
+
+    def test_existing_foreign_schedule_cancels_only_pending_and_preserves_history(self):
+        for status in ['pending', 'reserved', 'dispatching', 'uncertain', 'delivered']:
+            with self.subTest(status=status):
+                target, reviewer = self.pair()
+                self.configure(target, reviewer)
+                self.tick(2800)
+                event_id = self.schedule(target)['lastEventId']
+                with self.runtime.db() as db:
+                    db.execute('UPDATE runtime_events SET status=?,turn_id=? WHERE id=?',
+                               (status, 'existing-turn', event_id))
+                    before = dict(db.execute('SELECT * FROM runtime_events WHERE id=?', (event_id,)).fetchone())
+                self.update(reviewer, rootId=reviewer, inFlight=status == 'dispatching')
+                with patch('codex_chat_reviews._snapshot', side_effect=AssertionError('Read foreign chat')):
+                    self.tick(50000)
+                schedule = self.schedule(target)
+                self.assertEqual(schedule['status'], 'blocked')
+                self.assertEqual(schedule['reason'], 'Reviews are limited to agents in the same team')
+                self.assertEqual(schedule['lastEventId'], event_id)
+                with self.runtime.db() as db:
+                    after = dict(db.execute('SELECT * FROM runtime_events WHERE id=?', (event_id,)).fetchone())
+                expected = dict(before)
+                if status == 'pending':
+                    expected.update(status='cancelled', error=schedule['reason'])
+                self.assertEqual(after, expected)
+                self.assertEqual(self.runtime.agent(reviewer)['inFlight'], status == 'dispatching')
+                self.assertTrue(self.runtime.agent(reviewer)['autoWake'])
+                count = len(self.events())
+                self.tick(60000)
+                self.assertEqual(len(self.events()), count)
+
+    def test_foreign_schedule_can_be_removed_without_room_changes_but_not_enabled(self):
+        target, reviewer = self.pair()
+        self.configure(target, reviewer)
+        self.tick(2800)
+        room_id = self.schedule(target)['roomId']
+        self.update(reviewer, rootId=reviewer)
+        with self.runtime.db() as db:
+            before = db.execute('SELECT record FROM runtime_rooms WHERE id=?', (room_id,)).fetchone()[0]
+        with self.assertRaisesRegex(ValueError, 'same team'):
+            self.configure(target, reviewer, expected_revision=1)
+        self.configure(target, reviewer, expected_revision=1, enabled=False, removed=True)
+        removed = self.schedule(target)
+        self.configure(target, reviewer, expected_revision=1, enabled=False, removed=True)
+        self.assertEqual(self.schedule(target), removed)
+        self.assertTrue(removed['removed'])
+        self.assertEqual(self.events()[0]['status'], 'cancelled')
+        with self.assertRaisesRegex(ValueError, 'same team'):
+            self.configure(target, reviewer, expected_revision=2)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT record FROM runtime_rooms WHERE id=?', (room_id,)).fetchone()[0], before)
+
     def test_default_timer_room_and_restart_persistence_without_model_call(self):
         target, reviewer = self.pair()
+        calls_before = list(self.runtime.server.calls)
         self.configure(target, reviewer)
         schedule = self.schedule(target)
         self.assertEqual((schedule['intervalMinutes'], schedule['nextAt'], schedule['revision']), (30, 2800, 1))
         self.assertEqual(self.events(), [])
-        self.assertIsNone(self.runtime.server)
+        # Worker creation reads the catalog. Review settings must not call it
+        # again or start a model turn.
+        self.assertEqual(self.runtime.server.calls, calls_before)
+        self.assertFalse(any(method == 'turn/start' for method, _ in self.runtime.server.calls))
         room = self.runtime.chat_read(schedule['roomId'], reviewer)['room']
         self.assertEqual(room['reviewTargets'], [target])
         self.runtime.close()
@@ -251,12 +332,13 @@ class ChatReviewsContract(unittest.TestCase):
         self.assertEqual(len(self.events()), 1)
         self.tick(4600)
         self.assertEqual(len(self.events()), 1)
-        empty, fresh = self.lead('Empty')['id'], self.lead('Fresh reviewer')['id']
+        empty_agent = self.lead('Empty')
+        empty, fresh = empty_agent['id'], self.worker(empty_agent, 'Fresh reviewer', prompt='')['id']
         self.configure(empty, fresh)
         self.tick(2800)
         self.assertEqual(self.schedule(empty)['reason'], 'The target chat has no messages')
 
-    def test_shared_room_cross_team_messages_both_directions_and_viewer_boundary(self):
+    def test_shared_room_same_team_messages_both_directions_and_viewer_boundary(self):
         target, reviewer = self.pair()
         outsider = self.lead('Outsider')['id']
         self.configure(target, reviewer)
@@ -273,7 +355,7 @@ class ChatReviewsContract(unittest.TestCase):
 
     def test_multiple_and_reciprocal_assignments_preserve_runtime_queue_state(self):
         target, reviewer = self.pair()
-        second = self.lead('Second reviewer')['id']
+        second = self.worker(self.runtime.agent(target), 'Second reviewer', prompt='')['id']
         with self.runtime.db() as db:
             self.runtime.item(db, reviewer, 'own-request', 'user', 'Review my work too')
         self.configure(target, reviewer)

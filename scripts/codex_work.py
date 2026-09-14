@@ -431,8 +431,7 @@ class WorkMixin:
                         )
             readable = {
                 r["id"]
-                for r in self.chat_rooms(db)
-                if not caller or caller["id"] in r["members"]
+                for r in self.chat_rooms(db, caller["id"] if caller else None)
             }
             for row in db.execute(
                 "SELECT id,room,sender,text FROM runtime_chat_messages WHERE instr(lower(text),lower(?))>0 ORDER BY seq DESC LIMIT 1000",

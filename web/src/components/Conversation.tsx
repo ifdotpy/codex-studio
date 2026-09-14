@@ -1173,7 +1173,9 @@ export default function Conversation(p: {
           {p.room.kind === "private"
             ? "Private between participants. Visible to you."
             : "Broadcast to " +
-              (p.room.rootId === "all" ? "all teams." : "this team.")}
+              (p.room.rootId === "all"
+                ? "all teams (historical, read only)."
+                : "this team.")}
         </p>
       ) : (
         <>

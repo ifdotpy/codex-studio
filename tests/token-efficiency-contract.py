@@ -103,8 +103,8 @@ class EfficiencyContract(unittest.TestCase):
         peers = self.runtime.model_directory(other['id'], 'orchestration_peers', {})
         self.assertEqual([a['id'] for a in peers['items']], [other['id']])
         self.assertNotIn('private:', packed(peers))
-        cross = self.runtime.model_directory(other['id'], 'orchestration_peers', {'scope': 'all'})
-        self.assertIn(lead['id'], [a['id'] for a in cross['items']])
+        with self.assertRaisesRegex(ValueError, 'limited to your team'):
+            self.runtime.model_directory(other['id'], 'orchestration_peers', {'scope': 'all'})
         with self.assertRaisesRegex(ValueError, 'Unknown monitor'):
             self.runtime.model_context(other['id'], {'topic': 'monitor', 'id': 'm'})
 

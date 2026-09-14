@@ -32,6 +32,10 @@ class CanvasContract(unittest.TestCase):
                                "turnStatus": "running", "goalStatus": "active", "launcherPid": os.getpid(),
                                "boardOwner": wave + ":run-" + wave + ":worker"}])
 
+        one = json.loads((self.root / "codex-swarm-status.one.json").read_text())
+        one.append({**one[0], "name": "peer", "threadId": "thread-peer", "boardOwner": "one:run-one:peer"})
+        self.write("one", one)
+
     def tearDown(self):
         self.env.stop()
         self.temp.cleanup()
@@ -41,7 +45,7 @@ class CanvasContract(unittest.TestCase):
 
     def group(self):
         key = str(uuid.uuid4())
-        ids = [t["id"] for t in self.canvas.threads()]
+        ids = [t["id"] for t in self.canvas.threads() if t["wave"] == "one"]
         self.canvas.create_chat("Runtime team", ids, key)
         return key, ids
 
@@ -55,7 +59,7 @@ class CanvasContract(unittest.TestCase):
     def test_chat_is_a_node_and_connections_define_membership(self):
         chat = str(uuid.uuid4())
         self.canvas.create_chat('Independent chat', [], chat)
-        first, second = [t['id'] for t in self.canvas.threads()]
+        first, second = [t['id'] for t in self.canvas.threads() if t['wave'] == 'one']
         self.canvas.connect_chat(first, chat)
         self.canvas.connect_chat(first, chat)
         other = str(uuid.uuid4())
@@ -123,7 +127,7 @@ class CanvasContract(unittest.TestCase):
     def test_cli_creates_chat_and_connects_native_agent(self):
         result = subprocess.run([str(SCRIPTS/'codex-graph'), 'agent', '--id','host-root','--name','Lead'], capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
-        created = subprocess.run([str(SCRIPTS/'codex-chat'),'create','Planning'],capture_output=True,text=True)
+        created = subprocess.run([str(SCRIPTS/'codex-chat'),'create','Planning','--agent','host-root'],capture_output=True,text=True)
         self.assertEqual(created.returncode,0,created.stderr)
         chat = json.loads(created.stdout)['id']
         connected = subprocess.run([str(SCRIPTS/'codex-chat'),'connect',chat,'--agent','host-root'],capture_output=True,text=True)
@@ -133,9 +137,9 @@ class CanvasContract(unittest.TestCase):
         self.assertEqual(self.canvas.messages(chat)[0]['author'],'host-root')
 
     def test_chat_reads_do_not_write_state(self):
-        chat, _ = self.group()
+        chat, ids = self.group()
         before = {p.name:p.stat().st_mtime_ns for p in self.root.iterdir()}
-        for command, args in [('codex-chat',['list']),('codex-chat',['read',chat]),('codex-graph',['list'])]:
+        for command, args in [('codex-chat',['list','--agent',ids[0]]),('codex-chat',['read',chat,'--agent',ids[0]]),('codex-graph',['list'])]:
             result = subprocess.run([str(SCRIPTS/command),*args],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(before, {p.name:p.stat().st_mtime_ns for p in self.root.iterdir()})
@@ -157,8 +161,8 @@ class CanvasContract(unittest.TestCase):
         key = str(uuid.uuid4())
         result = self.canvas.post(room, "inspect only", key)
         self.assertEqual(set(result["deliveries"].values()), {"queued"})
-        for wave in ("one", "two"):
-            inbox = self.root / f"codex-inbox.{wave}.run-{wave}" / "worker.json"
+        for name in ("worker", "peer"):
+            inbox = self.root / "codex-inbox.one.run-one" / f"{name}.json"
             text = json.loads(inbox.read_text())["text"]
             self.assertIn("inspect only", text)
             self.assertIn("codex-chat", text)
@@ -188,8 +192,9 @@ class CanvasContract(unittest.TestCase):
     def test_new_run_cannot_receive_old_group_message(self):
         room, ids = self.group()
         self.write("one", [{"name": "worker", "threadId": "replacement", "runId": "new-run", "turnStatus": "running", "launcherPid": os.getpid()}])
-        result = self.canvas.post(room, "old run only", str(uuid.uuid4()))
-        self.assertTrue(result["deliveries"][ids[0]].startswith("failed:"))
+        with self.assertRaisesRegex(ValueError, "team cannot be verified"):
+            self.canvas.post(room, "old run only", str(uuid.uuid4()))
+        self.assertEqual(self.canvas.messages(room), [])
         self.assertFalse((self.root / "codex-inbox.one.new-run").exists())
 
     def test_steer_rejects_identity_change_after_canvas_read(self):
@@ -209,12 +214,13 @@ class CanvasContract(unittest.TestCase):
         current_bytes = second_path.read_bytes()
         threads = {t["id"]: t for t in self.canvas.threads()}
         self.assertEqual(threads[ids[0]]["agentOwner"], "one:run-one:worker")
-        self.assertEqual(threads[ids[1]]["agentOwner"], "two:run-two:worker")
+        foreign = next(t for t in threads.values() if t["wave"] == "two")
+        self.assertEqual(foreign["agentOwner"], "two:run-two:worker")
         self.assertTrue(all("boardOwner" not in t for t in threads.values()))
         cases = [
             (["--owner", "one:run-one:worker"], {}, ids[0]),
             ([], {"CODEX_BOARD_OWNER": "one:run-one:worker"}, ids[0]),
-            ([], {"CODEX_AGENT_OWNER": "two:run-two:worker", "CODEX_BOARD_OWNER": "wrong-owner"}, ids[1]),
+            ([], {"CODEX_AGENT_OWNER": "one:run-one:peer", "CODEX_BOARD_OWNER": "wrong-owner"}, ids[1]),
         ]
         for index, (args, overrides, author) in enumerate(cases):
             env = {**os.environ, "CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": "", **overrides}
@@ -228,6 +234,130 @@ class CanvasContract(unittest.TestCase):
         self.assertEqual(second_path.read_bytes(), current_bytes)
         with self.assertRaisesRegex(ValueError, "not a member"):
             self.canvas.post(room, "intruder", str(uuid.uuid4()), author="foreign", notify=False)
+
+    def test_cross_team_create_connect_and_post_fail_before_delivery(self):
+        room, ids = self.group()
+        foreign = next(t["id"] for t in self.canvas.threads() if t["wave"] == "two")
+        with self.assertRaisesRegex(ValueError, "one team"):
+            self.canvas.create_chat("Mixed", [ids[0], foreign], str(uuid.uuid4()))
+        with self.assertRaisesRegex(ValueError, "one team"):
+            self.canvas.connect_chat(foreign, room)
+        self.assertEqual(next(g for g in self.canvas.chats() if g["id"] == room)["members"], sorted(ids))
+        # A pre-upgrade room can already contain both teams.
+        with self.canvas.connect() as db:
+            db.execute("INSERT INTO graph_edges VALUES (?,?,?,?)", ("old-foreign-edge", foreign, room, "chat"))
+        with patch("codex_canvas.subprocess.run") as send:
+            for author in ("user", ids[0]):
+                with self.assertRaisesRegex(ValueError, "one team"):
+                    self.canvas.post(room, "No relay", str(uuid.uuid4()), author=author)
+            send.assert_not_called()
+        self.assertEqual(self.canvas.messages(room), [])
+
+    def test_old_mixed_room_retry_and_read_cannot_bypass_team_guard(self):
+        room, ids = self.group()
+        foreign = next(t["id"] for t in self.canvas.threads() if t["wave"] == "two")
+        key = str(uuid.uuid4())
+        with self.canvas.connect() as db:
+            db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)",
+                       (key, room, "user", "Old mixed delivery", 1, json.dumps({ids[0]: "queued", foreign: "pending"})))
+        with patch("codex_canvas.subprocess.run") as send:
+            with self.assertRaisesRegex(ValueError, "one team"):
+                self.canvas.post(room, "Old mixed delivery", key)
+            send.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "one team"):
+            self.canvas.agent_messages(room, ids[0])
+        self.assertEqual(self.canvas.agent_chats(ids[0]), [])
+        # User history and its original receipts stay intact.
+        self.assertEqual(self.canvas.messages(room)[0]["deliveries"][foreign], "pending")
+        with self.assertRaisesRegex(ValueError, "one team"):
+            self.canvas.connect_chat(ids[1], room)
+
+    def test_managed_teams_use_stored_root_and_unknown_teams_fail(self):
+        agents = {
+            "a": {"id": "a", "rootId": "one", "source": "managed"},
+            "b": {"id": "b", "rootId": "two", "source": "managed"},
+            "unknown": {"id": "unknown", "source": "managed", "cwd": "/same"},
+        }
+        with patch.object(self.canvas, "threads", return_value=list(agents.values())):
+            with self.assertRaisesRegex(ValueError, "one team"):
+                self.canvas.create_chat("Mixed", ["a", "b"], str(uuid.uuid4()))
+            with self.assertRaisesRegex(ValueError, "team cannot be verified"):
+                self.canvas.create_chat("Unknown", ["unknown"], str(uuid.uuid4()))
+
+    def test_cli_preserves_user_reads_and_rejects_foreign_agent_access(self):
+        room, ids = self.group()
+        foreign = next(t["id"] for t in self.canvas.threads() if t["wave"] == "two")
+        self.canvas.post(room, "Private team history", str(uuid.uuid4()), author=ids[0], notify=False)
+        user_env = {**os.environ, "CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}
+        user_read = subprocess.run([str(SCRIPTS / "codex-chat"), "read", room], env=user_env, capture_output=True, text=True)
+        self.assertEqual(user_read.returncode, 0, user_read.stderr)
+        self.assertIn("Private team history", user_read.stdout)
+        cases = [
+            (["read", room, "--agent", foreign], {}, "not a member"),
+            (["connect", room, "--agent", foreign], {"CODEX_AGENT_OWNER": "one:run-one:worker"}, "one team"),
+            (["disconnect", room, "--agent", ids[0]], {"CODEX_AGENT_OWNER": "two:run-two:worker"}, "one team"),
+            (["read", room, "--owner", "one:run-one:worker"], {"CODEX_AGENT_OWNER": "two:run-two:worker"}, "inherited worker"),
+        ]
+        for args, overrides, error in cases:
+            env = {**os.environ, "CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": "", **overrides}
+            result = subprocess.run([str(SCRIPTS / "codex-chat"), *args], env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(error, result.stderr)
+            self.assertNotIn("Private team history", result.stdout)
+        self.assertEqual(next(g for g in self.canvas.chats() if g["id"] == room)["members"], sorted(ids))
+
+    def test_cli_managed_actor_uses_runtime_tools(self):
+        with self.canvas.connect() as db:
+            db.execute("CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            record = {"id": "managed", "rootId": "managed", "name": "Lead", "agentOwner": "managed-owner"}
+            db.execute("INSERT INTO runtime_agents VALUES (?,?)", ("managed", json.dumps(record)))
+        for args, owner in ((["--agent", "managed"], ""), ([], "managed-owner")):
+            env = {**os.environ, "CODEX_AGENT_OWNER": owner, "CODEX_BOARD_OWNER": ""}
+            result = subprocess.run([str(SCRIPTS / "codex-chat"), "list", *args], env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("runtime chat tools", result.stderr)
+
+    def test_steer_inherited_owner_cannot_select_foreign_wave_or_run(self):
+        self.write("one", [
+            {"name": "worker", "threadId": "thread-one", "runId": "run-one", "launcherPid": os.getpid(),
+             "agentOwner": "one:run-one:worker"},
+            {"name": "peer", "threadId": "thread-peer", "runId": "run-one", "launcherPid": os.getpid()},
+            {"name": "stale", "threadId": "thread-old", "runId": "old-run", "launcherPid": os.getpid()},
+        ])
+        for variable in ("CODEX_AGENT_OWNER", "CODEX_BOARD_OWNER"):
+            env = {**os.environ, "CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": "", variable: "one:run-one:worker"}
+            for wave, worker in (("two", "worker"), ("one", "stale")):
+                result = subprocess.run([str(SCRIPTS / "codex-steer"), "--wave", wave, worker, "No relay"],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("one team", result.stderr)
+                self.assertFalse(list(self.root.glob("codex-inbox.*")))
+            result = subprocess.run([str(SCRIPTS / "codex-steer"), "--wave", "one", "peer", "Same team"],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inbox = self.root / "codex-inbox.one.run-one" / "peer.json"
+            self.assertEqual(json.loads(inbox.read_text())["text"], "Same team\n")
+            inbox.unlink()
+            inbox.parent.rmdir()
+        env = {**os.environ, "CODEX_AGENT_OWNER": "managed:agent-id", "CODEX_BOARD_OWNER": ""}
+        result = subprocess.run([str(SCRIPTS / "codex-steer"), "--wave", "one", "peer", "No relay"],
+                                env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("runtime tools", result.stderr)
+        self.assertFalse(list(self.root.glob("codex-inbox.*")))
+
+    def test_graph_refuses_agent_context_before_read_or_registration(self):
+        before = self.canvas.snapshot()
+        for variable in ("CODEX_AGENT_OWNER", "CODEX_BOARD_OWNER"):
+            env = {**os.environ, "CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": "", variable: "one:run-one:worker"}
+            for args in (["list"], ["agent", "--id", "foreign-parent", "--name", "Foreign"]):
+                result = subprocess.run([str(SCRIPTS / "codex-graph"), *args], env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("team runtime tools", result.stderr)
+                self.assertEqual(result.stdout, "")
+        after = self.canvas.snapshot()
+        self.assertEqual(before["nodes"], after["nodes"])
+        self.assertEqual(before["edges"], after["edges"])
 
     def test_transcript_appends_and_omits_internal_reasoning(self):
         folder = self.profile / "sessions/2026/09/05"
@@ -283,7 +413,7 @@ class CanvasContract(unittest.TestCase):
             self.assertEqual(request("/", headers={"Host": "evil.example"})[0], 403)
             self.assertEqual(request("/api/state", headers={"Origin": "https://evil.example"})[0], 403)
             self.assertEqual(request("/api/chats", {})[0], 403)
-            body = {"id": str(uuid.uuid4()), "name": "team", "members": [t["id"] for t in self.canvas.threads()]}
+            body = {"id": str(uuid.uuid4()), "name": "team", "members": [t["id"] for t in self.canvas.threads() if t["wave"] == "one"]}
             headers = {"Origin": base, "X-Canvas-Token": token}
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/api/chats", body, headers)[0], 200)

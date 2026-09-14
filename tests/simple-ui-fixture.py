@@ -115,8 +115,19 @@ if os.environ.get('SCOPED_ROOMS_UI_FIXTURE'):
         active['autoWake'] = True
         c.runtime.put(db, 'agents', active)
     c.runtime.chat_message(other['id'], 'broadcast', 'Only the second conversation', 'scope-other-broadcast')
-    c.runtime.chat_message(child['id'], other['id'], 'Direct cross-team discussion', 'scope-cross-team')
-    c.runtime.chat_message(child['id'], 'all', 'Global broadcast stays outside chat lists', 'scope-global')
+    # Historical rooms remain visible to the user after team isolation.
+    with c.runtime.lock, c.runtime.db() as db:
+        for room, message_id, text in [
+            ({'id': 'private:' + ':'.join(sorted([child['id'], other['id']])),
+              'kind': 'private', 'members': sorted([child['id'], other['id']])},
+             'scope-cross-team', 'Direct cross-team discussion'),
+            ({'id': 'broadcast:all', 'kind': 'broadcast', 'rootId': 'all'},
+             'scope-global', 'Global broadcast stays outside chat lists'),
+        ]:
+            room['updated'] = __import__('time').time()
+            c.runtime.put(db, 'rooms', room)
+            db.execute('INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)',
+                       (message_id, room['id'], child['id'], text, room['updated'], '{}'))
 c.runtime.connect().gate.set()
 if os.environ.get('MESSAGES_UI_FIXTURE'):
     c.runtime.complaint(lead['id'], {'action': 'submit', 'text': 'Please confirm the release scope.'}, 'messages-lead')

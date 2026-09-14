@@ -17,20 +17,38 @@ parser.add_argument("--agent", help="Exact agent identity for a connection or na
 parser.add_argument("--id", help="Stable request identity for creation or message retries")
 args = parser.parse_args()
 try:
+    inherited_owner = os.environ.get("CODEX_AGENT_OWNER") or os.environ.get("CODEX_BOARD_OWNER")
+    if inherited_owner and args.owner != inherited_owner:
+        raise ValueError("The owner must match the inherited worker identity.")
     canvas = Canvas(read_only=args.action in ('read', 'list'))
-    if args.action == "list":
-        result = canvas.chats()
-    elif args.action == "create" and args.chat:
-        result = canvas.create_chat(args.chat, [], args.id or str(uuid.uuid4()))
-    elif args.action in ('connect', 'disconnect') and args.chat and args.agent:
-        result = canvas.connect_chat(args.agent, args.chat, args.action == 'connect')
-    elif args.action == "read" and args.chat:
-        result = canvas.messages(args.chat)
-    elif args.action == "post" and args.chat and args.text and (args.owner or args.agent):
-        rows = [t for t in canvas.threads() if (t['id'] == args.agent if args.agent else t.get("agentOwner", t.get("boardOwner")) == args.owner)]
+    # Resolve the inherited worker identity first. --agent selects a connection
+    # target and must not replace that identity.
+    actor = None
+    if args.owner or args.agent:
+        rows = [t for t in canvas.threads() if (
+            t.get("agentOwner", t.get("boardOwner")) == args.owner if args.owner else t['id'] == args.agent)]
         if len(rows) != 1:
             raise ValueError("The owner must identify one current worker.")
-        result = canvas.post(args.chat, args.text, args.id or str(uuid.uuid4()), author=rows[0]["id"], notify=False)
+        actor = rows[0]
+        if actor.get("source") == "managed":
+            raise ValueError("Managed agents must use their runtime chat tools, which verify the current team.")
+        canvas._team_id(actor["id"])
+    if args.action == "list":
+        result = canvas.agent_chats(actor["id"]) if actor else canvas.chats()
+    elif args.action == "create" and args.chat:
+        result = canvas.create_chat(args.chat, [actor["id"]] if actor else [], args.id or str(uuid.uuid4()))
+    elif args.action in ('connect', 'disconnect') and args.chat and args.agent:
+        group = next((g for g in canvas.chats() if g["id"] == args.chat), None)
+        if not group:
+            raise ValueError("The target must be a chat.")
+        canvas._check_chat_team(args.chat, [*group["members"], args.agent], actor["id"])
+        result = canvas.connect_chat(args.agent, args.chat, args.action == 'connect')
+    elif args.action == "read" and args.chat:
+        result = canvas.agent_messages(args.chat, actor["id"]) if actor else canvas.messages(args.chat)
+    elif args.action == "post" and args.chat and args.text and actor:
+        if args.agent and args.agent != actor["id"]:
+            raise ValueError("The agent must match the inherited worker identity.")
+        result = canvas.post(args.chat, args.text, args.id or str(uuid.uuid4()), author=actor["id"], notify=False)
     else:
         parser.error("create needs NAME. connect/disconnect need CHAT --agent ID. post needs CHAT TEXT and --owner or --agent.")
     print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -55,9 +55,15 @@ export default function ReviewSchedules({
   for (const item of Object.values(known))
     if ((schedules.get(item.reviewerId)?.revision || 0) < item.revision)
       schedules.set(item.reviewerId, item);
+  const teamId = agent.rootId || (agent.isLead ? agent.id : undefined);
+  const sameTeam = (candidate?: Agent) =>
+    !!teamId &&
+    candidate?.source === "managed" &&
+    (candidate.rootId || (candidate.isLead ? candidate.id : undefined)) ===
+      teamId;
   const choices = agents.filter(
     (candidate) =>
-      candidate.source === "managed" &&
+      sameTeam(candidate) &&
       candidate.id !== agent.id &&
       !candidate.deletedAt &&
       (!schedules.has(candidate.id) || schedules.get(candidate.id)?.removed),
@@ -69,6 +75,14 @@ export default function ReviewSchedules({
     removed = false,
   ) => {
     if (lock.current) return;
+    if (
+      enabled &&
+      !removed &&
+      !sameTeam(agents.find((item) => item.id === reviewerId))
+    ) {
+      setError("Reviewers must belong to this team.");
+      return;
+    }
     lock.current = true;
     setPending(true);
     setError("");
@@ -146,8 +160,8 @@ export default function ReviewSchedules({
     <section className="review-schedules" aria-label="Chat reviewers">
       <Text fw={600}>Reviewers</Text>
       <Text size="sm" c="dimmed">
-        Another chat checks this chat on a timer. Both agents can discuss
-        findings in Messages.
+        An agent in this team checks this chat on a timer. Both agents can
+        discuss findings in Messages.
       </Text>
       {[...schedules.values()]
         .filter((item) => !item.removed)
@@ -158,6 +172,9 @@ export default function ReviewSchedules({
             reviewer={agents.find(
               (candidate) => candidate.id === item.reviewerId,
             )}
+            sameTeam={sameTeam(
+              agents.find((candidate) => candidate.id === item.reviewerId),
+            )}
             pending={pending}
             save={save}
             openRoom={openRoom}
@@ -165,7 +182,7 @@ export default function ReviewSchedules({
         ))}
       <Select
         label="Reviewer chat"
-        placeholder="Select a chat"
+        placeholder="Select a team agent"
         searchable
         clearable
         data={choices.map((candidate) => ({
@@ -175,7 +192,7 @@ export default function ReviewSchedules({
         value={reviewer}
         onChange={setReviewer}
         disabled={pending}
-        nothingFoundMessage="No matching chats"
+        nothingFoundMessage="No matching agents in this team"
       />
       <NumberInput
         label="Review interval (minutes)"
@@ -187,7 +204,11 @@ export default function ReviewSchedules({
         disabled={pending}
       />
       <Button
-        disabled={!reviewer || !validMinutes || pending}
+        disabled={
+          !choices.some((candidate) => candidate.id === reviewer) ||
+          !validMinutes ||
+          pending
+        }
         onClick={() =>
           reviewer && validMinutes && void save(reviewer, Number(minutes), true)
         }
@@ -211,12 +232,14 @@ function ReviewRow({
   item,
   reviewer,
   pending,
+  sameTeam,
   save,
   openRoom,
 }: {
   item: ReviewSchedule;
   reviewer?: Agent;
   pending: boolean;
+  sameTeam: boolean;
   save: (
     id: string,
     minutes: number,
@@ -239,9 +262,13 @@ function ReviewRow({
     <div className="review-schedule" data-reviewer={item.reviewerId}>
       <Text fw={500}>{reviewer?.name || "Unavailable chat"}</Text>
       <Text size="sm" c="dimmed">
-        {!item.enabled ? "Paused" : item.reason || item.status || "Scheduled"}
+        {!sameTeam
+          ? "Unavailable: outside this team. History remains available."
+          : !item.enabled
+            ? "Paused"
+            : item.reason || item.status || "Scheduled"}
       </Text>
-      {!!item.nextAt && item.enabled && (
+      {!!item.nextAt && item.enabled && sameTeam && (
         <Text size="xs" c="dimmed">
           Next check: {new Date(item.nextAt * 1000).toLocaleString()}
         </Text>
@@ -253,13 +280,15 @@ function ReviewRow({
         allowDecimal={false}
         value={minutes}
         onChange={setMinutes}
-        disabled={pending}
+        disabled={pending || !sameTeam}
       />
       <div className="review-schedule-actions">
         <Button
           size="xs"
           variant="light"
-          disabled={pending || !valid || minutes === item.intervalMinutes}
+          disabled={
+            pending || !sameTeam || !valid || minutes === item.intervalMinutes
+          }
           onClick={() =>
             void save(item.reviewerId, Number(minutes), item.enabled)
           }
@@ -269,7 +298,7 @@ function ReviewRow({
         <Button
           size="xs"
           variant="light"
-          disabled={pending}
+          disabled={pending || !sameTeam}
           onClick={() =>
             void save(item.reviewerId, item.intervalMinutes, !item.enabled)
           }

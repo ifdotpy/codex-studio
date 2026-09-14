@@ -77,17 +77,17 @@ TOOLS = [
          {"action": {"type": "string", "enum": ["submit", "read", "respond"]},
           "complaint_id": TEXT, "text": TEXT,
           "status": {"type": "string", "enum": ["in_progress", "resolved", "declined"]}}, ["action"]),
-    tool("orchestration_peers", "List all managed agents and your readable chat rooms. "
-         "Returns a paged team directory without histories. scope=all discovers other teams. Do not poll.",
-         {"scope": {"type": "string", "enum": ["team", "all"]},
+    tool("orchestration_peers", "List agents and readable chat rooms in your team. "
+         "Returns a paged team directory without histories. Other teams are unavailable. Do not poll.",
+         {"scope": {"type": "string", "enum": ["team"]},
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_message", "Share a finding, question, or answer with other agents during work. "
-         "target is an agent id, parent, lead, broadcast (your team), or all (all teams). "
+         "target is an agent id in your team, parent, lead, or broadcast (your team). "
          "Broadcasts notify only active agents; other recipients can read them in chat history. "
          "Private chats are visible to their participants and the user. Direct messages wake idle "
          "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
          {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}}, ["target", "text"]),
-    tool("orchestration_chat_read", "Read messages in a chat you belong to. "
+    tool("orchestration_chat_read", "Read messages in a chat you belong to within your team. "
          "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
          {"room_id": TEXT, "before": {"type": "integer", "minimum": 1}}, ["room_id"]),
     tool("orchestration_title", "Set a short conversation title from the user's task. "
@@ -178,8 +178,8 @@ Choose the operation from the work transition:
 Use orchestration_peers to discover agents, then orchestration_message to talk to them.
 Report useful early progress with importance=progress; questions and blockers use their own importance.
 The server delivers submitted evidence and child completion to the lead.
-Use an agent id for a private chat, broadcast for your team, or all for all teams. The user can read
-these chats. Private means other agents cannot read it through the chat tools.
+Use a same-team agent id for a private chat or broadcast for your team. Communication and
+chat history access are restricted to one team. The user can read these chats. Private means other agents cannot read it through the chat tools.
 Direct messages wake recipients automatically. Broadcasts notify only active agents; idle and
 finished agents can read them in history. Use a direct follow-up to resume an assignment.
 Send a message when you have a new finding, question, or answer for its recipient.
@@ -1518,7 +1518,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError('Wait for the model change before sending another message')
             if sender:
                 caller = self.agent(sender, db)
-                if not caller["autoWake"] or caller["epoch"] != sender_epoch:
+                if not caller.get("rootId") or caller["rootId"] != a["rootId"]:
+                    raise ValueError("This record belongs to another team")
+                if caller.get("deletedAt") or not caller["autoWake"] or caller["epoch"] != sender_epoch:
                     raise ValueError("Sender was stopped")
             old = db.execute(
                 "SELECT * FROM runtime_events WHERE id=?", (message_id,)
@@ -1606,6 +1608,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                                 "delivery": delivery,
                                 "requestedDelivery": requested_delivery,
                                 "acceptedAt": time.time(),
+                                **({"senderId": sender} if sender else {}),
                             }
                         ),
                     ),
@@ -1641,6 +1644,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                                 "delivery": delivery,
                                 "requestedDelivery": requested_delivery,
                                 "acceptedAt": time.time(),
+                                **({"senderId": sender} if sender else {}),
                             }
                         ),
                     ),
@@ -2045,6 +2049,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         self.retry_monitor_results()
         from codex_session_names import session_names
         session_names(self).tick()
+        from codex_team_isolation import cancel_pending
+        with self.lock, self.db() as db:
+            cancel_pending(self, db)
         with self.lock, self.db() as db:
             agents = self.records(db, "agents")
             transfer_store(self).tick(agents)
@@ -2138,7 +2145,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     return
                 assert_native_thread_open(current)
             with self.lock, self.db() as db:
+                from codex_team_isolation import assert_events
                 current = self.agent(a["id"], db)
+                assert_events(self, db, current, rows)
                 attempt = current.get("startAttempt") or {}
                 if attempt.get("id") != attempt_id or current["epoch"] != epoch or not current["autoWake"]:
                     return
@@ -2239,6 +2248,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     return
                 self.assert_workspace_available(db, current)
                 assert_native_thread_open(current)
+                from codex_team_isolation import assert_events
+                assert_events(self, db, current, rows)
                 current["startAttempt"]["submitted"] = True
                 current["startAttempt"].update(accountKey=a.get("accountKey", "default"),
                     connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
@@ -3379,11 +3390,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     def chat_rooms(self, db, viewer=None):
         agents = {a["id"]: a for a in self.records(db, "agents") if not a.get("deletedAt")}
+        viewer_root = agents.get(viewer, {}).get("rootId") if viewer else None
         rooms = []
         for room in self.records(db, "rooms"):
             members = ([a["id"] for a in agents.values() if room.get("rootId") in {"all", a["rootId"]}]
                        if room["kind"] == "broadcast" else room["members"])
             if any(m not in agents for m in members) or not members or (viewer and viewer not in members):
+                continue
+            if viewer and (not viewer_root or room.get("rootId") == "all"
+                           or any(agents[m].get("rootId") != viewer_root for m in members)):
                 continue
             room["members"] = members
             room["name"] = ("All agents" if room.get("rootId") == "all" else
@@ -3402,7 +3417,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError("This conversation was deleted")
             return {"self": viewer, "lead": a["rootId"], "parent": a["parentId"],
                     "peers": [{k: p.get(k) for k in ("id", "name", "role", "rootId", "parentId", "status")}
-                              for p in self.records(db, "agents") if not p.get("deletedAt")],
+                              for p in self.records(db, "agents") if not p.get("deletedAt") and p["rootId"] == a["rootId"]],
                     "rooms": self.chat_rooms(db, viewer)}
 
     def chat_read(self, room_id, viewer=None, before=None, limit=100):
@@ -3436,13 +3451,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if sender.get("deletedAt") or not sender["autoWake"] or (epoch is not None and sender["epoch"] != epoch):
                 raise ValueError("Sender was stopped")
             target = {"parent": sender["parentId"], "lead": sender["rootId"]}.get(target, target)
-            if target in {"broadcast", "all"}:
-                root = sender["rootId"] if target == "broadcast" else "all"
+            if target == "all":
+                raise ValueError("Communication is limited to one team; use broadcast for your team")
+            if target == "broadcast":
+                root = sender["rootId"]
                 room = {"id": "broadcast:" + root, "kind": "broadcast", "rootId": root}
                 recipients = [a for a in self.records(db, "agents")
-                              if root in {"all", a["rootId"]} and not a.get("deletedAt")]
+                              if root == a["rootId"] and not a.get("deletedAt")]
             else:
-                recipient = self.agent(target, db)
+                recipient = self.checked_actor(db, target, sender_id)
                 if recipient.get("deletedAt"):
                     raise ValueError("Recipient conversation was deleted")
                 if recipient["id"] == sender_id:

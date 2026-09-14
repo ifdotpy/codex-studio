@@ -58,6 +58,8 @@ def request(path, data=None, token=''):
         return json.load(response)
 
 try:
+    if os.environ.get('CODEX_AGENT_OWNER') or os.environ.get('CODEX_BOARD_OWNER'):
+        raise ValueError('Agents must use their runtime tools; codex-control is for the user')
     import uuid
     from urllib.parse import quote
     state = request('/api/state') if a.command != 'requests' else {}

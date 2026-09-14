@@ -167,6 +167,12 @@ Open **Messages** in the chat header on a computer or phone.
 - **For you** opens first. It contains questions, permissions, your tasks, and messages from the main agent.
 - **Team** contains **To orchestrator**, **Team broadcast**, and **Between agents**.
 
+Agents can exchange messages and read agent conversations only within their team.
+A team contains one lead and its workers, with the same `rootId`.
+Chats from another team are outside this boundary, even in the same project.
+Review timers also require a reviewer from the same team.
+You can still read historical conversations between teams.
+
 The main agent has the orchestrator role. Subagents ask it for help.
 Only the main agent sends conversational messages or tasks to you.
 Native tool permissions still require your approval.

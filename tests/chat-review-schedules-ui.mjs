@@ -45,9 +45,7 @@ try {
     (await fetch(origin + "/api/state?view=chat")).json();
   const state = await snapshot();
   const target = state.threads.find((agent) => agent.name === "Release lead");
-  const reviewer = state.threads.find(
-    (agent) => agent.name === "Other project",
-  );
+  const reviewer = state.threads.find((agent) => agent.name === "Worker 38");
   assert(target && reviewer);
   browser = await engine.launch({
     headless: true,
@@ -109,7 +107,12 @@ try {
   await region
     .getByLabel("Reviewer chat", { exact: true })
     .fill("Other project");
-  await page.getByRole("option", { name: /Other project/ }).click();
+  assert.equal(
+    await page.getByRole("option", { name: /Other project/ }).count(),
+    0,
+  );
+  await region.getByLabel("Reviewer chat", { exact: true }).fill("Worker 38");
+  await page.getByRole("option", { name: /Worker 38/ }).click();
   await region
     .getByRole("button", { name: "Add reviewer", exact: true })
     .click();
@@ -143,7 +146,7 @@ try {
   await page.locator('[data-message-group="reviews"]').waitFor();
   await page.screenshot({ path: join(root, "discussion.png") });
   console.log(
-    "PASS defaults, assign, interval, pause/resume, cross-team discussion",
+    "PASS defaults, assign, interval, pause/resume, same-team discussion and foreign reviewer exclusion",
   );
 
   await page.reload();
@@ -155,7 +158,12 @@ try {
   await region
     .getByLabel("Reviewer chat", { exact: true })
     .fill("Other project");
-  await page.getByRole("option", { name: /Other project/ }).click();
+  assert.equal(
+    await page.getByRole("option", { name: /Other project/ }).count(),
+    0,
+  );
+  await region.getByLabel("Reviewer chat", { exact: true }).fill("Worker 38");
+  await page.getByRole("option", { name: /Worker 38/ }).click();
   loseNextReply = true;
   await region
     .getByRole("button", { name: "Add reviewer", exact: true })

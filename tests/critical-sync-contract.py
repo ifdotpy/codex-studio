@@ -91,6 +91,7 @@ class FakeRuntime:
         return {
             "agents": [{
                 "id": "managed-agent",
+                "rootId": "managed-agent",
                 "name": "Managed agent",
                 "kind": "agent",
                 "source": "managed",

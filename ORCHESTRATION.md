@@ -80,12 +80,13 @@ The native permission system still owns tool approval.
 
 The conversation header provides context compaction, review, and team stop.
 
-Open **Chat settings > Reviewers** to assign another chat as a reviewer.
-Select the reviewer chat. Set the interval in minutes.
+Open **Chat settings > Reviewers** to assign an agent from the same team.
+Select the reviewer. Set the interval in minutes.
 The default interval is 30 minutes. Each target can have several reviewers.
 
 Use **Discussion** to open their private conversation.
-The conversation also appears under **Messages > Team > Reviews** for both teams.
+The conversation also appears under **Messages > Team > Reviews**.
+Assignments across teams cannot run. Their history remains readable by the user.
 Use **Pause**, **Resume**, or **Remove** to control each assignment.
 
 Studio stores the schedule in SQLite. The timer runs while the Mac backend runs.
@@ -242,9 +243,9 @@ The lead receives these additional tools:
 | Tool | Behavior |
 |---|---|
 | `orchestration_complaint` | Submit a complaint, read the team book, or record the responsible lead's response. |
-| `orchestration_peers` | Discover all managed agents and the caller's chat rooms. |
-| `orchestration_message` | Send to an agent id, `parent`, `lead`, `broadcast` (team), or `all` (all teams). |
-| `orchestration_chat_read` | Read a participant chat, with a cursor for older messages. |
+| `orchestration_peers` | Discover the caller's team agents and readable team chat rooms. |
+| `orchestration_message` | Send to a team agent id, `parent`, `lead`, or `broadcast` (team). |
+| `orchestration_chat_read` | Read a participant chat within the same team, with a cursor for older messages. |
 | `orchestration_title` | Set the conversation title from the task. Only a lead can call this tool. |
 | `orchestration_interrupt` | Stop a descendant and its descendants. A follow-up can resume them. |
 | `orchestration_spawn` | Create up to 64 workers in one request. Each worker has a task, role, and optional model, effort, and `fast_mode` overrides. |
@@ -654,7 +655,8 @@ Codex tools such as `exec_command` retain Codex's own output controls.
   `action=history` pages its results and decisions. Mutations return brief receipts;
   the operation receipt retains the complete task and its evidence.
 - `orchestration_peers` returns a paged team directory and readable room identities.
-  `scope=all` discovers other teams without their private chat contents.
+  Both the directory and readable rooms stay within the caller's team (`rootId`).
+  The `all` scope and message target are not supported.
   `orchestration_status` returns compact team and monitor states. Pass the returned
   `revision` as `since_revision` to receive changes and removals. The server retains
   eight snapshots per caller. An expired revision returns a full compact snapshot

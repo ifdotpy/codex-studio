@@ -13,7 +13,7 @@ import time
 import uuid
 # Keep import caches out of the project checkout.
 sys.dont_write_bytecode = True
-from codex_state import state_dir, process_is_alive
+from codex_state import state_dir, process_is_alive, read_threads
 
 
 COMPONENT_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
@@ -38,6 +38,17 @@ def main() -> int:
         parser.error("MESSAGE must not be empty")
 
     root = state_dir()
+    owner = os.environ.get("CODEX_AGENT_OWNER") or os.environ.get("CODEX_BOARD_OWNER")
+    actor = None
+    if owner:
+        actors = [row for row in read_threads(root) if row.get("agentOwner") == owner]
+        if len(actors) != 1:
+            print("The inherited owner must identify one current legacy worker. Managed agents must use runtime tools.", file=sys.stderr)
+            return 2
+        actor = actors[0]
+        if not actor.get("runId") or not process_is_alive(actor.get("launcherPid")):
+            print("The inherited worker has no active legacy team. Use runtime tools.", file=sys.stderr)
+            return 2
     if args.wave:
         paths = [root / f"codex-swarm-status.{args.wave}.json"]
     else:
@@ -71,6 +82,9 @@ def main() -> int:
 
     wave, thread = matches[0]
     run_id = thread.get("runId")
+    if actor and (actor["wave"], actor["runId"]) != (wave, run_id):
+        print("Communication is limited to one team. The target belongs to another wave or run.", file=sys.stderr)
+        return 2
     if ((args.expected_run and args.expected_run != run_id)
             or (args.expected_thread and args.expected_thread != thread.get("threadId"))):
         print("worker identity changed; refresh before sending", file=sys.stderr)

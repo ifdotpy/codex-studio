@@ -89,10 +89,10 @@ class EfficiencyMixin:
             agents = [a for a in self.records(db, 'agents') if not a.get('deletedAt')]
             if name == 'orchestration_peers':
                 scope = args.get('scope', 'team')
-                if scope not in {'team', 'all'}:
-                    raise ValueError('Choose team or all')
+                if scope != 'team':
+                    raise ValueError('Agent discovery is limited to your team')
                 rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
-                        for a in agents if scope == 'all' or a['rootId'] == actor['rootId']]
+                        for a in agents if a['rootId'] == actor['rootId']]
                 rows.sort(key=lambda a: a['id'])
                 result = self.model_page(rows, args, [actor_id, scope])
                 # No message bodies, monitor tails, profiles, or schemas here.
