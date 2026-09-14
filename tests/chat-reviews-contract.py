@@ -35,6 +35,61 @@ class ChatReviewsContract(unittest.TestCase):
     def schedule(self, target, index=0):
         return self.runtime.agent(target)['reviewSchedules'][index]
 
+    def run_now(self, target, reviewer, request='click', revision=1):
+        return self.runtime.chat_organization(target, {'id': target, 'review_schedule': {
+            'action': 'run', 'reviewer_id': reviewer, 'expected_revision': revision, 'request_id': request}})
+
+    def test_manual_review_retries_and_busy_clicks_never_duplicate(self):
+        target, reviewer = self.pair()
+        self.configure(target, reviewer)
+        with patch('codex_chat_reviews.time.time', return_value=1200):
+            self.run_now(target, reviewer)
+        first = self.schedule(target)['lastEventId']
+        self.assertEqual(self.schedule(target)['nextAt'], 3000)
+        self.assertEqual(self.events()[0]['agent'], reviewer)
+        self.assertIn('manual-', first)
+        for status in ['pending', 'reserved', 'dispatching', 'uncertain', 'delivered']:
+            with self.runtime.db() as db:
+                db.execute('UPDATE runtime_events SET status=? WHERE id=?', (status, first))
+            self.run_now(target, reviewer, 'busy-' + status)
+            self.assertEqual(len(self.events()), 1)
+        self.completed(target, reviewer)
+        self.run_now(target, reviewer)
+        self.assertEqual(len(self.events()), 1, 'Lost response retry after completion is still idempotent')
+        self.run_now(target, reviewer, 'second-click')
+        self.assertEqual(len(self.events()), 2, 'Explicit manual review can recheck unchanged content')
+        self.assertNotEqual(self.schedule(target)['lastEventId'], first)
+
+    def test_manual_cross_team_review_and_request_identity_conflict(self):
+        target, _ = self.pair()
+        reviewer = self.lead('Foreign reviewer')['id']
+        self.configure(target, reviewer)
+        self.run_now(target, reviewer)
+        from codex_team_isolation import validate_event
+        with self.runtime.db() as db:
+            self.assertIsNone(validate_event(self.runtime, db, self.runtime.agent(reviewer, db), self.events()[0]))
+        other = self.lead('Other target')['id']
+        self.configure(other, reviewer)
+        with self.assertRaises(ValueError):
+            self.run_now(other, reviewer)
+        self.assertEqual(len(self.events()), 1)
+
+    def test_manual_review_preserves_pause_recovery_and_revision_boundaries(self):
+        target, reviewer = self.pair()
+        with self.assertRaisesRegex(ValueError, 'Enable'):
+            self.run_now(target, reviewer)
+        self.configure(target, reviewer)
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            self.run_now(target, reviewer, revision=0)
+        self.update(reviewer, nativeFailureHold=True)
+        with self.assertRaisesRegex(ValueError, 'recovery'):
+            self.run_now(target, reviewer)
+        self.update(reviewer, nativeFailureHold=False)
+        self.configure(target, reviewer, enabled=False, expected_revision=1)
+        with self.assertRaisesRegex(ValueError, 'Enable'):
+            self.run_now(target, reviewer, revision=2)
+        self.assertEqual(len(self.events()), 0)
+
     def tick(self, now):
         with patch('codex_rules.time.time', return_value=now):
             self.runtime.rules_tick()
@@ -405,7 +460,7 @@ class ChatReviewsContract(unittest.TestCase):
         self.runtime.dispatch()
         f.eventually(lambda: self.runtime.agent(reviewer).get('turnId'))
         calls = [params for method, params in self.runtime.server.calls if method == 'turn/start']
-        self.assertTrue(any('one scheduled review' in params['input'][0]['text'] for params in calls))
+        self.assertTrue(any('one review request' in params['input'][0]['text'] for params in calls))
 
 
 if __name__ == '__main__':

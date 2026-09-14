@@ -35,6 +35,8 @@ def review_schedule(runtime, db, target, data):
     if set(data) - {'id', 'review_schedule'} or data.get('id', target['id']) != target['id']:
         raise ValueError('Change the review schedule separately from other chat settings')
     desired = data['review_schedule']
+    if isinstance(desired, dict) and desired.get('action') == 'run':
+        return review_now(runtime, db, target, desired)
     fields = {'reviewer_id', 'interval_minutes', 'enabled', 'removed', 'expected_revision'}
     if not isinstance(desired, dict) or set(desired) - fields:
         raise ValueError('Supply a reviewer, interval, enabled state, and revision')
@@ -96,6 +98,55 @@ def review_schedule(runtime, db, target, data):
         runtime.loaded.discard(target['id'])
     runtime.changed.set()
     return target
+
+
+def review_now(runtime, db, target, desired):
+    """Queue one user-requested review, with durable retry identity."""
+    if set(desired) != {'action', 'reviewer_id', 'expected_revision', 'request_id'}:
+        raise ValueError('Supply the review assignment, revision, and request identity')
+    request_id = desired['request_id']
+    if not isinstance(request_id, str) or not 1 <= len(request_id) <= 100:
+        raise ValueError('Supply a review request identity')
+    entry = next((s for s in target.get('reviewSchedules', [])
+                  if s['reviewerId'] == desired['reviewer_id']), None)
+    if not entry or not entry['enabled'] or entry.get('removed'):
+        raise ValueError('Enable the review assignment first')
+    if type(desired['expected_revision']) is not int or desired['expected_revision'] != entry['revision']:
+        raise ValueError('The review schedule changed. Reload the chat')
+    reviewer = runtime.agent(entry['reviewerId'], db)
+    if not (target.get('rootId') and target['rootId'] == reviewer.get('rootId')) and not review_pair_allowed(db, target['id'], reviewer['id']):
+        raise ValueError('The review assignment no longer matches these chats')
+    key = 'manual-review:' + request_id
+    signature, saved = runtime.operation_receipt(db, key, {'target': target['id'], **desired})
+    if saved is not None:
+        return target
+    reason = _participant_reason(target, 'Target') or _participant_reason(reviewer, 'Reviewer')
+    if reason:
+        raise ValueError(reason)
+    from codex_agent_modes import assert_worker_input
+    assert_worker_input(runtime, db, reviewer)
+    outstanding = _outstanding(db, entry, reviewer)
+    if outstanding:
+        entry.update(status='reviewing' if reviewer.get('inFlight') else 'queued', reason=outstanding)
+    else:
+        seq, fingerprint, snapshot, has_context = _snapshot(db, target)
+        if not has_context:
+            raise ValueError('The target chat has no messages')
+        now = time.time()
+        event_id = f"review:{target['id']}:{reviewer['id']}:{entry['revision']}:manual-" + hashlib.sha256(request_id.encode()).hexdigest()
+        runtime.enqueue(db, reviewer, 'chat_review',
+                        _prompt(target, {**entry, 'lastEventId': event_id}, snapshot), event_id)
+        _save_metadata(db, event_id, reviewAssignment={'targetId': target['id'], 'reviewerId': reviewer['id']},
+                       reviewTrigger='user')
+        entry.update(lastEventId=event_id, lastRunAt=now, lastReviewedSeq=seq,
+                     lastReviewedFingerprint=fingerprint, nextAt=now + entry['intervalMinutes'] * 60,
+                     status='queued', reason=None)
+    current = runtime.agent(target['id'], db)
+    current['reviewSchedules'] = target['reviewSchedules']
+    runtime.put(db, 'agents', current)
+    runtime.save_receipt(db, key, signature, {'eventId': entry['lastEventId']})
+    runtime.changed.set()
+    return current
 
 
 def _cancel_pending(db, entry, reason):
@@ -313,7 +364,7 @@ def _snapshot(db, target):
 
 def _prompt(target, entry, snapshot):
     return (
-        'The user assigned you to review another chat on a timer. This is one scheduled review.\n'
+        'The user assigned you to review another chat. This is one review request.\n'
         f"Target chat_id: {target['id']}\nTarget name: {target['name']}\nTarget cwd: {target['cwd']}\n"
         f"Shared room_id: {entry['roomId']}\nReview event_id: {entry['lastEventId']}\n"
         'Check whether the work follows the user requests and whether its claims have evidence. '

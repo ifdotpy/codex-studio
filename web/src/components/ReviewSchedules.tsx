@@ -40,6 +40,7 @@ export default function ReviewSchedules({
   const [error, setError] = useState("");
   const active = useRef(true);
   const lock = useRef(false);
+  const runRequests = useRef<Record<string, { revision: number; id: string }>>({});
   useEffect(() => {
     active.current = true;
     return () => {
@@ -53,9 +54,12 @@ export default function ReviewSchedules({
         .map((item: ReviewSchedule) => [candidate.id, item] as const),
     );
   const schedules = new Map<string, ReviewSchedule>(assignments(agents));
-  for (const [targetId, item] of Object.entries(known))
-    if ((schedules.get(targetId)?.revision || 0) < item.revision)
+  for (const [targetId, item] of Object.entries(known)) {
+    const current = schedules.get(targetId);
+    if ((current?.revision || 0) < item.revision ||
+        (current?.revision === item.revision && (current.lastRunAt || 0) < (item.lastRunAt || 0)))
       schedules.set(targetId, item);
+  }
   const availableChat = (candidate?: Agent) =>
     candidate?.source === "managed" && !candidate.deletedAt &&
     !!(candidate.rootId || (candidate.isLead ? candidate.id : undefined));
@@ -143,6 +147,39 @@ export default function ReviewSchedules({
       if (active.current) setPending(false);
     }
   };
+  const runNow = async (targetId: string) => {
+    const previous = schedules.get(targetId);
+    if (lock.current || !previous?.enabled) return;
+    lock.current = true;
+    setPending(true);
+    setError("");
+    const request = runRequests.current[targetId];
+    const identity = request?.revision === previous.revision
+      ? request : { revision: previous.revision, id: crypto.randomUUID() };
+    runRequests.current[targetId] = identity;
+    try {
+      const result = await api<Agent>("/api/organization", {
+        id: targetId,
+        review_schedule: {
+          action: "run", reviewer_id: agent.id,
+          expected_revision: identity.revision, request_id: identity.id,
+        },
+      }, { workspaceId, timeoutMs: 15000 });
+      const saved = result.reviewSchedules?.find((item: ReviewSchedule) => item.reviewerId === agent.id);
+      if (result.id !== targetId || !saved?.lastRunAt)
+        throw new Error("The server did not confirm the review request.");
+      delete runRequests.current[targetId];
+      if (active.current) setKnown((old) => ({ ...old, [targetId]: saved }));
+      await refresh();
+    } catch (cause) {
+      if (active.current) setError(errorText(cause));
+      // Retain this request identity. A retry must not repeat a completed review.
+      await refresh().catch(() => {});
+    } finally {
+      lock.current = false;
+      if (active.current) setPending(false);
+    }
+  };
   const validMinutes =
     typeof minutes === "number" &&
     Number.isInteger(minutes) &&
@@ -152,7 +189,7 @@ export default function ReviewSchedules({
     <section className="review-schedules" aria-label="Chat reviews">
       <Text fw={600}>Review other chats</Text>
       <Text size="sm" c="dimmed">
-        This agent reviews the selected chats on a timer. Review events arrive
+        This agent reviews the selected chats on a timer or when you select Start review. Review events arrive
         in this chat. Both agents can discuss findings in Messages.
       </Text>
       {[...schedules.entries()]
@@ -168,6 +205,7 @@ export default function ReviewSchedules({
             )}
             pending={pending}
             save={save}
+            runNow={runNow}
             openRoom={openRoom}
           />
         ))}
@@ -226,6 +264,7 @@ function ReviewRow({
   pending,
   availableChat,
   save,
+  runNow,
   openRoom,
 }: {
   item: ReviewSchedule;
@@ -239,6 +278,7 @@ function ReviewRow({
     enabled: boolean,
     removed?: boolean,
   ) => Promise<void>;
+  runNow: (id: string) => Promise<void>;
   openRoom: (id: string) => void;
 }) {
   const [minutes, setMinutes] = useState<string | number>(item.intervalMinutes);
@@ -276,6 +316,13 @@ function ReviewRow({
         disabled={pending || !availableChat}
       />
       <div className="review-schedule-actions">
+        <Button
+          size="xs"
+          disabled={pending || !availableChat || !item.enabled || ["queued", "reviewing"].includes(item.status || "")}
+          onClick={() => void runNow(targetId)}
+        >
+          {item.status === "reviewing" ? "Review in progress" : item.status === "queued" ? "Review queued" : "Start review"}
+        </Button>
         <Button
           size="xs"
           variant="light"

@@ -176,6 +176,9 @@ removing the assignment revokes this exception. Other team boundaries still appl
 Configure reviews in the reviewer's chat settings. Select the chats to review
 and the interval, which defaults to 30 minutes. Timer events arrive in the
 reviewer's chat. Existing assignments appear there without migration.
+Select **Start review** beside an enabled assignment to request a review now.
+An existing queued or active review is reused. After a new manual request, the
+next timer check uses the configured interval. Manual requests can review unchanged work.
 You can still read historical conversations between teams.
 
 Use **Multi agent** / **Single agent** in the chat header to change delegation immediately.

@@ -108,6 +108,12 @@ with c.runtime.lock, c.runtime.db() as db:
     a.update(compactions=2, contextUsage={'tokens':80000,'window':200000,'at':__import__('time').time()})
     c.runtime.put(db, 'agents', a)
 other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt': 'Separate task'}, defer=True)
+if os.environ.get('CHAT_REVIEWS_UI_FIXTURE'):
+    with c.runtime.lock, c.runtime.db() as db:
+        for actor in c.runtime.records(db, 'agents'):
+            if actor['id'] == other['id'] or actor['name'] == 'Worker 38':
+                actor.update(autoWake=True, status='completed')
+                c.runtime.put(db, 'agents', actor)
 c.runtime.create({'name': 'Standalone reviewer', 'cwd': str(c.root), 'prompt': 'Review', 'role': 'reviewer', 'model': 'gpt-5.6-luna'}, defer=True)
 if os.environ.get('SCOPED_ROOMS_UI_FIXTURE'):
     with c.runtime.lock, c.runtime.db() as db:
