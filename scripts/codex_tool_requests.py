@@ -60,6 +60,7 @@ _WORK_REJECTIONS = {
     "Only the lead can create work", "Only the lead can change work assignments",
     "Only the assigned worker can submit its result", "Only the lead can accept or reject a result",
     "This result is already accepted", "Submit a result before review", "This work item is not ready",
+    "Supply up to 50 file paths",
     "Another agent owns this work item", "Dependencies have not been accepted", "Unknown managed agent",
     "The file is outside this agent workspace", "Supply a source revision with 1 to 200 characters",
     "Supply a result with 1 to 32000 characters", "Supply test evidence with 1 to 32000 characters",
@@ -71,6 +72,7 @@ _MESSAGE_REJECTIONS = {
     "Versioned progress requires a progress_key and nonnegative integer progress_version",
     "Unknown message importance", "Message must have 1 to 12000 characters", "Select another agent",
     "Unknown managed agent",
+    "Recipient conversation was deleted",
 }
 
 

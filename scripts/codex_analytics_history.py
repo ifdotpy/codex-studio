@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import threading
 import time
+import uuid
 
 from codex_budget import budget_migrate, budget_prepare_migration
 
@@ -186,9 +187,37 @@ def inherited_usage_threads(agent):
         source = receipt['source'].get('threadId')
         if source:
             allowed.add(source)
-        copied = (receipt.get('snapshot') or {}).get('importThreadId')
+        snapshot = receipt.get('snapshot') or {}
+        copied = snapshot.get('importThreadId')
         if copied:
             allowed.add(copied)
+        ancestry = snapshot.get('ancestry')
+        if isinstance(ancestry, list) and 1 < len(ancestry) <= 32:
+            try:
+                valid = (snapshot.get('sourcePath') == ancestry[-1]['path']
+                         and snapshot.get('sourceSha256') == ancestry[-1]['sha256']
+                         and snapshot.get('sourceBytes') == ancestry[-1]['endByteOffset']
+                         and ancestry[-1]['threadId'] == source
+                         and bool(snapshot.get('copyPath')) and bool(snapshot.get('terminalTurnId'))
+                         and len(snapshot['copySha256']) == 64
+                         and all(c in '0123456789abcdef' for c in snapshot['copySha256']))
+                ids = set()
+                for index, segment in enumerate(ancestry):
+                    tid = segment['threadId']
+                    valid = valid and str(uuid.UUID(tid)) == tid and tid not in ids
+                    ids.add(tid)
+                    valid = (valid and isinstance(segment['path'], str) and bool(segment['path'])
+                             and type(segment['endByteOffset']) is int and segment['endByteOffset'] > 0
+                             and len(segment['sha256']) == 64
+                             and all(c in '0123456789abcdef' for c in segment['sha256']))
+                    boundary = segment['endOrdinalExclusive']
+                    valid = valid and (boundary is None if index == len(ancestry) - 1
+                                       else type(boundary) is int and boundary > 0)
+                if valid:
+                    allowed.update(ids)
+            except (KeyError, TypeError, ValueError, AttributeError):
+                # Incomplete proof never expands the accepted source identities.
+                pass
         thread = source
     return sorted(allowed)
 
@@ -399,17 +428,27 @@ class AnalyticsHistoryMixin:
                     return self._analytics_history_save(key, a, state)
                 info = path.stat()
                 identity = [info.st_dev, info.st_ino]
-                if state.get("identity") and (state["identity"] != identity or info.st_size < state["offset"]):
+                previous_identity = state.get("filesystemIdentity", state.get("identity"))
+                # Device numbers can change after remount. Preserve the original
+                # analytics identity; continuity still requires the same inode,
+                # recorded path, thread header and checkpoint bytes.
+                remapped_device = bool(previous_identity and previous_identity != identity
+                    and previous_identity[1] == identity[1] and state.get("path") == str(path)
+                    and state.get("anchor") and state.get("offset", 0) > 0
+                    and info.st_size >= state["offset"])
+                if previous_identity and (previous_identity != identity and not remapped_device
+                                          or info.st_size < state["offset"]):
                     state.update(status="identityChanged", error="Native rollout was replaced or truncated; previous checkpoint retained")
                     return self._analytics_history_save(key, a, state)
-                state.update(path=str(path), identity=identity, fileBytes=info.st_size)
+                state.update(path=str(path), fileBytes=info.st_size)
+                state.setdefault("identity", identity)
                 records, consumed, partial, oversized = [], 0, False, False
                 with path.open("rb") as handle:
                     opened = os.fstat(handle.fileno())
                     if [opened.st_dev, opened.st_ino] != identity:
                         state.update(status="identityChanged", error="Native rollout changed during open")
                         return self._analytics_history_save(key, a, state)
-                    if not state.get("validated"):
+                    if remapped_device or not state.get("validated"):
                         first = handle.readline(MAX_LINE_BYTES + 1)
                         try:
                             header = json.loads(first)
@@ -418,7 +457,8 @@ class AnalyticsHistoryMixin:
                         except (ValueError, AttributeError):
                             valid = False
                         if not valid:
-                            state.update(status="wrongThread", error="Native rollout header does not match the managed thread")
+                            state.update(status="identityChanged" if remapped_device else "wrongThread",
+                                         error="Native rollout header does not match the managed thread")
                             return self._analytics_history_save(key, a, state)
                         state["validated"] = True
                     if state.get("anchor"):
@@ -427,6 +467,11 @@ class AnalyticsHistoryMixin:
                         if anchor != state["anchor"]:
                             state.update(status="identityChanged", error="Native rollout checkpoint bytes changed")
                             return self._analytics_history_save(key, a, state)
+                    if remapped_device:
+                        state["filesystemRemap"] = {"previous": previous_identity, "current": identity,
+                            "offset": state["offset"], "at": time.time(), "proof": "samePathInodeHeaderAnchor"}
+                        state["filesystemRemapCount"] = state.get("filesystemRemapCount", 0) + 1
+                    state["filesystemIdentity"] = identity
                     handle.seek(state["offset"])
                     while len(records) < max_records and consumed < max_bytes:
                         offset = handle.tell()
@@ -458,7 +503,7 @@ class AnalyticsHistoryMixin:
                 collected = []
                 for offset, record in records:
                     if record is not None:
-                        identity_key = hashlib.sha256((key + ":" + str(identity) + ":" + str(offset)).encode()).hexdigest()
+                        identity_key = hashlib.sha256((key + ":" + str(state["identity"]) + ":" + str(offset)).encode()).hexdigest()
                         for action in rollout_actions(record, context, identity_key, info.st_mtime):
                             collected.append((action, dict(context)))
                 with self.lock, self.db() as db:

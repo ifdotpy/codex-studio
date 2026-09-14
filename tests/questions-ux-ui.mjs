@@ -140,7 +140,8 @@ try {
     stateSequence = 0;
   await page.route("**/api/sync/pull?*", async (route) => {
     const url = new URL(route.request().url());
-    if (url.searchParams.get("scope") !== "state") return route.fallback();
+    const scope = url.searchParams.get("scope");
+    if (!["state", "state:chat"].includes(scope)) return route.fallback();
     const state = questionState(
       await (await fetch(origin + "/api/state")).json(),
     );
@@ -156,7 +157,7 @@ try {
         ...identity,
         documents:
           after < stateSequence
-            ? [{ id: "state", seq: stateSequence, payload, _deleted: false }]
+            ? [{ id: scope, seq: stateSequence, payload, _deleted: false }]
             : [],
         checkpoint: { seq: Math.max(after, stateSequence) },
       },
@@ -192,6 +193,14 @@ try {
   await modal
     .getByRole("textbox", { name: "Blocking tool question?" })
     .waitFor();
+  assert.equal(
+    await page
+      .locator('[data-request="blocking-question"]')
+      .getByText("Blocking tool question?", { exact: true })
+      .count(),
+    1,
+    "an open single question appears once",
+  );
   await page.keyboard.press("Escape");
   await modal.waitFor({ state: "hidden" });
   extraRequests = false;
@@ -200,6 +209,15 @@ try {
   await card.locator("[data-answer]").click();
   const form = card.getByRole("form", { name: "Reply to the agent" });
   const send = form.getByRole("button", { name: "Send answer", exact: true });
+  assert.equal(
+    await card
+      .locator(".request-question-label")
+      .filter({ hasText: "Which scope?" })
+      .count(),
+    1,
+    "an open multi-question card does not repeat its first question",
+  );
+  assert.equal(await card.locator(".request-prompt").count(), 0);
   assert.equal(
     await page.getByRole("dialog", { name: "Reply to the agent" }).count(),
     0,
@@ -233,6 +251,10 @@ try {
     "custom text clears the option selection",
   );
   await card.getByRole("button", { name: "Hide", exact: true }).click();
+  assert.equal(
+    await card.getByText("Which scope?", { exact: true }).count(),
+    1,
+  );
   await card.locator("[data-answer]").click();
   assert.equal(
     await form.getByRole("textbox", { name: "Which scope?" }).inputValue(),
@@ -264,8 +286,16 @@ try {
         ),
       ),
     ),
-    false,
-    "Answer drafts never enter browser storage",
+    true,
+    "Non-secret answer drafts persist for application reload",
+  );
+  await page.reload();
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await card.locator("[data-answer]").click();
+  assert.equal(
+    await form.getByRole("textbox", { name: "Which scope?" }).inputValue(),
+    "Only the request controls",
+    "Reload restores the non-secret answer draft",
   );
   for (const [width, height] of [
     [1440, 960],

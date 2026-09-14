@@ -85,7 +85,7 @@ class TransferRepair(f.ContextWait):
                 self.assertEqual(repair.verified_events(db,a),[])
             self.assertEqual(repair.repair_idle(self.runtime,a['id'])['threadId'],a['threadId'])
 
-    def test_new_event_still_requires_terminal_native_history(self):
+    def test_unchecked_event_with_mismatched_native_ancestry_is_rejected(self):
         a=self.transfer()
         with self.runtime.db() as db:
             row=dict(self.event,id='new-unchecked-event',turn_id='new-source-turn',created=3)
@@ -93,7 +93,7 @@ class TransferRepair(f.ContextWait):
                 tuple(row[k] for k in ('id','agent','kind','text','status','created','epoch','turn_id','error')))
             self.assertEqual([r['id'] for r in repair.verified_events(db,a)],['new-unchecked-event'])
         initial_forks=len(self.forks())
-        with self.assertRaisesRegex(ValueError,'terminal native turn'):
+        with self.assertRaisesRegex(ValueError,'native ancestry identity'):
             repair.repair_idle(self.runtime,a['id'])
         self.assertEqual(len(self.forks()),initial_forks)
 

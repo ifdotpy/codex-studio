@@ -64,6 +64,40 @@ class ContextWait(f.NativeActionRepair):
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['clientUserMessageId'], 'wait-user')
 
+    def test_async_question_survives_fork_and_answer_uses_current_thread_once(self):
+        question = {'id':'question-exact','agent':self.a['id'],'epoch':self.a['epoch'],
+            'accountKey':self.a['accountKey'],'method':'agent/asyncQuestion','status':'pending',
+            'params':{'threadId':self.tid,'questions':[{'id':'color','question':'Choose the color.'}]}}
+        self.put('requests',question)
+        self.runtime.send(self.a['id'],'Continue while the question is pending.',message_id='question-continue')
+        self.runtime.dispatch()
+        eventually(lambda:self.runtime.agent(self.a['id']).get('turnId')=='resumed-turn')
+        a=self.runtime.agent(self.a['id'])
+        with self.runtime.db() as db:
+            saved=json.loads(db.execute('SELECT record FROM runtime_requests WHERE id=?',(question['id'],)).fetchone()[0])
+        self.assertEqual(saved,question)
+        self.assertNotEqual(a['threadId'],self.tid)
+        self.agent_update(a,status='idle',inFlight=False,turnId=None)
+        answer={'answers':{'color':{'answers':['Green']}}}
+        self.assertEqual(self.runtime.answer(question['id'],answer),{'status':'answered'})
+        self.assertTrue(self.runtime.answer(question['id'],answer)['replayed'])
+        self.runtime.dispatch()
+        eventually(lambda:len([m for m,p in self.server.calls if m=='turn/start'])==2)
+        answers=[p for m,p in self.server.calls if m=='turn/start' and p.get('clientUserMessageId')=='question-exact:answer']
+        self.assertEqual(len(answers),1)
+        self.assertEqual(answers[0]['threadId'],a['threadId'])
+        self.assertIn('Green',json.dumps(answers[0]['input']))
+        self.assertEqual(len(self.forks()),1)
+
+    def test_native_blocking_requests_still_prevent_repair(self):
+        for method in ('item/tool/requestUserInput','item/commandExecution/requestApproval','unknown/request'):
+            with self.subTest(method=method):
+                record={'id':'blocking-exact','agent':self.a['id'],'method':method,'status':'pending'}
+                self.put('requests',record)
+                with self.assertRaisesRegex(ValueError,'requests: blocking-exact'):
+                    repair.repair_idle(self.runtime,self.a['id'])
+                self.assertEqual(self.forks(),[])
+
     def test_failed_tool_response_preserves_unknown_outcome(self):
         record = {'id':'failed-tool','agent':self.a['id'],'stage':'failed','outcome':'unknown',
                   'finished':1,'result':{'success':False,'contentItems':[{'type':'inputText','text':'Unknown command watch'}]}}

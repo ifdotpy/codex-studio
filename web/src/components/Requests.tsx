@@ -333,20 +333,24 @@ function RequestCard({
                       : "Request"}
             </span>
           </div>
-          <p className="request-prompt">
-            {questions[0]?.question || (
-              <ErrorDescription
-                value={p.reason || p.message || "Approval required."}
-                role="status"
-              />
-            )}
-          </p>
-          {questions[0]?.question && (p.reason || p.message) && (
-            <p>
-              <ErrorDescription value={p.reason || p.message} role="status" />
+          {(!open || blocked || !question) && (
+            <p className="request-prompt">
+              {questions[0]?.question || (
+                <ErrorDescription
+                  value={p.reason || p.message || "Approval required."}
+                  role="status"
+                />
+              )}
             </p>
           )}
-          {questions.length > 1 && <p>{questions.length} questions</p>}
+          {questions[0]?.question &&
+            (p.reason || p.message) &&
+            (p.reason || p.message) !== questions[0].question && (
+              <p>
+                <ErrorDescription value={p.reason || p.message} role="status" />
+              </p>
+            )}
+          {!open && questions.length > 1 && <p>{questions.length} questions</p>}
           {(p.command || r.preview?.command) && (
             <pre>{JSON.stringify(p.command || r.preview.command)}</pre>
           )}

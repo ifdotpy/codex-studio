@@ -27,7 +27,7 @@ class LimitFixesUpdateContract(unittest.TestCase):
             for name in update.SOURCE_SHA if name not in update.NEW_MODULES}
         cls.prior_sources = {commit: {name: subprocess.check_output(
             ['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
-            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70', '7f77579', '94b72e2')}
+            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70', '7f77579', '94b72e2', '116ed9c')}
         cls.helper_old = {}
         cls.helper_versions = {}
         for name, versions in update.HELPER_BASELINES.items():
@@ -95,9 +95,9 @@ class LimitFixesUpdateContract(unittest.TestCase):
         for module, values in update.GLOBAL_IMPORTS.items():
             for key in values:
                 vars(self.modules[module]).pop(key, None)
-        for target, (old, _) in update.CONSTANTS.items():
+        for target, allowed in update.CONSTANTS.items():
             name, key = target.split('.')
-            setattr(self.modules[name], key, copy.deepcopy(old))
+            setattr(self.modules[name], key, copy.deepcopy(allowed[0]))
         self.modules['codex_runtime'].efficiency_tools = self.modules['codex_efficiency'].efficiency_tools
         self.modules['codex_runtime'].TOOLS = copy.deepcopy(self.old_tools)
         self.runtime = self.owner()
@@ -216,10 +216,14 @@ class LimitFixesUpdateContract(unittest.TestCase):
         self.assertEqual(changed, set(update.EXPECTED))
         for target, allowed in update.CONSTANTS.items():
             name, key = target.split('.')
-            for source, expected in zip((self.old[name], (ROOT / 'scripts' / (name + '.py')).read_bytes()), allowed):
+            for source, expected in zip((self.old[name], (ROOT / 'scripts' / (name + '.py')).read_bytes()), (allowed[0], allowed[-1])):
                 node = next(node for node in ast.parse(source).body if isinstance(node, ast.Assign)
                             and any(isinstance(value, ast.Name) and value.id == key for value in node.targets))
                 self.assertEqual(ast.literal_eval(node.value), expected)
+            for sources in self.prior_sources.values():
+                node = next(node for node in ast.parse(sources[name]).body if isinstance(node, ast.Assign)
+                            and any(isinstance(value, ast.Name) and value.id == key for value in node.targets))
+                self.assertIn(ast.literal_eval(node.value), allowed)
 
     def test_preserves_callbacks_pending_requests_streams_and_inflight(self):
         before = self.state()
@@ -234,9 +238,9 @@ class LimitFixesUpdateContract(unittest.TestCase):
         self.assertEqual(before[6:-1], self.state()[6:-1])
         for (previous, _), (current, value) in zip(before[-1], self.state()[-1]):
             self.assertIs(previous, current)
-        for target, (_, desired) in update.CONSTANTS.items():
+        for target, allowed in update.CONSTANTS.items():
             name, key = target.split('.')
-            self.assertEqual(getattr(self.modules[name], key), desired)
+            self.assertEqual(getattr(self.modules[name], key), allowed[-1])
         after = self.state()
         self.assertEqual(self.apply()['status'], 'already_applied')
         self.assertEqual(after, self.state())
@@ -293,6 +297,11 @@ class LimitFixesUpdateContract(unittest.TestCase):
             self.apply()
         with patch.object(self.transfers, 'rt', object()), self.assertRaisesRegex(RuntimeError, 'transfer store'):
             self.apply()
+        for name, values in update.GLOBAL_IMPORTS.items():
+            for key in values:
+                with patch.object(self.modules[name], key, object(), create=True):
+                    with self.subTest(module=name, key=key), self.assertRaisesRegex(RuntimeError, 'Unknown limit-fix import'):
+                        self.apply()
         for target in update.CONSTANTS:
             name, key = target.split('.')
             live = getattr(self.modules[name], key)
@@ -313,6 +322,27 @@ class LimitFixesUpdateContract(unittest.TestCase):
                 self.apply()
             self.assertEqual(before, self.state())
             del helper.unknown
+
+    def test_reviewed_constant_versions_restore_after_late_failure(self):
+        self.apply()
+        for index in range(max(map(len, update.CONSTANTS.values())) - 1):
+            for target, allowed in update.CONSTANTS.items():
+                name, key = target.split('.')
+                live = getattr(self.modules[name], key)
+                previous = allowed[min(index, len(allowed) - 2)]
+                live.symmetric_difference_update(live ^ previous)
+            before = self.state()
+            with patch.object(update, '_active_frames', side_effect=[None, RuntimeError('Controlled constant rollback')]):
+                with self.assertRaisesRegex(RuntimeError, 'Controlled constant rollback'):
+                    self.apply()
+            self.assertEqual(before, self.state())
+            self.assertEqual(self.apply()['status'], 'applied')
+            after = self.state()
+            self.assertEqual(self.apply()['status'], 'already_applied')
+            self.assertEqual(after, self.state())
+            for target, allowed in update.CONSTANTS.items():
+                name, key = target.split('.')
+                self.assertEqual(getattr(self.modules[name], key), allowed[-1])
 
     def test_unloaded_optional_helpers_register_without_runtime_operations(self):
         for name in update.OPTIONAL_MODULES:
@@ -439,9 +469,37 @@ class LimitFixesUpdateContract(unittest.TestCase):
             self.assertIn(update.signature(prior), update.EXPECTED[target])
             live.__code__, live.__defaults__, live.__kwdefaults__ = prior.__code__, prior.__defaults__, prior.__kwdefaults__
             callbacks[target] = live
+        constants = {}
+        for target, allowed in update.CONSTANTS.items():
+            name, key = target.split('.')
+            node = next(node for node in ast.parse(self.prior_sources[commit][name]).body if isinstance(node, ast.Assign)
+                        and any(isinstance(value, ast.Name) and value.id == key for value in node.targets))
+            prior = ast.literal_eval(node.value)
+            self.assertIn(prior, allowed)
+            constants[target] = live = getattr(self.modules[name], key)
+            live.symmetric_difference_update(live ^ prior)
+        imports = []
+        for name, values in update.GLOBAL_IMPORTS.items():
+            prior_imports = {value.asname or value.name for node in ast.parse(self.prior_sources[commit][name]).body
+                             if isinstance(node, (ast.Import, ast.ImportFrom)) for value in node.names}
+            for key, (provider, attribute) in values.items():
+                if key not in prior_imports:
+                    vars(self.modules[name]).pop(key, None)
+                previous = vars(self.modules[name]).get(key, update.MISSING)
+                imports.append((name, key, provider, attribute, previous))
         before = self.state()
         self.assertEqual(self.apply()['status'], 'applied')
-        self.assertEqual(before[1:], self.state()[1:])
+        after = self.state()
+        self.assertEqual((before[1], before[3:-1]), (after[1], after[3:-1]))
+        for name, key, provider, attribute, previous in imports:
+            expected = getattr(sys.modules[provider], attribute) if attribute else sys.modules[provider]
+            self.assertIs(vars(self.modules[name])[key], expected)
+            if previous is not update.MISSING:
+                self.assertIs(vars(self.modules[name])[key], previous)
+        for target, previous in constants.items():
+            name, key = target.split('.')
+            self.assertIs(getattr(self.modules[name], key), previous)
+            self.assertEqual(previous, update.CONSTANTS[target][-1])
         for target, previous in callbacks.items():
             self.assertIs(getattr(*self.target(target)), previous)
             self.assertEqual(update.signature(previous), update.EXPECTED[target][-1])
@@ -469,6 +527,9 @@ class LimitFixesUpdateContract(unittest.TestCase):
 
     def test_exact_94b_implementation_upgrades_with_existing_callbacks(self):
         self.previous_implementation_upgrades('94b72e2')
+
+    def test_exact_116_implementation_upgrades_with_existing_callbacks(self):
+        self.previous_implementation_upgrades('116ed9c')
 
     def test_94b_active_event_read_and_late_failure_preserve_helper(self):
         helper = self.legacy_context_helper('94b72e2')

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native rollout parsing, profile boundaries, and resumable import contracts."""
 import contextlib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import threading
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from codex_analytics_history import AnalyticsHistoryMixin, normalize_item, rollout_actions
+from codex_analytics_history import AnalyticsHistoryMixin, inherited_usage_threads, normalize_item, rollout_actions
 
 THREAD = "01a07781-5d19-7390-bc74-c12094143962"
 OTHER_THREAD = "01a07781-5d19-7390-bc74-c12094143963"
@@ -72,6 +73,55 @@ class Fixture(AnalyticsHistoryMixin):
 class ParsingTests(unittest.TestCase):
     def context(self):
         return {"threadId": THREAD, "turnId": "turn-one", "model": "gpt-6-astra", "window": 258400}
+
+    def ancestry_agent(self):
+        return {'id':'agent', 'accountKey':'profile', 'threadId':'current-fork', 'contextRepair':{
+            'agent':'agent', 'phase':'completed', 'newThreadId':'current-fork',
+            'source':{'id':'agent','accountKey':'profile','threadId':THREAD},
+            'snapshot':{'sourcePath':'/source.jsonl','sourceSha256':'a'*64,'sourceBytes':100,
+                'copyPath':'/copy.jsonl','copySha256':'c'*64,'terminalTurnId':'terminal',
+                'ancestry':[{'threadId':OTHER_THREAD,'path':'/ancestor.jsonl','sha256':'b'*64,
+                             'endByteOffset':200,'endOrdinalExclusive':12},
+                            {'threadId':THREAD,'path':'/source.jsonl','sha256':'a'*64,
+                             'endByteOffset':100,'endOrdinalExclusive':None}]}}}
+
+    def test_verified_materialized_ancestor_usage_keeps_exact_response_identity(self):
+        agent = self.ancestry_agent()
+        allowed = inherited_usage_threads(agent)
+        self.assertEqual(allowed, sorted([THREAD, OTHER_THREAD]))
+        context = {'threadId':agent['threadId'], 'allowedSourceThreadIds':allowed}
+        raw = {'thread_id':OTHER_THREAD, 'turn_id':'old-turn', 'response_id':'original-charge',
+               'usage':{'total_tokens':100}, 'thread_token_usage':{'total_tokens':100}}
+        action = rollout_actions({'type':'token_usage_record','payload':raw}, context, 'id', 1)[0]
+        self.assertEqual(action[0], 'event')
+        self.assertEqual(action[2]['responseId'], 'original-charge')
+        self.assertEqual(action[2]['rawTokenUsageRecord'], raw)
+
+    def test_unverified_ancestry_never_expands_usage_scope(self):
+        for defect in ('account','agent','phase','target','hash','copyHash','path','sourceSize',
+                       'boundary','bytes','duplicate','missingField','nonUuid','terminal'):
+            with self.subTest(defect=defect):
+                agent = self.ancestry_agent()
+                r = agent['contextRepair']; snapshot = r['snapshot']; ancestor = snapshot['ancestry'][0]
+                if defect == 'account': r['source']['accountKey'] = 'other'
+                elif defect == 'agent': r['agent'] = 'other'
+                elif defect == 'phase': r['phase'] = 'unknown'
+                elif defect == 'target': r['newThreadId'] = 'other'
+                elif defect == 'hash': snapshot['sourceSha256'] = 'd'*64
+                elif defect == 'copyHash': snapshot['copySha256'] = 'invalid'
+                elif defect == 'path': snapshot['sourcePath'] = '/other.jsonl'
+                elif defect == 'sourceSize': snapshot['sourceBytes'] = 99
+                elif defect == 'boundary': ancestor['endOrdinalExclusive'] = None
+                elif defect == 'bytes': ancestor['endByteOffset'] = 0
+                elif defect == 'duplicate': snapshot['ancestry'].insert(0, dict(ancestor))
+                elif defect == 'missingField': ancestor.pop('sha256')
+                elif defect == 'nonUuid': ancestor['threadId'] = 'not-a-uuid'
+                elif defect == 'terminal': snapshot.pop('terminalTurnId')
+                allowed = inherited_usage_threads(agent)
+                self.assertNotIn(OTHER_THREAD, allowed)
+                context = {'threadId':agent['threadId'], 'allowedSourceThreadIds':allowed}
+                raw = {'thread_id':OTHER_THREAD, 'response_id':'original-charge','usage':{'total_tokens':100}}
+                self.assertEqual(rollout_actions({'type':'token_usage_record','payload':raw}, context,'id',1)[0][0], 'coverage')
 
     def test_request_usage_preserves_raw_record_and_cache_writes(self):
         raw = {"thread_id": THREAD, "turn_id": "t", "response_id": "r", "session_id": "s",
@@ -228,6 +278,73 @@ class ImportTests(unittest.TestCase):
         self.f.analytics_history_step()
         self.assertEqual(self.f.state()["status"], "identityChanged")
         self.assertEqual(self.f.state()["offset"], previous)
+
+    def set_history_state(self, state):
+        with self.f.db() as db:
+            db.execute("UPDATE analytics_history SET record=? WHERE id=?", (json.dumps(state), state["id"]))
+
+    def test_device_renumber_preserves_offset_and_analytics_identity_across_restart(self):
+        payload = line("response_item", {"type": "message", "role": "user", "content": []})
+        self.f.path.write_bytes(self.header + payload)
+        self.f.analytics_history_step()
+        state = self.f.state()
+        state["identity"][0] += 1
+        state.pop("filesystemIdentity")
+        state["status"] = "identityChanged"
+        original_identity, previous_offset = list(state["identity"]), state["offset"]
+        self.set_history_state(state)
+        with self.f.path.open("ab") as stream:
+            stream.write(payload)
+        self.assertTrue(self.f.analytics_history_step())
+        current = self.f.state()
+        self.assertEqual(current["status"], "current")
+        self.assertEqual(current["identity"], original_identity)
+        self.assertEqual(current["filesystemRemap"]["offset"], previous_offset)
+        self.assertEqual(len(self.f.captured()), 2)
+        expected = hashlib.sha256((state["id"] + ":" + str(original_identity) + ":" + str(previous_offset)).encode()).hexdigest()
+        self.assertEqual(self.f.captured()[-1][2]["p"]["_analyticsId"], expected)
+        # A second remount and process restart preserve the original identity.
+        current["filesystemIdentity"][0] += 2
+        self.set_history_state(current)
+        restarted = Fixture(self.temp.name)
+        self.assertFalse(restarted.analytics_history_step())
+        self.assertEqual(restarted.state()["identity"], original_identity)
+        self.assertEqual(restarted.state()["filesystemRemapCount"], 2)
+        self.assertEqual(len(restarted.captured()), 2)
+
+    def test_device_remap_requires_all_checkpoint_evidence(self):
+        for changed in ("inode", "path", "missingPath", "missingAnchor", "anchor", "header", "shorter"):
+            with self.subTest(changed=changed):
+                self.f.path.write_bytes(self.header + b"{}\n" * 100)
+                with self.f.db() as db:
+                    db.execute("DELETE FROM analytics_history")
+                self.f.analytics_history_step()
+                state = self.f.state()
+                state["identity"][0] += 1
+                state.pop("filesystemIdentity")
+                original_identity, offset = list(state["identity"]), state["offset"]
+                if changed == "inode":
+                    state["identity"][1] += 1
+                    original_identity = list(state["identity"])
+                elif changed == "path":
+                    state["path"] += ".different"
+                elif changed == "missingPath":
+                    state.pop("path")
+                elif changed == "missingAnchor":
+                    state.pop("anchor")
+                elif changed == "anchor":
+                    state["anchor"] = "changed"
+                elif changed == "header":
+                    self.f.path.write_bytes(self.f.path.read_bytes().replace(THREAD.encode(), OTHER_THREAD.encode()))
+                else:
+                    self.f.path.write_bytes(self.header)
+                self.set_history_state(state)
+                self.assertFalse(self.f.analytics_history_step())
+                current = self.f.state()
+                self.assertEqual(current["status"], "identityChanged")
+                self.assertEqual(current["offset"], offset)
+                self.assertEqual(current["identity"], original_identity)
+                self.assertNotIn("filesystemRemap", current)
 
     def test_in_place_rewrite_is_detected_by_checkpoint_anchor(self):
         self.f.path.write_bytes(self.header)

@@ -4344,7 +4344,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         "result": result[:4000], "resultTruncated": len(result) > 4000,
                         "resultTurnId": a.get("lastCompletedTurn") if result else None,
                     }
-                for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy"):
+                for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
+                    ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",
+                     "lastContextRepairWait", "nativeNameSynced") if not include_work else ()
+                ):
                     a.pop(private, None)
                 block = native_thread_block(a)
                 if block:

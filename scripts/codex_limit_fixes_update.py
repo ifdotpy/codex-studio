@@ -1,6 +1,6 @@
 """Apply the reviewed limit fixes without restarting active Studio work.
 
-Python 3.14 admits the exact ccbd147, 7415ada, f496684, a50ac70, 7f77579 and 94b72e2 implementations. Existing functions,
+Python 3.14 admits the exact ccbd147, 7415ada, f496684, a50ac70, 7f77579, 94b72e2 and 116ed9c implementations. Existing functions,
 callbacks, HTTP closure cells, tool lists and runtime objects keep their identity.
 Schema changes run lazily through future normal calls, never during this patch.
 """
@@ -18,7 +18,8 @@ from codex_resource_removal_update import _find_handler
 
 BASE_COMMIT = 'ccbd147'
 # BEGIN REVIEWED MANIFEST
-HELPER_BASELINES = {'codex_context_repair': {'94b72e2': 'cac82e291be01d0cf7615aa51a51f0814c47a3435db2c0c73026342320e9a445',
+HELPER_BASELINES = {'codex_context_repair': {'116ed9c': 'a8db6bf4f3dded0d11ad931feafb60d162c3db32dc61aa9c3dd33af0d9e21d06',
+                          '94b72e2': 'cac82e291be01d0cf7615aa51a51f0814c47a3435db2c0c73026342320e9a445',
                           '7f77579': '59e23131f78a9147be0419e0bcae329e7b982e1ae8db65ed475ac5661a7283f5',
                           '7415ada': '200a8196052edd3ced721d8ddfe7511d51a60da180e851e3f2af53fff365ac1f',
                           'a50ac70': '9eaf690e24068685f0ca61a754101515a4b842fe20dae2d01f053e6fb235ddfe',
@@ -31,22 +32,35 @@ HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
                                    '3732b846818729cc7a31c8af381936b0117a5420ce4db0fe76dd7c1d394c5ca6'),
  'codex_context_repair._defer_context': (None,
                                          'a1d4ad93c604aeaae405bd2523877b99a68558343fbbe5e91a872acba7e5f60a'),
+ 'codex_context_repair._fail': ('bccb0c5545ec091cc5146d2951b61c3be8b3d1ce549b317f3a3100db23f946a9',
+                                'aa1ca9fe84e1e2125ccd7bf582927eb2233f75f98ad478f844ddf704e07fd7b3'),
  'codex_context_repair._inherited_checked_events': (None,
                                                     'd1ba6a6577fa399edb92575389d13d0160a4d2cc574cd324e508837da0d0ea7d'),
  'codex_context_repair._local_idle': ('93da65b90f9a4b69260118663a8aa0c226a4e26dd9475fd2588045d0e6fe4595',
                                       'd29466729b24a95874f7bb1fb04c17a430292455013b57dee112b5987eab8c77',
-                                      '66d114d58b4b157e4aa5d743c48da6e4a100d6e584bee2c21f5613caa9fb9767'),
+                                      '66d114d58b4b157e4aa5d743c48da6e4a100d6e584bee2c21f5613caa9fb9767',
+                                      'd8cc14644760a2064e5be1e5ed16b7cfac9b2d19c2b6be936c09cbd0b0327ed1'),
  'codex_context_repair._native_idle': ('d1a23cf97c939f599747203a6fcdcdc72bc7f54f5483a8752129a6f0d4665d90',
                                        '9a9678fbef3dc3e8c84d70c1023020ad27adfd5e125eaac9058c2e630a7a91ea',
-                                       'd51c58eecb0438ed25d9fa2282016fff195d0d8ca53e4aa25941a666f0b1f932'),
+                                       'd51c58eecb0438ed25d9fa2282016fff195d0d8ca53e4aa25941a666f0b1f932',
+                                       'f9b1f7dfa04d8acd05151c50d97a02b0391dc4e943147510cb081b48a4785e41'),
  'codex_context_repair._native_items': (None,
                                         '6b8f9fbe0b2b0b9ed7fac075228d7bda0fc494968ab08e3b6b833293cf73eeb3'),
  'codex_context_repair._native_read': (None,
                                        'bf4c5caae273a4f00731c13dc3f5419700e45d60b2365e15ee2b74cb532530e9'),
+ 'codex_context_repair._prefix_hash': (None,
+                                       '5558df30e89e9f9b304300b9791a5bd39ddb3e725c53b5dbcdbbf5d83dad62d9'),
+ 'codex_context_repair._prefix_records': (None,
+                                          '288a9f935ad7b92e89dfd8bc195a16c4783b3516e225d0f6d194c7a90d2efe8f'),
+ 'codex_context_repair._projected_records': (None,
+                                             '4fea5cfc4ecb30a016c1fc081f82d51732ef1cf12b3bb4f0d9d231cba7a7772e'),
  'codex_context_repair._repair': ('c614f8410795993560b296e2b1472f1e120620a7aa0efe4de507cecaf077d511',
                                   '7cd0eb16f58e2d88b8874516912d79a360f0677bf0772c807620ace90f8d81b5',
                                   '779b57a3ef375f19281be417234d85b7e123881ae1b96886378bc6e8be96e47c',
-                                  'ea2e1d89d62d0b6c7b785a4e0f88ef321281a75a7e163a680829685869639d08'),
+                                  'ea2e1d89d62d0b6c7b785a4e0f88ef321281a75a7e163a680829685869639d08',
+                                  'fb668ce9fab885fa3111c484030d08d7a961290a98581cf2ca3da50456fd71bb'),
+ 'codex_context_repair._rollout_segments': (None,
+                                            'af35c1876890a6d0e552e699a7b631a584056d6b61fd234d1f5e5a72be6ac212'),
  'codex_context_repair._settle': ('48cd337f3654a6c301cf72a09131e65cd119bd444d4e456691e1bbf8a15a170b',
                                   'a70cd4e4d7b44cd94a374e1292ca2447061b4e14792813e0aa735a16773396b5'),
  'codex_context_repair._terminal_native_item': (None,
@@ -73,7 +87,8 @@ HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
                                               '8ea452c0c46969b54cd04b81b458fa1ddbdc57b271abf7d767e0deb59597d0b8'),
  'codex_context_repair.sanitized_rollout': ('8eeaf9cda2fa8020627ab9b6e188b2af99f0fe12ebbfe57fe8f478db6f65ac1e',
                                             'f634364cd9bf36650babe05a16fe82ebbe26fb2992abb48ab636f1f86c9f6646',
-                                            'c301b951d82a8fbef79158bc4550e0faf136237c5904f5d9a076d2826538db4a'),
+                                            'c301b951d82a8fbef79158bc4550e0faf136237c5904f5d9a076d2826538db4a',
+                                            '8610798ee2991bb659f0e32e8fcdd8d73334ac97efb7fa7c6e9a808c3391fd79'),
  'codex_context_repair.verified_events': ('8aed95de0228d5ad5f314fb576667154e55e1fd707f8c5f817c3e6c9ddd8ecad',
                                           '6d50b41b07c5f5d96c36547b31aa15f59a8ac1b41dd3c34f03e588a7381b90f1')}
 EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680aadd73c306fe2ecc90ad092152c06fd72044b5d9ab7c18dbd40a8c43',
@@ -92,13 +107,15 @@ EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680a
                                                                            '3f12a4186591f17db12c9604575d77b994eb19811e53500887e9c6e82fe3f612'),
  'codex_analytics_history.AnalyticsHistoryMixin.analytics_history_step': ('a38a0d225cd2de7774c1fdfb5f1096d96ef8e42025cfce11f3b613d2a780bede',
                                                                           'd9bf5ce48fd24be4c80b9ccb51a4c676dca4c8a727560265f865b2edb26f1c6e',
-                                                                          'ab84f87911161b69a065be595978eddace26be009be410934e68d2b04363defb'),
+                                                                          'ab84f87911161b69a065be595978eddace26be009be410934e68d2b04363defb',
+                                                                          'ca8301f1b01ad0518e86902b659a1f7568c9dd8142633e33be455df8bfdc772b'),
  'codex_analytics_history._history_worker_error': (None,
                                                    '5516bb5224ce6219b82f8f3fc4893f42c7d286b964126e8bab2a99a6fc8cd55a'),
  'codex_analytics_history._history_worker_state': (None,
                                                    '0ddf8231c8a22285a56de4ae4fb73724f77b51570ce0b0cd8b38f990980c3f38'),
  'codex_analytics_history.inherited_usage_threads': (None,
-                                                     '870310c042f3a103f1bc7bd61bd26e3a77ed45ab1d34339a94b3e996b8af68b6'),
+                                                     '870310c042f3a103f1bc7bd61bd26e3a77ed45ab1d34339a94b3e996b8af68b6',
+                                                     '465c5a9dde7772c96eb5c69493d286308a55677a5ee967cfba07a5307c5bc467'),
  'codex_analytics_history.repair_terminal_errors': (None,
                                                     '96a582c95c676364909d8bfc40d1b4398c25a2e353dbe72aba76afd65e02aae8'),
  'codex_analytics_history.rollout_actions': ('4938a456e379a205c84e1731a8aa3af7c4f611a87bd656cbc3bf43a8dbc3b854',
@@ -192,6 +209,8 @@ EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680a
                                              'd1838dc91719db821c24a4988c391c52c0095363859c4a14e31692169fef6dbe'),
  'codex_runtime.Runtime.send': ('62b77be1c3618219eae7ffdc070bcaf55a172ddbceb6a4d135bb9cccbfdb486d',
                                 '56f5b33967163ff41b1a26d21f8a9495b10b797a1655bf57c5e6698b4a82af82'),
+ 'codex_runtime.Runtime.snapshot': ('97a2ce8650011ef46a5e53e29e6bdb49905ebde923cfc653fd16f80b43c44516',
+                                    '80692a41e3aef435b784c414cb6cf1753d9ce6b4be995ea05a17ee0a970f19de'),
  'codex_runtime.Runtime.start': ('362ec61e1d70ea3d127f59627c7d7111bc6e4e26b860b7ea1d3dc023e4fbd72c',
                                  '51cadbaa97832c5563a39c3f6ad2cfe7be888a808c69cf7dd98e5eb8faf7b1ab'),
  'codex_runtime.Runtime.start_error': ('b4c32d85a96bd2d7beaf8018b3c45f9d62f4d58ef8155b431cef3f5bf1d8176a',
@@ -204,17 +223,17 @@ EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680a
 SOURCE_SHA = {'codex_account_transfer': 'd3bb785c611b95b27343d6c4aaaf1b3e811cd2dd9044feaa83efab4a74ae926a',
  'codex_agent_modes': '881bcb2985c283787b937ac06d043df51ba0ee1853063ac941502bbbc0bcba38',
  'codex_analytics': '95d31c3d6122376e08a5ca840fb8ef5dfd2a975dc4d6fc1dafb9cb9653e4720d',
- 'codex_analytics_history': '370ed3699c769dbff9b32baa5a831580d7bb184e88d3d0dee7ed860495a7e352',
+ 'codex_analytics_history': '4e7d85dfb1d9815d76ae48e3a122744ad8dbac70676b26984ba64b68ca025951',
  'codex_browser_recovery': 'b212d954451ab92db8ab69fe06e55caaa717dc25f71c21abc2879d3284ea0fc4',
  'codex_budget': 'fb2a9a60065b7278cd4741c8326c6f06cb581950cb29632f3560dee89e5f0359',
  'codex_canvas': '6e9bb7d6d39cb61078cc6ae851aaff54ae8605c906a1d5a4574840a963608d72',
  'codex_chat_reviews': '6f7a6e2f811d5694b908b2f6447cc45d16440d38ea32db9d760e652e4a177df9',
- 'codex_context_repair': 'a8db6bf4f3dded0d11ad931feafb60d162c3db32dc61aa9c3dd33af0d9e21d06',
+ 'codex_context_repair': 'c8d4f4a77ece8838ab3862eda2e9bf6c64a26407627778a9ca0457e95631efd7',
  'codex_efficiency': '339eb402d4c4666acda6e896e928b9abd12aef3680b0470bbacecb7c2305fecc',
  'codex_native_action_receipts': '902646dd0a63dc51a69191abbe69be2746d51e841baf530965e6d1ff8f2dd1a7',
  'codex_native_voice': '8fbff84260eff954a07552c391b42c26dc75509cce91cb6ed93659a7e2dc89d7',
- 'codex_runtime': 'f6257caf9bff9f39f276de3cc7adfc63b60e16bbd03da52bfa9581dd17aecba8',
- 'codex_tool_requests': 'd7a08b5539f1192b92438bddc38fd1a7f02052a80dc05b3d033705c47fd23b34',
+ 'codex_runtime': '857279f08a3f54df9d81afd7d052ba6ce3b51e3807e5b85b96ce5333d7888ecc',
+ 'codex_tool_requests': 'f5352666bc9590975f053de28326879a53d8d1ab6c804e1c989cf36951fe9588',
  'codex_wakeups': 'c4e2c44925d4f7ce971e4cc0f7800df61e19fef55891b38f22d5439f6ed8fa60',
  'codex_work': 'c7f37d9d6f37115b62f790e8d89ddd1c3de99cf3c2713768e78bbc0016fdf5cb',
  'codex_workspace': '02d923a4624d996a491a4266554dcb16922d7d5984e08edee0f1667a64854673'}
@@ -222,7 +241,8 @@ NEW_MODULES = {'codex_native_action_receipts', 'codex_context_repair', 'codex_bu
 OPTIONAL_MODULES = {'codex_native_voice', 'codex_browser_recovery', 'codex_agent_modes', 'codex_chat_reviews'}
 GLOBAL_IMPORTS = {'codex_analytics': {'budget_capture': ('codex_budget', 'budget_capture')},
  'codex_analytics_history': {'budget_migrate': ('codex_budget', 'budget_migrate'),
-                             'budget_prepare_migration': ('codex_budget', 'budget_prepare_migration')}}
+                             'budget_prepare_migration': ('codex_budget', 'budget_prepare_migration'),
+                             'uuid': ('uuid', None)}}
 CONSTANTS = {'codex_tool_requests._MESSAGE_REJECTIONS': ({'Message must have 1 to 12000 characters',
                                               'Select another agent',
                                               'Unknown managed agent',
@@ -236,7 +256,63 @@ CONSTANTS = {'codex_tool_requests._MESSAGE_REJECTIONS': ({'Message must have 1 t
                                               'Unknown managed agent',
                                               'Unknown message importance',
                                               'Versioned progress requires a progress_key and nonnegative '
-                                              'integer progress_version'})}
+                                              'integer progress_version'},
+                                             {'A no-issue result requires the exact active review event and '
+                                              'target',
+                                              'Message must have 1 to 12000 characters',
+                                              'Recipient conversation was deleted',
+                                              'Select another agent',
+                                              'Unknown managed agent',
+                                              'Unknown message importance',
+                                              'Versioned progress requires a progress_key and nonnegative '
+                                              'integer progress_version'}),
+ 'codex_tool_requests._WORK_REJECTIONS': ({'Another agent owns this work item',
+                                           'Dependencies have not been accepted',
+                                           'List changed or cursor is invalid. Read the first page again.',
+                                           'Only the assigned worker can submit its result',
+                                           'Only the lead can accept or reject a result',
+                                           'Only the lead can change work assignments',
+                                           'Only the lead can create work',
+                                           'Review or accepted work cannot be reassigned; reject a result '
+                                           'before editing',
+                                           'Submit a result before review',
+                                           'Supply a result with 1 to 32000 characters',
+                                           'Supply a source revision with 1 to 200 characters',
+                                           'Supply test evidence with 1 to 32000 characters',
+                                           'The file is outside this agent workspace',
+                                           'This result is already accepted',
+                                           'This work item changed. Reload before editing',
+                                           'This work item is not ready',
+                                           'Unknown managed agent',
+                                           'Unknown task in this team',
+                                           'Unknown work item',
+                                           'Work under review cannot be reassigned; reject its result before '
+                                           'editing',
+                                           'limit must be 1 to 50'},
+                                          {'Another agent owns this work item',
+                                           'Dependencies have not been accepted',
+                                           'List changed or cursor is invalid. Read the first page again.',
+                                           'Only the assigned worker can submit its result',
+                                           'Only the lead can accept or reject a result',
+                                           'Only the lead can change work assignments',
+                                           'Only the lead can create work',
+                                           'Review or accepted work cannot be reassigned; reject a result '
+                                           'before editing',
+                                           'Submit a result before review',
+                                           'Supply a result with 1 to 32000 characters',
+                                           'Supply a source revision with 1 to 200 characters',
+                                           'Supply test evidence with 1 to 32000 characters',
+                                           'Supply up to 50 file paths',
+                                           'The file is outside this agent workspace',
+                                           'This result is already accepted',
+                                           'This work item changed. Reload before editing',
+                                           'This work item is not ready',
+                                           'Unknown managed agent',
+                                           'Unknown task in this team',
+                                           'Unknown work item',
+                                           'Work under review cannot be reassigned; reject its result before '
+                                           'editing',
+                                           'limit must be 1 to 50'})}
 TOOLS_DIGEST = ('7abaeeff65bd2ceb4c5b0b786b8ce2bd47267e7e4242cdbc64113d488371277a',
  'a76bf69476cdf347a932ced5f5a6a2f0ab2c5f7abad4124f6a0b271e468ce0a4')
 TOOL_CHANGES = {'orchestration_message': {'description': 'Share a finding, question, or answer with other agents during '
@@ -530,13 +606,13 @@ def apply(runtime, handler_class=None):
                 raise RuntimeError('Unknown live limit-fix function: ' + target)
             originals.append((target, live, (live.__code__, live.__defaults__, live.__kwdefaults__), desired))
         constants = []
-        for target, (old, desired) in CONSTANTS.items():
+        for target, allowed in CONSTANTS.items():
             name, key = target.split('.')
             live = vars(modules[name]).get(key)
             if (type(live) is not set or any(type(value) is not str for value in live)
-                    or live != old and live != desired):
+                    or live not in allowed):
                 raise RuntimeError('Unknown live limit-fix constant: ' + target)
-            constants.append((live, live.copy(), desired))
+            constants.append((live, live.copy(), allowed[-1]))
         tools = codex_runtime.TOOLS
         if type(tools) is not list or digest(tools) not in TOOLS_DIGEST:
             raise RuntimeError('Unknown live limit-fix tool definitions')

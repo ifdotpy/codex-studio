@@ -79,6 +79,113 @@ class NativeContextRepair(unittest.TestCase):
     def test_transferred_repaired_fork_keeps_history_on_its_first_input(self):
         self.run_case(False, transferred=True)
 
+    def test_unrepaired_transfer_materializes_exact_native_ancestor_prefix(self):
+        self.run_unrepaired_transfer(False)
+
+    def test_nested_unrepaired_transfer_with_empty_turn_index_keeps_history(self):
+        self.run_unrepaired_transfer(True)
+
+    def run_unrepaired_transfer(self, nested):
+        from codex_account_transfer import transfer_store
+        with n.native_server(FailureHandler) as (source, tid, provider, notifications, _):
+            tid = source.call('thread/start', {'cwd':'/tmp','config':n.n.THREAD_CONFIG,
+                'approvalPolicy':'never','sandbox':'danger-full-access',
+                'developerInstructions':'Preserve developer policy jade-37.'})['thread']['id']
+            provider.command = 'printf ancestor-command-receipt'
+            payload = json.dumps({'stdout':'unrepaired-legacy-' * 3000})
+            event_text = '[Orchestration event: monitor_exit]\n' + payload
+            def source_turn(text):
+                turn = source.call('turn/start', {'threadId':tid,'input':[{'type':'text','text':text}]})['turn']['id']
+                n.n.until(lambda:any(e.get('method')=='turn/completed' and e['params']['turn']['id']==turn for e in notifications), 'source terminal')
+                return turn
+            event_turn = source_turn(event_text)
+            provider.latest_tool = True
+            latest = source_turn('Preserve inherited latest user maple and its latest tool receipt.')
+            before = json.dumps(provider.requests[-1])
+            original_path = Path(source.call('thread/read', {'threadId':tid,'includeTurns':False})['thread']['path'])
+            original_bytes = original_path.read_bytes()
+            f = n.w.WorkspaceContract()
+            f.setUp()
+            try:
+                with n.native_server(FailureHandler) as (target, empty, target_provider, target_notifications, _):
+                    target_home = Path(target.call('thread/read', {'threadId':empty,'includeTurns':False})['thread']['path']).parents[4]
+                    parent_id, parent_path = tid, original_path
+                    if nested:
+                        parent = source.call('thread/fork', {'threadId':tid,'excludeTurns':True,
+                            'deferGoalContinuation':True,'config':n.n.THREAD_CONFIG,
+                            'approvalPolicy':'never','sandbox':'danger-full-access'})['thread']
+                        parent_id, parent_path = parent['id'], Path(parent['path'])
+                    imported = transfer_store(f.runtime).copy_history(original_path.parents[4],target_home,parent_path)
+                    imported_prefix = Path(imported).read_bytes()
+                    params = {'threadId':parent_id,'path':str(imported),'excludeTurns':True,'deferGoalContinuation':True,
+                              'config':n.n.THREAD_CONFIG,'approvalPolicy':'never','sandbox':'danger-full-access'}
+                    fork = target.call('thread/fork',params)['thread']
+                    base = json.loads(Path(fork['path']).read_text().splitlines()[0])
+                    self.assertEqual(base['payload']['history_base']['end_byte_offset'],len(imported_prefix))
+                    self.assertEqual(base['payload']['history_base']['end_ordinal_exclusive'],json.loads(imported_prefix.splitlines()[-1])['ordinal']+1)
+                    if nested:
+                        turns = target.call('thread/turns/list', {'threadId':fork['id'],'limit':1,'sortDirection':'desc','itemsView':'notLoaded'})
+                        self.assertEqual(turns['data'],[])
+                    from codex_context_repair import _rollout_segments
+                    segments = _rollout_segments(target_home,Path(fork['path']),fork['id'])
+                    copied_root = Path(segments[0]['path'])
+                    self.assertEqual(copied_root.read_bytes(),original_bytes)
+                    # A real later source turn is outside the captured native fork boundary.
+                    source_turn('EXCLUDED-LATER-ANCESTOR-USER')
+                    later_bytes = original_path.read_bytes()
+                    self.assertTrue(later_bytes.startswith(original_bytes))
+                    with copied_root.open('ab') as stream:
+                        stream.write(later_bytes[len(original_bytes):])
+                    top_bytes = Path(fork['path']).read_bytes()
+                    target_provider.requests = provider.requests
+                    target_provider.unexpected = provider.unexpected
+                    count = len(provider.requests)
+                    a = f.agent_update(f.lead(),threadId=fork['id'],status='idle',inFlight=False)
+                    with f.runtime.db() as db:
+                        db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                            ('native-ancestry-event',a['id'],'monitor_exit',payload,'delivered',1,a['epoch'],event_turn,None))
+                    with patch.object(f.runtime,'connect',return_value=target), patch.object(f.runtime.accounts,'home',return_value=target_home), patch.object(f.runtime,'connection_current',return_value=True), patch.object(f.runtime,'new_thread_params',return_value={'config':n.n.THREAD_CONFIG,'approvalPolicy':'never','sandbox':'danger-full-access'}):
+                        repaired = repair_idle(f.runtime,a['id'])
+                    self.assertEqual(len(provider.requests),count)
+                    self.assertEqual(repaired['contextRepair']['snapshot']['terminalTurnId'],latest)
+                    self.assertEqual(len(repaired['contextRepair']['snapshot']['ancestry']),3 if nested else 2)
+                    from codex_analytics_history import inherited_usage_threads, rollout_actions
+                    allowed = inherited_usage_threads(repaired)
+                    context = {'threadId':repaired['threadId'],'allowedSourceThreadIds':allowed}
+                    projected = [json.loads(line) for line in Path(repaired['contextRepair']['snapshot']['copyPath']).read_text().splitlines()]
+                    usage = [row for row in projected if row['type']=='token_usage_record']
+                    self.assertTrue(usage,'Installed native fixture must persist exact response usage')
+                    original_usage = [json.loads(line)['payload'] for line in original_bytes.splitlines()
+                                      if json.loads(line)['type']=='token_usage_record']
+                    for record in usage:
+                        actions = rollout_actions(record,context,'native-ancestry-usage',1)
+                        self.assertFalse(any(action[1]=='wrongThreadRecord' for action in actions))
+                        self.assertEqual(actions[0][2]['responseId'],record['payload']['response_id'])
+                        self.assertEqual(actions[0][2]['rawTokenUsageRecord'],record['payload'])
+                        self.assertIn(record['payload'],original_usage)
+
+                    self.assertEqual(copied_root.read_bytes(),later_bytes)
+                    self.assertEqual(Path(fork['path']).read_bytes(),top_bytes)
+                    self.assertEqual(original_path.read_bytes(),later_bytes)
+                    result = target.call('turn/start', {'threadId':repaired['threadId'],'input':[{'type':'text','text':'First repaired transferred input.'}]})['turn']['id']
+                    n.n.until(lambda:any(e.get('method')=='turn/completed' and e['params']['turn']['id']==result for e in target_notifications),'repaired terminal')
+                    after = json.dumps(provider.requests[-1])
+                    for marker in ('ancestor-command-receipt','inherited latest user maple','latest-tool-receipt-maple','event:native-ancestry-event','Preserve developer policy jade-37.'):
+                        self.assertIn(marker,after)
+                    for item in json.loads(before).get('input',[]):
+                        if item.get('type') == 'function_call_output':
+                            self.assertIn(item,provider.requests[-1]['input'])
+                    self.assertNotIn('EXCLUDED-LATER-ANCESTOR-USER',after)
+                    self.assertLess(len(after),len(before)-40000)
+                    self.assertEqual(provider.requests[-1].get('instructions'),provider.requests[count-2].get('instructions'))
+                    self.assertEqual(len(provider.requests),count+1)
+                    self.assertEqual(provider.unexpected,[])
+                    print(json.dumps({'ancestryDepth':3 if nested else 2,'emptyNativeTurnIndex':nested,
+                        'beforeBytes':len(before),'afterBytes':len(after),'repairModelRequests':0,
+                        'sourceUnchanged':True,'laterAncestorInputExcluded':True,'externalRequests':[]}))
+            finally:
+                f.tearDown()
+
     def run_case(self, compacted, failed=False, tool_failed=False, transferred=False):
         with n.native_server(FailureHandler) as (server, tid, provider, notifications, _), ExitStack() as extra:
             provider.command = 'printf repair-command-receipt-cedar'

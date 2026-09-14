@@ -121,8 +121,9 @@ def _local_idle(rt, db, a, attempt_id):
     ):
         if not db.execute('SELECT 1 FROM sqlite_master WHERE name=?', ('runtime_' + table,)).fetchone():
             continue
+        nonblocking = " AND coalesce(json_extract(record,'$.method'),'')!='agent/asyncQuestion'" if table == 'requests' else ''
         row = db.execute(f"SELECT id FROM runtime_{table} WHERE json_extract(record,'$.agent')=? "
-                         f"AND json_extract(record,'$.{column}') IN ({','.join('?' for _ in statuses)}) LIMIT 1",
+                         f"AND json_extract(record,'$.{column}') IN ({','.join('?' for _ in statuses)}){nonblocking} LIMIT 1",
                          (a['id'], *statuses)).fetchone()
         if row:
             raise _waiting('Context repair waits for ' + table + ': ' + row[0])
@@ -205,18 +206,138 @@ def verified_events(db, a):
                                         for text in users.get(e['turn_id'], []))]
 
 
-def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None):
+def _prefix_records(path, end):
+    """Read exactly the native byte boundary, never an ancestor's later suffix."""
+    with Path(path).open('rb') as stream:
+        remaining = end
+        while remaining:
+            raw = stream.readline(min(remaining, 64 * 1024 * 1024 + 1))
+            if len(raw) > 64 * 1024 * 1024:
+                raise ValueError('Native context record exceeds the 64 MiB line limit')
+            if not raw or not raw.endswith(b'\n'):
+                raise _waiting('Context repair waits for the complete saved rollout tail', 'native')
+            remaining -= len(raw)
+            yield raw
+
+
+def _rollout_segments(home, source, thread_id):
+    """Validate native history_base byte and ordinal boundaries within one home."""
+    home, source = Path(home).resolve(), Path(source).resolve()
+    roots = [home / 'sessions', home / 'archived_sessions']
+    segments, seen, total = [], set(), 0
+    path, tid, end, ordinal_end = source, thread_id, source.stat().st_size, None
+    for _ in range(32):
+        if tid in seen:
+            raise ValueError('Native context ancestry contains a cycle')
+        seen.add(tid)
+        relative = path.relative_to(home)
+        if relative.parts[0] not in {'sessions', 'archived_sessions'} or path.suffix != '.jsonl':
+            raise ValueError('Unsupported native ancestry path')
+        total += end
+        if total > 8 * 1024 ** 3:
+            raise ValueError('Native context ancestry exceeds the copy size limit')
+        digest, first, last = hashlib.sha256(), None, None
+        for raw in _prefix_records(path, end):
+            digest.update(raw)
+            record = json.loads(raw)
+            if first is None:
+                first = record
+            ordinal = record.get('ordinal')
+            if ordinal_end is not None or first.get('payload', {}).get('history_base'):
+                if type(ordinal) is not int or (last is not None and ordinal != last + 1):
+                    raise ValueError('Native context ancestry has an invalid ordinal boundary')
+            last = ordinal
+        if not first or first.get('type') != 'session_meta' or first.get('payload', {}).get('id') != tid:
+            raise ValueError('The native ancestry identity does not match its history reference')
+        base = first['payload'].get('history_base')
+        if ordinal_end is not None and (last is None or last + 1 != ordinal_end):
+            raise ValueError('Native context ancestry has an invalid ordinal cutoff')
+        if base:
+            if (not isinstance(base, dict) or set(base) != {'thread_id', 'end_ordinal_exclusive', 'end_byte_offset'}
+                    or any(type(base[k]) is not int or base[k] <= 0 for k in ('end_ordinal_exclusive', 'end_byte_offset'))):
+                raise ValueError('Unsupported native context ancestry boundary')
+            try:
+                if str(uuid.UUID(base['thread_id'])) != base['thread_id']:
+                    raise ValueError()
+            except (ValueError, TypeError, AttributeError):
+                raise ValueError('Unsupported native context ancestry identity') from None
+            if first.get('ordinal') != base['end_ordinal_exclusive']:
+                raise ValueError('Native context ancestry has an invalid starting ordinal')
+        elif ordinal_end is not None and first.get('ordinal') != 0:
+            raise ValueError('Native context ancestry does not start at ordinal zero')
+        segments.append({'path':str(path), 'threadId':tid, 'endByteOffset':end,
+                         'endOrdinalExclusive':ordinal_end, 'sha256':digest.hexdigest(), 'first':first})
+        if not base:
+            return list(reversed(segments))
+        tid, end, ordinal_end = base['thread_id'], base['end_byte_offset'], base['end_ordinal_exclusive']
+        candidates = []
+        for root in roots:
+            for candidate in root.rglob('*' + tid + '*.jsonl'):
+                candidate = candidate.resolve()
+                if not candidate.is_relative_to(root.resolve()):
+                    raise ValueError('Native context ancestry leaves the account home')
+                if candidate.stat().st_size < end:
+                    continue
+                metadata = json.loads(next(_prefix_records(candidate, end)))
+                if metadata.get('type') == 'session_meta' and metadata.get('payload', {}).get('id') == tid:
+                    candidates.append(candidate)
+        if not candidates:
+            raise ValueError('The native context ancestor is missing: ' + tid)
+        hashes = {_prefix_hash(candidate, end) for candidate in candidates}
+        if len(hashes) != 1:
+            raise ValueError('The native context ancestor has conflicting saved prefixes: ' + tid)
+        path = sorted(candidates)[0]
+    raise ValueError('Native context ancestry exceeds the depth limit')
+
+
+def _prefix_hash(path, end):
+    digest = hashlib.sha256()
+    for raw in _prefix_records(path, end):
+        digest.update(raw)
+    return digest.hexdigest()
+
+
+def _projected_records(segments):
+    if len(segments) == 1:
+        yield from _prefix_records(segments[0]['path'], segments[0]['endByteOffset'])
+        return
+    metadata = copy.deepcopy(segments[-1]['first'])
+    metadata['payload'].pop('history_base')
+    metadata['ordinal'] = 0
+    yield (json.dumps(metadata, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+    ordinal = 1
+    for segment in segments:
+        for index, raw in enumerate(_prefix_records(segment['path'], segment['endByteOffset'])):
+            if index == 0:
+                continue
+            record = json.loads(raw)
+            if record.get('type') == 'session_meta':
+                raise ValueError('Native context contains an unexpected session identity')
+            record['ordinal'] = ordinal
+            ordinal += 1
+            yield (json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+
+
+def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None, *, segments=None, inherited_empty=False):
     """Change exact event prefixes only, with matching native turn provenance.
 
     Instructions, user text, attachments, summaries and tool receipts retain their
     values. Unknown input structures never authorize text replacement.
     """
     source, destination = Path(source), Path(destination)
-    with source.open('rb') as stream:
-        first = json.loads(stream.readline())
+    first = json.loads(next(_prefix_records(source, source.stat().st_size)))
     if first.get('type') != 'session_meta' or first['payload'].get('id') != thread_id:
         raise ValueError('The native rollout identity does not match the agent')
     inherited = bool(first['payload'].get('history_base'))
+    if inherited and not segments:
+        raise ValueError('Inherited native context requires verified ancestry')
+    if inherited_empty:
+        if not segments or len(segments) < 2:
+            raise _waiting('Context repair needs a terminal native turn', 'native')
+        for index, raw in enumerate(_prefix_records(source, segments[-1]['endByteOffset'])):
+            record = json.loads(raw)
+            if index and not (record.get('type') == 'event_msg' and record.get('payload', {}).get('type') == 'thread_settings_applied'):
+                raise _waiting('Context repair needs a terminal native turn for the local history', 'native')
     # Native paginated threads reject alternate paths for their registered UUID.
     # The private import has its own UUID. The receipt retains the source UUID.
     import_id = str(uuid.uuid4())
@@ -265,14 +386,15 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
                 changed = True
         return changed
 
-    turn, snapshot = None, False
+    turn = None
     latest_started, latest_terminal, terminal_at = None, None, None
     source_hash, clean_hash = hashlib.sha256(), hashlib.sha256()
     source_bytes, clean_bytes = 0, 0
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     created = False
     try:
-        with source.open('rb') as incoming, destination.open('xb') as outgoing:
+        with destination.open('xb') as outgoing:
+            incoming = _projected_records(segments) if segments else _prefix_records(source, source.stat().st_size)
             created = True
             os.chmod(destination, 0o600)
             for index, raw in enumerate(incoming):
@@ -284,7 +406,7 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
                 payload = record.get('payload') or {}
                 changed = False
                 if index == 0:
-                    if record != first:
+                    if not inherited and record != first:
                         raise ValueError('The source context changed before its copy')
                     payload['id'] = import_id
                     changed = True
@@ -306,7 +428,6 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
                 elif record.get('type') == 'response_item':
                     changed = repair_item(payload, turn)
                 elif record.get('type') == 'compacted':
-                    snapshot = snapshot or isinstance(payload.get('replacement_history'), list)
                     for item in payload.get('replacement_history') or []:
                         changed = repair_item(item) or changed
                 clean = (json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n').encode() if changed else raw
@@ -317,8 +438,8 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
                 raise _waiting('Context repair waits for the saved terminal turn: ' + terminal_turn, 'native')
             if any(len(ids) > 1 for ids in matched_messages.values()):
                 raise ValueError('The native event identity is ambiguous; original context is preserved')
-            if inherited and not snapshot:
-                raise ValueError('Inherited native context needs a persisted context snapshot before repair')
+            if inherited_empty and (not latest_terminal or latest_started != latest_terminal):
+                raise _waiting('Context repair waits for the saved inherited terminal turn', 'native')
             outgoing.flush()
             os.fsync(outgoing.fileno())
     except Exception:
@@ -330,6 +451,9 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
               'sourceBytes': source_bytes, 'importThreadId': import_id,
               'savedBytes': saved, 'eventIds': sorted(set(changes)), 'terminalTurnId': latest_terminal,
               'terminalCompletedAt': terminal_at}
+    if segments:
+        report.update(sourceSha256=segments[-1]['sha256'], sourceBytes=segments[-1]['endByteOffset'])
+        report['ancestry'] = [{k:v for k,v in segment.items() if k != 'first'} for segment in segments]
     if changes:
         report.update(copyPath=str(destination), copySha256=clean_hash.hexdigest(), copyBytes=clean_bytes)
     else:
@@ -434,7 +558,7 @@ def _unresolved_tool_receipts(rt, a):
         return unresolved
 
 
-def _native_idle(server, tid, unresolved=()):
+def _native_idle(server, tid, unresolved=(), *, inherited_empty=False):
     native = _native_read(server, 'thread/read', {'threadId': tid, 'includeTurns': False}, timeout=10)['thread']
     status = native.get('status', {}).get('type')
     if native.get('id') != tid:
@@ -449,7 +573,9 @@ def _native_idle(server, tid, unresolved=()):
     turns = _native_read(server, 'thread/turns/list', {'threadId': tid, 'limit': 1,
                        'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout=10)
     pages, deadline = {}, time.monotonic() + 20
-    if not turns.get('data'):
+    if not turns.get('data') and inherited_empty and not unresolved and status in {'idle', 'notLoaded'}:
+        native['repairInheritedEmpty'] = True
+    elif not turns.get('data'):
         raise _waiting('Context repair needs a terminal native turn; native status: ' + status, 'native')
     if turns.get('data'):
         turn = turns['data'][0]
@@ -552,6 +678,8 @@ def _fail(rt, op, error, *, unknown):
         stored = a.get('contextRepair') or {}
         if stored.get('id') != op['id'] or stored.get('phase') == 'completed':
             return
+        if op.get('copyCleanup'):
+            stored['copyCleanup'] = copy.deepcopy(op['copyCleanup'])
         stored.update(phase='unknown' if unknown else 'failed', error=str(error))
         _save(rt, db, a, stored)
 
@@ -751,12 +879,12 @@ def _repair(rt, key, attempt_id):
         elif old:
             a['lastContextRepairCheck'] = old
         _save(rt, db, a, op)
-    submitted = False
+    submitted, report = False, None
     try:
         server = rt.connect(a.get('accountKey', 'default'))
         op['connectionId'] = rt.connection_ids.get(a.get('accountKey', 'default'))
         _callback_barrier(server)
-        native = _native_idle(server, a['threadId'], _unresolved_tool_receipts(rt, a))
+        native = _native_idle(server, a['threadId'], _unresolved_tool_receipts(rt, a), inherited_empty=True)
         # Native regular items flush before the terminal marker. Require that
         # exact saved marker below; unloading here could close a later resume.
         with rt.lock, rt.db() as db:
@@ -770,10 +898,14 @@ def _repair(rt, key, attempt_id):
         if relative.parts[0] not in {'sessions', 'archived_sessions'} or source.suffix != '.jsonl':
             raise ValueError('Unsupported native history path')
         destination = home / 'sessions' / '.studio-context-repairs' / op['id'] / source.name
+        segments = _rollout_segments(home, source, a['threadId'])
         # Native fork can make its own history copy. Keep capacity for both copies.
-        if shutil.disk_usage(rt.root).free < source.stat().st_size * 3 + 64 * 1024 * 1024:
+        if shutil.disk_usage(home).free < sum(s['endByteOffset'] for s in segments) * 3 + 64 * 1024 * 1024:
             raise ValueError('Context repair needs free space for three copies of this rollout')
-        report = sanitized_rollout(source, destination, a['threadId'], events, native.get('repairTerminalTurnId'))
+        report = sanitized_rollout(source, destination, a['threadId'], events, native.get('repairTerminalTurnId'),
+                                   segments=segments, inherited_empty=native.get('repairInheritedEmpty', False))
+        if any(_prefix_hash(s['path'], s['endByteOffset']) != s['sha256'] for s in segments):
+            raise _waiting('Context repair waits for stable saved ancestry', 'native')
         source_hash = _hash_file(source)
         report['sourceFileIdentity'] = _file_identity(source)
         with rt.lock, rt.db() as db:
@@ -834,6 +966,11 @@ def _repair(rt, key, attempt_id):
             return current
     except Exception as error:
         from codex_runtime import PreparationPending
+        if not submitted and report and report.get('copyPath'):
+            try:
+                Path(report['copyPath']).unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                op['copyCleanup'] = {'path':report['copyPath'], 'outcome':'failed', 'error':str(cleanup_error)}
         if not isinstance(error, PreparationPending):
             _fail(rt, op, error, unknown=submitted)
         raise
