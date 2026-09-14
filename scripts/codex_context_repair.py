@@ -551,7 +551,8 @@ def recover_context_failures(rt, db, agents):
             and receipt.get('phase') == 'unchanged' and receipt.get('source') == _identity(a)
             and receipt.get('settings') == rt.preparation_settings(a)
             and isinstance(receipt.get('snapshot'), dict))
-        if (a.get('status') != 'failed' or (a.get('error') not in errors and not preparation_race) or a.get('inFlight')
+        exact_error = isinstance(a.get('error'), str) and a['error'] in errors
+        if (a.get('status') != 'failed' or (not exact_error and not preparation_race) or a.get('inFlight')
                 or a.get('contextRepairWait') or not attempt.get('events')
                 or not _unsubmitted(a, attempt.get('id'))):
             continue

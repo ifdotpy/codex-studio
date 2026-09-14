@@ -1,6 +1,6 @@
 """Apply the reviewed limit fixes without restarting active Studio work.
 
-Python 3.14 admits the exact ccbd147, 7415ada and f496684 implementations. Existing functions,
+Python 3.14 admits the exact ccbd147, 7415ada, f496684 and a50ac70 implementations. Existing functions,
 callbacks, HTTP closure cells, tool lists and runtime objects keep their identity.
 Schema changes run lazily through future normal calls, never during this patch.
 """
@@ -19,6 +19,7 @@ from codex_resource_removal_update import _find_handler
 BASE_COMMIT = 'ccbd147'
 # BEGIN REVIEWED MANIFEST
 HELPER_BASELINES = {'codex_context_repair': {'7415ada': '200a8196052edd3ced721d8ddfe7511d51a60da180e851e3f2af53fff365ac1f',
+                          'a50ac70': '9eaf690e24068685f0ca61a754101515a4b842fe20dae2d01f053e6fb235ddfe',
                           'f496684': 'ccab4526509a2f72e1965444d538b604c8431f305f28a3a7d2da5671e30138f0'}}
 HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
                                             'df178aeab1b6d277e4dd28ebe213683423a0cbb495a7a2ff59eff9058359dde0'),
@@ -56,7 +57,8 @@ HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
  'codex_context_repair.defer_context_start': (None,
                                               '3986f18f49d1acb3fb05b60f1f8b3d399b41bab3d95c663bbd714181678abd3e'),
  'codex_context_repair.recover_context_failures': (None,
-                                                   '8340e5e37ee3c3cdf6525b91b02c2e099769a9a548125244cf6f23455663f138'),
+                                                   '8340e5e37ee3c3cdf6525b91b02c2e099769a9a548125244cf6f23455663f138',
+                                                   '2ac7d3b3715debf1fa2bcb1bf4a990753d42d130004ad89f0ff03265a2d82987'),
  'codex_context_repair.repair_before_start': ('a17e5d717d5b75610ad80a14691a415ee923e6a0f81766e191f4bf0628076157',
                                               '8ea452c0c46969b54cd04b81b458fa1ddbdc57b271abf7d767e0deb59597d0b8'),
  'codex_context_repair.sanitized_rollout': ('8eeaf9cda2fa8020627ab9b6e188b2af99f0fe12ebbfe57fe8f478db6f65ac1e',
@@ -194,7 +196,7 @@ SOURCE_SHA = {'codex_account_transfer': 'd3bb785c611b95b27343d6c4aaaf1b3e811cd2d
  'codex_budget': 'fb2a9a60065b7278cd4741c8326c6f06cb581950cb29632f3560dee89e5f0359',
  'codex_canvas': '6e9bb7d6d39cb61078cc6ae851aaff54ae8605c906a1d5a4574840a963608d72',
  'codex_chat_reviews': '6f7a6e2f811d5694b908b2f6447cc45d16440d38ea32db9d760e652e4a177df9',
- 'codex_context_repair': '9eaf690e24068685f0ca61a754101515a4b842fe20dae2d01f053e6fb235ddfe',
+ 'codex_context_repair': '59e23131f78a9147be0419e0bcae329e7b982e1ae8db65ed475ac5661a7283f5',
  'codex_efficiency': '339eb402d4c4666acda6e896e928b9abd12aef3680b0470bbacecb7c2305fecc',
  'codex_native_action_receipts': '902646dd0a63dc51a69191abbe69be2746d51e841baf530965e6d1ff8f2dd1a7',
  'codex_native_voice': '8fbff84260eff954a07552c391b42c26dc75509cce91cb6ed93659a7e2dc89d7',

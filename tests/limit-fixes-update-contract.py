@@ -27,7 +27,7 @@ class LimitFixesUpdateContract(unittest.TestCase):
             for name in update.SOURCE_SHA if name not in update.NEW_MODULES}
         cls.prior_sources = {commit: {name: subprocess.check_output(
             ['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
-            for name in cls.old} for commit in ('7415ada', 'f496684')}
+            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70')}
         cls.helper_old = {}
         cls.helper_versions = {}
         for name, versions in update.HELPER_BASELINES.items():
@@ -460,6 +460,51 @@ class LimitFixesUpdateContract(unittest.TestCase):
 
     def test_exact_f496_implementation_upgrades_with_existing_callbacks(self):
         self.previous_implementation_upgrades('f496684')
+
+    def test_exact_a50_implementation_upgrades_with_existing_callbacks(self):
+        self.previous_implementation_upgrades('a50ac70')
+
+    def test_a50_recovery_guards_and_rollback(self):
+        helper = self.legacy_context_helper('a50ac70')
+        target = helper.recover_context_failures
+        original = target.__code__, target.__defaults__
+        for kind in ('code', 'defaults'):
+            if kind == 'code':
+                target.__code__ = target.__code__.replace(co_consts=target.__code__.co_consts + ('unknown',))
+            else:
+                target.__defaults__ = ('unknown',)
+            before = self.state(), self.helper_state(helper)
+            with self.subTest(kind=kind), self.assertRaisesRegex(RuntimeError, 'helper member'):
+                self.apply()
+            self.assertEqual(before, (self.state(), self.helper_state(helper)))
+            target.__code__, target.__defaults__ = original
+        before = self.state(), self.helper_state(helper)
+        with patch.object(update, '_active_frames', side_effect=[None, RuntimeError('Controlled late frame failure')]):
+            with self.assertRaisesRegex(RuntimeError, 'Controlled late frame failure'):
+                self.apply()
+        self.assertEqual(before, (self.state(), self.helper_state(helper)))
+        entered, release = threading.Event(), threading.Event()
+        def agents():
+            entered.set()
+            if not release.wait(15):
+                raise AssertionError('Fixture did not release recovery')
+            return
+            yield
+        thread = threading.Thread(target=target, args=(None, None, agents()))
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            with self.assertRaisesRegex(RuntimeError, 'earlier call.*recover_context_failures'):
+                self.apply()
+            self.assertEqual(before, (self.state(), self.helper_state(helper)))
+        finally:
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.apply()['status'], 'applied')
+        self.assertIs(helper.recover_context_failures, target)
+        target(None, None, [{'status': 'failed', 'error': {'type': 'usageLimitExceeded'}}])
+        self.assertEqual(self.apply()['status'], 'already_applied')
 
     def test_previous_live_helper_callbacks_upgrade_without_state_changes(self):
         helper = self.legacy_context_helper()

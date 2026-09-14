@@ -257,6 +257,28 @@ class ContextWait(f.NativeActionRepair):
             self.assertFalse(self.runtime.agent(a['id']).get('contextRepairWait'))
             self.assertEqual(self.runtime.agent(a['id'])['status'],'failed')
 
+    def test_structured_provider_error_does_not_block_other_recovery(self):
+        other = self.runtime.agent(self.a['id'])
+        other.update(id='provider-limited', status='failed', error={
+            'message':'Usage limit reached', 'codexErrorInfo':'usageLimitExceeded'},
+            nativeFailureHold=True, inFlight=False)
+        self.put('agents', other)
+        error = 'Context repair waits for complete native tool receipts'
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                ('mixed-unsent',self.a['id'],'user','Preserve this input','failed',2,self.a['epoch'],None,error))
+        a = self.agent_update(self.a,status='failed',error=error,inFlight=False,startAttempt={
+            'id':'mixed-attempt','submitted':False,'events':['mixed-unsent'],
+            'epoch':self.a['epoch'],'accountKey':self.a['accountKey']})
+        with self.runtime.lock,self.runtime.db() as db:
+            repair.recover_context_failures(self.runtime,db,[other,a])
+        self.assertEqual(self.runtime.agent(other['id'])['error'], other['error'])
+        self.assertTrue(self.runtime.agent(other['id'])['nativeFailureHold'])
+        self.assertTrue(self.runtime.agent(a['id'])['contextRepairWait']['historicalFailureRecovered'])
+        self.due()
+        eventually(lambda:self.runtime.agent(a['id']).get('turnId')=='resumed-turn')
+        self.assertEqual(len([m for m,p in self.server.calls if m=='turn/start']),1)
+
     def test_native_action_wait_keeps_receipt_and_resumes_once(self):
         self.monitor()
         result=self.runtime.native_action(self.a['id'],'review','wait-review')
