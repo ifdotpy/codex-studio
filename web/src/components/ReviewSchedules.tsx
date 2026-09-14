@@ -33,7 +33,7 @@ export default function ReviewSchedules({
   refresh: () => Promise<void>;
   openRoom: (id: string) => void;
 }) {
-  const [reviewer, setReviewer] = useState<string | null>(null);
+  const [target, setTarget] = useState<string | null>(null);
   const [minutes, setMinutes] = useState<string | number>(30);
   const [known, setKnown] = useState<Record<string, ReviewSchedule>>({});
   const [pending, setPending] = useState(false);
@@ -46,15 +46,16 @@ export default function ReviewSchedules({
       active.current = false;
     };
   }, []);
-  const schedules = new Map<string, ReviewSchedule>(
-    (agent.reviewSchedules || []).map((item: ReviewSchedule) => [
-      item.reviewerId,
-      item,
-    ]),
-  );
-  for (const item of Object.values(known))
-    if ((schedules.get(item.reviewerId)?.revision || 0) < item.revision)
-      schedules.set(item.reviewerId, item);
+  const assignments = (candidates: Agent[]) =>
+    candidates.flatMap((candidate) =>
+      (candidate.reviewSchedules || [])
+        .filter((item: ReviewSchedule) => item.reviewerId === agent.id)
+        .map((item: ReviewSchedule) => [candidate.id, item] as const),
+    );
+  const schedules = new Map<string, ReviewSchedule>(assignments(agents));
+  for (const [targetId, item] of Object.entries(known))
+    if ((schedules.get(targetId)?.revision || 0) < item.revision)
+      schedules.set(targetId, item);
   const teamId = agent.rootId || (agent.isLead ? agent.id : undefined);
   const sameTeam = (candidate?: Agent) =>
     !!teamId &&
@@ -69,7 +70,7 @@ export default function ReviewSchedules({
       (!schedules.has(candidate.id) || schedules.get(candidate.id)?.removed),
   );
   const save = async (
-    reviewerId: string,
+    targetId: string,
     intervalMinutes: number,
     enabled: boolean,
     removed = false,
@@ -78,22 +79,22 @@ export default function ReviewSchedules({
     if (
       enabled &&
       !removed &&
-      !sameTeam(agents.find((item) => item.id === reviewerId))
+      !sameTeam(agents.find((item) => item.id === targetId))
     ) {
-      setError("Reviewers must belong to this team.");
+      setError("The reviewed chat must belong to this team.");
       return;
     }
     lock.current = true;
     setPending(true);
     setError("");
     try {
-      const previous = schedules.get(reviewerId);
+      const previous = schedules.get(targetId);
       const result = await api<Agent>(
         "/api/organization",
         {
-          id: agent.id,
+          id: targetId,
           review_schedule: {
-            reviewer_id: reviewerId,
+            reviewer_id: agent.id,
             interval_minutes: intervalMinutes,
             enabled,
             removed,
@@ -104,10 +105,10 @@ export default function ReviewSchedules({
       );
       if (!active.current) return;
       const saved = (result.reviewSchedules || []).find(
-        (item: ReviewSchedule) => item.reviewerId === reviewerId,
+        (item: ReviewSchedule) => item.reviewerId === agent.id,
       );
       if (
-        result.id !== agent.id ||
+        result.id !== targetId ||
         !saved ||
         saved.intervalMinutes !== intervalMinutes ||
         saved.enabled !== enabled ||
@@ -115,8 +116,8 @@ export default function ReviewSchedules({
         saved.revision < (previous?.revision || 0)
       )
         throw new Error("The server did not confirm the review schedule.");
-      setKnown((old) => ({ ...old, [reviewerId]: saved }));
-      setReviewer(null);
+      setKnown((old) => ({ ...old, [targetId]: saved }));
+      setTarget(null);
       await refresh();
     } catch (cause) {
       if (active.current) {
@@ -135,13 +136,7 @@ export default function ReviewSchedules({
             canonical &&
             canonical.threadId === agent.threadId
           )
-            setKnown(
-              Object.fromEntries(
-                (canonical.reviewSchedules || []).map(
-                  (item: ReviewSchedule) => [item.reviewerId, item],
-                ),
-              ),
-            );
+            setKnown(Object.fromEntries(assignments(snapshot.threads)));
         } catch {
           /* Keep the form and error so the user can retry. */
         }
@@ -157,23 +152,22 @@ export default function ReviewSchedules({
     minutes >= 1 &&
     minutes <= 10080;
   return (
-    <section className="review-schedules" aria-label="Chat reviewers">
-      <Text fw={600}>Reviewers</Text>
+    <section className="review-schedules" aria-label="Chat reviews">
+      <Text fw={600}>Review other chats</Text>
       <Text size="sm" c="dimmed">
-        An agent in this team checks this chat on a timer. Both agents can
-        discuss findings in Messages.
+        This agent reviews the selected chats on a timer. Review events arrive
+        in this chat. Both agents can discuss findings in Messages.
       </Text>
-      {[...schedules.values()]
-        .filter((item) => !item.removed)
-        .map((item) => (
+      {[...schedules.entries()]
+        .filter(([, item]) => !item.removed)
+        .map(([targetId, item]) => (
           <ReviewRow
-            key={item.reviewerId}
+            key={targetId}
+            targetId={targetId}
             item={item}
-            reviewer={agents.find(
-              (candidate) => candidate.id === item.reviewerId,
-            )}
+            target={agents.find((candidate) => candidate.id === targetId)}
             sameTeam={sameTeam(
-              agents.find((candidate) => candidate.id === item.reviewerId),
+              agents.find((candidate) => candidate.id === targetId),
             )}
             pending={pending}
             save={save}
@@ -181,16 +175,16 @@ export default function ReviewSchedules({
           />
         ))}
       <Select
-        label="Reviewer chat"
-        placeholder="Select a team agent"
+        label="Chat to review"
+        placeholder="Select a chat in this team"
         searchable
         clearable
         data={choices.map((candidate) => ({
           value: candidate.id,
           label: `${candidate.name} (${shortModel(candidate.model)})`,
         }))}
-        value={reviewer}
-        onChange={setReviewer}
+        value={target}
+        onChange={setTarget}
         disabled={pending}
         nothingFoundMessage="No matching agents in this team"
       />
@@ -205,15 +199,15 @@ export default function ReviewSchedules({
       />
       <Button
         disabled={
-          !choices.some((candidate) => candidate.id === reviewer) ||
+          !choices.some((candidate) => candidate.id === target) ||
           !validMinutes ||
           pending
         }
         onClick={() =>
-          reviewer && validMinutes && void save(reviewer, Number(minutes), true)
+          target && validMinutes && void save(target, Number(minutes), true)
         }
       >
-        Add reviewer
+        Add chat
       </Button>
       <Text size="xs" c="dimmed">
         Default: every 30 minutes. No new work means no repeat review. A busy
@@ -230,14 +224,16 @@ export default function ReviewSchedules({
 
 function ReviewRow({
   item,
-  reviewer,
+  targetId,
+  target,
   pending,
   sameTeam,
   save,
   openRoom,
 }: {
   item: ReviewSchedule;
-  reviewer?: Agent;
+  targetId: string;
+  target?: Agent;
   pending: boolean;
   sameTeam: boolean;
   save: (
@@ -259,8 +255,8 @@ function ReviewRow({
     minutes >= 1 &&
     minutes <= 10080;
   return (
-    <div className="review-schedule" data-reviewer={item.reviewerId}>
-      <Text fw={500}>{reviewer?.name || "Unavailable chat"}</Text>
+    <div className="review-schedule" data-review-target={targetId}>
+      <Text fw={500}>{target?.name || "Unavailable chat"}</Text>
       <Text size="sm" c="dimmed">
         {!sameTeam
           ? "Unavailable: outside this team. History remains available."
@@ -274,7 +270,7 @@ function ReviewRow({
         </Text>
       )}
       <NumberInput
-        label={`Interval for ${reviewer?.name || "reviewer"} (minutes)`}
+        label={`Interval for ${target?.name || "chat"} (minutes)`}
         min={1}
         max={10080}
         allowDecimal={false}
@@ -289,9 +285,7 @@ function ReviewRow({
           disabled={
             pending || !sameTeam || !valid || minutes === item.intervalMinutes
           }
-          onClick={() =>
-            void save(item.reviewerId, Number(minutes), item.enabled)
-          }
+          onClick={() => void save(targetId, Number(minutes), item.enabled)}
         >
           Save interval
         </Button>
@@ -300,7 +294,7 @@ function ReviewRow({
           variant="light"
           disabled={pending || !sameTeam}
           onClick={() =>
-            void save(item.reviewerId, item.intervalMinutes, !item.enabled)
+            void save(targetId, item.intervalMinutes, !item.enabled)
           }
         >
           {item.enabled ? "Pause" : "Resume"}
@@ -316,9 +310,7 @@ function ReviewRow({
           size="xs"
           variant="subtle"
           disabled={pending}
-          onClick={() =>
-            void save(item.reviewerId, item.intervalMinutes, false, true)
-          }
+          onClick={() => void save(targetId, item.intervalMinutes, false, true)}
         >
           Remove
         </Button>

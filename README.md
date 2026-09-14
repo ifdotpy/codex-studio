@@ -171,6 +171,9 @@ Agents can exchange messages and read agent conversations only within their team
 A team contains one lead and its workers, with the same `rootId`.
 Chats from another team are outside this boundary, even in the same project.
 Review timers also require a reviewer from the same team.
+Configure reviews in the reviewer's chat settings. Select the chats to review
+and the interval, which defaults to 30 minutes. Timer events arrive in the
+reviewer's chat. Existing assignments appear there without migration.
 You can still read historical conversations between teams.
 
 Use **Multi agent** / **Single agent** in the chat header to change delegation immediately.

@@ -73,13 +73,19 @@ try {
       );
       localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
     },
-    { stateDir: state.stateDir, id: target.id },
+    { stateDir: state.stateDir, id: reviewer.id },
   );
   const writes = [];
   let loseNextReply = false;
   await page.route("**/api/organization", async (route) => {
     const body = route.request().postDataJSON();
     if (!body.review_schedule) return route.continue();
+    assert.equal(body.id, target.id, "The selected chat is the review target");
+    assert.equal(
+      body.review_schedule.reviewer_id,
+      reviewer.id,
+      "The current chat receives the scheduled review",
+    );
     writes.push(body);
     if (loseNextReply) {
       loseNextReply = false;
@@ -94,10 +100,11 @@ try {
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
-    await page.getByRole("region", { name: "Chat reviewers" }).waitFor();
+    await page.getByRole("region", { name: "Chat reviews" }).waitFor();
   };
   await settings();
-  const region = page.getByRole("region", { name: "Chat reviewers" });
+  await page.getByText("Review other chats", { exact: true }).waitFor();
+  const region = page.getByRole("region", { name: "Chat reviews" });
   assert.equal(
     await region
       .getByLabel("Review interval (minutes)", { exact: true })
@@ -105,21 +112,28 @@ try {
     "30",
   );
   await region
-    .getByLabel("Reviewer chat", { exact: true })
+    .getByLabel("Chat to review", { exact: true })
     .fill("Other project");
   assert.equal(
     await page.getByRole("option", { name: /Other project/ }).count(),
     0,
   );
-  await region.getByLabel("Reviewer chat", { exact: true }).fill("Worker 38");
-  await page.getByRole("option", { name: /Worker 38/ }).click();
   await region
-    .getByRole("button", { name: "Add reviewer", exact: true })
-    .click();
-  const row = region.locator(`[data-reviewer="${reviewer.id}"]`);
+    .getByLabel("Chat to review", { exact: true })
+    .fill("Release lead");
+  await page.getByRole("option", { name: /Release lead/ }).click();
+  await region.getByRole("button", { name: "Add chat", exact: true }).click();
+  const row = region.locator(`[data-review-target="${target.id}"]`);
   await row.waitFor();
   let saved = (await snapshot()).threads.find((agent) => agent.id === target.id)
     .reviewSchedules[0];
+  assert.equal(saved.reviewerId, reviewer.id);
+  assert.equal(
+    (await snapshot()).threads.find((agent) => agent.id === reviewer.id)
+      .reviewSchedules?.length || 0,
+    0,
+    "The reviewer does not receive a reversed target schedule",
+  );
   assert.equal(saved.intervalMinutes, 30);
   assert.equal(saved.enabled, true);
   assert.equal(saved.lastRunAt, null);
@@ -128,8 +142,9 @@ try {
   await row.getByRole("button", { name: "Save interval" }).click();
   await page.waitForFunction(
     (id) =>
-      document.querySelector(`[data-reviewer="${id}"] input`)?.value === "45",
-    reviewer.id,
+      document.querySelector(`[data-review-target="${id}"] input`)?.value ===
+      "45",
+    target.id,
   );
   await row.getByRole("button", { name: "Pause", exact: true }).click();
   await row.getByRole("button", { name: "Resume", exact: true }).waitFor();
@@ -146,7 +161,7 @@ try {
   await page.locator('[data-message-group="reviews"]').waitFor();
   await page.screenshot({ path: join(root, "discussion.png") });
   console.log(
-    "PASS defaults, assign, interval, pause/resume, same-team discussion and foreign reviewer exclusion",
+    "PASS defaults, assign, interval, pause/resume, reviewer-owned assignment, same-team discussion and foreign target exclusion",
   );
 
   await page.reload();
@@ -156,18 +171,18 @@ try {
   await row.getByRole("button", { name: "Remove", exact: true }).click();
   await row.waitFor({ state: "detached" });
   await region
-    .getByLabel("Reviewer chat", { exact: true })
+    .getByLabel("Chat to review", { exact: true })
     .fill("Other project");
   assert.equal(
     await page.getByRole("option", { name: /Other project/ }).count(),
     0,
   );
-  await region.getByLabel("Reviewer chat", { exact: true }).fill("Worker 38");
-  await page.getByRole("option", { name: /Worker 38/ }).click();
-  loseNextReply = true;
   await region
-    .getByRole("button", { name: "Add reviewer", exact: true })
-    .click();
+    .getByLabel("Chat to review", { exact: true })
+    .fill("Release lead");
+  await page.getByRole("option", { name: /Release lead/ }).click();
+  loseNextReply = true;
+  await region.getByRole("button", { name: "Add chat", exact: true }).click();
   await region.getByRole("alert").waitFor();
   assert.equal(loseNextReply, false);
   await row.waitFor();
