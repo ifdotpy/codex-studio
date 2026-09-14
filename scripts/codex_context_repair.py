@@ -134,6 +134,51 @@ def _local_idle(rt, db, a, attempt_id):
     return historical
 
 
+def _inherited_checked_events(db, a):
+    """Carry a completed repair through exact committed account-transfer forks."""
+    history = [h for h in a.get('accountHistory', []) if h.get('transferId')]
+    if not history or not db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_account_transfers'").fetchone():
+        return set()
+    repairs = [a.get('contextRepair') or {}, *a.get('contextRepairHistory', [])]
+    scope, seen = (a.get('accountKey', 'default'), a.get('threadId')), set()
+    checked = set()
+    for _ in range(len(history) + 1):
+        if scope in seen:
+            return set()
+        seen.add(scope)
+        for receipt in repairs:
+            source = receipt.get('source') or {}
+            if (receipt.get('phase') == 'completed' and receipt.get('agent') == a['id']
+                    and source.get('id') == a['id'] and source.get('epoch') == a['epoch']
+                    and (source.get('accountKey'), receipt.get('newThreadId')) == scope
+                    and receipt.get('compactions') == a.get('compactions', 0)):
+                checked.update(receipt.get('checkedEventIds', []))
+        parents = set()
+        for entry in history:
+            row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (entry['transferId'],)).fetchone()
+            if not row:
+                continue
+            transfer = json.loads(row[0])
+            member = (transfer.get('members') or {}).get(a['id']) or {}
+            source = member.get('source') or {}
+            target = (member.get('result') or {}).get('thread') or {}
+            parent = (entry.get('accountKey', 'default'), entry.get('threadId'))
+            if (transfer.get('id') == entry['transferId'] and transfer.get('status') in {'pending', 'completed', 'cancelled'}
+                    and member.get('phase') == 'completed'
+                    and (transfer.get('targetAccountKey'), target.get('id')) == scope
+                    and parent == (member.get('sourceAccountKey'), member.get('sourceThreadId'))
+                    and parent == (source.get('accountKey'), source.get('threadId'))
+                    and source.get('epoch') == a['epoch'] and parent[1]
+                    and target.get('forkedFromId') == parent[1]):
+                parents.add(parent)
+        if not parents:
+            return checked
+        if len(parents) != 1:
+            return set()
+        scope = parents.pop()
+    return set()
+
+
 def verified_events(db, a):
     receipt = a.get('contextRepair') or {}
     repaired = set(receipt.get('repairedEventIds', [])) if receipt.get('newThreadId') == a.get('threadId') else set()
@@ -141,6 +186,7 @@ def verified_events(db, a):
     if (receipt.get('phase') in {'unchanged', 'completed'} and checked_thread == a.get('threadId')
             and receipt.get('compactions') == a.get('compactions', 0)):
         repaired.update(receipt.get('checkedEventIds', []))
+    repaired.update(_inherited_checked_events(db, a))
     events = [dict(r) for r in db.execute(
         "SELECT e.* FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
         "WHERE e.agent=? AND e.status='delivered' "

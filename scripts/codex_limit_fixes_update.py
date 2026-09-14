@@ -1,6 +1,6 @@
 """Apply the reviewed limit fixes without restarting active Studio work.
 
-Python 3.14 admits the exact ccbd147, 7415ada, f496684, a50ac70 and 7f77579 implementations. Existing functions,
+Python 3.14 admits the exact ccbd147, 7415ada, f496684, a50ac70, 7f77579 and 94b72e2 implementations. Existing functions,
 callbacks, HTTP closure cells, tool lists and runtime objects keep their identity.
 Schema changes run lazily through future normal calls, never during this patch.
 """
@@ -18,7 +18,8 @@ from codex_resource_removal_update import _find_handler
 
 BASE_COMMIT = 'ccbd147'
 # BEGIN REVIEWED MANIFEST
-HELPER_BASELINES = {'codex_context_repair': {'7f77579': '59e23131f78a9147be0419e0bcae329e7b982e1ae8db65ed475ac5661a7283f5',
+HELPER_BASELINES = {'codex_context_repair': {'94b72e2': 'cac82e291be01d0cf7615aa51a51f0814c47a3435db2c0c73026342320e9a445',
+                          '7f77579': '59e23131f78a9147be0419e0bcae329e7b982e1ae8db65ed475ac5661a7283f5',
                           '7415ada': '200a8196052edd3ced721d8ddfe7511d51a60da180e851e3f2af53fff365ac1f',
                           'a50ac70': '9eaf690e24068685f0ca61a754101515a4b842fe20dae2d01f053e6fb235ddfe',
                           'f496684': 'ccab4526509a2f72e1965444d538b604c8431f305f28a3a7d2da5671e30138f0'}}
@@ -30,6 +31,8 @@ HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
                                    '3732b846818729cc7a31c8af381936b0117a5420ce4db0fe76dd7c1d394c5ca6'),
  'codex_context_repair._defer_context': (None,
                                          'a1d4ad93c604aeaae405bd2523877b99a68558343fbbe5e91a872acba7e5f60a'),
+ 'codex_context_repair._inherited_checked_events': (None,
+                                                    'd1ba6a6577fa399edb92575389d13d0160a4d2cc574cd324e508837da0d0ea7d'),
  'codex_context_repair._local_idle': ('93da65b90f9a4b69260118663a8aa0c226a4e26dd9475fd2588045d0e6fe4595',
                                       'd29466729b24a95874f7bb1fb04c17a430292455013b57dee112b5987eab8c77',
                                       '66d114d58b4b157e4aa5d743c48da6e4a100d6e584bee2c21f5613caa9fb9767'),
@@ -70,7 +73,9 @@ HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
                                               '8ea452c0c46969b54cd04b81b458fa1ddbdc57b271abf7d767e0deb59597d0b8'),
  'codex_context_repair.sanitized_rollout': ('8eeaf9cda2fa8020627ab9b6e188b2af99f0fe12ebbfe57fe8f478db6f65ac1e',
                                             'f634364cd9bf36650babe05a16fe82ebbe26fb2992abb48ab636f1f86c9f6646',
-                                            'c301b951d82a8fbef79158bc4550e0faf136237c5904f5d9a076d2826538db4a')}
+                                            'c301b951d82a8fbef79158bc4550e0faf136237c5904f5d9a076d2826538db4a'),
+ 'codex_context_repair.verified_events': ('8aed95de0228d5ad5f314fb576667154e55e1fd707f8c5f817c3e6c9ddd8ecad',
+                                          '6d50b41b07c5f5d96c36547b31aa15f59a8ac1b41dd3c34f03e588a7381b90f1')}
 EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680aadd73c306fe2ecc90ad092152c06fd72044b5d9ab7c18dbd40a8c43',
                                                            '1c5eda98a0fe8fd99c6686b176de3f420f7ee439e54a1e36bddfb9f03c5c0ffa'),
  'codex_agent_modes.tool_mode_context': ('c28b40bac6cad47c525c9f6fd9dc749e0cd346ebacfdb6f5d3c934a164faa442',
@@ -204,7 +209,7 @@ SOURCE_SHA = {'codex_account_transfer': 'd3bb785c611b95b27343d6c4aaaf1b3e811cd2d
  'codex_budget': 'fb2a9a60065b7278cd4741c8326c6f06cb581950cb29632f3560dee89e5f0359',
  'codex_canvas': '6e9bb7d6d39cb61078cc6ae851aaff54ae8605c906a1d5a4574840a963608d72',
  'codex_chat_reviews': '6f7a6e2f811d5694b908b2f6447cc45d16440d38ea32db9d760e652e4a177df9',
- 'codex_context_repair': 'cac82e291be01d0cf7615aa51a51f0814c47a3435db2c0c73026342320e9a445',
+ 'codex_context_repair': 'a8db6bf4f3dded0d11ad931feafb60d162c3db32dc61aa9c3dd33af0d9e21d06',
  'codex_efficiency': '339eb402d4c4666acda6e896e928b9abd12aef3680b0470bbacecb7c2305fecc',
  'codex_native_action_receipts': '902646dd0a63dc51a69191abbe69be2746d51e841baf530965e6d1ff8f2dd1a7',
  'codex_native_voice': '8fbff84260eff954a07552c391b42c26dc75509cce91cb6ed93659a7e2dc89d7',

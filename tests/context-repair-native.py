@@ -2,6 +2,7 @@
 """Native history repair with local Responses and blocked external requests."""
 import importlib.util
 import json
+from contextlib import ExitStack
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -75,8 +76,11 @@ class NativeContextRepair(unittest.TestCase):
     def test_unsuccessful_dynamic_tool_receipt_is_terminal_for_maintenance(self):
         self.run_case(False, tool_failed=True)
 
-    def run_case(self, compacted, failed=False, tool_failed=False):
-        with n.native_server(FailureHandler) as (server, tid, provider, notifications, _):
+    def test_transferred_repaired_fork_keeps_history_on_its_first_input(self):
+        self.run_case(False, transferred=True)
+
+    def run_case(self, compacted, failed=False, tool_failed=False, transferred=False):
+        with n.native_server(FailureHandler) as (server, tid, provider, notifications, _), ExitStack() as extra:
             provider.command = 'printf repair-command-receipt-cedar'
             if tool_failed:
                 provider.failed_dynamic_fixture = True
@@ -146,6 +150,41 @@ class NativeContextRepair(unittest.TestCase):
                 self.assertTrue(report['eventIds'], report)
                 fork = {'id': repaired['threadId']}
                 self.assertEqual(len(provider.requests), count)
+                if transferred:
+                    from codex_account_transfer import transfer_store
+                    target_server, empty_id, target_provider, target_notifications, _ = extra.enter_context(n.native_server(FailureHandler))
+                    target_provider.requests, target_provider.unexpected = provider.requests, provider.unexpected
+                    empty_native = target_server.call('thread/read', {'threadId':empty_id,'includeTurns':False})['thread']
+                    target_home = Path(empty_native['path']).parents[4]
+                    parent_native = server.call('thread/read', {'threadId':fork['id'],'includeTurns':False})['thread']
+                    imported = transfer_store(f.runtime).copy_history(source.parents[4],target_home,parent_native['path'])
+                    target = target_server.call('thread/fork', {'threadId':fork['id'],'path':str(imported),'excludeTurns':True,
+                        'deferGoalContinuation':True,'config':n.n.THREAD_CONFIG,
+                        'approvalPolicy':'never','sandbox':'danger-full-access'})['thread']
+                    page = target_server.call('thread/turns/list', {'threadId':target['id'],'limit':1,
+                        'sortDirection':'desc','itemsView':'notLoaded'})
+                    self.assertEqual(page['data'], [])
+                    self.assertEqual(target['forkedFromId'],fork['id'])
+                    target_source = Path(target['path']).read_bytes()
+                    transfer = {'id':'native-transfer','leadId':a['id'],'status':'completed',
+                        'targetAccountKey':'fixture-target','members':{a['id']:{'phase':'completed',
+                            'sourceAccountKey':a['accountKey'],'sourceThreadId':fork['id'],
+                            'source':{'accountKey':a['accountKey'],'threadId':fork['id'],'epoch':a['epoch']},
+                            'result':{'thread':target}}}}
+                    with f.runtime.db() as db:
+                        db.execute('CREATE TABLE IF NOT EXISTS runtime_account_transfers(id TEXT PRIMARY KEY,record TEXT NOT NULL)')
+                        db.execute('INSERT INTO runtime_account_transfers VALUES (?,?)',('native-transfer',json.dumps(transfer)))
+                    moved=f.agent_update(repaired,accountKey='fixture-target',threadId=target['id'],
+                        accountHistory=[*repaired.get('accountHistory',[]),{'transferId':'native-transfer',
+                            'accountKey':a['accountKey'],'threadId':fork['id']}])
+                    with patch.object(f.runtime,'connect',side_effect=AssertionError('Checked inherited history needs no new repair')):
+                        admitted=repair_idle(f.runtime,moved['id'])
+                    self.assertEqual(admitted['threadId'],target['id'])
+                    self.assertEqual(admitted['accountKey'],'fixture-target')
+                    self.assertEqual(Path(target['path']).read_bytes(),target_source)
+                    self.assertEqual(len(provider.requests),count)
+                    fork={'id':target['id']}
+                    server, notifications = target_server, target_notifications
             finally:
                 f.tearDown()
             turn(fork['id'], 'After repair measurement.')
@@ -170,7 +209,8 @@ class NativeContextRepair(unittest.TestCase):
             self.assertIn('repair-command-receipt-cedar', resumed)
             self.assertEqual(source.read_bytes(), data)
             print(json.dumps({'beforeBytes': len(before.encode()), 'afterBytes': len(after.encode()),
-                'compacted': compacted, 'failedSource': failed, 'failedDynamicTool': tool_failed, 'savedForkBytes': len(resumed.encode()), 'repairModelRequests': 0, 'externalRequests': provider.unexpected}))
+                'compacted': compacted, 'failedSource': failed, 'failedDynamicTool': tool_failed,
+                'transferred':transferred, 'savedForkBytes': len(resumed.encode()), 'repairModelRequests': 0, 'externalRequests': provider.unexpected}))
 
 
 if __name__ == '__main__':

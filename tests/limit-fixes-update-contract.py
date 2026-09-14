@@ -27,7 +27,7 @@ class LimitFixesUpdateContract(unittest.TestCase):
             for name in update.SOURCE_SHA if name not in update.NEW_MODULES}
         cls.prior_sources = {commit: {name: subprocess.check_output(
             ['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
-            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70', '7f77579')}
+            for name in cls.old} for commit in ('7415ada', 'f496684', 'a50ac70', '7f77579', '94b72e2')}
         cls.helper_old = {}
         cls.helper_versions = {}
         for name, versions in update.HELPER_BASELINES.items():
@@ -466,6 +466,41 @@ class LimitFixesUpdateContract(unittest.TestCase):
 
     def test_exact_7f_implementation_upgrades_with_existing_callbacks(self):
         self.previous_implementation_upgrades('7f77579')
+
+    def test_exact_94b_implementation_upgrades_with_existing_callbacks(self):
+        self.previous_implementation_upgrades('94b72e2')
+
+    def test_94b_active_event_read_and_late_failure_preserve_helper(self):
+        helper = self.legacy_context_helper('94b72e2')
+        before = self.state(), self.helper_state(helper)
+        with patch.object(update, '_active_frames', side_effect=[None, RuntimeError('Controlled late frame failure')]):
+            with self.assertRaisesRegex(RuntimeError, 'Controlled late frame failure'):
+                self.apply()
+        self.assertEqual(before, (self.state(), self.helper_state(helper)))
+        entered, release = threading.Event(), threading.Event()
+        results = []
+        class PendingDB:
+            def execute(self, *args):
+                entered.set()
+                if not release.wait(15):
+                    raise AssertionError('Fixture did not release the event read')
+                return []
+        def read():
+            results.append(helper.verified_events(PendingDB(), {'id': 'agent'}))
+        thread = threading.Thread(target=read)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            with self.assertRaisesRegex(RuntimeError, 'earlier call.*verified_events'):
+                self.apply()
+            self.assertEqual(before, (self.state(), self.helper_state(helper)))
+        finally:
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(results, [[]])
+        self.assertEqual(self.apply()['status'], 'applied')
+        self.assertEqual(self.apply()['status'], 'already_applied')
 
     def test_a50_recovery_guards_and_rollback(self):
         helper = self.legacy_context_helper('a50ac70')
