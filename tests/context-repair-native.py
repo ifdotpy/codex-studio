@@ -14,6 +14,30 @@ from codex_context_repair import repair_idle, _native_idle
 
 class FailureHandler(n.s.ShellHandler):
     def do_POST(self):
+        latest = getattr(self.server, 'latest_tool', False)
+        if latest or (getattr(self.server, 'failed_dynamic_fixture', False) and not self.server.requests):
+            self.server.latest_tool = False
+            request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            self.server.requests.append(request)
+            dynamic = getattr(self.server, 'failed_dynamic_fixture', False)
+            call_id = 'fixture-latest-call' if latest else 'fixture-failed-call'
+            item = {'id':call_id,'call_id':call_id,'type':'function_call',
+                    'name':'repair_fixture_tool' if dynamic else 'exec_command',
+                    'arguments':'{}' if dynamic else json.dumps({'cmd':'printf latest-tool-receipt-maple','max_output_tokens':1000}),
+                    'status':'completed'}
+            response = {'id':'fixture-tool-response','object':'response','status':'completed',
+                        'model':request['model'],'output':[item],
+                        'usage':{'input_tokens':1,'output_tokens':1,'total_tokens':2}}
+            self.send_response(200)
+            self.send_header('Content-Type','text/event-stream')
+            self.send_header('Connection','close')
+            self.end_headers()
+            self.event('response.created',response={**response,'status':'in_progress','output':[]})
+            self.event('response.output_item.added',output_index=0,item={**item,'status':'in_progress'})
+            self.event('response.output_item.done',output_index=0,item=item)
+            self.event('response.completed',response=response)
+            self.close_connection=True
+            return
         if not getattr(self.server, 'fail_next', False) or self.path != '/v1/responses':
             return super().do_POST()
         self.server.fail_next = False
@@ -48,9 +72,20 @@ class NativeContextRepair(unittest.TestCase):
             self.assertEqual(provider.unexpected, [])
             provider.release.set()
 
-    def run_case(self, compacted, failed=False):
+    def test_unsuccessful_dynamic_tool_receipt_is_terminal_for_maintenance(self):
+        self.run_case(False, tool_failed=True)
+
+    def run_case(self, compacted, failed=False, tool_failed=False):
         with n.native_server(FailureHandler) as (server, tid, provider, notifications, _):
             provider.command = 'printf repair-command-receipt-cedar'
+            if tool_failed:
+                provider.failed_dynamic_fixture = True
+                server.request = lambda message: server.write({'id':message['id'], 'result':{
+                    'success':False,'contentItems':[{'type':'inputText','text':'repair-command-receipt-cedar: latest-tool-receipt-maple: known tool failure'}]}})
+                tid = server.call('thread/start', {'cwd':'/tmp','config':n.n.THREAD_CONFIG,
+                    'approvalPolicy':'never','sandbox':'danger-full-access',
+                    'dynamicTools':[{'name':'repair_fixture_tool','description':'Return the isolated failure receipt',
+                                     'inputSchema':{'type':'object','properties':{}}}]})['thread']['id']
             text = json.dumps({'id': 'monitor-repair', 'status': 'exited', 'exitCode': 0,
                                'stdout': 'legacy-payload-marker-' * 3000})
             original = '[Orchestration event: monitor_exit]\n' + text
@@ -59,20 +94,28 @@ class NativeContextRepair(unittest.TestCase):
                 n.n.until(lambda: any(e.get('method') == 'turn/completed' and e['params']['turn']['id'] == result for e in notifications), 'native completion')
                 return result
             first = turn(tid, 'Preserve user decision birch-192. Run the fixture command once.')
+            if tool_failed:
+                page = server.call('thread/items/list', {'threadId':tid,'turnId':first,'limit':1000,'sortDirection':'asc'})
+                calls = [entry['item'] for entry in page['data'] if entry['item']['type']=='dynamicToolCall']
+                self.assertEqual(len(calls),1)
+                self.assertEqual(calls[0]['status'],'failed')
+                self.assertIs(calls[0]['success'],False)
             event_turn = turn(tid, original + '\n\nKeep this appended instruction unchanged.')
+            provider.latest_tool = True
+            latest = turn(tid, 'Preserve latest-user-maple and run the latest fixture tool once.')
             if failed:
                 provider.fail_next = True
                 failed_turn = turn(tid, 'Fail this isolated request without a retry.')
                 completion = next(e for e in notifications if e.get('method') == 'turn/completed' and e['params']['turn']['id'] == failed_turn)
                 self.assertEqual(completion['params']['turn']['status'], 'failed')
-            else:
-                turn(tid, 'Before repair measurement.')
             before = json.dumps(provider.requests[-1])
             native = server.call('thread/read', {'threadId': tid, 'includeTurns': False})['thread']
             if failed:
                 self.assertEqual(native['status']['type'], 'systemError')
-            else:
+            if compacted:
                 server.call('thread/unsubscribe', {'threadId': tid})
+            elif not failed:
+                self.assertEqual(native['status']['type'], 'idle')
             source = Path(native['path'])
             if compacted:
                 records = [json.loads(line) for line in source.read_text().splitlines()]
@@ -110,6 +153,8 @@ class NativeContextRepair(unittest.TestCase):
             self.assertLess(len(after), len(before) - 50000)
             self.assertIn('birch-192', after)
             self.assertIn('repair-command-receipt-cedar', after)
+            self.assertIn('latest-user-maple', after)
+            self.assertIn('latest-tool-receipt-maple', after)
             self.assertIn('Keep this appended instruction unchanged.', after)
             self.assertIn('event:monitor:repair', after)
             if compacted:
@@ -125,7 +170,7 @@ class NativeContextRepair(unittest.TestCase):
             self.assertIn('repair-command-receipt-cedar', resumed)
             self.assertEqual(source.read_bytes(), data)
             print(json.dumps({'beforeBytes': len(before.encode()), 'afterBytes': len(after.encode()),
-                'compacted': compacted, 'failedSource': failed, 'savedForkBytes': len(resumed.encode()), 'repairModelRequests': 0, 'externalRequests': provider.unexpected}))
+                'compacted': compacted, 'failedSource': failed, 'failedDynamicTool': tool_failed, 'savedForkBytes': len(resumed.encode()), 'repairModelRequests': 0, 'externalRequests': provider.unexpected}))
 
 
 if __name__ == '__main__':

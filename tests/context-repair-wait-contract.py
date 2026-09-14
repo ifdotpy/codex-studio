@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""Maintenance waits preserve accepted input and terminal unknown receipts."""
+import concurrent.futures
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+
+spec = importlib.util.spec_from_file_location('actions', Path(__file__).with_name('native-action-context-repair-contract.py'))
+f = importlib.util.module_from_spec(spec); spec.loader.exec_module(f)
+repair, eventually = f.f.repair, f.f.f.eventually
+
+
+class ContextWait(f.NativeActionRepair):
+    def setUp(self):
+        super().setUp()
+        submit = self.server.submit
+        def call(method, params):
+            if method != 'turn/start':
+                return submit(method, params)
+            self.server.calls.append((method, copy.deepcopy(params)))
+            future = concurrent.futures.Future()
+            future.set_result({'turn':{'id':'resumed-turn','status':'inProgress'}})
+            return 'resumed-rpc', method, future
+        self.server.submit = call
+
+    def put(self, table, value):
+        with self.runtime.db() as db:
+            self.runtime.put(db, table, value)
+
+    def monitor(self):
+        self.put('monitors', {'id':'exact-active-monitor','agent':self.a['id'],'status':'running'})
+
+    def clear_monitor(self):
+        self.put('monitors', {'id':'exact-active-monitor','agent':self.a['id'],'status':'completed'})
+
+    def due(self):
+        a = self.runtime.agent(self.a['id'])
+        a['contextRepairWait']['nextCheckAt'] = 0
+        self.agent_update(a, contextRepairWait=a['contextRepairWait'])
+        self.runtime.dispatch()
+
+    def test_active_monitor_defers_same_input_then_submits_once(self):
+        self.monitor()
+        self.runtime.send(self.a['id'], 'Keep one exact request.', message_id='wait-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        waiting = self.runtime.agent(self.a['id'])
+        self.assertEqual(waiting['status'], 'queued')
+        self.assertIn('monitors: exact-active-monitor', waiting['error'])
+        attempt_id = waiting['startAttempt']['id']
+        self.due()
+        self.assertEqual(self.forks(), [])
+        self.clear_monitor()
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['startAttempt']['id'], attempt_id)
+        self.assertEqual(current['startAttempt']['events'], ['wait-user'])
+        self.assertEqual(len(self.forks()), 1)
+        starts = [p for m,p in self.server.calls if m == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'wait-user')
+
+    def test_failed_tool_response_preserves_unknown_outcome(self):
+        record = {'id':'failed-tool','agent':self.a['id'],'stage':'failed','outcome':'unknown',
+                  'finished':1,'result':{'success':False,'contentItems':[{'type':'inputText','text':'Unknown command watch'}]}}
+        self.put('tool_requests', record)
+        self.assertEqual(repair.repair_idle(self.runtime, self.a['id'])['contextRepair']['phase'], 'completed')
+        with self.runtime.db() as db:
+            self.assertEqual(self.runtime.tool_request(record['id'],db), record)
+
+    def test_native_history_timeout_defers_exact_start_then_resumes_once(self):
+        from codex_runtime import ResponseTimeout
+        original = self.server.call
+        unavailable = [True]
+        def call(method, params, timeout=10):
+            if unavailable[0] and method == 'thread/items/list':
+                raise ResponseTimeout('thread/items/list response timed out; outcome unknown')
+            return original(method, params, timeout)
+        self.server.call = call
+        self.runtime.send(self.a['id'], 'Preserve accepted input.', message_id='read-timeout-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        a = self.runtime.agent(self.a['id'])
+        self.assertEqual(a['status'], 'queued')
+        self.assertFalse(a['inFlight'])
+        self.assertFalse(a['startAttempt']['submitted'])
+        attempt_id = a['startAttempt']['id']
+        self.assertIn('native history read (thread/items/list)', a['error'])
+        self.assertEqual(self.forks(), [])
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.assertEqual(self.runtime.agent(self.a['id'])['contextRepairWait']['checks'], 2)
+        self.assertEqual(self.runtime.agent(self.a['id']).get('contextRepairHistory', []), [])
+        unavailable[0] = False
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        a = self.runtime.agent(self.a['id'])
+        self.assertEqual(a['startAttempt']['id'], attempt_id)
+        self.assertEqual(a['startAttempt']['events'], ['read-timeout-user'])
+        self.assertEqual(len(self.forks()), 1)
+        self.assertEqual(len([m for m,p in self.server.calls if m == 'turn/start']), 1)
+
+    def test_interrupted_receipt_requires_exact_old_turn_native_terminal_item(self):
+        record = {'id':'missing-receipt','agent':self.a['id'],'stage':'interrupted','outcome':'unknown',
+                  'threadId':self.tid,'accountKey':self.a['accountKey'],'turnId':'old-turn','callId':'old-call'}
+        self.put('tool_requests', record)
+        original = self.server.call
+        native_status = ['inProgress']
+        def call(method, params, timeout=10):
+            if method == 'thread/items/list' and params['turnId'] == 'old-turn':
+                self.server.calls.append((method,copy.deepcopy(params)))
+                return {'data':[{'turnId':'old-turn','item':{'type':'dynamicToolCall','id':'old-call',
+                                 'status':native_status[0],'success':False}}]}
+            return original(method,params,timeout)
+        self.server.call = call
+        with self.assertRaisesRegex(ValueError, 'exact tool receipt: missing-receipt'):
+            repair.repair_idle(self.runtime,self.a['id'])
+        self.assertEqual(self.forks(), [])
+        native_status[0] = 'failed'
+        repair.repair_idle(self.runtime,self.a['id'])
+        with self.runtime.db() as db:
+            self.assertEqual(self.runtime.tool_request(record['id'],db), record)
+        self.assertTrue(any(p.get('turnId') == 'old-turn' for m,p in self.server.calls if m == 'thread/items/list'))
+
+    def test_foreign_receipt_never_uses_same_call_id_on_current_thread(self):
+        record = {'id':'foreign-receipt','agent':self.a['id'],'stage':'interrupted','outcome':'unknown',
+                  'threadId':'old-native','accountKey':'other-account','turnId':'turn','callId':'same-call'}
+        self.put('tool_requests', record)
+        self.server.items = [{'item':{'type':'dynamicToolCall','id':'same-call','status':'failed','success':False}}]
+        with self.assertRaisesRegex(ValueError, 'original account/thread receipt'):
+            repair.repair_idle(self.runtime,self.a['id'])
+        self.assertEqual(self.forks(), [])
+        self.agent_update(self.a, accountHistory=[{'threadId':'old-native','accountKey':'other-account'}])
+        repair.repair_idle(self.runtime,self.a['id'])
+        with self.runtime.db() as db:
+            self.assertEqual(self.runtime.tool_request(record['id'],db), record)
+
+    def test_paged_native_items_reject_pending_on_later_page(self):
+        original = self.server.call
+        terminal = [False]
+        def call(method,params,timeout=10):
+            if method == 'thread/items/list':
+                self.server.calls.append((method,copy.deepcopy(params)))
+                if not params.get('cursor'):
+                    return {'data':[{'turnId':'turn','item':{'id':str(i),'type':'reasoning'}} for i in range(1000)], 'nextCursor':'page-2'}
+                self.assertEqual(params['cursor'],'page-2')
+                return {'data':[{'turnId':'turn','item':{'id':'last-tool','type':'dynamicToolCall',
+                    'status':'failed' if terminal[0] else 'inProgress','success':False}}]}
+            return original(method,params,timeout)
+        self.server.call = call
+        with self.assertRaisesRegex(ValueError, 'complete native tool receipts'):
+            repair.repair_idle(self.runtime,self.a['id'])
+        self.assertEqual(self.forks(), [])
+        terminal[0] = True
+        repair.repair_idle(self.runtime,self.a['id'])
+        self.assertEqual(len(self.forks()), 1)
+
+    def test_missing_terminal_tail_defers_without_unloading_or_forking(self):
+        terminal = self.records.pop()
+        self.write_records()
+        self.runtime.send(self.a['id'], 'Preserve the latest turn.', message_id='tail-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        a = self.runtime.agent(self.a['id'])
+        self.assertIn('saved terminal turn: turn', a['error'])
+        attempt_id = a['startAttempt']['id']
+        self.assertFalse(a['startAttempt']['submitted'])
+        self.assertEqual(self.forks(), [])
+        self.assertFalse(any(m == 'thread/unsubscribe' for m,p in self.server.calls))
+        self.records.append(terminal)
+        self.write_records()
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        self.assertEqual(self.runtime.agent(a['id'])['startAttempt']['id'], attempt_id)
+        self.assertEqual(len(self.forks()), 1)
+
+    def test_exact_unchanged_repair_preparation_failure_is_recovered(self):
+        error = 'Thread preparation belongs to an earlier agent state'
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                ('unchanged-user',self.a['id'],'user','Keep this','failed',2,self.a['epoch'],None,error))
+        a = self.agent_update(self.a,status='failed',error=error,inFlight=False,startAttempt={
+            'id':'unchanged-attempt','submitted':False,'events':['unchanged-user'],
+            'epoch':self.a['epoch'],'accountKey':self.a['accountKey']})
+        receipt = {'id':'unchanged-operation','phase':'unchanged','source':repair._identity(a),
+                   'settings':self.runtime.preparation_settings(a),'snapshot':{'eventIds':[]}}
+        a = self.agent_update(a,contextRepair=receipt)
+        with self.runtime.lock,self.runtime.db() as db:
+            repair.recover_context_failures(self.runtime,db,[a])
+        self.assertTrue(self.runtime.agent(a['id'])['contextRepairWait']['historicalFailureRecovered'])
+        self.due()
+        eventually(lambda:self.runtime.agent(a['id']).get('turnId')=='resumed-turn')
+        self.assertEqual(self.runtime.agent(a['id'])['startAttempt']['id'],'unchanged-attempt')
+
+    def test_old_source_cleanup_unknown_never_repeats_fork_or_input(self):
+        original = self.server.submit
+        cleanup = concurrent.futures.Future()
+        def submit(method, params):
+            if method == 'thread/unsubscribe':
+                self.server.calls.append((method, copy.deepcopy(params)))
+                self.assertEqual(params['threadId'], self.tid)
+                self.assertNotEqual(self.runtime.agent(self.a['id'])['threadId'], self.tid)
+                return 'source-cleanup-rpc', method, cleanup
+            return original(method, params)
+        self.server.submit = submit
+        self.runtime.send(self.a['id'], 'Keep the successful fork.', message_id='cleanup-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        eventually(lambda: (self.runtime.agent(self.a['id'])['contextRepair'].get('sourceCleanup') or {}).get('requestId'))
+        cleanup.set_exception(RuntimeError('Cleanup disconnected; outcome unknown'))
+        a = self.runtime.agent(self.a['id'])
+        self.assertEqual(a['contextRepair']['phase'], 'completed')
+        self.assertEqual(a['contextRepair']['sourceCleanup']['phase'], 'unknown')
+        self.assertEqual(a['turnId'], 'resumed-turn')
+        self.runtime.dispatch()
+        self.assertEqual(len(self.forks()), 1)
+        self.assertEqual(len([m for m,p in self.server.calls if m == 'thread/start']), 0)
+        self.assertEqual(len([m for m,p in self.server.calls if m == 'turn/start']), 1)
+        self.assertEqual(len([m for m,p in self.server.calls if m == 'thread/unsubscribe']), 1)
+
+    def test_existing_failed_exact_batch_is_recovered_without_new_ids(self):
+        error = 'Context repair waits for commands, monitors, and tool receipts'
+        ids = ['old-user-' + str(i) for i in range(19)]
+        with self.runtime.db() as db:
+            for key in ids:
+                db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                    (key,self.a['id'],'user','Original '+key,'failed',2,self.a['epoch'],None,error))
+        self.agent_update(self.a,status='failed',error=error,inFlight=False,startAttempt={
+            'id':'old-unsent','submitted':False,'events':ids,'epoch':self.a['epoch'],'accountKey':self.a['accountKey']})
+        self.runtime.dispatch()
+        waiting = self.runtime.agent(self.a['id'])
+        self.assertEqual(waiting['status'],'queued')
+        self.assertTrue(waiting['contextRepairWait']['historicalFailureRecovered'])
+        self.assertEqual(waiting['startAttempt']['id'],'old-unsent')
+        self.due()
+        eventually(lambda:self.runtime.agent(self.a['id']).get('turnId')=='resumed-turn')
+        current=self.runtime.agent(self.a['id'])
+        self.assertEqual(current['startAttempt']['events'],ids)
+        self.assertEqual(current['startAttempt']['id'],'old-unsent')
+        self.assertEqual(len([m for m,p in self.server.calls if m=='turn/start']),1)
+
+    def test_migration_preserves_user_pause_and_submission_uncertainty(self):
+        error='Context repair waits for complete native tool receipts'
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                ('unsent',self.a['id'],'user','Keep this','failed',2,self.a['epoch'],None,error))
+        base={'id':'held','submitted':False,'events':['unsent'],'epoch':self.a['epoch'],'accountKey':self.a['accountKey']}
+        for fields in ({'autoWake':False},{'startAttempt':{**base,'submitted':True}}, {'startAttempt':{**base,'epoch':99}}):
+            a=self.agent_update(self.a,status='failed',error=error,inFlight=False,autoWake=True,startAttempt=base)
+            a=self.agent_update(a,**fields)
+            with self.runtime.lock,self.runtime.db() as db:
+                repair.recover_context_failures(self.runtime,db,[a])
+            self.assertFalse(self.runtime.agent(a['id']).get('contextRepairWait'))
+            self.assertEqual(self.runtime.agent(a['id'])['status'],'failed')
+
+    def test_native_action_wait_keeps_receipt_and_resumes_once(self):
+        self.monitor()
+        result=self.runtime.native_action(self.a['id'],'review','wait-review')
+        self.assertEqual(result['outcome']['status'],'pending')
+        current=self.runtime.agent(self.a['id'])
+        attempt=current['startAttempt']['id']
+        self.assertEqual(current['status'],'queued')
+        self.clear_monitor();self.due()
+        eventually(lambda:self.runtime.agent(self.a['id']).get('turnId')=='review-turn')
+        replay=self.runtime.native_action(self.a['id'],'review','wait-review')
+        self.assertEqual(replay['outcome']['status'],'acknowledged')
+        self.assertEqual(self.runtime.agent(self.a['id'])['startAttempt']['id'],attempt)
+        self.assertEqual(len([m for m,p in self.server.calls if m=='review/start']),1)
+
+    def test_superseded_action_wait_retires_only_exact_unsent_receipt(self):
+        self.monitor()
+        result=self.runtime.native_action(self.a['id'],'review','superseded-review')
+        self.assertEqual(result['outcome']['status'],'pending')
+        a=self.runtime.agent(self.a['id'])
+        a=self.agent_update(a,epoch=a['epoch']+1,error='Keep newer error')
+        with self.runtime.lock,self.runtime.db() as db:
+            repair.claim_context_wait(self.runtime,db,a)
+            outcome=json.loads(db.execute('SELECT outcome FROM runtime_native_action_receipts WHERE id=?',('superseded-review',)).fetchone()[0])
+        self.assertTrue(outcome['notSubmitted'])
+        self.assertEqual(outcome['status'],'failed')
+        self.assertEqual(self.runtime.agent(a['id'])['error'],'Keep newer error')
+        self.assertFalse(any(m=='review/start' for m,p in self.server.calls))
+
+
+if __name__=='__main__':
+    suite=unittest.TestSuite(ContextWait(name) for name in ContextWait.__dict__ if name.startswith('test_'))
+    raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

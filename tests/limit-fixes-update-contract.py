@@ -25,15 +25,19 @@ class LimitFixesUpdateContract(unittest.TestCase):
         cls.old = {name: subprocess.check_output(
             ['git', 'show', update.BASE_COMMIT + ':scripts/' + name + '.py'], cwd=ROOT, text=True)
             for name in update.SOURCE_SHA if name not in update.NEW_MODULES}
-        cls.prior_sources = {name: subprocess.check_output(
-            ['git', 'show', '7415ada:scripts/' + name + '.py'], cwd=ROOT)
-            for name in cls.old}
+        cls.prior_sources = {commit: {name: subprocess.check_output(
+            ['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
+            for name in cls.old} for commit in ('7415ada', 'f496684')}
         cls.helper_old = {}
-        for name, (commit, expected) in update.HELPER_BASELINES.items():
-            raw = subprocess.check_output(['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
-            if hashlib.sha256(raw).hexdigest() != expected:
-                raise AssertionError('Unknown previous helper source: ' + name)
-            cls.helper_old[name] = raw
+        cls.helper_versions = {}
+        for name, versions in update.HELPER_BASELINES.items():
+            cls.helper_versions[name] = {}
+            for commit, expected in versions.items():
+                raw = subprocess.check_output(['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
+                if hashlib.sha256(raw).hexdigest() != expected:
+                    raise AssertionError('Unknown previous helper source: ' + name)
+                cls.helper_versions[name][commit] = raw
+            cls.helper_old[name] = next(iter(cls.helper_versions[name].values()))
         # The reviewed fixture stores only changed tool definitions. Reconstruct
         # the previous list from literal baseline definitions in the manifest.
         cls.old_tools = copy.deepcopy(codex_runtime.TOOLS)
@@ -383,10 +387,10 @@ class LimitFixesUpdateContract(unittest.TestCase):
         self.assertEqual(errors, ['Old call settled'])
         self.assertEqual(self.apply()['status'], 'applied')
 
-    def legacy_context_helper(self):
+    def legacy_context_helper(self, commit='7415ada'):
         self.apply()
         name = 'codex_context_repair'
-        helper = update._stage_module(name, self.helper_old[name], ROOT / 'scripts')
+        helper = update._stage_module(name, self.helper_versions[name][commit], ROOT / 'scripts')
         sys.modules[name] = helper
         return helper
 
@@ -397,32 +401,35 @@ class LimitFixesUpdateContract(unittest.TestCase):
 
     def test_helper_upgrade_manifest_covers_exact_previous_source_delta(self):
         changed = set()
-        for name, old in self.helper_old.items():
+        for name, versions in self.helper_versions.items():
             current = (ROOT / 'scripts' / (name + '.py')).read_bytes()
-            previous = {node.name: node for node in ast.parse(old).body if isinstance(node, ast.FunctionDef)}
             desired = {node.name: node for node in ast.parse(current).body if isinstance(node, ast.FunctionDef)}
-            self.assertEqual(previous.keys(), desired.keys())
-            self.assertEqual([ast.dump(node) for node in ast.parse(old).body if not isinstance(node, ast.FunctionDef)],
-                             [ast.dump(node) for node in ast.parse(current).body if not isinstance(node, ast.FunctionDef)])
-            for method, node in desired.items():
-                if ast.dump(node) != ast.dump(previous[method]):
-                    target = name + '.' + method
-                    changed.add(target)
-                    expected = update.HELPER_UPGRADES[target]
-                    for source, digest in zip((old, current), expected):
-                        function, _ = update.source_function(source, (method,), {'__name__': name})
-                        self.assertEqual(update.signature(function), digest)
+            for commit, old in versions.items():
+                previous = {node.name: node for node in ast.parse(old).body if isinstance(node, ast.FunctionDef)}
+                self.assertFalse(previous.keys() - desired.keys())
+                self.assertEqual([ast.dump(node) for node in ast.parse(old).body if not isinstance(node, ast.FunctionDef)],
+                                 [ast.dump(node) for node in ast.parse(current).body if not isinstance(node, ast.FunctionDef)])
+                for method, node in desired.items():
+                    if method not in previous or ast.dump(node) != ast.dump(previous[method]):
+                        target = name + '.' + method
+                        changed.add(target)
+                        expected = update.HELPER_UPGRADES[target]
+                        prior = update.signature(update.source_function(old, (method,), {'__name__': name})[0]) if method in previous else None
+                        self.assertIn(prior, expected)
+                        final = update.source_function(current, (method,), {'__name__': name})[0]
+                        self.assertEqual(update.signature(final), expected[-1])
         self.assertEqual(changed, set(update.HELPER_UPGRADES))
 
-    def test_exact_7415_implementation_upgrades_with_existing_callbacks(self):
-        helper = self.legacy_context_helper()
+    def previous_implementation_upgrades(self, commit):
+        helper = self.legacy_context_helper(commit)
+        helper_callbacks = self.helper_state(helper)
         callbacks = {}
         for target in update.EXPECTED:
             name, *path = target.split('.')
             owner, method = self.target(target)
             live = getattr(owner, method)
             try:
-                prior, _ = update.source_function(self.prior_sources[name], tuple(path), vars(self.modules[name]),
+                prior, _ = update.source_function(self.prior_sources[commit][name], tuple(path), vars(self.modules[name]),
                                                   closure=live.__closure__)
             except RuntimeError as error:
                 self.assertIn('source structure', str(error))
@@ -440,7 +447,19 @@ class LimitFixesUpdateContract(unittest.TestCase):
             self.assertEqual(update.signature(previous), update.EXPECTED[target][-1])
         for target, expected in update.HELPER_UPGRADES.items():
             self.assertEqual(update.signature(getattr(helper, target.split('.')[-1])), expected[-1])
+        for name, previous, code, defaults, kwdefaults in helper_callbacks:
+            current = getattr(helper, name)
+            self.assertIs(current, previous)
+            if helper.__name__ + '.' + name not in update.HELPER_UPGRADES:
+                self.assertEqual((current.__code__, current.__defaults__, current.__kwdefaults__),
+                                 (code, defaults, kwdefaults))
         self.assertEqual(self.apply()['status'], 'already_applied')
+
+    def test_exact_7415_implementation_upgrades_with_existing_callbacks(self):
+        self.previous_implementation_upgrades('7415ada')
+
+    def test_exact_f496_implementation_upgrades_with_existing_callbacks(self):
+        self.previous_implementation_upgrades('f496684')
 
     def test_previous_live_helper_callbacks_upgrade_without_state_changes(self):
         helper = self.legacy_context_helper()
@@ -464,7 +483,15 @@ class LimitFixesUpdateContract(unittest.TestCase):
         helper = self.legacy_context_helper()
         for target in update.HELPER_UPGRADES:
             method = target.split('.')[-1]
-            function = getattr(helper, method)
+            function = getattr(helper, method, update.MISSING)
+            if function is update.MISSING:
+                setattr(helper, method, lambda: None)
+                before = self.state(), self.helper_state(helper)
+                with self.subTest(target=target), self.assertRaisesRegex(RuntimeError, 'helper member'):
+                    self.apply()
+                self.assertEqual(before, (self.state(), self.helper_state(helper)))
+                delattr(helper, method)
+                continue
             original = function.__code__, function.__defaults__
             for kind in ('code', 'defaults'):
                 if kind == 'code':
@@ -476,6 +503,17 @@ class LimitFixesUpdateContract(unittest.TestCase):
                     self.apply()
                 self.assertEqual(before, (self.state(), self.helper_state(helper)))
                 function.__code__, function.__defaults__ = original
+
+    def test_late_frame_refusal_restores_functions_globals_and_new_helper_members(self):
+        helper = update._stage_module('codex_context_repair',
+            self.helper_versions['codex_context_repair']['f496684'], ROOT / 'scripts')
+        sys.modules['codex_context_repair'] = helper
+        before = self.state(), self.helper_state(helper)
+        with patch.object(update, '_active_frames', side_effect=[None, RuntimeError('Controlled late frame failure')]):
+            with self.assertRaisesRegex(RuntimeError, 'Controlled late frame failure'):
+                self.apply()
+        self.assertEqual(before, (self.state(), self.helper_state(helper)))
+        self.assertEqual(self.apply()['status'], 'applied')
 
     def test_previous_helper_partial_assignment_restores_exact_callbacks(self):
         helper = self.legacy_context_helper()

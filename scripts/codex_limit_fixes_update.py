@@ -1,6 +1,6 @@
 """Apply the reviewed limit fixes without restarting active Studio work.
 
-Python 3.14 admits the exact ccbd147 and 7415ada implementations. Existing functions,
+Python 3.14 admits the exact ccbd147, 7415ada and f496684 implementations. Existing functions,
 callbacks, HTTP closure cells, tool lists and runtime objects keep their identity.
 Schema changes run lazily through future normal calls, never during this patch.
 """
@@ -18,11 +18,49 @@ from codex_resource_removal_update import _find_handler
 
 BASE_COMMIT = 'ccbd147'
 # BEGIN REVIEWED MANIFEST
-HELPER_BASELINES = {'codex_context_repair': ('7415ada', '200a8196052edd3ced721d8ddfe7511d51a60da180e851e3f2af53fff365ac1f')}
-HELPER_UPGRADES = {'codex_context_repair._native_idle': ('d1a23cf97c939f599747203a6fcdcdc72bc7f54f5483a8752129a6f0d4665d90',
-                                       '9a9678fbef3dc3e8c84d70c1023020ad27adfd5e125eaac9058c2e630a7a91ea'),
+HELPER_BASELINES = {'codex_context_repair': {'7415ada': '200a8196052edd3ced721d8ddfe7511d51a60da180e851e3f2af53fff365ac1f',
+                          'f496684': 'ccab4526509a2f72e1965444d538b604c8431f305f28a3a7d2da5671e30138f0'}}
+HELPER_UPGRADES = {'codex_context_repair._callback_barrier': (None,
+                                            'df178aeab1b6d277e4dd28ebe213683423a0cbb495a7a2ff59eff9058359dde0'),
+ 'codex_context_repair._cleanup_source': (None,
+                                          '30cb9e12dc6d08a6df8bd30c4d08b0652c0f9d63a49aa168cc07dfd3c3226792'),
+ 'codex_context_repair._defer_context': (None,
+                                         'a1d4ad93c604aeaae405bd2523877b99a68558343fbbe5e91a872acba7e5f60a'),
+ 'codex_context_repair._local_idle': ('93da65b90f9a4b69260118663a8aa0c226a4e26dd9475fd2588045d0e6fe4595',
+                                      'd29466729b24a95874f7bb1fb04c17a430292455013b57dee112b5987eab8c77'),
+ 'codex_context_repair._native_idle': ('d1a23cf97c939f599747203a6fcdcdc72bc7f54f5483a8752129a6f0d4665d90',
+                                       '9a9678fbef3dc3e8c84d70c1023020ad27adfd5e125eaac9058c2e630a7a91ea',
+                                       'd51c58eecb0438ed25d9fa2282016fff195d0d8ca53e4aa25941a666f0b1f932'),
+ 'codex_context_repair._native_items': (None,
+                                        '6b8f9fbe0b2b0b9ed7fac075228d7bda0fc494968ab08e3b6b833293cf73eeb3'),
+ 'codex_context_repair._native_read': (None,
+                                       'bf4c5caae273a4f00731c13dc3f5419700e45d60b2365e15ee2b74cb532530e9'),
  'codex_context_repair._repair': ('c614f8410795993560b296e2b1472f1e120620a7aa0efe4de507cecaf077d511',
-                                  '7cd0eb16f58e2d88b8874516912d79a360f0677bf0772c807620ace90f8d81b5')}
+                                  '7cd0eb16f58e2d88b8874516912d79a360f0677bf0772c807620ace90f8d81b5',
+                                  '779b57a3ef375f19281be417234d85b7e123881ae1b96886378bc6e8be96e47c'),
+ 'codex_context_repair._settle': ('48cd337f3654a6c301cf72a09131e65cd119bd444d4e456691e1bbf8a15a170b',
+                                  'a70cd4e4d7b44cd94a374e1292ca2447061b4e14792813e0aa735a16773396b5'),
+ 'codex_context_repair._terminal_native_item': (None,
+                                                '1c25e1e4d33ed8d9d44d31f2204af9b092b93e9d13f35b7fb1f84e96b2bd3596'),
+ 'codex_context_repair._unresolved_tool_receipts': (None,
+                                                    '9e35ab9e749c6e237acfdc7de802117e37a37aff20e3e7087998035c0c51766a'),
+ 'codex_context_repair._unsubmitted': (None,
+                                       'cc91cb6045b9e3351683147bee5be3307cd4d755f045402a9d1d99e7ea506749'),
+ 'codex_context_repair._waiting': (None, 'e33bc9ce1b84654646b78c891d34d421595a5d3238c067a5b45bd681bedf7355'),
+ 'codex_context_repair.assert_context_available': ('73d6a4282aac1e927b0b7ef9ca0fe38c348b309b64e5127451eedc2537027c37',
+                                                   '418d603a2431e748ea663591e311f4bb7212be4ea92aba6a8b3126bb347e5c58'),
+ 'codex_context_repair.blocked': ('90fc20953e813d3c023e8c2b06ae0d8b3dd8c1a965e5bf799137a873d4b57182',
+                                  '9f69686706d049fea0e9cb369d62813b05b17f50ec6cf61cc7d6a2e8269bac81'),
+ 'codex_context_repair.claim_context_wait': (None,
+                                             'fc10f342d54e135355f452026b968789f0d1e321da2152cfe45568e3891fce6c'),
+ 'codex_context_repair.defer_context_start': (None,
+                                              '3986f18f49d1acb3fb05b60f1f8b3d399b41bab3d95c663bbd714181678abd3e'),
+ 'codex_context_repair.recover_context_failures': (None,
+                                                   '8340e5e37ee3c3cdf6525b91b02c2e099769a9a548125244cf6f23455663f138'),
+ 'codex_context_repair.repair_before_start': ('a17e5d717d5b75610ad80a14691a415ee923e6a0f81766e191f4bf0628076157',
+                                              '8ea452c0c46969b54cd04b81b458fa1ddbdc57b271abf7d767e0deb59597d0b8'),
+ 'codex_context_repair.sanitized_rollout': ('8eeaf9cda2fa8020627ab9b6e188b2af99f0fe12ebbfe57fe8f478db6f65ac1e',
+                                            'f634364cd9bf36650babe05a16fe82ebbe26fb2992abb48ab636f1f86c9f6646')}
 EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680aadd73c306fe2ecc90ad092152c06fd72044b5d9ab7c18dbd40a8c43',
                                                            '1c5eda98a0fe8fd99c6686b176de3f420f7ee439e54a1e36bddfb9f03c5c0ffa'),
  'codex_agent_modes.tool_mode_context': ('c28b40bac6cad47c525c9f6fd9dc749e0cd346ebacfdb6f5d3c934a164faa442',
@@ -118,7 +156,8 @@ EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680a
                                      '3d04d12dd474a7be5eead91c68b55b5858ce5a5230769d18d49c99c1fd7394c3'),
  'codex_runtime.Runtime.dispatch': ('d7bb2dfa7d7597681ca39a591b4dd02120db63dabb4ab674f04a3834be798347',
                                     '14cdf04f11da7b34cb39d462d0fab05744417634a79e79643b94d8e9c8f81505',
-                                    '11ca91182f2554ab678e4660c3b887d079e22ff45c924441008d39ec72c31850'),
+                                    '11ca91182f2554ab678e4660c3b887d079e22ff45c924441008d39ec72c31850',
+                                    '5663ae51be5b9f938dde85042da686224986109e8304e2950cdcfb2b10b9ebf8'),
  'codex_runtime.Runtime.dynamic': ('a343c4822dc25a246fe4ad0c2bffb287b3941b11b84cd18361367a558968e3b1',
                                    '282a4c1fda1e179c4dd95aa0fb3dc2384d91bc0afd8c4984decc3ecb7732225c'),
  'codex_runtime.Runtime.native_action': ('71c665aa2afec153428aaff002d00a722738acc1c30d2fbd4cf663b7e8e0529c',
@@ -134,13 +173,15 @@ EXPECTED = {'codex_account_transfer.AccountTransfers.local_blocker': ('8db9b680a
  'codex_runtime.Runtime.prepared_result': ('e59baed43b656e27bd3a9d1987f1879d4603bd41eff9a0c7273c9711733a450d',
                                            'fa4ddd7d4a3f6b79127e0562cc6cbf059dd152b85fd6541e58cadcedaed46144'),
  'codex_runtime.Runtime.run_native_action': ('086804757634cf287f8c57bf52238bdf0788c80a3fafa2326af838a14a3c3b84',
-                                             'ec16ce03bf40b16c3ee785bb7ede2b3773612fccc3e09a8a7eb68c84250baf69'),
+                                             'ec16ce03bf40b16c3ee785bb7ede2b3773612fccc3e09a8a7eb68c84250baf69',
+                                             'd1838dc91719db821c24a4988c391c52c0095363859c4a14e31692169fef6dbe'),
  'codex_runtime.Runtime.send': ('62b77be1c3618219eae7ffdc070bcaf55a172ddbceb6a4d135bb9cccbfdb486d',
                                 '56f5b33967163ff41b1a26d21f8a9495b10b797a1655bf57c5e6698b4a82af82'),
  'codex_runtime.Runtime.start': ('362ec61e1d70ea3d127f59627c7d7111bc6e4e26b860b7ea1d3dc023e4fbd72c',
                                  '51cadbaa97832c5563a39c3f6ad2cfe7be888a808c69cf7dd98e5eb8faf7b1ab'),
  'codex_runtime.Runtime.start_error': ('b4c32d85a96bd2d7beaf8018b3c45f9d62f4d58ef8155b431cef3f5bf1d8176a',
-                                       'f7396ef483b6b65bd3cd1bce04590a5cd1813869cbd017c4209128e31a3a36aa'),
+                                       'f7396ef483b6b65bd3cd1bce04590a5cd1813869cbd017c4209128e31a3a36aa',
+                                       'f940516efa0571b05523252d24ecf12112e6064e30abe386e0ef1d3a225a741c'),
  'codex_work.WorkMixin.work_action': ('83907197198082242cf723594b4f8707b4aaa0374bc55a5cc629b40dc9203527',
                                       '1743a5dc4524f1065c71f2709e0b4182617abe8a8caa8974a8b89c1fbcc4cada'),
  'codex_workspace.WorkspaceMixin.assert_workspace_available': ('d789137b99f96a138ee944c9af5ad3ceacf1dabc8b4182caf2faf29a45446981',
@@ -153,11 +194,11 @@ SOURCE_SHA = {'codex_account_transfer': 'd3bb785c611b95b27343d6c4aaaf1b3e811cd2d
  'codex_budget': 'fb2a9a60065b7278cd4741c8326c6f06cb581950cb29632f3560dee89e5f0359',
  'codex_canvas': '6e9bb7d6d39cb61078cc6ae851aaff54ae8605c906a1d5a4574840a963608d72',
  'codex_chat_reviews': '6f7a6e2f811d5694b908b2f6447cc45d16440d38ea32db9d760e652e4a177df9',
- 'codex_context_repair': 'ccab4526509a2f72e1965444d538b604c8431f305f28a3a7d2da5671e30138f0',
+ 'codex_context_repair': '9eaf690e24068685f0ca61a754101515a4b842fe20dae2d01f053e6fb235ddfe',
  'codex_efficiency': '339eb402d4c4666acda6e896e928b9abd12aef3680b0470bbacecb7c2305fecc',
  'codex_native_action_receipts': '902646dd0a63dc51a69191abbe69be2746d51e841baf530965e6d1ff8f2dd1a7',
  'codex_native_voice': '8fbff84260eff954a07552c391b42c26dc75509cce91cb6ed93659a7e2dc89d7',
- 'codex_runtime': 'f9ce7bb31f2d211e300660d4eb359f7cad4c6fe4e91d3e4dc248f8e0c495561e',
+ 'codex_runtime': 'f6257caf9bff9f39f276de3cc7adfc63b60e16bbd03da52bfa9581dd17aecba8',
  'codex_tool_requests': 'd7a08b5539f1192b92438bddc38fd1a7f02052a80dc05b3d033705c47fd23b34',
  'codex_wakeups': 'c4e2c44925d4f7ce971e4cc0f7800df61e19fef55891b38f22d5439f6ed8fa60',
  'codex_work': 'c7f37d9d6f37115b62f790e8d89ddd1c3de99cf3c2713768e78bbc0016fdf5cb',
@@ -315,12 +356,16 @@ def _helper_equal(live, desired):
     metadata = {'__name__', '__doc__', '__package__', '__loader__', '__spec__', '__file__', '__cached__'}
     actual = {k: v for k, v in vars(live).items() if k not in metadata}
     expected = {k: v for k, v in vars(desired).items() if k not in metadata}
-    if actual.keys() != expected.keys():
+    permitted_missing = {name for name in expected
+                         if HELPER_UPGRADES.get(live.__name__ + '.' + name, (False,))[0] is None}
+    if actual.keys() - expected.keys() or expected.keys() - actual.keys() - permitted_missing:
         raise RuntimeError('Unknown limit-fix helper globals: ' + live.__name__)
     for name, value in expected.items():
-        previous = actual[name]
+        previous = actual.get(name, MISSING)
         if isinstance(value, FunctionType) and value.__module__ == live.__name__:
             allowed = HELPER_UPGRADES.get(live.__name__ + '.' + name, (signature(value), signature(value)))
+            if previous is MISSING and allowed[0] is None and signature(value) == allowed[-1]:
+                continue
             valid = (signature(value) == allowed[-1]
                      and isinstance(previous, FunctionType) and previous.__globals__ is vars(live)
                      and previous.__module__ == live.__name__ and previous.__closure__ is None
@@ -489,6 +534,8 @@ def apply(runtime, handler_class=None):
             return {'status': 'already_applied', 'baseCommit': BASE_COMMIT}
         updates = [entry for entry in originals if signature(entry[1]) != signature(entry[3])]
         old_tools = list(tools)
+        # Refuse known active callers before exposing new helper members.
+        _active_frames(updates)
         try:
             for name, module in staged.items():
                 if name in sys.modules:

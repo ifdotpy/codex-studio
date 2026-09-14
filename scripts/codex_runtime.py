@@ -2096,6 +2096,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         from codex_team_isolation import cancel_pending
         with self.lock, self.db() as db:
             cancel_pending(self, db)
+            from codex_context_repair import recover_context_failures
+            recover_context_failures(self, db, self.records(db, "agents"))
         with self.lock, self.db() as db:
             agents = self.records(db, "agents")
             transfer_store(self).tick(agents)
@@ -2119,7 +2121,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if a["status"] == "queued"
                     and a["autoWake"]
                     and not a.get("nativeFailureHold")
-                    and not context_repair_blocked(a)
+                    and (not context_repair_blocked(a) or a.get("contextRepairWait"))
                     and not safety_retry_active(a)
                     and a.get("browserRecovery", {}).get("stage") not in {"pending", "reconnecting"}
                     and not a.get("accountTransferId")
@@ -2148,6 +2150,16 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         a["error"] = None
                     a.pop("budgetBlocked", None)
                     self.put(db, "agents", a)
+                from codex_context_repair import claim_context_wait
+                context_job = claim_context_wait(self, db, a)
+                if context_job:
+                    if not context_job.get("waiting"):
+                        active.append(context_job["agent"])
+                        if context_job["kind"] == "action":
+                            self.pool.submit(self.run_native_action, a["id"], context_job["attempt"])
+                        else:
+                            self.pool.submit(self.start, context_job["agent"], context_job["rows"])
+                    continue
                 from codex_budget import claim_budget_wait
                 budget_job = claim_budget_wait(self, db, a)
                 if budget_job:
@@ -2438,6 +2450,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.start_error(agent_id, attempt["id"], error, unknown=True)
 
     def start_error(self, agent_id, attempt_id, error, *, unknown=False):
+        from codex_context_repair import defer_context_start
+        if defer_context_start(self, agent_id, attempt_id, error, unknown=unknown):
+            return
         from codex_budget import defer_budget_start
         if defer_budget_start(self, agent_id, attempt_id, error, unknown=unknown):
             return
@@ -4639,6 +4654,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     self.start_error(key, attempt["id"], cause, unknown="outcome unknown" in str(cause))))
             return {"status": "starting", "pending": True, "error": str(error)}
         except Exception as error:
+            from codex_context_repair import defer_context_start
+            if defer_context_start(self, key, attempt["id"], error):
+                record(self, attempt, "pending", error)
+                return {"status": "queued", "pending": True, "error": str(error)}
             from codex_budget import defer_budget_start
             if defer_budget_start(self, key, attempt["id"], error):
                 record(self, attempt, "pending", error)

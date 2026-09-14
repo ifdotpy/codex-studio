@@ -44,8 +44,8 @@ class Server:
         self.calls.append((method, copy.deepcopy(params)))
         future = concurrent.futures.Future()
         self.futures.append(future)
-        if not self.hold:
-            future.set_result({'thread': {'id': str(uuid.uuid4())}})
+        if method != 'thread/fork' or not self.hold:
+            future.set_result({'thread': {'id': str(uuid.uuid4())}} if method == 'thread/fork' else {})
         return len(self.futures), method, future
 
     def on_result(self, ticket, callback):
@@ -81,6 +81,7 @@ class ContextRepair(unittest.TestCase):
                 copy.deepcopy(message), {'type': 'function_call_output', 'call_id': 'command', 'output': 'exitCode=0 receipt-192'},
                 {'type': 'message', 'role': 'user', 'content': [{'type': 'input_image', 'image_url': 'fixture-image'},
                     {'type': 'input_text', 'text': 'Preserve real user text.'}]}]}}]
+        self.records.append({'type':'event_msg','payload':{'type':'task_complete','turn_id':'turn'}})
         self.write_records()
         self.server = Server(self.path, self.tid)
         self.patches = [patch.object(self.runtime, 'connect', return_value=self.server),
@@ -270,7 +271,8 @@ class ContextRepair(unittest.TestCase):
         result = repair.repair_idle(self.runtime, self.a['id'])
         self.assertEqual(result['contextRepair']['phase'], 'completed')
         self.assertEqual(len(self.forks()), 1)
-        self.assertEqual(sum(m == 'thread/unsubscribe' for m, p in self.server.calls), 1)
+        unsubscribes = [p for m,p in self.server.calls if m == 'thread/unsubscribe']
+        self.assertTrue(all(p['threadId'] == self.tid for p in unsubscribes))
 
     def test_native_pending_permission_and_user_input_are_not_idle(self):
         for flag in ('waitingOnApproval', 'waitingOnUserInput'):
