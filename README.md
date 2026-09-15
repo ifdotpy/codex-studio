@@ -179,6 +179,10 @@ reviewer's chat. Existing assignments appear there without migration.
 Select **Start review** beside an enabled assignment to request a review now.
 An existing queued or active review is reused. After a new manual request, the
 next timer check uses the configured interval. Manual requests can review unchanged work.
+Review events carry short briefs, not copied tool JSON or full chat histories.
+After a completed review in the same native context, the next brief contains only changes.
+The reviewer requests missing evidence directly from the target in their shared room.
+Transport receipts and repeated identical reports do not trigger another timer review.
 You can still read historical conversations between teams.
 
 Use **Multi agent** / **Single agent** in the chat header to change delegation immediately.

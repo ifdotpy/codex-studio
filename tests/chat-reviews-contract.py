@@ -228,6 +228,60 @@ class ChatReviewsContract(unittest.TestCase):
         self.tick(50001)
         self.assertEqual(len(self.events()), 1)
 
+    def test_review_brief_delta_requires_completed_same_native_context(self):
+        target, reviewer = self.pair()
+        self.update(reviewer, threadId='review-native', compactions=0)
+        self.runtime.send(target, 'Original user requirement', 'original-delta')
+        self.configure(target, reviewer)
+        self.tick(2800)
+        self.assertIn('Original user requirement', self.events()[0]['text'])
+        self.completed(target, reviewer, 'first-review')
+        self.update(reviewer, lastCompletedTurn='first-review', lastCompletedTurnStatus='completed')
+        with self.runtime.db() as db:
+            self.runtime.item(db, target, 'next-work', 'assistant', 'Fixed the failing check in commit abc123')
+        self.tick(4600)
+        brief = self.events()[-1]['text']
+        self.assertIn('Changes since your completed review:', brief)
+        self.assertIn('abc123', brief)
+        self.assertNotIn('Original user requirement', brief)
+        self.completed(target, reviewer, 'second-review')
+        self.update(reviewer, lastCompletedTurn='second-review', lastCompletedTurnStatus='completed', compactions=1)
+        with self.runtime.db() as db:
+            self.runtime.item(db, target, 'newer-work', 'assistant', 'New independent evidence')
+        self.tick(6400)
+        self.assertIn('Review brief:', self.events()[-1]['text'])
+        self.assertIn('Original user requirement', self.events()[-1]['text'])
+
+    def test_transport_metadata_and_duplicate_reports_do_not_restart_reviews(self):
+        target, reviewer = self.pair()
+        self.update(reviewer, threadId='review-native', compactions=0)
+        tool = {'type': 'dynamicToolCall', 'id': 'receipt-1', 'tool': 'orchestration_message',
+                'arguments': {'target': reviewer, 'text': 'Check exact commit abc123'},
+                'status': 'completed', 'success': True, 'durationMs': 12,
+                'contentItems': [{'type': 'inputText', 'text': 'transport receipt and timestamp'}]}
+        with self.runtime.db() as db:
+            self.runtime.item(db, target, 'receipt-output', 'output', json.dumps(tool))
+        self.configure(target, reviewer)
+        self.tick(2800)
+        self.assertIn('Check exact commit abc123', self.events()[0]['text'])
+        self.assertNotIn('transport receipt', self.events()[0]['text'])
+        self.assertNotIn('durationMs', self.events()[0]['text'])
+        self.completed(target, reviewer)
+        self.update(reviewer, lastCompletedTurn='review-turn', lastCompletedTurnStatus='completed')
+        tool.update(id='receipt-2', durationMs=400)
+        tool['contentItems'][0]['text'] = 'different transport receipt'
+        with self.runtime.db() as db:
+            self.runtime.item(db, target, 'receipt-output', 'output', json.dumps(tool))
+            self.runtime.item(db, target, 'duplicate-output', 'output', json.dumps(tool))
+        self.tick(4600)
+        self.assertEqual(len(self.events()), 1)
+        self.assertEqual(self.schedule(target)['status'], 'unchanged')
+        with self.runtime.db() as db:
+            for index in range(10):
+                self.runtime.item(db, target, 'duplicate-' + str(index), 'output', json.dumps(tool))
+        self.tick(6400)
+        self.assertEqual(len(self.events()), 1, 'Rolling identical reports out of the window is not new work')
+
     def test_revision_lost_response_replay_pause_remove_and_readd(self):
         target, reviewer = self.pair()
         self.configure(target, reviewer)
@@ -375,12 +429,11 @@ class ChatReviewsContract(unittest.TestCase):
             self.runtime.item(db, target, 'large-command', 'output', json.dumps(tool), 'commandExecution')
         self.configure(target, reviewer)
         self.tick(2800)
-        snapshot = json.loads(self.events()[0]['text'].split('Target context snapshot:\n', 1)[1])
-        command = json.loads(snapshot['recentOutcomes'][-1]['text'])
-        self.assertEqual(command['exitCode'], 17)
-        self.assertEqual(command['status'], 'failed')
-        self.assertIn('FAILED assertion at the end', command['output'])
-        self.assertIn('Expected 2, received 3', command['error'])
+        brief = self.events()[0]['text'].split('Target context snapshot:\n', 1)[1]
+        self.assertIn('exit=17', brief)
+        self.assertIn('failed', brief)
+        self.assertIn('FAILED assertion at the end', brief)
+        self.assertIn('Expected 2, received 3', brief)
         self.completed(target, reviewer)
         with self.runtime.db() as db:
             row = db.execute('SELECT record FROM runtime_items WHERE id=?', (target + ':large-command',)).fetchone()
@@ -453,7 +506,7 @@ class ChatReviewsContract(unittest.TestCase):
         self.configure(target, reviewer)
         self.tick(2800)
         event = self.events()[0]
-        self.assertLess(len(event['text']), 30000)
+        self.assertLess(len(event['text']), 6500)
         for text in ['Original user task', 'Newest user correction', target, self.schedule(target)['roomId'], str(self.project),
                      'Do not edit the target files', 'orchestration_message']:
             self.assertIn(text, event['text'])
