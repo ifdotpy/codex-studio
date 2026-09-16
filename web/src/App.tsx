@@ -169,7 +169,15 @@ export default function App() {
   const createdSelection = useRef<string | null>(null);
   useMobileViewport(mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
-  const { data, error, refresh, workspaceId } = useSnapshot(),
+  const {
+      data,
+      error,
+      refresh,
+      workspaceId,
+      rememberCreated,
+      forgetCreated,
+      creationScope,
+    } = useSnapshot(),
     [opened, setOpened] = useState<string | null>(() =>
       window.matchMedia("(max-width: 760px)").matches
         ? saved("codex-mobile-opened", null)
@@ -628,7 +636,6 @@ export default function App() {
       id: crypto.randomUUID(),
       previous: lead?.id || null,
       reuse_empty: false,
-      model: "gpt-6-astra",
       ...(cwd ? { cwd } : {}),
       ...(projectFolder ? { project_folder: projectFolder } : {}),
       ...(cwd &&
@@ -646,19 +653,20 @@ export default function App() {
       // Save the exact request before sending it. A lost response must retain this identity.
       localStorage.setItem(creationKey, JSON.stringify(creation.current));
       setPendingCreation(creation.current);
-      const a = await api("/api/leads", creation.current);
+      const a = await api("/api/leads", creation.current, { timeoutMs: 15000 });
       if (a.id !== creation.current.id)
         throw new Error("The server returned another chat identity.");
+      rememberCreated(a, creationScope);
       localStorage.removeItem(creationKey);
       setPendingCreation(null);
       if (!opened && drafts.new) setDraft(drafts.new, a.id);
       setToast("");
       creation.current = null;
       createdSelection.current = a.id;
-      await refresh();
       setOpened(a.id);
       setSidebar(false);
       setTeamOpen(false);
+      void refresh();
       return a.id as string;
     } catch (e) {
       notify(errorText(e));
@@ -882,6 +890,7 @@ export default function App() {
                   { id },
                 );
                 setModal(null);
+                if (!isRoom) forgetCreated(r.deleted);
                 if (r.deleted.includes(opened)) setOpened(null);
                 setDrafts((old) => {
                   const next = { ...old };

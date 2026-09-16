@@ -1,6 +1,13 @@
 import { retainTranscriptItems } from "./transcriptIdentity";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { syncApi as api, ApiError, errorText, setToken } from "./api";
+import {
+  syncApi as api,
+  ApiError,
+  errorText,
+  setToken,
+  saved,
+  save,
+} from "./api";
 import {
   subscribeProjection,
   syncDatabase,
@@ -14,6 +21,85 @@ export function useSnapshot() {
     [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
+  const [created, setCreated] = useState<{ scope: string; agents: Agent[] }>(
+    () => {
+      const cached = saved<{ scope: string; agents: Agent[] } | null>(
+        "codex-confirmed-chats",
+        null,
+      );
+      return cached &&
+        typeof cached.scope === "string" &&
+        Array.isArray(cached.agents)
+        ? cached
+        : { scope: "", agents: [] };
+    },
+  );
+  // Match the durable creation request's workspace scope, including HTTP fallback.
+  const scope = data?.stateDir || "";
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+  const rememberCreated = useCallback((agent: Agent, expectedScope: string) => {
+    if (currentScope.current !== expectedScope)
+      throw new Error("The workspace changed before the new chat opened.");
+    // A fresh draft has no native thread. Existing-thread retries await its projection.
+    const confirmed = {
+      ...agent,
+      source: "managed",
+      kind: "agent",
+      canSend: agent.canSend ?? !agent.threadId,
+    };
+    setCreated((old) => ({
+      scope: expectedScope,
+      agents: [
+        ...(old.scope === expectedScope ? old.agents : []).filter(
+          (a) => a.id !== agent.id,
+        ),
+        confirmed,
+      ],
+    }));
+  }, []);
+  const forgetCreated = useCallback((ids: string[]) => {
+    setCreated((old) => ({
+      ...old,
+      agents: old.agents.filter((a) => !ids.includes(a.id)),
+    }));
+  }, []);
+  useEffect(() => {
+    if (!data) return;
+    setCreated((old) => {
+      if (old.scope !== scope)
+        return old.agents.length ? { scope, agents: [] } : old;
+      const remaining = old.agents.filter(
+        (a) => !data?.threads.some((row) => row.id === a.id),
+      );
+      return remaining.length === old.agents.length
+        ? old
+        : { scope, agents: remaining };
+    });
+  }, [data, scope, created]);
+  useEffect(() => {
+    save("codex-confirmed-chats", created);
+  }, [created]);
+  const visibleData = useMemo(() => {
+    if (!data || created.scope !== scope || !created.agents.length) return data;
+    const missing = created.agents.filter(
+      (a) => !data.threads.some((row) => row.id === a.id),
+    );
+    if (!missing.length) return data;
+    return {
+      ...data,
+      threads: [...data.threads, ...missing],
+      runtime: {
+        ...data.runtime,
+        agents: [
+          ...data.runtime.agents.filter(
+            (a) => !missing.some((row) => row.id === a.id),
+          ),
+          ...missing,
+        ],
+      },
+    };
+  }, [data, created, scope]);
   const generation = useRef(0);
   const replicated = useRef(false);
   const sessionToken = useRef("");
@@ -113,7 +199,15 @@ export function useSnapshot() {
       ),
     [],
   );
-  return { data, error: error || syncError, refresh, workspaceId };
+  return {
+    data: visibleData,
+    error: error || syncError,
+    refresh,
+    workspaceId,
+    rememberCreated,
+    forgetCreated,
+    creationScope: scope,
+  };
 }
 // Native input batches have separate user-visible message identities.
 export function transcriptMessages(

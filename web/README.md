@@ -87,6 +87,10 @@ Send delivers after active tool calls. Desktop Enter does the same.
 **Queue after turn** holds the message until the current turn ends.
 Shift+Enter adds a line. Tab and Shift+Tab move the keyboard focus.
 An idle agent starts a new turn with either send action.
+New chats use the server's default model without a model catalog request.
+The server's creation response opens the chat before the full list refreshes.
+An older list cannot remove that confirmed chat while synchronization catches up.
+The client retains the confirmed chat across reloads until the list includes it.
 
 Managed conversations use `/api/transcript/stream`, a server-sent event stream.
 The server sends a snapshot on connection and changed records after that.

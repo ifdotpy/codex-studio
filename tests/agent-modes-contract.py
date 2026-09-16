@@ -168,6 +168,15 @@ class AgentModes(unittest.TestCase):
         result = self.rt.model_tool_result(self.lead['id'], 'test', {'success': True, 'contentItems': []})
         self.assertIn('Multi agent mode', result['contentItems'][-1]['text'])
 
+    def test_default_chat_creation_needs_no_model_catalog(self):
+        self.rt.catalog = lambda account='default': (_ for _ in ()).throw(AssertionError('Catalog must not run'))
+        request = {'id': str(uuid.uuid4()), 'cwd': self.tmp.name, 'reuse_empty': False}
+        created = self.rt.new_lead(request)
+        self.assertEqual(created['model'], 'gpt-6-astra')
+        self.assertEqual(created['status'], 'idle')
+        self.assertIsNone(created['threadId'])
+        self.assertEqual(self.rt.new_lead(request)['id'], created['id'])
+
     def test_model_without_reasoning_and_creation_retry_without_catalog(self):
         catalog = copy.deepcopy(f.CATALOG)
         catalog['data'].append({'model': 'plain', 'supportedReasoningEfforts': []})
