@@ -38,6 +38,8 @@ class Server:
             return {'data': [] if self.no_turns else [{'id': 'turn', 'status': self.turn_status}]}
         if method == 'thread/items/list':
             return {'data': self.items}
+        if method == 'thread/backgroundTerminals/list' and self.status == 'notLoaded':
+            raise RuntimeError(json.dumps({'code': -32600, 'message': 'thread not found: ' + self.tid}))
         return {'data': self.queue if method == 'thread/queue/list' else self.terminals if method == 'thread/backgroundTerminals/list' else []}
 
     def submit(self, method, params):
@@ -248,6 +250,42 @@ class ContextRepair(unittest.TestCase):
         self.server.status = 'idle'
         self.server.items = [{'item': {'type': 'commandExecution', 'status': 'inProgress'}}]
         with self.assertRaisesRegex(ValueError, 'tool receipts'):
+            repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(self.forks(), [])
+
+    def test_unloaded_history_repairs_without_resuming_or_sending_input(self):
+        self.server.status = 'notLoaded'
+        result = repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(result['contextRepair']['phase'], 'completed')
+        self.assertEqual(len(self.forks()), 1)
+        methods = [m for m, _ in self.server.calls]
+        self.assertIn('thread/queue/list', methods)
+        self.assertNotIn('thread/backgroundTerminals/list', methods)
+        self.assertNotIn('thread/resume', methods)
+        self.assertNotIn('turn/start', methods)
+
+    def test_unloaded_history_still_requires_empty_queue_and_terminal_receipts(self):
+        self.server.status = 'notLoaded'
+        for field, value, error in [
+            ('queue', [{'id': 'queued'}], 'queued input'),
+            ('turn_status', 'inProgress', 'terminal native turn'),
+            ('items', [{'item': {'type': 'dynamicToolCall', 'status': 'inProgress'}}], 'tool receipts')]:
+            with self.subTest(field=field):
+                original = getattr(self.server, field)
+                setattr(self.server, field, value)
+                with self.assertRaisesRegex(ValueError, error):
+                    repair.repair_idle(self.runtime, self.a['id'])
+                setattr(self.server, field, original)
+                self.assertEqual(self.forks(), [])
+
+    def test_loaded_missing_thread_error_is_not_treated_as_idle(self):
+        original = self.server.call
+        def call(method, params, timeout=10):
+            if method == 'thread/backgroundTerminals/list':
+                raise RuntimeError('thread not found: ' + self.tid)
+            return original(method, params, timeout)
+        self.server.call = call
+        with self.assertRaisesRegex(ValueError, 'native history read'):
             repair.repair_idle(self.runtime, self.a['id'])
         self.assertEqual(self.forks(), [])
 

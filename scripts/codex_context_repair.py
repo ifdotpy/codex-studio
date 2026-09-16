@@ -603,7 +603,11 @@ def _native_idle(server, tid, unresolved=(), *, inherited_empty=False):
     if status not in {'idle', 'notLoaded', 'systemError'}:
         raise _waiting('Context repair requires a confirmed idle native thread; native status: '
                        + json.dumps(native.get('status'), sort_keys=True), 'native')
-    for method in ('thread/backgroundTerminals/list', 'thread/queue/list'):
+    # Native terminals belong to a loaded session. Installed Codex rejects this
+    # query for notLoaded threads, while their durable queue remains readable.
+    methods = ('thread/queue/list',) if status == 'notLoaded' else (
+        'thread/backgroundTerminals/list', 'thread/queue/list')
+    for method in methods:
         result = _native_read(server, method, {'threadId': tid}, timeout=10)
         if result.get('data') or result.get('nextCursor'):
             raise _waiting('Context repair waits for native commands and queued input', 'native')

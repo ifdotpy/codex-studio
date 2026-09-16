@@ -78,6 +78,28 @@ stream_max_retries = 0
 
 
 class NativePrimitives(unittest.TestCase):
+    def test_context_repair_reads_unloaded_history_after_native_restart(self):
+        import codex_context_repair as repair
+        with native_server() as (server, tid, provider, notifications, restart):
+            provider.release.set()
+            server.call('turn/start', {'threadId': tid,
+                'input': [{'type': 'text', 'text': 'Materialize the local repair fixture.'}]})
+            n.until(lambda: any(e.get('method') == 'turn/completed'
+                and e['params']['threadId'] == tid for e in notifications), 'fixture turn')
+            server.close()
+            server = restart()
+            self.assertEqual(server.call('thread/read', {'threadId': tid,
+                'includeTurns': False})['thread']['status']['type'], 'notLoaded')
+            with self.assertRaisesRegex(RuntimeError, 'thread not found: ' + tid):
+                server.call('thread/backgroundTerminals/list', {'threadId': tid})
+            result = repair._native_idle(server, tid)
+            self.assertEqual(result['id'], tid)
+            self.assertTrue(result['repairTerminalTurnId'])
+            self.assertTrue(Path(result['path']).is_file())
+            self.assertEqual(result['status']['type'], 'notLoaded')
+            self.assertEqual(len(provider.requests), 1)
+            self.assertEqual(provider.unexpected, [])
+
     def test_studio_stops_real_native_process_after_turn_without_model_request(self):
         with native_server(s.ShellHandler) as (server, tid, provider, notifications, _):
             turn = server.call('turn/start', {'threadId': tid,
@@ -167,6 +189,9 @@ class NativePrimitives(unittest.TestCase):
             server = restart()
             page = server.call('thread/queue/list', {'threadId': tid})
             self.assertEqual([i['id'] for i in page['data']], [first['id'], second['id']])
+            import codex_context_repair as repair
+            with self.assertRaisesRegex(ValueError, 'queued input'):
+                repair._native_idle(server, tid)
             server.call('thread/queue/reorder', {'threadId': tid,
                 'queuedSubmissionIds': [second['id'], first['id']]})
             updated = server.call('thread/queue/update', {'threadId': tid,
