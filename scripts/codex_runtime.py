@@ -4408,8 +4408,13 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "monitors": [m for m in state["monitors"] if m["agent"] in {a["id"] for a in agents}]}
 
     def transcript(self, key, before=None, around=None, limit=120, after=None):
-        self.agent(key)
-        with self.lock, self.db() as db:
+        with self.db() as db:
+            # Read one committed snapshot without waiting for agent execution.
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            a = self.agent(key, db)
+            if a.get("deletedAt"):
+                raise ValueError("This conversation was deleted")
             from codex_transcript_history import history_rows
             rows, limit = history_rows(db, key, before, around, limit, after)
             items = list(reversed([json.loads(r['record']) for r in rows[:limit]]))
@@ -4472,7 +4477,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     continue
                 item = {"id": key + ":" + event["id"], "role": "user", "title": "You",
                         "text": event["text"], "at": event["created"], "materialized": False,
-                        "assets": [self.asset_view(self.asset_record(v)) for v in meta.get("assets", [])]}
+                        "assets": [self.asset_view(self.asset_record(v, db)) for v in meta.get("assets", [])]}
                 items.append(item)
                 represented[event["id"]] = item
             if represented:
@@ -4491,9 +4496,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         requestedDelivery=meta.get('requestedDelivery', meta.get('delivery', 'queue')) or 'queue',
                         materialized=represented[event["id"]].get("materialized", True),
                         deliveryError=event["error"], pending=event["status"] == "pending")
-            a = self.agent(key, db)
-            if a.get("deletedAt"):
-                raise ValueError("This conversation was deleted")
             live = a["status"] in {"running", "starting", "approval"} and a.get("autoWake")
             failed_turns = {item['turnId'] for item in items if item.get('turnStatus') == 'failed' and item.get('turnId')}
             turn_errors = {turn['turnId']: turn['error'] for turn in

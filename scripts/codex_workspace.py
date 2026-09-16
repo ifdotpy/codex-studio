@@ -439,16 +439,18 @@ class WorkspaceMixin:
     def asset_view(asset):
         return {k: v for k, v in asset.items() if k != "path"}
 
-    def asset_record(self, key):
-        with self.lock, self.db() as db:
-            row = db.execute(
-                "SELECT record FROM runtime_assets WHERE id=?", (key,)
-            ).fetchone()
-            if not row:
-                raise ValueError("Unknown attachment")
-            asset = json.loads(row[0])
-            self.checked_actor(db, asset["agent"])
-            return asset
+    def asset_record(self, key, db=None):
+        if db is None:
+            with self.lock, self.db() as own:
+                return self.asset_record(key, own)
+        row = db.execute(
+            "SELECT record FROM runtime_assets WHERE id=?", (key,)
+        ).fetchone()
+        if not row:
+            raise ValueError("Unknown attachment")
+        asset = json.loads(row[0])
+        self.checked_actor(db, asset["agent"])
+        return asset
 
     def message_inputs(self, agent_id, text, asset_ids):
         inputs = [{"type": "text", "text": text}]
