@@ -58,6 +58,8 @@ For example, one worker can own the complete route display across model, transpo
 
 Keep independent work active while a build or external dependency is pending.
 After a worker result, review it and assign the next ready task when one exists.
+Use `orchestration_send` for instructions to an existing worker. The default steers its active turn or starts a turn when idle.
+Set `delivery=queue` only when the instruction must wait for the current turn to finish.
 Determine which tasks actually depend on the blocked build.
 Use the current registry to distinguish active, queued, completed, and failed agents.
 Choose team size from useful independent work and actual resource limits.

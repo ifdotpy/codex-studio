@@ -109,7 +109,7 @@ TOOLS = [
                  "fast_mode": {"type": "boolean"}}, "required": ["name", "prompt"],
              "additionalProperties": False}}}, ["agents"]),
     tool("orchestration_send", "Assign a new or revised instruction to an existing descendant, "
-         "or explicitly resume its authorized work. The instruction queues behind an active turn. "
+         "or explicitly resume its authorized work. By default, steer the active turn or start a turn when idle. "
          "Completion returns to its parent automatically. Review corrections travel through orchestration_task action=reject.",
          {"agent_id": TEXT, "text": TEXT}, ["agent_id", "text"]),
     tool("orchestration_status", "Read compact team and monitor states. since_revision returns only changes and removals. "
@@ -140,7 +140,7 @@ for definition in TOOLS:
         }
         definition[
             "description"
-        ] += " delivery=steer corrects the current active turn; queue waits for its completion."
+        ] += " Set delivery=queue only to wait for the current turn to finish. Explicit delivery=steer requires an active turn."
         definition["inputSchema"]["properties"]["request_id"] = {"type": "string", "maxLength": 200}
         definition["description"] += " Supply a stable request_id for an instruction. Reuse it only for the exact same target, text and delivery mode. Recover the receipt before retrying."
     if definition["name"] == "orchestration_monitor":
@@ -3165,13 +3165,22 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     ):
                         cursor = self.agent(cursor["parentId"])
                     if cursor and cursor.get("parentId") == a["id"]:
+                        delivery = args.get("delivery", "after_tool")
+                        if "delivery" not in args:
+                            # Retries retain the route accepted before a default changed.
+                            with self.lock, self.db() as db:
+                                prior = db.execute("SELECT m.record FROM runtime_events e "
+                                    "LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=?", (key,)).fetchone()
+                                if prior:
+                                    metadata = json.loads(prior[0]) if prior[0] else {}
+                                    delivery = metadata.get("requestedDelivery", metadata.get("delivery", "queue"))
                         value = self.send(
                             target["id"],
                             args["text"],
                             key,
                             manual=False,
                             resume=True,
-                            delivery=args.get("delivery", "queue"),
+                            delivery=delivery,
                             sender=a["id"],
                             sender_epoch=a["epoch"],
                         )

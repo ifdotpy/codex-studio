@@ -64,6 +64,8 @@ class FakeServer:
             if self.finish_before_reply:
                 self.complete(params['threadId'], turn['id'])
             return {'turn': turn}
+        if method == 'turn/steer':
+            return {'turnId': params['expectedTurnId']}
         if method == 'command/exec':
             assert params['sandboxPolicy']['type'] in {'readOnly', 'workspaceWrite', 'dangerFullAccess'}
             self.notify({'method': 'command/exec/outputDelta', 'params': {'processId': params['processId'],
