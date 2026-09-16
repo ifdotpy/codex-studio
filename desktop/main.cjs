@@ -51,25 +51,9 @@ app.enableSandbox();
 let win;
 let backend;
 let backendResources;
-let notifications = false;
 let microphoneUntil = 0;
 const transcriptionPermits = new Map();
 let transcriptionRunning = null;
-let notificationWrite = Promise.resolve();
-const notificationSettings = path.join(
-  app.getPath("userData"),
-  "notifications.json",
-);
-async function loadNotifications() {
-  try {
-    notifications =
-      JSON.parse(await fs.readFile(notificationSettings, "utf8")).enabled ===
-      true;
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      console.error("Cannot read notification settings:", error.message);
-  }
-}
 function notificationTarget(value) {
   if (!value || value.section !== "messages")
     throw new Error("Invalid notification target.");
@@ -357,32 +341,8 @@ async function nativeAction(event, request) {
       if (!running) throw new Error("The local backend is unavailable.");
       return updateStatus(backendResources, running);
     }
-    case "getNotifications":
-      await notificationWrite;
-      return notifications && Notification.isSupported();
-    case "setNotifications": {
-      if (typeof request.value !== "boolean")
-        throw new Error("Notification permission must be true or false.");
-      const enabled = request.value;
-      const write = notificationWrite
-        .catch(() => {})
-        .then(async () => {
-          await fs.mkdir(path.dirname(notificationSettings), {
-            recursive: true,
-          });
-          const temporary = `${notificationSettings}.tmp`;
-          await fs.writeFile(temporary, JSON.stringify({ enabled }), {
-            mode: 0o600,
-          });
-          await fs.rename(temporary, notificationSettings);
-          notifications = enabled;
-        });
-      notificationWrite = write;
-      await write;
-      return notifications && Notification.isSupported();
-    }
     case "notify": {
-      if (!notifications || !Notification.isSupported()) return false;
+      if (!Notification.isSupported()) return false;
       const target = notificationTarget(request.value?.target);
       const notification = new Notification({
         title: string(request.value?.title, 160),
@@ -416,7 +376,6 @@ async function start() {
       console.error("Desktop recovery is unavailable:", error.message);
     }
   }
-  await loadNotifications();
   backendResources = app.isPackaged
     ? path.join(process.resourcesPath, "workspace")
     : path.resolve(__dirname, "..");

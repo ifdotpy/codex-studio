@@ -69,13 +69,12 @@ try {
         `codex-desktop-opened:${stateDir}`,
         JSON.stringify(id),
       );
+      localStorage.setItem("workspace-notifications", "false");
       window.alerts = [];
       window.fakeFocus = false;
       document.hasFocus = () => window.fakeFocus;
       window.codexDesktop = {
         platform: "darwin",
-        getNotifications: async () => true,
-        setNotifications: async (enabled) => enabled,
         notify: async (value) => {
           window.alerts.push(value);
           return true;
@@ -196,16 +195,13 @@ try {
     .getByText("Which release scope?", { exact: true })
     .waitFor();
   await page.screenshot({ path: join(evidence, "notification-question.png") });
-  await page
-    .getByRole("button", { name: "Disable desktop alerts", exact: true })
-    .click();
-  change(other.id, { lastCompletedTurn: "disabled-turn" });
-  await refresh();
   assert.equal(
-    await page.evaluate(() => window.alerts.length),
-    3,
-    "disabled notifications are silent",
+    await page.getByRole("button", { name: /desktop alerts/ }).count(),
+    0,
   );
+  change(other.id, { lastCompletedTurn: "global-turn" });
+  await refresh();
+  await page.waitForFunction(() => window.alerts.length === 4);
   await page.reload();
   await page.locator("#conversation-title").waitFor();
   await refresh();

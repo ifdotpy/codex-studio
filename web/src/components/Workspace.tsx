@@ -65,8 +65,6 @@ type Context = Props & {
   preview: (target: PreviewTarget) => void;
   navigate: (section: string, agent?: string, item?: string) => void;
   focusId: string;
-  notifications: boolean;
-  toggleNotifications: () => Promise<void>;
   resourceCache: Map<string, Json>;
 };
 const sections = [
@@ -155,9 +153,6 @@ export function Workspace(props: Props) {
     [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [pending, setPending] = useState(0),
     [focusId, setFocusId] = useState("");
-  const [notifications, setNotifications] = useState(() =>
-    saved("workspace-notifications", false),
-  );
   useEffect(() => {
     if (props.opened && props.initialFocus) setFocusId(props.initialFocus.id);
   }, [props.opened, props.initialFocus?.requestId]);
@@ -168,19 +163,6 @@ export function Workspace(props: Props) {
         ?.querySelector('[aria-current="page"]')
         ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [section, props.opened]);
-  useEffect(() => {
-    let active = true;
-    if (window.codexDesktop?.getNotifications)
-      void window.codexDesktop
-        .getNotifications()
-        .then((enabled) => {
-          if (active) setNotifications(enabled);
-        })
-        .catch((error) => props.notify(errorText(error)));
-    return () => {
-      active = false;
-    };
-  }, []);
   const refreshRef = useRef(props.refresh),
     notifyRef = useRef(props.notify);
   refreshRef.current = props.refresh;
@@ -235,51 +217,6 @@ export function Workspace(props: Props) {
     },
     [reload],
   );
-  const toggleNotifications = async () => {
-    if (notifications) {
-      try {
-        if (window.codexDesktop)
-          await window.codexDesktop.setNotifications(false);
-        setNotifications(false);
-        save("workspace-notifications", false);
-        window.dispatchEvent(
-          new CustomEvent("studio-notifications", { detail: false }),
-        );
-      } catch (error) {
-        props.notify(errorText(error));
-      }
-      return;
-    }
-    if (window.codexDesktop) {
-      try {
-        const allowed = await window.codexDesktop.setNotifications(true);
-        setNotifications(allowed);
-        save("workspace-notifications", allowed);
-        window.dispatchEvent(
-          new CustomEvent("studio-notifications", { detail: allowed }),
-        );
-      } catch (error) {
-        props.notify(errorText(error));
-      }
-      return;
-    }
-    if (!("Notification" in window)) {
-      props.notify("This browser does not support desktop notifications.");
-      return;
-    }
-    const permission = await Notification.requestPermission();
-    if (permission !== "granted") {
-      props.notify(
-        "Notifications are blocked. Change the browser permission to enable them.",
-      );
-      return;
-    }
-    setNotifications(true);
-    save("workspace-notifications", true);
-    window.dispatchEvent(
-      new CustomEvent("studio-notifications", { detail: true }),
-    );
-  };
   const selected = props.data.threads.find(
     (a) => a.id === agentId && a.source === "managed",
   );
@@ -291,8 +228,6 @@ export function Workspace(props: Props) {
     revision,
     preview: setPreview,
     focusId,
-    notifications,
-    toggleNotifications,
     resourceCache,
     navigate: (section, agent, item) => {
       setSection(section);
@@ -1172,18 +1107,6 @@ function Attention(c: Context) {
   };
   return (
     <>
-      <div className="workspace-toolbar">
-        <span className="workspace-muted">
-          Group new alerts when this browser tab is in the background.
-        </span>
-        <Button
-          size="xs"
-          variant="light"
-          onClick={() => void c.toggleNotifications()}
-        >
-          {c.notifications ? "Disable desktop alerts" : "Enable desktop alerts"}
-        </Button>
-      </div>
       <Requests
         scope={c.data.stateDir}
         allRequests={c.allRequests}

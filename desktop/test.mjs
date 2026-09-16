@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { _electron as electron } from "playwright-core";
 import { createRequire } from "node:module";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,11 @@ try {
   assert.match(backend.backendBuild, /^[a-f0-9]{64}$/);
   const attached = await ensureBackend({ resources, port, env });
   assert.equal(attached.owned, false);
+  await mkdir(env.CODEX_DESKTOP_PROFILE, { recursive: true });
+  await writeFile(
+    path.join(env.CODEX_DESKTOP_PROFILE, "notifications.json"),
+    JSON.stringify({ enabled: false }),
+  );
   desktop = await electron.launch({ args: [root, "--hidden"], env });
   const page = await desktop.firstWindow();
   await page.waitForFunction(() => !!window.codexDesktop);
@@ -105,11 +110,38 @@ try {
     ),
     /desktop button/,
   );
+  await desktop.evaluate(({ Notification, app }) => {
+    app.__testNotifications = [];
+    Notification.isSupported = () => true;
+    Notification.prototype.show = function () {
+      app.__testNotifications.push({ title: this.title, body: this.body });
+    };
+  });
+  assert.match(
+    await page.evaluate(() =>
+      window.codexDesktop
+        .notify({ title: "Test", body: "Invalid target" })
+        .catch((e) => e.message),
+    ),
+    /Invalid notification target/,
+  );
   assert.equal(
     await page.evaluate(() =>
-      window.codexDesktop.notify({ title: "Test", body: "Must not display" }),
+      window.codexDesktop.notify({
+        title: "Global alert",
+        body: "No app opt-in",
+        target: { agentId: "test-chat", section: "messages" },
+      }),
     ),
-    false,
+    true,
+  );
+  assert.deepEqual(
+    await desktop.evaluate(({ app }) => app.__testNotifications),
+    [{ title: "Global alert", body: "No app opt-in" }],
+  );
+  assert.equal(
+    await page.evaluate(() => typeof window.codexDesktop.setNotifications),
+    "undefined",
   );
   const file = path.join(temp, "native-picker.txt");
   await writeFile(file, "Native attachment");
@@ -176,15 +208,10 @@ try {
     .getByRole("button", { name: /^Messages/ })
     .first()
     .click();
-  await page
-    .getByRole("button", { name: "Enable desktop alerts", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "Disable desktop alerts", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "Enable desktop alerts", exact: true })
-    .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: /desktop alerts/ }).count(),
+    0,
+  );
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   await page.evaluate(() => {
@@ -464,13 +491,13 @@ try {
         "state mismatch",
         "sandbox",
         "gesture",
-        "notifications opt-in",
+        "global native notifications ignore legacy opt-out",
         "native pickers",
         "native file save bytes and cancel through isolated IPC",
         "native file metadata and actions through isolated IPC",
         "React project picker",
         "React attachment upload",
-        "React notification toggle",
+        "React has no notification toggle",
         "production external-link handler",
         "external URL validation",
         "local reveal",

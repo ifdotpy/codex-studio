@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { saved } from "../api";
+import { useEffect, useRef } from "react";
 import { desktopAlerts } from "../desktopAlerts";
 import type { Snapshot } from "../types";
 
@@ -7,33 +6,11 @@ export function useDesktopNotifications(
   data: Snapshot | null,
   opened: string | null,
 ) {
-  const [enabled, setEnabled] = useState(false);
   const state = useRef({
     scope: "",
     initialized: false,
     seen: new Set<string>(),
   });
-  useEffect(() => {
-    let active = true;
-    let changed = false;
-    const change = (event: Event) => {
-      changed = true;
-      setEnabled((event as CustomEvent<boolean>).detail);
-    };
-    window.addEventListener("studio-notifications", change);
-    const load = window.codexDesktop
-      ? window.codexDesktop.getNotifications()
-      : Promise.resolve(saved("workspace-notifications", false));
-    void load
-      .then((value) => {
-        if (active && !changed) setEnabled(value);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-      window.removeEventListener("studio-notifications", change);
-    };
-  }, []);
   useEffect(() => {
     if (!data) return;
     const scope = data.stateDir;
@@ -43,9 +20,9 @@ export function useDesktopNotifications(
     const alerts = desktopAlerts(data);
     const added = alerts.filter((alert) => !current.seen.has(alert.id));
     for (const alert of alerts) current.seen.add(alert.id);
-    // The initial snapshot and opt-in establish a baseline, not an old-alert backlog.
-    if (!enabled || !current.initialized) {
-      current.initialized = enabled;
+    // The initial snapshot establishes a baseline, not an old-alert backlog.
+    if (!current.initialized) {
+      current.initialized = true;
       return;
     }
     for (const alert of added) {
@@ -77,5 +54,5 @@ export function useDesktopNotifications(
         };
       }
     }
-  }, [data, opened, enabled]);
+  }, [data, opened]);
 }

@@ -23,8 +23,6 @@ export interface DesktopBridge {
     target: { agent?: string; path?: string; asset?: string };
   }): Promise<boolean>;
   openExternal(url: string): Promise<void>;
-  setNotifications(enabled: boolean): Promise<boolean>;
-  getNotifications(): Promise<boolean>;
   getBackendUpdate?(): Promise<{
     availableBackendBuild: string | null;
     updateRequired: boolean | null;

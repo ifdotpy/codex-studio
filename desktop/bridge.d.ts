@@ -18,8 +18,6 @@ export interface CodexDesktop {
   >;
   revealPath(path: string): Promise<void>;
   openExternal(url: string): Promise<void>;
-  setNotifications(enabled: boolean): Promise<boolean>;
-  getNotifications(): Promise<boolean>;
   onNavigate(
     callback: (target: {
       agentId: string;

@@ -43,10 +43,9 @@ The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. The packa
 | `pickFiles()`               | Up to 20 files, with name, path, MIME type, and base64 data; 20 MB total limit |
 | `revealPath(path)`          | Reveal an existing absolute path in Finder                                     |
 | `openExternal(url)`         | Open an HTTP or HTTPS URL in the default browser                               |
-| `setNotifications(enabled)` | Save the notification setting for this app profile                               |
-| `notify({title, body, target})`     | Send a silent notification if permission is enabled                            |
+| `notify({title, body, target})`     | Send a silent native notification                            |
 
-Call the first five methods directly from a user click or keyboard handler, before an `await`. The isolated preload accepts a trusted input event for 1.2 seconds and consumes it once. Native notifications require explicit permission first. Other Chromium permissions are denied.
+Call the first four methods directly from a user click or keyboard handler, before an `await`. The isolated preload accepts a trusted input event for 1.2 seconds and consumes it once. Native notifications are enabled globally. macOS controls their presentation. Other Chromium permissions are denied.
 
 The main process checks the sender, frame, page URL, method, and arguments. The renderer has no Node.js access. Context isolation and the Chromium sandbox stay enabled. Embedded previews receive no bridge. Navigation, redirects, new windows, and webviews are blocked. The UI opens external links through the validated bridge.
 
@@ -108,16 +107,17 @@ API references: [Apple Speech file requests](https://developer.apple.com/documen
 [on-device recognition](https://developer.apple.com/documentation/speech/sfspeechrecognitionrequest/requiresondevicerecognition),
 and [Electron permissions](https://www.electronjs.org/docs/latest/api/session).
 
-`getNotifications()` reads the saved notification setting. `onNavigate()` receives the exact chat and optional item from a notification click. It returns an unsubscribe function.
+`onNavigate()` receives the exact chat and optional item from a notification click. It returns an unsubscribe function.
 
-Enable **Desktop alerts** from the **Messages** view. Alerts cover all chats:
+Desktop alerts are always enabled in the app. There is no app toggle. macOS
+notification settings control whether banners appear. Alerts cover all chats:
 completed lead replies, questions, approval requests, user tasks, messages addressed
 to the user, and lead failures. Worker completion and internal team messages do
 not produce desktop alerts. The focused chat stays silent while its window has
 focus. A click opens the chat or the request that needs attention.
 
 Alerts use the existing chat snapshot without separate workspace reads. The first
-snapshot after launch or opt-in establishes a baseline; old events do not repeat.
+snapshot after launch establishes a baseline; old events do not repeat.
 The desktop app must remain running. macOS notification settings still apply.
 Run `node tests/desktop-alerts-contract.mjs` and
 `node tests/desktop-notifications-ui.mjs` from the repository root. The UI check
