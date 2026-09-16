@@ -30,10 +30,10 @@ import "./turn-history.css";
 import { messageRenderKey } from "./messageDelivery";
 import ReasoningDuration from "./ReasoningDuration";
 
-function messageGroups(items: Message[]) {
+function messageGroups(items: Message[], showCompletedCommands = false) {
   const groups: (Message | Message[])[] = [];
   for (const item of items) {
-    if (isPastCommand(item)) continue;
+    if (!showCompletedCommands && isPastCommand(item)) continue;
     if (isFileChange(item)) groups.push(item);
     else if (["tool", "output"].includes(item.role)) {
       const last = groups.at(-1);
@@ -71,15 +71,19 @@ const WorkBlock = memo(function WorkBlock({
   items,
   storageKey,
   agentId,
+  active,
 }: {
   items: Message[];
   storageKey: string;
   agentId?: string;
+  active: boolean;
 }) {
   const key = `${storageKey}:tools-v3`;
   const id = items[0].id;
   const [open, setOpen] = useState(
-    () => saved<Record<string, boolean>>(key, {})[id] ?? items.length < 3,
+    () =>
+      saved<Record<string, boolean>>(key, {})[id] ??
+      (active || items.length < 3),
   );
   const [visited, setVisited] = useState(open);
   const summary = activitySummary(items);
@@ -179,9 +183,11 @@ function Turn({
   retryFailure: () => void;
 }) {
   const result = group.result;
+  // Keep the visible calls when this turn ends, so the transcript does not jump.
+  const [showCompletedCommands] = useState(() => !group.outcome);
   const groupedMessages = useMemo(
-    () => messageGroups(group.items),
-    [group.items],
+    () => messageGroups(group.items, showCompletedCommands),
+    [group.items, showCompletedCommands],
   );
   const visibleError = group.items.some(
     (item) =>
@@ -206,6 +212,7 @@ function Turn({
             items={item}
             storageKey={storageKey}
             agentId={agentId}
+            active={!group.outcome}
           />
         ) : (
           <div

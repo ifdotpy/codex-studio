@@ -109,6 +109,9 @@ a short fade. Earlier text nodes stay mounted as new text arrives.
 reasoning. `Activity.tsx` shows commands, inputs, outputs, exit codes, and durations.
 Raw events remain available in a separate disclosure. Long payloads wrap and
 scroll inside their cards.
+The current turn shows tool calls by default, including completed commands while
+the agent thinks. Manual collapse remains available. Turn completion preserves
+the visible calls; older commands stay hidden when history is reopened.
 
 `tests/live-chat-ui.mjs` injects app-server notifications into an isolated runtime.
 It tests the real HTTP stream and React interface without model inference.

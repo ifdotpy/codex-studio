@@ -32,6 +32,8 @@ try {
   const state = await (await fetch(origin + "/api/state")).json();
   const lead = state.threads.find((a) => a.name === "Other project");
   let turn = "first",
+    turnDone = false,
+    phase = "tool",
     items = [];
   const shared = () => ({ turnId: turn });
   const seed = () => [
@@ -91,12 +93,11 @@ try {
       ...shared(),
       id: `build-${turn}`,
       role: "tool",
-      toolStatus: "completed",
+      toolStatus: "running",
       text: JSON.stringify({
         type: "commandExecution",
         command: "npm run build",
-        aggregatedOutput: "build ok",
-        exitCode: 0,
+        status: "inProgress",
       }),
     },
   ];
@@ -105,7 +106,13 @@ try {
     items,
     order: items.map((i) => i.id),
     replace: true,
-    agent: { ...lead, status: "running", inFlight: true, turnId: turn },
+    agent: {
+      ...lead,
+      status: turnDone ? "idle" : "running",
+      inFlight: !turnDone,
+      turnId: turnDone ? null : turn,
+      activity: { phase },
+    },
   });
   browser = await chromium.launch({
     headless: true,
@@ -191,9 +198,57 @@ try {
         `[data-message="read-${turn}"], [data-message="check-${turn}"], [data-message="build-${turn}"]`,
       )
       .count(),
-    0,
-    "completed commands have no visual history",
+    3,
+    "current turn includes completed and running commands",
   );
+  assert.equal(await work().evaluate((element) => element.open), true);
+  assert.equal(
+    await work().locator(".tool-card:visible").count(),
+    6,
+    "all current calls are visible without expanding the group",
+  );
+  const build = page.locator(`[data-message="build-${turn}"]`);
+  await build.evaluate((element) => {
+    element.dataset.retained = "yes";
+  });
+  items = items.map((item) =>
+    item.id === `build-${turn}`
+      ? {
+          ...item,
+          toolStatus: "failed",
+          text: JSON.stringify({
+            type: "commandExecution",
+            command: "npm run build",
+            status: "completed",
+            exitCode: 1,
+            aggregatedOutput: "fixture build failed",
+          }),
+        }
+      : item,
+  );
+  phase = "thinking";
+  items.push({
+    ...shared(),
+    id: "reasoning-live",
+    role: "reasoning",
+    text: "",
+    reasoningMs: 0,
+    reasoningSince: Date.now() / 1000,
+    reasoningObservedAt: Date.now() / 1000,
+  });
+  await emit();
+  await page.locator('.reasoning-duration[data-running="true"]').waitFor();
+  assert.equal(
+    await build.isVisible(),
+    true,
+    "completed call remains visible during thinking",
+  );
+  assert.equal(
+    await build.getAttribute("data-retained"),
+    "yes",
+    "call keeps its DOM node",
+  );
+  assert.equal(await build.getAttribute("data-tool-status"), "failed");
   assert.equal(
     await work().locator(".tool-group").count(),
     0,
@@ -204,12 +259,37 @@ try {
     0,
     "raw tool content stays closed",
   );
+  await build.locator(":scope > summary").click();
+  await build.getByText("Exit code 1", { exact: true }).waitFor();
+  await build.getByText("fixture build failed", { exact: true }).waitFor();
+  if (await page.locator("#jump-latest").isVisible())
+    await page.locator("#jump-latest").click();
+  await page.screenshot({
+    path: join(directory, "thinking-tools-desktop.png"),
+  });
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.waitForTimeout(100);
+  if (await page.locator("#jump-latest").isVisible())
+    await page.locator("#jump-latest").click();
+  const toolBounds = await build.boundingBox();
+  assert.ok(
+    toolBounds.y >= 0 && toolBounds.y < 900,
+    "call is in the mobile viewport",
+  );
+  await page.screenshot({ path: join(directory, "thinking-tools-mobile.png") });
+  assert.ok(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  );
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await work().locator(":scope > summary").click();
   await finish();
   await page.locator('[data-message="final-first"]').waitFor();
   assert.equal(
     await work().getAttribute("open"),
     null,
-    "tools start closed and stay closed when the final arrives",
+    "manual collapse remains when the final arrives",
   );
   assert.equal(await page.locator(".turn-answer").isVisible(), true);
   await work().locator(":scope > summary").click();
@@ -224,7 +304,13 @@ try {
     streaming: false,
     turnStatus: "completed",
   }));
+  turnDone = true;
   await emit();
+  assert.equal(
+    await build.getAttribute("data-retained"),
+    "yes",
+    "turn completion preserves visible tool nodes",
+  );
   await page.reload();
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await work().waitFor();
@@ -242,9 +328,11 @@ try {
   await page.screenshot({ path: join(directory, "answer-desktop.png") });
 
   turn = "reader";
+  turnDone = false;
   items = seed();
   await emit();
   await page.locator('[data-message="note-reader-12"]').waitFor();
+  await work().locator(":scope > summary").click();
   await page.locator("#messages").evaluate((root) => {
     root.scrollTop = 700;
     root.dispatchEvent(new Event("scroll"));
@@ -465,6 +553,9 @@ try {
       cases: [
         "visible final",
         "single structured work log",
+        "completed calls remain visible during thinking",
+        "running calls and failures preserve their nodes",
+        "current groups start open with tool details closed",
         "small groups start open; added tools preserve expansion",
         "small groups preserve saved closed choice",
         "manual choice",
