@@ -122,6 +122,10 @@ It tests the real HTTP stream and React interface without model inference.
 
 ## Orchestration workspace
 
+Desktop alerts request only the workspace inbox. They do not read checkpoint history.
+Each alert check finishes before the next check starts.
+Workspace reads use one committed database snapshot without the agent execution lock.
+
 The **Work** button opens the work board, changes, Messages, search, the agent plan,
 checkpoints, tools, profiles, and rules. The main screen keeps the
 conversation and worker list. Canvas and the saved-plan editor are removed.

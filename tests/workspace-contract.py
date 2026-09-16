@@ -380,6 +380,72 @@ class WorkspaceContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "deleted"):
             self.runtime.workspace_snapshot(lead["id"])
 
+    def test_inbox_view_skips_checkpoint_history_and_keeps_exact_inbox(self):
+        lead = self.lead()
+        self.agent_update(lead, status="failed", error="Fixture failure")
+        expected = self.runtime.workspace_snapshot(lead["id"])["inbox"]
+        records = self.runtime.records
+        def guarded(db, table):
+            if table in {"checkpoints", "annotations", "plans"}:
+                raise AssertionError("Inbox reads unrelated history: " + table)
+            return records(db, table)
+        with patch.object(self.runtime, "records", side_effect=guarded), patch.object(
+                self.runtime, "recent_tasks", side_effect=AssertionError("Inbox reads task history")):
+            self.assertEqual(self.runtime.workspace_snapshot(lead["id"], view="inbox"), {"inbox": expected})
+        with self.assertRaisesRegex(ValueError, "Unknown workspace view"):
+            self.runtime.workspace_snapshot(lead["id"], view="invalid")
+
+    def test_workspace_read_does_not_wait_for_runtime_lock(self):
+        lead = self.lead()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with self.runtime.lock:
+                result = pool.submit(self.runtime.workspace_snapshot, lead["id"], view="inbox")
+                snapshot = result.result(timeout=1)
+        self.assertIn("inbox", snapshot)
+
+    def test_slow_checkpoint_read_does_not_block_limits(self):
+        lead = self.lead()
+        entered, release = threading.Event(), threading.Event()
+        records = self.runtime.records
+        def delayed(db, table):
+            if table == "checkpoints":
+                entered.set()
+                if not release.wait(3):
+                    raise AssertionError("Checkpoint reader was not released")
+            return records(db, table)
+        with patch.object(self.runtime, "records", side_effect=delayed), ThreadPoolExecutor(max_workers=2) as pool:
+            snapshot = pool.submit(self.runtime.workspace_snapshot, lead["id"])
+            try:
+                self.assertTrue(entered.wait(1))
+                limits = pool.submit(self.runtime.limits)
+                self.assertIsNone(limits.result(timeout=1)["error"])
+            finally:
+                release.set()
+            self.assertIn("checkpoints", snapshot.result(timeout=1))
+
+    def test_workspace_read_uses_one_committed_snapshot(self):
+        lead = self.lead()
+        self.agent_update(lead, status="failed", error="Before concurrent write")
+        records = self.runtime.records
+        changed = False
+        def change_after_read(db, table):
+            nonlocal changed
+            rows = records(db, table)
+            if table == "agents" and not changed:
+                changed = True
+                self.agent_update(lead, status="completed", error=None)
+                with self.runtime.lock, self.runtime.db() as writer:
+                    self.runtime.put(writer, "checkpoints", {"id": "later", "agent": lead["id"],
+                        "rootId": lead["rootId"], "items": ["later-item"]})
+            return rows
+        with patch.object(self.runtime, "records", side_effect=change_after_read):
+            before = self.runtime.workspace_snapshot(lead["id"])
+        self.assertTrue(any(row["text"] == "Before concurrent write" for row in before["inbox"]))
+        self.assertEqual(before["checkpoints"], [])
+        after = self.runtime.workspace_snapshot(lead["id"])
+        self.assertEqual(after["checkpoints"][0]["items"], ["later-item"])
+        self.assertFalse(any(row["kind"] == "agent" for row in after["inbox"]))
+
     def test_reported_changes_are_per_agent_and_restore_the_full_saved_diff(self):
         lead = self.git_project()
         other = self.lead("Other chat in the same directory")

@@ -756,7 +756,7 @@ def make_server(canvas, port=0, public_origin=None):
                     if path.path == "/api/questions":
                         return self.send(runtime.question_history(agent))
                     if path.path == "/api/workspace":
-                        return self.send(runtime.workspace_snapshot(agent))
+                        return self.send(runtime.workspace_snapshot(agent, view=q.get("view", "full")))
                     if path.path == "/api/work":
                         return self.send(runtime.work_action(agent, {"action": "list"}))
                     if path.path == "/api/queue":

@@ -282,10 +282,18 @@ export function Workspace(props: Props) {
       return;
     let active = true,
       seen: Set<string> | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
     const check = async () => {
       try {
         if (!props.agent) return;
-        const result = await api(endpoint("workspace", props.agent));
+        const result = await api(
+          endpoint("workspace", props.agent) + "&view=inbox",
+          undefined,
+          {
+            signal: controller.signal,
+          },
+        );
         if (!active) return;
         const ids = new Set(dataRef.current.threads.map((agent) => agent.id));
         const items: Json[] = (result.inbox || []).filter((item: Json) =>
@@ -333,13 +341,15 @@ export function Workspace(props: Props) {
         }
       } catch {
         /* Retry on the next interval. This does not change the inbox. */
+      } finally {
+        if (active) timer = setTimeout(() => void check(), 10000);
       }
     };
     void check();
-    const timer = setInterval(() => void check(), 10000);
     return () => {
       active = false;
-      clearInterval(timer);
+      clearTimeout(timer);
+      controller.abort();
     };
   }, [notifications, props.agent?.rootId, props.agent?.id]);
   const selected = props.data.threads.find(

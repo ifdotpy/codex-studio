@@ -1432,8 +1432,12 @@ class WorkspaceMixin:
         self.capability_cache[key] = result
         return result
 
-    def workspace_snapshot(self, key=None):
-        with self.lock, self.db() as db:
+    def workspace_snapshot(self, key=None, *, view="full"):
+        if view not in {"full", "inbox"}:
+            raise ValueError("Unknown workspace view")
+        with self.db() as db:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
             root = self.checked_actor(db, key)["rootId"] if key else None
             agents = [
                 a for a in self.records(db, "agents")
@@ -1529,6 +1533,8 @@ class WorkspaceMixin:
                             "text": r["error"],
                         }
                     )
+            if view == "inbox":
+                return {"inbox": inbox}
             return {
                 "work": [
                     self.work_view(w, works)
