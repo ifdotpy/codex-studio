@@ -181,8 +181,6 @@ export function Workspace(props: Props) {
       active = false;
     };
   }, []);
-  const dataRef = useRef(props.data);
-  dataRef.current = props.data;
   const refreshRef = useRef(props.refresh),
     notifyRef = useRef(props.notify);
   refreshRef.current = props.refresh;
@@ -244,6 +242,9 @@ export function Workspace(props: Props) {
           await window.codexDesktop.setNotifications(false);
         setNotifications(false);
         save("workspace-notifications", false);
+        window.dispatchEvent(
+          new CustomEvent("studio-notifications", { detail: false }),
+        );
       } catch (error) {
         props.notify(errorText(error));
       }
@@ -254,6 +255,9 @@ export function Workspace(props: Props) {
         const allowed = await window.codexDesktop.setNotifications(true);
         setNotifications(allowed);
         save("workspace-notifications", allowed);
+        window.dispatchEvent(
+          new CustomEvent("studio-notifications", { detail: allowed }),
+        );
       } catch (error) {
         props.notify(errorText(error));
       }
@@ -272,86 +276,10 @@ export function Workspace(props: Props) {
     }
     setNotifications(true);
     save("workspace-notifications", true);
+    window.dispatchEvent(
+      new CustomEvent("studio-notifications", { detail: true }),
+    );
   };
-  useEffect(() => {
-    if (
-      !notifications ||
-      (!window.codexDesktop &&
-        (!("Notification" in window) || Notification.permission !== "granted"))
-    )
-      return;
-    let active = true,
-      seen: Set<string> | null = null;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const controller = new AbortController();
-    const check = async () => {
-      try {
-        if (!props.agent) return;
-        const result = await api(
-          endpoint("workspace", props.agent) + "&view=inbox",
-          undefined,
-          {
-            signal: controller.signal,
-          },
-        );
-        if (!active) return;
-        const ids = new Set(dataRef.current.threads.map((agent) => agent.id));
-        const items: Json[] = (result.inbox || []).filter((item: Json) =>
-          ids.has(item.agent),
-        );
-        const next = new Set(items.map((item) => `${item.kind}:${item.id}`));
-        const added = seen
-          ? items.filter((item) => !seen!.has(`${item.kind}:${item.id}`))
-          : [];
-        seen = next;
-        if (added.length && document.visibilityState !== "visible") {
-          const groups = new Map<string, number>();
-          for (const item of added)
-            groups.set(item.kind, (groups.get(item.kind) || 0) + 1);
-          const body = [...groups]
-            .map(([kind, count]) => `${count} ${kind}${count === 1 ? "" : "s"}`)
-            .join(", ");
-          if (window.codexDesktop) {
-            await window.codexDesktop.notify({
-              title: "Codex Studio needs attention",
-              body,
-              target: {
-                agentId: props.agent.rootId || props.agent.id,
-                section: "messages",
-              },
-            });
-            return;
-          }
-          const notification = new Notification(
-            "Codex Studio needs attention",
-            { body, tag: "codex-workspace-attention" },
-          );
-          notification.onclick = () => {
-            notification.close();
-            window.focus();
-            window.dispatchEvent(
-              new CustomEvent("studio-navigate", {
-                detail: {
-                  agentId: props.agent!.rootId || props.agent!.id,
-                  section: "messages",
-                },
-              }),
-            );
-          };
-        }
-      } catch {
-        /* Retry on the next interval. This does not change the inbox. */
-      } finally {
-        if (active) timer = setTimeout(() => void check(), 10000);
-      }
-    };
-    void check();
-    return () => {
-      active = false;
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [notifications, props.agent?.rootId, props.agent?.id]);
   const selected = props.data.threads.find(
     (a) => a.id === agentId && a.source === "managed",
   );

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Desktop alert reads remain small and cannot overlap while Limits is open.
+// Desktop alerts use the existing snapshot and do not request workspace histories.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
@@ -59,9 +59,6 @@ try {
     requests = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/api/workspace?*", (route) => {
-    const url = new URL(route.request().url());
-    assert.equal(url.searchParams.get("view"), "inbox");
-    assert.equal(url.searchParams.get("agent"), lead.id);
     requests.push(Date.now());
     pending.push(route);
   });
@@ -88,15 +85,9 @@ try {
   await page.waitForTimeout(11000);
   assert.equal(
     requests.length,
-    1,
-    "a slow alert read cannot start another alert read",
+    0,
+    "desktop alerts do not request workspace data",
   );
-  for (const route of pending.splice(0)) {
-    const response = await route.fetch();
-    const result = await response.json();
-    assert.deepEqual(Object.keys(result), ["inbox"]);
-    await route.fulfill({ response });
-  }
   assert.doesNotMatch(
     await details.innerText(),
     /server did not respond in time/,

@@ -110,4 +110,17 @@ and [Electron permissions](https://www.electronjs.org/docs/latest/api/session).
 
 `getNotifications()` reads the saved notification setting. `onNavigate()` receives the exact chat and optional item from a notification click. It returns an unsubscribe function.
 
+Enable **Desktop alerts** from the **Messages** view. Alerts cover all chats:
+completed lead replies, questions, approval requests, user tasks, messages addressed
+to the user, and lead failures. Worker completion and internal team messages do
+not produce desktop alerts. The focused chat stays silent while its window has
+focus. A click opens the chat or the request that needs attention.
+
+Alerts use the existing chat snapshot without separate workspace reads. The first
+snapshot after launch or opt-in establishes a baseline; old events do not repeat.
+The desktop app must remain running. macOS notification settings still apply.
+Run `node tests/desktop-alerts-contract.mjs` and
+`node tests/desktop-notifications-ui.mjs` from the repository root. The UI check
+records native bridge calls; it does not display or verify macOS banners.
+
 Native transcription accepts an attempt `id`. `onTranscriptionProgress()` reports completed and total audio parts for that ID. `cancelTranscription(id)` stops that attempt after a user action. The saved recording remains on the device.

@@ -1,3 +1,4 @@
+import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { accountLimits } from "./accountUsage";
@@ -256,6 +257,7 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(""), 5000);
   }, []);
   const nativeActions = useNativeAction(data?.stateDir, workspaceId, notify);
+  useDesktopNotifications(data, opened);
   const submitNativeAction = async (
     target: Agent,
     action: "compact" | "review",
@@ -454,7 +456,7 @@ export default function App() {
             }
           : undefined,
       );
-      setWorkspaceOpen(true);
+      setWorkspaceOpen(!!navigationTarget.itemId);
     }
     setNavigationTarget(undefined);
   }, [navigationTarget, data, agents, notify]);
