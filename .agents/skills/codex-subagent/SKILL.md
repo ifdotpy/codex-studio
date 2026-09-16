@@ -19,6 +19,12 @@ chat. Report the result to the orchestrator with relevant changes, check results
 and unresolved limits. Your final result returns to the orchestrator for review.
 The orchestrator records acceptance after review.
 
+Choose implementation details within the agreed design and ownership boundaries.
+Complete the actual caller integration and relevant checks included in your assignment.
+Keep related defect corrections in the same assignment through review.
+If completion requires a change outside your authority, report the dependency and proposed resolution to the orchestrator.
+Do not claim a complete feature from an unused API or source changes alone.
+
 Use direct agent messages for coordination. Use the shared team channel for
 information that the team needs. The harness delivers task submissions and your
 final result to the orchestrator automatically.
