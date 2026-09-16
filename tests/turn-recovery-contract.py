@@ -29,7 +29,10 @@ class RecoveryServer(fixture.FakeServer):
     def call(self, method, params, timeout=60):
         if method == 'thread/turns/list':
             self.calls.append((method, params))
-            return {'data': self.native.get('turns', [])[:params['limit']]}
+            offset = int(params.get('cursor', '0'))
+            turns = self.native.get('turns', [])
+            end = offset + params['limit']
+            return {'data': turns[offset:end], 'nextCursor': str(end) if end < len(turns) else None}
         if method == 'thread/read':
             self.calls.append((method, params))
             self.read_entered.set()
@@ -84,6 +87,16 @@ class TurnRecoveryContract(unittest.TestCase):
             row = json.loads(db.execute('SELECT record FROM runtime_items WHERE id=?', (self.key + ':answer',)).fetchone()[0])
             self.assertFalse(row['streaming'])
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_completed_turns').fetchone()[0], 1)
+
+    def test_completed_turn_on_later_page_recovers_once(self):
+        self.server.native['turns'] = [
+            {'id': 'newer-' + str(i), 'status': 'completed', 'items': []} for i in range(31)
+        ] + self.server.native['turns']
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['outcome'], 'completed')
+        self.assertEqual(self.runtime.agent(self.key)['lastAnswer'], 'Full final answer')
+        pages = [p for m, p in self.server.calls if m == 'thread/turns/list']
+        self.assertEqual([p.get('cursor') for p in pages], [None, '10', '20', '30'])
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'skipped')
 
     def test_unloaded_interrupted_thread_clears_preparation_cache(self):
         self.assertIn(self.key, self.runtime.loaded)

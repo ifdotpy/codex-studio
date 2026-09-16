@@ -33,6 +33,7 @@ class TransferContract(f.AccountContracts):
             if method == 'thread/read':
                 return {'thread': {'id': params['threadId'], 'status': {'type': 'idle'}, 'path': '/fixture/rollout.jsonl'}}
             if method == 'thread/backgroundTerminals/list': return {'data': []}
+            if method == 'thread/queue/list': return {'data': []}
             if method == 'thread/unsubscribe': return {}
             return original(method, params, timeout)
         self.source_server.call = call
@@ -117,6 +118,66 @@ class TransferContract(f.AccountContracts):
     def complete_fork(self, index=0):
         self.until(lambda:not self.store.running)
         self.pending[index][2].set_result({'thread': {'id': 'target-thread-'+str(index)}, 'model':'gpt-6-astra'})
+
+    def test_native_queue_blocks_transfer_until_empty(self):
+        original = self.source_server.call
+        queued = [{'id': 'native-accepted-input'}]
+        def call(method, params, timeout=60):
+            if method == 'thread/read':
+                return {'thread': {'id': params['threadId'], 'status': {'type': 'notLoaded'},
+                                   'path': '/fixture/rollout.jsonl'}}
+            if method == 'thread/queue/list':
+                return {'data': list(queued)}
+            return original(method, params, timeout)
+        self.source_server.call = call
+        op = self.start_transfer()
+        self.tick()
+        self.until(lambda: not self.store.running)
+        self.assertEqual(self.pending, [])
+        self.assertEqual(self.receipt(op['id'])['members'][self.lead_agent['id']]['phase'], 'waiting')
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountKey'], 'default')
+        self.assertEqual(queued, [{'id': 'native-accepted-input'}])
+        queued.clear()
+        with self.runtime.lock, self.runtime.db() as db:
+            saved = self.store.get(db, op['id'])
+            saved['members'][self.lead_agent['id']]['nextCheck'] = 0
+            self.store.save(db, saved)
+        self.tick()
+        self.until(lambda: bool(self.pending))
+        self.complete_fork()
+        self.tick()
+        self.assertEqual(self.receipt(op['id'])['status'], 'completed')
+        self.assertEqual(len(self.pending), 1)
+
+    def test_native_input_arriving_during_copy_blocks_fork(self):
+        original = self.source_server.call
+        reads = []
+        def call(method, params, timeout=60):
+            if method == 'thread/queue/list':
+                reads.append(params)
+                return {'data': [] if len(reads) == 1 else [{'id': 'late-native-input'}]}
+            return original(method, params, timeout)
+        self.source_server.call = call
+        op = self.start_transfer()
+        self.tick()
+        self.until(lambda: not self.store.running)
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(self.pending, [])
+        self.assertEqual(self.receipt(op['id'])['members'][self.lead_agent['id']]['phase'], 'waiting')
+
+    def test_native_queue_read_failure_does_not_transfer(self):
+        original = self.source_server.call
+        def call(method, params, timeout=60):
+            if method == 'thread/queue/list':
+                raise TimeoutError('Native queue response unavailable')
+            return original(method, params, timeout)
+        self.source_server.call = call
+        op = self.start_transfer()
+        self.tick()
+        self.until(lambda: not self.store.running)
+        self.assertEqual(self.pending, [])
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountKey'], 'default')
+        self.assertNotEqual(self.receipt(op['id'])['status'], 'completed')
 
     def test_transfer_keeps_identity_history_queue_and_settings(self):
         aid = self.lead_agent['id']

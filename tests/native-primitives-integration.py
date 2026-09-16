@@ -78,6 +78,24 @@ stream_max_retries = 0
 
 
 class NativePrimitives(unittest.TestCase):
+    def test_recovery_reads_exact_turn_beyond_first_native_page(self):
+        from codex_turn_recovery import read_native_turn
+        with native_server() as (server, tid, provider, notifications, _):
+            provider.release.set()
+            turns = []
+            for i in range(12):
+                turn = server.call('turn/start', {'threadId': tid,
+                    'input': [{'type': 'text', 'text': 'Local history fixture ' + str(i)}]})['turn']['id']
+                n.until(lambda: any(e.get('method') == 'turn/completed'
+                    and e['params']['turn']['id'] == turn for e in notifications), 'fixture turn')
+                turns.append(turn)
+            result = read_native_turn(server, tid, turns[0])
+            self.assertEqual(result['id'], turns[0])
+            self.assertEqual(result['status'], 'completed')
+            self.assertTrue(any(item['type'] == 'agentMessage' for item in result['items']))
+            self.assertEqual(len(provider.requests), 12)
+            self.assertEqual(provider.unexpected, [])
+
     def test_context_repair_reads_unloaded_history_after_native_restart(self):
         import codex_context_repair as repair
         with native_server() as (server, tid, provider, notifications, restart):
@@ -189,6 +207,14 @@ class NativePrimitives(unittest.TestCase):
             server = restart()
             page = server.call('thread/queue/list', {'threadId': tid})
             self.assertEqual([i['id'] for i in page['data']], [first['id'], second['id']])
+            from codex_account_transfer import AccountTransfers
+            transfer = object.__new__(AccountTransfers)
+            waits = []
+            transfer.update = lambda *args, **kwargs: waits.append(kwargs)
+            self.assertTrue(transfer.wait_for_native_queue('transfer', 'agent', server, tid))
+            self.assertEqual(waits[-1]['phase'], 'waiting')
+            self.assertEqual([i['id'] for i in server.call('thread/queue/list',
+                {'threadId': tid})['data']], [first['id'], second['id']])
             import codex_context_repair as repair
             with self.assertRaisesRegex(ValueError, 'queued input'):
                 repair._native_idle(server, tid)
@@ -201,6 +227,7 @@ class NativePrimitives(unittest.TestCase):
                 self.assertTrue(server.call('thread/queue/delete', {'threadId': tid,
                     'queuedSubmissionId': item['id']})['deleted'])
             self.assertEqual(server.call('thread/queue/list', {'threadId': tid})['data'], [])
+            self.assertFalse(transfer.wait_for_native_queue('transfer', 'agent', server, tid))
             self.assertEqual(len(provider.requests), 1)
             print(json.dumps({'nativeQueueSurvivesRestart': True, 'sameClientIdCreatesEntries': 2,
                               'queueCrudModelRequests': 0}))

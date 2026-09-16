@@ -235,6 +235,15 @@ class AccountTransfers:
             self.save(db, op)
         return op
 
+    def wait_for_native_queue(self, key, aid, source, thread_id):
+        queue = source.call('thread/queue/list', {'threadId': thread_id}, timeout=10)
+        if not isinstance(queue.get('data'), list):
+            raise ValueError('Codex returned an invalid native queue page')
+        if queue['data'] or queue.get('nextCursor'):
+            self.update(key, aid, phase='waiting', waiting='Waiting for native queued input')
+            return True
+        return False
+
     def run(self, key, aid):
         rt = self.rt
         try:
@@ -292,6 +301,8 @@ class AccountTransfers:
                 if native.get('status', {}).get('type') not in {'idle', 'notLoaded', 'systemError'}:
                     self.update(key, aid, phase='waiting', waiting='Waiting for the native turn')
                     return
+                if self.wait_for_native_queue(key, aid, source, a['threadId']):
+                    return
                 if native['status']['type'] in {'idle', 'systemError'}:
                     jobs = source.call('thread/backgroundTerminals/list', {'threadId': a['threadId']}, timeout=10)
                     if jobs.get('data') or jobs.get('nextCursor'):
@@ -314,6 +325,10 @@ class AccountTransfers:
                 if not native.get('path'):
                     raise ValueError('Codex returned no saved context path')
                 source_path = self.copy_history(rt.accounts.home(a.get('accountKey', 'default')), rt.accounts.home(target), native['path'])
+                # Copying a large history can take time. Recheck the durable queue
+                # before submission, including for an unloaded source session.
+                if self.wait_for_native_queue(key, aid, source, a['threadId']):
+                    return
             params = rt.new_thread_params({**a, **resolved, 'accountKey': target})
             params.pop('dynamicTools', None)
             params['excludeTurns'] = True

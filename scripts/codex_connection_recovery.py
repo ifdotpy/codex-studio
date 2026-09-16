@@ -43,9 +43,8 @@ def recover(runtime, key, *, automatic=False):
             raise ValueError('Native thread identity changed')
         if thread.get('status', {}).get('type') not in {'idle', 'notLoaded'}:
             return record_check(runtime, expected, connection, server, thread.get('status', {}).get('type'))
-        page = server.call('thread/turns/list', {'threadId': agent['threadId'], 'limit': 10,
-            'sortDirection': 'desc', 'itemsView': 'full'}, timeout=10)
-        turn = next((t for t in page.get('data', []) if t.get('id') == agent['turnId']), None)
+        from codex_turn_recovery import read_native_turn
+        turn = read_native_turn(server, agent['threadId'], agent['turnId'])
         thread = server.call('thread/read', {'threadId': agent['threadId'], 'includeTurns': False}, timeout=5)['thread']
         if thread.get('id') != agent['threadId']:
             raise ValueError('Native thread identity changed')

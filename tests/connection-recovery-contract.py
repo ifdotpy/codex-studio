@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 
@@ -106,6 +107,39 @@ class ConnectionRecoveryContract(unittest.TestCase):
         self.assertEqual(self.server.calls, calls)
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_completed_turns').fetchone()[0], 1)
+
+    def test_completed_target_on_later_page_reconciles(self):
+        self.server.native['turns'] = [
+            {'id': 'newer-' + str(i), 'status': 'completed', 'items': []} for i in range(21)
+        ] + self.server.native['turns']
+        self.assertEqual(recover(self.runtime, self.key)['outcome'], 'completed')
+        self.assertEqual(self.runtime.agent(self.key)['lastAnswer'], 'Full final answer')
+        pages = [p for m, p in self.server.calls if m == 'thread/turns/list']
+        self.assertEqual([p.get('cursor') for p in pages], [None, '10', '20'])
+        self.read_calls_only()
+
+    def test_bad_or_unavailable_later_page_preserves_interrupted_state(self):
+        original = self.server.call
+        for failure in ('cycle', 'timeout', 'deadline'):
+            with self.subTest(failure=failure):
+                calls = []
+                def call(method, params, timeout=60):
+                    if method == 'thread/turns/list':
+                        calls.append(params)
+                        if params.get('cursor') and failure == 'timeout':
+                            raise TimeoutError('Later history page unavailable')
+                        return {'data': [], 'nextCursor': 'same'}
+                    return original(method, params, timeout)
+                with patch.object(self.server, 'call', side_effect=call):
+                    if failure == 'deadline':
+                        with patch('codex_turn_recovery.time.monotonic', side_effect=[0, 1, 21]):
+                            result = recover(self.runtime, self.key)
+                    else:
+                        result = recover(self.runtime, self.key)
+                self.assertEqual(result['status'], 'unconfirmed')
+                self.assertIn('error', result)
+                self.assertEqual(self.runtime.agent(self.key), self.a)
+                self.assertLessEqual(len(calls), 2)
 
     def test_failed_retains_native_error_and_failure_hold(self):
         error = {'message': 'Quota exceeded', 'codexErrorInfo': 'usageLimitExceeded'}

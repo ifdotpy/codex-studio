@@ -8,6 +8,30 @@ import json
 import time
 
 
+def read_native_turn(server, thread_id, turn_id):
+    """Find the exact turn across history pages within one read deadline."""
+    deadline = time.monotonic() + 20
+    cursor, seen = None, set()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Native turn history read timed out')
+        params = {'threadId': thread_id, 'limit': 10,
+                  'sortDirection': 'desc', 'itemsView': 'full'}
+        if cursor is not None:
+            params['cursor'] = cursor
+        page = server.call('thread/turns/list', params, timeout=min(10, remaining))
+        turn = next((t for t in page.get('data', []) if t.get('id') == turn_id), None)
+        if turn is not None:
+            return turn
+        cursor = page.get('nextCursor')
+        if not cursor:
+            return None
+        if cursor in seen:
+            raise ValueError('Native turn history repeated its page cursor')
+        seen.add(cursor)
+
+
 class TurnRecoveryMixin:
     def queue_turn_recovery(self, agents, *, force_id=None):
         """At most one native probe occupies the existing recovery executor."""
@@ -76,9 +100,7 @@ class TurnRecoveryMixin:
             if thread.get('status', {}).get('type') not in {'idle', 'notLoaded'}:
                 return {'status': 'active_or_unknown'}
             # The exact terminal turn is required. Never infer an outcome from silence.
-            page = server.call('thread/turns/list', {'threadId': a['threadId'], 'limit': 10,
-                'sortDirection': 'desc', 'itemsView': 'full'}, timeout=10)
-            turn = next((t for t in page.get('data', []) if t.get('id') == a['turnId']), None)
+            turn = read_native_turn(server, a['threadId'], a['turnId'])
             thread = server.call('thread/read', {'threadId': a['threadId'], 'includeTurns': False}, timeout=5)['thread']
             if thread.get('id') != a['threadId']:
                 raise ValueError('Native thread identity changed')
