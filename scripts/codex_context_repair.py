@@ -641,6 +641,7 @@ def _native_idle(server, tid, unresolved=(), *, inherited_empty=False):
         turn = turns['data'][0]
         native['repairTerminalTurnId'] = turn['id']
         native['repairTerminalStatus'] = turn.get('status')
+        native['repairTerminalStartedAt'] = turn.get('startedAt')
         native['repairTerminalCompletedAt'] = turn.get('completedAt')
         if turn.get('status') not in {'completed', 'failed', 'interrupted'}:
             raise _waiting('Context repair requires a terminal native turn', 'native')
@@ -1014,6 +1015,14 @@ def _repair(rt, key, attempt_id):
             op['snapshot'] = report
             if historical:
                 completed = report.get('terminalCompletedAt')
+                if (not isinstance(completed, (int, float))
+                        and native.get('repairTerminalStatus') == 'interrupted'
+                        and isinstance(native.get('repairTerminalStartedAt'), (int, float))
+                        and native['repairTerminalStartedAt'] > max(r['created'] for r in historical)):
+                    # Codex may omit completedAt for a server-interrupted turn.
+                    # Its startedAt still proves that old uncertain inputs came first.
+                    completed = time.time()
+                    report['terminalCompletedAt'] = completed
                 if (report.get('terminalTurnId') != native.get('repairTerminalTurnId')
                         or not isinstance(completed, (int, float))
                         or completed <= max(r['created'] for r in historical)
