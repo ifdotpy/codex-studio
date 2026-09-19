@@ -338,7 +338,8 @@ def _projected_records(segments):
             yield (json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
 
 
-def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None, *, segments=None, inherited_empty=False):
+def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None, *, segments=None,
+                      inherited_empty=False, terminal_status=None, terminal_completed_at=None):
     """Change exact event prefixes only, with matching native turn provenance.
 
     User text, attachments, summaries and tool receipts retain their values.
@@ -471,6 +472,24 @@ def sanitized_rollout(source, destination, thread_id, events, terminal_turn=None
                 outgoing.write(clean)
                 clean_hash.update(clean)
                 clean_bytes += len(clean)
+            native_terminal_proof = (terminal_status == 'interrupted'
+                or (terminal_status == 'completed' and isinstance(terminal_completed_at, (int, float))))
+            if terminal_turn and latest_started == terminal_turn and latest_terminal != terminal_turn \
+                    and native_terminal_proof:
+                # A process can die after Codex persists the turn state but before
+                # it appends the JSONL terminal event. Use the native terminal
+                # status as proof and record the marker only in the immutable fork.
+                marker_type = 'turn_aborted' if terminal_status == 'interrupted' else 'task_complete'
+                marker = {'type': 'event_msg', 'payload': {'type': marker_type,
+                    'turn_id': terminal_turn}}
+                if isinstance(terminal_completed_at, (int, float)):
+                    marker['payload']['completed_at'] = terminal_completed_at
+                marker_raw = (json.dumps(marker, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+                outgoing.write(marker_raw)
+                clean_hash.update(marker_raw)
+                clean_bytes += len(marker_raw)
+                latest_terminal = terminal_turn
+                terminal_at = terminal_completed_at
             if terminal_turn and (latest_started != terminal_turn or latest_terminal != terminal_turn):
                 raise _waiting('Context repair waits for the saved terminal turn: ' + terminal_turn, 'native')
             if any(len(ids) > 1 for ids in matched_messages.values()):
@@ -621,6 +640,8 @@ def _native_idle(server, tid, unresolved=(), *, inherited_empty=False):
     if turns.get('data'):
         turn = turns['data'][0]
         native['repairTerminalTurnId'] = turn['id']
+        native['repairTerminalStatus'] = turn.get('status')
+        native['repairTerminalCompletedAt'] = turn.get('completedAt')
         if turn.get('status') not in {'completed', 'failed', 'interrupted'}:
             raise _waiting('Context repair requires a terminal native turn', 'native')
         pages[turn['id']] = _native_items(server, tid, turn['id'], deadline)
@@ -980,7 +1001,9 @@ def _repair(rt, key, attempt_id):
         if shutil.disk_usage(home).free < sum(s['endByteOffset'] for s in segments) * 3 + 64 * 1024 * 1024:
             raise ValueError('Context repair needs free space for three copies of this rollout')
         report = sanitized_rollout(source, destination, a['threadId'], events, native.get('repairTerminalTurnId'),
-                                   segments=segments, inherited_empty=native.get('repairInheritedEmpty', False))
+                                   segments=segments, inherited_empty=native.get('repairInheritedEmpty', False),
+                                   terminal_status=native.get('repairTerminalStatus'),
+                                   terminal_completed_at=native.get('repairTerminalCompletedAt'))
         if any(_prefix_hash(s['path'], s['endByteOffset']) != s['sha256'] for s in segments):
             raise _waiting('Context repair waits for stable saved ancestry', 'native')
         source_hash = _hash_file(source)

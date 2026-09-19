@@ -124,6 +124,19 @@ class ContextRepair(unittest.TestCase):
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT text FROM runtime_events WHERE id=?', (self.event['id'],)).fetchone()[0], self.text)
 
+    def test_interrupted_native_turn_supplies_missing_terminal_marker_in_copy(self):
+        self.records.pop()
+        self.write_records()
+        self.server.turn_status = 'interrupted'
+        source = self.path.read_bytes()
+        result = repair.repair_idle(self.runtime, self.a['id'])
+        receipt = result['contextRepair']
+        self.assertEqual(receipt['phase'], 'completed')
+        self.assertEqual(self.path.read_bytes(), source)
+        clean = [json.loads(x) for x in Path(receipt['snapshot']['copyPath']).read_text().splitlines()]
+        self.assertEqual(clean[-1]['payload']['type'], 'turn_aborted')
+        self.assertEqual(clean[-1]['payload']['turn_id'], 'turn')
+
     def test_saved_native_tool_output_is_authorized_after_repair(self):
         key = self.tid + ':legacy-tool'
         result = {'success':True, 'contentItems':[{'type':'inputText','text':'Saved command receipt walnut-271.'}]}
