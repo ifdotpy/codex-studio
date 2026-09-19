@@ -815,6 +815,25 @@ def recover_context_failures(rt, db, agents):
     for a in agents:
         attempt = a.get('startAttempt') or {}
         receipt = a.get('contextRepair') or {}
+        # A server can die after the repair record is saved but before a turn
+        # reservation exists. That record cannot have submitted a native fork.
+        # Retire it after a grace period so it cannot block the normal queue.
+        if (receipt.get('phase') == 'preparing' and not a.get('inFlight')
+                and not a.get('startAttempt')
+                and time.time() - float(receipt.get('updated', receipt.get('created', 0))) >= 60):
+            retired = copy.deepcopy(receipt)
+            retired.update(
+                status='superseded',
+                finishedAt=time.time(),
+                supersededReason='Stale pre-submission context repair after backend restart; no native fork was submitted.',
+            )
+            a['lastContextRepairCheck'] = retired
+            a.pop('contextRepair', None)
+            if a.get('error') == receipt.get('error'):
+                a['error'] = None
+            rt.put(db, 'agents', a)
+            rt.changed.set()
+            continue
         preparation_race = (a.get('error') == 'Thread preparation belongs to an earlier agent state'
             and receipt.get('phase') == 'unchanged' and receipt.get('source') == _identity(a)
             and receipt.get('settings') == rt.preparation_settings(a)

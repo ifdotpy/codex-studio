@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import time
 import unittest
 from unittest.mock import patch
 import uuid
@@ -182,6 +183,24 @@ class ContextRepair(unittest.TestCase):
             db.execute('DELETE FROM runtime_events WHERE agent=?', (self.a['id'],))
         self.assertEqual(repair.repair_before_start(self.runtime, self.a)['threadId'], self.tid)
         self.assertEqual(self.server.calls, [])
+
+    def test_stale_preparing_repair_without_attempt_is_retired(self):
+        stale = {
+            'id': 'stale-repair', 'agent': self.a['id'],
+            'source': {'id': self.a['id'], 'accountKey': self.a['accountKey'],
+                       'epoch': self.a['epoch'], 'threadId': self.tid},
+            'phase': 'preparing', 'created': time.time() - 120,
+            'updated': time.time() - 120,
+        }
+        self.agent_update(self.a, status='queued', autoWake=True,
+                          inFlight=False, contextRepair=stale)
+        with self.runtime.db() as db:
+            repair.recover_context_failures(self.runtime, db,
+                                            self.runtime.records(db, 'agents'))
+        current = self.runtime.agent(self.a['id'])
+        self.assertNotIn('contextRepair', current)
+        self.assertEqual(current['lastContextRepairCheck']['status'], 'superseded')
+        self.assertIn('no native fork', current['lastContextRepairCheck']['supersededReason'])
 
     def test_pending_repair_blocks_prepare_and_dispatch_but_preserves_queued_send(self):
         self.agent_update(self.a, autoWake=True, contextRepair={'id':'repair-exact','phase':'unknown'})
