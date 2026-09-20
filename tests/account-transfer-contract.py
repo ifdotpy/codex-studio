@@ -351,6 +351,26 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.runtime.agent(worker['id'])['accountKey'],'default')
         self.assertEqual(self.receipt(op['id'])['status'],'completed')
 
+    def test_existing_unsent_subagent_member_is_pruned(self):
+        op = self.start_transfer()
+        worker = self.runtime.create({'name': 'Legacy worker', 'prompt': 'Task'},
+                                     parent=self.lead_agent['id'], defer=True)
+        self.set_agent(worker['id'], accountTransferId=op['id'], status='waiting',
+                       inFlight=False, threadId=None)
+        with self.runtime.lock, self.runtime.db() as db:
+            saved = self.store.get(db, op['id'])
+            saved['members'][worker['id']] = {
+                'phase': 'waiting', 'sourceAccountKey': 'default', 'sourceThreadId': None,
+            }
+            self.store.save(db, saved)
+        self.set_agent(self.lead_agent['id'], accountTransfer={
+            'id': 'newer-operation', 'status': 'cancelled',
+        })
+        self.tick()
+        receipt = self.receipt(op['id'])
+        self.assertNotIn(worker['id'], receipt['members'])
+        self.assertNotIn('accountTransferId', self.runtime.agent(worker['id']))
+
     def test_restart_retains_unknown_receipt_and_never_replays_it(self):
         op=self.start_transfer();self.tick();self.until(lambda:len(self.pending)==1)
         self.until(lambda:not self.store.running)

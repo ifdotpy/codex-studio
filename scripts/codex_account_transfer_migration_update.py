@@ -7,7 +7,7 @@ from types import FunctionType
 from codex_active_task_update import compile_function, signature
 
 
-SOURCE_SHA = '893e09cffbdb2fbb5651da9995d0a4fe9561c79542b2fe78f4fcec3a6ddce73a'
+SOURCE_SHA = '34934f270165fcf7a2b1aefce9181b8729c0f84a889b2196d1c8bcf0517844e1'
 EXPECTED = {
     'request': (
         'c30af1f46c7999ae1001c5b9589faf73a8850a5b119726109dbf447251bca662',
@@ -16,6 +16,10 @@ EXPECTED = {
     'adopt': (
         'e44991039703fec31420ed92833c4ffdbb7c13032be4c37aaf69f817118b9ead',
         'beebd001b9f5fbb480d731b1b8d5446e0329446669409c7dc07130109b8185f3',
+    ),
+    'tick': (
+        '566c776adab85e7359e42459279cde5f8a88744cab3e2c69bc081b5a59542289',
+        '87d0b6776108cfda85f055aeb310e9d984ec3b8eb6daa386eff1f4e921981d3a',
     ),
 }
 

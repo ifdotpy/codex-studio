@@ -157,6 +157,27 @@ class AccountTransfers:
             return
         rt = self.rt
         with rt.lock, rt.db() as db:
+            def prune_unsent(op):
+                dirty = False
+                for aid, member in list(op['members'].items()):
+                    # Do not continue an older unsent subagent transfer after
+                    # the migration boundary changes to orchestrator only.
+                    if (aid == op['leadId'] or member['phase'] != 'waiting'
+                            or member.get('result')):
+                        continue
+                    a = rt.agent(aid, db)
+                    if a.get('accountTransferId') == op['id']:
+                        a.pop('accountTransferId', None)
+                        rt.put(db, 'agents', a)
+                    del op['members'][aid]
+                    dirty = True
+                return dirty
+
+            # Clean every pending operation. The lead may point to a newer
+            # operation, so active-agent discovery alone misses old records.
+            for op in rt.records(db, 'account_transfers'):
+                if op.get('status') == 'pending' and prune_unsent(op):
+                    self.save(db, op)
             operations = {a['accountTransfer']['id'] for a in agents if a.get('isLead')
                           and (a.get('accountTransfer') or {}).get('status') == 'pending'}
             for key in operations:
@@ -164,7 +185,7 @@ class AccountTransfers:
                 before = len(op['members'])
                 self.adopt(db, op, agents)
                 dirty = before != len(op['members'])
-                for aid, member in op['members'].items():
+                for aid, member in list(op['members'].items()):
                     a = rt.agent(aid, db)
                     if a.get('deletedAt') and member['phase'] not in {'submitted', 'unknown', 'ready'}:
                         member.update(phase='completed', waiting=None)

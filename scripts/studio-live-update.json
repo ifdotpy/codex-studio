@@ -1,11 +1,11 @@
 {
-  "id": "2026-09-20-account-migration-lead-only",
+  "id": "2026-09-20-account-migration-lead-only-v3",
   "inputs": {
     "codex-canvas": "002303238b64b884d98ad999062bd9fd3f7b7d346c3e737b43d07f2f06544c1e",
     "codex-mobile.py": "347fc4b42c02414202063863ceff8a71a810c093aa837b49da4eca344720ee68",
     "codex_account_cost_update.py": "7622e4bdd90cfde83ac522621714cfdee78dfdcc6e65718de6fa231f70f157bf",
-    "codex_account_transfer.py": "893e09cffbdb2fbb5651da9995d0a4fe9561c79542b2fe78f4fcec3a6ddce73a",
-    "codex_account_transfer_migration_update.py": "c75f51ce877c35be8e2ea87e032a26ec11a01eca3d21d56a85e57deed64f0f0f",
+    "codex_account_transfer.py": "34934f270165fcf7a2b1aefce9181b8729c0f84a889b2196d1c8bcf0517844e1",
+    "codex_account_transfer_migration_update.py": "49dca0f517e3a83552ca7085dcf341eaccd2a665ea0df894463b0878238cd5d7",
     "codex_accounts.py": "daad24f472cf39770f612505a2c5f966651610e22f26b2f4b1bfdb2609db28ce",
     "codex_active_task_update.py": "f084aedabe3b8345855e7dfe5b766e3c22a0927e21c55caf6353ff5190132589",
     "codex_agent_management.py": "28d6b8767709f54ce004999441f59485b1f741ed96905d5fcaeb360ad0112ab6",
@@ -111,6 +111,6 @@
     3,
     14
   ],
-  "scope": "Account migration transfers the orchestrator only; subagents remain on the source account",
+  "scope": "Account migration transfers the orchestrator only; prune unsent subagent members from all pending transfers",
   "version": 1
 }
