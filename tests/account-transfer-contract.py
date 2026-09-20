@@ -294,15 +294,15 @@ class TransferContract(f.AccountContracts):
         self.start_transfer(); self.tick()
         self.assertEqual(self.pending, [])
 
-    def test_native_submission_holds_the_transfer_slot_until_receipt(self):
-        self.runtime.create({'name': 'Second', 'prompt': 'Task'}, parent=self.lead_agent['id'], defer=True)
-        self.start_transfer(); self.tick(); self.until(lambda: len(self.pending) == 1)
-        self.until(lambda: not self.store.running)
-        self.tick()
-        self.assertEqual(len(self.pending), 1)
-        self.complete_fork()
-        self.until(lambda: not self.store.futures)
-        self.tick(); self.until(lambda: len(self.pending) == 2)
+    def test_subagents_are_not_transferred(self):
+        worker = self.runtime.create({'name': 'Second', 'prompt': 'Task'}, parent=self.lead_agent['id'], defer=True)
+        op = self.start_transfer()
+        self.assertEqual(set(self.receipt(op['id'])['members']), {self.lead_agent['id']})
+        self.assertNotIn('accountTransferId', self.runtime.agent(worker['id']))
+        self.tick(); self.until(lambda: len(self.pending) == 1)
+        self.complete_fork(); self.tick()
+        self.assertEqual(self.receipt(op['id'])['status'], 'completed')
+        self.assertEqual(self.runtime.agent(worker['id'])['accountKey'], 'default')
 
     def test_preparation_lock_retries_without_a_model_turn(self):
         from codex_native_errors import NativeRpcError
@@ -338,17 +338,17 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(member['phase'], 'blocked')
         self.assertEqual(len(member['preparationRejections']), 4)
 
-    def test_workers_created_during_transfer_are_included(self):
+    def test_workers_created_during_transfer_are_excluded(self):
         aid=self.lead_agent['id'];op=self.start_transfer()
         worker=self.runtime.create({'name':'Worker','prompt':'Task'},parent=aid,defer=True)
         self.set_agent(worker['id'], status='waiting', inFlight=False, threadId=None)
         self.tick();self.until(lambda:len(self.pending)==1)
-        self.assertIn(worker['id'],self.receipt(op['id'])['members'])
+        self.assertNotIn(worker['id'],self.receipt(op['id'])['members'])
+        self.assertNotIn('accountTransferId', self.runtime.agent(worker['id']))
         self.complete_fork(0);self.until(lambda:not self.store.futures)
-        self.tick();self.until(lambda:len(self.pending)==2)
-        self.complete_fork(1);self.tick()
+        self.tick()
         self.assertEqual(self.runtime.agent(worker['id'])['parentId'],aid)
-        self.assertEqual(self.runtime.agent(worker['id'])['accountKey'],self.other_key)
+        self.assertEqual(self.runtime.agent(worker['id'])['accountKey'],'default')
         self.assertEqual(self.receipt(op['id'])['status'],'completed')
 
     def test_restart_retains_unknown_receipt_and_never_replays_it(self):

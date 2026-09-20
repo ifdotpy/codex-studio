@@ -101,7 +101,10 @@ class AccountTransfers:
                 raise ValueError('Finish or cancel the current transfer first')
             if rt.accounts.get(target).get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
-            members = [a for a in rt.records(db, 'agents') if a['rootId'] == key and not a.get('deletedAt')]
+            # Account migration moves the orchestrator only. Subagents keep
+            # their source account and continue under their existing context.
+            members = [a for a in rt.records(db, 'agents')
+                       if a['id'] == key and not a.get('deletedAt')]
             for a in members:
                 self.check_destination(a, target, db)
             op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
@@ -115,7 +118,8 @@ class AccountTransfers:
 
     def adopt(self, db, op, agents):
         for a in agents:
-            if a['rootId'] != op['leadId'] or a.get('deletedAt') or a['id'] in op['members']:
+            # Do not add subagents created after the migration starts.
+            if a['id'] != op['leadId'] or a.get('deletedAt') or a['id'] in op['members']:
                 continue
             done = a.get('accountKey', 'default') == op['targetAccountKey']
             op['members'][a['id']] = {'phase': 'completed' if done else 'waiting',
