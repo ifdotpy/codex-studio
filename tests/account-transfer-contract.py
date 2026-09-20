@@ -82,6 +82,13 @@ class TransferContract(f.AccountContracts):
         self.tick()
         self.assertEqual(self.receipt(transfer['id'])['status'], 'completed')
 
+    def test_new_transfer_replaces_terminal_transfer_metadata(self):
+        previous = self.start_transfer()
+        self.store.action(previous['id'], 'cancel')
+        current = self.start_transfer()
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['id'], current['id'])
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['status'], 'pending')
+
     def test_unknown_or_committed_operation_keeps_transfer_blocked(self):
         with self.runtime.lock, self.runtime.db() as db:
             actor = self.runtime.agent(self.lead_agent['id'], db)

@@ -61,7 +61,9 @@ class AccountTransfers:
         op['updated'] = time.time()
         self.rt.put(db, 'account_transfers', op)
         lead = self.rt.agent(op['leadId'], db)
-        if (lead.get('accountTransfer') or {}).get('id') not in {None, op['id']}:
+        current = lead.get('accountTransfer') or {}
+        if (current.get('id') not in {None, op['id']}
+                and current.get('status') not in TERMINAL):
             return
         members = list(op['members'].values())
         lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated')}
