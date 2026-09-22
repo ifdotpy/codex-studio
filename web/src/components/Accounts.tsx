@@ -234,21 +234,20 @@ export function AccountTransferConfirmation({
       onClose={() => {
         if (!pending) onClose();
       }}
-      title="Transfer this team"
+      title="Transfer this chat"
       closeOnClickOutside={!pending}
       closeOnEscape={!pending}
       withCloseButton={!pending}
     >
       <p>
-        Transfer the main agent and all its subagents to{" "}
-        <strong>{target?.email || target?.label}</strong>?
+        Transfer this chat to <strong>{target?.email || target?.label}</strong>?
       </p>
       <p>
-        Active agents finish their current work first. Each agent keeps its
-        conversation history.
+        The current turn finishes first. The chat keeps its conversation
+        history. Subagents stay on their current accounts.
       </p>
       <p>
-        This changes the account for this team. It does not change the project
+        This changes the account for this chat. It does not change the project
         default.
       </p>
       {error && <p role="alert">{error}</p>}
@@ -274,7 +273,7 @@ export function AccountTransferConfirmation({
           }
         }}
       >
-        Transfer team
+        Transfer chat
       </Button>
     </Modal>
   );
@@ -385,7 +384,7 @@ export default function Accounts({
         <Menu.Dropdown>
           <Menu.Label>
             {pinned
-              ? "Transfer team to account"
+              ? "Transfer chat to account"
               : "Account for this conversation"}
           </Menu.Label>
           {accounts

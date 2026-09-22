@@ -285,10 +285,10 @@ try {
   const picker=page.locator(".account-picker");
   await picker.click();
   await page.getByRole("menuitem").filter({hasText:"work@example.com"}).click();
-  const confirmation=page.getByRole("dialog", {name:"Transfer this team", exact:true});
+  const confirmation=page.getByRole("dialog", {name:"Transfer this chat", exact:true});
   await confirmation.waitFor();
   assert.equal(bodies.filter(b=>b.path==="/api/agents/account-transfer").length,0,"account selection requires confirmation");
-  await confirmation.getByRole("button", {name:"Transfer team", exact:true}).click();
+  await confirmation.getByRole("button", {name:"Transfer chat", exact:true}).click();
   await confirmation.waitFor({state:"hidden"});
   await page.waitForFunction(()=>document.querySelector(".account-picker")?.textContent.includes("1/8"));
   assert.equal(bodies.filter(b=>b.path==="/api/agents/account-transfer").length,1);
@@ -307,7 +307,7 @@ try {
   await page.locator('[data-chat="started"]').click();
   await page.getByRole("button", {name:"Chat settings", exact:true}).click();
   await picker.click();
-  await page.getByRole("button",{name:"Retry",exact:true}).click();
+  await page.getByRole("menu").getByRole("button",{name:"Retry",exact:true}).click();
   assert.ok(bodies.some(b=>b.body.action==="retry" && b.body.request_id==="saved-request"));
   agents[0].accountKey="work";agents[0].accountTransfer={...agents[0].accountTransfer,status:"completed",completed:8};
   await page.waitForFunction(()=>document.querySelector(".account-picker")?.textContent.includes("work@example.com"));

@@ -949,7 +949,11 @@ def make_server(canvas, port=0, public_origin=None):
                             return self.send(transfers.action(body.get("request_id"), body["action"]))
                         return self.send(transfers.request(body.get("id"), body.get("account_key"), body.get("request_id")))
                     if self.path == "/api/agents/account":
-                        return self.send(runtime.set_account(body.get("id"), body.get("account_key"), body.get("cwd")))
+                        selected = runtime.set_account(body.get("id"), body.get("account_key"), body.get("cwd"))
+                        with runtime.lock, runtime.db() as db:
+                            selected = runtime.agent(selected["id"], db)
+                            selected["empty"] = runtime.empty_lead(db, selected)
+                        return self.send(selected)
                     if self.path == "/api/work":
                         return self.send(
                             runtime.work_action(agent, body, body.get("id"))
@@ -1033,7 +1037,12 @@ def make_server(canvas, port=0, public_origin=None):
                     if self.path == "/api/conversation/delete":
                         return self.send(canvas.runtime.delete_conversation(body.get("id")))
                     if self.path == "/api/leads":
-                        return self.send(canvas.runtime.new_lead(body))
+                        created = canvas.runtime.new_lead(body)
+                        # The creation receipt is shown before its snapshot arrives.
+                        with runtime.lock, runtime.db() as db:
+                            created = runtime.agent(created["id"], db)
+                            created["empty"] = runtime.empty_lead(db, created)
+                        return self.send(created)
                     if self.path == "/api/conversation":
                         if "agent_mode" in body:
                             try:

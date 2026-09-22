@@ -1639,10 +1639,11 @@ export default function App() {
                 onError={notify}
                 changeAccount={async (key) => {
                   if (agent?.isLead) {
-                    await api("/api/agents/account", {
+                    const selected = await api("/api/agents/account", {
                       id: agent.id,
                       account_key: key,
                     });
+                    rememberCreated(selected, data.stateDir);
                     await refresh();
                   } else {
                     accounts.setData(

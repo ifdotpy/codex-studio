@@ -186,6 +186,84 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountKey'], 'default')
         self.assertNotEqual(self.receipt(op['id'])['status'], 'completed')
 
+    def test_destinations_have_independent_native_receipt_slots(self):
+        same = self.lead()
+        self.set_agent(same['id'], status='complete', threadId=None)
+        same_op = self.store.request(same['id'], self.other_key, str(uuid.uuid4()))
+        opposite = self.runtime.create({'cwd': str(self.root), 'prompt': '', 'account_key': self.other_key}, draft=True)
+        self.set_agent(opposite['id'], status='complete', threadId=None)
+        other_op = self.store.request(opposite['id'], 'default', str(uuid.uuid4()))
+        original = self.source_server.submit
+        independent = []
+        def submit(method, params):
+            if method == 'thread/start':
+                future = concurrent.futures.Future()
+                independent.append(future)
+                return future
+            return original(method, params)
+        self.source_server.submit = submit
+        first = self.start_transfer()
+        # Reserve the first destination before scheduling both other leads.
+        with self.runtime.db() as db:
+            self.store.tick([self.runtime.agent(self.lead_agent['id'], db)])
+        self.until(lambda: len(self.pending) == 1)
+        self.until(lambda: not self.store.running)
+        self.tick()
+        self.until(lambda: bool(independent))
+        self.assertEqual(len(self.pending), 1)
+        self.assertEqual(self.receipt(same_op['id'])['members'][same['id']]['phase'], 'waiting')
+        self.until(lambda: not self.store.running)
+        independent[0].set_result({'thread': {'id': 'independent-target'}})
+        self.assertEqual(self.runtime.agent(opposite['id'])['accountKey'], 'default')
+        self.complete_fork()
+        self.tick()
+        self.until(lambda: len(self.pending) == 2)
+        self.complete_fork(1)
+
+    def test_ready_receipt_commits_without_delay_or_native_preparation(self):
+        op = self.start_transfer()
+        self.tick()
+        self.until(lambda: len(self.pending) == 1)
+        aid = self.lead_agent['id']
+        self.set_agent(aid, workspaceOperation={'id': 'temporary'})
+        self.complete_fork()
+        self.assertEqual(self.receipt(op['id'])['members'][aid]['phase'], 'ready')
+        self.set_agent(aid, workspaceOperation=None)
+        with patch.object(self.runtime, 'catalog', side_effect=AssertionError('No catalog reread')):
+            self.tick()
+            self.until(lambda: not self.store.running)
+        self.assertEqual(self.runtime.agent(aid)['accountKey'], self.other_key)
+        self.assertEqual(len(self.pending), 1)
+
+    def test_orphan_exact_pending_pointer_recovers_terminal_summary(self):
+        old = self.start_transfer()
+        self.store.action(old['id'], 'cancel')
+        terminal = self.runtime.agent(self.lead_agent['id'])['accountTransfer']
+        current = self.start_transfer()
+        self.set_agent(self.lead_agent['id'], accountTransfer=terminal)
+        self.tick()
+        self.until(lambda: len(self.pending) == 1)
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['id'], current['id'])
+        self.complete_fork()
+
+    def test_conflicting_pending_pointer_is_not_submitted(self):
+        op = self.start_transfer()
+        self.set_agent(self.lead_agent['id'], accountTransfer={'id': 'other-pending', 'status': 'pending'})
+        self.tick()
+        self.assertEqual(self.pending, [])
+        self.assertEqual(self.receipt(op['id'])['members'][self.lead_agent['id']]['phase'], 'waiting')
+        self.set_agent(self.lead_agent['id'], accountTransfer={'id': op['id'], 'status': 'pending'})
+
+    def test_restart_preserves_terminal_receipt_timestamp(self):
+        from codex_account_transfer import AccountTransfers
+        op = self.start_transfer()
+        self.store.action(op['id'], 'cancel')
+        before = self.receipt(op['id'])
+        summary = self.runtime.agent(self.lead_agent['id'])['accountTransfer']
+        AccountTransfers(self.runtime)
+        self.assertEqual(self.receipt(op['id']), before)
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer'], summary)
+
     def test_transfer_keeps_identity_history_queue_and_settings(self):
         aid = self.lead_agent['id']
         self.set_agent(aid, compactions=17, panelVersion=3)
@@ -197,6 +275,8 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.pending[0][0], 'thread/fork')
         self.assertTrue(self.pending[0][1]['deferGoalContinuation'])
         self.complete_fork()
+        self.assertEqual(self.receipt(op['id'])['status'], 'completed')
+        self.assertEqual(self.runtime.agent(aid)['accountTransfer']['status'], 'completed')
         a = self.runtime.agent(aid)
         self.assertEqual(a['accountKey'], self.other_key)
         self.assertEqual(a['compactions'], 17)

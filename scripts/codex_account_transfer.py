@@ -34,12 +34,18 @@ class AccountTransfers:
         with rt.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
             for op in rt.records(db, 'account_transfers'):
+                if op.get('status') in TERMINAL:
+                    continue
+                dirty = False
                 for member in op['members'].values():
                     if member['phase'] == 'reading':
                         member['phase'] = 'waiting'
+                        dirty = True
                     elif member['phase'] == 'submitted':
                         member.update(phase='unknown', error='The server restarted before the transfer receipt arrived. No request was repeated.')
-                self.save(db, op)
+                        dirty = True
+                if dirty:
+                    self.save(db, op)
 
     def close(self):
         with self.rt.lock:
@@ -62,6 +68,8 @@ class AccountTransfers:
         self.rt.put(db, 'account_transfers', op)
         lead = self.rt.agent(op['leadId'], db)
         current = lead.get('accountTransfer') or {}
+        if lead.get('accountTransferId') not in {None, op['id']}:
+            return
         if (current.get('id') not in {None, op['id']}
                 and current.get('status') not in TERMINAL):
             return
@@ -184,8 +192,36 @@ class AccountTransfers:
             for op in rt.records(db, 'account_transfers'):
                 if op.get('status') == 'pending' and prune_unsent(op):
                     self.save(db, op)
-            operations = {a['accountTransfer']['id'] for a in agents if a.get('isLead')
-                          and (a.get('accountTransfer') or {}).get('status') == 'pending'}
+            operations = set()
+            for a in agents:
+                if not a.get('isLead'):
+                    continue
+                summary = a.get('accountTransfer') or {}
+                exact = a.get('accountTransferId')
+                if exact:
+                    op = self.get(db, exact)
+                    # Conflicting active identities require explicit reconciliation.
+                    if (op['leadId'] != a['id'] or a['id'] not in op['members']
+                            or (summary.get('status') == 'pending' and summary.get('id') != exact)):
+                        continue
+                    if op['status'] == 'pending':
+                        operations.add(exact)
+                        if summary.get('id') != exact or summary.get('status') != 'pending':
+                            self.save(db, op)
+                elif summary.get('status') == 'pending':
+                    operations.add(summary['id'])
+            # Derive reservations from durable operation identities. A pending
+            # receipt retains its destination slot even after cancellation.
+            busy_targets = {self.get(db, key)['targetAccountKey'] for key, _ in self.futures}
+            for running_id in self.running:
+                running_agent = rt.agent(running_id, db)
+                running_key = running_agent.get('accountTransferId')
+                if running_key:
+                    busy_targets.add(self.get(db, running_key)['targetAccountKey'])
+                else:
+                    # Preserve exclusion if a worker lost its agent pointer.
+                    busy_targets.update(op['targetAccountKey'] for op in rt.records(db, 'account_transfers')
+                                        if running_id in op['members'] and op['members'][running_id]['phase'] == 'reading')
             for key in operations:
                 op = self.get(db, key)
                 before = len(op['members'])
@@ -200,7 +236,8 @@ class AccountTransfers:
                         continue
                     # Keep the slot until the native receipt, not only submission.
                     # Paginated forks import into one SQLite history database.
-                    if member.get('nextCheck', 0) > time.time() or self.running or self.futures:
+                    if member['phase'] != 'ready' and (member.get('nextCheck', 0) > time.time()
+                            or op['targetAccountKey'] in busy_targets):
                         continue
                     reason = self.local_blocker(db, a)
                     if reason:
@@ -209,6 +246,7 @@ class AccountTransfers:
                             dirty = True
                         continue
                     self.running.add(aid)
+                    busy_targets.add(op['targetAccountKey'])
                     member.update(nextCheck=time.time() + 10, waiting=None)
                     dirty = True
                     # Commit the reservation before the worker reads its receipt.
@@ -291,6 +329,14 @@ class AccountTransfers:
                     self.assert_source(m, a)
                 if self.local_blocker(db, a):
                     return
+                if reuse_result and isinstance(m.get('targetSettings'), dict):
+                    try:
+                        self.assert_settings(m, a)
+                    except TransferSettingsConflict:
+                        pass  # Explicit retry validates the newer settings below.
+                    else:
+                        self.commit(db, op, a)
+                        return
                 m.update(phase='reading', source={k: a.get(k) for k in ('epoch', 'accountKey', 'threadId', 'cwd')},
                          settings=rt.preparation_settings(a),
                          pendingSettings=a.get('pendingSettings'),
@@ -437,7 +483,8 @@ class AccountTransfers:
             rejected = isinstance(error, NativeRpcError) and error.code in {-32601, -32602}
             self.update(key, aid, phase='blocked' if rejected or isinstance(error, TransferSettingsConflict) else 'unknown', error=str(error))
         finally:
-            self.futures.pop((key, aid), None)
+            with rt.lock:
+                self.futures.pop((key, aid), None)
             rt.changed.set()
 
     def retry_preparation(self, key, aid, error):
@@ -503,6 +550,8 @@ class AccountTransfers:
                 a['status'] = 'queued'
         rt.put(db, 'agents', a)
         m.update(phase='completed', error=None, waiting=None)
+        if op['status'] == 'pending' and all(member['phase'] == 'completed' for member in op['members'].values()):
+            op['status'] = 'completed'
         self.save(db, op)
         db.commit()
         rt.loaded.discard(a['id'])

@@ -2,7 +2,7 @@
 // Confirmed creation opens before the full chat projection arrives. No model calls.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,28 @@ try {
   });
   const origin = `http://127.0.0.1:${port}`;
   const initial = await (await fetch(origin + "/api/state?view=chat")).json();
+  const otherHome = join(evidence, "alternate-account");
+  await mkdir(otherHome);
+  await writeFile(
+    join(otherHome, "auth.json"),
+    JSON.stringify({
+      tokens: { account_id: "draft-account", access_token: "fixture" },
+    }),
+  );
+  const registration = await fetch(origin + "/api/accounts/register", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Canvas-Token": initial.token,
+    },
+    body: JSON.stringify({ home: otherHome }),
+  });
+  assert.equal(registration.ok, true);
+  const registered = await registration.json();
+  const destination = registered.accounts.find(
+    (account) => account.label === "alternate-account",
+  );
+  assert.ok(destination);
   browser = await chromium.launch({
     headless: true,
     executablePath:
@@ -43,6 +65,14 @@ try {
   await page.route("**/api/sync/**", (route) =>
     route.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
   );
+  const accountChanges = [];
+  const transfers = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/agents/account"))
+      accountChanges.push(request.postDataJSON());
+    if (request.url().endsWith("/api/agents/account-transfer"))
+      transfers.push(request.postDataJSON());
+  });
   let hold = false,
     stale = true,
     confirmed,
@@ -67,6 +97,11 @@ try {
     assert.equal(response.ok(), true);
     confirmed = await response.json();
     assert.equal(confirmed.model, "gpt-6-astra");
+    assert.equal(
+      confirmed.empty,
+      true,
+      "creation receipt includes account eligibility before the snapshot",
+    );
     assert.equal(
       confirmed.threadId,
       null,
@@ -98,6 +133,43 @@ try {
   await page.locator("#message").fill("New draft before the projection");
   assert.equal(await page.locator("#send").isEnabled(), true);
   await page.screenshot({ path: join(evidence, "created-before-refresh.png") });
+  await page
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
+  await page.locator(".account-picker").click();
+  await page
+    .getByText("Account for this conversation", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.getByText("Transfer chat to account", { exact: true }).count(),
+    0,
+  );
+  const accountResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/agents/account"),
+  );
+  const accountStartedAt = Date.now();
+  await page
+    .getByRole("menuitem")
+    .filter({ hasText: destination.email || destination.label })
+    .click();
+  const selectedResponse = await accountResponse;
+  assert.equal(selectedResponse.ok(), true);
+  const selected = await selectedResponse.json();
+  assert.equal(selected.empty, true);
+  assert.equal(selected.threadId, null);
+  const accountChangeMs = Date.now() - accountStartedAt;
+  await page
+    .locator(".account-picker")
+    .getByText(destination.email || destination.label, { exact: true })
+    .waitFor();
+  assert.equal(accountChanges.length, 1);
+  assert.equal(accountChanges[0].id, confirmed.id);
+  assert.equal(
+    transfers.length,
+    0,
+    "a draft account choice never starts a transfer",
+  );
+  await page.keyboard.press("Escape");
   hold = false;
   for (const route of pending.splice(0)) await route.fulfill({ json: initial });
   await page.waitForTimeout(1800);
@@ -178,7 +250,9 @@ try {
     "deletion before the projection cannot restore a confirmed chat",
   );
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: true, openedAfterMs, evidence }));
+  console.log(
+    JSON.stringify({ passed: true, openedAfterMs, accountChangeMs, evidence }),
+  );
 } catch (error) {
   await page?.screenshot({ path: join(evidence, "failure.png") });
   console.error("Evidence:", evidence);
