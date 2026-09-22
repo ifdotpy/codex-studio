@@ -58,25 +58,26 @@ class MonitorContinuation(unittest.TestCase):
         self.assert_delivered(key, before)
         self.assertEqual(json.loads(self.exits(key)[0]['text'])['exitCode'], 137)
 
-    def test_cancel_approval_and_starting_monitors_delivers_without_command(self):
-        for status in ('approval', 'starting'):
-            with self.subTest(status=status):
-                current = self.runtime.agent(self.agent['id'])
-                if current.get('turnId'):
-                    self.server.complete(current['threadId'], current['turnId'])
-                m = self.runtime.monitor(self.agent['id'], {'command': 'never-run'})
-                with self.runtime.lock, self.runtime.db() as db:
-                    m['status'] = status
-                    self.runtime.put(db, 'monitors', m)
-                before = len(self.starts())
-                self.runtime.cancel_monitor(m['id'])
-                self.assert_delivered(m['id'], before)
-                payload = json.loads(self.exits(m['id'])[0]['text'])
-                self.assertEqual(payload['status'], 'cancelled')
-                self.assertIsNone(payload['exitCode'])
-                self.runtime.cancel_monitor(m['id'])
-                self.assertEqual(len(self.exits(m['id'])), 1)
+    def assert_cancel_before_command(self, status):
+        m = self.runtime.monitor(self.agent['id'], {'command': 'never-run'})
+        with self.runtime.lock, self.runtime.db() as db:
+            m['status'] = status
+            self.runtime.put(db, 'monitors', m)
+        before = len(self.starts())
+        self.runtime.cancel_monitor(m['id'])
+        self.assert_delivered(m['id'], before)
+        payload = json.loads(self.exits(m['id'])[0]['text'])
+        self.assertEqual(payload['status'], 'cancelled')
+        self.assertIsNone(payload['exitCode'])
+        self.runtime.cancel_monitor(m['id'])
+        self.assertEqual(len(self.exits(m['id'])), 1)
         self.assertEqual(self.server.commands, {})
+
+    def test_cancel_approval_monitor_delivers_without_command(self):
+        self.assert_cancel_before_command('approval')
+
+    def test_cancel_starting_monitor_delivers_without_command(self):
+        self.assert_cancel_before_command('starting')
 
     def test_paused_or_old_epoch_cancellation_records_without_continuation(self):
         key = self.monitor()

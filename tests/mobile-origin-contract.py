@@ -75,12 +75,10 @@ class MobileOriginContract(unittest.TestCase):
         self.assertEqual(self.request({**self.headers, "X-Canvas-Token": state["token"]}, body, "/api/chats")[0], 200)
         self.assertEqual(len(self.canvas.chats()), 1)
 
-    def test_public_panel_scripts_accept_exact_proxy_host(self):
+    def test_opaque_cross_site_asset_requests_are_rejected(self):
         self.enable()
         headers = {**self.headers, "Host": "studio.example.ts.net", "Origin": "null", "Sec-Fetch-Site": "cross-site"}
-        req = urllib.request.Request(self.url + "/assets/panel-bridge.js", headers=headers)
-        with urllib.request.urlopen(req, timeout=3) as result:
-            self.assertEqual(result.status, 200)
+        self.assertEqual(self.request(headers, path="/assets/panel-bridge.js")[0], 403)
         self.assertEqual(self.request(headers)[0], 403)
 
     def test_workspace_identity_guards_mutations(self):

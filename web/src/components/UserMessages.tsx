@@ -20,8 +20,7 @@ import { writeLocalDraft } from "../sync/localDraft";
 // Keep unsent replies separate from immutable delivery attempts.
 const replyDrafts = new Map<string, { text: string; status: string }>();
 
-const recipient = (c: Json) =>
-  c.recipient || (c.author === c.leadId ? "user" : "lead");
+const recipient = (c: Json) => c.recipient;
 
 function MessageResponse({
   detail,

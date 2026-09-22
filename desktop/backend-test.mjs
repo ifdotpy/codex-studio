@@ -21,6 +21,7 @@ const state = "/unused-studio-state";
 const record = {
   application: "codex-agents",
   protocol: 1,
+  backendBuild: "b".repeat(64),
   pid: process.pid,
   stateDir: state,
 };
@@ -113,6 +114,13 @@ test("incompatible identity and invalid JSON fail without retries", async () => 
   for (const body of [
     "not JSON",
     JSON.stringify({ ...record, stateDir: "/different" }),
+    JSON.stringify({ ...record, protocol: 0 }),
+    JSON.stringify({ ...record, protocol: 2 }),
+    JSON.stringify({ ...record, backendBuild: undefined }),
+    JSON.stringify({ ...record, backendBuild: null }),
+    JSON.stringify({ ...record, backendBuild: 123 }),
+    JSON.stringify({ ...record, backendBuild: "unknown" }),
+    JSON.stringify({ ...record, backendBuild: "a".repeat(63) }),
   ]) {
     let calls = 0;
     await serve(
@@ -193,11 +201,11 @@ test("an app restart reports a pending backend update and preserves the owner", 
   const canonicalState = realpathSync(tmpdir());
   const before = backendBuild(root);
   try {
-    for (const liveBuild of [undefined, "a".repeat(64), before]) {
+    for (const liveBuild of ["a".repeat(64), before]) {
       const data = {
         ...record,
         stateDir: canonicalState,
-        ...(liveBuild ? { backendBuild: liveBuild } : {}),
+        backendBuild: liveBuild,
       };
       await serve(
         (req, res) => res.end(JSON.stringify(data)),

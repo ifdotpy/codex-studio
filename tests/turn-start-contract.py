@@ -282,6 +282,9 @@ class RpcWaitContract(unittest.TestCase):
         server.reader_done = threading.Event()
         server.dispatcher = threading.Thread(target=server.dispatch, daemon=True)
         server.dispatcher.start()
+        server.clock_replies = queue.Queue(maxsize=AppServer.CLOCK_QUEUE_LIMIT)
+        server.clock_writer = threading.Thread(target=server.write_clocks, daemon=True)
+        server.clock_writer.start()
         def cleanup():
             server.reader_done.set()
             self.assertTrue(server.join_callbacks(2))

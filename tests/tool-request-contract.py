@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_tool_requests import RequestMixin
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'fixtures'))
+from current_cleanup_receipts import migrate_receipts
 
 
 class Ledger(RequestMixin):
@@ -182,19 +184,20 @@ class RequestContract(unittest.TestCase):
         self.runtime = Ledger(self.runtime.path)
         self.assertEqual(self.runtime.tool_request(record['id'])['outcome'], 'applied')
 
-    def test_legacy_receipts_are_recoverable_without_a_ledger(self):
+    def test_migrated_receipts_are_recoverable_and_cannot_replay(self):
         with self.runtime.db() as db:
             for call, success in [('legacy-ok', True), ('legacy-error', False)]:
                 db.execute('INSERT INTO runtime_tool_results VALUES (?,?)', ('thread:' + call, json.dumps(self.result(success))))
+            migrate_receipts(db)
         result = self.runtime.request_action('lead', {'action': 'get', 'request_id': 'legacy-ok'})
         self.assertEqual(result['outcome'], 'applied')
-        self.assertTrue(result['legacy'])
+        self.assertEqual(result['migrationSource'], 'saved_receipt')
         result = self.runtime.request_action('lead', {'action': 'cancel', 'request_id': 'thread:legacy-error'})
         self.assertEqual(result['outcome'], 'unknown')
         self.assertFalse(result['cancelRequested'])
-        reserved = self.reserve(call='legacy-ok')
-        self.assertEqual(reserved['outcome'], 'applied')
-        self.assertFalse(self.runtime.begin_tool_request(reserved['id']))
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.reserve(call='legacy-ok')
+        self.assertFalse(self.runtime.begin_tool_request('thread:legacy-ok'))
 
     def test_list_is_bounded_and_omits_result_bodies(self):
         for n in range(56):
@@ -310,13 +313,15 @@ class RequestContract(unittest.TestCase):
         self.assertEqual(found['outcome'], 'applied')
         self.assertNotIn('operationResult', found)
 
-    def test_operation_only_legacy_receipt_is_unknown_and_scoped(self):
+    def test_migrated_operation_only_receipt_is_unknown_and_scoped(self):
         operation = {'id': 'work-legacy', 'status': 'accepted', 'version': 7}
         self.save_operation_receipt('thread:legacy-accept', operation)
+        with self.runtime.db() as db:
+            migrate_receipts(db)
         for request_id in ['legacy-accept', 'thread:legacy-accept']:
             found = self.runtime.request_action('lead', {'action': 'get', 'request_id': request_id})
             self.assertEqual((found['stage'], found['outcome']), ('unknown', 'unknown'))
-            self.assertTrue(found['legacy'])
+            self.assertEqual(found['migrationSource'], 'saved_receipt')
             self.assertTrue(found['operationApplied'])
             self.assertEqual(found['operationResult'], operation)
             self.assertNotIn('result', found)
@@ -328,7 +333,7 @@ class RequestContract(unittest.TestCase):
         self.assertEqual(missing['outcome'], 'unknown')
         self.assertNotIn('operationApplied', missing)
         with self.runtime.db() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_requests').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_requests').fetchone()[0], 1)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_results').fetchone()[0], 0)
 
 

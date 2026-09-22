@@ -9,7 +9,7 @@ import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_budget import budget_admission, budget_capture, budget_migrate, budget_status
+from codex_budget import budget_admission, budget_capture, budget_status
 from codex_analytics import AnalyticsMixin
 from codex_analytics_history import rollout_actions, inherited_usage_threads, repair_terminal_errors
 
@@ -110,20 +110,45 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(self.notice(1020, 20), 1020)
         self.assertEqual(self.response('missed-old-compaction', 50, at=2), 1070)
 
-    def test_migration_is_bounded_and_resumable(self):
-        for i in range(130):
-            record = {'threadId': 'thread', 'turnId': 'old', 'at': 1, 'responseId': str(i),
-                      'rawTokenUsageRecord': {'response_id': str(i)}, 'last': {'totalTokens': 1}}
-            self.r.db.execute('INSERT INTO analytics_usage(id,agent,at,record) VALUES (?,?,?,?)', (str(i), 'a', 1, json.dumps(record)))
+    def test_deployment_preserves_charges_and_rejects_unfinished_import(self):
+        from fixtures.current_cleanup_state import convert_completed_budgets
+        self.notice(150, 150)
+        before = json.loads(self.r.db.execute('SELECT record FROM runtime_budget').fetchone()[0])
+        old = {**before, 'legacy': 31, 'migrationSeq': 1, 'migrationEnd': 2}
+        old.pop('historicalNotices')
+        self.r.db.execute('UPDATE runtime_budget SET record=?', (json.dumps(old),))
+        with self.assertRaisesRegex(ValueError, 'Finish the budget'):
+            convert_completed_budgets(self.r.db)
+        self.assertEqual(json.loads(self.r.db.execute('SELECT record FROM runtime_budget').fetchone()[0]), old)
+        old['migrationSeq'] = 2
+        self.r.db.execute('UPDATE runtime_budget SET record=?', (json.dumps(old),))
+        self.assertEqual(convert_completed_budgets(self.r.db), 1)
+        current = json.loads(self.r.db.execute('SELECT record FROM runtime_budget').fetchone()[0])
+        self.assertEqual(current, {**before, 'historicalNotices': 31})
+        self.assertEqual(convert_completed_budgets(self.r.db), 1)
+        self.assertEqual(self.notice(160, 10), 160)
+
+    def test_deployment_rejects_usage_without_a_ledger(self):
+        from codex_budget import budget_init
+        from fixtures.current_cleanup_state import convert_completed_budgets
+        budget_init(self.r.db)
+        self.r.db.execute('INSERT INTO analytics_usage(id,agent,at,record) VALUES (?,?,?,?)',
+                          ('uncounted', 'a', 1, '{}'))
+        with self.assertRaisesRegex(ValueError, 'Initialize the saved usage ledger'):
+            convert_completed_budgets(self.r.db)
+
+    def test_new_ledger_does_not_scan_previous_analytics(self):
+        record = {'threadId': 'thread', 'turnId': 'old', 'at': 1, 'responseId': 'previous',
+                  'rawTokenUsageRecord': {'response_id': 'previous'}, 'last': {'totalTokens': 130}}
+        self.r.db.execute('INSERT INTO analytics_usage(id,agent,at,record) VALUES (?,?,?,?)',
+                          ('previous', 'a', 1, json.dumps(record)))
         budget_status(self.r, self.r.db, self.a)
+        state = json.loads(self.r.db.execute('SELECT record FROM runtime_budget').fetchone()[0])
+        self.assertNotIn('migrationSeq', state)
+        self.assertNotIn('migrationEnd', state)
+        self.assertNotIn('legacy', state)
+        self.assertEqual(state['historicalNotices'], 0)
         self.assertEqual(self.r.agent('a', self.r.db)['tokensUsed'], 0)
-        budget_migrate(self.r.db, self.a)
-        self.assertEqual(self.r.agent('a', self.r.db)['tokensUsed'], 64)
-        budget_migrate(self.r.db, self.a)
-        self.assertEqual(self.r.agent('a', self.r.db)['tokensUsed'], 128)
-        budget_migrate(self.r.db, self.a)
-        budget_migrate(self.r.db, self.a)
-        self.assertEqual(self.r.agent('a', self.r.db)['tokensUsed'], 130)
 
     def test_out_of_order_notices_do_not_create_reset_charges(self):
         self.notice(150, 150, at=20)

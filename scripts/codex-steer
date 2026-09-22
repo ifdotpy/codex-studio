@@ -37,17 +37,20 @@ def main() -> int:
     if not message:
         parser.error("MESSAGE must not be empty")
 
+    if os.environ.get("CODEX_BOARD_OWNER"):
+        print("CODEX_BOARD_OWNER is unsupported. Start the worker with the current launcher.", file=sys.stderr)
+        return 2
     root = state_dir()
-    owner = os.environ.get("CODEX_AGENT_OWNER") or os.environ.get("CODEX_BOARD_OWNER")
+    owner = os.environ.get("CODEX_AGENT_OWNER")
     actor = None
     if owner:
         actors = [row for row in read_threads(root) if row.get("agentOwner") == owner]
         if len(actors) != 1:
-            print("The inherited owner must identify one current legacy worker. Managed agents must use runtime tools.", file=sys.stderr)
+            print("The inherited owner must identify one current launcher worker. Managed agents must use runtime tools.", file=sys.stderr)
             return 2
         actor = actors[0]
         if not actor.get("runId") or not process_is_alive(actor.get("launcherPid")):
-            print("The inherited worker has no active legacy team. Use runtime tools.", file=sys.stderr)
+            print("The inherited worker has no active launcher team. Use runtime tools.", file=sys.stderr)
             return 2
     if args.wave:
         paths = [root / f"codex-swarm-status.{args.wave}.json"]

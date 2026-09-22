@@ -1,4 +1,4 @@
-"""Selected-chat native voice and preserved legacy transcripts."""
+"""Selected-chat native voice and saved transcripts."""
 import base64
 import json
 from pathlib import Path
@@ -16,7 +16,8 @@ class VoiceStore(NativeVoice):
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS voice_sessions (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, created REAL NOT NULL,
-                  ended REAL, sdp TEXT, answer TEXT);
+                  ended REAL, sdp TEXT, answer TEXT, native_thread TEXT,
+                  account_key TEXT, connection_id TEXT, state TEXT, error TEXT);
                 CREATE TABLE IF NOT EXISTS voice_records (
                   seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
                   agent TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL,
@@ -28,10 +29,6 @@ class VoiceStore(NativeVoice):
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, records TEXT NOT NULL, text TEXT NOT NULL, edited_text TEXT);
             """)
 
-        with runtime.db() as db:
-            columns = {r[1] for r in db.execute("PRAGMA table_info(voice_deliveries)")}
-            if "edited_text" not in columns:
-                db.execute("ALTER TABLE voice_deliveries ADD COLUMN edited_text TEXT")
         self.init_native()
         self.prune_audio()
 
@@ -167,7 +164,7 @@ class VoiceStore(NativeVoice):
         self._agent(agent)
         with self.runtime.db() as db:
             rows = [json.loads(r[0]) for r in db.execute("SELECT record FROM runtime_requests")]
-        supported = {"monitor/approve", "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval"}
+        supported = {"monitor/approve", "item/commandExecution/requestApproval", "item/fileChange/requestApproval"}
         return {"requests": [r for r in rows if r.get("agent") == agent and r.get("status") == "pending" and r.get("method") in supported]}
 
     def approval_speech(self, agent, request_id):

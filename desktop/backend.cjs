@@ -35,8 +35,6 @@ function updateStatus(resources, running) {
   }
   return {
     availableBackendBuild,
-    // A legacy backend has no source identity. An app restart cannot prove
-    // that the code in the running process matches the installed files.
     updateRequired: running.backendBuild !== availableBackendBuild,
   };
 }
@@ -122,6 +120,8 @@ async function identity(
     !response.ok ||
     data.application !== "codex-agents" ||
     data.protocol !== 1 ||
+    typeof data.backendBuild !== "string" ||
+    !/^[a-f0-9]{64}$/.test(data.backendBuild) ||
     !Number.isSafeInteger(data.pid) ||
     data.pid < 1 ||
     data.stateDir !== state

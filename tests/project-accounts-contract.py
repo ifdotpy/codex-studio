@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Project account defaults and migration. Temporary SQLite, no model requests."""
+"""Project account defaults. Temporary SQLite, no model requests."""
 
 from contextlib import contextmanager
 import json
@@ -138,38 +138,18 @@ class ProjectAccountsContract(unittest.TestCase):
         self.assertEqual(sum(isinstance(result, ValueError) for result in results), 1)
         self.assertEqual(self.store.projects()["items"][0]["accountRevision"], 2)
 
-    def test_migration_precedence_and_once_only_registration(self):
-        legacy = self.root / "legacy"
-        ambiguous = self.root / "ambiguous"
-        fallback = self.root / "fallback"
-        self.store.accounts.data["accounts"]["default"]["projectRules"] = {
-            "allowedProjects": [str(self.project), str(legacy), str(ambiguous)], "revision": 2}
-        self.store.accounts.data["accounts"][self.other]["projectRules"] = {
-            "allowedProjects": [str(ambiguous)], "revision": 1}
-        self.store.accounts._save()
-        saved = {"id": str(fallback), "path": str(fallback), "name": "Keep me", "created": 15}
-        explicit = {"id": str(self.root / "explicit"), "path": str(self.root / "explicit"),
-                    "name": "Explicit", "created": 10, "accountKey": self.other, "accountRevision": 9}
+    def test_restart_preserves_explicit_projects_without_discovery(self):
+        selected = self.set_account(self.other, 0)
+        unregistered = self.root / "unregistered"
         with self.store.db() as db:
-            db.execute("DELETE FROM runtime_workspace_migrations")
-            for project in (saved, explicit):
-                self.store.put(db, "projects", project)
-            for key, account, created, deleted in (("old", "default", 1, False),
-                                                   ("new", self.other, 2, False),
-                                                   ("deleted", "default", 3, True)):
-                self.store.put(db, "agents", {"id": key, "isLead": True, "cwd": str(self.project),
-                    "accountKey": account, "created": created, "deletedAt": created if deleted else None})
-            self.store.migrate_project_accounts(db)
-        projects = {p["path"]: p for p in self.store.projects()["items"]}
-        self.assertEqual(projects[str(self.project)]["accountKey"], self.other)
-        self.assertEqual(projects[str(legacy)]["accountKey"], "default")
-        self.assertNotIn(str(ambiguous), projects)
-        self.assertEqual(projects[str(fallback)], dict(saved, accountKey="default", accountRevision=1))
-        self.assertEqual(projects[explicit["path"]], explicit)
-        self.store.projects({"action": "remove", "path": str(legacy)})
+            self.store.put(db, "agents", {"id": "lead", "isLead": True, "cwd": str(unregistered),
+                                           "accountKey": self.other, "created": 1})
         restarted = Store(self.root)
-        self.assertNotIn(str(legacy), {p["path"] for p in restarted.projects()["items"]})
-        self.assertNotIn("projectRules", restarted.accounts.get("default"))
+        self.assertEqual(restarted.projects()["items"], [selected])
+        self.assertEqual(restarted.project_account(self.project), self.other)
+        self.assertEqual(restarted.project_account(unregistered), "default")
+        self.store.projects({"action": "remove", "path": str(self.project)})
+        self.assertEqual(Store(self.root).projects()["items"], [])
 
 
 if __name__ == "__main__":

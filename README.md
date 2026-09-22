@@ -293,7 +293,7 @@ python3 -B tests/catalog-recovery-contract.py
 python3 -B tests/tool-request-contract.py
 python3 -B tests/spawn-request-recovery-contract.py
 python3 -B tests/tool-request-http-contract.py
-python3 -B tests/request-recovery-legacy-contract.py
+python3 -B tests/control-requests-contract.py
 python3 -B tests/task-completion-recovery-contract.py
 python3 -B tests/analytics-contract.py
 python3 -B tests/analytics-history-contract.py
@@ -302,14 +302,8 @@ python3 -B tests/runtime-accounts-contract.py
 python3 -B tests/limits-refresh-contract.py
 python3 -B tests/canvas-contract.py
 python3 -B tests/install-cli-contract.py
-python3 -B tests/panel-contract.py
-python3 -B tests/panel-feed-contract.py
-python3 -B tests/panel-feed-monitor-contract.py
-python3 -B tests/ec2-panel-feed-contract.py
-python3 -B tests/ec2-panel-render-contract.py
-python3 -B tests/panel-callback-contract.py
-python3 -B tests/panel-render-contract.py
-python3 -B tests/structured-panel-render-contract.py
+python3 -B tests/live-updates-contract.py
+python3 -B tests/source-contract.py
 python3 -B tests/worker-overview-contract.py
 python3 -B tests/turn-history-contract.py
 python3 -B tests/question-history-contract.py

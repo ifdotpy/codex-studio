@@ -63,9 +63,6 @@ output. Use `orchestration_request` to recover the receipt after a lost reply.
 Use `orchestration_interrupt` with the returned reviewer ID to stop the review.
 Claude agents do not expose this native Codex tool.
 
-Older Codex threads can use `orchestration_send` with `agent_id: "workspace"`
-and JSON in `text`: `{"tool":"orchestration_review","arguments":{"request_id":"review-1"}}`.
-
 Use `orchestration_send` for a new or revised assignment, or an explicit resumption.
 Use `orchestration_interrupt` to stop a
 managed descendant. Stop blocks automatic continuation; do not bypass it with
@@ -82,8 +79,7 @@ Record verified status in your PROGRESS.md file. Do not poll through model calls
 For an optional low-worker alert, the orchestrator saves an `orchestration_watch`
 with `kind=low_workers`, a stable `id`, and a `name`. Set `minimumWorkers` (default 8)
 and `durationMinutes` (default 30). The server counts subagents that start, run, or
-have active command monitors. Queued agents, idle agents without commands, and panel
-feeds do not count. A continuous shortage sends one rule message to the orchestrator.
+have active command monitors. Queued agents and idle agents without commands do not count. A continuous shortage sends one rule message to the orchestrator.
 Recovery to the threshold arms the alert again. Use `pause`, `resume`, or `delete`
 with the same rule ID to control it. Resume starts a new observation period.
 Server restart starts a fresh duration check;
@@ -114,9 +110,6 @@ responses return to voice automatically. Do not repeat them with
 Without active voice, it saves text silently. Its receipt does not confirm exact
 playback. Ending voice stops audio, not the task. Continue unless the user asks
 to stop work. Use chat permission buttons; do not infer approval from playback.
-Older threads can use the workspace fallback with
-`{"tool":"orchestration_speak","arguments":{"text":"..."}}`.
-
 ## Work, complaints, and user tasks
 
 Use the operation that matches the task's next transition. The caller supplies the
@@ -136,7 +129,6 @@ The owner continues from a rejection's `work_decision`, then submits revised evi
 Task events queue the owner when automatic continuation is enabled. Explicit stops
 and native failure holds remain in effect. Inspect the agent's state and receipt
 before an authorized recovery action.
-`orchestration_result action=submit` is an alias for the same evidence submission.
 
 Use `orchestration_task action=list` to find work. It returns brief tasks and
 `nextCursor`. Use `action=get` for one task and `action=history` for earlier evidence.
@@ -158,18 +150,12 @@ The harness delivers complaints and responses automatically. For a complaint ass
 finishing the turn. A separate `action=read` is optional. The user's response to a
 lead complaint arrives automatically as a message.
 
-If the dedicated tool is absent in an older thread, call `orchestration_send` with
-`agent_id="complaint"` and `text` containing the same action object as JSON.
-
 Only the orchestrator can use `orchestration_user_task` to create or change user
 tasks. Subagents request these actions through the orchestrator. Supply completion
 criteria. A user check starts review and notifies the orchestrator. The orchestrator
 accepts the result or returns the task with a reason. The checkbox is not acceptance.
 Native permission requests still use the actual user approval flow when required.
 An orchestrator's response cannot replace required user approval.
-
-Older managed threads can lack recently added tools. Use only fallbacks documented
-in the application's tool descriptions or orchestration contract.
 
 ## State and output
 
@@ -207,8 +193,7 @@ clears the display. Update it when the facts change. No special panel tool,
 command output feed, or model wake is required.
 
 Read [the progress guide](references/panel.md) for the file contract.
-Existing read-only permissions still apply. The old panel tools are retired;
-[the compatibility note](references/panel-feed.md) describes retained legacy data.
+Existing read-only permissions still apply.
 
 ## Worker cleanup
 
@@ -221,18 +206,4 @@ assignments, or unarchived children. `list_archived` supports `limit` and `curso
 `restore` returns a worker paused. Use `orchestration_send` for explicit continuation.
 Do not treat silence as proof of failure. Do not archive a worker to hide an error.
 
-For an existing thread without this native tool, use the workspace compatibility
-call. Its permissions and archive checks are identical:
-
-```javascript
-await tools.orchestration_send({
-  agent_id: "workspace",
-  text: JSON.stringify({
-    tool: "orchestration_context",
-    arguments: { topic: "agent_manage", action: "inspect", agent_id: "WORKER_ID" }
-  })
-})
-```
-
-Replace `action` with `recover`, `archive`, `restore`, or `list_archived` as needed.
 Add `reason` for `archive`. Never replace the worker ID with a thread ID.

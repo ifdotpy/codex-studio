@@ -2,7 +2,6 @@
 """Local release validation never replaces native connections or repeats work."""
 import fcntl
 import hashlib
-import importlib.util
 import json
 import os
 import runpy
@@ -219,33 +218,50 @@ class LiveUpdatesContract(unittest.TestCase):
         self.manager.tick()
         self.assertEqual(self.runtime.attempts, 0)
 
-    def test_real_guarded_patch_preserves_bound_callback_and_database(self):
-        specification = importlib.util.spec_from_file_location(
-            "message_intent_fixture", ROOT / "tests/message-intent-update-contract.py")
-        fixture_module = importlib.util.module_from_spec(specification)
-        specification.loader.exec_module(fixture_module)
-        fixture_type = fixture_module.MessageIntentUpdateContract
-        fixture_type.setUpClass()
-        fixture = fixture_type()
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        (self.scripts / "codex_fixture_update.py").unlink()
-        for name in ("codex_message_intent_update.py", "codex_runtime.py"):
-            (self.scripts / name).write_bytes((ROOT / "scripts" / name).read_bytes())
-        fixture.module.__file__ = str(self.scripts / "codex_runtime.py")
-        fixture.runtime.root = self.root
-        manager = LiveUpdates(fixture.runtime, self.scripts)
-        before = fixture.state()
-        callback = fixture.runtime.transcript
-        self.assertNotIn("requestedDelivery", callback("agent")["items"][0])
-        self.manifest(patch="codex_message_intent_update.py")
-        manager.tick()
-        self.assertEqual(manager.status()["status"], "applied", manager.status())
-        self.assertIs(callback.__func__, before[0])
-        self.assertEqual(callback("agent")["items"][0]["requestedDelivery"], "after_tool")
-        self.assertEqual(fixture.state()[2:], before[2:])
-        manager.tick()
-        self.assertEqual(manager.status()["attempt"], 1)
+    def test_guarded_patch_preserves_bound_callback_and_database(self):
+        from codex_source import signature
+        import sqlite3
+        from types import MethodType
+
+        def transcript(runtime):
+            return dict(runtime.record)
+
+        self.runtime.record = {"message": "existing message"}
+        self.runtime.transcript = MethodType(transcript, self.runtime)
+        callback = self.runtime.transcript
+        self.runtime.connection = sqlite3.connect(self.root / "fixture.sqlite3")
+        self.addCleanup(self.runtime.connection.close)
+        self.runtime.connection.execute("CREATE TABLE history(message TEXT)")
+        self.runtime.connection.execute("INSERT INTO history VALUES (?)", ("existing message",))
+        self.runtime.connection.commit()
+        before = (self.root / "fixture.sqlite3").read_bytes()
+        patch_source = """from codex_source import signature
+
+def desired(runtime):
+    return {**runtime.record, 'requestedDelivery': 'after_tool'}
+
+def apply(runtime):
+    with runtime.lock:
+        function = runtime.transcript.__func__
+        if signature(function) == signature(desired):
+            return {'status': 'already_applied'}
+        if signature(function) != EXPECTED:
+            raise RuntimeError('Unknown live function')
+        function.__code__ = desired.__code__
+        return {'status': 'applied'}
+""".replace("EXPECTED", repr(signature(transcript)))
+        (self.scripts / "codex_fixture_update.py").write_text(patch_source)
+        self.manifest()
+        self.assertNotIn("requestedDelivery", callback())
+        self.manager.tick()
+        self.assertEqual(self.manager.status()["status"], "applied", self.manager.status())
+        self.assertIs(callback.__func__, self.runtime.transcript.__func__)
+        self.assertEqual(callback()["requestedDelivery"], "after_tool")
+        self.assertEqual((self.root / "fixture.sqlite3").read_bytes(), before)
+        self.assertEqual(self.runtime.connection.execute("SELECT message FROM history").fetchall(),
+                         [("existing message",)])
+        self.manager.tick()
+        self.assertEqual(self.manager.status()["attempt"], 1)
 
 
 if __name__ == "__main__":

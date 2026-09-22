@@ -44,7 +44,7 @@ def _blockers(rt, db, a):
     if a.get('inFlight') or a['status'] in {'starting', 'running', 'approval', 'queued'}:
         add('active_turn', [key])
     if a.get('workspaceOperation'): add('workspace_operation', [key])
-    preparation = getattr(rt, 'preparations', {}).get(key)
+    preparation = rt.preparations.get(key)
     if preparation and not preparation['future'].done(): add('thread_preparation', [key])
     add('descendants', [x['id'] for x in rt.records(db, 'agents') if x.get('parentId') == key and not x.get('deletedAt')])
     add('input_delivery', [r[0] for r in db.execute(
@@ -53,14 +53,11 @@ def _blockers(rt, db, a):
     add('background_tasks', [x['id'] for x in active_task_records(db, ('running','starting','pending','unknown'), agent=key)])
     add('questions', [x['id'] for x in rt.records(db, 'requests') if x.get('agent') == key and x.get('status') == 'pending'])
     add('assigned_work', [x['id'] for x in rt.records(db, 'work') if x.get('owner') == key and x.get('status') not in {'accepted','cancelled'}])
-    # Older live servers can lack the request ledger. Their input/turn guards still apply.
-    if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_tool_requests'").fetchone():
-        if hasattr(rt, 'reconcile_tool_requests'):
-            rt.reconcile_tool_requests(db, key)
-        add('tool_requests', [row[0] for row in db.execute(
-            "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
-            "AND (json_extract(record,'$.stage') IN ('queued','running') OR json_extract(record,'$.outcome')='unknown')",
-            (key,))])
+    rt.reconcile_tool_requests(db, key)
+    add('tool_requests', [row[0] for row in db.execute(
+        "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+        "AND (json_extract(record,'$.stage') IN ('queued','running') OR json_extract(record,'$.outcome')='unknown')",
+        (key,))])
     return result
 
 
@@ -77,8 +74,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 blockers = _blockers(rt, db, target)
                 if blockers: return {'status': 'blocked', 'agent': _brief(target), 'blockers': blockers}
                 observed = (target['epoch'], target.get('threadId'), target.get('accountKey', 'default'))
-                connection = getattr(rt, 'connection_ids', {}).get(observed[2])
-                server = getattr(rt, 'servers', {}).get(observed[2])
+                connection = rt.connection_ids.get(observed[2])
+                server = rt.servers.get(observed[2])
         if observed and observed[1]:
             try:
                 if server is None: raise ValueError('Owning account is offline')
@@ -121,13 +118,13 @@ def manage_agent(rt, actor_id, args, epoch=None):
         if action == 'inspect':
             blockers = [] if archived else _blockers(rt, db, target)
             return {'agent': _brief(target), 'canArchive': not archived and not blockers,
-                    'blockers': blockers, 'schedulerAlive': getattr(rt, 'scheduler', None).is_alive() if getattr(rt, 'scheduler', None) else None}
+                    'blockers': blockers, 'schedulerAlive': rt.scheduler.is_alive()}
         if archived: raise ValueError('Restore this worker before recovery')
         request_recovery = (rt.reconcile_tool_requests(db, target['id'])
-                            if action == 'recover' and hasattr(rt, 'reconcile_tool_requests') else None)
+                            if action == 'recover' else None)
         if action == 'archive':
             if (observed != (target['epoch'], target.get('threadId'), target.get('accountKey', 'default'))
-                    or connection != getattr(rt, 'connection_ids', {}).get(observed[2])):
+                    or connection != rt.connection_ids.get(observed[2])):
                 raise ValueError('Worker changed during native inspection; inspect it again')
             reason = args.get('reason', '')
             if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:

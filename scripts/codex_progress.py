@@ -61,7 +61,6 @@ def progress_context(state_dir, agent_id):
         "Use it for the current status, results, and blockers. Update it when these facts change. "
         "An empty or missing file clears the display. This file belongs to this agent, even when agents share a working directory. "
         "It persists across restarts. It does not run scripts, read command output, or wake the model. "
-        "The orchestration_panel and orchestration_panel_feed tools are retired."
     ) + progress_fit_context(state_dir, agent_id)
 
 

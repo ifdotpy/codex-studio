@@ -38,14 +38,14 @@ class ModelCatalogCache:
             entry = self.entries.get(account)
             same = (entry is not None and entry["server"] is server
                     and entry["connectionId"] == connection_id)
-            if same and entry.get("completeVersion") == 2 and entry["expires"] > self.clock():
+            if same and entry["expires"] > self.clock():
                 result = copy.deepcopy(entry["value"])
                 future = None
             else:
                 if not same or entry["future"].done():
                     entry = {"server": server, "connectionId": connection_id,
                              "future": concurrent.futures.Future(),
-                             "expires": 0, "value": None, "completeVersion": 2}
+                             "expires": 0, "value": None}
                     self.entries[account] = entry
                     start = True
                 future = entry["future"]
@@ -118,10 +118,6 @@ class ModelCatalogCache:
                     "The existing metadata request remains available for recovery") from error
         if not current():
             raise CatalogUnavailable("Model catalog connection changed; no workers were created")
-        if entry.get("completeVersion") != 2:
-            # A live update retains a legacy pending read until its exact response.
-            # Its first page cannot serve as a complete catalog after the update.
-            return self.read(account, server, connection_id, current)
         return result
 
 

@@ -12,12 +12,14 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("action", choices=["list", "create", "connect", "disconnect", "read", "post"])
 parser.add_argument("chat", nargs="?")
 parser.add_argument("text", nargs="?")
-parser.add_argument("--owner", default=os.environ.get("CODEX_AGENT_OWNER") or os.environ.get("CODEX_BOARD_OWNER"))
+parser.add_argument("--owner", default=os.environ.get("CODEX_AGENT_OWNER"))
 parser.add_argument("--agent", help="Exact agent identity for a connection or native author")
 parser.add_argument("--id", help="Stable request identity for creation or message retries")
 args = parser.parse_args()
 try:
-    inherited_owner = os.environ.get("CODEX_AGENT_OWNER") or os.environ.get("CODEX_BOARD_OWNER")
+    if os.environ.get("CODEX_BOARD_OWNER"):
+        raise ValueError("CODEX_BOARD_OWNER is unsupported. Start the worker with the current launcher.")
+    inherited_owner = os.environ.get("CODEX_AGENT_OWNER")
     if inherited_owner and args.owner != inherited_owner:
         raise ValueError("The owner must match the inherited worker identity.")
     canvas = Canvas(read_only=args.action in ('read', 'list'))
@@ -26,7 +28,7 @@ try:
     actor = None
     if args.owner or args.agent:
         rows = [t for t in canvas.threads() if (
-            t.get("agentOwner", t.get("boardOwner")) == args.owner if args.owner else t['id'] == args.agent)]
+            t.get("agentOwner") == args.owner if args.owner else t['id'] == args.agent)]
         if len(rows) != 1:
             raise ValueError("The owner must identify one current worker.")
         actor = rows[0]

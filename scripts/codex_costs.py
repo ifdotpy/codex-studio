@@ -1,9 +1,8 @@
 """Local cost estimates from native Codex profile logs.
 
 The account reader uses the isolated helper in cost-scanner. Its upstream
-parser owns token deltas, duplicate/fork reconciliation, and pricing. The
-legacy CostReader command remains available for compatibility. No Runtime
-token totals are added to a scanner report. Estimates are not invoices.
+parser owns token deltas, duplicate/fork reconciliation, and pricing.
+No Runtime token totals are added to a scanner report. Estimates are not invoices.
 """
 
 import copy
@@ -12,7 +11,6 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -58,9 +56,11 @@ def normalize(payload):
     )
     if not row or row.get("error") or row.get("source") != "local":
         raise ValueError("CodexBar did not return local Codex costs.")
-    if row.get("currencyCode", "USD") != "USD":
+    if row.get("currencyCode") != "USD":
         raise ValueError("CodexBar returned an unsupported currency.")
-    coverage = row.get("coverage") if isinstance(row.get("coverage"), dict) else {}
+    if not isinstance(row.get("coverage"), dict) or type(row.get("historyCoverageIsEstablished")) is not bool:
+        raise ValueError("The local cost scanner returned invalid coverage.")
+    coverage = row["coverage"]
     unknown = set()
     for day in row.get("daily") or []:
         if not isinstance(day, dict):
@@ -93,7 +93,7 @@ def normalize(payload):
     )
     today = amount(row.get("sessionCostUSD"))
     month = amount(row.get("last30DaysCostUSD"))
-    # Older versions omit coverage. A claimed zero must not conceal missing rates.
+    # A claimed zero must not conceal missing rates.
     if today == 0 and (not complete or unknown or unpriced):
         today = None
     if month == 0 and (not complete or unknown or unpriced):
@@ -142,32 +142,17 @@ def report_fingerprint(data):
 class CostReader:
     """One local scan at a time. GET requests return without waiting for the CLI."""
 
-    def __init__(self, root, executable=None, interval=120, timeout=90, clock=None, *, environment=None, scan_lock=None, command=None):
+    def __init__(self, root, interval=120, timeout=90, clock=None, *, command, environment=None, scan_lock=None):
+        if not callable(command):
+            raise ValueError("A local cost scanner command is required.")
         self.environment = dict(environment) if environment is not None else None
         self.scan_lock = scan_lock
         self.command = command
         self.path = Path(root) / "local-costs.json"
-        self.executable = executable or shutil.which("codexbar")
-        if not self.executable:
-            self.executable = next(
-                (
-                    p
-                    for p in ("/opt/homebrew/bin/codexbar", "/usr/local/bin/codexbar")
-                    if os.access(p, os.X_OK)
-                ),
-                None,
-            )
-        self.scope = hashlib.sha256(
-            (
-                str(
-                    Path((self.environment or os.environ).get("CODEX_HOME", "~/.codex"))
-                    .expanduser()
-                    .resolve()
-                )
-                + "\0"
-                + str(self.executable)
-            ).encode()
-        ).hexdigest()
+        self.scope = hashlib.sha256(json.dumps([
+            str(Path((self.environment or os.environ).get("CODEX_HOME", "~/.codex")).expanduser().resolve()),
+            str(Path(root).resolve()),
+        ]).encode()).hexdigest()
         self.interval, self.timeout = max(1, interval), timeout
         self.clock = clock or time.time
         self.lock = threading.RLock()
@@ -219,8 +204,7 @@ class CostReader:
             return {**state, "refreshing": self.busy, "stale": stale}
 
     def _refresh(self):
-        scan_lock = getattr(self, "scan_lock", None)
-        command_factory = getattr(self, "command", None)
+        scan_lock = self.scan_lock
         acquired = False
         try:
             if scan_lock is not None:
@@ -230,26 +214,18 @@ class CostReader:
             with self.lock:
                 if self.closed:
                     return
-            command = command_factory() if command_factory is not None else None
-            if not command and not self.executable:
-                raise ValueError("Install CodexBar CLI to read local cost estimates.")
-            # The cost subcommand is local-only. Never invoke usage/login/cookie APIs.
+            command = self.command()
+            if not isinstance(command, list) or not command or any(not isinstance(part, str) for part in command):
+                raise ValueError("The local cost scanner command is invalid.")
             with tempfile.TemporaryFile() as output:
                 with self.lock:
                     if self.closed:
                         return
                     self.process = subprocess.Popen(
-                        command or [
-                            self.executable,
-                            "cost",
-                            "--provider",
-                            "codex",
-                            "--format",
-                            "json",
-                        ],
+                        command,
                         stdout=output,
                         stderr=subprocess.DEVNULL,
-                        env=getattr(self, "environment", None),
+                        env=self.environment,
                     )
                     process = self.process
                 try:
@@ -257,11 +233,11 @@ class CostReader:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
-                    raise ValueError("CodexBar cost scan timed out.") from None
+                    raise ValueError("Local cost scan timed out.") from None
                 if code:
-                    raise ValueError(f"CodexBar cost scan failed (exit {code}).")
+                    raise ValueError(f"Local cost scan failed (exit {code}).")
                 if output.tell() > 32 * 1024 * 1024:
-                    raise ValueError("CodexBar cost report exceeds 32 MiB.")
+                    raise ValueError("Local cost report exceeds 32 MiB.")
                 output.seek(0)
                 data = normalize(json.load(output))
                 fingerprint = report_fingerprint(data)

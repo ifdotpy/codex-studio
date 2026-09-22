@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from codex_panel import PanelMixin, panel_tools
+from codex_panel import PanelMixin
 from codex_progress import MAX_PROGRESS_BYTES, progress_context, progress_path, provision_progress, read_progress
 from codex_work import WorkMixin
 
@@ -27,7 +27,6 @@ class Fixture(PanelMixin):
         self.in_db = False
         self.connection = sqlite3.connect(root / "fixture.sqlite3")
         self.connection.execute("CREATE TABLE IF NOT EXISTS runtime_agents(id TEXT PRIMARY KEY, record TEXT)")
-        self.setup_panels(self.connection)
         self.connection.commit()
 
     @contextmanager
@@ -194,7 +193,9 @@ class ProgressContract(unittest.TestCase):
         self.assertIsNotNone(self.runtime.get_panel("first")["error"])
         self.assertEqual(second.read_text(), "private second")
 
-    def test_read_and_provision_preserve_legacy_rows_receipts_and_active_feed(self):
+    def test_read_and_provision_preserve_archived_panel_records(self):
+        self.runtime.connection.execute("CREATE TABLE runtime_panels(id TEXT PRIMARY KEY, record TEXT)")
+        self.runtime.connection.execute("CREATE TABLE runtime_panel_callbacks(agent TEXT, version INTEGER, callback TEXT, payload TEXT, result TEXT)")
         panel = {"id": "first", "agent": "first", "version": 7, "html": "legacy", "css": "",
                  "callbacks": [{"id": "go", "label": "Go"}],
                  "feed": {"status": "running", "monitorId": "active-monitor"}}
@@ -205,9 +206,8 @@ class ProgressContract(unittest.TestCase):
         provision_progress(self.root, "first").write_text("new markdown")
         self.runtime.get_panel("first")
         self.assertEqual(list(self.runtime.connection.iterdump()), before)
-        self.assertEqual(self.runtime.panel("first")["feed"]["status"], "running")
-        self.assertEqual(self.runtime.panel("first")["submittedCallbacks"], ["go"])
-        self.assertEqual(panel_tools(lambda *args: self.fail("Retired schema constructed"), {}), [])
+        self.assertFalse(hasattr(self.runtime, "panel_callback"))
+        self.assertFalse(hasattr(self.runtime, "panel_feed_action"))
         context = progress_context(self.root, "first")
         self.assertIn(str(progress_path(self.root, "first")), context)
         self.assertIn("ordinary file tools", context)

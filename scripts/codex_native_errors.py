@@ -20,16 +20,8 @@ class NativeRpcError(RuntimeError):
 SUPPORTED_REQUESTS = frozenset({
     'item/commandExecution/requestApproval', 'item/fileChange/requestApproval',
     'item/tool/requestUserInput', 'item/permissions/requestApproval',
-    'mcpServer/elicitation/request', 'execCommandApproval', 'applyPatchApproval',
+    'mcpServer/elicitation/request',
 })
-LEGACY_APPROVAL_REQUESTS = frozenset({'execCommandApproval', 'applyPatchApproval'})
-
-
-def native_request_thread(method, params):
-    field = 'conversationId' if method in LEGACY_APPROVAL_REQUESTS else 'threadId'
-    return params.get(field)
-
-
 NOTICE_METHODS = frozenset({
     'warning', 'guardianWarning', 'configWarning', 'deprecationNotice',
     'mcpServer/startupStatus/updated', 'modelProvider/authRecoveryStarted',
@@ -222,12 +214,11 @@ def consume_native_notification(runtime, message, account_key, connection_id):
             # A resolved request is not evidence that permission was granted.
             for a in agents:
                 for r in runtime.records(db, 'requests'):
-                    if ((r.get('agent') == a['id'] or
-                         (r.get('agent') is None and r.get('method') in LEGACY_APPROVAL_REQUESTS))
+                    if (r.get('agent') == a['id']
                             and r.get('rpcId') == p.get('requestId')
                             and r.get('accountKey', 'default') == account_key
                             and r.get('connectionId') == connection_id
-                            and native_request_thread(r.get('method'), r.get('params', {})) == tid
+                            and r.get('params', {}).get('threadId') == tid
                             and r.get('status') in {'pending', 'answering', 'uncertain', 'blocked'}):
                         r.update(status='resolved', resolvedAt=time.time())
                         runtime.put(db, 'requests', r)

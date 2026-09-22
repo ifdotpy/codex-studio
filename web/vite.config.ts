@@ -60,8 +60,8 @@ export default defineConfig({
           /(?:src|href)="\.\/([^"?#]+)"/g,
         ))
           visit(match[1]);
-        // Only content-addressed assets belong to this build. The panel's separate,
-        // unversioned renderer and every API response stay on the network.
+        // Only content-addressed assets belong to this build.
+        // API responses stay on the network.
         const assets = Object.keys(bundle).filter((name) =>
           /^assets\/.+-[\w-]{8,}\.[\w]+$/.test(name),
         );
@@ -75,35 +75,7 @@ export default defineConfig({
         });
       },
     },
-    {
-      name: "studio-panel-bundle",
-      configureServer(server) {
-        server.middlewares.use(
-          "/assets/panel-ui.js",
-          async (_request, response) => {
-            try {
-              const script = await readFile(
-                new URL("./dist/assets/panel-ui.js", import.meta.url),
-              );
-              response.setHeader("Content-Type", "text/javascript");
-              response.setHeader("Cache-Control", "no-store");
-              response.end(script);
-            } catch {
-              response.statusCode = 503;
-              response.end(
-                "Build the Studio panel renderer before starting the development server.",
-              );
-            }
-          },
-        );
-      },
-    },
   ],
-  build: {
-    rollupOptions: {
-      input: { main: "index.html", panel: "panel-preview.html" },
-    },
-  },
   server: {
     proxy: {
       "/api": {

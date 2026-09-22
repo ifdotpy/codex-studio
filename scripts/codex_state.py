@@ -14,10 +14,8 @@ def outside_claude(path: Path) -> Path:
         raise RuntimeError(f"Codex agent data must be outside .claude: {resolved}")
     return resolved
 
-def state_dir(legacy_key: str | None = None) -> Path:
+def state_dir() -> Path:
     configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
-    if not configured and legacy_key:
-        configured = os.environ.get(legacy_key)
     if configured:
         return outside_claude(Path(configured))
     base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
@@ -62,11 +60,7 @@ def read_threads(root: Path, wave: str | None = None) -> list[dict]:
         for row in records:
             if row.get("wave", file_wave) != file_wave:
                 raise RuntimeError(f"wave identity mismatch: {path}")
-            current = {**row, "wave": file_wave}
-            legacy_owner = current.pop("boardOwner", None)
-            if not current.get("agentOwner") and legacy_owner:
-                current["agentOwner"] = legacy_owner
-            threads.append(current)
+            threads.append({**row, "wave": file_wave})
     return threads
 
 def final_answer(thread_id: str, limit: int) -> str:

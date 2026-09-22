@@ -62,8 +62,8 @@ try {
     posts = [];
   const pending = new Map();
   let holdSession = false;
-  let legacySession = false;
-  const legacyStateReads = [];
+  let missingSession = false;
+  const stateReads = [];
   const sessions = [];
   await context.route("**/check", (route) =>
     route.fulfill({
@@ -77,15 +77,13 @@ try {
     }),
   );
   await context.route("**/api/session", (route) => {
-    if (legacySession)
+    if (missingSession)
       return route.fulfill({ status: 404, json: { error: "Not found" } });
     if (holdSession) sessions.push(route);
     else return route.fulfill({ json: { token: "fixture" } });
   });
   await context.route(/\/api\/state(?:\?.*)?$/, (route) => {
-    legacyStateReads.push(
-      new URL(route.request().url()).searchParams.get("view"),
-    );
+    stateReads.push(new URL(route.request().url()).searchParams.get("view"));
     return route.fulfill({ json: { token: "fixture" } });
   });
   await context.route("**/api/messages", (route) => {
@@ -95,6 +93,10 @@ try {
       const routes = pending.get(body.id) || [];
       routes.push(route);
       pending.set(body.id, routes);
+    } else if (body.id === "statusless-receipt") {
+      return route.fulfill({
+        json: { id: body.id, room: body.room, text: body.text, deliveries: {} },
+      });
     } else return route.fulfill({ json: { id: body.id, status: "delivered" } });
   });
   const mount = async (page) => {
@@ -376,15 +378,30 @@ try {
     async () => (await stored(first, orderedSecond.id)).status === "accepted",
   );
   await first.evaluate(() => window.reactRoot.unmount());
-  // Older servers obtain credentials through the small chat snapshot.
-  legacySession = true;
-  await start(first, body("legacy-session-send"));
-  assert.equal((await settle(first)).status, "delivered");
-  assert.deepEqual(legacyStateReads, ["chat"]);
+  // A missing current endpoint cannot silently obtain credentials elsewhere.
+  missingSession = true;
+  const failure = await first.evaluate(async (value) => {
+    try {
+      await window.send.durableSend(value);
+    } catch (error) {
+      return error.message;
+    }
+  }, body("missing-session-send"));
+  assert.match(failure, /Not found/);
+  assert.equal((await stored(first, "missing-session-send")).status, "failed");
+  assert.deepEqual(stateReads, []);
   assert.deepEqual(
-    posts.filter((post) => post.id === "legacy-session-send"),
-    [body("legacy-session-send")],
+    posts.filter((post) => post.id === "missing-session-send"),
+    [],
   );
+  missingSession = false;
+  await start(first, body("statusless-receipt"));
+  assert.equal((await settle(first)).queued, true);
+  const unmatched = await stored(first, "statusless-receipt");
+  assert.equal(unmatched.status, "queued");
+  assert.equal(unmatched.attempted, true);
+  assert.match(unmatched.error, /does not match/);
+  assert.equal(unmatched.receipt, undefined);
   assert.deepEqual(errors, []);
   console.log(
     "PASS: offline persistence, immediate callback, reconnect, cancellation boundary, concurrent tabs, late receipt/error guards, immutable IDs, stalled HTTP retry, ordered parallel chat recovery",

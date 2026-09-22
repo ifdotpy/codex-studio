@@ -23,6 +23,12 @@ class TransferContract(f.AccountContracts):
         self.store = transfer_store(self.runtime)
         self.lead_agent = self.lead()
         self.set_agent(self.lead_agent['id'], status='complete', inFlight=False, threadId='native-source', turnId=None)
+        # The fake fork copies this exact current catalog from its source.
+        from codex_native_tools import mark_current
+        with self.runtime.lock, self.runtime.db() as db:
+            source = self.runtime.agent(self.lead_agent['id'], db)
+            mark_current(source, self.runtime.tool_definitions(source))
+            self.runtime.put(db, 'agents', source)
         self.target_server = self.runtime.connect(self.other_key)
         self.source_server = self.runtime.connect('default')
         self.pending = []
@@ -125,6 +131,81 @@ class TransferContract(f.AccountContracts):
     def complete_fork(self, index=0):
         self.until(lambda:not self.store.running)
         self.pending[index][2].set_result({'thread': {'id': 'target-thread-'+str(index)}, 'model':'gpt-6-astra'})
+
+    def test_fork_preserves_only_a_verified_current_tool_catalog(self):
+        from codex_native_tools import needs_refresh
+        self.set_agent(self.lead_agent['id'], nativeToolCatalog={'threadId': 'native-source', 'digest': 'old'})
+        self.start_transfer()
+        self.tick()
+        self.until(lambda: len(self.pending) == 1)
+        self.complete_fork()
+        target = self.runtime.agent(self.lead_agent['id'])
+        self.assertTrue(needs_refresh(target, self.runtime.tool_definitions(target)))
+
+    def test_account_catalog_reservation_blocks_source_and_destination(self):
+        op = self.start_transfer()
+        for account in ('default', self.other_key):
+            self.runtime._native_tools_refreshing = {account}
+            self.tick()
+            self.assertEqual(self.pending, [])
+            member = self.receipt(op['id'])['members'][self.lead_agent['id']]
+            self.assertEqual(member['waiting'], 'Waiting for the account tool catalog update')
+        self.runtime._native_tools_refreshing.clear()
+        self.tick()
+        self.until(lambda: len(self.pending) == 1)
+        self.complete_fork()
+        from codex_native_tools import needs_refresh
+        target = self.runtime.agent(self.lead_agent['id'])
+        self.assertFalse(needs_refresh(target, self.runtime.tool_definitions(target)))
+
+    def test_destination_catalog_reservation_is_rechecked_before_submit(self):
+        op = self.start_transfer()
+        def reserve_destination(*_):
+            with self.runtime.lock:
+                self.runtime._native_tools_refreshing = {self.other_key}
+            return Path('/fixture/import.jsonl')
+        with patch.object(self.store, 'copy_history', side_effect=reserve_destination):
+            self.tick()
+            self.until(lambda: not self.store.running)
+        self.assertEqual(self.pending, [])
+        member = self.receipt(op['id'])['members'][self.lead_agent['id']]
+        self.assertEqual(member['phase'], 'waiting')
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime._native_tools_refreshing.clear()
+            saved = self.store.get(db, op['id'])
+            saved['members'][self.lead_agent['id']]['nextCheck'] = 0
+            self.store.save(db, saved)
+        self.tick()
+        self.until(lambda: len(self.pending) == 1)
+        self.complete_fork()
+
+    def test_deleted_unsent_member_releases_only_its_transfer_pointer(self):
+        op = self.start_transfer()
+        aid = self.lead_agent['id']
+        before = self.set_agent(aid, deletedAt=time.time(), status='paused', autoWake=False)
+        self.tick()
+        after = self.runtime.agent(aid)
+        self.assertNotIn('accountTransferId', after)
+        for field in ('accountKey', 'threadId', 'epoch', 'autoWake', 'status', 'deletedAt'):
+            self.assertEqual(after[field], before[field])
+        self.assertEqual(self.pending, [])
+        self.assertEqual(self.receipt(op['id'])['status'], 'completed')
+        self.assertEqual(after['accountTransfer']['id'], op['id'])
+        self.assertEqual(after['accountTransfer']['status'], 'completed')
+
+    def test_deleted_member_preserves_unknown_transfer_receipt(self):
+        op = self.start_transfer()
+        aid = self.lead_agent['id']
+        self.set_agent(aid, deletedAt=time.time(), status='paused', autoWake=False)
+        with self.runtime.lock, self.runtime.db() as db:
+            saved = self.store.get(db, op['id'])
+            saved['members'][aid].update(phase='unknown', nativeMethod='thread/fork', submittedAt=time.time())
+            self.store.save(db, saved)
+        self.tick()
+        self.assertEqual(self.runtime.agent(aid)['accountTransferId'], op['id'])
+        self.assertEqual(self.receipt(op['id'])['members'][aid]['phase'], 'unknown')
+        self.assertEqual(self.receipt(op['id'])['status'], 'pending')
+        self.assertEqual(self.pending, [])
 
     def test_native_queue_blocks_transfer_until_empty(self):
         original = self.source_server.call
@@ -438,7 +519,7 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.runtime.agent(worker['id'])['accountKey'],'default')
         self.assertEqual(self.receipt(op['id'])['status'],'completed')
 
-    def test_existing_unsent_subagent_member_is_pruned(self):
+    def test_deployment_removes_only_unsent_subagent_member(self):
         op = self.start_transfer()
         worker = self.runtime.create({'name': 'Legacy worker', 'prompt': 'Task'},
                                      parent=self.lead_agent['id'], defer=True)
@@ -453,6 +534,10 @@ class TransferContract(f.AccountContracts):
         self.set_agent(self.lead_agent['id'], accountTransfer={
             'id': 'newer-operation', 'status': 'cancelled',
         })
+        from fixtures.current_cleanup_state import convert_unsent_transfer_members
+        with self.runtime.lock, self.runtime.db() as db:
+            self.assertEqual(convert_unsent_transfer_members(self.runtime, db), 1)
+            self.assertEqual(convert_unsent_transfer_members(self.runtime, db), 0)
         self.tick()
         receipt = self.receipt(op['id'])
         self.assertNotIn(worker['id'], receipt['members'])

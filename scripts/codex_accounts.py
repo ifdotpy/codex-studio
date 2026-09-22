@@ -133,7 +133,7 @@ class AccountStore:
         with self.lock:
             row = self._row(key)
             if row.get("duplicateOf"):
-                return {k: v for k, v in row.items() if not k.startswith("_") and k != "projectRules"}
+                return {k: v for k, v in row.items() if not k.startswith("_")}
             if row.get("provider") == "claude":
                 from codex_claude import auth_metadata as claude_auth
                 metadata = claude_auth(row.get("claudeOptions"))
@@ -159,30 +159,11 @@ class AccountStore:
                 row.update(metadata)
                 if metadata["status"] != "error":
                     row.pop("error", None)
-            return {k: v for k, v in row.items() if not k.startswith("_") and k != "projectRules"}
+            return {k: v for k, v in row.items() if not k.startswith("_")}
 
     def get(self, key):
         with self.lock:
             return self.refresh(key)
-
-    def legacy_project_defaults(self):
-        """Read old directory rules only as migration hints, never permissions."""
-        with self.lock:
-            candidates = {}
-            for key, row in self.data["accounts"].items():
-                rules = row.get("projectRules") or {}
-                allowed = rules.get("allowedProjects")
-                if not isinstance(allowed, list):
-                    continue
-                identity = row.get("accountId") or row.get("_credentialIdentity") or key
-                for value in allowed:
-                    if isinstance(value, str) and value.strip():
-                        path = str(Path(value).expanduser().resolve())
-                        candidates.setdefault(path, {}).setdefault(identity, key)
-            return {
-                path: next(iter(owners.values()))
-                for path, owners in candidates.items() if len(owners) == 1
-            }
 
     def home(self, key):
         row = self.get(key)

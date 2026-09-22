@@ -164,6 +164,27 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual((self.case / "cache-a" / "model-pricing" / "models-dev-v1.json").exists(), installed_pricing.exists())
         self.assertTrue((self.case / "cache-b" / "cost-usage" / "codex-v8.json").exists())
 
+    def test_old_cache_producer_is_rejected_and_native_logs_are_rescanned(self):
+        path = self.session_path("home", "one")
+        self.append_rows(path, self.rows("one", "gpt-5", 1000, 1000))
+        self.assertEqual(self.scan("home", "cache")["sessionTokens"], 2000)
+        cache_path = self.case / "cache" / "cost-usage" / "codex-v8.json"
+        cache = json.loads(cache_path.read_text())
+        producer = cache["producerKey"]
+        cache["days"][self.day]["gpt-5"] = [9000, 0, 9000]
+        for usage in cache["files"].values():
+            usage["days"][self.day]["gpt-5"] = [9000, 0, 9000]
+        cache_path.write_text(json.dumps(cache))
+        # The same valid producer keeps the existing incremental cache.
+        self.assertEqual(self.scan("home", "cache")["sessionTokens"], 18000)
+        for old_producer in ["codex:cu:p3c27f997569eb3c5", "unknown-parser"]:
+            cache["producerKey"] = old_producer
+            cache_path.write_text(json.dumps(cache))
+            self.assertEqual(self.scan("home", "cache")["sessionTokens"], 2000)
+            refreshed = json.loads(cache_path.read_text())
+            self.assertEqual(refreshed["producerKey"], producer)
+            self.assertEqual(refreshed["days"][self.day]["gpt-5"], [1000, 0, 1000])
+
     def test_changed_log_uses_persistent_incremental_cache(self):
         path = self.session_path("home", "one")
         self.append_rows(path, self.rows("one", "gpt-5", 1000, 1000))

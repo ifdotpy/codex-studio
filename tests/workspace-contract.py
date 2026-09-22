@@ -590,7 +590,7 @@ class WorkspaceContract(unittest.TestCase):
         peer, outsider = self.worker(lead), self.worker(lead, "Outsider")
         secret = self.work(other, "ultrasecret work")
         result = self.tool(
-            peer, "orchestration_result", {"action": "read", "task_id": secret["id"]}
+            peer, "orchestration_task", {"action": "get", "task_id": secret["id"]}
         )
         self.assertFalse(result["success"])
         self.runtime.chat_message(

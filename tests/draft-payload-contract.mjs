@@ -1,4 +1,4 @@
-// New clients must also work with the old server's byte comparison.
+// Conflict equality and journal removal require canonical draft bytes.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { encodeDraftPayload } from "../web/src/sync/draftPayload.ts";
@@ -41,5 +41,5 @@ for (const value of [
   );
 }
 console.log(
-  "Draft payload compatibility: PASS (edit, clear, alternatives, nested values, Unicode, old server encoding).",
+  "Draft payload encoding: PASS (edit, clear, alternatives, nested values, Unicode, canonical server encoding).",
 );

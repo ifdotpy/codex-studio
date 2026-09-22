@@ -135,23 +135,6 @@ class AccountsContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.home("default")
 
-    def test_old_directory_rules_are_only_migration_hints(self):
-        self.store.data["accounts"]["default"]["projectRules"] = {
-            "allowedProjects": [str(self.root / "old-project")], "revision": 3,
-        }
-        self.store._save()
-        self.assertNotIn("projectRules", self.store.get("default"))
-        self.assertNotIn("projectRules", self.store.refresh("default"))
-        self.assertEqual(self.store.legacy_project_defaults(), {str((self.root / "old-project").resolve()): "default"})
-        self.assertEqual(self.store.home("default"), self.primary.resolve())
-        other = self.home / "other"
-        auth(other, "account-two")
-        key = self.store.register(str(other))
-        self.store.data["accounts"][key]["projectRules"] = {
-            "allowedProjects": [str(self.root / "old-project")], "revision": 1,
-        }
-        self.assertEqual(self.store.legacy_project_defaults(), {})
-
     def test_login_uses_new_home_and_reuses_request_receipt(self):
         (self.primary / "config.toml").write_text(
             'model = "gpt-5.6-sol"\nforced_chatgpt_account_id = "account-one"\n[features]\ntime_awareness = true\n'

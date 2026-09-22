@@ -63,19 +63,6 @@ def work_tools(tool, text):
             ["action"],
         ),
         tool(
-            "orchestration_result",
-            "Submit evidence for lead review, or read earlier evidence. submit saves result, checks, revision, and files; sets the task to review; and notifies the lead. The lead records acceptance or required corrections with orchestration_task.",
-            {
-                "action": {"type": "string", "enum": ["submit", "read"]},
-                "task_id": text,
-                "result": text,
-                "checks": text,
-                "revision": text,
-                "files": {"type": "array", "items": text},
-            },
-            ["action", "task_id"],
-        ),
-        tool(
             "orchestration_search",
             "Search your own messages and tool results, plus shared team work and complaints. Private rooms remain visible only to their participants. Results include exact record references.",
             {"query": text, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},

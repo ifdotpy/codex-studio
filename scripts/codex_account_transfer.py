@@ -84,10 +84,6 @@ class AccountTransfers:
 
     def check_destination(self, actor, target, db=None):
         self.rt.accounts.home(target)  # Validate the registered account identity.
-        # Older Studio versions also have account/project admission rules.
-        checker = getattr(self.rt, 'check_account_project', None)
-        if checker:
-            checker({**actor, 'accountKey': target}, db)
 
     def settings_snapshot(self, agent):
         return {**self.rt.preparation_settings(agent),
@@ -220,27 +216,6 @@ class AccountTransfers:
             return
         rt = self.rt
         with rt.lock, rt.db() as db:
-            def prune_unsent(op):
-                dirty = False
-                for aid, member in list(op['members'].items()):
-                    # Do not continue an older unsent subagent transfer after
-                    # the migration boundary changes to orchestrator only.
-                    if (aid == op['leadId'] or member['phase'] != 'waiting'
-                            or member.get('result')):
-                        continue
-                    a = rt.agent(aid, db)
-                    if a.get('accountTransferId') == op['id']:
-                        a.pop('accountTransferId', None)
-                        rt.put(db, 'agents', a)
-                    del op['members'][aid]
-                    dirty = True
-                return dirty
-
-            # Clean every pending operation. The lead may point to a newer
-            # operation, so active-agent discovery alone misses old records.
-            for op in rt.records(db, 'account_transfers'):
-                if op.get('status') == 'pending' and prune_unsent(op):
-                    self.save(db, op)
             operations = set()
             for a in agents:
                 if not a.get('isLead'):
@@ -278,8 +253,13 @@ class AccountTransfers:
                 dirty = before != len(op['members'])
                 for aid, member in list(op['members'].items()):
                     a = rt.agent(aid, db)
-                    if a.get('deletedAt') and member['phase'] not in {'submitted', 'unknown', 'ready'}:
+                    if (a.get('deletedAt') and member['phase'] not in {'submitted', 'unknown', 'ready'}
+                            and aid not in self.running and (key, aid) not in self.futures):
                         member.update(phase='completed', waiting=None)
+                        if (a.get('accountTransferId') == key
+                                and not any(member.get(field) for field in ('submittedAt', 'nativeMethod', 'nativeParams', 'result'))):
+                            a.pop('accountTransferId')
+                            rt.put(db, 'agents', a)
                         dirty = True
                     if member['phase'] not in {'waiting', 'ready'} or aid in self.running:
                         continue
@@ -313,6 +293,12 @@ class AccountTransfers:
     def local_blocker(self, db, a):
         rt = self.rt
         from codex_context_repair import blocked
+        from codex_native_tools import account_reserved
+        accounts = {a.get('accountKey', 'default')}
+        if a.get('accountTransferId'):
+            accounts.add(self.get(db, a['accountTransferId'])['targetAccountKey'])
+        if any(account_reserved(rt, key) for key in accounts):
+            return 'Waiting for the account tool catalog update'
         if blocked(a):
             return "Waiting for the exact context repair receipt"
         if a.get('inFlight') or a['status'] in ACTIVE:
@@ -324,7 +310,7 @@ class AccountTransfers:
             return 'Waiting for the native thread receipt'
         # A previous backend cannot still deliver its RPC. Carry its uncertainty
         # unchanged; it is not an active operation and must never be replayed.
-        boot = getattr(rt, 'started_at', 0)
+        boot = rt.started_at
         if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND "
                       "(status IN ('reserved','dispatching') OR (status='uncertain' AND created>=?)) LIMIT 1",
                       (a['id'], a['epoch'], boot)).fetchone():
@@ -333,16 +319,14 @@ class AccountTransfers:
             if db.execute(f"SELECT 1 FROM runtime_{table} WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status') IN ({','.join('?' for _ in statuses)}) LIMIT 1",
                           (a['id'], *statuses)).fetchone():
                 return 'Waiting for background work or a tool response'
-        if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_tool_requests'").fetchone():
-            rt.reconcile_tool_requests(db, a['id'])
-            if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? AND "
-                          "(json_extract(record,'$.stage') IN ('queued','running') OR "
-                          "(json_extract(record,'$.outcome')='unknown' AND coalesce(json_extract(record,'$.created'),?)>=?)) LIMIT 1",
-                          (a['id'], boot, boot)).fetchone():
-                return 'Waiting for the tool receipt'
+        rt.reconcile_tool_requests(db, a['id'])
+        if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? AND "
+                      "(json_extract(record,'$.stage') IN ('queued','running') OR "
+                      "(json_extract(record,'$.outcome')='unknown' AND coalesce(json_extract(record,'$.created'),?)>=?)) LIMIT 1",
+                      (a['id'], boot, boot)).fetchone():
+            return 'Waiting for the tool receipt'
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='voice_sessions'").fetchone():
-            columns = {r[1] for r in db.execute('PRAGMA table_info(voice_sessions)')}
-            if 'state' in columns and db.execute('SELECT 1 FROM voice_sessions WHERE agent=? AND state IS NOT NULL AND ended IS NULL', (a['id'],)).fetchone():
+            if db.execute('SELECT 1 FROM voice_sessions WHERE agent=? AND state IS NOT NULL AND ended IS NULL', (a['id'],)).fetchone():
                 return 'End voice to transfer this agent'
         return None
 
@@ -580,10 +564,6 @@ class AccountTransfers:
 
     def assert_settings(self, member, agent):
         expected = self.settings_snapshot(agent)
-        # Receipts saved by older versions have no provider/defaults snapshot.
-        for field in ('provider', 'workerDefaults', 'claudeOptions'):
-            if field not in member['settings']:
-                expected.pop(field, None)
         if (expected != member['settings']
                 or agent.get('pendingSettings') != member.get('pendingSettings')
                 or agent.get('pendingSettingsAccountKey') != member.get('pendingSettingsAccountKey')):
@@ -660,6 +640,11 @@ class AccountTransfers:
         resume_failed = a.get('autoWake') and a.get('status') in {'failed', 'interrupted'}
         source_provider = rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')
         target_provider = rt.accounts.get(target).get('provider', 'codex')
+        from codex_native_tools import digest, needs_refresh, mark_current
+        inherited_catalog = (a.get('nativeToolCatalog')
+                             if source_provider == target_provider == 'codex'
+                             and m.get('nativeMethod') == 'thread/fork'
+                             and not needs_refresh(a, rt.tool_definitions(a)) else None)
         history = {'transferId': op['id'], 'accountKey': a.get('accountKey', 'default'),
                    'threadId': a.get('threadId'), 'provider': source_provider,
                    'targetAccountKey': target, 'targetProvider': target_provider,
@@ -674,6 +659,8 @@ class AccountTransfers:
         a.update(accountKey=target, threadId=result['thread']['id'], turnId=None,
                  sandbox=result.get('sandbox', a.get('sandbox')), approvalPolicy=result.get('approvalPolicy', a.get('approvalPolicy')))
         a.update(m['targetSettings'])
+        if inherited_catalog and inherited_catalog['digest'] == digest(rt.tool_definitions(a)):
+            mark_current(a, rt.tool_definitions(a))
         if source_provider != target_provider:
             a.pop('claudeOptions', None)
             a.pop('pendingSettings', None)

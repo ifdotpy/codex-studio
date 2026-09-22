@@ -6,11 +6,7 @@ import {
   type SetStateAction,
 } from "react";
 import { saved, save } from "../api";
-import {
-  startDraftReplication,
-  syncDatabase,
-  UnsupportedSyncError,
-} from "./client";
+import { startDraftReplication, syncDatabase } from "./client";
 
 import { encodeDraftPayload } from "./draftPayload";
 import {
@@ -39,7 +35,7 @@ if (!device) {
 }
 export function useSyncedDrafts() {
   const storageKey = useRef(
-    `codex-drafts:${saved("codex-sync-workspace", "legacy")}`,
+    `codex-drafts:${saved("codex-sync-workspace", "unassigned")}`,
   );
   const [writer] = useState(() => crypto.randomUUID());
   const [recovery] = useState(() => {
@@ -56,17 +52,12 @@ export function useSyncedDrafts() {
     new Map(recovery.entries.map((entry) => [entry.key, entry])),
   );
   const [drafts, update] = useState<Drafts>(() => {
-    const next: Drafts = saved(
-      storageKey.current,
-      storageKey.current.endsWith(":legacy")
-        ? saved("codex-agent-drafts", {})
-        : {},
-    );
+    const next: Drafts = saved(storageKey.current, {});
     for (const entry of recovery.entries)
       next[entry.version.session] = entry.version.text;
     return next;
   });
-  const importLegacy = useRef(storageKey.current.endsWith(":legacy"));
+  const importUnassigned = useRef(storageKey.current.endsWith(":unassigned"));
   const current = useRef(drafts);
   const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
   const conflictValues = useRef<DraftVersion[]>([]);
@@ -194,7 +185,6 @@ export function useSyncedDrafts() {
     [reconcile],
   );
   const flushing = useRef<Promise<void> | null>(null);
-  const unsupported = useRef(false);
   const pendingEdits = useRef(
     new Map(
       recovery.entries.map(({ version }) => [version.session, version.updated]),
@@ -220,9 +210,11 @@ export function useSyncedDrafts() {
     const targetKey = `codex-drafts:${workspaceId}`;
     if (storageKey.current === targetKey) return;
     const previousKey = storageKey.current;
-    const legacy = previousKey.endsWith(":legacy");
-    const next: Drafts = legacy ? { ...current.current } : saved(targetKey, {});
-    if (legacy) {
+    const unassigned = previousKey.endsWith(":unassigned");
+    const next: Drafts = unassigned
+      ? { ...current.current }
+      : saved(targetKey, {});
+    if (unassigned) {
       for (const entry of entries()) {
         const moved = {
           ...entry,
@@ -246,7 +238,6 @@ export function useSyncedDrafts() {
     save(targetKey, next);
   }, []);
   const flushDrafts = useCallback(() => {
-    if (unsupported.current) return Promise.resolve();
     if (flushing.current) return flushing.current;
     flushing.current = (async () => {
       let connecting = false;
@@ -304,8 +295,7 @@ export function useSyncedDrafts() {
         reportLocalError("");
         reconcile(decodeDrafts(await db.drafts.find().exec()));
       } catch (error) {
-        if (error instanceof UnsupportedSyncError) unsupported.current = true;
-        else if (connecting) reportSyncFailure(true);
+        if (connecting) reportSyncFailure(true);
         else
           reportLocalError(
             "Draft changes could not be saved for synchronization. Keep this chat open.",
@@ -394,7 +384,7 @@ export function useSyncedDrafts() {
     let starting = false,
       started = false;
     const start = () => {
-      if (stopped || starting || started || unsupported.current) return;
+      if (stopped || starting || started) return;
       clearTimeout(retry);
       starting = true;
       void syncDatabase()
@@ -403,16 +393,15 @@ export function useSyncedDrafts() {
           adoptScope(workspaceId);
           await flushDrafts();
           cancel = await startDraftReplication((e) => {
-            if (!stopped && !(e instanceof UnsupportedSyncError))
-              reportSyncFailure(e !== null);
+            if (!stopped) reportSyncFailure(e !== null);
           });
           if (stopped) {
             cancel();
             return;
           }
-          // Import the previous browser drafts without replacing a replicated branch.
+          // Adopt drafts made before this device learns its workspace identity.
           for (const [session, text] of Object.entries(
-            importLegacy.current ? current.current : {},
+            importUnassigned.current ? current.current : {},
           )) {
             const id = `${device}:${session}`;
             if (!(await db.drafts.findOne(id).exec()))
@@ -434,11 +423,10 @@ export function useSyncedDrafts() {
           });
           unsubscribe = () => sub.unsubscribe();
           started = true;
-          importLegacy.current = false;
+          importUnassigned.current = false;
         })
         .catch((e) => {
-          if (e instanceof UnsupportedSyncError) unsupported.current = true;
-          if (!stopped && !(e instanceof UnsupportedSyncError)) {
+          if (!stopped) {
             reportSyncFailure(true);
             unsubscribe();
             cancel();

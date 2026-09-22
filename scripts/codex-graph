@@ -16,7 +16,9 @@ parser.add_argument('--thread', help='Local Codex thread identity, when the host
 parser.add_argument('--status', default='unknown', choices=['unknown', 'running', 'waiting', 'completed', 'blocked', 'failed', 'interrupted'])
 args = parser.parse_args()
 try:
-    if os.environ.get("CODEX_AGENT_OWNER") or os.environ.get("CODEX_BOARD_OWNER"):
+    if os.environ.get("CODEX_BOARD_OWNER"):
+        raise ValueError("CODEX_BOARD_OWNER is unsupported. Start the worker with the current launcher.")
+    if os.environ.get("CODEX_AGENT_OWNER"):
         raise ValueError("Agent sessions must use their team runtime tools. The graph CLI is for the user.")
     canvas = Canvas(read_only=args.action == 'list')
     if args.action == 'list':

@@ -347,54 +347,58 @@ class NativeErrorContract(unittest.TestCase):
         self.assertEqual(next(r for r in records if r['rpcId'] == 'later-approval')['status'], 'blocked')
         self.assertEqual(len(self.server.responses), replies)
 
-    def test_legacy_approval_identity_and_unblocked_response(self):
+    def test_deprecated_approval_requests_are_rejected_without_pending_permission(self):
         for method in ('execCommandApproval', 'applyPatchApproval'):
-            request = {'id': method, 'method': method, 'params': {
-                'conversationId': self.a['threadId'], 'threadId': 'ignored-wrong-field', 'callId': method}}
-            self.runtime.request(request, 'default', self.connection)
-            with self.runtime.db() as db:
-                record = next(r for r in self.runtime.records(db, 'requests') if r['rpcId'] == method)
-            self.assertEqual(record['agent'], self.key)
-            self.assertEqual(self.runtime.answer(record['id'], {'decision': 'accept'})['status'], 'answered')
-            self.assertEqual(self.server.responses[-1], {'id': method, 'result': {'decision': 'approved'}})
+            with self.subTest(method=method):
+                self.runtime.request({'id': method, 'method': method, 'params': {
+                    'conversationId': self.a['threadId'], 'threadId': self.a['threadId'],
+                    'callId': method}}, 'default', self.connection)
+                self.assertEqual(self.server.responses[-1]['id'], method)
+                self.assertEqual(self.server.responses[-1]['error']['code'], -32601)
+                self.assertNotIn('result', self.server.responses[-1])
+                with self.runtime.db() as db:
+                    self.assertFalse(any(r['rpcId'] == method for r in self.runtime.records(db, 'requests')))
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'running')
 
-    def test_legacy_approvals_before_and_after_policy_block_do_not_reply(self):
-        records = []
+    def test_deprecated_saved_approval_cannot_be_answered_or_spoken(self):
+        from codex_voice import VoiceStore
+        voice = VoiceStore(self.runtime)
+        replies = list(self.server.responses)
         for method in ('execCommandApproval', 'applyPatchApproval'):
-            self.runtime.request({'id': method, 'method': method, 'params': {
-                'conversationId': self.a['threadId'], 'callId': method}}, 'default', self.connection)
+            record = {'id': method, 'rpcId': method, 'method': method, 'agent': self.key,
+                      'status': 'pending', 'accountKey': 'default', 'connectionId': self.connection,
+                      'params': {'conversationId': self.a['threadId']}}
             with self.runtime.db() as db:
-                record = next(r for r in self.runtime.records(db, 'requests') if r['rpcId'] == method)
-                self.assertEqual(record['agent'], self.key)
-                if method == 'applyPatchApproval':
-                    # An existing record can predate correct legacy identity binding.
-                    record['agent'] = None
-                    self.runtime.put(db, 'requests', record)
-                records.append(record)
-        self.send('error', error=self.policy_error(), willRetry=False)
-        responses = list(self.server.responses)
-        for record in records:
-            with self.assertRaisesRegex(ValueError, 'another chat'):
-                self.runtime.answer(record['id'], {'decision': 'accept'})
-            self.runtime.request({'id': 'later-' + record['rpcId'], 'method': record['method'],
-                                  'params': record['params']}, 'default', self.connection)
-        with self.runtime.db() as db:
-            late = [r for r in self.runtime.records(db, 'requests') if str(r['rpcId']).startswith('later-')]
-        self.assertEqual(len(late), 2)
-        self.assertTrue(all(r['status'] == 'blocked' and r['agent'] == self.key for r in late))
-        self.assertEqual(self.server.responses, responses)
+                self.runtime.put(db, 'requests', record)
+            with self.assertRaisesRegex(ValueError, 'Unsupported request type'):
+                self.runtime.answer(method, {'decision': 'accept'})
+            self.assertNotIn(method, [r['id'] for r in voice.approvals(self.key)['requests']])
+            with self.assertRaisesRegex(ValueError, 'no longer pending'):
+                voice.approval_speech(self.key, method)
+        self.assertEqual(self.server.responses, replies)
 
-    def test_native_resolution_uses_legacy_conversation_identity(self):
-        for method in ('execCommandApproval', 'applyPatchApproval'):
+    def test_native_approvals_preserve_current_decisions(self):
+        for method in ('item/commandExecution/requestApproval', 'item/fileChange/requestApproval'):
+            for decision in ('accept', 'decline', 'cancel'):
+                with self.subTest(method=method, decision=decision):
+                    rpc_id = method + ':' + decision
+                    self.runtime.request({'id': rpc_id, 'method': method, 'params': {
+                        'threadId': self.a['threadId'], 'turnId': self.turn}}, 'default', self.connection)
+                    with self.runtime.db() as db:
+                        record = next(r for r in self.runtime.records(db, 'requests') if r['rpcId'] == rpc_id)
+                    self.assertEqual(record['agent'], self.key)
+                    self.assertEqual(self.runtime.answer(record['id'], {'decision': decision})['status'], 'answered')
+                    self.assertEqual(self.server.responses[-1], {'id': rpc_id, 'result': {'decision': decision}})
+
+    def test_native_resolution_requires_exact_thread_and_request(self):
+        for method in ('item/commandExecution/requestApproval', 'item/fileChange/requestApproval'):
             self.runtime.request({'id': method, 'method': method, 'params': {
-                'conversationId': self.a['threadId'], 'callId': method}}, 'default', self.connection)
+                'threadId': self.a['threadId'], 'turnId': self.turn}}, 'default', self.connection)
             self.send('serverRequest/resolved', threadId='unrelated', requestId=method)
+            self.send('serverRequest/resolved', requestId='unrelated')
             with self.runtime.db() as db:
                 record = next(r for r in self.runtime.records(db, 'requests') if r['rpcId'] == method)
                 self.assertEqual(record['status'], 'pending')
-                if method == 'applyPatchApproval':
-                    record['agent'] = None
-                    self.runtime.put(db, 'requests', record)
             responses = list(self.server.responses)
             self.send('serverRequest/resolved', requestId=method)
             with self.runtime.db() as db:

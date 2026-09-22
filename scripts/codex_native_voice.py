@@ -10,10 +10,6 @@ class NativeVoice:
         self.native_lock = threading.RLock()
         self.connections = {}
         with self.runtime.db() as db:
-            columns = {r[1] for r in db.execute("PRAGMA table_info(voice_sessions)")}
-            for name in ("native_thread", "account_key", "connection_id", "state", "error"):
-                if name not in columns:
-                    db.execute(f"ALTER TABLE voice_sessions ADD COLUMN {name} TEXT")
             db.execute("""CREATE TABLE IF NOT EXISTS voice_speech_requests (
                 id TEXT PRIMARY KEY, session TEXT NOT NULL, record_id TEXT NOT NULL,
                 state TEXT NOT NULL, error TEXT)""")

@@ -28,27 +28,8 @@ def _arguments(message):
     return params, args
 
 
-def _identity_command(params, args):
-    tool = params.get("tool")
-    if tool == "orchestration_send" and args.get("agent_id") == "workspace":
-        try:
-            bridge = json.loads(args.get("text", ""))
-            if isinstance(bridge, dict) and bridge.get("tool") in {"orchestration_send", "orchestration_review"} and isinstance(bridge.get("arguments"), dict):
-                return bridge["tool"], bridge["arguments"]
-        except (ValueError, TypeError):
-            pass
-    return tool, args
-
-
 def _prefix(account, thread):
     return (str(account) + ":" if account != "default" else "") + str(thread) + ":"
-
-
-def request_prefixes(actor):
-    """Scopes recorded by the server, including completed account transfers."""
-    scopes = [actor, *actor.get("accountHistory", [])]
-    return list(dict.fromkeys(_prefix(scope.get("accountKey", "default"), scope["threadId"])
-                             for scope in scopes if isinstance(scope, dict) and scope.get("threadId")))
 
 
 _READ_TOOLS = {"orchestration_read", "orchestration_peers", "orchestration_search", "orchestration_chat_read"}
@@ -77,16 +58,10 @@ _MESSAGE_REJECTIONS = {
 
 
 def request_read_only(tool, args):
-    if tool == "orchestration_send" and args.get("agent_id") == "workspace":
-        try:
-            bridge = json.loads(args.get("text", ""))
-            tool, args = bridge["tool"], bridge.get("arguments", {})
-        except (ValueError, TypeError, KeyError):
-            return False
     if not isinstance(args, dict):
         return False
     return (tool in _READ_TOOLS
-            or tool in {"orchestration_task", "orchestration_result"} and args.get("action", "list") in {"list", "get", "read", "history"}
+            or tool == "orchestration_task" and args.get("action", "list") in {"list", "get", "read", "history"}
             or tool == "orchestration_request" and args.get("action", "list") in {"list", "get"})
 
 
@@ -101,20 +76,15 @@ def request_result_outcome(record, result):
     texts = [item.get("text") for item in result.get("contentItems", [])
              if isinstance(item, dict) and item.get("type") == "inputText"]
     error = texts[0] if texts and isinstance(texts[0], str) else None
-    if tool in {"orchestration_task", "orchestration_result"} and error in _WORK_REJECTIONS:
+    if tool == "orchestration_task" and error in _WORK_REJECTIONS:
         return "not_applied"
     if tool == "orchestration_message" and error in _MESSAGE_REJECTIONS:
         return "not_applied"
     # Exact pre-write guards. Committed operation receipts still take precedence.
     rejections = {
         "orchestration_task": {"Supply a review decision with 1 to 32000 characters"},
-        "orchestration_result": {"Supply a review decision with 1 to 32000 characters"},
         "orchestration_message": {"This record belongs to another team"},
         "orchestration_agent_manage": {"You can manage only your own descendant workers", "Unknown managed agent"},
-        "orchestration_resource": {
-            "Resource reservations were removed. Continue without a board claim.",
-            "Unknown workspace tool",
-        },
         "orchestration_monitor": {"Command timeout must be 1 second to 24 hours", "Supply a command with 1 to 12000 characters"},
         "orchestration_monitor_input": {"This interactive monitor is not active"},
         "orchestration_user_task": {"Wait for the user to check this task before accepting it",
@@ -125,17 +95,6 @@ def request_result_outcome(record, result):
     if error in rejections.get(tool, set()):
         return "not_applied"
     if tool == "orchestration_title" and error == "Only a lead can set a title of 1 to 80 characters":
-        return "not_applied"
-    # The legacy workspace bridge routes these errors only from read/validation
-    # paths. Do not infer safety from arbitrary exception words or JSON output.
-    if tool == "orchestration_send" and error in {
-        "Resource reservations were removed. Continue without a board claim.",
-        "Output reference is not owned by this agent", "Unknown context topic",
-        "There is no active turn to steer. Choose queue", "A workspace operation is active in this directory",
-        "Unknown managed agent", "Unknown workspace tool", "'agent_id'",
-        "request_id is not used by list", "limit must be 1 to 50",
-        "List changed or cursor is invalid. Read the first page again.", "Unknown task in this team",
-    }:
         return "not_applied"
     return "unknown"
 
@@ -209,7 +168,7 @@ class RequestMixin:
     def tool_request_key(message, account_key="default"):
         params, args = _arguments(message)
         call = str(params.get("callId", message.get("id")))
-        name, identity_args = _identity_command(params, args)
+        name, identity_args = params.get("tool"), args
         if name in {"orchestration_spawn", "orchestration_send", "orchestration_review"} and "request_id" in identity_args:
             request_id = identity_args["request_id"]
             if (not isinstance(request_id, str) or not 1 <= len(request_id) <= 200
@@ -279,7 +238,7 @@ class RequestMixin:
     def reserve_tool_request(self, message, account_key="default", connection_id=None):
         params, args = _arguments(message)
         key = self.tool_request_key(message, account_key)
-        identity_tool, identity_args = _identity_command(params, args)
+        identity_tool, identity_args = params.get("tool"), args
         signature = hashlib.sha256(json.dumps(
             {"tool": identity_tool, "arguments": identity_args}, sort_keys=True,
             separators=(",", ":"), ensure_ascii=False, allow_nan=False,
@@ -314,7 +273,6 @@ class RequestMixin:
                     record["reservationDelayMs"] = max(0, now - dispatched) * 1000
                     if "wireReceivedAt" in record:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
-                record["identityTool"] = identity_tool
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
                 self.put(db, "tool_requests", record)
@@ -368,44 +326,12 @@ class RequestMixin:
         record.update(stage="completed" if outcome == "applied" else "failed",
                       outcome=outcome, result=result, updated=now, finished=record.get("finished", now))
         record.pop("error", None)
-        if record.get("identityTool", record.get("tool")) in {"orchestration_spawn", "orchestration_review"}:
+        if record.get("tool") in {"orchestration_spawn", "orchestration_review"}:
             ids = _spawned_ids(result)
             if ids:
                 record["agentIds"] = ids
         self.put(db, "tool_requests", record)
         return record
-
-    def _legacy_tool_request(self, db, actor, request_id):
-        prefixes = request_prefixes(actor)
-        candidates = ([request_id] if any(request_id.startswith(prefix) for prefix in prefixes)
-                      else [prefix + request_id for prefix in prefixes])
-        found = []
-        for key in candidates:
-            owner = self.tool_request(key, db)
-            if owner and owner.get("agent") != actor["id"]:
-                continue
-            row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
-            evidence = operation_receipt_evidence(db, key) if not row else None
-            if row or evidence:
-                found.append((key, row, evidence))
-        if len(found) != 1:
-            if found:
-                return {"id": request_id, "agent": actor["id"], "legacy": True,
-                        "stage": "ambiguous", "outcome": "unknown",
-                        "message": "Use the full request id; this call id exists in several account histories."}
-            return None
-        key, row, evidence = found[0]
-        prefix = next(prefix for prefix in prefixes if key.startswith(prefix))
-        if not row:
-            return {"id": key, "agent": actor["id"], "threadId": actor.get("threadId"),
-                    "callId": key[len(prefix):], "stage": "unknown", "outcome": "unknown",
-                    "cancelRequested": False, "legacy": True, **evidence,
-                    "message": "The operation receipt is committed. The final tool result is unavailable; do not repeat the operation."}
-        result = json.loads(row[0])
-        return {"id": key, "agent": actor["id"], "threadId": actor.get("threadId"),
-                "callId": key[len(prefix):], "stage": "completed" if result.get("success") is True else "failed",
-                "outcome": "applied" if result.get("success") is True else "unknown", "result": result,
-                "cancelRequested": False, "legacy": True, "agentIds": _spawned_ids(result)}
 
     def _refresh_tool_request(self, db, record):
         if record["outcome"] not in {"applied", "not_applied"}:
@@ -469,12 +395,9 @@ class RequestMixin:
                             "message": "Use the canonical request id from list; this short id names several requests."}
                 record = self.tool_request(aliases[0][0], db) if aliases else None
             if record is None:
-                record = self._legacy_tool_request(db, actor, request_id)
-            if record is None:
                 return {"id": request_id, "stage": "not_found", "outcome": "unknown",
                         "message": "No receipt found. This does not prove that the operation did not execute."}
-            if not record.get("legacy"):
-                record = self._refresh_tool_request(db, record)
+            record = self._refresh_tool_request(db, record)
             if action == "cancel" and record["stage"] in {"queued", "running"}:
                 record.update(cancelRequested=True, updated=time.time())
                 if record["stage"] == "queued":
@@ -484,8 +407,7 @@ class RequestMixin:
             result = {k: v for k, v in record.items() if k != "signature"}
             if action == "get" and record.get("outcome") not in {"applied", "not_applied"} and "operationResult" not in record:
                 result.update(operation_receipt_evidence(db, record["id"]) or {})
-            if action == "get" and (record.get("identityTool", record.get("tool")) in {"orchestration_spawn", "orchestration_review"}
-                                    or (record.get("legacy") and record.get("agentIds"))):
+            if action == "get" and record.get("agentIds"):
                 # The receipt remains immutable. These observations show the
                 # current registry state, not the state when creation committed.
                 result["agents"] = self._request_agent_states(db, record)

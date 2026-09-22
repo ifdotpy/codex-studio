@@ -77,7 +77,7 @@ def _unsettled_inputs(db, a, attempt_id):
         if row['id'] in permitted and row['status'] != 'uncertain':
             continue
         # AppServer.write rejects offline before writing bytes; submit removes
-        # its pending future. Preserve legacy uncertainty without replay.
+        # its pending future. Keep saved offline uncertainty without replay.
         if (row['status'] == 'uncertain' and row['error'] == 'Codex app-server is offline'
                 and row['turn_id'] is None and row['metadata'] is None
                 and row['id'] not in attempt.get('events', []) and attempt.get('submitted') is False
@@ -137,8 +137,7 @@ def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
             raise _waiting('Context repair waits for ' + table + ': ' + row[0])
     historical = _unsettled_inputs(db, a, attempt_id)
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='voice_sessions'").fetchone():
-        columns = {r[1] for r in db.execute('PRAGMA table_info(voice_sessions)')}
-        if 'state' in columns and db.execute('SELECT 1 FROM voice_sessions WHERE agent=? AND state IS NOT NULL AND ended IS NULL', (a['id'],)).fetchone():
+        if db.execute('SELECT 1 FROM voice_sessions WHERE agent=? AND state IS NOT NULL AND ended IS NULL', (a['id'],)).fetchone():
             raise _waiting('Context repair waits for voice to end')
     return historical
 
@@ -551,8 +550,6 @@ def _terminal_native_item(item):
 
 
 def _callback_barrier(server):
-    if not hasattr(server, 'after_events'):
-        return
     drained = concurrent.futures.Future()
     server.after_events(lambda: drained.set_result(None))
     try:
@@ -715,6 +712,10 @@ def _settle(rt, op, future, server=None):
             _local_idle(rt, db, a, stored['source']['attemptId'])
             a.setdefault('accountHistory', []).append({'contextRepairId': stored['id'],
                 'accountKey': stored['source']['accountKey'], 'threadId': stored['source']['threadId'], 'at': time.time()})
+            from codex_native_tools import digest
+            source_catalog = {'threadId': a['threadId'], 'digest': digest(rt.tool_definitions(a))}
+            if a.get('nativeToolCatalog') == source_catalog:
+                a['nativeToolCatalog'] = {**source_catalog, 'threadId': tid}
             a.update(threadId=tid, turnId=None)
             if stored['source']['attemptId']:
                 a['startAttempt']['threadId'] = tid

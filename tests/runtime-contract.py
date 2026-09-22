@@ -103,6 +103,13 @@ class FakeServer:
     def on_result(self, future, callback):
         future.add_done_callback(callback)
 
+    def after_events(self, callback):
+        # This fake delivers notifications and callbacks synchronously.
+        callback()
+
+    def join_callbacks(self, timeout=10):
+        return True
+
     def complete(self, tid, turn, text='Result with evidence'):
         self.notify({'method': 'item/completed', 'params': {'threadId': tid,
             'item': {'id': turn + '-answer', 'type': 'agentMessage', 'text': text}}})
@@ -360,10 +367,10 @@ class RuntimeContract(unittest.TestCase):
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE kind='complaint'").fetchone()[0], 0)
 
-    def test_complaint_honors_stop_and_old_thread_tool_route(self):
+    def test_complaint_honors_stop_with_current_tool(self):
         a = self.lead()
-        self.runtime.dynamic({'id':900,'params':{'threadId':a['threadId'],'callId':'old-complaint','tool':'orchestration_send',
-            'arguments':{'agent_id':'complaint','text':json.dumps({'action':'submit','text':'A concrete old-thread problem'})}}})
+        self.runtime.dynamic({'id':900,'params':{'threadId':a['threadId'],'callId':'complaint','tool':'orchestration_complaint',
+            'arguments':{'action':'submit','text':'A concrete problem'}}})
         self.assertTrue(next(r for r in self.runtime.server.responses if r['id']==900)['result']['success'])
         self.runtime.stop(a['id'])
         self.runtime.complaint(a['id'], {'action':'submit','text':'User complaint while stopped'}, 'stopped-complaint', user=True)
@@ -528,15 +535,10 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.snapshot()['requests'], [])
         self.assertIn('One file', self.runtime.transcript(a['id'])['items'][-1]['text'])
 
-    def test_lead_migration_does_not_promote_standalone_workers(self):
+    def test_role_identity_survives_restart(self):
         a = self.lead()
         self.complete(a)
         b = self.runtime.create({'cwd': str(self.root), 'prompt': 'Review', 'role': 'reviewer'}, defer=True)
-        with self.runtime.lock, self.runtime.db() as db:
-            for key in (a['id'], b['id']):
-                row = self.runtime.agent(key, db)
-                row.pop('isLead')
-                self.runtime.put(db, 'agents', row)
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertTrue(self.runtime.agent(a['id'])['isLead'])

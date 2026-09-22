@@ -1,7 +1,3 @@
-if (process.argv.includes("--render-panel")) {
-  require("./panel-renderer.cjs");
-  return;
-}
 const {
   app,
   BrowserWindow,

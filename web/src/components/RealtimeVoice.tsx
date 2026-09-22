@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
-import { api, errorText, saved } from "../api";
+import { api, errorText } from "../api";
 import "./realtime-voice.css";
 
 type VoiceRecord = { id: string; seq: number; kind: string; text: string };
@@ -48,7 +48,6 @@ function NativeVoice({
   const [blockedAudio, setBlockedAudio] = useState(false);
   const [rows, setRows] = useState<VoiceRecord[]>([]);
   const [partial, setPartial] = useState("");
-  const [legacy, setLegacy] = useState("");
   const peer = useRef<Peer | null>(null);
   const generation = useRef(0);
   const muteWanted = useRef(false);
@@ -114,22 +113,6 @@ function NativeVoice({
   };
   useEffect(() => {
     mounted.current = true;
-    // Preserve unsaved text from the retired courier. Never automatically send it.
-    const pending = saved<Record<string, any>[]>(
-      `voice-pending:${agentId}`,
-      [],
-    );
-    const draft = saved<{ editedText?: string } | null>(
-      `voice-delivery:${agentId}`,
-      null,
-    );
-    setLegacy(
-      draft?.editedText ||
-        pending
-          .map((r) => r.text || "")
-          .filter(Boolean)
-          .join("\n\n"),
-    );
     return () => {
       const hadVoice = !!peer.current;
       mounted.current = false;
@@ -343,17 +326,6 @@ function NativeVoice({
     });
     setMuted(next);
   };
-  const dismissLegacy = () => {
-    try {
-      localStorage.removeItem(`voice-pending:${agentId}`);
-      localStorage.removeItem(`voice-delivery:${agentId}`);
-      setLegacy("");
-    } catch (failure) {
-      setError(
-        `The recovered draft could not be dismissed. ${errorText(failure)}`,
-      );
-    }
-  };
   return (
     <>
       <Popover
@@ -462,29 +434,6 @@ function NativeVoice({
                     </div>
                   ))}
               </div>
-            </details>
-          )}
-          {legacy && (
-            <details>
-              <summary>Recovered voice draft</summary>
-              <p>{legacy}</p>
-              <button
-                type="button"
-                onClick={() =>
-                  void navigator.clipboard
-                    .writeText(legacy)
-                    .then(() => {
-                      dismissLegacy();
-                      notify("The recovered draft was copied.");
-                    })
-                    .catch((e) => setError(errorText(e)))
-                }
-              >
-                Copy draft
-              </button>
-              <button type="button" onClick={dismissLegacy}>
-                Dismiss recovered draft
-              </button>
             </details>
           )}
         </Popover.Dropdown>

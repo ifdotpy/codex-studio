@@ -14,11 +14,6 @@ import {
 } from "./transcriptCache";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
-export class UnsupportedSyncError extends Error {
-  constructor() {
-    super("This server does not support synchronization.");
-  }
-}
 export type SyncDocument = {
   id: string;
   payload: string;
@@ -45,7 +40,7 @@ let pending: ReturnType<typeof open> | undefined;
 async function open() {
   const cached = saved<string>("codex-sync-workspace", "");
   const hasCache = /^[a-f0-9]{32}$/.test(cached);
-  type Identity = { workspaceId: string; chatState?: boolean };
+  type Identity = { workspaceId: string };
   const identify = async () => {
     if (navigator.onLine === false)
       throw new TypeError("The device is offline.");
@@ -67,8 +62,6 @@ async function open() {
         ])
       : initialIdentity);
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404)
-      throw new UnsupportedSyncError();
     const unavailable =
       error instanceof TypeError ||
       (error instanceof ApiError &&
@@ -78,13 +71,7 @@ async function open() {
     clearTimeout(grace);
   }
   const workspaceId = identity?.workspaceId || cached;
-  const chatState = identity
-    ? identity.chatState === true
-    : saved<boolean>(`codex-sync-chat-state:${workspaceId}`, false) === true;
-  if (identity) {
-    save("codex-sync-workspace", workspaceId);
-    save(`codex-sync-chat-state:${workspaceId}`, chatState);
-  }
+  if (identity) save("codex-sync-workspace", workspaceId);
   // Cached display does not authorize reads or draft writes against another Mac.
   // Retain the original request after the grace period, and retry failed checks.
   let verified = !!identity;
@@ -146,7 +133,7 @@ async function open() {
     if (doc.id.startsWith("transcript:"))
       cacheTranscript(workspaceId, doc.id.slice(11), doc);
   });
-  return { db, workspaceId, chatState, verifyWorkspace };
+  return { db, workspaceId, verifyWorkspace };
 }
 export function syncDatabase() {
   return (pending ??= open().catch((error) => {
@@ -272,11 +259,11 @@ async function acquireProjection(
   expectedWorkspace?: string,
   background = false,
 ) {
-  const { db, workspaceId, chatState, verifyWorkspace } = await syncDatabase();
+  const { db, workspaceId, verifyWorkspace } = await syncDatabase();
   if (expectedWorkspace && expectedWorkspace !== workspaceId)
     throw new Error("The server workspace changed. Reload to synchronize.");
   while (closingScopes.has(scope)) await closingScopes.get(scope);
-  const remoteScope = scope === "state" && chatState ? "state:chat" : scope;
+  const remoteScope = scope === "state" ? "state:chat" : scope;
   let state = scopes.get(scope);
   if (!state) {
     const listeners = new Set<(error: unknown | null) => void>();
@@ -550,7 +537,7 @@ export function subscribeProjection(
         attached = true;
       }
     } catch (error) {
-      if (!stopped && !(error instanceof UnsupportedSyncError)) {
+      if (!stopped) {
         report(error);
         timer = setTimeout(() => void connect(), 3000);
       }

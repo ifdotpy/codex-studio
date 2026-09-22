@@ -12,7 +12,8 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from codex_tool_requests import RequestMixin
 from codex_efficiency import EfficiencyMixin
 from codex_agent_management import manage_agent
-from codex_request_recovery import recover_legacy_requests
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'fixtures'))
+from current_cleanup_receipts import migrate_receipts
 
 
 def fixture(name):
@@ -24,7 +25,6 @@ def fixture(name):
 
 requests = fixture('tool-request-contract')
 management = fixture('agent-management-contract')
-legacy = fixture('request-recovery-legacy-contract')
 
 
 class Receipts(unittest.TestCase):
@@ -47,19 +47,17 @@ class Receipts(unittest.TestCase):
             record = self.runtime.finish_tool_request(record['id'], result)
         return record
 
-    def test_new_read_only_and_workspace_bridge_failures_are_definitive(self):
+    def test_current_read_only_failures_are_definitive(self):
         for index, (tool, args) in enumerate([
             ('orchestration_task', {'action': 'get'}),
             ('orchestration_read', {}),
-            ('orchestration_send', {'agent_id': 'workspace', 'text': json.dumps({
-                'tool': 'orchestration_task', 'arguments': {'action': 'list'}})}),
         ]):
             record = self.failed_request(str(index), tool, args, error='Database read failed')
             self.assertEqual(record['outcome'], 'not_applied')
             self.assertFalse(self.runtime.begin_tool_request(record['id']))
 
     def test_legacy_read_validation_reconciles_from_record_without_cached_result(self):
-        for index, tool in enumerate(['orchestration_peers', 'orchestration_task', 'orchestration_send']):
+        for index, tool in enumerate(['orchestration_peers', 'orchestration_task']):
             record = self.failed_request(str(index), tool, legacy=True)
             found = self.runtime.request_action('lead', {'action': 'get', 'request_id': record['id']})
             self.assertEqual(found['outcome'], 'not_applied')
@@ -70,7 +68,7 @@ class Receipts(unittest.TestCase):
     def test_mutation_error_is_unknown_even_when_it_mentions_validation(self):
         for index, (tool, error) in enumerate([
             ('orchestration_task', 'Disk write failed'), ('orchestration_monitor', 'limit must be 1 to 50'),
-            ('orchestration_panel', 'The panel renderer timed out after 15 seconds.'),
+            ('orchestration_monitor', 'The command timed out after 15 seconds.'),
             ('orchestration_send', '{"code": -32600, "message": "no active turn to steer"}'),
         ]):
             record = self.failed_request(str(index), tool, error=error, legacy=True)
@@ -95,10 +93,86 @@ class Receipts(unittest.TestCase):
             self.runtime.put(db, 'agents', actor)
             for key in ['thread:old', 'account-new:new-thread:collision', 'thread:collision']:
                 db.execute('INSERT INTO runtime_tool_results VALUES (?,?)', (key, json.dumps(self.result())))
+            migrate_receipts(db)
         for key in ['old', 'thread:old']:
             self.assertEqual(self.runtime.request_action('lead', {'action': 'get', 'request_id': key})['outcome'], 'applied')
         self.assertEqual(self.runtime.request_action('lead', {'action': 'get', 'request_id': 'collision'})['stage'], 'ambiguous')
         self.assertEqual(self.runtime.request_action('worker', {'action': 'get', 'request_id': 'thread:old'})['stage'], 'not_found')
+
+
+class ReceiptMigration(unittest.TestCase):
+    setUp = requests.RequestContract.setUp
+    message = requests.RequestContract.message
+    reserve = requests.RequestContract.reserve
+    result = requests.RequestContract.result
+
+    def test_ambiguous_owner_cannot_read_or_replay_saved_result(self):
+        with self.runtime.db() as db:
+            other = self.runtime.checked_actor(db, 'worker')
+            other['accountHistory'] = [{'threadId': 'thread', 'accountKey': 'default'}]
+            self.runtime.put(db, 'agents', other)
+            encoded = json.dumps(self.result())
+            db.execute('INSERT INTO runtime_tool_results VALUES (?,?)', ('thread:collision', encoded))
+            counts = migrate_receipts(db)
+            self.assertEqual(counts['unowned'], 1)
+            self.assertEqual(db.execute('SELECT result FROM runtime_tool_results').fetchone()[0], encoded)
+        saved = self.runtime.tool_request('thread:collision')
+        self.assertIsNone(saved['agent'])
+        self.assertEqual(saved['outcome'], 'unknown')
+        for actor in ['lead', 'worker', 'other']:
+            self.assertEqual(self.runtime.request_action(actor, {
+                'action': 'get', 'request_id': 'thread:collision'})['stage'], 'not_found')
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.reserve(call='collision')
+        self.assertFalse(self.runtime.begin_tool_request('thread:collision'))
+
+    def test_existing_identity_and_results_survive_repeat_conversion(self):
+        original = self.reserve(tool='orchestration_review', args={'request_id': 'once'})
+        with self.runtime.db() as db:
+            original['identityTool'] = original['tool']
+            original['tool'] = 'orchestration_send'
+            self.runtime.put(db, 'tool_requests', original)
+            db.execute('DELETE FROM runtime_tool_request_aliases')
+            first = migrate_receipts(db)
+            once = self.runtime.tool_request(original['id'], db)
+            second = migrate_receipts(db)
+            self.assertEqual(self.runtime.tool_request(original['id'], db), once)
+        self.assertEqual(first['normalized'], 1)
+        self.assertEqual(second['normalized'], 0)
+        self.assertNotIn('identityTool', once)
+        self.assertEqual(once['tool'], 'orchestration_review')
+        self.assertEqual(once['signature'], original['signature'])
+        self.assertEqual(self.runtime.request_action('lead', {'action': 'get', 'request_id': 'once'})['id'], once['id'])
+        self.assertEqual(self.reserve(call='retry', tool='orchestration_review', args={'request_id': 'once'})['id'], once['id'])
+
+    def test_full_saved_tool_and_native_output_survive_conversion(self):
+        class Store(requests.Ledger, EfficiencyMixin):
+            def checked_actor(self, db, agent_id, *args):
+                return super().checked_actor(db, agent_id)
+        rt = Store(self.runtime.path)
+        body = 'Full saved command output. ' * 2000
+        with rt.db() as db:
+            db.execute('CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,record TEXT)')
+            db.execute('CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,body)')
+            item = {'id': 'lead:exec', 'title': 'commandExecution', 'truncated': True, 'text': '{'}
+            db.execute('INSERT INTO runtime_items VALUES (?,?,?)', ('lead:exec', 'lead', json.dumps(item)))
+            payload = json.dumps({'aggregatedOutput': body, 'exitCode': 0, 'status': 'completed'})
+            db.execute('INSERT INTO runtime_search VALUES (?,?,?)', ('lead:exec', 'lead', payload))
+            result = {'success': True, 'contentItems': [{'type': 'inputText', 'text': body}]}
+            db.execute('INSERT INTO runtime_tool_results VALUES (?,?)', ('thread:tool', json.dumps(result)))
+            self.assertEqual(migrate_receipts(db)['searchRows'], 1)
+            self.assertEqual(migrate_receipts(db)['converted'], 0)
+        for reference in ['lead:exec', 'thread:tool']:
+            chunks, offset = [], 0
+            while True:
+                page = rt.model_read('lead', {'output_ref': reference, 'offset': offset})
+                chunks.append(page['text'])
+                if page['nextOffset'] is None:
+                    break
+                offset = page['nextOffset']
+            self.assertEqual(''.join(chunks), body)
+        with self.assertRaisesRegex(ValueError, 'not owned'):
+            rt.model_read('worker', {'output_ref': 'thread:tool'})
 
 
 class Archives(unittest.TestCase):
@@ -109,9 +183,6 @@ class Archives(unittest.TestCase):
         class Store(management.Store, RequestMixin):
             pass
         self.rt = Store(str(Path(self.tmp.name) / 'state.sqlite'))
-        with self.rt.db() as db:
-            db.execute('CREATE TABLE runtime_tool_results(id TEXT PRIMARY KEY, result TEXT)')
-            self.rt.setup_tool_requests(db)
 
     def call(self, action):
         return manage_agent(self.rt, 'lead', {'action': action, 'agent_id': 'worker', 'reason': 'Verified'}, 1)
@@ -265,7 +336,7 @@ class RuntimeValidation(unittest.TestCase):
         finally:
             case.tearDown()
 
-    def test_send_stable_identity_survives_lost_reply_and_workspace_bridge(self):
+    def test_send_stable_identity_survives_lost_reply(self):
         from unittest.mock import patch
         module = fixture('runtime-contract')
         case = module.RuntimeContract()
@@ -284,12 +355,8 @@ class RuntimeValidation(unittest.TestCase):
             self.assertEqual(before['outcome'], 'applied')
             second = {'id': 9961, 'params': {**first['params'], 'callId': 'send-retry'}}
             rt.dynamic(second)
-            bridge = {'id': 9962, 'params': {**first['params'], 'callId': 'send-bridge', 'arguments': {
-                'agent_id': 'workspace', 'text': json.dumps({'tool': 'orchestration_send', 'arguments': args})}}}
-            rt.dynamic(bridge)
-            self.assertEqual(rt.tool_request_key(bridge), key)
             self.assertEqual(rt.tool_request(key), before)
-            for call in ['send-first', 'send-retry', 'send-bridge', 'send-once']:
+            for call in ['send-first', 'send-retry', 'send-once']:
                 self.assertEqual(rt.request_action(lead['id'], {'action': 'get', 'request_id': call})['id'], key)
             with rt.db() as db:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_events WHERE id=?', (key,)).fetchone()[0], 1)
@@ -298,15 +365,6 @@ class RuntimeValidation(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'different content'):
                 rt.reserve_tool_request(changed)
             self.assertEqual(rt.tool_request(key), before)
-            bridge_args = {**args, 'request_id': 'bridge-first'}
-            fresh_bridge = {'id': 9964, 'params': {**first['params'], 'callId': 'fresh-bridge', 'arguments': {
-                'agent_id': 'workspace', 'text': json.dumps({'tool': 'orchestration_send', 'arguments': bridge_args})}}}
-            rt.dynamic(fresh_bridge)
-            bridge_key = rt.tool_request_key(fresh_bridge)
-            self.assertEqual(rt.tool_request(bridge_key)['outcome'], 'applied')
-            rt.dynamic({'id': 9965, 'params': {**first['params'], 'callId': 'fresh-direct', 'arguments': bridge_args}})
-            with rt.db() as db:
-                self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_events WHERE id=?', (bridge_key,)).fetchone()[0], 1)
         finally:
             case.tearDown()
 
@@ -331,30 +389,6 @@ class RuntimeValidation(unittest.TestCase):
                 self.assertFalse(rt.begin_tool_request(key))
         finally:
             case.tearDown()
-
-
-class LegacyHTTP(unittest.TestCase):
-    setUp = legacy.LegacyRecovery.setUp
-    tearDown = legacy.LegacyRecovery.tearDown
-    result = legacy.LegacyRecovery.result
-
-    def test_old_server_recovery_uses_ledger_owner_and_historical_prefix_without_writes(self):
-        with sqlite3.connect(self.database) as db:
-            actor = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id='lead'").fetchone()[0])
-            actor.update(threadId='new', accountKey='new', accountHistory=[{'accountKey': 'default', 'threadId': 'thread-main'}])
-            db.execute("UPDATE runtime_agents SET record=? WHERE id='lead'", (json.dumps(actor),))
-            db.execute('CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT)')
-            record = {'id': 'thread-main:bad-limit', 'agent': 'lead', 'tool': 'orchestration_peers',
-                      'stage': 'failed', 'outcome': 'unknown', 'result': {'success': False,
-                      'contentItems': [{'type': 'inputText', 'text': 'limit must be 1 to 50'}]}}
-            db.execute('INSERT INTO runtime_tool_requests VALUES (?,?)', (record['id'], json.dumps(record)))
-        before = self.database.read_bytes()
-        for ref in ['thread-main:bad-limit', 'bad-limit']:
-            found = recover_legacy_requests(self.url, 'lead', ref)
-            self.assertEqual(found['outcome'], 'not_applied')
-        self.assertEqual(recover_legacy_requests(self.url, 'lead', 'thread-main:ok')['outcome'], 'applied')
-        self.assertEqual(recover_legacy_requests(self.url, 'other', record['id'])['stage'], 'not_found')
-        self.assertEqual(self.database.read_bytes(), before)
 
 
 if __name__ == '__main__':

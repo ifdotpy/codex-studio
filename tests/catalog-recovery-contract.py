@@ -97,22 +97,6 @@ class CatalogCacheContract(unittest.TestCase):
                 pending.result()
             self.assertIsNone(self.cache.entries['a']['value'])
 
-    def test_legacy_pending_catalog_is_retained_then_replaced_with_complete_snapshot(self):
-        self.warm()
-        legacy = self.cache.entries['a']
-        legacy.pop('completeVersion')
-        legacy['future'] = concurrent.futures.Future()
-        with self.assertRaises(CatalogPending):
-            self.read()
-        self.assertEqual(len(self.server.requests), 1)
-        legacy['future'].set_result(CATALOG)
-        with self.assertRaises(CatalogPending):
-            self.read()
-        self.assertEqual(len(self.server.requests), 2)
-        self.server.requests[1].set_result({**CATALOG, 'nextCursor': 'two'})
-        self.server.requests[2].set_result({'data': [{'model': 'new'}], 'nextCursor': None})
-        self.assertEqual(len(self.read()['data']), 2)
-
     def test_expired_success_needs_fresh_read_and_preserves_exact_pending(self):
         self.warm()
         self.now += 301

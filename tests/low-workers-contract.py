@@ -88,15 +88,15 @@ class LowWorkersContract(unittest.TestCase):
 
     def test_counts_team_workers_and_commands_once(self):
         lead = self.agent_update(self.lead(), autoWake=True)
-        a, b, queued, deleted, panel = [self.worker(lead) for _ in range(5)]
+        a, b, queued, deleted = [self.worker(lead) for _ in range(4)]
         self.agent_update(a, status='starting')
         self.agent_update(queued, status='queued')
         self.agent_update(deleted, status='running', deletedAt=1)
         other = self.lead('Other')
         self.agent_update(self.worker(other), status='running')
         with self.runtime.lock, self.runtime.db() as db:
-            for key, agent, extra in [('one', a, {}), ('two', b, {}), ('three', b, {}), ('panel', panel, {'panelFeed': {'id': 'feed'}})]:
-                self.runtime.put(db, 'monitors', {'id': key, 'agent': agent['id'], 'status': 'running', **extra})
+            for key, agent in [('one', a), ('two', b), ('three', b)]:
+                self.runtime.put(db, 'monitors', {'id': key, 'agent': agent['id'], 'status': 'running'})
         self.alert(lead, minimumWorkers=2, durationMinutes=1)
         self.tick(100)
         self.assertEqual(self.rule()['activeWorkers'], 2)
@@ -107,7 +107,7 @@ class LowWorkersContract(unittest.TestCase):
         self.tick(101)
         self.tick(162)
         self.assertEqual(len(self.events(lead, 'rule')), 1)
-        for worker in (a, b, queued, deleted, panel):
+        for worker in (a, b, queued, deleted):
             self.assertEqual(self.events(worker, 'rule'), [])
 
     def test_same_save_and_resume_do_not_reset_timer_or_latch(self):

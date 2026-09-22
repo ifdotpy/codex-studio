@@ -13,7 +13,7 @@ mailbox message; all other commands are read-only.
   luna watch [-i 20]        dashboard, refreshed until interrupted
 
 Launcher lifecycle lives in codex-daemon (start | stop | status).
-CODEX_AGENTS_STATE_DIR selects state; LUNA_HOME remains an explicit legacy alias.
+CODEX_AGENTS_STATE_DIR selects the state directory.
 There is no automatic search in another agent application's directories.
 """
 
@@ -34,7 +34,7 @@ from codex_state import ACTIVE, state_dir, read_threads, effective_status, proce
 # ---------------------------------------------------------------- locating
 
 try:
-    HOME = str(state_dir("LUNA_HOME"))
+    LUNA_STATE_DIR = str(state_dir())
 except RuntimeError as error:
     sys.exit(f"luna: {error}")
 
@@ -95,7 +95,7 @@ def live_launchers():
 
 
 def load_threads():
-    return read_threads(Path(HOME))
+    return read_threads(Path(LUNA_STATE_DIR))
 
 
 def resolve_status(thread):
@@ -122,7 +122,7 @@ def find(threads, name, wave=None):
 def recent_events(thread, count):
     name = thread["name"]
     run_id = thread.get("runId")
-    path = os.path.join(HOME, f"codex-swarm-events.{thread['wave']}.{run_id}.jsonl")
+    path = os.path.join(LUNA_STATE_DIR, f"codex-swarm-events.{thread['wave']}.{run_id}.jsonl")
     if not run_id or not os.path.isfile(path):
         return []
     rows = deque(maxlen=count)
@@ -236,7 +236,7 @@ def cmd_tail(args):
 def cmd_say(args):
     thread = find(load_threads(), args.name, args.wave)
     script = Path(__file__).resolve().with_name("codex-steer")
-    env = {**os.environ, "CODEX_AGENTS_STATE_DIR": HOME}
+    env = {**os.environ, "CODEX_AGENTS_STATE_DIR": LUNA_STATE_DIR}
     return subprocess.run(
         [sys.executable, str(script), "--wave", thread["wave"], "--", thread["name"], *args.message],
         env=env,
@@ -266,7 +266,7 @@ def cmd_dashboard(args):
     pids = live_launchers()
     load, free = machine()
     state = paint(f"live launchers: {', '.join(map(str, pids))}", "32") if pids else paint("no live launchers", "31")
-    print(f"{state}   load {load:.1f}   disk {free:.0f}G free   {HOME}")
+    print(f"{state}   load {load:.1f}   disk {free:.0f}G free   {LUNA_STATE_DIR}")
     print()
     cmd_ls(argparse.Namespace(all=False))
     return 0

@@ -49,6 +49,30 @@ class AccountTransferSettingsContract(unittest.TestCase):
     def member(self, op):
         return self.t.receipt(op['id'])['members'][self.key]
 
+    def test_waiting_snapshot_is_captured_before_native_transfer(self):
+        self.t.set_agent(self.key, effort=None, nativeEffort='high')
+        op = self.t.start_transfer()
+        with self.runtime.lock, self.runtime.db() as db:
+            stored = self.t.store.get(db, op['id'])
+            snapshot = self.t.store.settings_snapshot(self.agent())
+            for name in ('provider', 'workerDefaults', 'claudeOptions'):
+                snapshot.pop(name)
+            stored['members'][self.key]['settings'] = snapshot
+            self.t.store.save(db, stored)
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.assertEqual(self.member(op)['settings'], self.t.store.settings_snapshot(self.agent()))
+        self.t.complete_fork()
+        self.assertEqual(self.member(op)['phase'], 'completed')
+
+    def test_incomplete_snapshot_cannot_authorize_commit(self):
+        from codex_account_transfer import TransferSettingsConflict
+        snapshot = self.t.store.settings_snapshot(self.agent())
+        for name in ('provider', 'workerDefaults', 'claudeOptions'):
+            incomplete = {key: value for key, value in snapshot.items() if key != name}
+            with self.assertRaises(TransferSettingsConflict):
+                self.t.store.assert_settings({'settings': incomplete}, self.agent())
+
     def test_null_effort_resolves_for_destination_and_retains_user_preference(self):
         self.t.set_agent(self.key, effort=None, nativeEffort='high')
         self.target_supported = ['low']

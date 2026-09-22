@@ -97,14 +97,11 @@ class ReviewRuntimeContract(unittest.TestCase):
             self.rt.put(db, 'agents', a)
         return a
 
-    def invoke(self, args=None, *, bridge=False, actor=None):
+    def invoke(self, args=None, *, actor=None):
         self.seq += 1
         actor = actor or self.parent
         name = 'orchestration_review'
         args = copy.deepcopy(args if args is not None else {'request_id': 'review-fixture'})
-        if bridge:
-            args = {'agent_id': 'workspace', 'text': json.dumps({'tool': name, 'arguments': args})}
-            name = 'orchestration_send'
         self.rt.dynamic({'id': self.seq, 'params': {'threadId': actor['threadId'],
             'turnId': actor['turnId'], 'callId': str(self.seq), 'tool': name, 'arguments': args}},
             actor.get('accountKey', 'default'))
@@ -132,9 +129,9 @@ class ReviewRuntimeContract(unittest.TestCase):
             return db.execute("SELECT id,text FROM runtime_events WHERE agent=? AND kind='child_result'",
                               (self.parent['id'],)).fetchall()
 
-    def test_direct_and_workspace_calls_share_one_durable_receipt(self):
+    def test_retries_share_one_durable_receipt(self):
         first = self.request()
-        self.assertEqual(self.request(bridge=True), first)
+        self.assertEqual(self.request(), first)
         self.assertEqual(self.request(), first)
         with self.rt.db() as db:
             children = [a for a in self.rt.records(db, 'agents') if a.get('parentId') == self.parent['id']]
@@ -146,27 +143,25 @@ class ReviewRuntimeContract(unittest.TestCase):
         self.assertFalse(conflict['success'])
         self.assertFalse(self.server.reviews)
 
-    def test_receipt_recovery_reports_current_child_for_both_entry_routes(self):
-        for bridge in (False, True):
-            with self.subTest(bridge=bridge):
-                request_id = 'recovery-workspace' if bridge else 'recovery-direct'
-                first = self.request(args={'request_id': request_id}, bridge=bridge)
-                self.assertEqual(self.request(args={'request_id': request_id}, bridge=not bridge), first)
-                receipt = self.rt.request_action(self.parent['id'], {
-                    'action': 'get', 'request_id': request_id})
-                self.assertEqual(receipt['agentIds'], [first['agentId']])
-                self.assertEqual(receipt['identityTool'], 'orchestration_review')
-                self.assertEqual(receipt['tool'], 'orchestration_send' if bridge else 'orchestration_review')
-                self.assertEqual([(a['id'], a['status']) for a in receipt['agents']],
-                                 [(first['agentId'], 'queued')])
-                self.update(first['agentId'], status='completed', inFlight=False)
-                recovered = self.rt.request_action(self.parent['id'], {
-                    'action': 'get', 'request_id': first['requestId']})
-                self.assertEqual(recovered['agentIds'], [first['agentId']])
-                self.assertEqual([(a['id'], a['status']) for a in recovered['agents']],
-                                 [(first['agentId'], 'completed')])
-                self.assertEqual(recovered['result'], receipt['result'])
-                self.assertEqual(recovered['outcome'], 'applied')
+    def test_receipt_recovery_reports_current_child(self):
+        request_id = 'recovery-direct'
+        first = self.request(args={'request_id': request_id})
+        self.assertEqual(self.request(args={'request_id': request_id}), first)
+        receipt = self.rt.request_action(self.parent['id'], {
+            'action': 'get', 'request_id': request_id})
+        self.assertEqual(receipt['agentIds'], [first['agentId']])
+        self.assertEqual(receipt['tool'], 'orchestration_review')
+        self.assertEqual([(a['id'], a['status']) for a in receipt['agents']],
+                         [(first['agentId'], 'queued')])
+        self.update(first['agentId'], status='completed', inFlight=False)
+        recovered = self.rt.request_action(self.parent['id'], {
+            'action': 'get', 'request_id': first['requestId']})
+        self.assertEqual(recovered['agentIds'], [first['agentId']])
+        self.assertEqual([(a['id'], a['status']) for a in recovered['agents']],
+                         [(first['agentId'], 'completed')])
+        self.assertEqual(recovered['result'], receipt['result'])
+        self.assertEqual(recovered['outcome'], 'applied')
+
 
     def test_dispatch_uses_child_native_review_with_inherited_identity_and_readonly_policy(self):
         target = {'type': 'baseBranch', 'branch': 'main'}
@@ -224,7 +219,7 @@ class ReviewRuntimeContract(unittest.TestCase):
         value = self.request()
         entry = self.dispatch_review(value)
         self.assertTrue(self.rt.agent(value['agentId'])['inFlight'])
-        self.assertEqual(self.request(bridge=True), value)
+        self.assertEqual(self.request(), value)
         self.rt.dispatch()
         self.assertEqual(len(self.server.reviews), 1)
         self.server.finish(entry)
@@ -290,7 +285,7 @@ class ReviewRuntimeContract(unittest.TestCase):
         self.dispatch_review(value)
         self.assertFalse(original_server.reviews)
         self.assertEqual(len(self.server.reviews), 1)
-        self.assertEqual(self.request(bridge=True), value)
+        self.assertEqual(self.request(), value)
 
     def test_cancelled_tool_receipt_prevents_creation_on_later_callback(self):
         message = {'id': 99, 'params': {'threadId': self.parent['threadId'],
@@ -299,7 +294,7 @@ class ReviewRuntimeContract(unittest.TestCase):
         receipt = self.rt.reserve_tool_request(message, 'default', self.rt.connection_ids['default'])
         cancelled = self.rt.request_action(self.parent['id'], {'action': 'cancel', 'request_id': receipt['id']})
         self.assertEqual(cancelled['outcome'], 'not_applied')
-        result = self.invoke({'request_id': 'cancel-before-create'}, bridge=True)
+        result = self.invoke({'request_id': 'cancel-before-create'})
         self.assertFalse(result['success'])
         with self.rt.db() as db:
             self.assertEqual(len(self.rt.records(db, 'agents')), 1)

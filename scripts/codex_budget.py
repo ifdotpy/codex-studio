@@ -1,8 +1,8 @@
 """Durable token admission. Call helpers under Runtime.lock and its transaction.
 
 Response IDs identify charges. Notice counters are provisional observations, not
-additional charges. Migration preserves an existing lifetime floor; historical
-imports overlap that floor. Only responses after the migration boundary add to it.
+additional charges. The initial lifetime floor covers historical imports.
+Only responses after its cutoff add to that floor.
 """
 import hashlib
 import json
@@ -23,13 +23,13 @@ def budget_init(db):
 
 def _accounting(state):
     provisional = (state['noticeSpent'] > state['before'] + state['after'] or state['faults']
-                   or state['ambiguousNotices'] or state['migrationSeq'] < state['migrationEnd'])
+                   or state['ambiguousNotices'])
     return 'provisional' if provisional else 'responseRecords'
 
 
 def _save(db, a, state):
     state['spent'] = max(state['spent'], state['floor'] + state['after'],
-                         state['before'] + state['after'], state['noticeSpent'], state['legacy'])
+                         state['before'] + state['after'], state['noticeSpent'], state['historicalNotices'])
     db.execute('INSERT INTO runtime_budget VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
                (a['id'], json.dumps(state)))
     # History captures use a historical agent copy. Update only budget fields.
@@ -52,43 +52,10 @@ def _state(db, a):
     current = json.loads(current[0]) if current else a
     floor = _tokens(current.get('tokensUsed')) or 0
     state = {'cutoff': time.time(), 'floor': floor, 'spent': floor, 'before': 0, 'after': 0,
-             'legacy': 0, 'noticeSpent': floor, 'counter': floor if floor else None,
+             'historicalNotices': 0, 'noticeSpent': floor, 'counter': floor if floor else None,
              'thread': current.get('threadId'), 'noticeAt': 0, 'created': current.get('created', 0),
              'lastAmount': None, 'ambiguousNotices': [], 'faults': []}
-    exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone()
-    state['migrationEnd'] = (db.execute('SELECT COALESCE(MAX(seq),0) FROM analytics_usage').fetchone()[0] if exists else 0)
-    state['migrationSeq'] = 0
     return _save(db, a, state)
-
-
-def budget_prepare_migration(runtime):
-    """Prepare the scan index in the history worker, outside Runtime.lock."""
-    if getattr(runtime, '_budget_index_ready', False):
-        return
-    with runtime.db() as db:
-        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone():
-            db.execute('CREATE INDEX IF NOT EXISTS analytics_usage_migration ON analytics_usage(agent,seq)')
-    runtime._budget_index_ready = True
-
-
-def budget_migrate(db, a, limit=64):
-    """Advance one bounded page in the existing history worker transaction."""
-    state = _state(db, a)
-    if state['migrationSeq'] >= state['migrationEnd']:
-        return
-    rows = db.execute('SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?',
-                      (a['id'], state['migrationSeq'], state['migrationEnd'], limit)).fetchall()
-    for row in rows:
-        record = json.loads(row[1])
-        p = {'threadId': record.get('threadId'), 'turnId': record.get('turnId'),
-             'responseId': record.get('responseId'), 'rawTokenUsageRecord': record.get('rawTokenUsageRecord'),
-             'requestUsage': record.get('requestUsage'), 'tokenUsage': {'total': record.get('total'), 'last': record.get('last')},
-             '_analyticsTimestampSource': record.get('timestampSource')}
-        _capture(db, a, state, p, record.get('at', 0), 'rollout')
-        state['migrationSeq'] = row[0]
-    if len(rows) < limit:
-        state['migrationSeq'] = state['migrationEnd']
-    _save(db, a, state)
 
 
 def _capture(db, a, state, p, at, source):
@@ -133,7 +100,7 @@ def _capture(db, a, state, p, at, source):
             state['after' if at > state['cutoff'] else 'before'] += amount
     elif source != 'live':
         if not response:
-            state['legacy'] += amount
+            state['historicalNotices'] += amount
     else:
         counter = _tokens((usage.get('total') or {}).get('totalTokens'))
         if counter is None:
@@ -161,8 +128,6 @@ def budget_capture(db, a, p, *, at=None, source='live'):
 
 
 def _coverage(db, a, state):
-    if state['migrationSeq'] < state['migrationEnd']:
-        return 'Stored usage migration is incomplete'
     if state['faults']:
         return ', '.join(state['faults'])
     if state['ambiguousNotices']:
@@ -205,7 +170,7 @@ def _coverage(db, a, state):
         return 'Native usage history is unavailable'
     if state['spent'] and not (history.get('context') or {}).get('requestUsageAvailable'):
         return 'Native history lacks response usage records'
-    if state['before'] + state['after'] < max(state['floor'], state['noticeSpent'], state['legacy']):
+    if state['before'] + state['after'] < max(state['floor'], state['noticeSpent'], state['historicalNotices']):
         return 'Response usage does not cover the observed lifetime counter'
     return None
 

@@ -31,14 +31,12 @@ from codex_workspace import WorkspaceMixin, active_task_records
 from codex_rules import RulesMixin, rule_tools
 from codex_user_tasks import UserTasksMixin, user_task_tools
 from codex_questions import QuestionsMixin, is_question, answer_signature, record_answer
-from codex_panel import PanelMixin, panel_tools
-from codex_panel_render import render_panel
-from codex_panel_feed import PanelFeedConsumer
+from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_capacity_retry import CapacityRetryMixin
 from codex_safety_buffering import active as safety_retry_active
-from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits, native_request_thread, LEGACY_APPROVAL_REQUESTS
+from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
 
 def uid():
     return str(uuid.uuid4())
@@ -133,7 +131,7 @@ def voice_tools():
 
 from codex_agent_review import review_tools
 
-TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
+TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -199,8 +197,6 @@ The user response automatically notifies the reporting lead.
 Do not poll or routinely read the complaint book. For complaints assigned to the lead,
 use action=respond with an action, a reasoned refusal, or a next step before finishing.
 A separate action=read is optional. Do not claim a fix without evidence.
-If this older thread lacks orchestration_complaint, use orchestration_send with
-agent_id="complaint" and text containing JSON for the same action and fields.
 Use orchestration_task to track assignments, dependencies, submitted evidence and explicit acceptance.
 Use orchestration_watch for file changes or schedules with a script gate; no model runs during the wait.
 Read profiles with orchestration_context topic=profiles; pass profile_id to orchestration_spawn.
@@ -210,12 +206,6 @@ Use effort=null to select a model's native default, or fast_mode=false to disabl
 Only the user can change team defaults. Do not call settings APIs to change them.
 Only the orchestrator uses orchestration_speak(text) for additional speech. Do not duplicate your normal reply; native voice already receives it.
 Without active voice the text is saved silently. Voice interruption does not stop your task.
-Older threads can call the workspace tools through orchestration_send with agent_id="workspace"
-and text containing JSON {"tool":"orchestration_task","arguments":{"action":"list"}}.
-Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
-orchestration_watch, orchestration_monitor_input, orchestration_user_task,
-orchestration_request, orchestration_read, orchestration_context, orchestration_status,
-orchestration_peers, orchestration_message, orchestration_monitor, orchestration_send, orchestration_review.
 Use your per-agent PROGRESS.md file for status above the composer. Read and edit it with ordinary file tools.
 A background script can write the file directly. File changes do not wake the model.
 Only the orchestrator uses orchestration_user_task for things the user must do. Supply clear completion criteria.
@@ -383,9 +373,7 @@ class AppServer:
     def join_callbacks(self, timeout=10):
         """Join only after the caller releases Runtime and database locks."""
         deadline = time.monotonic() + timeout
-        workers = [self.dispatcher]
-        if getattr(self, "clock_writer", None) is not None:
-            workers.append(self.clock_writer)
+        workers = [self.dispatcher, self.clock_writer]
         for worker in workers:
             if threading.current_thread() is worker:
                 return False
@@ -622,7 +610,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         self.prepare_locks = {}
         self.preparations = {}
         self.monitor_threads = set()
-        self.panel_feed_consumers = {}
         self.offline = False
         self.changed = threading.Event()
         self.closed = False
@@ -699,8 +686,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status IN ('dispatching','reserved')"
             )
             for a in self.records(db, "agents"):
-                # Role and parent identity determine a managed lead, independently of its model.
-                a.setdefault("isLead", not a.get("parentId") and a.get("role") == "orchestrator")
                 block = native_thread_block(a)
                 if block:
                     a["nativeThreadBlock"] = block
@@ -709,33 +694,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if not restart_restored and a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
-                a.setdefault("accountKey", "default")
-                a.setdefault("yoloMode", None)
-                a.setdefault("compactions", 0)
-                a.setdefault("compactionsObservedOnly", bool(a.get("threadId")))
                 a["inFlight"] = False
                 self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
                 self.put(db, "agents", a)
-            for complaint in self.records(db, "complaints"):
-                if "recipient" not in complaint:
-                    complaint["recipient"] = self.complaint_recipient(complaint)
-                    if complaint["recipient"] == "user" and not any(r["author"] == "user" for r in complaint["responses"]):
-                        # Keep historical lead responses, but they cannot count as user action.
-                        complaint.update(legacyLeadReadAt=complaint["readAt"], legacyStatus=complaint["status"],
-                                         readAt=None, status="open")
-                complaint.setdefault("version", 1)
-                self.put(db, "complaints", complaint)
-            # Rerouted complaints belong to the user, not to another lead turn.
-            for lead in self.records(db, "agents"):
-                if not lead.get("isLead") or self.unanswered_complaints(db, lead["id"]):
-                    continue
-                cancelled = db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND kind='complaint' AND status='pending'", (lead["id"],)).rowcount
-                if cancelled and lead["status"] == "queued" and not db.execute(
-                    "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending'", (lead["id"],)
-                ).fetchone():
-                    lead["status"] = "waiting"
-                    self.put(db, "agents", lead)
             for task in active_task_records(db):
                 task.update(status="lost", finished=time.time(), error="Server restarted. Tool outcome unknown.")
                 self.put(db, "tasks", task)
@@ -764,7 +726,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.setup_work(db)
             self.setup_tool_requests(db)
             self.setup_user_tasks(db)
-            self.setup_panels(db)
             self.setup_workspace(db)
             self.setup_rules(db)
             from codex_monitor_recovery import recover_monitor_results, acknowledge_monitor_result
@@ -778,16 +739,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         self.monitor_recovery_warnings = monitor_recovery["warnings"]
         for warning in self.monitor_recovery_warnings:
             print("Monitor recovery: " + json.dumps(warning), file=sys.stderr)
-        with self.db() as db:
-            recovered_feeds = [m for m in self.records(db, "monitors")
-                               if m["id"] in monitor_recovery["restored"] and m.get("panelFeed")]
-        for monitor in recovered_feeds:
-            self.panel_feed_monitor_status(monitor, monitor["status"], monitor.get("error"))
-        # Restart never replays a panel command. Surface its persisted lost state.
-        with self.db() as db:
-            lost_feeds = [m for m in self.records(db, "monitors") if m.get("panelFeed") and m["status"] == "lost"]
-        for monitor in lost_feeds:
-            self.panel_feed_monitor_status(monitor, "lost", monitor.get("error"))
         os.chmod(self.db_path, 0o600)
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
         self.scheduler.start()
@@ -859,6 +810,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         with self.start_lock:
             if self.closed:
                 raise RuntimeError("Runtime is stopped")
+            from codex_native_tools import assert_connect_allowed
+            assert_connect_allowed(self, account_key)
             server = self.servers.get(account_key)
             if provider == "claude" and server is not None and self.factory is AppServer:
                 from codex_claude_controls import retire_idle_bridge
@@ -938,13 +891,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if task.get("agent") in ids:
                     task.update(status="lost", finished=time.time(), error="Codex disconnected. Tool outcome unknown.")
                     self.put(db, "tasks", task)
-            lost_feeds = []
             for monitor in self.records(db, "monitors"):
                 if monitor.get("agent") in ids and monitor["status"] in {"running", "starting", "approval"}:
                     monitor.update(status="lost", finished=time.time(), error="Codex disconnected. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", monitor)
-                    if monitor.get("panelFeed"):
-                        lost_feeds.append(monitor)
             for r in self.records(db, "requests"):
                 if (r.get("agent") in ids or r.get("accountKey", "default") == account_key) and r["status"] == "pending":
                     # Local requests without account metadata are owned by their agent.
@@ -959,8 +909,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         voice = getattr(self, "_voice_store", None)
         if voice:
             voice.disconnected_native(account_key, connection_id)
-        for monitor in lost_feeds:
-            self.panel_feed_consumer(monitor).finish("lost", monitor.get("error"), discard=True)
 
     def item(self, db, agent, key, role, text, title=None, inputs=None, **metadata):
         key = agent + ":" + key
@@ -1256,6 +1204,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             return a
 
     def new_lead(self, data):
+        if "dangerously_skip_rules" in data:
+            raise ValueError("Unsupported setting: dangerously_skip_rules")
         if "reuse_empty" in data and type(data["reuse_empty"]) is not bool:
             raise ValueError("reuse_empty must be a boolean")
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
@@ -1268,9 +1218,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             settings["reuse_empty"] = data["reuse_empty"]
         if 'project_folder' in data:
             settings['project_folder'] = data['project_folder']
-        # Retain this retired field only in the identity of requests saved by older clients.
-        if "dangerously_skip_rules" in data:
-            settings["dangerously_skip_rules"] = data["dangerously_skip_rules"]
         if "yolo_mode" in data:
             settings["yolo_mode"] = data["yolo_mode"]
         requested_cwd = self.project_directory(data["cwd"]) if "cwd" in data else None
@@ -2001,6 +1948,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         with self.lock:
             a = self.agent(a["id"])
             assert_context_available(a)
+            from codex_native_tools import account_reserved
+            if account_reserved(self, a.get("accountKey", "default")):
+                raise ValueError("The account tool catalog is updating. Input remains queued.")
         if a.get("accountTransferId") and not a.get("inFlight"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
         server = self.connect(a.get("accountKey", "default"))
@@ -2072,6 +2022,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                              "threadId": a["threadId"], "cwd": a["cwd"], "method": method,
                              "settings": self.preparation_settings(a),
                              "contextVersions": context_versions,
+                             "toolCatalog": params.get("dynamicTools"),
                              "future": concurrent.futures.Future()}
                 latest["prepareAttempt"] = operation["id"]
                 self.put(db, "agents", latest)
@@ -2113,6 +2064,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                          profile=result.get("activePermissionProfile"))
                 a["preparedContext"] = {"epoch": [thread_id, a.get("compactions", 0)],
                                         "versions": operation.get("contextVersions", {})}
+                if operation["method"] == "thread/start" and operation.get("toolCatalog") is not None:
+                    from codex_native_tools import mark_current
+                    mark_current(a, operation["toolCatalog"])
                 self.put(db, "agents", a)
                 db.commit()  # The cache must never outlive a failed thread-identity commit.
                 self.loaded.add(a["id"])
@@ -2195,6 +2149,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     break
                 if sum(t["rootId"] == a["rootId"] for t in active) >= a["concurrency"]:
                     continue
+                from codex_native_tools import account_reserved
+                if account_reserved(self, a.get("accountKey", "default")):
+                    continue
                 from codex_budget import budget_admission
                 try:
                     budget_admission(self, db, a)
@@ -2228,6 +2185,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         self.pool.submit(self.start, budget_job["agent"], budget_job["rows"])
                     continue
                 a = self.agent(a["id"], db)
+                from codex_native_tools import gate as native_tools_gate
+                if not native_tools_gate(self, db, a, self.tool_definitions(a)):
+                    continue
                 from codex_agent_review import claim as claim_review
                 review_attempt = claim_review(self, db, a)
                 if review_attempt:
@@ -2939,7 +2899,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                                "interrupted" if turn.get("status") == "interrupted" else "failed")
                 if not a["autoWake"]:
                     a["status"] = "paused"
-                watches = any(m["agent"] == a["id"] and not m.get("panelFeed")
+                watches = any(m["agent"] == a["id"]
                               and m["status"] in {"running", "approval", "starting"}
                               for m in self.records(db, "monitors"))
                 children = any(c.get("parentId") == a["id"] and c["autoWake"]
@@ -2972,10 +2932,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if budget_status(self, db, a, check_coverage=False)["reached"]:
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
 
-    @staticmethod
-    def capture_panel(panel, *, strict_layout=True):
-        return render_panel(panel, strict_layout=strict_layout)
-
     def request(self, message, account_key="default", connection_id=None):
         if not self.connection_current(account_key, connection_id):
             return
@@ -2992,25 +2948,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     "contentItems": [{"type": "inputText", "text": str(error)}]}}, account_key, connection_id)
                 return
             name = message.get("params", {}).get("tool")
-            if name == "orchestration_send":
-                # Older threads reach workspace tools through this envelope.
-                # Routing reads its shape only; dynamic keeps full validation.
-                try:
-                    args = message.get("params", {}).get("arguments", {})
-                    if isinstance(args, str):
-                        args = json.loads(args)
-                    if isinstance(args, dict) and args.get("agent_id") == "complaint":
-                        name = "orchestration_complaint"
-                    elif (isinstance(args, dict) and args.get("agent_id") == "workspace"
-                          and isinstance(args.get("text"), str)):
-                        payload = json.loads(args["text"])
-                        if (isinstance(payload, dict) and isinstance(payload.get("tool"), str)
-                                and isinstance(payload.get("arguments", {}), dict)):
-                            name = payload["tool"]
-                except (TypeError, ValueError):
-                    pass
             executor = (self.recovery_pool if name in {"orchestration_request", "orchestration_status", "orchestration_peers"}
-                        else self.coordination_pool if name in {"orchestration_spawn", "orchestration_send", "orchestration_message", "orchestration_chat_read", "orchestration_title", "orchestration_complaint", "orchestration_task", "orchestration_result"}
+                        else self.coordination_pool if name in {"orchestration_spawn", "orchestration_send", "orchestration_message", "orchestration_chat_read", "orchestration_title", "orchestration_complaint", "orchestration_task"}
                         else self.tool_pool)
             executor.submit(self.dynamic, message, account_key, connection_id)
             return
@@ -3022,7 +2961,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if not self.connection_current(account_key, connection_id):
                 return
             p = message.get("params", {})
-            request_thread = native_request_thread(message["method"], p)
+            request_thread = p.get("threadId")
             a = next((a for a in self.records(db, "agents") if request_thread and a.get("threadId") == request_thread and a.get("accountKey", "default") == account_key), None)
             if a and not a.get("isLead") and message["method"] == "item/tool/requestUserInput":
                 self.reply({"id": message["id"], "error": {"code": -32600,
@@ -3156,27 +3095,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if isinstance(args, str):
                     args = json.loads(args)
                 name = p.get("tool")
-                if name == "orchestration_send" and args.get("agent_id") == "workspace":
-                    payload = json.loads(args["text"])
-                    name = payload.get("tool")
-                    args = payload.get("arguments", {})
-                    if name == "orchestration_resource":
-                        request_outcome = "not_applied"
-                        raise ValueError("Resource reservations were removed. Continue without a board claim.")
-                    if name not in {
-                        t["name"]
-                        for t in work_tools(tool, TEXT)
-                        + rule_tools(tool, TEXT)
-                        + user_task_tools(tool, TEXT)
-                        + panel_tools(tool, TEXT)
-                        + voice_tools()
-                        + request_tools(tool, TEXT)
-                        + efficiency_tools(tool, TEXT)
-                    } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor", "orchestration_send", "orchestration_panel", "orchestration_panel_feed", "orchestration_review"}:
-                        raise ValueError("Unknown workspace tool")
-                if name == "orchestration_resource":
-                    request_outcome = "not_applied"
-                    raise ValueError("Resource reservations were removed. Continue without a board claim.")
                 if name == "orchestration_agent_manage":
                     from codex_agent_management import manage_agent
                     value = manage_agent(self, a["id"], args, a["epoch"])
@@ -3188,18 +3106,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     value = self.request_action(a["id"], args)
                 elif name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
-                elif name in {"orchestration_panel", "orchestration_panel_feed"}:
-                    from codex_progress import progress_context
-                    from codex_tool_requests import operation_receipt_evidence
-                    with self.lock, self.db() as db:
-                        request_outcome = "unknown" if operation_receipt_evidence(db, key) else "not_applied"
-                    self.progress_file(a)
-                    raise ValueError(progress_context(self.root, a["id"]))
                 elif name == "orchestration_user_task":
                     value = self.user_task_action(a["id"], args, key, epoch=a["epoch"])
-                elif name in {"orchestration_task", "orchestration_result"}:
-                    if name == "orchestration_result" and args.get("action") == "read":
-                        args = {**args, "action": "get"}
+                elif name == "orchestration_task":
                     value = self.model_work(a["id"], args, key, a["epoch"])
                 elif name == "orchestration_search":
                     value = self.search_work(
@@ -3243,9 +3152,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"), review_event_id=args.get("review_event_id"), review_outcome=args.get("review_outcome"))
                 elif name == "orchestration_chat_read":
                     value = self.chat_read(args["room_id"], a["id"], args.get("before"), model=True)
-                elif name == "orchestration_send" and args.get("agent_id") == "complaint":
-                    value = self.complaint(a["id"], json.loads(args["text"]), key, a["epoch"])
                 elif name == "orchestration_send":
+                    if not isinstance(args.get("agent_id"), str) or not args["agent_id"]:
+                        request_outcome = "not_applied"
+                        raise ValueError("Supply agent_id for orchestration_send")
                     target_id = args["agent_id"]
                     # Resolve the edge here; send/chat enforce the sender epoch at the write boundary.
                     target = (
@@ -3478,7 +3388,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     @staticmethod
     def complaint_recipient(c):
-        return c.get("recipient", "user" if c["author"] == c["leadId"] else "lead")
+        return c["recipient"]
 
     @staticmethod
     def complaint_needs_response(c):
@@ -3496,14 +3406,14 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             c = json.loads(row[0])
             if self.complaint_recipient(c) != "user":
                 raise ValueError("This complaint requires a response from its orchestrator")
-            if type(data.get("version")) is not int or data["version"] != c.get("version", 1):
+            if type(data.get("version")) is not int or data["version"] != c["version"]:
                 raise ComplaintConflict("This complaint changed. Review the latest response before replying")
             text, status = data.get("text"), data.get("status")
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or status not in {"in_progress", "resolved", "declined"}:
                 raise ValueError("Record an action or reason and select in_progress, resolved, or declined")
             response = {"id": key, "author": "user", "text": text.strip(), "status": status, "at": time.time()}
             c["responses"].append(response)
-            c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"], version=c.get("version", 1) + 1)
+            c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"], version=c["version"] + 1)
             self.put(db, "complaints", c)
             reporter = self.agent(c["author"], db)
             if not reporter.get("deletedAt"):
@@ -3517,7 +3427,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         for c in self.records(db, "complaints"):
             result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
                            "title": c["text"][:140], "recipient": self.complaint_recipient(c),
-                           "version": c.get("version", 1), "needsResponse": self.complaint_needs_response(c),
+                           "version": c["version"], "needsResponse": self.complaint_needs_response(c),
                            "authorName": agents.get(c["author"], {}).get("name", "You" if c["author"] == "user" else c["author"]),
                            "leadName": agents.get(c["leadId"], {}).get("name", c["leadId"]),
                            "leadStopped": not agents.get(c["leadId"], {}).get("autoWake", False),
@@ -3596,7 +3506,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     return c
                 response = {"id": key, "author": actor_id, "text": text.strip(), "status": status, "at": time.time()}
                 c["responses"].append(response)
-                c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"], version=c.get("version", 1) + 1)
+                c.update(status=status, updated=response["at"], readAt=c["readAt"] or response["at"], version=c["version"] + 1)
                 self.put(db, "complaints", c)
                 from codex_wakeups import reconcile_complaints
                 reconcile_complaints(self, db, lead)
@@ -3766,18 +3676,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
             return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})
 
-    def assert_panel_feed_binding(self, db, agent_id, key, binding):
-        if binding is None:
-            return
-        panel = self.panel(agent_id, db)
-        feed = panel.get("feed", {})
-        actor = self.agent(agent_id, db)
-        if (panel["version"] != binding["panelVersion"] or feed.get("monitorId") != key
-                or feed.get("statePath") != binding["statePath"] or feed.get("epoch") != actor["epoch"]
-                or feed.get("status") not in {"starting", "approval", "running"}):
-            raise ValueError("The panel feed was stopped or replaced; command was not submitted")
-
-    def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None, *, panel_feed=None):
+    def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None):
         command = data.get("command")
         wake_on = data.get("wake_on", "exit")
         if wake_on not in {"exit", "failure"}:
@@ -3787,21 +3686,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             raise ValueError("Supply a command with 1 to 12000 characters")
         if not isinstance(timeout, int) or not 1000 <= timeout <= 86400000:
             raise ValueError("Command timeout must be 1 second to 24 hours")
-        if panel_feed is not None:
-            if (not isinstance(panel_feed, dict) or set(panel_feed) != {"panelVersion", "statePath", "intervalMs"}
-                    or type(panel_feed["panelVersion"]) is not int or panel_feed["panelVersion"] < 1
-                    or not isinstance(panel_feed["statePath"], str) or not panel_feed["statePath"].startswith("/")
-                    or type(panel_feed["intervalMs"]) is not int or not 1000 <= panel_feed["intervalMs"] <= 60000):
-                raise ValueError("Invalid panel feed binding")
-            if data.get("interactive") or rule:
-                raise ValueError("Panel feeds require separate stdout and stderr without a rule")
-            panel_feed = dict(panel_feed)
         key = str(uuid.uuid5(uuid.NAMESPACE_URL, key)) if key else uid()
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if row:
                 previous = json.loads(row[0])
-                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("panelFeed"), previous.get("wakeOn", "exit")) != (agent_id, command, timeout, bool(data.get("interactive")), panel_feed, wake_on):
+                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("wakeOn", "exit")) != (agent_id, command, timeout, bool(data.get("interactive")), wake_on):
                     raise ValueError("This monitor request id has different content")
                 return previous
             a = self.agent(agent_id, db)
@@ -3810,11 +3700,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if epoch is not None and a["epoch"] != epoch:
                 raise ValueError("The agent turn was stopped")
             self.assert_workspace_available(db, a)
-            self.assert_panel_feed_binding(db, agent_id, key, panel_feed)
-            if panel_feed is not None:
-                # The user can change permissions while panel preflight or old
-                # collector cancellation runs outside this transaction.
-                approved = approved and self.monitor_auto_approved(a)
             if rule:
                 # A rule can race a user permission change between prepare and this lock.
                 approved = self.monitor_auto_approved(a)
@@ -3850,14 +3735,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "ruleId": rule["id"] if rule else None,
                 "log": str(self.root / "monitor-logs" / (key + ".log")),
             }
-            if panel_feed is not None:
-                m["panelFeed"] = panel_feed
             self.put(db, "monitors", m)
             if not approved:
                 self.put(db, "requests", {"id": uid(), "method": "monitor/approve", "agent": agent_id,
                     "params": {"monitorId": key, "command": command, "cwd": a["cwd"]}, "status": "pending"})
-            if panel_feed is not None:
-                self.panel_feed_consumer(m).report(m["status"])
         if approved:
             self.launch_monitor(key)
         return m
@@ -3889,7 +3770,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     return
                 if preflight and not self.operation_current(a, preflight):
                     return
-                self.assert_panel_feed_binding(db, a["id"], key, m.get("panelFeed"))
             a = self.prepare(a)
             server = self.connect(a.get("accountKey", "default"))
             if shell_config is None:
@@ -3904,8 +3784,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         if current["status"] == "starting" and self.operation_current(self.agent(a["id"], db), preflight):
                             current.update(error=str(error), configurationPending=True)
                             self.put(db, "monitors", current)
-                            if current.get("panelFeed"):
-                                self.panel_feed_consumer(current).report("starting", str(error))
                     server.on_result(submitted_config, lambda future: self.pool.submit(
                         self.monitor_configuration_result, key, preflight, future) if not self.closed else None)
                     return
@@ -3924,7 +3802,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if preflight and not self.operation_current(current, preflight):
                     return
                 self.assert_workspace_available(db, current)
-                self.assert_panel_feed_binding(db, current["id"], key, m.get("panelFeed"))
                 selected_policy = self.turn_permissions(current).get("sandboxPolicy")
                 if selected_policy is not None:
                     params["sandboxPolicy"] = selected_policy
@@ -3947,8 +3824,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 self.put(db, "monitors", current_monitor)
                 db.commit()
                 submitted = self.submit_reserved(server, "command/exec", params)
-                if m.get("panelFeed"):
-                    self.panel_feed_consumer(m).report("running")
             try:
                 result = server.wait(submitted, timeout=m["timeout_ms"] / 1000 + 60)
             except ResponseTimeout as error:
@@ -3961,10 +3836,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 server.on_result(submitted, lambda future: self.monitor_result(key, operation, future)
                     if self.closed else self.pool.submit(self.monitor_result, key, operation, future))
                 return
-            if hasattr(server, "after_events"):
-                server.after_events(lambda: self.monitor_accepted(key, operation, result))
-            else:
-                self.monitor_accepted(key, operation, result)
+            server.after_events(lambda: self.monitor_accepted(key, operation, result))
         except PreparationPending as error:
             self.defer_preparation(error, lambda: self.launch_monitor(key, shell_config, preflight),
                 lambda cause: self.finish_monitor(key, None, str(cause)))
@@ -4000,8 +3872,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if m["status"] == "running" and self.operation_current(a, operation, epoch=False):
                 m["error"] = error
                 self.put(db, "monitors", m)
-                if m.get("panelFeed"):
-                    self.panel_feed_consumer(m).report("running", error)
 
     def monitor_accepted(self, key, operation, result):
         code = result.get("exitCode")
@@ -4021,40 +3891,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     pass
             else:
                 self.finish_monitor(key, None, str(error), operation=operation)
-
-    def panel_feed_monitor_status(self, monitor, status, error=None, sequence=None):
-        binding = monitor["panelFeed"]
-        self.panel_feed_status(monitor["agent"], monitor["id"], binding["panelVersion"],
-                               binding["statePath"], status, error=error, sequence=sequence)
-
-    def panel_feed_consumer(self, monitor):
-        key = monitor["id"]
-        with self.lock:
-            consumer = self.panel_feed_consumers.get(key)
-            if consumer is not None:
-                return consumer
-            binding = monitor["panelFeed"]
-            def update(state, sequence):
-                with self.lock, self.db() as db:
-                    row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
-                    current = json.loads(row[0]) if row else None
-                    actor = self.agent(monitor["agent"], db)
-                    if (self.closed or not current or current.get("cancelRequested")
-                            or current["status"] not in {"running", "completed", "failed"}
-                            or not actor["autoWake"] or actor["epoch"] != monitor["epoch"]):
-                        return
-                self.panel_feed_update(monitor["agent"], key, binding["panelVersion"],
-                                       binding["statePath"], state, sequence)
-            def status(value, error, sequence):
-                if not self.closed:
-                    self.panel_feed_monitor_status(monitor, value, error, sequence)
-            def done():
-                with self.lock:
-                    if self.panel_feed_consumers.get(key) is consumer:
-                        self.panel_feed_consumers.pop(key, None)
-            consumer = PanelFeedConsumer(update, status, binding["intervalMs"], done)
-            self.panel_feed_consumers[key] = consumer
-            return consumer
 
     def output(self, p, account_key="default", connection_id=None):
         key = p.get("processId")
@@ -4077,9 +3913,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             m["bytes"] += len(chunk)
             m["tail"] = (m["tail"] + chunk.decode("utf-8", errors="replace"))[-12000:]
             self.put(db, "monitors", m)
-            if (m.get("panelFeed") and m["status"] == "running" and not m.get("cancelRequested")
-                    and p.get("stream") == "stdout"):
-                self.panel_feed_consumer(m).feed(chunk)
 
     def finish_monitor(self, key, code, error, *, operation=None):
         with self.lock:
@@ -4169,7 +4002,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         return key
 
     def _monitor_exit_event(self, db, a, m, *, wake=True):
-        if m.get("panelFeed") or m.get("ruleId"):
+        if m.get("ruleId"):
             return
         if m.get("wakeOn", "exit") != "exit" and m["status"] == "completed":
             return
@@ -4208,9 +4041,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 self.rule_finished(m["ruleId"], code, "Monitor cancelled" if cancelled else error, m["tail"], db)
             else:
                 self._monitor_exit_event(db, a, m)
-        if m.get("panelFeed"):
-            diagnostic = m.get("error") or (f"Command exited with code {code}" if code not in (None, 0) else None)
-            self.panel_feed_consumer(m).finish(m["status"], diagnostic, discard=cancelled)
 
     def cancel_monitor(self, key, owner=None):
         with self.lock, self.db() as db:
@@ -4240,17 +4070,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if request["status"] == "pending" and request["method"] == "monitor/approve" and request.get("params", {}).get("monitorId") == key:
                     request["status"] = "expired"
                     self.put(db, "requests", request)
-        if m.get("panelFeed"):
-            with self.lock, self.db() as db:
-                current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
-                if current["status"] == "running":
-                    self.panel_feed_consumer(current).suspend()
-                else:
-                    # Completion can drain and remove the consumer after the
-                    # first transaction. Do not recreate a stopped consumer.
-                    consumer = self.panel_feed_consumers.get(key)
-                    if consumer is not None:
-                        consumer.finish(current["status"], current.get("error"), discard=True)
         server = self.servers.get(self.agent(m["agent"]).get("accountKey", "default"))
         if running and server:
             try:
@@ -4261,8 +4080,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if current["status"] == "running":
                         current["error"] = "Cancel requested. Process termination was not confirmed: " + str(error)
                         self.put(db, "monitors", current)
-                        if current.get("panelFeed"):
-                            self.panel_feed_consumer(current).report("stopping", current["error"])
                 return {"id": key, "status": current["status"], "cancelRequested": True, "error": current.get("error")}
         with self.lock, self.db() as db:
             current = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
@@ -4390,10 +4207,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if m["status"] == "starting":
                     self.launch_monitor(m["id"])
                 else:
-                    if m.get("panelFeed"):
-                        db.commit()
-                        self.panel_feed_consumer(m).finish("cancelled", "User declined the command", discard=True)
-                    elif m.get("ruleId"):
+                    if m.get("ruleId"):
                         self.rule_finished(
                             m["ruleId"],
                             None,
@@ -4411,22 +4225,16 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         )
                 return {"status": "answered"}
             method = r["method"]
-            request_thread = native_request_thread(method, r.get("params", {}))
-            if not r.get("agent") and method in LEGACY_APPROVAL_REQUESTS and request_thread:
-                a = next((a for a in self.records(db, "agents")
-                          if a.get("threadId") == request_thread
-                          and a.get("accountKey", "default") == r.get("accountKey", "default")), None)
-                if a:
-                    r["agent"] = a["id"]
+            request_thread = r.get("params", {}).get("threadId")
             if r.get("agent"):
                 a = self.agent(r["agent"], db)
                 if request_thread == a.get("threadId"):
                     assert_native_thread_open(a)
-            if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval", "applyPatchApproval"}:
+            if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
                 decision = data.get("decision")
                 if decision not in {"accept", "decline", "cancel"}:
                     raise ValueError("Choose accept, decline or cancel")
-                result = {"decision": {"accept": "approved", "decline": "denied", "cancel": "abort"}[decision] if method in {"execCommandApproval", "applyPatchApproval"} else decision}
+                result = {"decision": decision}
             elif method == "item/tool/requestUserInput":
                 answers = data.get("answers")
                 if not isinstance(answers, dict):
@@ -4903,16 +4711,17 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.ui_condition.notify_all()
         self.changed.set()
         self.scheduler.join()
+        from codex_native_tools import wait_updates
+        wait_updates(self)
+        with self.lock:
+            servers = list({id(server): server for server in [
+                *self.servers.values(),
+                *(entry["server"] for entry in getattr(self, "_native_tools_retiring", {}).values()),
+            ]}.values())
         transfers = getattr(self, "_account_transfers", None)
         if transfers:
             transfers.close()
-        with self.lock:
-            feed_consumers = list(self.panel_feed_consumers.values())
-        for consumer in feed_consumers:
-            consumer.close()
-        for consumer in feed_consumers:
-            consumer.worker.join()
-        for server in list(self.servers.values()):
+        for server in servers:
             server.close()
         with self.lock:
             monitor_threads = list(self.monitor_threads)
@@ -4921,8 +4730,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         self.pool.shutdown(wait=True, cancel_futures=True)
         for executor in (self.tool_pool, self.coordination_pool, self.recovery_pool):
             executor.shutdown(wait=True, cancel_futures=True)
-        for server in list(self.servers.values()):
-            if hasattr(server, "join_callbacks") and not server.join_callbacks(timeout=30):
+        for server in servers:
+            if not server.join_callbacks(timeout=30):
                 raise RuntimeError("Codex callbacks did not drain; runtime lease retained")
         history_thread = getattr(self, "analytics_history_thread", None)
         if history_thread is not None:

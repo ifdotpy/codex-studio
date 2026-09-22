@@ -19,10 +19,7 @@ queues, concurrency limits, command waits and automatic parent continuation.
 Use `scripts/codex-control` for terminal access to the same runtime.
 Recover an uncertain tool result with `codex-control requests AGENT_ID REQUEST_ID`.
 Omit `REQUEST_ID` to list recent requests. This command only reads receipts.
-An older local server can also use this command without a restart. If the route
-returns 404, the CLI reads saved results from that server's exact SQLite database
-in read-only mode. Missing results and failed legacy receipts remain `unknown`.
-This fallback is unavailable for remote servers and does not bypass HTTP errors.
+The CLI requires the current Studio HTTP protocol. Missing receipts remain `unknown`.
 An operation-only receipt exposes `operationApplied` and `operationResult` while
 the enclosing tool outcome remains unknown. It does not prove that a subsequent
 statement in the caller's script executed.
@@ -245,7 +242,7 @@ For `show`, `tail`, and `say`, use `--wave NAME` when worker names repeat.
 Ambiguous names fail instead of selecting the newest wave.
 Each worker uses its own launcher PID and run log.
 An unfinished worker whose launcher ended is `abandoned`.
-`LUNA_HOME` remains an explicit legacy alias for the state directory, below `CODEX_AGENTS_STATE_DIR` in precedence.
+`CODEX_AGENTS_STATE_DIR` selects the state directory.
 
 ## Script verification
 

@@ -38,7 +38,8 @@ def validate_event(runtime, db, recipient, event):
         return DENIED + ': the recipient team is unavailable'
     if kind == 'followup':
         row = db.execute('SELECT record FROM runtime_event_meta WHERE id=?', (event['id'],)).fetchone()
-        # Older followups came through the descendant-only send boundary.
+        # Restart, account-transfer, and saved-task continuations are system
+        # followups without a sender. Agent sends record senderId.
         if row is None:
             return None
         metadata = _object(row[0])
@@ -46,7 +47,7 @@ def validate_event(runtime, db, recipient, event):
             return None
         sender_id = metadata['senderId']
     elif kind == 'chat_review':
-        # The scheduler owns this durable key. Old review events have no meta.
+        # The scheduler owns this durable key and its participant identities.
         parts = str(event['id']).split(':')
         if len(parts) != 5 or parts[0] != 'review' or parts[2] != recipient['id']:
             return DENIED + ': the review participants are unavailable'

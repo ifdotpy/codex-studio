@@ -141,8 +141,6 @@ class EfficiencyContract(unittest.TestCase):
             self.runtime.model_read(other['id'], {'output_ref': key})
         with self.assertRaises(ValueError):
             self.runtime.model_read(lead['id'], {'output_ref': key, 'offset': -1})
-        legacy = self.value(self.tool(lead, 'orchestration_send', {'agent_id': 'workspace', 'text': packed({'tool': 'orchestration_read', 'arguments': {'output_ref': key}})}))
-        self.assertEqual(legacy['offset'], 0)
 
     def test_projection_retains_images_clocks_failure_and_spawn_ids(self):
         lead = self.lead()

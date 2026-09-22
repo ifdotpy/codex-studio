@@ -52,7 +52,7 @@ window.renderCase=async(which,value)=>{
   await saveRecording({id:'recording',chatId:'lead',state:'ready',sampleRate:16000,samples:4,created:Date.now(),error:value});
   component=React.createElement(Dictation,{chatId:'lead',onInsert:noop});
  }
- if(which==='panel') component=React.createElement(AgentPanel,{agentId:'panel-'+(++renderId),version:1,token:'fixture'});
+ if(which==='panel') component=React.createElement(AgentPanel,{agentId:'panel-'+(++renderId),token:'fixture',stateDir:'fixture'});
  root.render(React.createElement(MantineProvider,null,React.createElement(Boundary,{key:which==='panel'?'panel':++renderId},component)));
 };
 window.crashes=[];
@@ -86,9 +86,6 @@ try {
         : undefined,
   });
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-  // Chromium requires loopback permission for the sandboxed panel fixture.
-  if (browserType === chromium)
-    await page.context().grantPermissions(["local-network-access"]);
   const writes = [],
     errors = [],
     consoleErrors = [];
@@ -102,37 +99,18 @@ try {
       body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:operational-errors";</script>',
     }),
   );
-  let panelError = null,
-    callbackBody,
-    getFailure;
+  let getFailure;
   await page.route("**/api/**", async (route) => {
     if (route.request().method() === "POST") {
       writes.push(route.request().postDataJSON());
       return route.fulfill({
         status: 409,
-        json:
-          callbackBody === undefined
-            ? {
-                error: panelError,
-                requestId: "callback-envelope",
-                details: { transport: "native", attempt: 9 },
-              }
-            : callbackBody,
+        json: { error: "Unexpected action" },
       });
     }
     const url = new URL(route.request().url());
     if (url.pathname === "/api/panel" && getFailure !== undefined)
       return route.fulfill({ status: 503, json: getFailure });
-    if (url.pathname === "/api/panel")
-      return route.fulfill({
-        json: {
-          agent: url.searchParams.get("agent"),
-          version: 1,
-          html: '<button data-callback="check">Check action</button>',
-          css: "",
-          callbacks: [{ id: "check", label: "Check action" }],
-        },
-      });
     return route.fulfill({
       json: { tasks: [], monitors: [], requests: [], id: "tool" },
     });
@@ -243,109 +221,6 @@ try {
     await page.getByRole("button", { name: "Dictation", exact: true }).click();
     await page.getByText(legacy, { exact: true }).first().waitFor();
   }
-  panelError = value;
-  await page.evaluate((value) => window.renderCase("panel", value), value);
-  try {
-    await page
-      .locator('.agent-panel[data-ready="true"]')
-      .waitFor({ timeout: 8000 });
-  } catch (error) {
-    console.error(
-      "Panel readiness",
-      await page.locator("body").innerText(),
-      consoleErrors,
-      errors,
-    );
-    throw error;
-  }
-  const frame = page.frameLocator('iframe[title="Agent panel content"]');
-  await frame.getByRole("button", { name: "Check action" }).click();
-  await page
-    .getByText("Structured operation failed", { exact: true })
-    .first()
-    .waitFor();
-  await page
-    .getByRole("button", { name: "Show panel error details", exact: true })
-    .click();
-  await page.getByRole("dialog").waitFor();
-  assert.match(await page.getByRole("dialog").innerText(), /E_FIXTURE/);
-  assert.match(await page.getByRole("dialog").innerText(), /callback-envelope/);
-  assert.match(
-    await page.getByRole("dialog").innerText(),
-    /"transport": "native"/,
-  );
-  assert.match(await page.getByRole("dialog").innerText(), /"attempt": 7/);
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0].callback, "check");
-  assert.equal(
-    await page.getByRole("button", { name: "Retry", exact: true }).count(),
-    0,
-    "Rejected panel callback remains blocked",
-  );
-  assert.deepEqual(await page.evaluate(() => window.crashes), []);
-  panelError = { ...value, code: "E_NEW_SCOPE" };
-  await page.evaluate((value) => window.renderCase("panel", value), panelError);
-  await page.locator('.agent-panel[data-ready="true"]').waitFor();
-  assert.equal(
-    await page.getByRole("dialog").count(),
-    0,
-    "Switch closes earlier panel details",
-  );
-  await page
-    .frameLocator('iframe[title="Agent panel content"]')
-    .getByRole("button", { name: "Check action" })
-    .click();
-  await page
-    .getByText("Structured operation failed", { exact: true })
-    .first()
-    .waitFor();
-  assert.equal(
-    await page.getByRole("dialog").count(),
-    0,
-    "A new chat error cannot reopen earlier details",
-  );
-  assert.equal(writes.length, 2);
-  assert.notEqual(writes[0].agent, writes[1].agent);
-  assert.notEqual(writes[0].id, writes[1].id);
-  for (const body of [
-    {
-      message: "Message-only callback failure",
-      requestId: "message-callback",
-      details: { attempt: 10 },
-    },
-    null,
-  ]) {
-    callbackBody = body;
-    await page.evaluate((value) => window.renderCase("panel", value), body);
-    await page.locator('.agent-panel[data-ready="true"]').waitFor();
-    await page
-      .frameLocator('iframe[title="Agent panel content"]')
-      .getByRole("button", { name: "Check action" })
-      .click();
-    await page
-      .getByText(body?.message || "This panel action is no longer available.", {
-        exact: true,
-      })
-      .waitFor();
-    assert.equal(
-      await page.getByRole("button", { name: "Retry", exact: true }).count(),
-      0,
-      "HTTP 409 stays rejected for any response shape",
-    );
-    if (body) {
-      await page
-        .getByRole("button", { name: "Show panel error details", exact: true })
-        .click();
-      assert.deepEqual(
-        JSON.parse(await page.getByRole("dialog").locator("pre").innerText()),
-        body,
-      );
-      await page
-        .getByRole("dialog")
-        .getByRole("button", { name: "Close panel error details", exact: true })
-        .click();
-    }
-  }
   const beforeGetFailures = writes.length;
   for (const body of [
     {
@@ -363,11 +238,7 @@ try {
     getFailure = body;
     await page.evaluate((value) => window.renderCase("panel", value), body);
     await page
-      .getByText(
-        "Cannot load the agent panel: " +
-          (body?.error?.message || body?.message || "Request failed (503)"),
-        { exact: false },
-      )
+      .getByText("Cannot read PROGRESS.md.", { exact: false })
       .waitFor();
     assert.equal(
       writes.length,
@@ -376,22 +247,28 @@ try {
     );
     if (body) {
       await page
-        .getByRole("button", { name: "Show panel error details", exact: true })
+        .getByRole("button", { name: "Error details", exact: true })
         .click();
-      assert.deepEqual(
-        JSON.parse(await page.getByRole("dialog").locator("pre").innerText()),
-        body,
+      const dialog = page.getByRole("dialog");
+      await dialog
+        .getByRole("button", { name: "Error details", exact: true })
+        .click();
+      const detail = await dialog.innerText();
+      assert.ok(
+        detail.includes(body.requestId),
+        "Progress errors retain the request identity",
       );
-      await page
-        .getByRole("dialog")
-        .getByRole("button", { name: "Close panel error details", exact: true })
-        .click();
+      assert.ok(
+        detail.includes(body.error?.code || String(body.details.attempt)),
+        "Progress errors retain their diagnostic fields",
+      );
+      await page.keyboard.press("Escape");
     }
   }
   assert.deepEqual(await page.evaluate(() => window.crashes), []);
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: structured request/task/retry/safety/dictation diagnostics and rejected panel callback preserve render and manual actions",
+    "PASS: structured request/task/retry/safety/dictation and progress read diagnostics preserve render and manual actions",
   );
 } finally {
   await browser?.close();

@@ -12,21 +12,25 @@ restart agents, or repeat external operations as part of an update.
 
 ## Publish
 
-Review and test the patch against each supported live baseline. Install all
-source files under an exclusive flock on `scripts/.studio-update.lock`.
-Publish the manifest last, with the Python version used by the backend:
+Create one temporary patch for the current release outside the repository.
+Review and test it against the exact running backend. Do not ship previous
+release patches or chains of historical implementations.
+
+Copy the patch and current source into the release scripts directory under an
+exclusive flock on `scripts/.studio-update.lock`. Release that lock, then
+publish the manifest with the Python version used by the backend:
 
 ```sh
 python3 scripts/codex-publish-update \
-  --patch codex_message_intent_update.py \
-  --id message-intent-v1 \
-  --scope 'Message intent in the chat transcript'
+  --scripts /path/to/release/scripts \
+  --patch codex_release_update.py \
+  --id current-release \
+  --scope 'Exact methods and behavior changed by this release'
 ```
 
-Use `--scripts` to select an installed scripts directory. The command acquires
-the publication lock, hashes the complete Python source set, and atomically
-replaces `studio-live-update.json`. Installers must release their exclusive
-lock before they run this command.
+The command acquires the publication lock, hashes the complete Python source
+set, and atomically replaces `studio-live-update.json`. Sign the application
+after publication, then install the complete artifact.
 
 The updater holds a shared publication lock during validation and application.
 An incomplete installation, unknown source, or unsupported Python version does
@@ -38,15 +42,20 @@ manifest starts a new attempt without waiting for the previous retry delay.
 Read `live-update.json` in the existing state directory. The receipt records
 the patch result or its error. New backend instances also expose this data in
 `/api/desktop` under `liveUpdate`. A successful receipt belongs to its process.
-After a restart, the updater checks the live implementation again.
+Check the receipt's process identity, release identifier, status, and scope.
+Verify the changed behavior before removing the temporary deployment files.
+
+After verification, remove the manifest and temporary patch together under the
+exclusive publication lock. Sign the application again after that change.
+Keep the receipt in the state directory. New backend processes use the current
+source directly and do not need an old deployment patch.
 
 `backendBuild` remains the source identity from process startup. A successful
 patch receipt proves only the named patch scope. It does not claim that every
 loaded module matches every installed file.
 
-An existing backend needs a one-time installation of the updater. Later server
-starts install it automatically. A successful update does not restart the
-backend, close native connections, or change accepted message identities.
+The backend starts the updater automatically. A successful update does not
+restart the backend, close native connections, or change accepted message identities.
 
 ## Limits
 

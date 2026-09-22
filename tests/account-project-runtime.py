@@ -139,11 +139,10 @@ class ProjectRuntime(unittest.TestCase):
         self.legacy_rules([])
         server = self.runtime.connect()
         for method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval",
-                       "execCommandApproval", "applyPatchApproval", "item/permissions/requestApproval",
+                       "item/permissions/requestApproval",
                        "mcpServer/elicitation/request"):
             with self.subTest(method=method):
-                identity = "conversationId" if method in {"execCommandApproval", "applyPatchApproval"} else "threadId"
-                server.request({"id": method, "method": method, "params": {identity: a["threadId"]}})
+                server.request({"id": method, "method": method, "params": {"threadId": a["threadId"]}})
                 request = next(r for r in self.runtime.snapshot()["requests"] if r["rpcId"] == method)
                 before = len(server.responses)
                 self.runtime.answer(request["id"], {"decision": "accept"})

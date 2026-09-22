@@ -186,12 +186,11 @@ class EfficiencyMixin:
         if len(packed(texts).encode()) <= 16000:
             return result
         # The full result was committed before this projection. Images and
-        # immutable clock metadata stay intact, including panel set screenshots.
+        # immutable clock metadata stay intact.
         raw = '\n'.join(c.get('text', '') for c in texts)
         preview = {'requestId': key, 'outputRef': key, 'success': result.get('success'),
                    'truncated': True, 'textBytes': len(raw.encode()), 'excerpt': clip(raw, 4000),
-                   'read': {'tool': 'orchestration_read', 'output_ref': key},
-                   'legacyRead': {'agent_id': 'workspace', 'text': packed({'tool': 'orchestration_read', 'arguments': {'output_ref': key}})}}
+                   'read': {'tool': 'orchestration_read', 'output_ref': key}}
         with self.db() as db:
             receipt = self.tool_request(key, db)
             preview['outcome'] = receipt.get('outcome', 'unknown') if receipt else 'unknown'
@@ -234,7 +233,7 @@ class EfficiencyMixin:
                                          (actor['id'], call_id)).fetchall()
                     if len(aliases) > 1:
                         raise ValueError('Output reference is ambiguous. Use the canonical request id.')
-                    receipt = self.tool_request(aliases[0][0], db) if aliases else self._legacy_tool_request(db, actor, call_id)
+                    receipt = self.tool_request(aliases[0][0], db) if aliases else None
                     if receipt and receipt.get('agent') == actor['id']:
                         key = receipt['id']
                     native = None
@@ -245,11 +244,8 @@ class EfficiencyMixin:
                 if native.get('truncated') and db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search'").fetchone():
                     # Runtime.item indexes the original text in the same transaction
                     # before it clips the transcript view. Reuse that durable body.
-                    if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
-                        full = db.execute('SELECT s.body FROM runtime_search_rows r JOIN runtime_search s ON s.rowid=r.search_rowid '
-                                          'WHERE r.id=? AND s.id=? AND s.agent=?', (key, key, actor['id'])).fetchone()
-                    else:
-                        full = db.execute('SELECT body FROM runtime_search WHERE id=? AND agent=?', (key, actor['id'])).fetchone()
+                    full = db.execute('SELECT s.body FROM runtime_search_rows r JOIN runtime_search s ON s.rowid=r.search_rowid '
+                                      'WHERE r.id=? AND s.id=? AND s.agent=?', (key, key, actor['id'])).fetchone()
                 try:
                     payload = json.loads(full[0] if full else native['text'])
                 except (ValueError, TypeError, KeyError):
@@ -261,8 +257,6 @@ class EfficiencyMixin:
                 result = {'success': payload.get('status') == 'completed' and payload.get('exitCode') == 0}
                 receipt = {'outcome': 'unknown'}
             else:
-                if receipt is None:
-                    receipt = self._legacy_tool_request(db, actor, key) if isinstance(key, str) else None
                 if receipt is None or receipt.get('agent') != actor['id'] or receipt.get('stage') == 'ambiguous':
                     raise ValueError('Output reference is not owned by this agent')
                 key = receipt['id']
@@ -403,10 +397,6 @@ class EfficiencyMixin:
 
     def model_context(self, actor_id, args):
         topic = args.get('topic')
-        if topic == 'agent_manage':
-            # Compatibility for existing threads whose native tool list is fixed.
-            from codex_agent_management import manage_agent
-            return manage_agent(self, actor_id, args)
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             if topic == 'plan':

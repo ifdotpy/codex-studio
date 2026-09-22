@@ -177,7 +177,7 @@ class SpawnRequestRecovery(unittest.TestCase):
         starts = [params for method, params in self.runtime.server.calls if method == 'turn/start' and params['threadId'] == parent['threadId']]
         self.assertTrue(any('Child verified output' in json.dumps(params) for params in starts))
 
-    def test_old_thread_recovery_bypasses_both_pools_and_send_bypasses_slow_tools(self):
+    def test_recovery_bypasses_both_pools_and_send_bypasses_slow_tools(self):
         self.runtime.dynamic(self.message())
         child_id = self.request()['agentIds'][0]
         release_tools, release_coordination = threading.Event(), threading.Event()
@@ -193,10 +193,9 @@ class SpawnRequestRecovery(unittest.TestCase):
         try:
             tools_entered.wait(4)
             coordination_entered.wait(4)
-            envelope = json.dumps({'agent_id': 'workspace', 'text': json.dumps({
-                'tool': 'orchestration_request', 'arguments': {'action': 'get', 'request_id': 'batch-1'}})})
-            self.runtime.request(self.message('legacy-recovery', 'orchestration_send', envelope))
-            self.assertEqual(self.value(self.response('legacy-recovery'))['outcome'], 'applied')
+            self.runtime.request(self.message('request-recovery', 'orchestration_request',
+                {'action': 'get', 'request_id': 'batch-1'}))
+            self.assertEqual(self.value(self.response('request-recovery'))['outcome'], 'applied')
             self.assertTrue(all(not future.done() for future in tool_futures + coordination_futures))
             release_coordination.set()
             for future in coordination_futures:
@@ -208,9 +207,8 @@ class SpawnRequestRecovery(unittest.TestCase):
             with self.runtime.db() as db:
                 event = db.execute('SELECT agent,kind,text FROM runtime_events WHERE id=?', (receipt['id'],)).fetchone()
                 self.assertEqual(tuple(event), (child_id, 'followup', 'Continue the bounded task'))
-            self.runtime.request(self.message('complaint-shortcut', 'orchestration_send', {
-                'agent_id': 'complaint', 'text': json.dumps({'action': 'read'})}))
-            self.assertTrue(self.response('complaint-shortcut')['success'])
+            self.runtime.request(self.message('complaint-read', 'orchestration_complaint', {'action': 'read'}))
+            self.assertTrue(self.response('complaint-read')['success'])
             self.assertTrue(all(not future.done() for future in tool_futures))
         finally:
             release_tools.set()
@@ -218,7 +216,7 @@ class SpawnRequestRecovery(unittest.TestCase):
             for future in tool_futures + coordination_futures:
                 future.result(3)
 
-    def test_malformed_workspace_envelopes_fail_in_dynamic_without_intake_crash(self):
+    def test_removed_workspace_envelopes_fail_without_intake_crash(self):
         for n, text in enumerate(['not-json', '[]', json.dumps({'tool': []}),
                                   json.dumps({'tool': 'orchestration_request', 'arguments': []})]):
             call_id = 'malformed-' + str(n)

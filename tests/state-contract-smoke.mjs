@@ -27,7 +27,7 @@ try {
     json(join(state, "codex-swarm-status." + wave + ".json"), [{
       wave, name: "worker", threadId: "thread-" + wave, runId: "run-" + wave,
       launcherPid: process.pid, turnStatus: "running", goalStatus: "active",
-      lastEvent: new Date().toISOString(), boardOwner: wave + ":run:worker",
+      lastEvent: new Date().toISOString(), agentOwner: wave + ":run:worker",
     }]);
     writeFileSync(join(state, "codex-swarm-launcher." + wave + ".pid"), String(process.pid));
   }

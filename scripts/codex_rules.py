@@ -273,7 +273,7 @@ class RulesMixin:
         workers = [a for a in self.records(db, "agents")
                    if a["rootId"] == lead["id"] and not a.get("isLead") and not a.get("deletedAt")]
         commands = {m["agent"] for m in self.records(db, "monitors")
-                    if m.get("status") == "running" and not m.get("cancelRequested") and not m.get("panelFeed")}
+                    if m.get("status") == "running" and not m.get("cancelRequested")}
         count = sum(a["status"] in {"starting", "running"} or a["id"] in commands for a in workers)
         previous = (rule.get("lowSince"), rule.get("alerted"), rule.get("activeWorkers"))
         rule["activeWorkers"] = count

@@ -1,18 +1,7 @@
 import { retainTranscriptItems } from "./transcriptIdentity";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  syncApi as api,
-  ApiError,
-  errorText,
-  setToken,
-  saved,
-  save,
-} from "./api";
-import {
-  subscribeProjection,
-  syncDatabase,
-  UnsupportedSyncError,
-} from "./sync/client";
+import { syncApi as api, errorText, setToken, saved, save } from "./api";
+import { subscribeProjection, syncDatabase } from "./sync/client";
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import type { Snapshot, Message, Agent, Json } from "./types";
@@ -107,22 +96,17 @@ export function useSnapshot() {
     const request = ++generation.current;
     try {
       if (credentialsOnly) {
-        try {
-          const session = await api<{ token: string }>("/api/session");
-          if (request !== generation.current) return;
-          sessionToken.current = session.token;
-          setToken(session.token);
-          setData((old) =>
-            old && old.token !== session.token
-              ? { ...old, token: session.token }
-              : old,
-          );
-          setError("");
-          return;
-        } catch (error) {
-          // Keep compatibility with servers that predate the session endpoint.
-          if (!(error instanceof ApiError && error.status === 404)) throw error;
-        }
+        const session = await api<{ token: string }>("/api/session");
+        if (request !== generation.current) return;
+        sessionToken.current = session.token;
+        setToken(session.token);
+        setData((old) =>
+          old && old.token !== session.token
+            ? { ...old, token: session.token }
+            : old,
+        );
+        setError("");
+        return;
       }
       const next = await api<Snapshot>("/api/state?view=chat");
       if (request !== generation.current) return;
@@ -162,11 +146,8 @@ export function useSnapshot() {
         await refresh(true);
       } catch (error) {
         if (stopped) return;
-        if (error instanceof UnsupportedSyncError) await refresh(false);
-        else {
-          setError(errorText(error));
-          if (!replicated.current) await refresh(false);
-        }
+        setError(errorText(error));
+        if (!replicated.current) await refresh(false);
       }
       polling = false;
       if (!stopped) timer = setTimeout(poll, replicated.current ? 30000 : 1600);

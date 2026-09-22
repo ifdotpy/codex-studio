@@ -5,6 +5,6 @@ assert.equal(accountLimits(a, "a", "native-a"), a);
 assert.equal(accountLimits(a, "b"), null);
 assert.equal(accountLimits(a, "a", "replacement-login"), null);
 assert.equal(accountLimits({ data: {} }, "a"), null);
-assert.deepEqual(accountLimits({ data: {} }, "default"), { data: {} });
+assert.equal(accountLimits({ data: {} }, "default"), null);
 assert.equal(accountLimits(null, "default"), null);
 console.log("Account limits ownership: 6 passed");

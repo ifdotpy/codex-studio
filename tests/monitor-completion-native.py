@@ -44,6 +44,9 @@ class NativeCommands(f.FakeServer):
         self.native.close()
         super().close()
 
+    def join_callbacks(self, timeout=10):
+        return self.native.join_callbacks(timeout)
+
 
 class NativeCompletion(unittest.TestCase):
     def test_real_exit_and_cancel_emit_one_terminal_receipt(self):

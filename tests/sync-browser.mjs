@@ -21,7 +21,7 @@ try {
  await page.route('**/api/sync/pull?**', route => {
   const url = new URL(route.request().url()), after = Number(url.searchParams.get('after'));
   if(url.searchParams.get('scope')==='drafts')return route.fulfill({json:{workspaceId:'a'.repeat(32),documents:[],checkpoint:{seq:0}}});
-  route.fulfill({json:{workspaceId:"a".repeat(32),documents: after < revision ? [{id:'state',payload:JSON.stringify({text:content}),seq:revision,_deleted:false}] : [],checkpoint:{seq:Math.max(after,revision)}}});
+  route.fulfill({json:{workspaceId:"a".repeat(32),documents: after < revision ? [{id:'state:chat',payload:JSON.stringify({text:content}),seq:revision,_deleted:false}] : [],checkpoint:{seq:Math.max(after,revision)}}});
  });
  await page.route('**/api/sync/drafts', route=>{
   draftPushes.push(...route.request().postDataJSON().rows);

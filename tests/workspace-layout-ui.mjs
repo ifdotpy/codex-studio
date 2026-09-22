@@ -3,7 +3,7 @@
 // The fixture uses an isolated runtime. No model service or user state is used.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,7 @@ const fixture = spawn(
   { cwd: repo, stdio: ["pipe", "pipe", "pipe"] },
 );
 let browser;
+let closing = false;
 let log = "";
 fixture.stderr.on("data", (chunk) => (log += chunk));
 
@@ -50,14 +51,13 @@ assert.ok(lead, "fixture has a lead chat");
 
 const panel = {
   agent: lead.id,
-  version: 1,
-  dataVersion: 1,
-  format: "html",
-  html: `<main class="layout-panel"><strong>Active agent panel</strong><p>Panel content stays inside the shared reading column.</p><p>Additional content stays within the panel.</p></main>`,
-  css: `.layout-panel { min-height: 100px; padding: 12px 16px; } .layout-panel p { margin: 4px 0; }`,
-  updated: Date.now() / 1000,
-  callbacks: [],
-  submittedCallbacks: [],
+  format: "markdown",
+  markdown:
+    "Active agent progress\n\nPanel content stays inside the shared reading column.",
+  path: "/fixture/PROGRESS.md",
+  revision: "fixture-progress",
+  exists: true,
+  error: null,
 };
 
 try {
@@ -69,20 +69,34 @@ try {
     args: ["--disable-extensions", "--no-first-run"],
   });
   const page = await browser.newPage({ viewport: viewports[0] });
+  if (process.env.STUDIO_LAYOUT_ASSETS) {
+    await page.route("**/*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.origin !== origin || url.pathname.startsWith("/api/"))
+        return route.fallback();
+      const relative =
+        url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+      if (relative.includes("..")) throw Error("Invalid artifact path");
+      const file = join(process.env.STUDIO_LAYOUT_ASSETS, relative);
+      const contentType = relative.endsWith(".js")
+        ? "text/javascript"
+        : relative.endsWith(".css")
+          ? "text/css"
+          : relative.endsWith(".html")
+            ? "text/html"
+            : relative.endsWith(".json")
+              ? "application/json"
+              : undefined;
+      await route.fulfill({
+        body: await readFile(file),
+        ...(contentType ? { contentType } : {}),
+      });
+    });
+  }
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
 
-  // Keep the browser on the HTTP projection. This avoids a local sync cache
-  // replacing the long-label response with the fixture's short labels.
-  await page.route("**/api/sync/identity", (route) =>
-    route.fulfill({
-      status: 404,
-      json: { error: "Sync unavailable in fixture" },
-    }),
-  );
-  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
-    const response = await route.fetch();
-    const data = await response.json();
+  const labels = (data) => {
     const target =
       data.threads?.find((agent) => agent.id === lead.id) ||
       data.threads?.find((agent) => agent.name === "Release lead");
@@ -91,8 +105,6 @@ try {
       if (agent.id === targetId) {
         agent.name = longTitle;
         agent.cwd = longProject;
-        agent.panelVersion = panel.version;
-        agent.panelDataVersion = panel.dataVersion;
       } else if (agent.rootId === targetId) {
         agent.cwd = longProject;
       }
@@ -101,13 +113,32 @@ try {
       if (agent.id === targetId) {
         agent.name = longTitle;
         agent.cwd = longProject;
-        agent.panelVersion = panel.version;
-        agent.panelDataVersion = panel.dataVersion;
       } else if (agent.rootId === targetId) {
         agent.cwd = longProject;
       }
     }
-    await route.fulfill({ response, json: data });
+    return data;
+  };
+  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: labels(await response.json()) });
+  });
+  await page.route("**/api/sync/pull?**", async (route) => {
+    try {
+      const response = await route.fetch();
+      const data = await response.json();
+      const scope = new URL(route.request().url()).searchParams.get("scope");
+      if (scope === "state" || scope === "state:chat") {
+        for (const document of data.documents || []) {
+          document.payload = JSON.stringify(
+            labels(JSON.parse(document.payload)),
+          );
+        }
+      }
+      await route.fulfill({ response, json: data });
+    } catch (error) {
+      if (!closing) throw error;
+    }
   });
   await page.route("**/api/accounts", async (route) => {
     const data = structuredClone(fixtureAccounts);
@@ -123,7 +154,7 @@ try {
   await page.goto(origin);
   await page.locator("[data-chat]").filter({ hasText: longTitle }).click();
   await page.getByText("I assigned 40 workers", { exact: false }).waitFor();
-  await page.locator(".agent-panel[data-ready='true']").waitFor();
+  await page.locator(".agent-panel[data-fit='yes']").waitFor();
 
   const measure = () =>
     page.evaluate(() => {
@@ -207,6 +238,10 @@ try {
       join(root, "measurements.json"),
       JSON.stringify(measurements, null, 2),
     );
+    await writeFile(
+      join(root, "measurements.json"),
+      JSON.stringify(measurements, null, 2),
+    );
     await page.screenshot({
       path: join(root, `workspace-${viewport.name}.png`),
       animations: "disabled",
@@ -268,13 +303,10 @@ try {
       current.panel.height > 0 && current.panel.height <= panelHeight + 1,
       `${prefix}: panel height ${current.panel.height}`,
     );
-    const panelFrame = page.locator(".agent-panel iframe");
     assert.equal(
-      await panelFrame.evaluate(
-        (element) => element.getBoundingClientRect().height,
-      ),
-      panelHeight,
-      `${prefix}: active panel frame height`,
+      await page.locator(".agent-panel iframe").count(),
+      0,
+      `${prefix}: Markdown progress does not use a retired panel frame`,
     );
     const transcriptWidth = current.transcript.right - current.transcript.left;
     assert.ok(transcriptWidth <= 681, `${prefix}: readable text width`);
@@ -382,7 +414,11 @@ try {
   console.log(
     `PASS workspace layout: long title, project, account, capped panel, narrow text, aligned composer, blank composer, and team drawer across 1440, 1280, 1024, and 390px. Evidence ${root}`,
   );
+} catch (error) {
+  console.error("Layout evidence:", root);
+  throw error;
 } finally {
+  closing = true;
   for (const context of browser?.contexts() || []) {
     for (const page of context.pages())
       await page.unrouteAll({ behavior: "wait" });

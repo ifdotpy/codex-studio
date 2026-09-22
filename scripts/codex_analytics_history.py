@@ -14,8 +14,6 @@ import threading
 import time
 import uuid
 
-from codex_budget import budget_migrate, budget_prepare_migration
-
 
 TOKEN_FIELDS = {
     "input_tokens": "inputTokens", "cached_input_tokens": "cachedInputTokens",
@@ -397,7 +395,6 @@ class AnalyticsHistoryMixin:
             if not getattr(self, "_analytics_history_schema_ready", False):
                 with self.lock, self.db() as db:
                     self.analytics_history_init(db)
-            budget_prepare_migration(self)
             with self.lock, self.db() as db:
                 repair_terminal_errors(db)
                 agents = [a for a in self.records(db, "agents") if a.get("threadId")]
@@ -408,7 +405,6 @@ class AnalyticsHistoryMixin:
             self._analytics_history_cursor = (self._analytics_history_cursor + 1) % len(agents)
             key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
             with self.lock, self.db() as db:
-                budget_migrate(db, a)
                 row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()
             state = json.loads(row[0]) if row else {
                 "id": key, "agent": a["id"], "accountKey": a.get("accountKey", "default"),

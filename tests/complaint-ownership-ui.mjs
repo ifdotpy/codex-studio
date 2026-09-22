@@ -1,307 +1,284 @@
 #!/usr/bin/env node
-// Isolated UI contract. HTTP fixtures exercise retry, version conflict, and legacy behavior.
+// Current message recipient, history, and response delivery through the real component.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(repo, "web/package.json"));
 const { chromium } = require("playwright-core");
-const root = await mkdtemp(join(tmpdir(), "codex-complaint-owners-"));
-const proc = spawn(
-  "python3",
-  ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
-  { stdio: ["pipe", "pipe", "pipe"] },
-);
-let browser,
-  page,
-  log = "";
-proc.stderr.on("data", (data) => (log += data));
+const { createServer } = await import(require.resolve("vite"));
+const harness = `
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {MantineProvider} from '@mantine/core';
+import '@mantine/core/styles.css';
+import UserMessages from '/src/components/UserMessages.tsx';
+const root=createRoot(document.getElementById('root'));
+let records=[],target='user';
+const render=()=>root.render(React.createElement(MantineProvider,null,
+ React.createElement(UserMessages,{data:{stateDir:'ownership-contract',token:'fixture',threads:[{id:'lead',name:'Release lead'},{id:'worker',name:'Worker'}],runtime:{complaints:records}},target,refresh:async()=>{},notify:()=>{}})));
+window.setRecords=(value)=>{records=value;render()};
+window.setTarget=(value)=>{target=value;render()};
+`;
+const server = await createServer({
+  configFile: false,
+  root: join(repo, "web"),
+  server: { host: "127.0.0.1", port: 0 },
+  plugins: [
+    {
+      name: "ownership-contract",
+      resolveId(id) {
+        if (id === "virtual:ownership") return "\0ownership";
+      },
+      load(id) {
+        if (id === "\0ownership") return harness;
+      },
+    },
+  ],
+});
+await server.listen();
+let browser;
+const record = (id, author, recipient) => ({
+  id,
+  author,
+  recipient,
+  leadId: "lead",
+  version: 1,
+  text: `Message ${id}`,
+  title: `Message ${id}`,
+  status: "open",
+  created: 1,
+  updated: 1,
+  readAt: null,
+  responses: [],
+  authorName: author === "lead" ? "Release lead" : "Worker",
+  leadName: "Release lead",
+  needsResponse: true,
+});
+const user = record("owner", "lead", "user");
+const assigned = record("worker-request", "worker", "lead");
+const history = record("history", "lead", "user");
+history.responses = [
+  {
+    id: "historical-response",
+    author: "lead",
+    text: "The lead previously closed its own request.",
+    status: "resolved",
+    at: 1,
+  },
+];
+const records = [user, assigned, history];
 try {
-  const port = await new Promise((resolve, reject) => {
-    proc.stdout.once("data", (data) => resolve(Number(String(data).trim())));
-    proc.once("exit", () => reject(Error(log)));
-  });
-  const origin = `http://127.0.0.1:${port}`;
-  const state = await (await fetch(origin + "/api/state")).json();
-  const lead = state.threads.find((a) => a.name === "Release lead");
-  const worker = state.threads.find((a) => a.parentId === lead.id);
-  assert.ok(worker);
-  const makeComplaint = (id, author, recipient, text) => ({
-    id,
-    leadId: lead.id,
-    author,
-    recipient,
-    version: 1,
-    text,
-    title: text,
-    status: "open",
-    created: Date.now() / 1000,
-    updated: Date.now() / 1000,
-    readAt: null,
-    responses: [],
-    authorName: author === lead.id ? lead.name : worker.name,
-    leadName: lead.name,
-    needsResponse: true,
-  });
-  const user = makeComplaint(
-    "owner-problem",
-    lead.id,
-    "user",
-    "The test account needs access to the private repository.",
-  );
-  user.responses.push({
-    id: "old-self-response",
-    author: lead.id,
-    text: "Previous lead response before ownership split.",
-    status: "resolved",
-    at: Date.now() / 1000,
-  });
-  const assigned = makeComplaint(
-    "worker-problem",
-    worker.id,
-    "lead",
-    "The worker needs a decision from its orchestrator.",
-  );
-  const legacy = makeComplaint(
-    "legacy-problem",
-    lead.id,
-    undefined,
-    "Historical complaint on an older server.",
-  );
-  delete legacy.version;
-  legacy.needsResponse = false;
-  legacy.status = "resolved";
-  legacy.readAt = Date.now() / 1000;
-  legacy.responses.push({
-    id: "legacy-self-response",
-    author: lead.id,
-    text: "The lead previously closed its own complaint.",
-    status: "resolved",
-    at: legacy.readAt,
-  });
-  const records = [user, assigned, legacy];
   browser = await chromium.launch({
     executablePath:
       process.env.CHROME_BIN ||
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     headless: true,
   });
-  page = await browser.newPage({ viewport: { width: 1200, height: 950 } });
+  const page = await browser.newPage({
+    viewport: { width: 1200, height: 950 },
+  });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
-    const response = await route.fetch();
-    const data = await response.json();
-    data.runtime.complaints = records;
-    await route.fulfill({ response, json: data });
-  });
+  await page.route("**/check", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__ownership";</script>',
+    }),
+  );
   await page.route("**/api/complaint?*", (route) =>
     route.fulfill({
       json: records.find(
-        (c) => c.id === new URL(route.request().url()).searchParams.get("id"),
+        (record) =>
+          record.id === new URL(route.request().url()).searchParams.get("id"),
       ),
     }),
   );
-  let attempts = [],
-    mode = "lost",
+  let mode = "lost",
     completed = 0,
-    deferredResponse;
+    pending;
+  const attempts = [];
   await page.route("**/api/complaints", async (route) => {
     const payload = route.request().postDataJSON();
     attempts.push(payload);
+    assert.equal(route.request().headers()["x-canvas-token"], "fixture");
     if (mode === "deferred") {
-      deferredResponse = route;
+      pending = route;
       return;
     }
-    if (mode === "lost") {
-      mode = "retry";
-      completed++;
-      user.version++;
-      user.responses.push({
-        id: payload.id,
-        author: "user",
-        text: payload.text,
-        status: payload.status,
-        at: Date.now() / 1000,
-      });
-      user.status = payload.status;
-      user.needsResponse = false;
-      user.readAt = Date.now() / 1000;
-      await route.abort("failed");
-    } else if (mode === "retry") {
-      assert.deepEqual(payload, attempts[0]);
-      await route.fulfill({ json: user });
-      mode = "conflict";
-    } else if (mode === "conflict") {
+    if (mode === "conflict") {
       user.version++;
       user.responses.push({
         id: "other-tab",
         author: "user",
-        text: "Another window updated this complaint.",
+        text: "Another window updated this message.",
         status: "in_progress",
-        at: Date.now() / 1000,
-      });
-      await route.fulfill({
-        status: 409,
-        json: { error: "Complaint version changed" },
+        at: 2,
       });
       mode = "success";
-    } else {
-      assert.equal(payload.version, user.version);
-      assert.notEqual(payload.id, attempts.at(-2).id);
-      completed++;
-      user.version++;
-      user.responses.push({
-        id: payload.id,
-        author: "user",
-        text: payload.text,
-        status: payload.status,
-        at: Date.now() / 1000,
+      await route.fulfill({
+        status: 409,
+        json: { error: "Message version changed" },
       });
-      user.status = payload.status;
-      await route.fulfill({ json: user });
+      return;
     }
+    if (mode === "retry") {
+      assert.deepEqual(payload, attempts[0]);
+      mode = "conflict";
+      await route.fulfill({ json: user });
+      return;
+    }
+    assert.equal(payload.version, user.version);
+    user.version++;
+    completed++;
+    user.responses.push({
+      id: payload.id,
+      author: "user",
+      text: payload.text,
+      status: payload.status,
+      at: 3,
+    });
+    user.status = payload.status;
+    user.needsResponse = false;
+    if (mode === "lost") {
+      mode = "retry";
+      await route.abort("failed");
+    } else await route.fulfill({ json: user });
   });
-  await page.goto(origin);
-  await page.locator("#open-complaints").click();
-  assert.equal(
-    await page
-      .getByRole("tab", { name: /^For you/ })
-      .getAttribute("aria-selected"),
-    "true",
-  );
+  await page.goto(server.resolvedUrls.local[0] + "check");
+  await page.waitForFunction(() => !!window.setRecords);
+  await page.evaluate((records) => window.setRecords(records), records);
+  const thread = page.getByRole("region", {
+    name: "Message to you",
+    exact: true,
+  });
+  const back = () =>
+    thread
+      .getByRole("button", { name: "Back to messages", exact: true })
+      .click();
+  const open = async (id) => {
+    await page.locator(`[data-complaint="${id}"]`).click();
+    await thread
+      .getByRole("heading", { name: "Your reply", exact: true })
+      .waitFor();
+  };
   assert.equal(await page.locator("[data-complaint]").count(), 2);
-  const legacyCard = page.locator('[data-complaint="legacy-problem"]');
   assert.match(
-    await legacyCard.textContent(),
-    /Awaiting response/i,
-    "legacy self-closed complaint stays in the user pending inbox",
+    await page.locator('[data-complaint="history"]').innerText(),
+    /Awaiting your response/,
   );
-  assert.match(await legacyCard.textContent(), /Awaiting your response/);
+  await open("history");
   assert.match(
-    await page.getByRole("tab", { name: /^For you/ }).textContent(),
-    /2/,
+    await thread.locator(".complaint-response").innerText(),
+    /Release lead.*Resolved/s,
   );
-  assert.match(
-    await page.getByRole("tab", { name: /^For orchestrator/ }).textContent(),
-    /1/,
-  );
-  await page.evaluate(async () => {
-    await Promise.all(
-      document
-        .getAnimations()
-        .filter((a) => a.effect?.getTiming().iterations !== Infinity)
-        .map((a) => a.finished.catch(() => {})),
-    );
-  });
-  await page.screenshot({ path: join(root, "complaint-inbox.png") });
-  await page.locator('[data-complaint="owner-problem"]').click();
-  const dialog = page.getByRole("dialog", { name: "Complaint", exact: true });
-  await dialog.getByRole("heading", { name: "Your response" }).waitFor();
-  assert.match(
-    await dialog.locator(".complaint-response strong").first().textContent(),
-    /^Release lead/,
-  );
-  assert.equal(user.readAt, null, "opening a complaint does not mark it read");
   assert.equal(
-    await dialog.getByRole("button", { name: "Send response" }).isDisabled(),
+    history.responses[0].status,
+    "resolved",
+    "Prior response metadata stays intact",
+  );
+  await thread
+    .getByText("Your response is required.", { exact: true })
+    .waitFor();
+  assert.equal(
+    await thread
+      .getByRole("button", { name: "Send reply", exact: true })
+      .isDisabled(),
     true,
   );
-  await dialog
-    .getByLabel("Action or reason")
-    .fill("I will grant the account access.");
-  await page.evaluate(async () => {
-    await Promise.all(
-      document
-        .getAnimations()
-        .filter((a) => a.effect?.getTiming().iterations !== Infinity)
-        .map((a) => a.finished.catch(() => {})),
-    );
-  });
-  await page.screenshot({ path: join(root, "complaint-response.png") });
-  await dialog.getByRole("button", { name: "Send response" }).click();
-  await dialog.getByRole("button", { name: "Retry response" }).waitFor();
-  assert.equal(await dialog.getByLabel("Action or reason").isDisabled(), true);
-  await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await page.locator("#complaint-filter").selectOption("all");
-  await page.locator('[data-complaint="owner-problem"]').click();
-  await dialog.getByRole("button", { name: "Retry response" }).click();
-  await dialog.getByRole("button", { name: "Send response" }).waitFor();
+  await back();
+  await open("owner");
+  assert.equal(user.readAt, null, "Opening does not mark the request read");
+  await thread
+    .getByLabel("Reply", { exact: true })
+    .fill("I will grant access.");
+  await thread.getByRole("button", { name: "Send reply", exact: true }).click();
+  await thread
+    .getByRole("button", { name: "Retry response", exact: true })
+    .waitFor();
   assert.equal(
-    completed,
-    1,
-    "uncertain retry does not create another response",
+    await thread.getByLabel("Reply", { exact: true }).isDisabled(),
+    true,
   );
-  await dialog.getByLabel("Action or reason").fill("Access is now available.");
-  await dialog.getByLabel("Action", { exact: true }).selectOption("resolved");
-  await dialog.getByRole("button", { name: "Send response" }).click();
-  await dialog
+  await back();
+  await open("owner");
+  await thread
+    .getByRole("button", { name: "Retry response", exact: true })
+    .click();
+  await thread
+    .getByRole("button", { name: "Send reply", exact: true })
+    .waitFor();
+  assert.equal(completed, 1);
+  await thread
+    .getByLabel("Reply", { exact: true })
+    .fill("Access is available.");
+  await thread
+    .getByRole("button", {
+      name: "Change message status (optional)",
+      exact: true,
+    })
+    .click();
+  await thread
+    .getByLabel("Message status", { exact: true })
+    .selectOption("resolved");
+  await thread.getByRole("button", { name: "Send reply", exact: true }).click();
+  await thread
     .getByRole("alert")
-    .filter({ hasText: "This complaint changed" })
+    .filter({ hasText: "This message changed" })
     .waitFor();
-  await dialog
-    .getByText("Another window updated this complaint.", { exact: true })
+  await thread
+    .getByText("Another window updated this message.", { exact: true })
     .waitFor();
-  assert.equal(attempts.length, 3, "conflict does not auto-resubmit");
-  await dialog.getByRole("button", { name: "Send response" }).click();
-  await dialog
+  assert.equal(attempts.length, 3);
+  await thread.getByRole("button", { name: "Send reply", exact: true }).click();
+  await thread
     .locator(".complaint-response")
-    .filter({ hasText: "Access is now available." })
+    .filter({ hasText: "Access is available." })
     .waitFor();
   assert.equal(completed, 2);
-  await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await page.getByRole("tab", { name: /^For orchestrator/ }).click();
-  await page.locator('[data-complaint="worker-problem"]').click();
-  await dialog
-    .getByText("A response from the orchestrator is required.")
+  assert.notEqual(attempts[3].id, attempts[2].id);
+  await back();
+  await page.evaluate(() => window.setTarget("lead"));
+  await page.locator('[data-complaint="worker-request"]').click();
+  const leadThread = page.getByRole("region", {
+    name: "Message to main agent",
+    exact: true,
+  });
+  await leadThread
+    .getByText("A response from the main agent is required.", { exact: true })
     .waitFor();
-  assert.equal(await dialog.locator(".complaint-reply").count(), 0);
-  await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await page.getByRole("tab", { name: /^For you/ }).click();
-  await page.locator('[data-complaint="legacy-problem"]').click();
-  await dialog.getByText("Update the server to respond here.").waitFor();
-  assert.match(
-    await dialog.locator(".complaint-response strong").first().textContent(),
-    /^Release lead/,
-  );
-  assert.equal(
-    legacy.status,
-    "resolved",
-    "summary normalization preserves historical detail",
-  );
-  assert.equal(await dialog.locator(".complaint-reply").count(), 0);
-  await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  // A response from a closed dialog must not replace the complaint now open.
+  assert.equal(await leadThread.locator(".complaint-reply").count(), 0);
+  await leadThread
+    .getByRole("button", { name: "Back to messages", exact: true })
+    .click();
+  await page.evaluate(() => window.setTarget("user"));
   for (const status of [200, 409]) {
-    await page.locator('[data-complaint="owner-problem"]').click();
-    await dialog
-      .getByLabel("Action or reason")
-      .fill(`Deferred response ${status}`);
+    await open("owner");
+    await thread
+      .getByLabel("Reply", { exact: true })
+      .fill(`Deferred ${status}`);
     mode = "deferred";
-    deferredResponse = null;
-    await dialog.getByRole("button", { name: "Send response" }).click();
-    for (let attempt = 0; !deferredResponse && attempt < 100; attempt++) {
+    pending = null;
+    await thread
+      .getByRole("button", { name: "Send reply", exact: true })
+      .click();
+    for (let attempt = 0; !pending && attempt < 100; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.ok(deferredResponse, "the response request is pending");
-    await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    await page.locator('[data-complaint="legacy-problem"]').click();
-    await dialog.getByText("Update the server to respond here.").waitFor();
+    assert.ok(pending);
+    await back();
+    await open("history");
     await page.evaluate((forbidden) => {
-      window.complaintRaceObserved = false;
-      window.complaintRaceObserver = new MutationObserver(() => {
+      window.wrongMessage = false;
+      window.observer = new MutationObserver(() => {
         if (
           document
-            .querySelector('[role="dialog"]')
+            .querySelector(".message-inline-thread")
             ?.textContent.includes(forbidden)
         )
-          window.complaintRaceObserved = true;
+          window.wrongMessage = true;
       });
-      window.complaintRaceObserver.observe(document.body, {
+      window.observer.observe(document.body, {
         childList: true,
         subtree: true,
         characterData: true,
@@ -310,63 +287,43 @@ try {
     const settled = page.waitForResponse((response) =>
       response.url().endsWith("/api/complaints"),
     );
-    const conflictDetail =
+    const detail =
       status === 409
         ? page.waitForResponse((response) =>
-            response.url().includes("/api/complaint?id=owner-problem"),
+            response.url().includes("/api/complaint?id=owner"),
           )
         : null;
-    await deferredResponse.fulfill({
+    await pending.fulfill({
       status,
-      json: status === 200 ? user : { error: "Complaint version changed" },
+      json: status === 200 ? user : { error: "Message version changed" },
     });
     await settled;
-    // The conflict handler refreshes the state and fetches the old complaint again.
-    if (status === 409) {
-      await conflictDetail;
-    }
+    if (detail) await detail;
     await page.evaluate(async () => {
       await new Promise(requestAnimationFrame);
       await new Promise(requestAnimationFrame);
     });
+    assert.equal(await page.evaluate(() => window.wrongMessage), false);
+    await thread.getByText(history.text, { exact: true }).waitFor();
     assert.equal(
-      await page.evaluate(() => window.complaintRaceObserved),
-      false,
-      "late response never replaces another complaint",
+      await thread.locator(".complaint-reply").count(),
+      1,
+      "Current historical records permit a user reply",
     );
-    await dialog.getByText(legacy.text, { exact: true }).waitFor();
-    assert.equal(await dialog.locator(".complaint-reply").count(), 0);
-    await page.evaluate(() => window.complaintRaceObserver.disconnect());
-    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await page.evaluate(() => window.observer.disconnect());
+    await back();
   }
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.evaluate(async () => {
-    await Promise.all(
-      document
-        .getAnimations()
-        .filter((a) => a.effect?.getTiming().iterations !== Infinity)
-        .map((a) => a.finished.catch(() => {})),
-    );
-  });
-  await page.screenshot({ path: join(root, "complaint-mobile.png") });
   assert.ok(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
-    "no horizontal overflow",
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Complaint ownership UI: PASS (routing, exact retry, conflict, late response, legacy, mobile)",
+    "PASS: current recipients, preserved response history, pending user reply, exact retry, conflict, response permissions, late response, mobile",
   );
-  console.log("Screenshots:", root);
-} catch (error) {
-  await page?.screenshot({ path: join(root, "failure.png") });
-  console.error("Evidence:", root);
-  throw error;
 } finally {
   await browser?.close();
-  proc.kill("SIGTERM");
-  if (proc.exitCode === null)
-    await new Promise((resolve) => proc.once("exit", resolve));
+  await server.close();
 }

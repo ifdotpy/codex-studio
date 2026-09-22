@@ -368,11 +368,6 @@ try {
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     await value("medium");
-    await page
-      .getByText(
-        "Previous settings request has no account identity. Check the current settings.",
-      )
-      .waitFor();
     assert.equal(
       await page.getByRole("button", { name: "Check settings save" }).count(),
       0,
@@ -384,14 +379,11 @@ try {
       ),
       legacy,
     );
-    await page
-      .getByRole("button", { name: "Discard previous settings request" })
-      .click();
     assert.equal(
-      await page.evaluate(() =>
-        JSON.parse(localStorage.getItem("next-turn-settings:first")),
-      ),
-      null,
+      await page
+        .getByRole("button", { name: "Discard previous settings request" })
+        .count(),
+      0,
     );
   });
   await check("permission-canonical-handoff", async () => {

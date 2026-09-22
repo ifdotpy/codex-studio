@@ -48,12 +48,10 @@ class WorkspaceMixin:
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_projects (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_workspace_migrations (id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_workspace_operation_phase ON runtime_workspace_operations(
                 json_extract(record,'$.phase'), json_extract(record,'$.agent'));
         """)
-        self.migrate_project_accounts(db)
         # Capture uses a separate Git index and never restores workspace files or
         # changes the native thread. A dead process cannot retain its reservation.
         for operation in self._workspace_operations(db):
@@ -260,39 +258,6 @@ class WorkspaceMixin:
         if require_existing and not path.is_dir():
             raise ValueError("Select an existing project directory")
         return str(path)
-
-    def migrate_project_accounts(self, db):
-        marker = "project-account-defaults-v1"
-        if db.execute("SELECT 1 FROM runtime_workspace_migrations WHERE id=?", (marker,)).fetchone():
-            return
-        legacy = self.accounts.legacy_project_defaults()
-        leads = {}
-        for agent in self.records(db, "agents"):
-            if not agent.get("isLead") or agent.get("deletedAt") or not agent.get("cwd"):
-                continue
-            key = agent.get("accountKey", "default")
-            try:
-                self.accounts.get(key)
-            except ValueError:
-                continue
-            path = self.project_directory(agent["cwd"], require_existing=False)
-            previous = leads.get(path)
-            if previous is None or (agent.get("created", 0), agent["id"]) > (previous.get("created", 0), previous["id"]):
-                leads[path] = agent
-        projects = self.records(db, "projects")
-        registered = {self.project_directory(p["path"], require_existing=False) for p in projects}
-        for path in sorted((set(leads) | set(legacy)) - registered):
-            projects.append({"id": path, "path": path, "name": Path(path).name or path,
-                             "created": leads.get(path, {}).get("created", time.time())})
-        for project in projects:
-            if not project.get("accountKey"):
-                path = self.project_directory(project["path"], require_existing=False)
-                project["accountKey"] = leads[path].get("accountKey", "default") if path in leads else legacy.get(path, self.accounts.default())
-                project["accountRevision"] = 1
-            else:
-                project.setdefault("accountRevision", 1)
-            self.put(db, "projects", project)
-        db.execute("INSERT INTO runtime_workspace_migrations(id) VALUES (?)", (marker,))
 
     def project_account(self, cwd, db=None):
         if db is None:
@@ -1649,6 +1614,9 @@ class WorkspaceMixin:
     def assert_workspace_available(self, db, a):
         from codex_context_repair import assert_context_available
         assert_context_available(a)
+        from codex_native_tools import account_reserved
+        if account_reserved(self, a.get("accountKey", "default")):
+            raise ValueError("Wait for the account tool catalog update")
         if safety_retry_active(a):
             raise ValueError('Wait for the model change before another workspace operation')
         if a.get("accountTransferId") and not a.get("inFlight"):

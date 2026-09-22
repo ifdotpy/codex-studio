@@ -187,19 +187,15 @@ try {
   await page
     .getByRole("button", { name: "Voice conversation", exact: true })
     .click();
-  await page.getByText("Recovered voice draft", { exact: true }).click();
-  await page.getByRole("button", { name: "Dismiss recovered draft" }).click();
   assert.equal(
     await page.getByText("Recovered voice draft", { exact: true }).count(),
     0,
   );
-  await page.reload();
-  await page
-    .getByRole("button", { name: "Voice conversation", exact: true })
-    .click();
-  assert.equal(
-    await page.getByText("Recovered voice draft", { exact: true }).count(),
-    0,
+  assert.deepEqual(
+    await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("voice-delivery:chat-one")),
+    ),
+    { editedText: "Saved old voice text" },
   );
   assert.deepEqual(errors, []);
   console.log(

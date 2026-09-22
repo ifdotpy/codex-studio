@@ -100,40 +100,6 @@ class ComplaintRouting(unittest.TestCase):
                 self.respond(c, **patch)
         self.assertEqual(self.runtime.complaint_detail(c['id'])['responses'], [])
 
-    def test_migration_cancels_self_wake_but_keeps_worker_complaints(self):
-        c = self.submit()
-        c.pop('recipient')
-        with self.runtime.lock, self.runtime.db() as db:
-            self.runtime.put(db, 'complaints', c)
-            self.runtime.enqueue(db, self.lead, 'complaint', 'Old self complaint reminder', 'self-wake')
-        self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
-        self.assertEqual(self.events('complaint')[0]['status'], 'cancelled')
-        worker = self.runtime.create({'name':'Worker', 'prompt':'Check', 'role':'reviewer'}, parent=self.lead['id'])
-        self.submit(worker['id'], 'worker-complaint')
-        self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
-        self.assertEqual(sum(r['status']=='pending' for r in self.events('complaint')), 1)
-
-    def test_legacy_self_response_does_not_count_as_user_action(self):
-        c = self.submit()
-        c.pop('recipient')
-        c.pop('version')
-        c.update(status='resolved', readAt=100, responses=[{'id':'old', 'author':self.lead['id'],
-            'text':'I reported this to the owner.', 'status':'resolved', 'at':100}])
-        with self.runtime.lock, self.runtime.db() as db:
-            self.runtime.put(db, 'complaints', c)
-        self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
-        migrated = self.runtime.complaint_detail(c['id'])
-        self.assertEqual(migrated['recipient'], 'user')
-        self.assertEqual(migrated['status'], 'open')
-        self.assertEqual(migrated['legacyStatus'], 'resolved')
-        self.assertIsNone(migrated['readAt'])
-        self.assertEqual(migrated['responses'], c['responses'])
-        self.assertTrue(self.runtime.snapshot()['complaints'][0]['needsResponse'])
-        self.respond(migrated)
-        self.assertFalse(self.runtime.snapshot()['complaints'][0]['needsResponse'])
 
 
 if __name__ == '__main__':

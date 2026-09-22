@@ -20,3 +20,7 @@ the selected cache root. It never copies the shared token usage cache.
 
 The wrapper marks history coverage as partial until the caller verifies the
 selected profile's complete history. Unknown model pricing stays unknown.
+
+Studio constructs usage reports directly from native session records. It does not
+read the upstream report JSON formats. Codex caches require the current parser
+hash. A different hash causes a new scan of the source logs.

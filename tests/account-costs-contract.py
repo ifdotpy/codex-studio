@@ -92,35 +92,6 @@ with gate.open('x'):
         self.assertIsNone(value['data']); self.assertTrue(value['error'])
         for _ in range(20): self.reader.snapshot('work')
         self.assertEqual((self.root/'work/calls').read_text(),'scan\n')
-    def test_live_route_update_preserves_server_and_rejects_wrong_fingerprint(self):
-        from codex_account_cost_update import apply
-        from codex_efficiency_update import fingerprint
-        canvas=Canvas(self.root/'update')
-        canvas.runtime=types.SimpleNamespace(accounts=self.accounts,lock=threading.RLock(),closed=False)
-        server=make_server(canvas)
-        before=server.RequestHandlerClass.do_GET
-        close=server.server_close
-        try:
-            with self.assertRaisesRegex(RuntimeError,'HTTP methods changed'):
-                apply(server,'unknown',fingerprint(close))
-            self.assertIs(server.RequestHandlerClass.do_GET,before)
-            result=apply(server,fingerprint(before),fingerprint(close))
-            self.assertEqual(result['status'],'applied')
-            self.assertEqual(server.fileno()>=0,True)
-            function=server.RequestHandlerClass.do_GET
-            closure=dict(zip(function.__code__.co_freevars,[c.cell_contents for c in function.__closure__]))
-            closure['manager'].command_factory=self.factory
-            t=threading.Thread(target=server.serve_forever,daemon=True);t.start()
-            try:
-                url=f'http://127.0.0.1:{server.server_port}'
-                value=json.load(urlopen(url+'/api/costs?account_key=work'))
-                self.assertEqual(value['accountKey'],'work')
-                self.assertIn('token',json.load(urlopen(url+'/api/session')))
-                deadline=time.monotonic()+5
-                while closure['manager'].snapshot('work')['refreshing'] and time.monotonic()<deadline: time.sleep(.01)
-                self.assertEqual(closure['manager'].snapshot('work')['data']['todayUSD'],17)
-            finally: server.shutdown();t.join()
-        finally: server.server_close()
 
     def test_http_routes_account_and_rejects_unknown(self):
         canvas = Canvas(self.root/'server')

@@ -55,12 +55,12 @@ class CostsTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.payload = self.root / "payload.json"
         self.payload.write_text(json.dumps(report()))
-        self.cli = self.root / "codexbar"
+        self.cli = self.root / "cost-scanner"
         self.cli.write_text(
-            f'#!{sys.executable}\nimport pathlib,sys,time\np=pathlib.Path({str(self.root)!r})\nassert sys.argv[1:]==["cost","--provider","codex","--format","json"]\nwith (p/"calls").open("a") as f: f.write("call\\n")\nif (p/"delay").exists(): time.sleep(3)\nprint((p/"payload.json").read_text())\n'
+            f'#!{sys.executable}\nimport pathlib,sys,time\np=pathlib.Path({str(self.root)!r})\nassert sys.argv[1:]==[]\nwith (p/"calls").open("a") as f: f.write("call\\n")\nif (p/"delay").exists(): time.sleep(3)\nprint((p/"payload.json").read_text())\n'
         )
         self.cli.chmod(0o700)
-        self.reader = CostReader(self.root, str(self.cli))
+        self.reader = CostReader(self.root, command=lambda: [str(self.cli)])
 
     def tearDown(self):
         self.reader.close()
@@ -88,13 +88,24 @@ class CostsTests(unittest.TestCase):
         self.assertEqual(value["coverage"], "partial")
         self.assertEqual(value["unknownModels"], ["known"])
 
-    def test_old_cli_and_incomplete_history_are_explicit(self):
+    def test_missing_coverage_is_rejected_and_incomplete_history_is_explicit(self):
+        for missing in ("coverage", "historyCoverageIsEstablished"):
+            row = report()
+            del row[0][missing]
+            with self.assertRaisesRegex(ValueError, "invalid coverage"):
+                normalize(row)
         row = report()
-        del row[0]["coverage"]
-        del row[0]["historyCoverageIsEstablished"]
-        self.assertEqual(normalize(row)["coverage"], "unverified")
         row[0]["historyCoverageIsEstablished"] = False
         self.assertEqual(normalize(row)["coverage"], "partial")
+
+    def test_scanner_command_is_required_and_cannot_fall_back(self):
+        with self.assertRaisesRegex(ValueError, "command is required"):
+            CostReader(self.root, command=None)
+        self.reader.command = lambda: []
+        with patch("subprocess.Popen") as start:
+            self.reader._refresh()
+        start.assert_not_called()
+        self.assertIn("command is invalid", self.reader.state["error"])
 
     def test_missing_invalid_and_cross_provider_data(self):
         for value in (
@@ -120,7 +131,7 @@ class CostsTests(unittest.TestCase):
         value = wait(self.reader)
         self.assertEqual((self.root / "calls").read_text().splitlines(), ["call"])
         self.assertEqual(value["data"]["todayUSD"], 12.5)
-        other = CostReader(self.root, str(self.cli))
+        other = CostReader(self.root, command=lambda: [str(self.cli)])
         self.assertEqual(other.snapshot()["data"], value["data"])
         self.assertFalse(other.busy)
         self.assertEqual((self.root / "local-costs.json").stat().st_mode & 0o777, 0o600)
@@ -185,7 +196,7 @@ class CostsTests(unittest.TestCase):
         midnight = time.mktime(time.strptime(day, "%Y-%m-%d"))
         clock = [midnight + 12 * 3600]
         self.payload.write_text(json.dumps(report(day=day)))
-        reader = CostReader(self.root, str(self.cli), clock=lambda: clock[0])
+        reader = CostReader(self.root, command=lambda: [str(self.cli)], clock=lambda: clock[0])
         try:
             reader.snapshot()
             first = wait(reader)
@@ -216,7 +227,7 @@ class CostsTests(unittest.TestCase):
         self.reader.snapshot()
         wait(self.reader)
         with patch.dict(os.environ, {"CODEX_HOME": str(self.root / "another-home")}):
-            other = CostReader(self.root, str(self.cli))
+            other = CostReader(self.root, command=lambda: [str(self.cli)])
             self.assertIsNone(other.state["data"])
             other.close()
 

@@ -61,8 +61,8 @@ try {
       process.env.CHROME_BIN ||
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   });
-  for (const sync of process.env.DELIVERY_MODE === "rxdb" ? [true] : [false, true]) {
-    const mode = sync ? "rxdb" : "legacy";
+  {
+    const mode = "rxdb";
     Object.assign(a, {
       status: "running",
       inFlight: true,
@@ -145,42 +145,36 @@ try {
       }),
     );
     let transcriptPulls = 0;
-    if (!sync) {
-      await page.route("**/api/sync/**", (route) =>
-        route.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-      );
-    } else {
-      await page.route("**/api/sync/pull?*", (route) => {
-        const url = new URL(route.request().url());
-        const scope = url.searchParams.get("scope");
-        const stateScope = scope === "state" || scope === "state:chat";
-        if (!stateScope && !scope.startsWith("transcript:"))
-          return route.fallback();
-        const id = scope.slice("transcript:".length);
-        const seq = stateScope ? stateRevision : revisions.get(id);
-        const after = Number(url.searchParams.get("after") || 0);
-        if (scope.startsWith("transcript:")) transcriptPulls++;
-        return route.fulfill({
-          json: {
-            ...identity,
-            documents:
-              after < seq
-                ? [
-                    {
-                      id: scope,
-                      payload: JSON.stringify(
-                        stateScope ? state : history.get(id),
-                      ),
-                      seq,
-                      _deleted: false,
-                    },
-                  ]
-                : [],
-            checkpoint: { seq: Math.max(after, seq) },
-          },
-        });
+    await page.route("**/api/sync/pull?*", (route) => {
+      const url = new URL(route.request().url());
+      const scope = url.searchParams.get("scope");
+      const stateScope = scope === "state:chat";
+      if (!stateScope && !scope.startsWith("transcript:"))
+        return route.fallback();
+      const id = scope.slice("transcript:".length);
+      const seq = stateScope ? stateRevision : revisions.get(id);
+      const after = Number(url.searchParams.get("after") || 0);
+      if (scope.startsWith("transcript:")) transcriptPulls++;
+      return route.fulfill({
+        json: {
+          ...identity,
+          documents:
+            after < seq
+              ? [
+                  {
+                    id: scope,
+                    payload: JSON.stringify(
+                      stateScope ? state : history.get(id),
+                    ),
+                    seq,
+                    _deleted: false,
+                  },
+                ]
+              : [],
+          checkpoint: { seq: Math.max(after, seq) },
+        },
       });
-    }
+    });
     const posts = [];
     await page.route("**/api/messages", (route) => {
       assert.equal(route.request().method(), "POST");
@@ -227,15 +221,26 @@ try {
       const sent = posts.at(-1);
       assert.equal(
         await input.inputValue(),
-        sync ? "" : text,
-        `${mode}: draft clears only after the local outbox or server owns it`,
+        "",
+        `${mode}: draft clears only after the local outbox owns it`,
       );
       if (queue) {
-        await page.getByTestId("message-queue").getByText(text, { exact: true }).waitFor();
-        assert.equal(await row(text).count(), 0, `${mode}: queued send never flashes in the transcript`);
+        await page
+          .getByTestId("message-queue")
+          .getByText(text, { exact: true })
+          .waitFor();
+        assert.equal(
+          await row(text).count(),
+          0,
+          `${mode}: queued send never flashes in the transcript`,
+        );
       } else {
         await row(text).waitFor();
-        assert.equal(await row(text).count(), 1, `${mode}: one immediate local message`);
+        assert.equal(
+          await row(text).count(),
+          1,
+          `${mode}: one immediate local message`,
+        );
       }
       assert.equal(
         await input.evaluate((element) => document.activeElement === element),
@@ -259,11 +264,10 @@ try {
     await page.goto(origin);
     await page.locator(`[data-chat="${a.id}"]`).click();
     await page.locator(`[data-message="${a.id}-history-35"]`).waitFor();
-    if (sync)
-      await until(
-        () => transcriptPulls > 0,
-        "Real RxDB transcript projection loads",
-      );
+    await until(
+      () => transcriptPulls > 0,
+      "Real RxDB transcript projection loads",
+    );
 
     // The HTTP response and the replicated history are separate acknowledgements.
     await page.locator("#messages").evaluate((element) => {
@@ -354,7 +358,7 @@ try {
       async () => (await row(earlyText).count()) === 0,
       `${mode}: late HTTP acknowledgement cannot resurrect an observed receipt`,
     );
-    if (sync) {
+    {
       await page.reload();
       await page.locator(`[data-chat="${a.id}"]`).click();
       await page.locator(`[data-message="${a.id}-history-35"]`).waitFor();
@@ -392,14 +396,19 @@ try {
       `${mode}: streaming preserves manual scroll`,
     );
 
-    // A queue row can briefly disappear while an older server dispatches it.
+    // A delayed projection cannot remove a receipt before materialization.
     const queuedText = `${mode} queued message survives dispatch`;
     const queued = await start(queuedText, true);
-    const queueRow = () => page.getByTestId("message-queue").getByText(queuedText, { exact: true });
+    const queueRow = () =>
+      page.getByTestId("message-queue").getByText(queuedText, { exact: true });
     const assertQueueGeometry = async () => {
       await queueRow().waitFor();
       assert.equal(await row(queuedText).count(), 0);
-      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      assert.ok(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth + 1,
+        ),
+      );
     };
     await accept(queued, "queued");
     await assertQueueGeometry("queued receipt");
@@ -414,7 +423,8 @@ try {
     await publish(a.id, [...queueBase, queuedEcho]);
     await until(
       async () =>
-        (await queueRow().count()) === 1 && (await row(queuedText).count()) === 0,
+        (await queueRow().count()) === 1 &&
+        (await row(queuedText).count()) === 0,
       `${mode}: one queued row`,
     );
     await assertQueueGeometry("queued transcript");
@@ -523,14 +533,8 @@ try {
     );
     const beforeUncertainRetry = posts.length;
     await page.locator("#send").click();
-    // RxDB may retain its unresolved receipt without another network request.
-    // The legacy transport must inspect the existing identity through the POST.
-    if (!sync)
-      await until(
-        () => posts.length > beforeUncertainRetry,
-        "Legacy retry starts with its retained identity",
-      );
-    else await page.waitForTimeout(250);
+    // RxDB retains its unresolved receipt without another network request.
+    await page.waitForTimeout(250);
     const repeated = posts.slice(beforeUncertainRetry);
     assert.ok(repeated.length <= 1, `${mode}: no concurrent retries`);
     for (const attempt of repeated) {

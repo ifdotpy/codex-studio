@@ -77,7 +77,6 @@ export function outgoingTranscript(
           deliveryStatus: entry.status,
           deliveryError: entry.error,
         });
-      // Pending queue rows can disappear from older servers during dispatch.
       // Keep the local receipt until a durable transcript record replaces it.
       if (
         !present.pending &&

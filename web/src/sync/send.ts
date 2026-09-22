@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { syncApi, ApiError, errorText, setToken } from "../api";
-import { syncDatabase, UnsupportedSyncError } from "./client";
+import { syncDatabase } from "./client";
 import { onResume } from "./resume";
 
 type Intention = {
@@ -59,13 +59,7 @@ async function deliver(doc: any) {
         "The server workspace changed. Reload before sending.",
         409,
       );
-    let session;
-    try {
-      session = await syncApi<{ token: string }>("/api/session");
-    } catch (error) {
-      if (!(error instanceof ApiError && error.status === 404)) throw error;
-      session = await syncApi<{ token: string }>("/api/state?view=chat");
-    }
+    const session = await syncApi<{ token: string }>("/api/session");
     setToken(session.token);
     // Claim the current content before HTTP. Cancellation uses the same atomic
     // update and can succeed only before this request starts.
@@ -95,13 +89,7 @@ async function deliver(doc: any) {
       "failed",
       "cancelled",
     ].includes(result?.status);
-    const legacyReceipt =
-      result?.status === undefined &&
-      result?.room === value.body.room &&
-      result?.text === value.body.text?.trim() &&
-      result?.deliveries &&
-      typeof result.deliveries === "object";
-    if (result?.id !== value.body.id || (!acknowledged && !legacyReceipt))
+    if (result?.id !== value.body.id || !acknowledged)
       throw new Error("The delivery response does not match this message.");
     if (result.status === "failed" || result.status === "cancelled")
       throw new ApiError(
@@ -206,17 +194,7 @@ export async function durableSend(
 ) {
   if (typeof body.id !== "string" || !body.id)
     throw new Error("A message identity is required");
-  const storage = await syncDatabase().catch((error) => {
-    if (error instanceof UnsupportedSyncError) return null;
-    throw error;
-  });
-  if (!storage) {
-    // Legacy servers have no local outbox. Their successful reply owns the data.
-    const result = await syncApi("/api/messages", body);
-    await onPersist?.();
-    return result;
-  }
-  const { db } = storage;
+  const { db } = await syncDatabase();
   let doc = await db.outbox.findOne(body.id).exec();
   if (!doc) {
     try {
@@ -334,8 +312,7 @@ export function useOutbox() {
         );
         if (!stop) setError("");
       } catch (e) {
-        if (!stop && !(e instanceof UnsupportedSyncError))
-          setError(errorText(e));
+        if (!stop) setError(errorText(e));
       } finally {
         draining = false;
         if (drainAgain && !stop) void drain();
@@ -367,8 +344,7 @@ export function useOutbox() {
         subscribed = true;
         void drain();
       } catch (error) {
-        if (!stop && !(error instanceof UnsupportedSyncError))
-          setError(errorText(error));
+        if (!stop) setError(errorText(error));
       } finally {
         subscribing = false;
       }

@@ -12,11 +12,13 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_agent_management import manage_agent
 from codex_efficiency import EfficiencyMixin
+from codex_tool_requests import RequestMixin
 
-class Store(EfficiencyMixin):
+class Store(EfficiencyMixin, RequestMixin):
     def __init__(self, path):
         self.path=path; self.lock=threading.RLock(); self.preparations={}; self.claims={}; self.calls=[]
         self.native_state='idle'; self.connection_ids={'default':'connection'}
+        self.scheduler=threading.current_thread()
         owner=self
         class Native:
             def call(self, method, params, timeout):
@@ -27,6 +29,7 @@ class Store(EfficiencyMixin):
             for table in ['agents','monitors','tasks','requests','work','tool_requests','items']:
                 db.execute(f'CREATE TABLE runtime_{table} (id TEXT PRIMARY KEY, record TEXT)')
             db.execute('CREATE TABLE runtime_events (id TEXT PRIMARY KEY, agent TEXT, epoch INT, status TEXT)')
+            db.execute('CREATE TABLE runtime_tool_results (id TEXT PRIMARY KEY, result TEXT)')
             for key,parent,root,lead in [('lead',None,'lead',True),('worker','lead','lead',False),('peer',None,'peer',True),('foreign','peer','peer',False)]:
                 self.put(db,'agents',{'id':key,'name':key,'parentId':parent,'rootId':root,'isLead':lead,
                     'autoWake':True,'epoch':1,'status':'completed','inFlight':False,'threadId':key,'maxAgents':20})
@@ -101,11 +104,15 @@ class Contract(unittest.TestCase):
     def test_native_activity_blocks_archive_even_when_local_status_is_completed(self):
         self.rt.native_state='active'
         self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
-    def test_compatibility_entry_uses_the_same_checks(self):
-        result=self.rt.model_context('lead',{'topic':'agent_manage','action':'inspect','agent_id':'worker'})
-        self.assertTrue(result['canArchive'])
-        with self.assertRaises(ValueError):
-            self.rt.model_context('worker',{'topic':'agent_manage','action':'archive','agent_id':'worker'})
+    def test_missing_receipt_ledger_cannot_authorize_archive(self):
+        with self.rt.db() as db:
+            db.execute('DROP TABLE runtime_tool_requests')
+        with self.assertRaises(sqlite3.OperationalError):
+            self.call('archive')
+        with self.rt.db() as db:
+            self.assertNotIn('deletedAt', self.rt.agent('worker', db))
+        self.assertEqual(self.rt.calls, [])
+
     def test_restoration_obeys_team_limit(self):
         self.call('archive')
         with self.rt.db() as db:
@@ -113,7 +120,7 @@ class Contract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'limit'):self.call('restore')
 
 class RuntimeRouteContract(unittest.TestCase):
-    def test_native_and_existing_thread_routes_preserve_receipts_and_ui_visibility(self):
+    def test_native_tool_preserves_receipts_and_ui_visibility(self):
         import importlib.util
         spec=importlib.util.spec_from_file_location('runtime_fixture',Path(__file__).with_name('runtime-contract.py'))
         f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
@@ -131,12 +138,11 @@ class RuntimeRouteContract(unittest.TestCase):
                 result=next(r for r in rt.server.responses if r['id']==number)['result']
                 self.assertTrue(result['success'],str(result))
             invoke(9201,'orchestration_agent_manage',{'action':'inspect','agent_id':worker['id']})
-            bridge={'agent_id':'workspace','text':json.dumps({'tool':'orchestration_context','arguments':{
-                'topic':'agent_manage','action':'archive','agent_id':worker['id'],'reason':'Reviewed fixture'}})}
-            invoke(9202,'orchestration_send',bridge)
+            archive = {'action':'archive','agent_id':worker['id'],'reason':'Reviewed fixture'}
+            invoke(9202,'orchestration_agent_manage',archive)
             self.assertNotIn(worker['id'],[a['id'] for a in rt.snapshot()['agents']])
             epoch=rt.agent(worker['id'])['epoch']
-            invoke(9202,'orchestration_send',bridge)
+            invoke(9202,'orchestration_agent_manage',archive)
             self.assertEqual(epoch,rt.agent(worker['id'])['epoch'])
             invoke(9203,'orchestration_agent_manage',{'action':'restore','agent_id':worker['id']})
             self.assertIn(worker['id'],[a['id'] for a in rt.snapshot()['agents']])

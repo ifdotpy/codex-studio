@@ -1,14 +1,10 @@
 """Exact FTS row updates, migration rollback, and operation-count regression."""
 import sqlite3
-from contextlib import contextmanager
-import threading
-from types import MethodType, SimpleNamespace
 import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_work import WorkMixin
-from codex_search_index_update import apply, _LEGACY
 
 class SearchIndex(unittest.TestCase):
     def setUp(self):
@@ -56,26 +52,6 @@ class SearchIndex(unittest.TestCase):
         self.assertIsNone(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone())
         self.assertEqual(self.db.execute('SELECT count(*) FROM runtime_search').fetchone()[0], 2)
 
-    def test_live_cutover_requires_known_code_and_preserves_rows(self):
-        self.seed(15)
-        @contextmanager
-        def db():
-            with self.db:
-                yield self.db
-        runtime = SimpleNamespace(lock=threading.RLock(), db=db)
-        runtime.index_item = MethodType(lambda *args: None, runtime)
-        with self.assertRaisesRegex(RuntimeError, "Unknown live search"):
-            apply(runtime)
-        self.assertIsNone(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone())
-        scope = {}
-        exec(_LEGACY, scope)
-        runtime.index_item = MethodType(scope['index_item'], runtime)
-        self.assertEqual(apply(runtime), {'status': 'applied', 'mappedRows': 15})
-        self.assertEqual(apply(runtime), {'status': 'already_applied'})
-        with db() as connection:
-            runtime.index_item(connection, '3', 'agent', 'assistant', 'aftercutover')
-        self.assertEqual(self.db.execute("SELECT id FROM runtime_search WHERE runtime_search MATCH 'aftercutover'").fetchall(), [('3',)])
-        self.assertEqual(self.db.execute('SELECT count(*) FROM runtime_search').fetchone()[0], 15)
 
     def steps(self, callback):
         count = [0]

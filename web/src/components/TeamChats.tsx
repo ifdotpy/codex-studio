@@ -204,8 +204,7 @@ export default function TeamChats({
             runtime: { ...data.runtime, complaints: [message] },
           }}
           target={
-            (message.recipient ||
-              (message.author === message.leadId ? "user" : "lead")) as
+            message.recipient as
               | "user"
               | "lead"
           }

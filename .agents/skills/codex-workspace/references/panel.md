@@ -67,11 +67,3 @@ oversized file shows an error. The source stays unchanged. Studio accepts an ato
 file replacement and checks the next revision. The file does not run scripts,
 connect command output, or schedule model turns. Put requests that need a user
 response in the conversation or user-task flow.
-
-## Compatibility
-
-`orchestration_panel` and `orchestration_panel_feed` are retired. New calls return
-the progress-file instructions. The workspace fallback does not restore them.
-Stored legacy panels, callback receipts, and feed records remain intact.
-Already accepted work can finish. The change does not cancel active commands,
-replace old data, or schedule a model turn.

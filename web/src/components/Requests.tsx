@@ -225,11 +225,7 @@ function RequestCard({
 }: Omit<Props, "requests" | "allRequests"> & { request: Json }) {
   const draftKey = answerKey(scope, r);
   const owner = agents.find((a) => a.id === r.agent);
-  const requestThread = ["execCommandApproval", "applyPatchApproval"].includes(
-    r.method,
-  )
-    ? r.params?.conversationId
-    : r.params?.threadId;
+  const requestThread = r.params?.threadId;
   const blocked =
     !!nativeThreadError(owner) && requestThread === owner?.threadId;
   const [open, setOpen] = useState(false),
@@ -304,8 +300,6 @@ function RequestCard({
         "item/commandExecution/requestApproval",
         "item/fileChange/requestApproval",
         "item/permissions/requestApproval",
-        "applyPatchApproval",
-        "execCommandApproval",
       ].includes(r.method) ||
       (r.method === "mcpServer/elicitation/request" && p.mode === "url");
   const questions = question ? requestQuestions(r) : [];

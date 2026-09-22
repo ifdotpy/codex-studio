@@ -61,12 +61,6 @@ assert.equal(
   "working",
 );
 assert.equal(
-  state(lead, {
-    monitors: [{ agent: "lead", status: "running", panelFeed: true }],
-  }),
-  "unread",
-);
-assert.equal(
   state(lead, { monitors: [{ agent: "lead", status: "completed" }] }),
   "unread",
 );
@@ -261,14 +255,6 @@ assert.equal(
 assert.equal(
   chatActivities(
     snapshot([lead, pausedChild], { tasks: [{ ...command, epoch: 1 }] }),
-  ).size,
-  0,
-);
-assert.equal(
-  chatActivities(
-    snapshot([lead], {
-      monitors: [{ ...command, agent: "lead", panelFeed: true }],
-    }),
   ).size,
   0,
 );

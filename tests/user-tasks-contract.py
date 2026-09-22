@@ -247,7 +247,7 @@ class UserTasksContract(unittest.TestCase):
         self.assertIn(task["id"], json.dumps(params))
         self.assertIn("User tasks awaiting your review", json.dumps(params))
 
-    def test_restart_reroutes_only_unsent_legacy_completions(self):
+    def test_deployment_converts_only_unsent_worker_completions(self):
         lead = self.lead(); worker = self.worker(lead)
         task = self.legacy_worker_task(worker)
         task.update(status="review", delivery="pending")
@@ -256,6 +256,10 @@ class UserTasksContract(unittest.TestCase):
             event_id = self.runtime.enqueue(db, self.runtime.agent(worker["id"], db), "user_task_completed", json.dumps({"task_id": task["id"]}), "legacy-completion")
             self.runtime.enqueue(db, self.runtime.agent(worker["id"], db), "user_task_completed", json.dumps({"task_id": task["id"]}), "uncertain-completion")
             db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='uncertain-completion'")
+        from fixtures.current_cleanup_state import convert_user_task_recipients
+        with self.runtime.lock, self.runtime.db() as db:
+            self.assertEqual(convert_user_task_recipients(self.runtime, db), 1)
+            self.assertEqual(convert_user_task_recipients(self.runtime, db), 0)
         self.runtime.close()
         self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
         lead_events = self.events(lead, "user_task_completed")
@@ -297,7 +301,7 @@ class UserTasksContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.complete(task)
 
-    def test_native_tool_and_legacy_workspace_fallback(self):
+    def test_native_tool_and_removed_workspace_alias(self):
         a = self.lead()
         result = self.tool(
             a,
@@ -319,8 +323,8 @@ class UserTasksContract(unittest.TestCase):
                 ),
             },
         )
-        self.assertTrue(second["success"])
-        self.assertIn("Connect account", json.dumps(second))
+        self.assertFalse(second["success"])
+        self.assertIn("Unknown managed agent", json.dumps(second))
         schemas = self.tool(a, "orchestration_context", {"topic": "tools"})
         self.assertTrue(schemas['success'])
         content = json.loads(schemas['contentItems'][0]['text'])
@@ -329,7 +333,7 @@ class UserTasksContract(unittest.TestCase):
             self.assertTrue(schemas['success'])
         self.assertIn("orchestration_user_task", json.dumps(schemas))
 
-    def test_worker_dynamic_and_legacy_route_cannot_request_user_action(self):
+    def test_worker_cannot_request_user_action_through_native_or_removed_route(self):
         worker = self.worker(self.lead())
         arguments = {'action': 'create', 'title': 'Worker request', 'criteria': 'Done'}
         direct = self.tool(worker, 'orchestration_user_task', arguments)
@@ -338,7 +342,7 @@ class UserTasksContract(unittest.TestCase):
         fallback = self.tool(worker, 'orchestration_send', {'agent_id': 'workspace', 'text': json.dumps({
             'tool': 'orchestration_user_task', 'arguments': arguments})})
         self.assertFalse(fallback['success'])
-        self.assertIn('Ask your orchestrator to contact the user', json.dumps(fallback))
+        self.assertIn('Unknown managed agent', json.dumps(fallback))
         self.assertEqual(self.runtime.user_tasks()['items'], [])
 
     def test_http_completion_requires_token_and_preserves_agent_control(self):

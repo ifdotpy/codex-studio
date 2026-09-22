@@ -54,14 +54,33 @@ class Server:
     def on_result(self, ticket, callback):
         ticket[2].add_done_callback(callback)
 
+    def after_events(self, callback):
+        callback()
+
 
 class ContextRepair(unittest.TestCase):
-    agent_update = f.WorkspaceContract.agent_update
+    def agent_update(self, agent, **changes):
+        updated = f.WorkspaceContract.agent_update(self, agent, **changes)
+        if 'threadId' in changes:
+            from codex_native_tools import digest, mark_current
+            tools = self.runtime.tool_definitions(updated)
+            if (agent.get('nativeToolCatalog') or {}).get('digest') == digest(tools):
+                # This fixture changes the native identity with the same tools.
+                mark_current(updated, tools)
+                with self.runtime.lock, self.runtime.db() as db:
+                    self.runtime.put(db, 'agents', updated)
+        return updated
+
     lead = f.WorkspaceContract.lead
     def setUp(self):
         f.WorkspaceContract.setUp(self)
         self.tid = str(uuid.uuid4())
         self.a = self.agent_update(self.lead(), threadId=self.tid, status='idle', inFlight=False)
+        from codex_native_tools import catalog, mark_current
+        tools = self.runtime.tool_definitions(self.a)
+        mark_current(self.a, tools)
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, 'agents', self.a)
         self.home = self.root / 'native-home'
         self.path = self.home / 'sessions' / ('rollout-2026-09-14-' + self.tid + '.jsonl')
         self.path.parent.mkdir(parents=True)
@@ -76,7 +95,7 @@ class ContextRepair(unittest.TestCase):
             'internal_chat_message_metadata_passthrough': {'turn_id': 'turn'},
             'content': [{'type': 'input_text', 'text': '[Orchestration event: monitor_exit]\n' + self.text + '\n\nPreserve this instruction.'}]}
         self.records = [
-            {'type': 'session_meta', 'payload': {'id': self.tid}},
+            {'type': 'session_meta', 'payload': {'id': self.tid, 'dynamic_tools': catalog(tools)}},
             {'type': 'turn_context', 'payload': {'turn_id': 'turn'}},
             {'type': 'response_item', 'payload': copy.deepcopy(message)},
             {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': self.text}},
@@ -103,6 +122,19 @@ class ContextRepair(unittest.TestCase):
 
     def forks(self):
         return [p for m, p in self.server.calls if m == 'thread/fork']
+
+    def test_fork_carries_only_the_exact_current_source_catalog(self):
+        expected_digest = self.a['nativeToolCatalog']['digest']
+        repaired = repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(repaired['nativeToolCatalog'], {
+            'threadId': repaired['threadId'], 'digest': expected_digest})
+
+    def test_fork_does_not_certify_an_outdated_source_catalog(self):
+        previous = {'threadId': self.tid, 'digest': 'outdated-catalog'}
+        self.agent_update(self.a, nativeToolCatalog=previous)
+        repaired = repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(repaired['nativeToolCatalog'], previous)
+        self.assertNotEqual(repaired['nativeToolCatalog']['threadId'], repaired['threadId'])
 
     def test_copy_preserves_user_history_and_tool_results(self):
         source = self.path.read_bytes()
@@ -139,10 +171,14 @@ class ContextRepair(unittest.TestCase):
         self.assertEqual(clean[-1]['payload']['turn_id'], 'turn')
 
     def test_saved_native_tool_output_is_authorized_after_repair(self):
-        key = self.tid + ':legacy-tool'
+        request = {'id': 'saved-tool', 'params': {'threadId': self.tid, 'callId': 'saved-tool',
+            'tool': 'orchestration_read', 'arguments': {'output_ref': 'saved-output'}}}
+        receipt = self.runtime.reserve_tool_request(request, self.a.get('accountKey', 'default'))
+        key = receipt['id']
         result = {'success':True, 'contentItems':[{'type':'inputText','text':'Saved command receipt walnut-271.'}]}
         with self.runtime.db() as db:
             db.execute('INSERT INTO runtime_tool_results VALUES (?,?)', (key, json.dumps(result)))
+            self.runtime.finish_tool_request(key, result, db=db)
         a = self.agent_update(self.a, autoWake=True)
         changed = repair.repair_idle(self.runtime, a['id'])
         self.assertEqual(changed['accountHistory'][-1]['threadId'], self.tid)

@@ -128,11 +128,7 @@ function ScopedExecutionSettings({
   }, [opened]);
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
-  const legacyReceiptKey = `next-turn-settings:${agent.id}`;
   const receiptKey = `next-turn-settings:${JSON.stringify([agent.id, accountOf(agent)])}`;
-  const [legacyReceipt, setLegacyReceipt] = useState(
-    () => !teamDefaults && !!saved<Json | null>(legacyReceiptKey, null),
-  );
   const [unconfirmed, setUnconfirmed] = useState<Json | null>(() => {
     if (teamDefaults) return null;
     const value = saved<Json | null>(receiptKey, null);
@@ -488,22 +484,6 @@ function ScopedExecutionSettings({
           <div role="alert">
             <p>{catalog.error}</p>
             <Button onClick={catalog.retry}>Retry model list</Button>
-          </div>
-        )}
-        {legacyReceipt && (
-          <div role="status">
-            <p>
-              Previous settings request has no account identity. Check the
-              current settings.
-            </p>
-            <Button
-              onClick={() => {
-                save(legacyReceiptKey, null);
-                setLegacyReceipt(false);
-              }}
-            >
-              Discard previous settings request
-            </Button>
           </div>
         )}
         {unconfirmed && !saving && (

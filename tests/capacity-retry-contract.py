@@ -298,17 +298,6 @@ class CapacityContract(unittest.TestCase):
         fixture.eventually(lambda: self.agent().get('turnId'))
         self.assertEqual(len(self.starts()), 1)
 
-    def test_old_updaters_reject_runtime_without_capacity_lifecycle(self):
-        from codex_native_errors_update import apply as errors_update
-        from codex_turn_recovery_update import apply as recovery_update
-        class PreviousRuntime:
-            pass
-        runtime = PreviousRuntime()
-        runtime.marker = 'unchanged'
-        for update in (errors_update, recovery_update):
-            with self.assertRaisesRegex(RuntimeError, 'requires current source'):
-                update(runtime)
-            self.assertEqual(vars(runtime), {'marker': 'unchanged'})
 
     def test_duplicate_internal_dispatch_does_not_submit_again(self):
         retry = self.fail()

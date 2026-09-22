@@ -214,46 +214,7 @@ class TurnRecoveryContract(unittest.TestCase):
         fixture.eventually(lambda: not self.runtime.agent(self.key)['inFlight'])
         self.assertEqual(self.runtime.agent(self.key)['status'], 'completed')
 
-    def test_live_installer_preserves_connections_and_uses_real_dispatch(self):
-        import types
-        import codex_runtime
-        from codex_turn_recovery_update import apply, BASE_DISPATCH, BASE_PREPARE
-        from codex_efficiency_update import fingerprint
-        import subprocess
-        # Exact source before the watchdog, verified by both unchanged hash guards.
-        source = subprocess.check_output(
-            ['git', 'show', '03f8b2e^:scripts/codex_runtime.py'],
-            cwd=Path(__file__).resolve().parents[1], text=True)
-        module = compile(source, codex_runtime.__file__, 'exec', dont_inherit=True)
-        cls = next(c for c in module.co_consts if isinstance(c, types.CodeType) and c.co_name == 'Runtime')
-        code = next(c for c in cls.co_consts if isinstance(c, types.CodeType) and c.co_name == 'dispatch')
-        self.runtime.dispatch = types.MethodType(types.FunctionType(code, self.runtime.dispatch.__func__.__globals__), self.runtime)
-        self.assertEqual(fingerprint(self.runtime.dispatch), BASE_DISPATCH)
-        prepare = next(c for c in cls.co_consts if isinstance(c, types.CodeType) and c.co_name == 'prepare_locked')
-        self.runtime.prepare_locked = types.MethodType(types.FunctionType(prepare, self.runtime.prepare_locked.__func__.__globals__), self.runtime)
-        self.assertEqual(fingerprint(self.runtime.prepare_locked), BASE_PREPARE)
-        connections = dict(self.runtime.servers)
-        pool = self.runtime.recovery_pool
-        self.assertEqual(apply(self.runtime)['status'], 'applied')
-        self.assertEqual(apply(self.runtime)['status'], 'already_applied')
-        self.assertEqual(self.runtime.servers, connections)
-        self.assertIs(self.runtime.recovery_pool, pool)
-        with self.runtime.lock, self.runtime.db() as db:
-            a = self.runtime.agent(self.key, db)
-            a['activity'] = {'at': time.time() - 130}
-            a['lastEvent'] = '2020-01-01T00:00:00Z'
-            self.runtime.put(db, 'agents', a)
-        self.runtime.dispatch()
-        fixture.eventually(lambda: not self.runtime.agent(self.key)['inFlight'])
 
-    def test_installer_rejects_unknown_dispatch_without_changes(self):
-        import types
-        from codex_turn_recovery_update import apply
-        self.runtime.dispatch = types.MethodType(lambda self: None, self.runtime)
-        before = self.runtime.dispatch
-        with self.assertRaisesRegex(RuntimeError, 'Unknown scheduler'):
-            apply(self.runtime)
-        self.assertIs(self.runtime.dispatch, before)
 
     def test_scheduler_probes_one_at_a_time_without_holding_runtime_lock(self):
         self.server.native['status']['type'] = 'active'

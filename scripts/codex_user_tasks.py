@@ -43,33 +43,6 @@ class UserTasksMixin:
             "CREATE INDEX IF NOT EXISTS runtime_user_task_owner ON runtime_user_tasks(json_extract(record,'$.agent'),json_extract(record,'$.status'))"
         )
 
-        # Only unsent legacy completions can change recipient. Keep their identities.
-        for event in db.execute("SELECT * FROM runtime_events WHERE kind='user_task_completed' AND status='pending'").fetchall():
-            try:
-                task_id = json.loads(event["text"])["task_id"]
-            except (ValueError, TypeError, KeyError):
-                continue
-            row = db.execute("SELECT record FROM runtime_user_tasks WHERE id=?", (task_id,)).fetchone()
-            if not row:
-                continue
-            task = json.loads(row[0])
-            if event["agent"] != task["agent"] or task["agent"] == task["rootId"]:
-                continue
-            owner, lead = self.agent(task["agent"], db), self.agent(task["rootId"], db)
-            if owner.get("deletedAt") or lead.get("deletedAt") or not lead.get("isLead"):
-                continue
-            status = "pending" if lead["autoWake"] else "cancelled"
-            db.execute("UPDATE runtime_events SET agent=?,epoch=?,status=? WHERE id=?",
-                       (lead["id"], lead["epoch"], status, event["id"]))
-            task["delivery"] = status
-            self.put(db, "user_tasks", task)
-            if lead["autoWake"] and not lead.get("nativeFailureHold") and lead["status"] not in {"running", "starting", "approval"}:
-                lead["status"] = "queued"
-                self.put(db, "agents", lead)
-            if owner["status"] == "queued" and not db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending'", (owner["id"],)).fetchone():
-                owner["status"] = "waiting"
-                self.put(db, "agents", owner)
-
     def user_task_view(self, db, task):
         owner = self.agent(task["agent"], db)
         return {

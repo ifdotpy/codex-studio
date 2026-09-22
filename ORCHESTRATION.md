@@ -244,13 +244,6 @@ check command in their runtime instructions after edits. The
 [progress guide](.agents/skills/codex-workspace/references/panel.md) defines this workflow.
 An absent or stale measurement means unmeasured, not success.
 
-The old `orchestration_panel` and `orchestration_panel_feed` schemas are no longer
-advertised. New calls, including the workspace fallback, return migration
-instructions without writing legacy panel state. Stored panels, callback receipts,
-and feed records remain intact. Already accepted callbacks and active work can
-finish. No old panel data is copied into or replaces `PROGRESS.md`.
-See the [legacy feed note](.agents/skills/codex-workspace/references/panel-feed.md).
-
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
 Team capacity and token budgets remain available through `codex-control configure`.
 One lead can delegate a batch of work to dozens of agents.
@@ -385,9 +378,14 @@ wake a finished recipient. Stopped agents and unused blank leads receive stored
 history only. Peer messages never resume a stopped agent. Agent messages carry
 agent provenance; they do not add user authority. Instructions prohibit acknowledgement loops.
 
-Codex persists dynamic tools when it creates a thread. Existing threads can use
-`orchestration_status` for peers and recent chat history, and `orchestration_send`
-for parent, lead, peer, or broadcast messages. New threads have all three dedicated chat tools.
+Codex stores the tool catalog in each native thread. Studio checks the catalog
+before a new managed turn. Existing sessions continue while the account is busy.
+A catalog change waits for the account's native work to finish. Studio then replaces only the rollout metadata and reconnects the idle
+native process. The Studio chat ID, history, queued input, and action receipts remain.
+If the new catalog requires a larger header, Studio first creates a native branch.
+The original session and its existing branches remain unchanged.
+An unconfirmed native state blocks this update and shows the reason in the chat.
+Studio accepts only its current tool names and HTTP protocol.
 
 Native subagent tools are disabled only in these managed threads with `agents.enabled=false`,
 `features.multi_agent_v2=false`, and `features.multi_agent=false`. The last flag alone does not
@@ -433,7 +431,7 @@ the native permission settings. Native permission grants do not answer agent que
 ## Messages to the user and orchestrator
 
 Use `orchestration_complaint action=submit` for a message that needs a recorded response.
-The technical tool name remains for compatibility. Responsibility comes from the author:
+Responsibility comes from the author:
 
 - Subagent request: the orchestrator responds, under **To orchestrator**.
 - Orchestrator message: the user responds, under **For you**.
@@ -556,7 +554,7 @@ the queue cannot be changed; its unfinished edit remains available to copy.
 The client exposes model selection, message queues, approvals, synchronous and asynchronous user questions,
 context compaction and a native review of uncommitted changes.
 Account login and advanced configuration remain in Codex CLI or `config.toml`.
-The client answers `currentTime/read` and both current and legacy command/file approval requests.
+The client answers `currentTime/read`, `item/commandExecution/requestApproval`, and `item/fileChange/requestApproval`.
 Device attestation and externally supplied authentication refresh remain host-specific.
 These requests fail visibly instead of receiving fabricated credentials or an automatic success response.
 

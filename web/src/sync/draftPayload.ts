@@ -1,5 +1,5 @@
-// Match the server's JSON payload order, including older servers that compare
-// payload strings. Keep every field and nested value from the browser draft.
+// Match the server's canonical payload order for local conflict and journal checks.
+// Keep every field and nested value from the browser draft.
 export function encodeDraftPayload(value: unknown): string {
   const normalized = JSON.parse(JSON.stringify(value));
   const compareKeys = (a: string, b: string) => {

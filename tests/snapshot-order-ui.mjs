@@ -59,7 +59,8 @@ try {
     oldRequest,
     currentFailure = false,
     pendingAnswer,
-    answered = false;
+    answered = false,
+    stateSeq = 1;
   const snapshot = () => {
     const data = structuredClone(initial);
     if (answered) data.runtime.requests = [];
@@ -71,15 +72,29 @@ try {
         }
     return data;
   };
-  // This fixture tests the legacy API used by servers before mobile sync.
-  await page.route("**/api/sync/identity", (route) =>
-    route.fulfill({ status: 404, json: { error: "Not found" } }),
-  );
-  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
-    assert.equal(
-      new URL(route.request().url()).searchParams.get("view"),
-      "chat",
-    );
+  const identity = await (await fetch(`${origin}/api/sync/identity`)).json();
+  await page.route("**/api/sync/pull?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("scope") !== "state:chat") return route.fallback();
+    const after = Number(url.searchParams.get("after") || 0);
+    await route.fulfill({
+      json: {
+        ...identity,
+        documents:
+          after < stateSeq
+            ? [
+                {
+                  id: "state:chat",
+                  seq: stateSeq,
+                  payload: JSON.stringify(snapshot()),
+                },
+              ]
+            : [],
+        checkpoint: { seq: Math.max(after, stateSeq) },
+      },
+    });
+  });
+  await page.route("**/api/session", async (route) => {
     const data = snapshot();
     requests.push({ revision, held: holdNext, failure: currentFailure });
     if (holdNext) {
@@ -89,12 +104,14 @@ try {
     }
     await route.fulfill(
       currentFailure
-        ? { status: 503, json: { error: "Current snapshot unavailable" } }
-        : { json: data },
+        ? { status: 503, json: { error: "Current session unavailable" } }
+        : { json: { token: initial.token } },
     );
   });
   await page.route("**/api/messages", (route) =>
-    route.fulfill({ json: { status: "sent" } }),
+    route.fulfill({
+      json: { id: route.request().postDataJSON().id, status: "sent" },
+    }),
   );
   await page.route("**/api/answer", (route) => {
     pendingAnswer = route;
@@ -136,15 +153,18 @@ try {
       `Loading label ${key} stays stable`,
     );
   answered = true;
+  stateSeq++;
   await pendingAnswer.continue();
   await card.waitFor({ state: "hidden" });
 
   for (const oldFailure of [false, true]) {
     oldRequest = null;
     holdNext = true;
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await waitFor(() => oldRequest, "Background snapshot poll is held");
     const oldRevision = revision;
     revision++;
+    stateSeq++;
     await page.locator("#message").fill(`Snapshot refresh ${revision}`);
     await page.locator("#send").click();
     await workerButton
@@ -164,7 +184,7 @@ try {
     await oldRequest.route.fulfill(
       oldFailure
         ? { status: 503, json: { error: "Obsolete snapshot failure" } }
-        : { json: oldRequest.data },
+        : { json: { token: oldRequest.data.token } },
     );
     // Two paints settle the response before the next scheduled 1.6s poll can hide a regression.
     await page.waitForTimeout(150);
@@ -198,11 +218,13 @@ try {
 
   // A current failure still appears and the next current success clears it.
   currentFailure = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await page
     .locator("#error")
-    .getByText("Current snapshot unavailable", { exact: true })
+    .getByText("Current session unavailable", { exact: true })
     .waitFor();
   currentFailure = false;
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await page.locator("#error").waitFor({ state: "hidden" });
   assert.deepEqual(errors, []);
   await page.screenshot({
@@ -214,7 +236,7 @@ try {
     JSON.stringify({ requests, button: { before, during } }, null, 2),
   );
   console.log(
-    `PASS: delayed snapshot success and error cannot revert newer data; current errors remain visible; loading button label stays fixed. ${evidence}`,
+    `PASS: delayed credential success and error cannot revert newer replicated data; current errors remain visible; loading button label stays fixed. ${evidence}`,
   );
 } finally {
   await browser?.close();

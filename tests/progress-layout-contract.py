@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import codex_canvas
 import codex_progress_layout as layout
 from codex_progress import provision_progress, read_progress
-from codex_progress_update import source_function
+from codex_source import source_function
 from codex_remote import RemoteAccess
 
 spec = importlib.util.spec_from_file_location("progress_file_fixture", ROOT / "tests/progress-file-contract.py")

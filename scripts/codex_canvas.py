@@ -123,24 +123,7 @@ class Canvas:
                 CREATE TABLE IF NOT EXISTS graph_edges (
                   id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
                   kind TEXT NOT NULL, UNIQUE(source, target, kind));
-                CREATE TABLE IF NOT EXISTS canvas_migrations (name TEXT PRIMARY KEY);
             """)
-            db.execute('BEGIN IMMEDIATE')
-            if not db.execute("SELECT 1 FROM canvas_migrations WHERE name='chat-edges-v1'").fetchone():
-                legacy = {r['room'] for r in db.execute("SELECT DISTINCT room FROM messages WHERE room LIKE 'wave-%'")}
-                waves = {}
-                for row in read_threads(self.root):
-                    key = 'wave-' + identity(row['wave'], row.get('runId'))
-                    wave = waves.setdefault(key, {'name': row['wave'], 'members': []})
-                    wave['members'].append(identity(row['wave'], row.get('runId'), row['threadId'], row['name']))
-                for key in legacy:
-                    wave = waves.get(key, {'name': 'Previous wave chat', 'members': []})
-                    db.execute('INSERT OR IGNORE INTO groups VALUES (?,?,?)', (key, wave['name'], json.dumps(wave['members'])))
-                for group in db.execute("SELECT * FROM groups").fetchall():
-                    for member in json.loads(group["members"]):
-                        db.execute("INSERT OR IGNORE INTO graph_edges VALUES (?,?,?,?)",
-                                   (identity('chat', member, group['id']), member, group['id'], 'chat'))
-                db.execute("INSERT INTO canvas_migrations VALUES ('chat-edges-v1')")
         os.chmod(self.db, 0o600)
 
     @contextmanager
@@ -454,6 +437,22 @@ class Canvas:
             receipt = self.runtime.send(member, message, delivery_id)
         return self._delivery_status(receipt)
 
+    @staticmethod
+    def _message_receipt(row):
+        deliveries = list(row["deliveries"].values())
+        if not deliveries:
+            return {**row, "status": "delivered"}
+        accepted = {"queued", "delivered", "accepted", "sent"}
+        rejected = [value for value in deliveries
+                    if isinstance(value, str) and value.startswith(("failed:", "cancelled:"))]
+        if all(isinstance(value, str) and value in accepted for value in deliveries):
+            return {**row, "status": "queued" if "queued" in deliveries else "delivered"}
+        if len(rejected) == len(deliveries):
+            return {**row, "status": "failed", "error": "; ".join(dict.fromkeys(rejected))}
+        # A partial or unknown dispatch cannot authorize a new message identity.
+        return {**row, "status": "uncertain",
+                "error": "Delivery is unconfirmed for one or more recipients. Check the saved deliveries before sending again."}
+
     def post(self, room, text, key, author="user", notify=True):
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
             raise ValueError("Use a message with 1 to 12000 characters.")
@@ -473,7 +472,7 @@ class Canvas:
                 self._check_chat_team(room, [*members, *deliveries], None if author == "user" else author)
                 row = {**dict(previous), "deliveries": deliveries}
                 if not any(status == "pending" for status in deliveries.values()):
-                    return row
+                    return self._message_receipt(row)
                 group = next((g for g in self.chats() if g["id"] == room), None)
                 db.commit()
             else:
@@ -533,7 +532,7 @@ class Canvas:
                 db.execute("UPDATE messages SET deliveries=? WHERE id=?", (json.dumps(deliveries), key))
                 db.commit()
             row["deliveries"] = deliveries
-            return row
+            return self._message_receipt(row)
 
 
 def make_server(canvas, port=0, public_origin=None):
@@ -672,11 +671,7 @@ def make_server(canvas, port=0, public_origin=None):
 
         def do_GET(self):
             path = urlparse(self.path)
-            # The opaque panel iframe can load only these public, stateless scripts
-            # across origins. APIs and all other assets retain the local-origin gate.
-            public_bridge = (path.path in {"/assets/panel-bridge.js", "/assets/panel-ui.js"} and
-                             remote.request_origin(self.headers, self.client_address[0], self.server.server_port) is not None)
-            if not self.trusted() and not public_bridge:
+            if not self.trusted():
                 return self.send({"error": "Local origin required"}, 403)
             try:
                 if path.path == "/api/session":
@@ -991,12 +986,6 @@ def make_server(canvas, port=0, public_origin=None):
                             raise ValueError("Supply agent and request_id")
                         return self.send(runtime.request_action(body["agent"],
                             {"action": "cancel", "request_id": body["request_id"]}))
-                    if self.path == "/api/panel/callback":
-                        from codex_panel import PanelConflict
-                        try:
-                            return self.send(runtime.panel_callback(body))
-                        except PanelConflict as error:
-                            return self.send({"error": str(error)}, 409)
                     if self.path == "/api/profiles":
                         return self.send(runtime.profiles(body))
                     if self.path == "/api/rules":

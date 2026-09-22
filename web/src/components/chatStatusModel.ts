@@ -48,7 +48,6 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
     for (const record of entries) {
       const entry = record as typeof record & {
         epoch?: number;
-        panelFeed?: boolean;
         type?: string;
       };
       const agent = byId.get(entry.agent);
@@ -57,7 +56,6 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
         (entry.epoch != null &&
           agent.epoch != null &&
           entry.epoch !== agent.epoch) ||
-        (kind === "monitor" && entry.panelFeed) ||
         !["starting", "running", "approval"].includes(entry.status)
       )
         continue;

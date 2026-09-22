@@ -83,10 +83,12 @@ class ResetContracts(unittest.TestCase):
             self.runtime, {"credit_id": "credit-A", "account_id": "account-A", **data}
         )
 
-    def test_source_update_keeps_older_runtime_reset_compatible(self):
+    def test_reset_requires_account_lock_before_native_read_or_spend(self):
         with patch.object(self.runtime, "limit_refresh_lock", None):
-            self.assertEqual(self.reset()["outcome"], "reset")
-        self.assertEqual(len(self.server.consume_calls), 1)
+            with self.assertRaises(TypeError):
+                self.reset()
+        self.assertEqual(self.server.consume_calls, [])
+        self.assertEqual(self.server.read_count, 0)
 
     def test_exact_credit_and_completed_retry_do_not_spend_another_credit(self):
         request = str(uuid.uuid4())

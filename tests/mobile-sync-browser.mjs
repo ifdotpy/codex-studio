@@ -55,7 +55,6 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   let revision = 1;
   let identities = 0;
-  let chatState = false;
   const pulls = [];
   const pullCursors = [];
   const workspaceId = "e".repeat(32);
@@ -64,7 +63,7 @@ try {
   );
   await page.route("**/api/sync/identity", (route) => {
     identities++;
-    return route.fulfill({ json: { workspaceId, chatState } });
+    return route.fulfill({ json: { workspaceId } });
   });
   await page.route("**/api/sync/pull?*", (route) => {
     const url = new URL(route.request().url());
@@ -216,7 +215,6 @@ try {
     "Unmounted subscriptions leave no polling work",
   );
 
-  chatState = true;
   revision = 4;
   const beforeCompact = pulls.length;
   await page.reload();
@@ -238,7 +236,7 @@ try {
   );
   assert.ok(
     pulls.slice(beforeCompact).includes("state:chat"),
-    "Advertised compact state uses its own server scope",
+    "The current client always uses the compact state scope",
   );
   assert.ok(
     !pulls.slice(beforeCompact).includes("state"),
@@ -254,12 +252,12 @@ try {
   assert.equal(
     localState.state.revision,
     4,
-    "Capability upgrade replaces the existing cached state",
+    "A new response replaces the existing cached state",
   );
   assert.equal(
     localState.remote,
     false,
-    "The local state identity stays compatible with all existing subscribers",
+    "All subscribers use the same local state identity",
   );
   await page.evaluate(() => window.stopCompact());
 

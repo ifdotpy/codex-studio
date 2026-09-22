@@ -101,19 +101,6 @@ class BroadcastLifecycle(unittest.TestCase):
             self.assertEqual(self.runtime.agent(lead["id"])["status"], "queued")
             self.assertEqual(self.event(lead, "active-child")["status"], "pending")
 
-    def test_display_feed_does_not_make_completed_work_active(self):
-        lead = self.lead()
-        child = self.worker(lead)
-        with self.runtime.lock:
-            with self.runtime.db() as db:
-                self.runtime.put(db, "monitors", {"id": "fixture-feed", "agent": child["id"], "status": "running", "panelFeed": {"panelVersion": 1}})
-            self.runtime.chat_message(lead["id"], "all", "Policy update", "display-feed")
-            self.finish(child)
-            self.assertEqual(self.runtime.agent(child["id"])["status"], "completed")
-            self.assertEqual(self.event(child, "display-feed")["status"], "stored_only")
-            with self.runtime.db() as db:
-                db.execute("DELETE FROM runtime_monitors WHERE id='fixture-feed'")
-
     def test_old_epoch_work_does_not_reactivate_current_broadcast(self):
         lead = self.lead()
         child = self.worker(lead)

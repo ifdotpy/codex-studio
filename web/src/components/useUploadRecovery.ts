@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { errorText } from "../api";
-import { UnsupportedSyncError } from "../sync/client";
 import { onResume } from "../sync/resume";
 import {
   deliverUpload,
@@ -82,8 +81,7 @@ export function useUploadRecovery(
           setError(failures.join(" "));
         }
       } catch (failure) {
-        if (!stopped && !(failure instanceof UnsupportedSyncError))
-          setError(errorText(failure));
+        if (!stopped) setError(errorText(failure));
       } finally {
         busy = false;
         if (again && !stopped) {
