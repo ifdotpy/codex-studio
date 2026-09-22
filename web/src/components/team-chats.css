@@ -420,3 +420,10 @@
 .messages-for-you > .workspace-toolbar > span {
   display: none;
 }
+
+.team-chats.shared-chat-directory {
+  grid-template-columns: minmax(0, 1fr);
+}
+.shared-chat-directory .team-chat-placeholder {
+  display: none;
+}

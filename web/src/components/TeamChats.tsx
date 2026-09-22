@@ -1,19 +1,13 @@
+import AgentAvatar from "./AgentAvatar";
 import {
   ActionIcon,
-  Avatar,
   Button,
   Loader,
   TextInput,
   Tabs,
   UnstyledButton,
 } from "@mantine/core";
-import {
-  ArrowDown,
-  ArrowLeft,
-  Megaphone,
-  MessageCircle,
-  Search,
-} from "lucide-react";
+import { ArrowDown, ArrowLeft, MessageCircle, Search } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { errorText, save, saved } from "../api";
 import { useMediaQuery } from "@mantine/hooks";
@@ -39,6 +33,7 @@ export default function TeamChats({
   forLead,
   focusRequestId,
   focusRoomId,
+  onSelect,
 }: {
   data: Snapshot;
   leadId?: string;
@@ -46,6 +41,7 @@ export default function TeamChats({
   forLead: ReactNode;
   focusRequestId?: string;
   focusRoomId?: string;
+  onSelect?: (id: string) => void;
 }) {
   const [view, setView] = useState<string | null>("you");
   const narrow = useMediaQuery("(max-width: 640px)");
@@ -211,7 +207,9 @@ export default function TeamChats({
         {forYou}
       </Tabs.Panel>
       <Tabs.Panel value="team" className="messages-team-panel">
-        <div className={`team-chats ${detail && room ? "show-room" : ""}`}>
+        <div
+          className={`team-chats ${onSelect ? "shared-chat-directory" : ""} ${detail && room ? "show-room" : ""}`}
+        >
           <section className="team-room-list" aria-label="Team conversations">
             <div className="team-room-search">
               <TextInput
@@ -259,23 +257,20 @@ export default function TeamChats({
                             className={`team-room-row ${room?.id === item.id ? "selected" : ""}`}
                             aria-pressed={room?.id === item.id}
                             onClick={() => {
-                              setSelected(item.id);
-                              setDetail(true);
+                              if (onSelect) onSelect(item.id);
+                              else {
+                                setSelected(item.id);
+                                setDetail(true);
+                              }
                             }}
                           >
-                            <Avatar
-                              size={32}
-                              radius="xl"
-                              color={
-                                item.kind === "broadcast" ? "indigo" : "gray"
+                            <AgentAvatar
+                              id={
+                                item.members.find((id) => id !== leadId) ||
+                                item.id
                               }
-                            >
-                              {item.kind === "broadcast" ? (
-                                <Megaphone size={18} />
-                              ) : (
-                                <MessageCircle size={18} />
-                              )}
-                            </Avatar>
+                              size={36}
+                            />
                             <span className="team-room-copy">
                               <span className="team-room-title">
                                 <strong title={item.name}>{name(item)}</strong>
@@ -316,7 +311,7 @@ export default function TeamChats({
               )}
             </div>
           </section>
-          {room ? (
+          {!onSelect && room ? (
             <RoomMessages
               key={room.id}
               room={room}

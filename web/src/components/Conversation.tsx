@@ -1,3 +1,4 @@
+import AgentAvatar from "./AgentAvatar";
 import MessageQueue from "./MessageQueue";
 import { useMessageQueue } from "./useMessageQueue";
 import { useVisibleChatResult, type ChatReadProof } from "./useChatReadState";
@@ -767,9 +768,23 @@ export default function Conversation(p: {
           Sending…
         </span>
       )}
-      {p.room && m.senderName && (
-        <span className="message-label">{m.senderName}</span>
-      )}
+      <span className="chat-message-author">
+        <AgentAvatar
+          id={
+            m.role === "user" && !p.room
+              ? "studio-user"
+              : m.sender || p.agent?.id || p.id || "agent"
+          }
+          size={24}
+        />
+        <strong>
+          {p.room
+            ? m.senderName || "Agent"
+            : m.role === "user"
+              ? "You"
+              : p.agent?.name || "Agent"}
+        </strong>
+      </span>
       {deliveryLabel(m) &&
         !["sending", "reserved", "dispatching", "accepted"].includes(
           m.deliveryStatus || "",

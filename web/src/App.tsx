@@ -1,3 +1,4 @@
+import AgentAvatar from "./components/AgentAvatar";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
@@ -315,11 +316,6 @@ export default function App() {
     if (agent && !agent.isLead && agent.status === "completed")
       setCompletedOpen(true);
   }, [agent?.id, agent?.status]);
-  useEffect(() => {
-    if (!mobileClient) return;
-    if (opened && (room || legacy) && !agent)
-      setOpened(lead?.id || leads.at(-1)?.id || null);
-  }, [mobileClient, opened, agent?.isLead, lead?.id]);
   const accounts = useAccounts(data?.stateDir);
   const accountKey =
     agent?.accountKey ||
@@ -371,10 +367,6 @@ export default function App() {
         ? { chatId: id, messageId, requestId: crypto.randomUUID() }
         : undefined,
     );
-    if (mobileClient) {
-      const target = agents.find((item) => item.id === id);
-      if (!target) return;
-    }
     setRoomContext(lead?.id || null);
     setOpened(id);
     setSidebar(false);
@@ -392,9 +384,8 @@ export default function App() {
       if (
         selected &&
         (data.threads.some((item) => item.id === selected) ||
-          (!mobileClient &&
-            (data.runtime.rooms.some((item) => item.id === selected) ||
-              data.chats.some((item) => item.id === selected))))
+          data.runtime.rooms.some((item) => item.id === selected) ||
+          data.chats.some((item) => item.id === selected))
       ) {
         setOpened(selected);
         return;
@@ -1243,6 +1234,7 @@ export default function App() {
               </Button>
             )}
             <h1 id="conversation-title" title={title}>
+              <AgentAvatar id={opened || "new"} size={28} />
               <ChatStatus
                 status={agent ? indicators.get(agent.id) : undefined}
               />

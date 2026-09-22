@@ -376,6 +376,10 @@ export function Workspace(props: Props) {
               {section === "changes" && <Changes {...context} />}
               {section === "messages" && (
                 <TeamChats
+                  onSelect={(id) => {
+                    props.onSelect(id);
+                    props.onClose();
+                  }}
                   data={props.data}
                   focusRequestId={props.initialFocus?.requestId}
                   focusRoomId={props.initialFocus?.roomId}

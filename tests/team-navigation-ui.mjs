@@ -96,8 +96,7 @@ try {
     await route.fulfill({ response, json: data });
   });
   await page.goto(origin);
-  const selectLead = () =>
-    page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  const selectLead = () => page.locator(`[data-chat="${lead.id}"]`).click();
   await selectLead();
   assert.equal(
     await page.locator("#team-toggle").getAttribute("aria-expanded"),
@@ -313,6 +312,42 @@ try {
         .locator(".workspace-header")
         .evaluate((n) => n.scrollWidth <= n.clientWidth),
     );
+  }
+  const privateRoom = initial.runtime.rooms.find(
+    (room) => room.kind === "private" && room.members.includes(lead.id),
+  );
+  assert.ok(privateRoom);
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.waitForTimeout(350);
+    if (!(await page.locator("#sidebar").isVisible()))
+      await page.locator("#sidebar-toggle").click();
+    const entry = page.locator(`[data-chat="${privateRoom.id}"]`);
+    if (!(await entry.isVisible()))
+      await entry.locator("xpath=ancestor::details").locator("summary").click();
+    await entry.click();
+    await page.waitForFunction(
+      (name) =>
+        document.querySelector("#conversation-title")?.textContent === name,
+      privateRoom.name,
+    );
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    assert.equal(
+      await page.locator('[role="dialog"]:visible').count(),
+      0,
+      "room uses the same workspace",
+    );
+    assert.ok(
+      await page.locator("#messages .agent-avatar").count(),
+      "room messages show agent avatars",
+    );
+    await page.reload();
+    await page.waitForFunction(
+      (name) =>
+        document.querySelector("#conversation-title")?.textContent === name,
+      privateRoom.name,
+    );
+    await page.screenshot({ path: join(root, `shared-room-${width}.png`) });
   }
   assert.deepEqual(errors, []);
   console.log(
