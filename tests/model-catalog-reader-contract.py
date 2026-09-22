@@ -25,7 +25,7 @@ home = Path(os.environ['CODEX_HOME'])
 (home / 'pid').write_text(str(os.getpid()))
 (home / 'environment').write_text(json.dumps({
  'home': str(home), 'apiKey': 'OPENAI_API_KEY' in os.environ,
- 'codexKey': 'CODEX_API_KEY' in os.environ, 'argv': sys.argv[1:]}))
+ 'codexKey': 'CODEX_API_KEY' in os.environ, 'argv': sys.argv[1:], 'executable': sys.argv[0]}))
 mode = (home / 'mode').read_text()
 for line in sys.stdin:
  message = json.loads(line)
@@ -70,13 +70,15 @@ class ReaderContract(unittest.TestCase):
         self.binary.write_text('#!' + sys.executable + '\n' + PROGRAM)
         self.binary.chmod(0o700)
         (self.home / 'mode').write_text('normal')
-        env = patch.dict(os.environ, {'CODEX_CATALOG_BIN': str(self.binary),
-                                      'OPENAI_API_KEY': 'inherited', 'CODEX_API_KEY': 'inherited'})
+        env = patch.dict(os.environ, {'OPENAI_API_KEY': 'inherited', 'CODEX_API_KEY': 'inherited'})
         env.start()
         self.addCleanup(env.stop)
+        selector = patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary), 'sha256': 'approved'})
+        self.select_executable = selector.start()
+        self.addCleanup(selector.stop)
 
     def read(self, **kwargs):
-        return reader.read_model_catalog(self.home, isolated=True, **kwargs)
+        return reader.read_model_catalog(self.home, isolated=True, executable=str(self.binary), **kwargs)
 
     def assert_reaped(self):
         pid = int((self.home / 'pid').read_text())
@@ -91,6 +93,7 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(result['data'][0]['availableAccessPrograms']['cyber'], ['standard', 'daybreakBlue'])
         environment = json.loads((self.home / 'environment').read_text())
         self.assertEqual(environment['home'], str(self.home))
+        self.assertEqual(environment['executable'], str(self.binary))
         self.assertFalse(environment['apiKey'])
         self.assertFalse(environment['codexKey'])
         self.assertIn('cli_auth_credentials_store="file"', environment['argv'])
@@ -102,7 +105,7 @@ class ReaderContract(unittest.TestCase):
         self.assert_reaped()
 
     def test_default_account_preserves_native_auth_environment(self):
-        reader.read_model_catalog(self.home, isolated=False)
+        reader.read_model_catalog(self.home, isolated=False, executable=str(self.binary))
         environment = json.loads((self.home / 'environment').read_text())
         self.assertTrue(environment['apiKey'])
         self.assertTrue(environment['codexKey'])
@@ -150,7 +153,7 @@ class ReaderContract(unittest.TestCase):
         submitted = []
 
         def submit(method, params):
-            future = reader.submit_model_catalog(self.home, isolated=True, current=lambda: True)
+            future = reader.submit_model_catalog(self.home, isolated=True, current=lambda: True, executable=str(self.binary))
             submitted.append(future)
             return future
 
@@ -163,12 +166,12 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(len(submitted), 1)
         self.assert_reaped()
 
-    def test_binary_selection(self):
-        self.assertEqual(reader.catalog_binary(), str(self.binary))
-        with patch.dict(os.environ, {'CODEX_CATALOG_BIN': ''}), patch.object(reader, 'CHATGPT_CODEX', self.binary):
-            self.assertEqual(reader.catalog_binary(), str(self.binary))
-        with patch.dict(os.environ, {'CODEX_CATALOG_BIN': ''}), patch.object(reader, 'CHATGPT_CODEX', self.home / 'missing'), patch.object(reader.shutil, 'which', return_value='/native/codex'):
-            self.assertEqual(reader.catalog_binary(), '/native/codex')
+    def test_reader_requires_the_callers_selected_executable(self):
+        with self.assertRaises(TypeError):
+            reader.read_model_catalog(self.home, isolated=True)
+        with self.assertRaises(TypeError):
+            reader.submit_model_catalog(self.home, isolated=True, current=lambda: True)
+        self.assertFalse((self.home / 'pid').exists())
 
     def runtime(self, provider='codex'):
         from codex_runtime import AppServer
@@ -186,8 +189,11 @@ class ReaderContract(unittest.TestCase):
         result = runtime_catalog(runtime, 'secondary')
         self.assertEqual(len(result['data']), 2)
         runtime.accounts.home.assert_called_once_with('secondary')
+        self.select_executable.assert_called_once_with(runtime)
         runtime.servers['secondary'].submit.assert_not_called()
-        self.assertFalse(json.loads((self.home / 'environment').read_text())['apiKey'])
+        environment = json.loads((self.home / 'environment').read_text())
+        self.assertFalse(environment['apiKey'])
+        self.assertEqual(environment['executable'], str(self.binary))
         self.assert_reaped()
 
     def test_runtime_preserves_claude_catalog(self):
@@ -197,6 +203,15 @@ class ReaderContract(unittest.TestCase):
         runtime.servers['secondary'].submit.return_value = future
         self.assertEqual(runtime_catalog(runtime, 'secondary'), {'data': [{'model': 'claude'}]})
         runtime.accounts.home.assert_not_called()
+        self.select_executable.assert_not_called()
+        self.assertFalse((self.home / 'pid').exists())
+
+    def test_runtime_refuses_metadata_when_no_executable_is_approved(self):
+        runtime = self.runtime()
+        self.select_executable.side_effect = RuntimeError('No executable passed the protocol checks')
+        with self.assertRaisesRegex(RuntimeError, 'protocol checks'):
+            runtime_catalog(runtime, 'secondary')
+        runtime.servers['secondary'].submit.assert_not_called()
         self.assertFalse((self.home / 'pid').exists())
 
     def test_runtime_rejects_changed_account_before_metadata_process(self):

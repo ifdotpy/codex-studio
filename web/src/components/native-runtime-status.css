@@ -1,0 +1,41 @@
+.native-runtime-status {
+  margin: 16px 0;
+  padding: 12px 0;
+  border-block: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.native-runtime-heading,
+.native-runtime-account-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 12px;
+}
+.native-runtime-heading strong {
+  font-weight: 600;
+}
+.native-runtime-summary {
+  margin: 4px 0 0;
+}
+.native-runtime-status time,
+.native-runtime-status small,
+.native-runtime-account-heading > :last-child {
+  color: var(--muted);
+}
+.native-runtime-status small {
+  display: block;
+  font-size: inherit;
+}
+.native-runtime-accounts {
+  padding: 0;
+  margin: 8px 0 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+.native-runtime-status .native-runtime-error {
+  color: var(--mantine-color-red-6);
+  margin: 4px 0 0;
+}

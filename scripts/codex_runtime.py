@@ -251,7 +251,7 @@ class AppServer:
     CALLBACK_QUEUE_LIMIT = 4096
     CLOCK_QUEUE_LIMIT = 128
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None):
         import queue
         self.notification, self.request, self.died = notification, request, died
         self.lock = threading.RLock()
@@ -266,7 +266,7 @@ class AppServer:
         self.dispatch_stopped = False
         self.reader_done = threading.Event()
         self.log = (root / "app-server.log").open("ab")
-        command = [os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
+        command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
         env = os.environ.copy()
         if home is not None:
             env["CODEX_HOME"] = str(home)
@@ -808,43 +808,57 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         if provider == "claude" and account.get("status") != "ready":
             raise ValueError(account.get("error") or "Sign in with claude auth login first")
         home = self.accounts.home(account_key) if self.factory is AppServer and provider != "claude" else None
-        with self.start_lock:
-            if self.closed:
-                raise RuntimeError("Runtime is stopped")
-            from codex_native_tools import assert_connect_allowed
-            assert_connect_allowed(self, account_key)
-            server = self.servers.get(account_key)
-            if provider == "claude" and server is not None and self.factory is AppServer:
-                from codex_claude_controls import retire_idle_bridge
-                if retire_idle_bridge(self, account_key, account, server):
-                    server = None
-            if account_key in self.offline_accounts and server:
-                server.close()
-                self.servers.pop(account_key, None)
-                server = None
-            if server is None:
-                connection_id = uid()
-                self.connection_ids[account_key] = connection_id
-                self.offline_accounts.discard(account_key)
-                if account_key == "default":
-                    self.offline = False
-                callbacks = (
-                    lambda message: self.notification(message, account_key, connection_id),
-                    lambda message: self.request(message, account_key, connection_id),
-                    lambda: self.disconnected(account_key, connection_id),
-                )
-                root = self.root if account_key == "default" else self.root / "account-servers" / account_key
-                root.mkdir(parents=True, exist_ok=True)
-                if self.factory is AppServer:
-                    server = self.factory(root, *callbacks, home=home,
-                                          isolated=account_key != "default", provider=provider, provider_options=account if provider == "claude" else None)
+        selected = None
+        while True:
+            with self.start_lock:
+                if self.closed:
+                    raise RuntimeError("Runtime is stopped")
+                from codex_native_tools import assert_connect_allowed
+                assert_connect_allowed(self, account_key)
+                server = self.servers.get(account_key)
+                if provider == "claude" and server is not None and self.factory is AppServer:
+                    from codex_claude_controls import retire_idle_bridge
+                    if retire_idle_bridge(self, account_key, account, server):
+                        server = None
+                if (self.factory is AppServer and provider == "codex" and selected is None
+                        and (server is None or account_key in self.offline_accounts)):
+                    needs_executable = True
                 else:
-                    # Existing fixtures implement the original four-argument factory.
-                    server = self.factory(root, *callbacks)
-                self.servers[account_key] = server
-                if account_key == "default":
-                    self.server = server
-            return server
+                    needs_executable = False
+                    if account_key in self.offline_accounts and server:
+                        server.close()
+                        self.servers.pop(account_key, None)
+                        server = None
+                    if server is None:
+                        connection_id = uid()
+                        self.connection_ids[account_key] = connection_id
+                        self.offline_accounts.discard(account_key)
+                        if account_key == "default":
+                            self.offline = False
+                        callbacks = (
+                            lambda message: self.notification(message, account_key, connection_id),
+                            lambda message: self.request(message, account_key, connection_id),
+                            lambda: self.disconnected(account_key, connection_id),
+                        )
+                        root = self.root if account_key == "default" else self.root / "account-servers" / account_key
+                        root.mkdir(parents=True, exist_ok=True)
+                        if self.factory is AppServer:
+                            server = self.factory(root, *callbacks, home=home,
+                                                  isolated=account_key != "default", provider=provider,
+                                                  provider_options=account if provider == "claude" else None,
+                                                  executable=selected["path"] if selected else None)
+                            if selected:
+                                server.native_binary = selected
+                        else:
+                            # Existing fixtures implement the original four-argument factory.
+                            server = self.factory(root, *callbacks)
+                        self.servers[account_key] = server
+                        if account_key == "default":
+                            self.server = server
+                    return server
+            if needs_executable:
+                from codex_native_runtime import executable_for
+                selected = executable_for(self)
 
     def connection_current(self, account_key, connection_id):
         return connection_id is None or (
@@ -2137,6 +2151,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 self.scheduler_error = None
 
     def dispatch(self):
+        from codex_native_runtime import tick as native_runtime_tick
+        native_runtime_tick(self)
         self.analytics_history_ensure_running()
         self.retry_monitor_results()
         from codex_session_names import session_names
@@ -4760,6 +4776,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         self.scheduler.join()
         from codex_native_tools import wait_updates
         wait_updates(self)
+        native_updates = getattr(self, "native_runtime_updates", None)
+        if native_updates:
+            native_updates.close()
         with self.lock:
             servers = list({id(server): server for server in [
                 *self.servers.values(),

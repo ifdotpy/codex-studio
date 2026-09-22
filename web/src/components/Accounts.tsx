@@ -1,5 +1,6 @@
 import ErrorDescription from "./ErrorDescription";
 import ClaudeProfile from "./ClaudeProfile";
+import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { accountLimits } from "../accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
 import {
@@ -528,6 +529,7 @@ export default function Accounts({
               The application default applies when a project has no default.
               Existing chats keep their account.
             </p>
+            <NativeRuntimeStatus opened={opened} accounts={accounts} />
             <div className="accounts-list" aria-label="Saved accounts">
               {accounts.map((account) => (
                 <section

@@ -697,12 +697,14 @@ def make_server(canvas, port=0, public_origin=None):
                     query = parse_qs(path.query)
                     return self.send(cost_reader[0].snapshot(query.get("account_key", ["default"])[0]))
                 if path.path == "/api/desktop":
+                    from codex_native_runtime import status as native_runtime_status
                     return self.send(
                         {
                             "application": "codex-agents",
                             "protocol": 1,
                             "mobileProtocol": 1,
                             "backendBuild": BACKEND_BUILD,
+                            "nativeRuntime": native_runtime_status(canvas.runtime),
                             "liveUpdate": (canvas.runtime.live_updates.status()
                                            if getattr(canvas.runtime, "live_updates", None) else None),
                             "restartEnvironment": {key: os.environ[key] for key in (

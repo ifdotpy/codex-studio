@@ -4,32 +4,17 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
-from pathlib import Path
 import selectors
-import shutil
 import subprocess
 import threading
 import time
 
 
-CHATGPT_CODEX = Path("/Applications/ChatGPT.app/Contents/Resources/codex")
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
-def catalog_binary():
-    override = os.environ.get("CODEX_CATALOG_BIN")
-    if override:
-        return override
-    if CHATGPT_CODEX.is_file() and os.access(CHATGPT_CODEX, os.X_OK):
-        return str(CHATGPT_CODEX)
-    binary = shutil.which("codex")
-    if binary is None:
-        raise RuntimeError("Native model catalog executable is unavailable")
-    return binary
-
-
-def read_model_catalog(home, *, isolated, current=lambda: True, timeout=30):
+def read_model_catalog(home, *, executable, isolated, current=lambda: True, timeout=30):
     """Use native auth only. No thread, turn, command, or approval methods run.
 
     The caller owns one bounded worker. Stderr is drained and discarded, stdout
@@ -39,7 +24,7 @@ def read_model_catalog(home, *, isolated, current=lambda: True, timeout=30):
         raise RuntimeError("Model catalog connection changed")
     env = os.environ.copy()
     env["CODEX_HOME"] = str(home)
-    command = [catalog_binary(), "app-server", "--listen", "stdio://"]
+    command = [executable, "app-server", "--listen", "stdio://"]
     if isolated:
         env.pop("OPENAI_API_KEY", None)
         env.pop("CODEX_API_KEY", None)
@@ -151,12 +136,12 @@ def read_model_catalog(home, *, isolated, current=lambda: True, timeout=30):
             pipe.close()
 
 
-def submit_model_catalog(home, *, isolated, current):
+def submit_model_catalog(home, *, executable, isolated, current):
     future = concurrent.futures.Future()
 
     def run():
         try:
-            future.set_result(read_model_catalog(home, isolated=isolated, current=current))
+            future.set_result(read_model_catalog(home, executable=executable, isolated=isolated, current=current))
         except Exception as error:
             future.set_exception(error)
 

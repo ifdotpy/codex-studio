@@ -56,10 +56,20 @@ own switch. Account transfers preserve the mode only when the destination
 supports it; a provider change clears it. Native `review/start` cannot select
 Daybreak, so use a review task in the chat when this mode is required.
 
-Studio reads Codex model metadata through a short-lived native process without
-interrupting active sessions. It uses the Codex executable bundled with ChatGPT
-when installed, or the executable on PATH. `CODEX_CATALOG_BIN` sets an explicit
-metadata executable. The reader uses the selected account's native credentials
+Studio checks installed Codex executables every minute, including `CODEX_BIN`,
+PATH, and the copy bundled with ChatGPT. It checks the protocol schema and runs
+an isolated native smoke test without account credentials or model requests.
+The newest compatible version becomes an immutable bundle under the state
+directory. The bundle includes `codex` and `codex-code-mode-host`, with separate
+file hashes and one bundle identity. Studio publishes it only after both
+executables pass their checks. A failed check preserves the last approved version.
+Studio replaces an account app-server only after local and native checks confirm
+that no turns, commands, queues, approvals, or unresolved requests remain.
+Active work continues on its existing process. Accounts shows versions, pending
+updates, and rejection reasons. Studio does not download or install Codex packages.
+
+Studio reads Codex model metadata through a short-lived process of the same
+approved executable. The reader uses the selected account's native credentials
 and starts no model tasks. Model grants remain cached for five minutes.
 
 Claude Code uses its native permission rules for its tools. Studio command
@@ -303,6 +313,9 @@ python3 -B tests/monitor-lifecycle-contract.py
 python3 -B tests/harness-response-contract.py
 python3 -B tests/protocol-reader-contract.py
 python3 -B tests/catalog-recovery-contract.py
+python3 -B tests/native-binary-contract.py
+python3 -B tests/native-runtime-updates-contract.py
+python3 -B tests/model-catalog-reader-contract.py
 python3 -B tests/tool-request-contract.py
 python3 -B tests/spawn-request-recovery-contract.py
 python3 -B tests/tool-request-http-contract.py

@@ -134,9 +134,11 @@ def runtime_catalog(runtime, account):
     from codex_runtime import AppServer
     if runtime.factory is AppServer and runtime.accounts.get(account).get("provider", "codex") == "codex":
         from codex_model_catalog_reader import submit_model_catalog
+        from codex_native_runtime import executable_for
+        executable = executable_for(runtime)["path"]
         home = runtime.accounts.home(account)
 
         def submit(_method, _params):
-            return submit_model_catalog(home, isolated=account != "default", current=current)
+            return submit_model_catalog(home, executable=executable, isolated=account != "default", current=current)
 
     return cache.read(account, server, connection_id, current, submit=submit)

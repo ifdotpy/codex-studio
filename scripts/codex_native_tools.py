@@ -44,10 +44,13 @@ def account_reserved(rt, key):
         if retiring["server"].proc.poll() is None:
             return True
         rt._native_tools_retiring.pop(key, None)
-    return key in getattr(rt, "_native_tools_refreshing", set())
+    return (key in getattr(rt, "_native_tools_refreshing", set())
+            or key in getattr(rt, "_native_runtime_reservations", {}))
 
 
 def assert_connect_allowed(rt, key):
+    if key in getattr(rt, "_native_runtime_reservations", {}):
+        raise ValueError("The account app-server update is in progress")
     retiring = getattr(rt, "_native_tools_retiring", {}).get(key)
     if retiring is not None:
         if retiring["server"].proc.poll() is None:
