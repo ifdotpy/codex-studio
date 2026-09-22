@@ -140,6 +140,29 @@ class RestartContract(fixture.ConnectionRecoveryContract):
                 changed[section][field] = value
                 self.assertFalse(settle_reconciled(changed))
 
+    def test_later_completed_turn_does_not_reopen_reconciled_restart(self):
+        from codex_context_repair import _local_idle
+        self.server.native['turns'][0]['status'] = 'interrupted'
+        self.restart()
+        recover(self.runtime, self.key)
+        a = self.runtime.agent(self.key)
+        a['restartRecovery']['stage'] = 'pending'
+        a.update(status='completed', lastCompletedTurn='later-turn',
+                 lastCompletedTurnStatus='completed', autoWake=True)
+        before = copy.deepcopy(a)
+        with self.runtime.db() as db:
+            self.assertEqual(_local_idle(self.runtime, db, a, None), [])
+        self.assertEqual(a['restartRecovery']['stage'], 'finished')
+        self.assertEqual(a['lastCompletedTurn'], 'later-turn')
+        # Another process restart must not restore the old interrupted turn.
+        with self.runtime.db() as db:
+            self.assertFalse(restore(db, before))
+        self.assertEqual(before['restartRecovery']['stage'], 'finished')
+        self.assertEqual(before['status'], 'completed')
+        self.assertIsNone(before['turnId'])
+        self.assertTrue(before['autoWake'])
+        self.read_calls_only()
+
     def test_unobserved_native_command_blocks_continuation(self):
         self.server.native['turns'][0].update(status='interrupted',items=[
             {'id':'missed-command','type':'commandExecution','status':'inProgress'}])

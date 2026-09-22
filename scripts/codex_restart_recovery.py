@@ -19,6 +19,7 @@ def capture(agent):
 
 
 def restore(db, agent):
+    settle_reconciled(agent)
     old = agent.get('restartRecovery') or {}
     if old.get('stage') == 'pending' and any(old.get(key) != agent.get(key) for key in SCOPE):
         old['stage'] = 'superseded'
@@ -89,13 +90,14 @@ def settle_reconciled(agent):
             or any(marker.get(key) != agent.get(key) for key in SCOPE)
             or any(disconnected.get(key) != marker.get(key) for key in (*SCOPE, 'turnId'))
             or receipt.get('source') != 'native_thread_read'
-            or receipt.get('turnId') != turn or agent.get('lastCompletedTurn') != turn
+            or receipt.get('turnId') != turn
             or receipt.get('outcome') not in {'completed', 'failed', 'interrupted'}
-            or agent.get('lastCompletedTurnStatus') != receipt.get('outcome')
             or not isinstance(receipt.get('at'), (int, float))
             or not isinstance(marker.get('at'), (int, float))
             or receipt['at'] < marker['at']):
         return False
+    # Later turns can replace lastCompletedTurn. The exact recovery receipt
+    # still proves that this older restart turn has been reconciled.
     marker.update(stage='finished', reconciledAt=receipt['at'])
     return True
 
