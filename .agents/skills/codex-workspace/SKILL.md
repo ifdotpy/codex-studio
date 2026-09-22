@@ -51,6 +51,21 @@ answer. Finish the current turn when useful independent work is exhausted and a
 managed result is pending. Distinguish waiting for a result from task completion.
 This continuation behavior belongs to the managed runtime.
 
+Codex agents use `orchestration_review` for native code review. Supply a stable
+`request_id`. Omit `target` to review uncommitted changes. Other targets use
+`type: "baseBranch"` with `branch`, `type: "commit"` with `sha`, or
+`type: "custom"` with `instructions`.
+Studio creates a separate reviewer with read-only access to the caller's
+directory. The native `ReviewTask` uses configured `review_model`, or the
+caller's model when that setting is absent. The caller continues its current
+turn. Findings arrive as a child result; the reviewer chat retains the complete
+output. Use `orchestration_request` to recover the receipt after a lost reply.
+Use `orchestration_interrupt` with the returned reviewer ID to stop the review.
+Claude agents do not expose this native Codex tool.
+
+Older Codex threads can use `orchestration_send` with `agent_id: "workspace"`
+and JSON in `text`: `{"tool":"orchestration_review","arguments":{"request_id":"review-1"}}`.
+
 Use `orchestration_send` for a new or revised assignment, or an explicit resumption.
 Use `orchestration_interrupt` to stop a
 managed descendant. Stop blocks automatic continuation; do not bypass it with

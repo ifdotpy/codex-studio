@@ -33,7 +33,7 @@ def _identity_command(params, args):
     if tool == "orchestration_send" and args.get("agent_id") == "workspace":
         try:
             bridge = json.loads(args.get("text", ""))
-            if isinstance(bridge, dict) and bridge.get("tool") == "orchestration_send" and isinstance(bridge.get("arguments"), dict):
+            if isinstance(bridge, dict) and bridge.get("tool") in {"orchestration_send", "orchestration_review"} and isinstance(bridge.get("arguments"), dict):
                 return bridge["tool"], bridge["arguments"]
         except (ValueError, TypeError):
             pass
@@ -210,12 +210,12 @@ class RequestMixin:
         params, args = _arguments(message)
         call = str(params.get("callId", message.get("id")))
         name, identity_args = _identity_command(params, args)
-        if name in {"orchestration_spawn", "orchestration_send"} and "request_id" in identity_args:
+        if name in {"orchestration_spawn", "orchestration_send", "orchestration_review"} and "request_id" in identity_args:
             request_id = identity_args["request_id"]
             if (not isinstance(request_id, str) or not 1 <= len(request_id) <= 200
                     or request_id != request_id.strip() or any(ord(c) < 32 for c in request_id)):
                 raise ValueError("Supply request_id with 1 to 200 characters and no surrounding whitespace")
-            call = ("spawn:" if name == "orchestration_spawn" else "send:") + request_id
+            call = {"orchestration_spawn": "spawn:", "orchestration_send": "send:", "orchestration_review": "review:"}[name] + request_id
         return _prefix(account_key, params.get("threadId")) + call
 
     def tool_request(self, key, db=None):
@@ -314,7 +314,8 @@ class RequestMixin:
                     record["reservationDelayMs"] = max(0, now - dispatched) * 1000
                     if "wireReceivedAt" in record:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
-                if identity_tool in {"orchestration_spawn", "orchestration_send"} and "request_id" in identity_args:
+                record["identityTool"] = identity_tool
+                if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
                 self.put(db, "tool_requests", record)
                 cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
@@ -367,7 +368,7 @@ class RequestMixin:
         record.update(stage="completed" if outcome == "applied" else "failed",
                       outcome=outcome, result=result, updated=now, finished=record.get("finished", now))
         record.pop("error", None)
-        if record.get("tool") == "orchestration_spawn":
+        if record.get("identityTool", record.get("tool")) in {"orchestration_spawn", "orchestration_review"}:
             ids = _spawned_ids(result)
             if ids:
                 record["agentIds"] = ids
@@ -483,7 +484,7 @@ class RequestMixin:
             result = {k: v for k, v in record.items() if k != "signature"}
             if action == "get" and record.get("outcome") not in {"applied", "not_applied"} and "operationResult" not in record:
                 result.update(operation_receipt_evidence(db, record["id"]) or {})
-            if action == "get" and (record.get("tool") == "orchestration_spawn"
+            if action == "get" and (record.get("identityTool", record.get("tool")) in {"orchestration_spawn", "orchestration_review"}
                                     or (record.get("legacy") and record.get("agentIds"))):
                 # The receipt remains immutable. These observations show the
                 # current registry state, not the state when creation committed.

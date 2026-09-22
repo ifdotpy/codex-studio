@@ -131,7 +131,9 @@ def voice_tools():
                  {"text": TEXT}, ["text"])]
 
 
-TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT)
+from codex_agent_review import review_tools
+
+TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + panel_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -154,6 +156,8 @@ for definition in TOOLS:
 
 INSTRUCTIONS = """You work in Codex Studio. One lead agent coordinates a team.
 Use orchestration_spawn for delegation and orchestration_monitor for long commands.
+Codex agents can use orchestration_review for native code review in a separate read-only reviewer.
+It returns immediately and delivers findings through a child result. Reuse its request_id after a lost reply.
 A project's account is the default for new chats. The project directory is a working directory, not an access boundary.
 Use files and skills outside that directory when the task needs them. Native sandbox and approval settings still apply.
 Give each spawn a stable request_id. After a lost response, use orchestration_request to read its saved result.
@@ -211,7 +215,7 @@ and text containing JSON {"tool":"orchestration_task","arguments":{"action":"lis
 Supported fallback tools: orchestration_speak, orchestration_task, orchestration_result, orchestration_search,
 orchestration_watch, orchestration_monitor_input, orchestration_user_task,
 orchestration_request, orchestration_read, orchestration_context, orchestration_status,
-orchestration_peers, orchestration_message, orchestration_monitor, orchestration_send.
+orchestration_peers, orchestration_message, orchestration_monitor, orchestration_send, orchestration_review.
 Use your per-agent PROGRESS.md file for status above the composer. Read and edit it with ordinary file tools.
 A background script can write the file directly. File changes do not wake the model.
 Only the orchestrator uses orchestration_user_task for things the user must do. Supply clear completion criteria.
@@ -1822,11 +1826,13 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
     def tool_definitions(actor=None):
         if actor is None:
             return TOOLS
+        if actor.get("nativeReview"):
+            return []
         lead = bool(actor.get("isLead"))
         definitions = []
         for definition in TOOLS:
             if actor.get("provider") == "claude" and definition["name"] in {
-                "orchestration_speak"
+                "orchestration_speak", "orchestration_review"
             }:
                 continue
             if not lead and definition["name"] in {"orchestration_user_task", "orchestration_speak", "orchestration_agent_manage"}:
@@ -2222,6 +2228,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         self.pool.submit(self.start, budget_job["agent"], budget_job["rows"])
                     continue
                 a = self.agent(a["id"], db)
+                from codex_agent_review import claim as claim_review
+                review_attempt = claim_review(self, db, a)
+                if review_attempt:
+                    active.append(a)
+                    self.pool.submit(self.run_native_action, a["id"], review_attempt)
+                    continue
                 from codex_wakeups import pending_batch
                 pending = pending_batch(self, db, a)
                 rows = pending[:32]
@@ -2699,6 +2711,20 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             a = json.loads(row[0])
             if a.get("deletedAt"):
                 return
+            attempt = a.get("startAttempt") or {}
+            if (a.get("nativeReview") and attempt.get("action") == "review"
+                    and attempt.get("submitted") and method in {"item/started", "item/completed"}
+                    and isinstance(p.get("turnId"), str) and p["turnId"]
+                    and not a.get("turnId") and not attempt.get("observedTurnId")
+                    and not attempt.get("turnId") and a.get("inFlight")
+                    and a.get("threadId") == attempt.get("threadId")
+                    and self.operation_current(a, attempt)):
+                # Review can emit items before its RPC response, without a
+                # turn/started event. This fresh child has only this submission.
+                attempt["observedTurnId"] = p["turnId"]
+                a["turnId"] = p["turnId"]
+                if a["autoWake"]:
+                    a["status"] = "running"
             if method == "thread/closed" or (method == "thread/status/changed"
                     and p.get("status", {}).get("type") == "notLoaded"):
                 # Unloading is not a turn outcome or a delivery acknowledgement.
@@ -2804,6 +2830,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if inserted:
                         a["compactions"] = a.get("compactions", 0) + 1
                         a["contextUsage"] = None
+                if kind == "exitedReviewMode" and not started and isinstance(item.get("review"), str):
+                    a["lastAnswer"] = item["review"][-16000:]
+                    a["tail"] = item["review"][-300:]
                 if kind == "agentMessage" and method == "item/completed":
                     text = item.get("text", "")
                     self.item(db, a["id"], item["id"], "assistant", text, streaming=False,
@@ -3143,7 +3172,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         + voice_tools()
                         + request_tools(tool, TEXT)
                         + efficiency_tools(tool, TEXT)
-                    } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor", "orchestration_send", "orchestration_panel", "orchestration_panel_feed"}:
+                    } | {"orchestration_status", "orchestration_peers", "orchestration_message", "orchestration_monitor", "orchestration_send", "orchestration_panel", "orchestration_panel_feed", "orchestration_review"}:
                         raise ValueError("Unknown workspace tool")
                 if name == "orchestration_resource":
                     request_outcome = "not_applied"
@@ -3203,6 +3232,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     value = self.stop(
                         target["id"], True, sender=a["id"], sender_epoch=a["epoch"]
                     )
+                elif name == "orchestration_review":
+                    from codex_agent_review import request as request_review
+                    value = request_review(self, a, args, key)
                 elif name == "orchestration_spawn":
                     value = self.spawn_agents(a, args, key)
                 elif name in {"orchestration_status", "orchestration_peers"}:
@@ -4238,6 +4270,27 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     def interrupt(self, a):
         server = self.servers.get(a.get("accountKey", "default"))
+        if server and a.get("nativeReview") and not a.get("turnId"):
+            attempt = None
+            try:
+                with self.lock:
+                    current = self.agent(a["id"])
+                    attempt = current.get("startAttempt") or {}
+                    if (current.get("autoWake") or not current.get("inFlight")
+                            or current.get("turnId") or attempt.get("action") != "review"
+                            or not attempt.get("submitted")
+                            or current.get("threadId") != attempt.get("threadId")
+                            or not self.operation_current(current, attempt, epoch=False)):
+                        return
+                    submitted = self.submit_reserved(server, "turn/interrupt", {"threadId": current["threadId"], "turnId": ""})
+                server.wait(submitted, timeout=10)
+            except Exception as error:
+                with self.lock, self.db() as db:
+                    current = self.agent(a["id"], db)
+                    if attempt and (current.get("startAttempt") or {}).get("id") == attempt.get("id"):
+                        current["error"] = "Stop requested; review interruption is unconfirmed: " + str(error)
+                        self.put(db, "agents", current)
+            return
         if server and a.get("turnId"):
             current = self.agent(a["id"])
             if current.get("turnId") != a["turnId"] or not current.get("inFlight"):
@@ -4737,7 +4790,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if a.get("nativeEffort", a.get("effort")) is not None:
                         params["effort"] = a.get("nativeEffort", a.get("effort"))
                 if attempt["action"] == "review":
-                    params.update(target={"type": "uncommittedChanges"}, delivery="inline")
+                    params.update(target=attempt.get("reviewTarget", {"type": "uncommittedChanges"}), delivery="inline")
                 db.commit()
                 submitted = self.submit_reserved(server, method, params)
             try:

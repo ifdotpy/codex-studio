@@ -90,6 +90,18 @@ Review and Compact save a request ID before HTTP submission.
 After a lost reply or reload, **Check action request** reads that same request.
 A confirmed request does not execute again. A new explicit action receives a new ID.
 
+Codex agents can call `orchestration_review` with a stable `request_id` and an
+optional native `target`. The default target is `uncommittedChanges`. Supported
+targets also include `baseBranch`, `commit`, and `custom`.
+The server creates a managed reviewer in the caller's directory without sending
+an initial user turn. It runs `review/start` on that reviewer's native thread.
+The caller's active turn continues. The reviewer uses read-only permissions and
+the caller's model, unless native `review_model` selects another model.
+Team concurrency, agent limits, and budget admission apply. Completion sends one
+child result to the caller. The reviewer transcript retains the complete output.
+Receipt recovery does not create another reviewer or repeat a native review.
+Older threads can invoke the tool through the existing workspace tool bridge.
+
 Open **Chat settings > Reviewers** to assign an agent from the same team.
 Select the reviewer. Set the interval in minutes.
 The default interval is 30 minutes. Each target can have several reviewers.
