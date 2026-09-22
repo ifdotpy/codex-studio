@@ -1,6 +1,6 @@
 // Keep one certificate identity across local application updates.
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -84,6 +84,17 @@ export function signCode(target, identity = signingIdentity(), extra = []) {
   );
 }
 export function signApplication(application, identity = signingIdentity()) {
+  // External Python callers can import these modules without -B. Cache writes
+  // would add unsealed resources after installation and invalidate the bundle.
+  const scripts = path.join(
+    application,
+    "Contents/Resources/workspace/scripts",
+  );
+  if (existsSync(scripts)) {
+    const cache = path.join(scripts, "__pycache__");
+    mkdirSync(cache, { recursive: true });
+    chmodSync(cache, 0o555);
+  }
   signCode(application, identity, [
     "--deep",
     "--identifier",

@@ -43,6 +43,10 @@ The build refuses ad hoc signing because it changes the application identity
 that macOS uses for saved permissions. Keep the same certificate for updates.
 After changing installed resources, run `node desktop/signing.mjs /path/to/Codex\ Studio.app`.
 Do not replace this signature with `codesign --sign -`.
+The signer makes the bundled Python cache directory read-only. This prevents
+external Python imports from adding files that invalidate the resource seal.
+Run `node desktop/signing-test.mjs` from the repository root to check the local
+certificate and cache behavior.
 
 ## Native bridge
 
