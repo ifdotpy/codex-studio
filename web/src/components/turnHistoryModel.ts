@@ -1,5 +1,18 @@
 import type { Message } from "../types";
 
+// Native turns can finish without a reply, for example after a worker event.
+// Retain their records for turn status, but do not draw an empty message.
+export function isEmptyAssistantMessage(item: Message): boolean {
+  return (
+    item.role === "assistant" &&
+    !item.text.trim() &&
+    !item.assets?.length &&
+    !item.nativeNotice &&
+    !item.nativeError &&
+    !item.truncated
+  );
+}
+
 export interface HistoryGroup {
   id: string;
   items: Message[];
@@ -31,7 +44,10 @@ export function historyGroups(
     // An explicit final answer can stream before the terminal event arrives.
     group.result = group.items
       .filter(
-        (item) => item.role === "assistant" && item.phase === "final_answer",
+        (item) =>
+          item.role === "assistant" &&
+          item.phase === "final_answer" &&
+          !isEmptyAssistantMessage(item),
       )
       .at(-1);
     if (
@@ -61,7 +77,7 @@ export function historyGroups(
           ? "ended"
           : "completed";
     const answers = group.items.filter(
-      (item) => item.role === "assistant" && item.text.trim(),
+      (item) => item.role === "assistant" && !isEmptyAssistantMessage(item),
     );
     group.result =
       answers.filter((item) => item.phase === "final_answer").at(-1) ||

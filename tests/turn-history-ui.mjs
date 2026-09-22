@@ -124,6 +124,15 @@ try {
       { turnId: "three", toolStatus: "running" },
     ),
   ];
+  items.splice(
+    items.findIndex((entry) => entry.id === "ask2"),
+    0,
+    item("empty-after-result", "assistant", "", {
+      turnId: "one",
+      turnStatus: "completed",
+      phase: "final_answer",
+    }),
+  );
   items.push(
     item(
       "commentary3",
@@ -143,6 +152,25 @@ try {
       "I will report the result after the check finishes.",
       { turnId: "three", phase: "commentary" },
     ),
+    item("empty-live", "assistant", "", { turnId: "three", streaming: true }),
+    item("empty-completed", "assistant", "", {
+      turnId: "silent",
+      turnStatus: "completed",
+      phase: "final_answer",
+    }),
+    item("empty-whitespace", "assistant", " \n\t", {
+      turnId: "silent",
+      turnStatus: "completed",
+    }),
+    item("empty-interrupted", "assistant", "", {
+      turnId: "interrupted",
+      turnStatus: "interrupted",
+    }),
+    item("attachment-only", "assistant", "", {
+      turnId: "attachment",
+      turnStatus: "completed",
+      assets: [{ id: "report-asset", name: "worker-report.txt", image: false }],
+    }),
   );
   const transcript = {
     ...initial,
@@ -233,7 +261,41 @@ try {
   );
   await activeWork.locator(":scope > summary").click();
   assert.equal(await activeWork.getAttribute("open"), null);
-  for (const item of items.filter((item) => item.role === "assistant")) {
+  for (const item of items.filter((item) => item.id.startsWith("empty-"))) {
+    assert.equal(
+      await page.locator(`[data-message="${item.id}"]`).count(),
+      0,
+      `${item.id} has no empty bubble or message actions`,
+    );
+  }
+  assert.equal(
+    await page.locator('[data-turn="silent"]').count(),
+    0,
+    "a silent completed turn leaves no empty section",
+  );
+  assert.match(
+    await page.locator('[data-turn="interrupted"]').innerText(),
+    /Turn interrupted/,
+    "an empty reply preserves the turn outcome",
+  );
+  assert.equal(
+    await page
+      .locator('[data-message="result1"]')
+      .getByRole("button", { name: "Branch after this turn" })
+      .count(),
+    1,
+    "an empty terminal reply does not take branch actions from the visible answer",
+  );
+  assert.equal(
+    await page
+      .locator('[data-message="attachment-only"]')
+      .getByRole("button", { name: "worker-report.txt" })
+      .isVisible(),
+    true,
+  );
+  for (const item of items.filter(
+    (item) => item.role === "assistant" && !item.id.startsWith("empty-"),
+  )) {
     const message = page.locator(`#messages [data-message="${item.id}"]`);
     assert.equal(
       await message.isVisible(),
@@ -307,9 +369,15 @@ try {
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await activeWork.locator(":scope > summary").click();
   assert.equal(await activeWork.getAttribute("open"), null);
+  items.find((entry) => entry.id === "empty-live").text =
+    "The first text delta is visible.";
   await page.reload();
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await first.waitFor();
+  assert.match(
+    await page.locator('[data-message="empty-live"]').innerText(),
+    /The first text delta is visible/,
+  );
   assert.equal(
     await activeWork.getAttribute("open"),
     null,

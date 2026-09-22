@@ -25,7 +25,11 @@ import Activity, {
 import { toolLimitNotice } from "./toolLimitNotice";
 import { turnFailureReason } from "./turnFailureReason";
 import ConversationResults from "./ConversationResults";
-import { historyGroups, type HistoryGroup } from "./turnHistoryModel";
+import {
+  historyGroups,
+  isEmptyAssistantMessage,
+  type HistoryGroup,
+} from "./turnHistoryModel";
 import "./turn-history.css";
 import { messageRenderKey } from "./messageDelivery";
 import ReasoningDuration from "./ReasoningDuration";
@@ -33,6 +37,7 @@ import ReasoningDuration from "./ReasoningDuration";
 function messageGroups(items: Message[], showCompletedCommands = false) {
   const groups: (Message | Message[])[] = [];
   for (const item of items) {
+    if (isEmptyAssistantMessage(item)) continue;
     if (!showCompletedCommands && isPastCommand(item)) continue;
     if (isFileChange(item)) groups.push(item);
     else if (["tool", "output"].includes(item.role)) {

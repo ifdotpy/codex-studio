@@ -67,6 +67,7 @@ import { usePromptRecall } from "./usePromptRecall";
 import Requests from "./Requests";
 import UserTasks from "./UserTasks";
 import TurnHistory from "./TurnHistory";
+import { isEmptyAssistantMessage } from "./turnHistoryModel";
 import { Dictation } from "./Dictation";
 import RealtimeVoice from "./RealtimeVoice";
 import OutboxControls from "./OutboxControls";
@@ -685,7 +686,11 @@ export default function Conversation(p: {
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
     for (const item of items)
-      if (item.role === "assistant" && item.turnId)
+      if (
+        item.role === "assistant" &&
+        item.turnId &&
+        !isEmptyAssistantMessage(item)
+      )
         last.set(item.turnId, item.id);
     return last;
   }, [items]);
