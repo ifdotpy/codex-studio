@@ -34,8 +34,16 @@ export function useDesktopNotifications(
         continue;
       const { id, ...notification } = alert;
       if (window.codexDesktop) {
-        void window.codexDesktop.notify(notification).catch(() => {
+        void window.codexDesktop.notify(notification).catch((error) => {
           current.seen.delete(id);
+          window.dispatchEvent(
+            new CustomEvent("desktop-error", {
+              detail:
+                error instanceof Error
+                  ? error.message
+                  : "Could not show the desktop notification.",
+            }),
+          );
         });
       } else if (
         "Notification" in window &&

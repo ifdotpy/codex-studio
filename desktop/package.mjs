@@ -76,6 +76,19 @@ try {
       /^\/README\.md$/,
     ],
   });
+  for (const directory of output) {
+    const application = path.join(directory, "Codex Studio.app");
+    execFileSync("codesign", [
+      "--force",
+      "--deep",
+      "--sign",
+      "-",
+      "--identifier",
+      "local.codex.agents",
+      application,
+    ]);
+    execFileSync("codesign", ["--verify", "--deep", "--strict", application]);
+  }
   console.log(output.join("\n"));
 } finally {
   await rm(stage, { recursive: true, force: true });

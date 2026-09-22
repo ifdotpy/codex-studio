@@ -115,6 +115,7 @@ try {
     Notification.isSupported = () => true;
     Notification.prototype.show = function () {
       app.__testNotifications.push({ title: this.title, body: this.body });
+      this.emit("show");
     };
   });
   assert.match(
@@ -138,6 +139,23 @@ try {
   assert.deepEqual(
     await desktop.evaluate(({ app }) => app.__testNotifications),
     [{ title: "Global alert", body: "No app opt-in" }],
+  );
+  await desktop.evaluate(({ Notification }) => {
+    Notification.prototype.show = function () {
+      this.emit("failed", {}, "Notification fixture denied");
+    };
+  });
+  assert.match(
+    await page.evaluate(() =>
+      window.codexDesktop
+        .notify({
+          title: "Failed alert",
+          body: "Failure is visible",
+          target: { agentId: "test-chat", section: "messages" },
+        })
+        .catch((error) => error.message),
+    ),
+    /Notification fixture denied/,
   );
   assert.equal(
     await page.evaluate(() => typeof window.codexDesktop.setNotifications),

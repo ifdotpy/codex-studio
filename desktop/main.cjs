@@ -53,6 +53,7 @@ let backend;
 let backendResources;
 let microphoneUntil = 0;
 const transcriptionPermits = new Map();
+const activeNotifications = new Set();
 let transcriptionRunning = null;
 function notificationTarget(value) {
   if (!value || value.section !== "messages")
@@ -361,8 +362,24 @@ async function nativeAction(event, request) {
         win.focus();
         win.webContents.send("codex-desktop-navigate", target);
       });
-      notification.show();
-      return true;
+      activeNotifications.add(notification);
+      notification.once("close", () => activeNotifications.delete(notification));
+      return await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          activeNotifications.delete(notification);
+          reject(new Error("macOS did not confirm the notification. Check Studio in System Settings > Notifications."));
+        }, 15000);
+        notification.once("show", () => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+        notification.once("failed", (_event, error) => {
+          clearTimeout(timer);
+          activeNotifications.delete(notification);
+          reject(new Error(error || "macOS could not show the notification."));
+        });
+        notification.show();
+      });
     }
     default:
       throw new Error("Unknown native action.");
