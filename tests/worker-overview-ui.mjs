@@ -325,6 +325,24 @@ try {
   );
   assert.equal(await card(1).locator("strong").innerText(), longName);
   await page.screenshot({ path: join(root, "worker-overview-mobile.png") });
+  await card(1)
+    .getByRole("button", { name: `Delete subagent ${longName}`, exact: true })
+    .click();
+  const [deletedResponse] = await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/conversation/delete") &&
+        response.request().method() === "POST",
+    ),
+    page.locator(`[data-delete-chat="${worker(1).id}"]`).click(),
+  ]);
+  const receipt = await deletedResponse.json();
+  assert.deepEqual(receipt.deleted, [worker(1).id]);
+  await card(1).waitFor({ state: "hidden" });
+  const remaining = await (await fetch(origin + "/api/state")).json();
+  assert.ok(remaining.threads.some((agent) => agent.id === lead.id));
+  assert.ok(remaining.threads.some((agent) => agent.id === worker(2).id));
+  assert.ok(!remaining.threads.some((agent) => agent.id === worker(1).id));
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({

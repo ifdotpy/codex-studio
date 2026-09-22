@@ -871,9 +871,9 @@ export default function App() {
       throw e;
     }
   };
-  const remove = (id: string, isRoom: boolean) =>
+  const remove = (id: string, isRoom: boolean, isWorker = false) =>
     setModal({
-      title: "Delete chat?",
+      title: isWorker ? "Delete subagent?" : "Delete chat?",
       body: (
         <>
           <p>
@@ -902,7 +902,7 @@ export default function App() {
               })
             }
           >
-            Delete chat
+            {isWorker ? "Delete subagent" : "Delete chat"}
           </Button>
         </>
       ),
@@ -973,6 +973,10 @@ export default function App() {
         deferred={deferredIds.has(a.id)}
         indicator={indicators.get(a.id)}
         open={() => open(a.id)}
+        remove={() => {
+          setTeamOpen(false);
+          remove(a.id, false, true);
+        }}
       />
     </UIErrorBoundary>
   );

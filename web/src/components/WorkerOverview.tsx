@@ -140,12 +140,14 @@ export default function WorkerCard({
   deferred,
   open,
   indicator,
+  remove,
 }: {
   agent: Agent;
   selected: boolean;
   awaitingAnswer: boolean;
   deferred: boolean;
   open: () => void;
+  remove?: () => void;
   indicator?: ChatIndicator;
 }) {
   const overview = agent.overview;
@@ -202,6 +204,17 @@ export default function WorkerCard({
           )}
         </span>
       </UnstyledButton>
+      {remove && (
+        <Button
+          variant="subtle"
+          color="red"
+          size="compact-xs"
+          aria-label={`Delete subagent ${agent.name}`}
+          onClick={remove}
+        >
+          Delete subagent
+        </Button>
+      )}
       {Boolean(agent.error) && (
         <details className="worker-error-details">
           <summary>Error details</summary>
