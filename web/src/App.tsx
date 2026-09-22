@@ -1615,108 +1615,134 @@ export default function App() {
         title="Chat settings"
       >
         <div className="chat-settings-panel">
-          <NativeSelect
-            label="Appearance"
-            aria-label="Appearance"
-            value={colorScheme}
-            data={[
-              { value: "auto", label: "System" },
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
-            ]}
-            onChange={(event) =>
-              setColorScheme(
-                event.currentTarget.value as "auto" | "light" | "dark",
-              )
-            }
-          />
-          <Accounts
-            onModalOpenChange={setAccountModalOpen}
-            projectAccountKeys={
-              data.runtime.projects
-                ?.filter(
-                  (project) =>
-                    (agent || lead)?.cwd === project.path ||
-                    (agent || lead)?.cwd?.startsWith(project.path + "/"),
+          <section
+            className="settings-group"
+            aria-label="Conversation settings"
+          >
+            <h2>Conversation</h2>
+            <div className="settings-field">
+              <span className="settings-label">Account</span>
+              <Accounts
+                onModalOpenChange={setAccountModalOpen}
+                projectAccountKeys={
+                  data.runtime.projects
+                    ?.filter(
+                      (project) =>
+                        (agent || lead)?.cwd === project.path ||
+                        (agent || lead)?.cwd?.startsWith(project.path + "/"),
+                    )
+                    .sort((a, b) => b.path.length - a.path.length)[0]
+                    ?.accountKeys
+                }
+                state={accounts}
+                agent={agent || lead}
+                accountKey={accountKey}
+                onError={notify}
+                changeAccount={async (key) => {
+                  if (agent?.isLead) {
+                    await api("/api/agents/account", {
+                      id: agent.id,
+                      account_key: key,
+                    });
+                    await refresh();
+                  } else {
+                    accounts.setData(
+                      await api("/api/accounts/default", {
+                        account_key: key,
+                      }),
+                    );
+                  }
+                }}
+              />
+            </div>
+            {agent?.cwd && (
+              <div className="settings-field">
+                <span className="settings-label">Project</span>
+                <Button
+                  id="project"
+                  className="project-picker"
+                  leftSection={<Folder size={15} />}
+                  aria-label="Choose project folder"
+                  title={agent.cwd}
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    project();
+                  }}
+                >
+                  {projectName}
+                </Button>
+              </div>
+            )}
+          </section>
+          <section
+            className="settings-group settings-models"
+            aria-label="Model settings"
+          >
+            <h2>Models</h2>
+            {agent?.source === "managed" && (
+              <ExecutionSettings
+                key={"execution:" + agent.id}
+                onOpenChange={setMainSettingsOpen}
+                agent={agent}
+                catalog={workerModels}
+                refresh={refresh}
+              />
+            )}
+            {lead?.isLead && (
+              <ExecutionSettings
+                key={"defaults:" + lead.id}
+                onOpenChange={setSubagentSettingsOpen}
+                agent={lead}
+                catalog={workerModels}
+                refresh={refresh}
+                teamDefaults
+              />
+            )}
+          </section>
+          <section className="settings-appearance">
+            <NativeSelect
+              label="Appearance"
+              aria-label="Appearance"
+              value={colorScheme}
+              data={[
+                { value: "auto", label: "System" },
+                { value: "light", label: "Light" },
+                { value: "dark", label: "Dark" },
+              ]}
+              onChange={(event) =>
+                setColorScheme(
+                  event.currentTarget.value as "auto" | "light" | "dark",
                 )
-                .sort((a, b) => b.path.length - a.path.length)[0]?.accountKeys
-            }
-            state={accounts}
-            agent={agent || lead}
-            accountKey={accountKey}
-            onError={notify}
-            changeAccount={async (key) => {
-              if (agent?.isLead) {
-                await api("/api/agents/account", {
-                  id: agent.id,
-                  account_key: key,
-                });
-                await refresh();
-              } else {
-                accounts.setData(
-                  await api("/api/accounts/default", {
-                    account_key: key,
-                  }),
-                );
               }
-            }}
-          />
-          {agent?.cwd && (
-            <Button
-              id="project"
-              className="project-picker"
-              leftSection={<Folder size={15} />}
-              aria-label="Choose project folder"
-              title={agent.cwd}
-              onClick={() => {
-                setSettingsOpen(false);
-                project();
-              }}
-            >
-              {projectName}
-            </Button>
-          )}
+            />
+          </section>
           {agent?.source === "managed" && (
-            <ExecutionSettings
-              key={"execution:" + agent.id}
-              onOpenChange={setMainSettingsOpen}
-              agent={agent}
-              catalog={workerModels}
-              refresh={refresh}
-            />
-          )}
-          {lead?.isLead && (
-            <ExecutionSettings
-              key={"defaults:" + lead.id}
-              onOpenChange={setSubagentSettingsOpen}
-              agent={lead}
-              catalog={workerModels}
-              refresh={refresh}
-              teamDefaults
-            />
-          )}
-          {agent?.source === "managed" && (
-            <ReviewSchedules
-              key={`reviews:${data.stateDir}:${workspaceId}:${agent.id}`}
-              agent={agent}
-              agents={data.threads}
-              workspaceId={workspaceId}
-              stateDir={data.stateDir}
-              refresh={refresh}
-              openRoom={(roomId) => {
-                setSettingsOpen(false);
-                setWorkspaceSection("messages");
-                setWorkspaceFocus({
-                  id: roomId,
-                  roomId,
-                  requestId: crypto.randomUUID(),
-                });
-                setWorkspaceOpen(true);
-              }}
-            />
+            <details className="settings-reviews">
+              <summary>Review other chats</summary>
+              <ReviewSchedules
+                key={`reviews:${data.stateDir}:${workspaceId}:${agent.id}`}
+                agent={agent}
+                agents={data.threads}
+                workspaceId={workspaceId}
+                stateDir={data.stateDir}
+                refresh={refresh}
+                openRoom={(roomId) => {
+                  setSettingsOpen(false);
+                  setWorkspaceSection("messages");
+                  setWorkspaceFocus({
+                    id: roomId,
+                    roomId,
+                    requestId: crypto.randomUUID(),
+                  });
+                  setWorkspaceOpen(true);
+                }}
+              />
+            </details>
           )}
           {agent?.cwd && (
             <Button
+              variant="subtle"
+              className="settings-new-chat"
               disabled={creating}
               onClick={() => {
                 setSettingsOpen(false);

@@ -40,19 +40,71 @@
 .simple-workspace-header > button {
   flex-shrink: 0;
 }
+
 .chat-settings-panel {
   display: grid;
-  gap: 16px;
+  gap: 20px;
 }
-.chat-settings-panel > .mantine-Button-root {
-  justify-self: start;
-  max-width: 100%;
+.settings-group {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
 }
-.chat-settings-panel .execution-menu {
-  border: 0;
+.settings-group h2 {
   margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.settings-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.settings-label {
+  font-size: 12px;
+}
+.chat-settings-panel .settings-group .mantine-Button-root {
+  width: 100%;
+  max-width: 100%;
+  min-height: 36px;
+  height: auto;
+  margin: 0;
+  padding: 8px 10px;
+  justify-content: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.chat-settings-panel .settings-group .mantine-Button-inner {
+  justify-content: flex-start;
+}
+.chat-settings-panel
+  .settings-group
+  .mantine-Button-section[data-position="right"] {
+  margin-left: auto;
+}
+.settings-models {
+  gap: 8px;
+}
+.settings-reviews {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
+}
+.settings-reviews > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+.settings-reviews[open] > summary {
+  margin-bottom: 14px;
+}
+.chat-settings-panel .settings-new-chat {
+  justify-self: start;
+  font-size: 12px;
+  min-height: 30px;
   padding: 0;
-  flex-wrap: wrap;
 }
 .sidebar-search {
   margin: 0 8px 8px;
@@ -130,4 +182,8 @@
   :is(.attention-count, .tasks-count, .team-button-count) {
   background: var(--raised);
   color: var(--accent);
+}
+.chat-settings-panel #project {
+  width: 100%;
+  max-width: 100%;
 }

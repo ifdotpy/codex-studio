@@ -16,7 +16,11 @@ const server = spawn(
   process.env.PYTHON || "/opt/homebrew/bin/python3",
   ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
   {
-    env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board"), CHAT_REVIEWS_UI_FIXTURE: "1" },
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(root, "board"),
+      CHAT_REVIEWS_UI_FIXTURE: "1",
+    },
     stdio: ["pipe", "pipe", "pipe"],
   },
 );
@@ -81,7 +85,11 @@ try {
   await page.route("**/api/organization", async (route) => {
     const body = route.request().postDataJSON();
     if (!body.review_schedule) return route.continue();
-    assert.equal(body.id, expectedTarget, "The selected chat is the review target");
+    assert.equal(
+      body.id,
+      expectedTarget,
+      "The selected chat is the review target",
+    );
     assert.equal(
       body.review_schedule.reviewer_id,
       reviewer.id,
@@ -101,6 +109,13 @@ try {
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
+    await page.getByRole("dialog", { name: "Chat settings" }).waitFor();
+    await page.waitForTimeout(250);
+    const disclosure = page.locator(".settings-reviews");
+    if ((await disclosure.getAttribute("open")) === null) {
+      await page.screenshot({ path: join(root, "compact-settings.png") });
+      await disclosure.locator("summary").click();
+    }
     await page.getByRole("region", { name: "Chat reviews" }).waitFor();
   };
   await settings();
@@ -205,30 +220,45 @@ try {
   const foreign = state.threads.find((agent) => agent.name === "Other project");
   assert(foreign);
   expectedTarget = foreign.id;
-  await region.getByLabel("Chat to review", { exact: true }).fill("Other project");
+  await region
+    .getByLabel("Chat to review", { exact: true })
+    .fill("Other project");
   await page.getByRole("option", { name: /Other project/ }).click();
   await region.getByRole("button", { name: "Add chat", exact: true }).click();
   await page.locator(`[data-review-target="${foreign.id}"]`).waitFor();
-  const foreignSchedule = (await snapshot()).threads.find((agent) => agent.id === foreign.id)
+  const foreignSchedule = (await snapshot()).threads
+    .find((agent) => agent.id === foreign.id)
     .reviewSchedules.find((item) => item.reviewerId === reviewer.id);
   assert.equal(foreignSchedule.enabled, true);
   assert.deepEqual(foreignSchedule.authorizedRoots, {
-    [foreign.id]: foreign.rootId, [reviewer.id]: reviewer.rootId,
+    [foreign.id]: foreign.rootId,
+    [reviewer.id]: reviewer.rootId,
   });
   console.log("PASS cross-team assignment saves the exact reviewer and target");
 
   const foreignRow = region.locator(`[data-review-target="${foreign.id}"]`);
   loseNextReply = true;
-  await foreignRow.getByRole("button", { name: "Start review", exact: true }).click();
+  await foreignRow
+    .getByRole("button", { name: "Start review", exact: true })
+    .click();
   await region.getByRole("alert").waitFor();
-  await foreignRow.getByRole("button", { name: "Review queued", exact: true }).waitFor();
-  assert(await foreignRow.getByRole("button", { name: "Review queued", exact: true }).isDisabled());
-  const manual = (await snapshot()).threads.find((agent) => agent.id === foreign.id)
+  await foreignRow
+    .getByRole("button", { name: "Review queued", exact: true })
+    .waitFor();
+  assert(
+    await foreignRow
+      .getByRole("button", { name: "Review queued", exact: true })
+      .isDisabled(),
+  );
+  const manual = (await snapshot()).threads
+    .find((agent) => agent.id === foreign.id)
     .reviewSchedules.find((item) => item.reviewerId === reviewer.id);
   assert(manual.lastEventId.includes(":manual-"));
   assert.equal(manual.status, "queued");
   assert.equal(manual.intervalMinutes, foreignSchedule.intervalMinutes);
-  console.log("PASS manual review survives a lost response and disables duplicate requests");
+  console.log(
+    "PASS manual review survives a lost response and disables duplicate requests",
+  );
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: join(root, "mobile-settings.png") });
