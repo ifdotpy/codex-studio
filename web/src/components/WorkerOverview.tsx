@@ -1,5 +1,5 @@
-import { Button, UnstyledButton } from "@mantine/core";
-import { ChevronRight } from "lucide-react";
+import { ActionIcon, Button, Menu, UnstyledButton } from "@mantine/core";
+import { ChevronRight, MoreHorizontal, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { save, saved } from "../api";
 import { nativeErrorView } from "../nativeErrors";
@@ -163,58 +163,72 @@ export default function WorkerCard({
         : error;
   return (
     <div className={`worker-entry ${selected ? "selected" : ""}`}>
-      <UnstyledButton
-        className="worker"
-        data-worker={agent.id}
-        aria-current={selected ? "page" : undefined}
-        onClick={open}
-      >
-        <ChatStatus status={indicator} />
-        <span className="worker-text">
-          <strong>{agent.name}</strong>
-          <span className="worker-meta">
-            <small>
-              {indicator?.kind === "answer" ||
-              indicator?.label === "Waiting for a monitor"
-                ? indicator.label
-                : awaitingAnswer
-                  ? "Needs your answer"
-                  : deferred && agent.status === "approval"
-                    ? "Question deferred"
-                    : agent.status === "starting" &&
-                        (agent.startAttempt?.prepareError ||
-                          agent.startAttempt?.responseError)
-                      ? "Waiting for Codex"
-                      : statusLabel(agent.status)}
-            </small>
-            <span
-              className="worker-model-summary"
-              title={[
-                agent.model,
-                agent.effort || "default reasoning",
-                agent.fastMode ? "Fast" : "Standard",
-              ].join(" · ")}
-            >
-              {shortModel(agent.model)}
-              {agent.fastMode ? " · Fast" : ""}
-            </span>
-          </span>
-          {Boolean(agent.error) && (
-            <span className="worker-error">{errorSummary}</span>
-          )}
-        </span>
-      </UnstyledButton>
-      {remove && (
-        <Button
-          variant="subtle"
-          color="red"
-          size="compact-xs"
-          aria-label={`Delete subagent ${agent.name}`}
-          onClick={remove}
+      <div className="worker-heading">
+        <UnstyledButton
+          className="worker"
+          data-worker={agent.id}
+          aria-current={selected ? "page" : undefined}
+          onClick={open}
         >
-          Delete subagent
-        </Button>
-      )}
+          <ChatStatus status={indicator} />
+          <span className="worker-text">
+            <strong>{agent.name}</strong>
+            <span className="worker-meta">
+              <small>
+                {indicator?.kind === "answer" ||
+                indicator?.label === "Waiting for a monitor"
+                  ? indicator.label
+                  : awaitingAnswer
+                    ? "Needs your answer"
+                    : deferred && agent.status === "approval"
+                      ? "Question deferred"
+                      : agent.status === "starting" &&
+                          (agent.startAttempt?.prepareError ||
+                            agent.startAttempt?.responseError)
+                        ? "Waiting for Codex"
+                        : statusLabel(agent.status)}
+              </small>
+              <span
+                className="worker-model-summary"
+                title={[
+                  agent.model,
+                  agent.effort || "default reasoning",
+                  agent.fastMode ? "Fast" : "Standard",
+                ].join(" · ")}
+              >
+                {shortModel(agent.model)}
+                {agent.fastMode ? " · Fast" : ""}
+              </span>
+            </span>
+            {Boolean(agent.error) && (
+              <span className="worker-error">{errorSummary}</span>
+            )}
+          </span>
+        </UnstyledButton>
+        {remove && (
+          <Menu withinPortal position="bottom-end">
+            <Menu.Target>
+              <ActionIcon
+                variant="subtle"
+                color="gray"
+                size="sm"
+                aria-label={`Options for subagent ${agent.name}`}
+              >
+                <MoreHorizontal size={16} />
+              </ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item
+                color="red"
+                leftSection={<Trash2 size={14} />}
+                onClick={remove}
+              >
+                Delete subagent
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
+        )}
+      </div>
       {Boolean(agent.error) && (
         <details className="worker-error-details">
           <summary>Error details</summary>

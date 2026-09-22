@@ -162,7 +162,9 @@ try {
   const count = async (name) =>
     Number(await summary.locator(`[data-team-count="${name}"] dd`).innerText());
   const card = (n) =>
-    team.locator(`[data-worker="${worker(n).id}"]`).locator("..");
+    team
+      .locator(".worker-entry")
+      .filter({ has: page.locator(`[data-worker="${worker(n).id}"]`) });
   assert.equal(
     await page.locator("#conversation-title").innerText(),
     "Release lead",
@@ -326,7 +328,13 @@ try {
   assert.equal(await card(1).locator("strong").innerText(), longName);
   await page.screenshot({ path: join(root, "worker-overview-mobile.png") });
   await card(1)
-    .getByRole("button", { name: `Delete subagent ${longName}`, exact: true })
+    .getByRole("button", {
+      name: `Options for subagent ${longName}`,
+      exact: true,
+    })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Delete subagent", exact: true })
     .click();
   const [deletedResponse] = await Promise.all([
     page.waitForResponse(
