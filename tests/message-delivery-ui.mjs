@@ -61,7 +61,7 @@ try {
       process.env.CHROME_BIN ||
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   });
-  for (const sync of [false, true]) {
+  for (const sync of process.env.DELIVERY_MODE === "rxdb" ? [true] : [false, true]) {
     const mode = sync ? "rxdb" : "legacy";
     Object.assign(a, {
       status: "running",
@@ -230,12 +230,13 @@ try {
         sync ? "" : text,
         `${mode}: draft clears only after the local outbox or server owns it`,
       );
-      await row(text).waitFor();
-      assert.equal(
-        await row(text).count(),
-        1,
-        `${mode}: one immediate local message`,
-      );
+      if (queue) {
+        await page.getByTestId("message-queue").getByText(text, { exact: true }).waitFor();
+        assert.equal(await row(text).count(), 0, `${mode}: queued send never flashes in the transcript`);
+      } else {
+        await row(text).waitFor();
+        assert.equal(await row(text).count(), 1, `${mode}: one immediate local message`);
+      }
       assert.equal(
         await input.evaluate((element) => document.activeElement === element),
         true,
@@ -394,31 +395,11 @@ try {
     // A queue row can briefly disappear while an older server dispatches it.
     const queuedText = `${mode} queued message survives dispatch`;
     const queued = await start(queuedText, true);
-    const queuedNode = await row(queuedText).elementHandle();
-    let queuedSendingBox = await row(queuedText).boundingBox();
-    let queuedTextBox = await row(queuedText)
-      .locator(".prose.plain")
-      .boundingBox();
-    const assertQueueGeometry = async (phase) => {
-      const box = await row(queuedText).boundingBox();
-      const textBox = await row(queuedText)
-        .locator(".prose.plain")
-        .boundingBox();
-      for (const key of ["x", "y", "width", "height"]) {
-        assert.ok(
-          Math.abs(box[key] - queuedSendingBox[key]) <= 1,
-          `${mode}: ${phase} keeps queued bubble ${key}: ${queuedSendingBox[key]} -> ${box[key]}`,
-        );
-        assert.ok(
-          Math.abs(textBox[key] - queuedTextBox[key]) <= 1,
-          `${mode}: ${phase} keeps queued text ${key}`,
-        );
-      }
-      assert.equal(
-        await queuedNode.evaluate((node) => node.isConnected),
-        true,
-        `${mode}: ${phase} preserves the message node`,
-      );
+    const queueRow = () => page.getByTestId("message-queue").getByText(queuedText, { exact: true });
+    const assertQueueGeometry = async () => {
+      await queueRow().waitFor();
+      assert.equal(await row(queuedText).count(), 0);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     };
     await accept(queued, "queued");
     await assertQueueGeometry("queued receipt");
@@ -433,8 +414,7 @@ try {
     await publish(a.id, [...queueBase, queuedEcho]);
     await until(
       async () =>
-        (await row(queuedText).count()) === 1 &&
-        /Queued/.test(await row(queuedText).innerText()),
+        (await queueRow().count()) === 1 && (await row(queuedText).count()) === 0,
       `${mode}: one queued row`,
     );
     await assertQueueGeometry("queued transcript");
@@ -442,10 +422,9 @@ try {
       path: join(evidence, `${mode}-queued-desktop.png`),
     });
     await page.setViewportSize({ width: 390, height: 844 });
-    await row(queuedText).scrollIntoViewIfNeeded();
+    await queueRow().scrollIntoViewIfNeeded();
     await page.waitForTimeout(100);
-    queuedSendingBox = await row(queuedText).boundingBox();
-    queuedTextBox = await row(queuedText).locator(".prose.plain").boundingBox();
+
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -458,7 +437,7 @@ try {
     await publish(a.id, [...queueBase]);
     await page.waitForTimeout(200);
     assert.equal(
-      await row(queuedText).count(),
+      await queueRow().count(),
       1,
       `${mode}: dispatch gap retains local queued receipt`,
     );
@@ -470,7 +449,7 @@ try {
           0,
       `${mode}: materialized queue row stays unique`,
     );
-    await assertQueueGeometry("delivered transcript");
+    assert.equal(await queueRow().count(), 0);
     await page.setViewportSize({ width: 1440, height: 960 });
 
     // A rejected message keeps its draft, attachments, and an inline error.
@@ -615,7 +594,7 @@ try {
     await accept(stale, "queued");
     await row(staleText)
       .getByRole("status")
-      .filter({ hasText: /^Queued$/ })
+      .filter({ hasText: /^Sending…$/ })
       .waitFor();
     const mutationsBeforeStaleRemoval = mutations.length;
     await row(staleText)

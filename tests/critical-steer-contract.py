@@ -71,6 +71,33 @@ class CriticalSteerContract(unittest.TestCase):
                 (agent + ":" + message_id, agent),
             ).fetchone()[0]
 
+    def test_promote_queue_keeps_identity_and_retries_without_resend(self):
+        agent = self.lead()
+        self.runtime.send(agent, "Queued", "promote-one", delivery="queue")
+        body = {"action": "steer", "id": "promote-one", "expectedText": "Queued",
+                "request_id": "promote-request", "expected_revision": self.runtime.queue_action(agent)["revision"]}
+        result = self.runtime.queue_action(agent, body)
+        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(self.runtime.queue_action(agent, body), result)
+        calls = [p for m, p in self.server.calls if m == "turn/steer"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["clientUserMessageId"], "promote-one")
+        self.assertEqual(self.runtime.queue_action(agent)["items"], [])
+
+    def test_async_answer_steers_active_turn_once(self):
+        agent = self.lead()
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(agent, db)
+            self.runtime.put(db, "requests", {"id": "async-question", "agent": agent,
+                "epoch": a["epoch"], "method": "agent/asyncQuestion", "status": "pending",
+                "params": {"questions": [{"id": "q", "question": "Which file?"}]}})
+        body = {"answers": {"q": {"answers": ["main.py"]}}}
+        self.runtime.answer("async-question", body)
+        self.runtime.answer("async-question", body)
+        calls = [p for m, p in self.server.calls if m == "turn/steer"]
+        self.assertEqual(len(calls), 1)
+        self.assertIn("main.py", calls[0]["input"][0]["text"])
+
     def test_after_tool_resolves_at_server_and_replay_keeps_original_route(self):
         agent = self.lead()
         result = self.runtime.send(agent, "Correction", "enter-active", delivery="after_tool")

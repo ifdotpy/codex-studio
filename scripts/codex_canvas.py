@@ -1072,6 +1072,8 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(canvas.runtime.stop(body.get("id"), body.get("descendants", True)))
                     if self.path == "/api/monitor/cancel":
                         return self.send(canvas.runtime.cancel_monitor(body.get("id")))
+                    if self.path == "/api/questions/delete":
+                        return self.send(runtime.delete_question(body.get("id")))
                     if self.path == "/api/questions/defer":
                         return self.send(canvas.runtime.defer_question(body.get("id"), body.get("deferred", True)))
                     if self.path == "/api/answer":

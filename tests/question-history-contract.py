@@ -33,6 +33,25 @@ class QuestionHistoryContract(unittest.TestCase):
     def history(self):
         return self.runtime.question_history(self.lead["id"])["items"]
 
+    def test_delete_native_question_resolves_once_and_removes_history(self):
+        request = self.question()
+        before = len(self.runtime.server.responses)
+        result = self.runtime.delete_question(request["id"])
+        self.assertEqual(self.runtime.delete_question(request["id"]), result)
+        self.assertEqual(len(self.runtime.server.responses), before + 1)
+        self.assertEqual(self.history(), [])
+        self.assertFalse(any(r["id"] == request["id"] for r in self.runtime.snapshot()["requests"]))
+
+    def test_delete_stale_async_question_does_not_send_input(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "requests", {"id": "stale-async", "agent": self.lead["id"],
+                "epoch": -1, "status": "pending", "method": "agent/asyncQuestion",
+                "params": {"questions": [{"id": "q", "question": "Old question?"}]}})
+        before = list(self.runtime.server.calls)
+        self.runtime.delete_question("stale-async")
+        self.assertEqual(self.runtime.server.calls, before)
+        self.assertEqual(self.history(), [])
+
     def test_deferral_preserves_pending_rpc_and_suppresses_inbox(self):
         request = self.question()
         responses = len(self.runtime.server.responses)

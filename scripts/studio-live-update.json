@@ -1,5 +1,5 @@
 {
-  "id": "2026-09-20-account-migration-terminal-metadata-v1",
+  "id": "2026-09-22-chat-controls-v1",
   "inputs": {
     "codex-canvas": "002303238b64b884d98ad999062bd9fd3f7b7d346c3e737b43d07f2f06544c1e",
     "codex-mobile.py": "347fc4b42c02414202063863ceff8a71a810c093aa837b49da4eca344720ee68",
@@ -20,10 +20,11 @@
     "codex_browser_recovery.py": "b212d954451ab92db8ab69fe06e55caaa717dc25f71c21abc2879d3284ea0fc4",
     "codex_budget.py": "fb2a9a60065b7278cd4741c8326c6f06cb581950cb29632f3560dee89e5f0359",
     "codex_callback_wait_diagnostics_update.py": "339f7611c91cf7ee66b6bfc975ecb2d37b1a5d630d1ece49f76a83acd7bb8ace",
-    "codex_canvas.py": "8cdedbb3f24ed0562763cb75fb7315787ef81c8dc4e6362d17475668429e4d70",
+    "codex_canvas.py": "e252ed9a1991940628538cf09245a78b6b1e4ff71e082cdde5c44cff98ead554",
     "codex_capabilities_update.py": "7be5be7e53adebd48d82d31b1c72fcc977156d158c200d61f7b441d896e1b810",
     "codex_capacity_retry.py": "4213d37fbd0f2137c7e3067b02fd959adc2c6befb8811f1f6ac173e97199221a",
     "codex_catalog.py": "ad05aa1b44c89a98b8bba7af4fd2db3d254bce1fcf71b51c7a800020b07beae2",
+    "codex_chat_controls_update.py": "b752ad03ad3e2e0d20749dcb066bb0e43c995b49193a2ccf28a39ca4a5f324c3",
     "codex_chat_read_state.py": "b90e556be099468ca305cb98de0e08b200de4e4f6698313883e50dccb19b1675",
     "codex_chat_read_update.py": "380b38eb3bcdcf2659560d3ae0e3fc5d0eb06889484344b08096e0ab260ee754",
     "codex_chat_reviews.py": "f548578d7e99f8d3045610bbf8f76fa5fa73944fb01a4beac89b7dd0c861573e",
@@ -60,7 +61,7 @@
     "codex_project_accounts.py": "24cf51ff7847e1289df756cd9f03cc4c7dfbd24b0fc42850f46596d64be8692b",
     "codex_project_folders.py": "f24064506894977fc467f4084e9cbdde64623ceb026290faa729d753e7ac1f9a",
     "codex_project_selection.py": "f4d8c25bc5fc64d3dc8ad62ce94d30b84428691ace8ef8f669c18c572474248a",
-    "codex_questions.py": "8202d2b029241c4618f4e89fe533263a0e25e6541084e44a3f24e6c6aeed25c0",
+    "codex_questions.py": "94f5a2a85d1990e18d11f58ba359fca236d2ac02154c3dfe63c92b053c96827a",
     "codex_queue_update.py": "f927e71c5829dfc0323ba5935265aa7f80bd5c87a2edad4cab96cdb9df1dd693",
     "codex_reasoning_history.py": "a42ac6a516e00f52c9ad32308b6a9ffd2601a0a5654277eb447b55dbaf5e52c4",
     "codex_recovery_boundary_update.py": "6702b635b77d48ac2f4f1ec165eb96956543a4e48d4b4f72f54b6c56a6d33c98",
@@ -73,7 +74,7 @@
     "codex_review_pair_update.py": "d0a1a4e5e0c6a9886cc174890d683f92e822d204ac20d9b71924113ec91232d2",
     "codex_role_context_update.py": "c838612b25b6d290efb5977cf2b6e35bf4a3fdee1226f35bdf980069864e4ab5",
     "codex_rules.py": "91beb2c8be9f4b01eae4ef2ee176362b0a09a87a747ba676fd33d929ad34ed7d",
-    "codex_runtime.py": "b7ec4a36b39fca5be5e9e30cc763244247aefb59afe9b37f156f2c1db2bf1ac0",
+    "codex_runtime.py": "28898dbd606a61a5ce12f84fa068b427bc5462fcfaf7bc5cb67e3a0401f098a8",
     "codex_runtime_diagnostics_update.py": "455f1b7af9d75f22a226ea89ca6af1cbdf2ef67650cce1a6d46a9167b9ec0133",
     "codex_safety_buffering.py": "647fc3e8967e7ee8ff132e7adcb3d25ee0ffc94bc2ff709d6ed1566710ce5e9f",
     "codex_safety_update.py": "6ca5673f6e46d9fcb0a465bddb838274648fea7501a77761ef91d5445f830416",
@@ -99,18 +100,18 @@
     "codex_user_tasks.py": "769c2d20c6e7b729c1ae3dfebc64937e732dd57d9bbb2173e91992c5c1a98bca",
     "codex_voice.py": "b842f6de821425882e537d14ab4381290ab5cfd8e7724868b3c605a965938865",
     "codex_wakeups.py": "c4e2c44925d4f7ce971e4cc0f7800df61e19fef55891b38f22d5439f6ed8fa60",
-    "codex_work.py": "c7f37d9d6f37115b62f790e8d89ddd1c3de99cf3c2713768e78bbc0016fdf5cb",
+    "codex_work.py": "15dd0b48c72c56668db55979e56e5b9e5b207103f2dd53d6c17c254d4f3c2151",
     "codex_worker_terminal_receipt_recovery_update.py": "68673d3f27ddf440c514e07e417f79884b0be4dc1a95beeaceb018298018cc46",
     "codex_workspace.py": "bdf7ba95e9d3a6a0c4862e6c83a6aa4dc2b5bd766a1487c494cb06488e210b1d",
     "codex_workspace_delivery.py": "1cbf3d76ef438faeeb4221f49fd8b026fe12df46734b3aef8b6a33397e0c2423",
     "codex_workspace_read_update.py": "bc2f0c87ef5f0d13936c89204199a8755661992bc24cdae692700c0bb6e423cc",
     "install-cli.py": "ca11e8b3b0f7bb02df5a88b74a5306e5fa65feacadba5ba3234542231c5e9f85"
   },
-  "patch": "codex_account_transfer_migration_update.py",
+  "patch": "codex_chat_controls_update.py",
   "python": [
     3,
     14
   ],
-  "scope": "Account migration replaces terminal transfer metadata so a new orchestrator transfer is scheduled",
+  "scope": "Delete stale questions, steer answers and queued messages, and correct chat activity and queue display",
   "version": 1
 }

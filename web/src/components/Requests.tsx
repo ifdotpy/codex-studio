@@ -273,12 +273,15 @@ function RequestCard({
       if (mounted.current) setSending(false);
     }
   };
-  const defer = async () => {
+  const defer = async (remove = false) => {
     if (pending.current) return;
     pending.current = true;
     setSending(true);
     try {
-      await api("/api/questions/defer", { id: r.id, deferred: !r.deferred });
+      await api(remove ? "/api/questions/delete" : "/api/questions/defer", {
+        id: r.id,
+        deferred: !r.deferred,
+      });
       if (mounted.current) setOpen(false);
       await refresh();
     } catch (error) {
@@ -367,6 +370,15 @@ function RequestCard({
           )}
         </div>
         <div className="request-actions">
+          {question && (
+            <Button
+              variant="subtle"
+              disabled={sending}
+              onClick={() => void defer(true)}
+            >
+              Delete question
+            </Button>
+          )}
           {blocked ? (
             <p>
               This chat stopped as a precaution. This request cannot resume it.

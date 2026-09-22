@@ -590,6 +590,12 @@ try {
   console.log(
     "PASS lost response is visible across tabs; reload retries exact receipt without another edit",
   );
+  const question = page.locator('[data-request="async-question"]');
+  await question.getByRole("button", { name: "Delete question", exact: true }).click();
+  await wait(async () => !(await question.count()), "Deleted question leaves the chat");
+  const finalState = await (await fetch(origin + "/api/state")).json();
+  assert.ok(!finalState.runtime.requests.some((item) => item.id === "async-question"));
+  assert.equal(await page.locator("#composer .agent-phase").count(), 0);
   assert.deepEqual(errors, []);
   console.log(
     "PASS 390px queue controls and layout; queue mutations never send extra messages",

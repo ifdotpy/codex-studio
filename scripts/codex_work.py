@@ -594,14 +594,31 @@ class WorkMixin:
             request_id = data.get("request_id")
             if request_id is not None:
                 request_id = text_field(request_id, "a request ID", 200)
-            if action == "reorder" and not request_id:
-                raise ValueError("Supply a request ID to reorder the queue")
+            if action in {"reorder", "steer"} and not request_id:
+                raise ValueError("Supply a request ID to change queue delivery")
             receipt_key = "queue:" + agent_id + ":" + request_id if request_id else None
             signature, previous = self.operation_receipt(
                 db, receipt_key, {"agent": agent_id, "body": data},
             )
             if previous is not None:
                 return previous
+            if action == "steer":
+                message_id = data.get("id")
+                row = db.execute("SELECT * FROM runtime_events WHERE id=? AND agent=?",
+                                 (message_id, agent_id)).fetchone()
+                if not row or row["epoch"] != a["epoch"] or row["kind"] not in {"user", "followup"}:
+                    raise ValueError("This queued message is unavailable")
+                if data.get("expectedText") != row["text"]:
+                    raise ValueError("This queued message changed")
+                saved = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)).fetchone()
+                metadata = json.loads(saved[0]) if saved else {}
+                if row["status"] == "pending" and data.get("expected_revision") != snapshot()["revision"]:
+                    raise ValueError("This queue changed. Reload before steering")
+                db.commit()
+                result = self.send(agent_id, row["text"], message_id, manual=False,
+                                 delivery=metadata.get("requestedDelivery", metadata.get("delivery", "queue")),
+                                 assets=metadata.get("assets", []), promote=True)
+                return self.save_receipt(db, receipt_key, signature, result)
             current = snapshot()
             if (("expected_revision" in data or action == "reorder")
                     and data.get("expected_revision") != current["revision"]):

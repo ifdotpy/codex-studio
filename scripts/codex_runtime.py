@@ -1535,6 +1535,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         assets=None,
         sender=None,
         sender_epoch=None,
+        promote=False,
     ):
         assets = assets or []
         if (
@@ -1564,6 +1565,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "SELECT * FROM runtime_events WHERE id=?", (message_id,)
             ).fetchone()
             retry_not_submitted = False
+            promoting = False
             if old:
                 meta = db.execute(
                     "SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)
@@ -1578,7 +1580,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     or previous.get("requestedDelivery", previous.get("delivery", "queue")) != requested_delivery
                 ):
                     raise ValueError("This message id has different content")
-                if requested_delivery == "after_tool":
+                if requested_delivery == "after_tool" or promote:
                     delivery = previous.get("delivery", "queue")
                 retry_not_submitted = (
                     delivery == "steer"
@@ -1592,12 +1594,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                             or prior_native.get("epoch") != a.get("epoch")
                             or prior_native.get("accountKey", "default") != a.get("accountKey", "default")):
                         raise ValueError("This steer belongs to an earlier turn")
-                if not retry_not_submitted:
+                promoting = promote and old["status"] == "pending" and old["epoch"] == a["epoch"]
+                if not retry_not_submitted and not promoting:
                     return {
                         "id": message_id,
                         "status": old["status"],
                         "error": old["error"],
                     }
+            if promoting:
+                delivery = "steer"
             from codex_agent_modes import assert_worker_input
             assert_worker_input(self, db, a)
             assert_native_thread_open(a)
@@ -1626,6 +1631,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if not a["autoWake"]:
                 raise ValueError("Agent is stopped; no message was queued")
             if delivery == "queue":
+                if promoting:
+                    raise ValueError("This chat cannot accept a steer yet")
                 if retry_not_submitted:
                     raise ValueError("Only a steer can retry an unsent delivery")
                 db.execute(
@@ -1655,13 +1662,16 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     **({"delivery": "queue", "waitingFor": blockers} if blockers else {}),
                 }
             self.assert_workspace_available(db, a)
-            if retry_not_submitted:
+            if retry_not_submitted or promoting:
                 db.execute(
                     "UPDATE runtime_events SET status='dispatching',epoch=?,turn_id=?,error=NULL "
-                    "WHERE id=? AND agent=? AND status='failed'",
+                    "WHERE id=? AND agent=? AND status IN ('failed','pending')",
                     (a["epoch"], a["turnId"], message_id, key),
                 )
                 meta = previous
+                meta.setdefault("requestedDelivery", requested_delivery)
+                meta["delivery"] = "steer"
+                meta.setdefault("acceptedAt", time.time())
                 meta.pop("notSubmitted", None)
             else:
                 db.execute(
@@ -4232,7 +4242,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if a["epoch"] != r["epoch"] or not a["autoWake"]:
                     raise ValueError("This question belongs to a stopped turn")
                 text = "\n".join(q["question"] + "\n" + "\n".join(answers.get(q["id"], {}).get("answers", [])) for q in r["params"]["questions"])
-                self.enqueue(db, a, "user", text, key + ":answer")
+                db.commit()
+                self.send(a["id"], text, key + ":answer", delivery="after_tool")
                 r["status"] = "answered"
                 record_answer(r, data)
                 self.put(db, "requests", r)

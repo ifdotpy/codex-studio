@@ -400,7 +400,30 @@ export default function Conversation(p: {
   });
   const queue = useMemo(
     () =>
-      messageQueue.items.filter(
+      [
+        ...messageQueue.items,
+        ...items
+          .filter(
+            (item) =>
+              item.role === "user" &&
+              explicitQueue(item) &&
+              !dispatchedMessage(item) &&
+              ["sending", "pending", "queued", "accepted"].includes(
+                item.deliveryStatus || (item.pending ? "pending" : ""),
+              ) &&
+              !messageQueue.items.some(
+                (row) =>
+                  row.id === item.clientMessageId ||
+                  row.id === item.id ||
+                  `${p.id}:${row.id}` === item.id,
+              ),
+          )
+          .map((item) => ({
+            ...item,
+            id: item.clientMessageId || item.id,
+            localDelivery: true,
+          })),
+      ].filter(
         (entry) =>
           explicitQueue(entry) &&
           !items.some(
@@ -1114,6 +1137,23 @@ export default function Conversation(p: {
           {!p.room && agent && (
             <SafetyBuffering key={`safety:${agent.id}`} agent={agent} />
           )}
+          <div className="chat-activity">
+            {!detailedActivity &&
+              !reasoningVisible &&
+              agent &&
+              !(agent.status === "queued" && queue.length > 0) && (
+                <AgentPhase
+                  agent={{
+                    ...agent,
+                    activity: {
+                      ...agent.activity,
+                      phase: displayPhase,
+                    },
+                  }}
+                  connection={connection}
+                />
+              )}
+          </div>
           {!p.room && detailedActivity && (
             <AgentPhase agent={agent} connection={connection} />
           )}
@@ -1209,6 +1249,11 @@ export default function Conversation(p: {
                 scope={queueScope}
                 onEdit={messageQueue.edit}
                 onCancel={messageQueue.cancel}
+                onSteer={
+                  agent?.inFlight && agent?.turnId
+                    ? messageQueue.steer
+                    : undefined
+                }
                 onReorder={(ids) =>
                   messageQueue.reorder(
                     mergeQueueOrder(
@@ -1218,7 +1263,10 @@ export default function Conversation(p: {
                     ),
                   )
                 }
-                canReorder={messageQueue.canReorder}
+                canReorder={
+                  messageQueue.canReorder &&
+                  !queue.some((item) => item.localDelivery)
+                }
                 refreshing={messageQueue.busy}
                 error={messageQueue.error}
               />
@@ -1466,23 +1514,6 @@ export default function Conversation(p: {
               <span id="send-state" role="status" aria-live="polite">
                 {p.sending ? "Sending…" : ""}
               </span>
-              <div className="composer-activity">
-                {!detailedActivity &&
-                  !reasoningVisible &&
-                  agent &&
-                  !(agent.status === "queued" && queue.length > 0) && (
-                    <AgentPhase
-                      agent={{
-                        ...agent,
-                        activity: {
-                          ...agent.activity,
-                          phase: displayPhase,
-                        },
-                      }}
-                      connection={connection}
-                    />
-                  )}
-              </div>
               <div className="composer-submit-actions">
                 {managed && (
                   <ActionIcon

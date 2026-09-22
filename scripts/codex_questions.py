@@ -43,6 +43,30 @@ def record_answer(record, data):
 
 
 class QuestionsMixin:
+    def delete_question(self, key):
+        with self.lock, self.db() as db:
+            row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
+            if not row:
+                raise ValueError("Unknown question")
+            record = json.loads(row[0])
+            if not is_question(record):
+                raise ValueError("Only a question can be deleted")
+            self.checked_actor(db, record["agent"])
+            if record.get("deletedAt"):
+                return {"id": key, "status": "deleted"}
+            if record["status"] == "pending" and record["method"] != "agent/asyncQuestion":
+                db.commit()
+                # Resolve the native question without granting any permission.
+                self.answer(key, {"decision": "cancel"} if record["method"] == "mcpServer/elicitation/request"
+                            else {"answers": {}})
+                record = json.loads(db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()[0])
+            if record["status"] in {"answering", "uncertain"}:
+                raise ValueError("Question delivery is uncertain; wait for its receipt")
+            record.update(status="deleted", deletedAt=time.time(), deletedBy="user", deferred=False)
+            self.put(db, "requests", record)
+            self.changed.set()
+            return {"id": key, "status": "deleted"}
+
     def defer_question(self, key, deferred=True):
         if not isinstance(deferred, bool):
             raise ValueError("Deferred must be true or false")
@@ -71,7 +95,7 @@ class QuestionsMixin:
                    if not a.get("deletedAt") and a["rootId"] == owner["rootId"]}
             records = []
             for record in self.records(db, "requests"):
-                if record.get("agent") not in ids or not is_question(record):
+                if record.get("agent") not in ids or not is_question(record) or record.get("deletedAt"):
                     continue
                 records.append({name: record.get(name) for name in (
                     "id", "agent", "method", "status", "createdAt", "answeredAt", "answeredBy", "decision",

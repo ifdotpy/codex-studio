@@ -201,6 +201,8 @@ export function useMessageQueue(p: {
         expectedText: current?.text === text.trim() ? current.text : item.text,
       });
     },
+    steer: (item: QueueItem) =>
+      mutate({ action: "steer", id: item.id, expectedText: item.text }),
     cancel: (item: QueueItem) =>
       mutate({ action: "cancel", id: item.id, expectedText: item.text }),
     reorder: (ids: string[]) => mutate({ action: "reorder", ordered_ids: ids }),
