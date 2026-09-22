@@ -124,6 +124,26 @@ try {
       { turnId: "three", toolStatus: "running" },
     ),
   ];
+  items.push(
+    item(
+      "commentary3",
+      "assistant",
+      "The command is still running. This update must stay visible.",
+      { turnId: "three", phase: "commentary" },
+    ),
+    item("thinking3", "reasoning", "", {
+      turnId: "three",
+      reasoningMs: 1000,
+      reasoningSince: null,
+      reasoningObservedAt: Date.now() / 1000,
+    }),
+    item(
+      "commentary4",
+      "assistant",
+      "I will report the result after the check finishes.",
+      { turnId: "three", phase: "commentary" },
+    ),
+  );
   const transcript = {
     ...initial,
     items,
@@ -211,6 +231,30 @@ try {
     true,
     "one active tool is visible without a group click",
   );
+  await activeWork.locator(":scope > summary").click();
+  assert.equal(await activeWork.getAttribute("open"), null);
+  for (const item of items.filter((item) => item.role === "assistant")) {
+    const message = page.locator(`#messages [data-message="${item.id}"]`);
+    assert.equal(
+      await message.isVisible(),
+      true,
+      `${item.id} stays visible with collapsed tools`,
+    );
+    assert.equal(
+      await message.evaluate((node) => !!node.closest("details")),
+      false,
+      `${item.id} is outside every disclosure`,
+    );
+  }
+  assert.match(
+    await page.locator('[data-message="commentary3"]').innerText(),
+    /This update must stay visible/,
+  );
+  assert.match(
+    await page.locator('[data-message="commentary4"]').innerText(),
+    /after the check finishes/,
+  );
+  await activeWork.locator(":scope > summary").click();
   assert.match(await first.innerText(), /Build checks passed/);
   assert.equal(await page.locator('[data-message="note1"]').isVisible(), true);
   assert.match(
