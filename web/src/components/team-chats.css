@@ -460,3 +460,46 @@
   border-radius: 14px;
   background: var(--surface);
 }
+
+.messages-chat-list {
+  min-width: 0;
+}
+.messages-chat-list .team-room-row {
+  min-height: 76px;
+  text-align: left;
+  padding: 12px 10px;
+}
+.messages-chat-list .team-room-row > svg,
+.team-conversation-icon {
+  flex: none;
+}
+.team-conversation-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+  background: var(--raised, #27272e);
+}
+.team-conversation-icon.personal {
+  background: color-mix(in srgb, var(--accent) 20%, var(--surface));
+  color: var(--accent);
+}
+.messages-chat-list .team-room-row.selected {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+.messages-chat-list .team-room-title strong {
+  font-size: 14px;
+}
+.messages-chat-list .team-room-preview > span {
+  font-size: 13px;
+}
+@media (max-width: 640px) {
+  .messages-chat-list .team-room-detail {
+    display: none;
+  }
+  .messages-chat-list.show-room .team-room-detail {
+    display: flex;
+  }
+}

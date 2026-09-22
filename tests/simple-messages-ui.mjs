@@ -54,11 +54,12 @@ try {
   assert.equal(await page.locator("#sidebar .sidebar-team-chats").count(), 0);
   const title = await page.locator("#conversation-title").innerText();
   await page.locator("#messages-toggle").click();
-  const chats = page.locator(".unified-messages");
+  const chats = page.locator(".messages-chat-list");
   await chats.waitFor();
-  await chats.locator(".team-message").first().waitFor();
+  await chats.locator('[data-room="you"]').waitFor();
   assert.equal(await chats.getByRole("tab").count(), 0);
-  assert.equal(await chats.locator("[data-room]").count(), 0);
+  assert.ok((await chats.locator("[data-room]").count()) > 1);
+  assert.ok((await chats.locator(".team-room-row svg").count()) > 1);
   assert.equal(
     await chats.getByText("Command failures", { exact: true }).count(),
     0,
@@ -67,6 +68,55 @@ try {
     await chats.locator('[data-feed-item^="request:"]').count(),
     "For you questions share the feed",
   );
+  await chats.getByRole("textbox", { name: "Search chats" }).fill("Worker 39");
+  await chats.locator(`[data-room="${room.id}"]`).click();
+  await chats.locator(".team-message").first().waitFor();
+  assert.equal(await chats.locator('[data-feed-item^="request:"]').count(), 0);
+  assert.equal(
+    await chats
+      .locator(`[data-room="${room.id}"]`)
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  const roomData = await (
+    await fetch(origin + "/api/agent-chat?room=" + encodeURIComponent(room.id))
+  ).json();
+  assert.ok(roomData.messages.length > 0);
+  const renderedIds = await chats
+    .locator("[data-message]")
+    .evaluateAll((nodes) => nodes.map((node) => node.dataset.message));
+  assert.deepEqual(
+    renderedIds,
+    roomData.messages.map((message) => message.id),
+  );
+  await chats.getByRole("textbox", { name: "Search chats" }).fill("");
+  await chats.locator('[data-room="you"]').click();
+  assert.equal(await chats.locator(".team-message").count(), 0);
+  assert.equal(
+    await chats.getByRole("button", { name: "Earlier messages" }).count(),
+    0,
+  );
+  assert.ok(await chats.locator('[data-feed-item^="request:"]').count());
+  await chats.getByRole("textbox", { name: "Search chats" }).fill("Worker 39");
+  await chats.locator(`[data-room="${room.id}"]`).click();
+  await chats.locator(".team-message").first().waitFor();
+  const another = snapshot.runtime.rooms.find(
+    (item) => item.kind === "broadcast" && item.rootId === lead.id,
+  );
+  await chats
+    .getByRole("textbox", { name: "Search chats" })
+    .fill("Team broadcast");
+  await chats.locator(`[data-room="${another.id}"]`).click();
+  await chats.getByRole("textbox", { name: "Search chats" }).fill("Worker 39");
+  await chats.locator(`[data-room="${room.id}"]`).click();
+  await chats.locator(".team-message").first().waitFor();
+  assert.deepEqual(
+    await chats
+      .locator("[data-message]")
+      .evaluateAll((nodes) => nodes.map((node) => node.dataset.message)),
+    renderedIds,
+  );
+  await chats.getByRole("textbox", { name: "Search chats" }).fill("");
   const pageData = await (
     await fetch(
       origin + "/api/agent-chat?room=" + encodeURIComponent("feed:" + lead.id),
@@ -84,6 +134,9 @@ try {
   assert.equal(await page.locator("#conversation-title").innerText(), title);
   assert.equal(await page.getByRole("dialog").count(), 1);
   await page.waitForTimeout(250);
+  await chats.locator(".team-room-rows").evaluate((node) => {
+    node.scrollTop = 0;
+  });
   await page.screenshot({ path: join(evidence, "messages-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(250);
@@ -91,6 +144,14 @@ try {
     await chats.evaluate((node) => node.scrollWidth <= node.clientWidth),
   );
   await page.screenshot({ path: join(evidence, "messages-mobile.png") });
+  await chats.getByRole("button", { name: "Back to chats" }).click();
+  assert.equal(await chats.locator(".team-room-detail").isVisible(), false);
+  await chats.getByRole("textbox", { name: "Search chats" }).fill("For you");
+  assert.equal(await chats.locator("[data-room]").count(), 1);
+  await chats.getByRole("textbox", { name: "Search chats" }).fill("");
+  await page.screenshot({ path: join(evidence, "messages-mobile-list.png") });
+  await chats.locator('[data-room="you"]').click();
+  assert.ok(await chats.locator('[data-feed-item^="request:"]').count());
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, evidence }));
 } finally {
