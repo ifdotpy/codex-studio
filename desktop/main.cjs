@@ -376,7 +376,9 @@ async function nativeAction(event, request) {
         notification.once("failed", (_event, error) => {
           clearTimeout(timer);
           activeNotifications.delete(notification);
-          reject(new Error(error || "macOS could not show the notification."));
+          reject(new Error(/not allowed/i.test(error || "")
+            ? "STUDIO_NOTIFICATIONS_DENIED: Enable Allow notifications for Codex Studio in macOS System Settings > Notifications."
+            : error || "macOS could not show the notification."));
         });
         notification.show();
       });

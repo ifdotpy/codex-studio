@@ -118,6 +118,12 @@ try {
       this.emit("show");
     };
   });
+  await desktop.evaluate(({ Notification, app }) => {
+    app.__testNotificationShow = Notification.prototype.show;
+    Notification.prototype.show = function () { this.emit("failed", {}, "Notifications are not allowed for this application"); };
+  });
+  assert.match(await page.evaluate(() => window.codexDesktop.notify({title:"Permission test",body:"Test",target:{agentId:"fixture",section:"messages"}}).catch(e=>e.message)), /STUDIO_NOTIFICATIONS_DENIED/);
+  await desktop.evaluate(({ Notification, app }) => { Notification.prototype.show = app.__testNotificationShow; });
   assert.match(
     await page.evaluate(() =>
       window.codexDesktop

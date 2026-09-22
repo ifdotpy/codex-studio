@@ -9,13 +9,19 @@ export function useDesktopNotifications(
   const state = useRef({
     scope: "",
     initialized: false,
+    permissionReported: false,
     seen: new Set<string>(),
   });
   useEffect(() => {
     if (!data) return;
     const scope = data.stateDir;
     if (state.current.scope !== scope)
-      state.current = { scope, initialized: false, seen: new Set() };
+      state.current = {
+        scope,
+        initialized: false,
+        permissionReported: false,
+        seen: new Set(),
+      };
     const current = state.current;
     const alerts = desktopAlerts(data);
     const added = alerts.filter((alert) => !current.seen.has(alert.id));
@@ -35,11 +41,20 @@ export function useDesktopNotifications(
       const { id, ...notification } = alert;
       if (window.codexDesktop) {
         void window.codexDesktop.notify(notification).catch((error) => {
-          current.seen.delete(id);
+          const message =
+            error instanceof Error ? error.message : String(error);
+          const denied =
+            /STUDIO_NOTIFICATIONS_DENIED|Notifications are not allowed for this application/i.test(
+              message,
+            );
+          if (denied && current.permissionReported) return;
+          if (denied) current.permissionReported = true;
+          else current.seen.delete(id);
           window.dispatchEvent(
             new CustomEvent("desktop-error", {
-              detail:
-                error instanceof Error
+              detail: denied
+                ? "Enable Allow notifications for Codex Studio in macOS System Settings > Notifications."
+                : error instanceof Error
                   ? error.message
                   : "Could not show the desktop notification.",
             }),

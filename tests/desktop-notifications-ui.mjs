@@ -195,10 +195,48 @@ try {
     .getByText("Which release scope?", { exact: true })
     .waitFor();
   await page.screenshot({ path: join(evidence, "notification-question.png") });
+  await page.evaluate(() => {
+    window.fakeFocus = false;
+    window.deniedErrors = [];
+    window.addEventListener("desktop-error", (event) =>
+      window.deniedErrors.push(event.detail),
+    );
+    window.codexDesktop.notify = async () => {
+      throw new Error(
+        "Error invoking remote method 'codex-desktop': Error: Notifications are not allowed for this application",
+      );
+    };
+  });
+  change(lead.id, { lastCompletedTurn: "denied-once" });
+  await refresh();
+  await page.waitForFunction(() => window.deniedErrors.length === 1);
+  await refresh();
+  change(lead.id, { lastCompletedTurn: "denied-twice" });
+  await refresh();
+  assert.equal(
+    await page.evaluate(() => window.deniedErrors.length),
+    1,
+    "permission denial is shown once, not retried on every snapshot",
+  );
+  assert.match(
+    await page.evaluate(() => window.deniedErrors[0]),
+    /Enable Allow notifications for Codex Studio/,
+  );
+  assert.doesNotMatch(
+    await page.evaluate(() => window.deniedErrors[0]),
+    /remote method/,
+  );
+
   assert.equal(
     await page.getByRole("button", { name: /desktop alerts/ }).count(),
     0,
   );
+  await page.evaluate(() => {
+    window.codexDesktop.notify = async (value) => {
+      window.alerts.push(value);
+      return true;
+    };
+  });
   change(other.id, { lastCompletedTurn: "global-turn" });
   await refresh();
   await page.waitForFunction(() => window.alerts.length === 4);

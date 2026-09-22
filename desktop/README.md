@@ -31,7 +31,18 @@ Backend logs and its PID remain in `canvas.log` and `canvas.pid` under the state
 npm run package
 ```
 
-The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. The package includes Electron, Python source files, role skills, and the compiled web assets. Python and Codex remain installed prerequisites. The package uses no checkout paths at runtime. It is unsigned and not notarized; this build is for local use.
+The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. The package includes Electron, Python source files, role skills, and the compiled web assets. Python and Codex remain installed prerequisites. The package uses no checkout paths at runtime. It uses a persistent local signing certificate and is not notarized. This build is for local use.
+
+Configure `CODEX_STUDIO_SIGNING_IDENTITY` with the certificate fingerprint from
+`security find-identity -p codesigning`. Alternatively, save
+`{"identity":"CERTIFICATE_FINGERPRINT"}` in `~/.config/codex-studio/signing.json`.
+For a dedicated keychain, add `keychain` and `passwordFile` paths to the JSON config.
+Keep the password file private (mode `0600`). The build unlocks only that keychain.
+An environment override can specify `CODEX_STUDIO_SIGNING_KEYCHAIN`; unlock it before the build.
+The build refuses ad hoc signing because it changes the application identity
+that macOS uses for saved permissions. Keep the same certificate for updates.
+After changing installed resources, run `node desktop/signing.mjs /path/to/Codex\ Studio.app`.
+Do not replace this signature with `codesign --sign -`.
 
 ## Native bridge
 

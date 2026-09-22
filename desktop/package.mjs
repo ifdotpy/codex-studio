@@ -1,3 +1,4 @@
+import { signingIdentity, signApplication, signCode } from "./signing.mjs";
 import { execFileSync } from "node:child_process";
 import { packager } from "@electron/packager";
 import { cp, mkdir, mkdtemp, rm, access } from "node:fs/promises";
@@ -5,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const root = path.dirname(fileURLToPath(import.meta.url));
+const identity = signingIdentity();
 await access(path.join(root, "../web/dist/index.html"));
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
 try {
@@ -24,7 +26,7 @@ try {
     "-Xlinker",
     path.join(root, "native/speech-info.plist"),
   ]);
-  execFileSync("codesign", ["--force", "--sign", "-", speech]);
+  signCode(speech, identity);
   const resources = path.join(stage, "workspace");
   await mkdir(path.join(resources, "web"), { recursive: true });
   await cp(path.join(root, "../scripts"), path.join(resources, "scripts"), {
@@ -97,16 +99,7 @@ try {
   });
   for (const directory of output) {
     const application = path.join(directory, "Codex Studio.app");
-    execFileSync("codesign", [
-      "--force",
-      "--deep",
-      "--sign",
-      "-",
-      "--identifier",
-      "local.codex.agents",
-      application,
-    ]);
-    execFileSync("codesign", ["--verify", "--deep", "--strict", application]);
+    signApplication(application, identity);
   }
   console.log(output.join("\n"));
 } finally {
