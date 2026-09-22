@@ -123,7 +123,7 @@ def apply_result(runtime, expected, connection, server, turn, *, automatic=False
             return {'status': 'superseded'}
         agent = runtime.agent(expected['id'], db)
         outcome = turn['status']
-        from codex_restart_recovery import can_continue, continue_interrupted
+        from codex_restart_recovery import can_continue, continue_interrupted, settle_reconciled
         restart_continuation = automatic and can_continue(db, agent, turn)
         # Restore final text directly. Notification handlers can wake parents,
         # create questions, or schedule checkpoints; this read must do none of those.
@@ -153,6 +153,8 @@ def apply_result(runtime, expected, connection, server, turn, *, automatic=False
                          'at': time.time(), 'source': 'native_thread_read',
                          'previousError': expected['error']})
         runtime.loaded.discard(agent['id'])
+        if not restart_continuation:
+            settle_reconciled(agent)
         runtime.put(db, 'agents', agent)
         if restart_continuation:
             continue_interrupted(runtime, db, agent, turn)

@@ -78,6 +78,28 @@ def can_continue(db, agent, turn):
             and can_deliver_completion(db, agent, {**turn, 'status': 'completed'}))
 
 
+def settle_reconciled(agent):
+    """Close a verified restart receipt without granting continuation authority."""
+    marker = agent.get('restartRecovery') or {}
+    receipt = agent.get('connectionRecovery') or {}
+    disconnected = agent.get('disconnectRecovery') or {}
+    turn = marker.get('turnId')
+    if (marker.get('stage') != 'pending' or not turn
+            or agent.get('inFlight') or agent.get('turnId')
+            or any(marker.get(key) != agent.get(key) for key in SCOPE)
+            or any(disconnected.get(key) != marker.get(key) for key in (*SCOPE, 'turnId'))
+            or receipt.get('source') != 'native_thread_read'
+            or receipt.get('turnId') != turn or agent.get('lastCompletedTurn') != turn
+            or receipt.get('outcome') not in {'completed', 'failed', 'interrupted'}
+            or agent.get('lastCompletedTurnStatus') != receipt.get('outcome')
+            or not isinstance(receipt.get('at'), (int, float))
+            or not isinstance(marker.get('at'), (int, float))
+            or receipt['at'] < marker['at']):
+        return False
+    marker.update(stage='finished', reconciledAt=receipt['at'])
+    return True
+
+
 def continue_interrupted(runtime, db, agent, turn):
     marker = agent['restartRecovery']
     key = 'restart:' + agent['id'] + ':' + str(agent['epoch']) + ':' + turn['id']

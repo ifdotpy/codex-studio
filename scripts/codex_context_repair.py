@@ -92,7 +92,10 @@ def _unsettled_inputs(db, a, attempt_id):
 def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
     from codex_native_errors import assert_native_thread_open
     from codex_safety_buffering import active as safety_active
+    from codex_restart_recovery import settle_reconciled
     assert_native_thread_open(a)
+    if settle_reconciled(a):
+        rt.put(db, 'agents', a)
     browser = a.get('browserRecovery') or {}
     browser_same = all(browser.get(k) == a.get(k) for k in ('epoch', 'accountKey', 'threadId'))
     browser_request = browser.get('nativeRequest') or {}

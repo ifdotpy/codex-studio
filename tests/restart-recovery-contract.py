@@ -12,7 +12,7 @@ spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_nam
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_connection_recovery import recover
-from codex_restart_recovery import capture, restore
+from codex_restart_recovery import capture, restore, settle_reconciled
 
 
 class RestartContract(fixture.ConnectionRecoveryContract):
@@ -94,8 +94,51 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.restart()
         self.assertNotIn('continued',recover(self.runtime,self.key,automatic=True))
         self.assertFalse(self.runtime.agent(self.key)['autoWake'])
+        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'finished')
         with self.runtime.db() as db:
             self.assertEqual(self.runtime.records(db,'tasks')[0]['status'],'lost')
+
+    def test_manual_reconciliation_releases_restart_gate_without_followup(self):
+        from codex_context_repair import _local_idle
+        self.server.native['turns'][0]['status'] = 'interrupted'
+        self.restart()
+        self.assertEqual(recover(self.runtime, self.key)['status'], 'reconciled')
+        a = self.runtime.agent(self.key)
+        self.assertEqual(a['restartRecovery']['stage'], 'finished')
+        # Reproduce a saved receipt from before the fix.
+        a['restartRecovery']['stage'] = 'pending'
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'agents', a)
+            self.assertEqual(_local_idle(self.runtime, db, a, None), [])
+        current = self.runtime.agent(self.key)
+        self.assertEqual(current['restartRecovery']['stage'], 'finished')
+        self.assertFalse(current['autoWake'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE id LIKE 'restart:%'").fetchone()[0], 0)
+        self.read_calls_only()
+
+    def test_unconfirmed_or_different_restart_receipts_keep_gate(self):
+        self.restart()
+        recover(self.runtime, self.key)
+        a = self.runtime.agent(self.key)
+        a['restartRecovery']['stage'] = 'pending'
+        for field, value in [('threadId', 'other'), ('epoch', 99), ('turnId', 'new-turn'), ('inFlight', True)]:
+            with self.subTest(field=field):
+                changed = copy.deepcopy(a)
+                changed[field] = value
+                self.assertFalse(settle_reconciled(changed))
+        for section, field, value in [
+            ('connectionRecovery', 'turnId', 'other'),
+            ('connectionRecovery', 'at', 0),
+            ('connectionRecovery', 'source', 'unverified'),
+            ('connectionRecovery', 'outcome', 'unknown'),
+            ('restartRecovery', 'stage', 'held'),
+            ('disconnectRecovery', 'threadId', 'other'),
+        ]:
+            with self.subTest(section=section, field=field):
+                changed = copy.deepcopy(a)
+                changed[section][field] = value
+                self.assertFalse(settle_reconciled(changed))
 
     def test_unobserved_native_command_blocks_continuation(self):
         self.server.native['turns'][0].update(status='interrupted',items=[
