@@ -23,6 +23,7 @@ export interface Account {
   plan?: string | null;
   accountId?: string | null;
   source?: string;
+  provider?: string;
   status: string;
   disconnected?: boolean;
   error?: unknown;
@@ -70,7 +71,8 @@ function AccountCapacity({
 }) {
   const [limits, setLimits] = useState<Json | null>(null);
   useEffect(() => {
-    if (!opened || account.status !== "ready") return;
+    if (!opened || account.status !== "ready" || account.provider === "claude")
+      return;
     let live = true;
     setLimits(null);
     void api(
@@ -89,8 +91,14 @@ function AccountCapacity({
     return () => {
       live = false;
     };
-  }, [account.id, account.accountId, account.status, opened]);
+  }, [account.id, account.accountId, account.status, account.provider, opened]);
   if (account.status !== "ready") return null;
+  if (account.provider === "claude")
+    return (
+      <small>
+        Claude Code · {account.plan || "Subscription"} · Limits unavailable
+      </small>
+    );
   const buckets = readBuckets(limits, Date.now() / 1000);
   if (compact) {
     const bucket = buckets.find(
@@ -399,6 +407,10 @@ export default function Accounts({
                   account.status !== "ready" ||
                   account.disconnected ||
                   (pinned && !owner) ||
+                  (pinned &&
+                    account.id !== accountKey &&
+                    (account.provider === "claude" ||
+                      selected?.provider === "claude")) ||
                   transferring
                 }
                 leftSection={
@@ -427,6 +439,7 @@ export default function Accounts({
                       projectAccountKeys?.includes(account.id)
                         ? "Project"
                         : null,
+                      account.provider === "claude" ? "Claude Code" : null,
                       account.plan,
                       account.status !== "ready" ? account.status : null,
                     ]

@@ -1258,7 +1258,9 @@ export default function Conversation(p: {
                 onEdit={messageQueue.edit}
                 onCancel={messageQueue.cancel}
                 onSteer={
-                  agent?.inFlight && agent?.turnId
+                  agent?.inFlight &&
+                  agent?.turnId &&
+                  agent?.provider !== "claude"
                     ? messageQueue.steer
                     : undefined
                 }
@@ -1512,13 +1514,17 @@ export default function Conversation(p: {
                   }}
                 />
               )}
-              {managed && agent?.isLead && p.id && !threadBlock && (
-                <RealtimeVoice
-                  key={`voice:${p.id}`}
-                  agentId={p.id}
-                  notify={p.notify}
-                />
-              )}
+              {managed &&
+                agent?.isLead &&
+                agent?.provider !== "claude" &&
+                p.id &&
+                !threadBlock && (
+                  <RealtimeVoice
+                    key={`voice:${p.id}`}
+                    agentId={p.id}
+                    notify={p.notify}
+                  />
+                )}
               <span id="send-state" role="status" aria-live="polite">
                 {p.sending ? "Sending…" : ""}
               </span>

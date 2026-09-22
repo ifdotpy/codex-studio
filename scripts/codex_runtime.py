@@ -256,7 +256,7 @@ class AppServer:
     CALLBACK_QUEUE_LIMIT = 4096
     CLOCK_QUEUE_LIMIT = 128
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex"):
         import queue
         self.notification, self.request, self.died = notification, request, died
         self.lock = threading.RLock()
@@ -279,6 +279,9 @@ class AppServer:
             env.pop("OPENAI_API_KEY", None)
             env.pop("CODEX_API_KEY", None)
             command.extend(["-c", 'cli_auth_credentials_store="file"'])
+        if provider == "claude":
+            from codex_claude import transport
+            command, env = transport(root)
         self.proc = subprocess.Popen(
             command, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
@@ -843,8 +846,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         return mode_fields(json.loads(row[0]))
 
     def connect(self, account_key="default"):
-        self.accounts.get(account_key)
-        home = self.accounts.home(account_key) if self.factory is AppServer else None
+        account = self.accounts.get(account_key)
+        provider = account.get("provider", "codex")
+        if provider == "claude" and account.get("status") != "ready":
+            raise ValueError(account.get("error") or "Sign in with claude auth login first")
+        home = self.accounts.home(account_key) if self.factory is AppServer and provider != "claude" else None
         with self.start_lock:
             if self.closed:
                 raise RuntimeError("Runtime is stopped")
@@ -868,7 +874,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 root.mkdir(parents=True, exist_ok=True)
                 if self.factory is AppServer:
                     server = self.factory(root, *callbacks, home=home,
-                                          isolated=account_key != "default")
+                                          isolated=account_key != "default", provider=provider)
                 else:
                     # Existing fixtures implement the original four-argument factory.
                     server = self.factory(root, *callbacks)
@@ -1043,7 +1049,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     @staticmethod
     def worker_defaults(root):
-        return {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False,
+        return {"model": "sonnet" if root.get("provider") == "claude" else "gpt-5.6-luna", "effort": "max", "fastMode": False,
                 **root.get("workerDefaults", {})}
 
     @staticmethod
@@ -1149,8 +1155,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if not p and account.get("disconnected"):
                 raise ValueError("Reconnect this account before creating a chat")
             is_lead = p is None and role == "orchestrator"
-            defaults = self.worker_defaults(root or {})
-            model = data.get("model") or ((defaults["model"] or root["model"]) if root else DEFAULT_LEAD_MODEL)
+            provider = account.get("provider", "codex")
+            defaults = self.worker_defaults(root or {"provider": provider})
+            model = data.get("model") or ((defaults["model"] or root["model"]) if root else "default" if provider == "claude" else DEFAULT_LEAD_MODEL)
             if needs_catalog and account_key != catalog_account:
                 raise ValueError("The account changed. Create the worker again")
             effort = data.get("effort", defaults["effort"] if root else "medium")
@@ -1185,6 +1192,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "id": key,
                 "threadId": None,
                 "accountKey": account_key,
+                "provider": provider,
                 "yoloMode": root.get("yoloMode") if root else data.get("yolo_mode", True),
                 "name": name.strip(),
                 "prompt": prompt.strip(),
@@ -1316,7 +1324,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
                 project_folder = folder_for(self, db, cwd, data.get('project_folder'))
-                if previous and data.get("reuse_empty", True) and self.empty_lead(db, previous):
+                if previous and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
                     if data.get("model"):
                         effort, native_effort = self.validate_execution(catalog, data["model"], previous.get("effort"),
                             previous.get("fastMode", False), fallback_effort=True)
@@ -1369,6 +1377,13 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if directory != a['cwd']:
                 a.pop('projectFolder', None)
                 a['projectFolderRevision'] = a.get('projectFolderRevision', 0) + 1
+            provider = self.accounts.get(account_key).get("provider", "codex")
+            if provider != a.get("provider", "codex"):
+                a.update(provider=provider, model="default" if provider == "claude" else DEFAULT_LEAD_MODEL,
+                         effort="medium", nativeEffort="medium", fastMode=False)
+                a["workerDefaults"] = self.worker_defaults({"provider": provider})
+                a.pop("pendingSettings", None)
+                a.pop("pendingSettingsAccountKey", None)
             a.update(accountKey=account_key, cwd=directory)
             self.ensure_project(directory, account_key, db)
             self.put(db, "agents", a)
@@ -1512,7 +1527,13 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     a.pop('projectFolder', None)
                     a['projectFolderRevision'] = a.get('projectFolderRevision', 0) + 1
                 a["cwd"] = str(cwd)
-                a["accountKey"] = self.project_account(str(cwd), db=db)
+                account_key = self.project_account(str(cwd), db=db)
+                provider = self.accounts.get(account_key).get("provider", "codex")
+                if provider != a.get("provider", "codex"):
+                    a.update(provider=provider, model="default" if provider == "claude" else DEFAULT_LEAD_MODEL,
+                             effort="medium", nativeEffort="medium", fastMode=False)
+                    a["workerDefaults"] = self.worker_defaults({"provider": provider})
+                a["accountKey"] = account_key
                 self.ensure_project(str(cwd), a["accountKey"], db)
             self.put(db, "agents", a)
             for member in team:
@@ -1615,6 +1636,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             from codex_context_repair import blocked as context_repair_blocked
             if a.get("accountTransferId") or context_repair_blocked(a):
                 delivery = "queue"
+            if a.get("provider") == "claude" and delivery == "after_tool":
+                delivery = "queue"
+            if a.get("provider") == "claude" and delivery == "steer":
+                raise ValueError("Claude Code accepts messages between turns. Choose queue.")
             if delivery == "after_tool":
                 delivery = "steer" if a.get("turnId") and a.get("inFlight") and a["autoWake"] else "queue"
             if delivery == "steer" and (
@@ -1799,6 +1824,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         lead = bool(actor.get("isLead"))
         definitions = []
         for definition in TOOLS:
+            if actor.get("provider") == "claude" and definition["name"] in {
+                "orchestration_monitor", "orchestration_cancel_monitor", "orchestration_monitor_input", "orchestration_speak"
+            }:
+                continue
             if not lead and definition["name"] in {"orchestration_user_task", "orchestration_speak", "orchestration_agent_manage"}:
                 continue
             if definition["name"] == "orchestration_complaint":
@@ -1900,9 +1929,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             params["sandbox"] = "read-only"
         if progress and a.get("yoloMode") is False and a["role"] != "reviewer":
             params["config"]["sandbox_workspace_write.writable_roots"] = [str(progress.parent)]
+        if a.get("provider") == "claude":
+            params["developerInstructions"] += ("\nThis session uses Claude Code and its native tools. "
+                "Use Bash for commands. Studio command monitors and voice are unavailable. "
+                "Use Studio orchestration tools for subagents. Messages to active Claude agents wait in the queue. "
+                "Use delivery=queue; turn steer is unavailable.\n")
         params["dynamicTools"] = self.tool_definitions(a)
         from codex_browser import configure_browser
-        configure_browser(self, a, params)
+        if a.get("provider") != "claude":
+            configure_browser(self, a, params)
         return params
 
     def prepare(self, a):
@@ -3347,7 +3382,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             return self.limit_refresh_locks.setdefault(account_key, threading.Lock())
 
     def limits(self, account_key="default", force=False, connection_id=None):
-        self.accounts.get(account_key)
+        account = self.accounts.get(account_key)
+        if account.get("provider") == "claude":
+            return {"accountKey": account_key, "accountId": account.get("accountId"),
+                    "error": "Claude Code does not expose subscription limits", "at": None}
         with self.limit_refresh_lock(account_key):
             with self.lock:
                 cached = self.rate_limits_for(account_key)

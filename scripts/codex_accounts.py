@@ -134,7 +134,11 @@ class AccountStore:
             row = self._row(key)
             if row.get("duplicateOf"):
                 return {k: v for k, v in row.items() if not k.startswith("_") and k != "projectRules"}
-            metadata = auth_metadata(row["home"])
+            if row.get("provider") == "claude":
+                from codex_claude import auth_metadata as claude_auth
+                metadata = claude_auth()
+            else:
+                metadata = auth_metadata(row["home"])
             expected = row.get("accountId")
             credential_identity = row.get("_credentialIdentity")
             if (expected and metadata.get("accountId") != expected) or (
@@ -297,6 +301,15 @@ class AccountStore:
                     self.register(str(path))
                 except ValueError:
                     continue
+        from codex_claude import installed, auth_metadata as claude_auth
+        if installed():
+            metadata = claude_auth()
+            with self.lock:
+                self.data["accounts"].setdefault("claude-local", {
+                    "id": "claude-local", "provider": "claude",
+                    "home": str(Path.home() / ".claude"),
+                    "label": "Claude Code", "source": "Claude Code", **metadata,
+                })
         with self.lock:
             self.discovered = True
             self._save()

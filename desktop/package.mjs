@@ -30,8 +30,27 @@ try {
   await cp(path.join(root, "../scripts"), path.join(resources, "scripts"), {
     recursive: true,
     filter: (source) =>
-      !source.includes("__pycache__") && !source.endsWith(".pyc"),
+      !source.includes("__pycache__") &&
+      !source.includes("/node_modules") &&
+      !source.endsWith(".pyc"),
   });
+  execFileSync(
+    "npm",
+    [
+      "--prefix",
+      ".",
+      "ci",
+      "--ignore-scripts",
+      "--no-bin-links",
+      "--omit=optional",
+      "--no-audit",
+      "--no-fund",
+    ],
+    {
+      cwd: path.join(resources, "scripts/claude_bridge"),
+      stdio: "inherit",
+    },
+  );
   await cp(path.join(root, "../web/dist"), path.join(resources, "web/dist"), {
     recursive: true,
   });

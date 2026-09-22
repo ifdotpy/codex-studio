@@ -56,6 +56,9 @@ class AccountsContract(unittest.TestCase):
         self.env.start()
         self.user = patch("codex_accounts.Path.home", return_value=self.home)
         self.user.start()
+        self.claude = patch("codex_claude.installed", return_value=None)
+        self.claude.start()
+        self.addCleanup(self.claude.stop)
         self.store = AccountStore(self.root / "state")
 
     def tearDown(self):

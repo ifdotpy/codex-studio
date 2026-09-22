@@ -74,6 +74,10 @@ class AccountTransfers:
         self.rt.put(db, 'agents', lead)
 
     def check_destination(self, actor, target, db=None):
+        source = self.rt.accounts.get(actor.get("accountKey", "default"))
+        destination = self.rt.accounts.get(target)
+        if "claude" in {source.get("provider"), destination.get("provider")} and actor.get("accountKey") != target:
+            raise ValueError("Claude Code sessions cannot move between providers. Create a new chat with the destination account.")
         self.rt.accounts.home(target)  # Validate the registered account identity.
         # Older Studio versions also have account/project admission rules.
         checker = getattr(self.rt, 'check_account_project', None)

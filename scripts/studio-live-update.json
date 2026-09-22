@@ -1,12 +1,12 @@
 {
-  "id": "2026-09-22-message-feed-v1",
+  "id": "2026-09-22-claude-code-v3",
   "inputs": {
     "codex-canvas": "002303238b64b884d98ad999062bd9fd3f7b7d346c3e737b43d07f2f06544c1e",
     "codex-mobile.py": "347fc4b42c02414202063863ceff8a71a810c093aa837b49da4eca344720ee68",
     "codex_account_cost_update.py": "7622e4bdd90cfde83ac522621714cfdee78dfdcc6e65718de6fa231f70f157bf",
-    "codex_account_transfer.py": "7da253c94769eb7dd54dab0faf915437528ad7f23b1cb6dc6f8ce7d5d5782443",
+    "codex_account_transfer.py": "0ae177e112564778057cbd04fd7608fd7219ca49d06558657cd6f56ea3433b2c",
     "codex_account_transfer_migration_update.py": "62ca491995ac6590961435d7dca2254aa818fc5f1837759baa5ce56bf3b43a4c",
-    "codex_accounts.py": "daad24f472cf39770f612505a2c5f966651610e22f26b2f4b1bfdb2609db28ce",
+    "codex_accounts.py": "82c10fa5f4d8d13606c7277871bf995c4bd40bd98bf37bb320669fa32dc46b5b",
     "codex_active_task_update.py": "f084aedabe3b8345855e7dfe5b766e3c22a0927e21c55caf6353ff5190132589",
     "codex_agent_management.py": "28d6b8767709f54ce004999441f59485b1f741ed96905d5fcaeb360ad0112ab6",
     "codex_agent_modes.py": "881bcb2985c283787b937ac06d043df51ba0ee1853063ac941502bbbc0bcba38",
@@ -30,6 +30,8 @@
     "codex_chat_reviews.py": "f548578d7e99f8d3045610bbf8f76fa5fa73944fb01a4beac89b7dd0c861573e",
     "codex_chat_reviews_update.py": "34a991005ce226aaddc428d42a4baed2e78f9a0f78d940a327f0598f6ae43073",
     "codex_chat_status_update.py": "370cb85d36ee1232f006aaf3e2a6e15c1563d8501fdd20641227e3dffa6015a6",
+    "codex_claude.py": "84e2696ecc216980ff5af9a5140646369ae64e35ea126be7f9eb345c4c43902f",
+    "codex_claude_update.py": "dae672d5edd54b4e556fcf1bc2ab67c1fc768f244cd3369c7fe275fcb83455cd",
     "codex_complaints_update.py": "a0a458a6a1c917298f1636b6ee833272bd1011b29315d06334fa1a6a5de03dc6",
     "codex_connection_recovery.py": "eb194a755af0ee3f9e2b2b3e3250ac591c2d63b33cbf2024a56bf32fb4997e0a",
     "codex_context_repair.py": "4a61ab234f38334c39d903cd26934a9c09b0a3447dc581818f9dea3c6c4ae6a7",
@@ -75,7 +77,7 @@
     "codex_review_pair_update.py": "d0a1a4e5e0c6a9886cc174890d683f92e822d204ac20d9b71924113ec91232d2",
     "codex_role_context_update.py": "c838612b25b6d290efb5977cf2b6e35bf4a3fdee1226f35bdf980069864e4ab5",
     "codex_rules.py": "91beb2c8be9f4b01eae4ef2ee176362b0a09a87a747ba676fd33d929ad34ed7d",
-    "codex_runtime.py": "f868e80364d1ac428fecd671e29a5bf1ef116c153225ff6f77ef33e8e4de18bc",
+    "codex_runtime.py": "c07f1a52ea3273400609f126e52d639320527430ee791e7527d29aee00367fab",
     "codex_runtime_diagnostics_update.py": "455f1b7af9d75f22a226ea89ca6af1cbdf2ef67650cce1a6d46a9167b9ec0133",
     "codex_safety_buffering.py": "647fc3e8967e7ee8ff132e7adcb3d25ee0ffc94bc2ff709d6ed1566710ce5e9f",
     "codex_safety_update.py": "6ca5673f6e46d9fcb0a465bddb838274648fea7501a77761ef91d5445f830416",
@@ -108,11 +110,11 @@
     "codex_workspace_read_update.py": "bc2f0c87ef5f0d13936c89204199a8755661992bc24cdae692700c0bb6e423cc",
     "install-cli.py": "ca11e8b3b0f7bb02df5a88b74a5306e5fa65feacadba5ba3234542231c5e9f85"
   },
-  "patch": "codex_message_feed_update.py",
+  "patch": "codex_claude_update.py",
   "python": [
     3,
     14
   ],
-  "scope": "Read one team message feed without interrupting agents",
+  "scope": "Claude Code subscription accounts and sessions; existing Codex connections continue",
   "version": 1
 }

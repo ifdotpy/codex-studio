@@ -22,8 +22,23 @@ python3 scripts/install-cli.py
 npm --prefix web ci
 npm --prefix web run build
 npm --prefix desktop ci
+(cd scripts/claude_bridge && npm --prefix . ci --ignore-scripts --omit=optional)
 npm --prefix desktop start
 ```
+
+Claude Code is also supported through the installed CLI and its Claude subscription.
+Run `claude auth login`, then select **Claude Code** in the account menu for a new
+chat. Use **Find existing accounts** in Accounts if it does not appear. Studio
+reads the model list from Claude Code and keeps credentials in its native store.
+It uses the Claude Agent SDK with the installed executable, as in
+[T3 Code](https://github.com/pingdotgg/t3code). No Anthropic API key is required.
+
+Claude chats support streamed replies, native tools, action approvals, user
+questions, Studio agent tools, and session continuation. Active-turn messages wait
+in Studio's queue. Steer, Studio command monitors, voice, subscription limit reads,
+and account transfers are unavailable for Claude. Use Claude's Bash tool for
+commands. Native background tasks are disabled; Studio manages subagents.
+Claude Code uses its own permission rules, not the Codex sandbox.
 
 The command installer creates links in `~/.local/bin`. Add that directory to PATH
 if your shell does not include it. Use `--bin-dir` for another directory.
