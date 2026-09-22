@@ -1,5 +1,5 @@
 {
-  "id": "2026-09-22-chat-controls-v1",
+  "id": "2026-09-22-message-feed-v1",
   "inputs": {
     "codex-canvas": "002303238b64b884d98ad999062bd9fd3f7b7d346c3e737b43d07f2f06544c1e",
     "codex-mobile.py": "347fc4b42c02414202063863ceff8a71a810c093aa837b49da4eca344720ee68",
@@ -42,6 +42,7 @@
     "codex_limit_resets.py": "fdda6c5b0affe1a8147882feea5413f06ce8a69ecd92f26424dcfd6a0b9ad2dd",
     "codex_live_updates.py": "998e090fb8d531383566306737f8cf12cb71f393d898e476ae751ed483dec821",
     "codex_manual_review_update.py": "5b7bf5ade60df36da195cbd2ca5477433855ec7b8240f3c0da5ed4868d2e8323",
+    "codex_message_feed_update.py": "2a22273dfd8e01a17e000cec7e172af017c9e83a69bd6cae4380d324dd4e6400",
     "codex_message_intent_update.py": "665738382207ca9e9bd449aafc582a4606750e877ba875d00bad09b81288bcc1",
     "codex_model_turn_update.py": "5291a5f78d054e7d8ef09ccfab88eda7371bc500ff4dceb4600487a334302570",
     "codex_monitor_recovery.py": "50914ef626b170146e4964a0dfecce94d83567dff2f7ffd69febb99e98167fc2",
@@ -74,7 +75,7 @@
     "codex_review_pair_update.py": "d0a1a4e5e0c6a9886cc174890d683f92e822d204ac20d9b71924113ec91232d2",
     "codex_role_context_update.py": "c838612b25b6d290efb5977cf2b6e35bf4a3fdee1226f35bdf980069864e4ab5",
     "codex_rules.py": "91beb2c8be9f4b01eae4ef2ee176362b0a09a87a747ba676fd33d929ad34ed7d",
-    "codex_runtime.py": "28898dbd606a61a5ce12f84fa068b427bc5462fcfaf7bc5cb67e3a0401f098a8",
+    "codex_runtime.py": "f868e80364d1ac428fecd671e29a5bf1ef116c153225ff6f77ef33e8e4de18bc",
     "codex_runtime_diagnostics_update.py": "455f1b7af9d75f22a226ea89ca6af1cbdf2ef67650cce1a6d46a9167b9ec0133",
     "codex_safety_buffering.py": "647fc3e8967e7ee8ff132e7adcb3d25ee0ffc94bc2ff709d6ed1566710ce5e9f",
     "codex_safety_update.py": "6ca5673f6e46d9fcb0a465bddb838274648fea7501a77761ef91d5445f830416",
@@ -107,11 +108,11 @@
     "codex_workspace_read_update.py": "bc2f0c87ef5f0d13936c89204199a8755661992bc24cdae692700c0bb6e423cc",
     "install-cli.py": "ca11e8b3b0f7bb02df5a88b74a5306e5fa65feacadba5ba3234542231c5e9f85"
   },
-  "patch": "codex_chat_controls_update.py",
+  "patch": "codex_message_feed_update.py",
   "python": [
     3,
     14
   ],
-  "scope": "Delete stale questions, steer answers and queued messages, and correct chat activity and queue display",
+  "scope": "Read one team message feed without interrupting agents",
   "version": 1
 }

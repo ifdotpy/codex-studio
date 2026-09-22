@@ -3561,11 +3561,32 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         if before is not None and (not isinstance(before, int) or before < 1):
             raise ValueError("Invalid message cursor")
         with self.lock, self.db() as db:
-            room = next((r for r in self.chat_rooms(db, viewer) if r["id"] == room_id), None)
-            if not room:
-                raise ValueError("Chat is unavailable or you are not a participant")
-            rows = db.execute("SELECT * FROM runtime_chat_messages WHERE room=? AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT ?",
-                              (room_id, before, before, limit + 1)).fetchall()
+            rooms = self.chat_rooms(db, viewer)
+            if isinstance(room_id, str) and room_id.startswith("feed:"):
+                if viewer is not None or model:
+                    raise ValueError("The combined feed is available only in the user interface")
+                root_id = room_id[5:]
+                root = self.agent(root_id, db)
+                if not root.get("isLead") or root.get("deletedAt"):
+                    raise ValueError("Team is unavailable")
+                members = {a["id"] for a in self.records(db, "agents")
+                           if (a["id"] == root_id or a.get("rootId") == root_id) and not a.get("deletedAt")}
+                ids = [r["id"] for r in rooms if
+                       (r.get("kind") == "broadcast" and r.get("rootId") == root_id) or
+                       (r.get("kind") != "broadcast" and r.get("members") and
+                        (set(r["members"]).issubset(members) or
+                         (r.get("reviewTargets") and set(r["members"]) & members)))]
+                room = {"id": room_id, "name": root["name"], "members": sorted(members)}
+                rows = db.execute(
+                    "SELECT * FROM runtime_chat_messages WHERE room IN (SELECT value FROM json_each(?)) "
+                    "AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT ?",
+                    (json.dumps(ids), before, before, limit + 1)).fetchall()
+            else:
+                room = next((r for r in rooms if r["id"] == room_id), None)
+                if not room:
+                    raise ValueError("Chat is unavailable or you are not a participant")
+                rows = db.execute("SELECT * FROM runtime_chat_messages WHERE room=? AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT ?",
+                                  (room_id, before, before, limit + 1)).fetchall()
             messages = [{**dict(r), "deliveries": json.loads(r["deliveries"])} for r in reversed(rows[:limit])]
             names = {a["id"]: a["name"] for a in self.records(db, "agents")}
             for m in messages:

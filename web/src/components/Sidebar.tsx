@@ -1,4 +1,3 @@
-import AgentAvatar from "./AgentAvatar";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ActionIcon,
@@ -317,7 +316,6 @@ export default function Sidebar(p: Props) {
           onClick={() => p.open(row.id)}
           aria-current={p.opened === row.id}
         >
-          <AgentAvatar id={row.id} size={24} />
           <span className="row-copy">
             <strong>
               {a?.pinned && <Pin size={11} className="chat-pin" />}
@@ -561,89 +559,7 @@ export default function Sidebar(p: Props) {
             </section>
           );
         })}
-        {chats.map((chat) => {
-          const workers = p.data.threads.filter(
-            (agent) =>
-              !agent.isLead && agent.rootId === chat.id && !agent.deletedAt,
-          );
-          const memberIds = new Set([
-            chat.id,
-            ...workers.map((agent) => agent.id),
-          ]);
-          const rooms = p.data.runtime.rooms
-            .filter((room) =>
-              room.kind === "broadcast"
-                ? room.rootId === chat.id
-                : room.members.length > 0 &&
-                  (room.members.every((id) => memberIds.has(id)) ||
-                    (!!room.reviewTargets?.length &&
-                      room.members.some((id) => memberIds.has(id)))),
-            )
-            .sort((a, b) => {
-              const rank = (room: typeof a) =>
-                room.reviewTargets?.length
-                  ? 0
-                  : room.kind === "private" && room.members.includes(chat.id)
-                    ? 1
-                    : room.kind === "broadcast"
-                      ? 2
-                      : 3;
-              return (
-                rank(a) - rank(b) ||
-                (b.lastMessage?.created || b.updated) -
-                  (a.lastMessage?.created || a.updated)
-              );
-            });
-          return (
-            <div key={chat.id}>
-              {renderRow(chat)}
-              {!!(workers.length || rooms.length) && (
-                <details className="sidebar-team-chats">
-                  <summary>
-                    Team chats <span>{workers.length + rooms.length}</span>
-                  </summary>
-                  {workers.map((worker) => (
-                    <div
-                      className={`sidebar-row ${p.opened === worker.id ? "selected" : ""}`}
-                      key={worker.id}
-                    >
-                      <UnstyledButton
-                        className="chat-row"
-                        data-chat={worker.id}
-                        onClick={() => p.open(worker.id)}
-                        aria-current={p.opened === worker.id}
-                      >
-                        <AgentAvatar id={worker.id} size={22} />
-                        <span className="row-copy">
-                          <strong>{worker.name}</strong>
-                        </span>
-                        <ChatStatus status={p.indicators.get(worker.id)} />
-                      </UnstyledButton>
-                    </div>
-                  ))}
-                  {rooms.map((room) => (
-                    <div
-                      className={`sidebar-row ${p.opened === room.id ? "selected" : ""}`}
-                      key={room.id}
-                    >
-                      <UnstyledButton
-                        className="chat-row"
-                        data-chat={room.id}
-                        onClick={() => p.open(room.id)}
-                        aria-current={p.opened === room.id}
-                      >
-                        <AgentAvatar id={room.id} size={22} />
-                        <span className="row-copy">
-                          <strong>{room.name}</strong>
-                        </span>
-                      </UnstyledButton>
-                    </div>
-                  ))}
-                </details>
-              )}
-            </div>
-          );
-        })}
+        {chats.map(renderRow)}
         {!chats.length && !children.length && (
           <p className="project-empty">No chats</p>
         )}

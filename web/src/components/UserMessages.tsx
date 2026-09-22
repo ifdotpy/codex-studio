@@ -1,7 +1,6 @@
 import {
   Badge,
   Button,
-  Modal,
   NativeSelect,
   Textarea,
   UnstyledButton,
@@ -226,7 +225,7 @@ export default function UserMessages({
   const responseRequests = useRef(
     new Map<string, Json>(Object.entries(saved(pendingKey, {}))),
   );
-  const [filter, setFilter] = useState(target === "lead" ? "all" : "pending"),
+  const [filter, setFilter] = useState("all"),
     [detail, setDetail] = useState<Json | null>(null),
     [detailId, setDetailId] = useState<string | null>(null),
     [detailError, setDetailError] = useState(""),
@@ -290,7 +289,7 @@ export default function UserMessages({
     return null;
   return (
     <section className="user-message-list">
-      {records.some((c) => recipient(c) === target) && (
+      {!detailId && records.some((c) => recipient(c) === target) && (
         <div className="book-filter">
           <NativeSelect
             aria-label={
@@ -306,7 +305,7 @@ export default function UserMessages({
           </NativeSelect>
         </div>
       )}
-      <div className="user-message-rows">
+      <div className="user-message-rows" hidden={!!detailId}>
         {shown.map((c: Complaint) => (
           <UnstyledButton
             className="complaint-card"
@@ -360,93 +359,104 @@ export default function UserMessages({
           </p>
         </div>
       )}
-      <Modal
-        opened={!!detailId}
-        onClose={() => changeDetail(null)}
-        title={target === "user" ? "Message to you" : "Message to main agent"}
-      >
-        {detailError && (
-          <div role="alert">
-            <p>Could not load the message: {detailError}</p>
-            <Button
-              onClick={() => {
-                setDetailError("");
-                setDetailAttempt((value) => value + 1);
-              }}
-            >
-              Retry
-            </Button>
-          </div>
-        )}
-        {detail ? (
-          <>
-            <p className="notice">
-              {summary?.authorName || authorName(detail)} →{" "}
-              {recipientName(detail)} · {complaintLabel(detail.status)}
-            </p>
-            <p className="complaint-text">{detail.text}</p>
-            <p className="notice">
-              {recipient(detail) === "user"
-                ? detail.responses.some(
-                    (response: Json) => response.author === "user",
-                  )
-                  ? "You responded to this message."
-                  : "Your response is required."
-                : detail.readAt
-                  ? "Read by main agent: " +
-                    new Date(detail.readAt * 1000).toLocaleString()
-                  : "The main agent has not read this message."}
-            </p>
-            {detail.responses.map((r: Json) => (
-              <article className="complaint-response" key={r.id}>
-                <strong>
-                  {authorName({ author: r.author || detail.leadId })} ·{" "}
-                  {complaintLabel(r.status)}
-                </strong>
-                <small>{new Date(r.at * 1000).toLocaleString()}</small>
-                <p className="complaint-text">{r.text}</p>
-              </article>
-            ))}
-            {recipient(detail) === "lead" && !detail.responses.length && (
-              <p>A response from the main agent is required.</p>
-            )}
-            {detail.recipient === "user" &&
-              Number.isInteger(detail.version) && (
-                <MessageResponse
-                  key={detail.id}
-                  detail={detail}
-                  token={data.token}
-                  requests={responseRequests.current}
-                  pendingKey={pendingKey}
-                  refresh={refresh}
-                  notify={notify}
-                  onResponse={(result) => {
-                    if (
-                      activeDetailId.current !== detail.id ||
-                      result.id !== detail.id
+      {detailId && (
+        <section
+          className="message-inline-thread"
+          aria-label={
+            target === "user" ? "Message to you" : "Message to main agent"
+          }
+        >
+          <Button
+            variant="subtle"
+            size="compact-xs"
+            onClick={() => changeDetail(null)}
+          >
+            Back to messages
+          </Button>
+          {detailError && (
+            <div role="alert">
+              <p>Could not load the message: {detailError}</p>
+              <Button
+                onClick={() => {
+                  setDetailError("");
+                  setDetailAttempt((value) => value + 1);
+                }}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
+          {detail ? (
+            <>
+              <p className="notice">
+                {summary?.authorName || authorName(detail)} →{" "}
+                {recipientName(detail)} · {complaintLabel(detail.status)}
+              </p>
+              <p className="complaint-text">{detail.text}</p>
+              <p className="notice">
+                {recipient(detail) === "user"
+                  ? detail.responses.some(
+                      (response: Json) => response.author === "user",
                     )
-                      return;
-                    setDetail((current) => {
-                      if (activeDetailId.current !== result.id) return current;
-                      return current &&
-                        current.id === result.id &&
-                        current.version > result.version
-                        ? current
-                        : result;
-                    });
-                  }}
-                />
+                    ? "You responded to this message."
+                    : "Your response is required."
+                  : detail.readAt
+                    ? "Read by main agent: " +
+                      new Date(detail.readAt * 1000).toLocaleString()
+                    : "The main agent has not read this message."}
+              </p>
+              {detail.responses.map((r: Json) => (
+                <article className="complaint-response" key={r.id}>
+                  <strong>
+                    {authorName({ author: r.author || detail.leadId })} ·{" "}
+                    {complaintLabel(r.status)}
+                  </strong>
+                  <small>{new Date(r.at * 1000).toLocaleString()}</small>
+                  <p className="complaint-text">{r.text}</p>
+                </article>
+              ))}
+              {recipient(detail) === "lead" && !detail.responses.length && (
+                <p>A response from the main agent is required.</p>
               )}
-            {recipient(detail) === "user" &&
-              (detail.recipient !== "user" ||
-                !Number.isInteger(detail.version)) && (
-                <p className="notice">Update the server to respond here.</p>
-              )}
-          </>
-        ) : !detailError ? (
-          <p role="status">Loading…</p>
-        ) : null}
-      </Modal>
+              {detail.recipient === "user" &&
+                Number.isInteger(detail.version) && (
+                  <MessageResponse
+                    key={detail.id}
+                    detail={detail}
+                    token={data.token}
+                    requests={responseRequests.current}
+                    pendingKey={pendingKey}
+                    refresh={refresh}
+                    notify={notify}
+                    onResponse={(result) => {
+                      if (
+                        activeDetailId.current !== detail.id ||
+                        result.id !== detail.id
+                      )
+                        return;
+                      setDetail((current) => {
+                        if (activeDetailId.current !== result.id)
+                          return current;
+                        return current &&
+                          current.id === result.id &&
+                          current.version > result.version
+                          ? current
+                          : result;
+                      });
+                    }}
+                  />
+                )}
+              {recipient(detail) === "user" &&
+                (detail.recipient !== "user" ||
+                  !Number.isInteger(detail.version)) && (
+                  <p className="notice">Update the server to respond here.</p>
+                )}
+            </>
+          ) : !detailError ? (
+            <p role="status">Loading…</p>
+          ) : null}
+        </section>
+      )}
     </section>
   );
 }

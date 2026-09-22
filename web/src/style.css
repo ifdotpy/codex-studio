@@ -2225,24 +2225,3 @@ html body #root {
   background: light-dark(#e5f1fc, #253a50);
   border-radius: 16px 16px 4px 16px;
 }
-.sidebar-team-chats {
-  margin: 0 0 8px 12px;
-}
-.sidebar-team-chats > summary {
-  padding: 6px 8px;
-  color: var(--muted);
-  font-size: 11px;
-  cursor: pointer;
-}
-.sidebar-team-chats > summary span {
-  margin-left: 5px;
-}
-.sidebar-team-chats .row-copy small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 160px;
-  color: var(--muted);
-  font-size: 11px;
-}

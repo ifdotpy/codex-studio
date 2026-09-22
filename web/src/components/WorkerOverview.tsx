@@ -1,4 +1,3 @@
-import AgentAvatar from "./AgentAvatar";
 import { ActionIcon, Button, Menu, UnstyledButton } from "@mantine/core";
 import { ChevronRight, MoreHorizontal, Trash2 } from "lucide-react";
 import { useState } from "react";
@@ -171,7 +170,6 @@ export default function WorkerCard({
           aria-current={selected ? "page" : undefined}
           onClick={open}
         >
-          <AgentAvatar id={agent.id} />
           <ChatStatus status={indicator} />
           <span className="worker-text">
             <strong>{agent.name}</strong>

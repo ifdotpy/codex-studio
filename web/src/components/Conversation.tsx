@@ -777,13 +777,6 @@ export default function Conversation(p: {
           }
           size={24}
         />
-        <strong>
-          {p.room
-            ? m.senderName || "Agent"
-            : m.role === "user"
-              ? "You"
-              : p.agent?.name || "Agent"}
-        </strong>
       </span>
       {deliveryLabel(m) &&
         !["sending", "reserved", "dispatching", "accepted"].includes(

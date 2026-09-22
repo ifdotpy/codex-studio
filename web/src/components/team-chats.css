@@ -421,9 +421,42 @@
   display: none;
 }
 
-.team-chats.shared-chat-directory {
-  grid-template-columns: minmax(0, 1fr);
+.unified-messages {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
-.shared-chat-directory .team-chat-placeholder {
+.unified-message-scroll {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+}
+.unified-message-scroll > div {
+  max-width: 850px;
+  margin: 0 auto;
+}
+.unified-message-scroll [data-feed-item] {
+  margin-bottom: 14px;
+}
+.unified-message-scroll .team-message {
+  max-width: 100%;
+}
+.unified-message-scroll .book-filter {
   display: none;
+}
+.unified-message-scroll .complaint-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.unified-message-scroll .user-message-rows[hidden] {
+  display: none;
+}
+.message-inline-thread {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
 }

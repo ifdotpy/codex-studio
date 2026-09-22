@@ -37,10 +37,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import type { Agent, Json, Snapshot } from "../types";
-import Requests from "./Requests";
 import UserTasks from "./UserTasks";
 import { useFormDraft } from "./useFormDraft";
-import UserMessages from "./UserMessages";
 import TeamChats from "./TeamChats";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
 import "./Workspace.css";
@@ -376,11 +374,10 @@ export function Workspace(props: Props) {
               {section === "changes" && <Changes {...context} />}
               {section === "messages" && (
                 <TeamChats
-                  onSelect={(id) => {
-                    props.onSelect(id);
-                    props.onClose();
-                  }}
+                  refresh={props.refresh}
+                  notify={props.notify}
                   data={props.data}
+                  focusItemId={props.initialFocus?.id}
                   focusRequestId={props.initialFocus?.requestId}
                   focusRoomId={props.initialFocus?.roomId}
                   leadId={
@@ -388,15 +385,6 @@ export function Workspace(props: Props) {
                     (props.agent?.isLead ? props.agent.id : undefined)
                   }
                   forYou={<Attention {...context} />}
-                  forLead={
-                    <UserMessages
-                      data={props.data}
-                      target="lead"
-                      hideEmpty
-                      refresh={props.refresh}
-                      notify={props.notify}
-                    />
-                  }
                 />
               )}
               {section === "search" && <Find {...context} />}
@@ -1100,35 +1088,12 @@ function Attention(c: Context) {
   const items = workspaceInbox(
     c.data,
     c.data.runtime.work || work.data?.tasks || [],
-  );
+  ).filter((item) => item.kind !== "monitor");
   const groups = [...new Set(items.map((item) => item.kind))];
-  const labels: Record<string, string> = {
-    user_task: "Your tasks",
-    work: "Results to review",
-    agent: "Agent issues",
-    monitor: "Command failures",
-    rule: "Rule issues",
-  };
   return (
     <>
-      <Requests
-        scope={c.data.stateDir}
-        allRequests={c.allRequests}
-        requests={c.data.runtime.requests}
-        agents={c.data.threads}
-        refresh={c.refresh}
-        notify={c.notify}
-      />
       {groups.map((kind) => (
-        <details
-          className="workspace-inbox-group"
-          key={kind}
-          open={kind === "user_task" || kind === "work"}
-        >
-          <summary>
-            {labels[kind] || kind}{" "}
-            <span>{items.filter((item) => item.kind === kind).length}</span>
-          </summary>
+        <div className="unified-action-items" key={kind}>
           {items
             .filter((item) => item.kind === kind)
             .map((item) => (
@@ -1156,16 +1121,8 @@ function Attention(c: Context) {
                 <small>{ownerName(c.data, item.agent)}</small>
               </UnstyledButton>
             ))}
-        </details>
+        </div>
       ))}
-      <UserMessages
-        data={c.data}
-        refresh={c.refresh}
-        notify={c.notify}
-        hideEmpty
-        focusId={c.focusId}
-        focusRequestId={c.initialFocus?.requestId}
-      />
       {work.loading && !work.data ? (
         <p className="messages-background-load" role="status">
           <Loader size={12} /> Checking review tasks…

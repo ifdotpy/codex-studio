@@ -39,6 +39,23 @@ class TeamChatIsolation(unittest.TestCase):
                         json.dumps({recipient['id']: 'queued'})))
         return room, key
 
+    def test_combined_feed_scope_and_pagination(self):
+        lead, other = self.lead(), self.lead("Other")
+        worker, outsider = self.worker(lead), self.worker(other)
+        first, _ = self.historical(lead, worker)
+        self.historical(other, outsider)
+        page = self.runtime.chat_read("feed:" + lead["id"], limit=1)
+        self.assertEqual([m["room"] for m in page["messages"]], [first["id"]])
+        self.assertIsNone(page["nextBefore"])
+        before = page["messages"][0]["seq"]
+        self.assertEqual(self.runtime.chat_read("feed:" + lead["id"], before=before)["messages"], [])
+        with self.assertRaises(ValueError):
+            self.runtime.chat_read("feed:" + lead["id"], viewer=worker["id"])
+        with self.assertRaises(ValueError):
+            self.runtime.chat_read("feed:" + lead["id"], model=True)
+        with self.assertRaises(ValueError):
+            self.runtime.chat_read("feed:" + worker["id"])
+
     def test_cross_team_tools_fail_before_any_write_or_wake(self):
         lead, other = self.lead(), self.lead('Other')
         worker = self.worker(lead)

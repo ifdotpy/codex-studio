@@ -1,4 +1,3 @@
-import AgentAvatar from "./components/AgentAvatar";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
@@ -1234,7 +1233,6 @@ export default function App() {
               </Button>
             )}
             <h1 id="conversation-title" title={title}>
-              <AgentAvatar id={opened || "new"} size={28} />
               <ChatStatus
                 status={agent ? indicators.get(agent.id) : undefined}
               />
