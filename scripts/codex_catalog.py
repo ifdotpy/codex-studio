@@ -30,7 +30,7 @@ class ModelCatalogCache:
         self.lock = threading.Lock()
         self.entries = {}
 
-    def read(self, account, server, connection_id, current):
+    def read(self, account, server, connection_id, current, *, submit=None):
         if not current():
             raise CatalogUnavailable("Model catalog connection changed; no workers were created")
         start = False
@@ -98,7 +98,7 @@ class ModelCatalogCache:
                 try:
                     if not current():
                         raise RuntimeError("Model catalog connection changed")
-                    submitted = server.submit("model/list", {"limit": 100, **({'cursor': cursor} if cursor is not None else {})})
+                    submitted = (submit or server.submit)("model/list", {"limit": 100, **({'cursor': cursor} if cursor is not None else {})})
                 except Exception as error:
                     # Retain a submitted read after an unknown pipe-write outcome.
                     submitted = getattr(error, "submitted", None)
@@ -127,6 +127,16 @@ def runtime_catalog(runtime, account):
     server = runtime.connect(account)
     connection_id = runtime.connection_ids.get(account)
     cache = runtime.__dict__.setdefault("_catalog_cache", ModelCatalogCache())
-    return cache.read(account, server, connection_id, lambda: (
+    current = lambda: (
         not runtime.closed and runtime.servers.get(account) is server
-        and runtime.connection_current(account, connection_id)))
+        and runtime.connection_current(account, connection_id))
+    submit = None
+    from codex_runtime import AppServer
+    if runtime.factory is AppServer and runtime.accounts.get(account).get("provider", "codex") == "codex":
+        from codex_model_catalog_reader import submit_model_catalog
+        home = runtime.accounts.home(account)
+
+        def submit(_method, _params):
+            return submit_model_catalog(home, isolated=account != "default", current=current)
+
+    return cache.read(account, server, connection_id, current, submit=submit)

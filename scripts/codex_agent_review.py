@@ -79,6 +79,8 @@ def request(rt, actor, args, key):
         if previous is not None:
             return previous
         assert_delegation(rt.agent(actor['rootId'], db))
+    if actor.get('daybreakEnabled'):
+        raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
     catalog = rt.catalog(actor.get('accountKey', 'default'))
     with rt.lock, rt.db() as db:
         previous = _existing(rt, db, key, actor, target)
@@ -94,10 +96,12 @@ def request(rt, actor, args, key):
                 or (receipt and not rt.connection_current(receipt['accountKey'], receipt.get('connectionId')))):
             raise ValueError('The parent or its account connection changed before review creation')
         assert_delegation(rt.agent(current['rootId'], db))
+        if current.get('daybreakEnabled'):
+            raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
         spec = {'id': str(uuid.uuid5(uuid.NAMESPACE_URL, key)), 'name': 'Review',
                 'role': 'reviewer', 'prompt': 'Run a native code review: ' + json.dumps(target, ensure_ascii=False),
                 'model': current['model'], 'effort': current.get('effort'),
-                'fast_mode': current.get('fastMode', False)}
+                'fast_mode': current.get('fastMode', False), 'daybreak_enabled': False}
         # The native target stores the complete instructions. This display field
         # must stay inside create()'s task size limit.
         spec['prompt'] = spec['prompt'][:32000]

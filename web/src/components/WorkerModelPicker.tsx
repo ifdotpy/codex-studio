@@ -2,6 +2,27 @@ import { useEffect, useState } from "react";
 import { api, errorText } from "../api";
 import { type Json } from "../types";
 
+export const isDaybreakAlias = (model: string) =>
+  /^gpt-daybreak-(blue|red)-latest$/.test(model);
+
+export function daybreakProgram(info?: Json): string | null {
+  const programs = info?.availableAccessPrograms?.cyber;
+  if (!Array.isArray(programs)) return null;
+  if (programs.includes("daybreakBlue")) return "daybreakBlue";
+  if (programs.includes("daybreakRed")) return "daybreakRed";
+  return null;
+}
+
+export function supportsDaybreakMode(info: Json | undefined, enabled: boolean) {
+  if (!info || isDaybreakAlias(info.model)) return false;
+  if (enabled) return !!daybreakProgram(info);
+  const programs = info.availableAccessPrograms?.cyber;
+  return (
+    programs === undefined ||
+    (Array.isArray(programs) && programs.includes("standard"))
+  );
+}
+
 export function useWorkerModels(accountKey: string, enabled: boolean) {
   const [result, setResult] = useState<{
     key: string;

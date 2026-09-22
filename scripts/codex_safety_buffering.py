@@ -99,6 +99,11 @@ def current(runtime, db, op):
 def issue(runtime, op, stage):
     """Submit without a wait in the coordination pool. Preserve late replies."""
     try:
+        from codex_daybreak import turn_program, turn_params
+        program = None
+        if stage in {"interrupt", "fork", "start"}:
+            candidate = {**runtime.agent(op["agent"]), "model": op["model"]}
+            program = turn_program(runtime, candidate)
         with runtime.lock, runtime.db() as db:
             a = current(runtime, db, op)
             server = runtime.servers[op['accountKey']]
@@ -130,7 +135,8 @@ def issue(runtime, op, stage):
                 params.update(threadId=op['newThreadId'], input=op['input'],
                               clientUserMessageId=op['attemptId'], model=op['model'], effort='low',
                               serviceTier='priority' if a.get('fastMode') else 'default',
-                              **runtime.turn_permissions(a))
+                              **runtime.turn_permissions(a), **turn_params(a, program))
+                a['cyberAccessProgram'] = program
                 a.update(status='starting', inFlight=True, turnEpoch=a['epoch'], error=None,
                          startAttempt={'id': op['attemptId'], 'epoch': a['epoch'], 'events': [],
                              'action': 'safety', 'submitted': True, 'accountKey': op['accountKey'],

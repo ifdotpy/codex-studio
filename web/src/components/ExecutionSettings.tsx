@@ -3,7 +3,11 @@ import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, errorText, save, saved } from "../api";
 import { busy, type Agent, type Json } from "../types";
-import type { useWorkerModels } from "./WorkerModelPicker";
+import {
+  isDaybreakAlias,
+  supportsDaybreakMode,
+  type useWorkerModels,
+} from "./WorkerModelPicker";
 import "./execution-settings.css";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
@@ -32,6 +36,7 @@ export function shortModel(model: string) {
         "gpt-5.6-terra": "Terra",
         "gpt-5.6-luna": "Luna",
         "gpt-daybreak-blue-latest": "Daybreak Blue",
+        "gpt-daybreak-red-latest": "Daybreak Red",
       } as Record<string, string>
     )[model] || model
   );
@@ -47,6 +52,11 @@ type SettingsProps = {
   openRequest?: number;
 };
 const accountOf = (agent: Agent) => agent.accountKey || "default";
+const queuedFor = (agent: Agent) =>
+  agent.pendingSettingsAccountKey &&
+  agent.pendingSettingsAccountKey !== accountOf(agent)
+    ? null
+    : agent.pendingSettings;
 const settingsFor = (agent: Agent, teamDefaults: boolean) => {
   if (teamDefaults)
     return {
@@ -59,22 +69,21 @@ const settingsFor = (agent: Agent, teamDefaults: boolean) => {
           ? "max"
           : agent.workerDefaults.effort,
       fast_mode: !!agent.workerDefaults?.fastMode,
+      daybreak_enabled: !!agent.workerDefaults?.daybreakEnabled,
     };
-  const queued =
-    agent.pendingSettingsAccountKey &&
-    agent.pendingSettingsAccountKey !== accountOf(agent)
-      ? null
-      : agent.pendingSettings;
+  const queued = queuedFor(agent);
   return {
     model: queued?.model ?? agent.model,
     effort: queued ? (queued.effort ?? null) : (agent.effort ?? null),
     fast_mode: queued ? !!queued.fastMode : !!agent.fastMode,
+    daybreak_enabled: !!(queued?.daybreakEnabled ?? agent.daybreakEnabled),
   };
 };
 const sameSettings = (left: Json, right: Json) =>
   left.model === right.model &&
   left.effort === right.effort &&
-  left.fast_mode === right.fast_mode;
+  left.fast_mode === right.fast_mode &&
+  !!left.daybreak_enabled === !!right.daybreak_enabled;
 
 export function ExecutionSettings(props: SettingsProps) {
   // Account transfers reuse the same agent ID in the conversation view.
@@ -163,15 +172,7 @@ function ScopedExecutionSettings({
     : agent.isLead
       ? "Main agent"
       : "Subagent";
-  const queued = (
-    agent as Agent & {
-      pendingSettings?: {
-        model?: string;
-        effort?: string | null;
-        fastMode?: boolean;
-      };
-    }
-  ).pendingSettings;
+  const queued = queuedFor(agent);
   const stored = settingsFor(agent, teamDefaults);
   const current = unconfirmed || pending?.values || stored;
   useEffect(() => {
@@ -184,7 +185,14 @@ function ScopedExecutionSettings({
         !sameSettings(pending.baseline, stored))
     )
       setPending(null);
-  }, [saving, pending, stored.model, stored.effort, stored.fast_mode]);
+  }, [
+    saving,
+    pending,
+    stored.model,
+    stored.effort,
+    stored.fast_mode,
+    stored.daybreak_enabled,
+  ]);
   const selectedModel = current.model || agent.model;
   const info = infoFor(catalog, selectedModel);
   const active = !teamDefaults && (!!agent.inFlight || busy.has(agent.status));
@@ -194,19 +202,34 @@ function ScopedExecutionSettings({
     (active && !canQueueSettings) ||
     catalog.loading ||
     !!catalog.error;
-  const modelOptions = catalog.models.map((row) => ({
+  const models = catalog.models.filter((row) => !isDaybreakAlias(row.model));
+  const daybreakEnabled = !!current.daybreak_enabled;
+  const supportsMode = (row: Json | undefined, enabled = daybreakEnabled) =>
+    supportsDaybreakMode(row, enabled);
+  const canEnableDaybreak = models.some((row) => supportsMode(row, true));
+  const canDisableDaybreak = models.some((row) => supportsMode(row, false));
+  const modeSupported = supportsMode(info);
+  const modeQueued =
+    !teamDefaults &&
+    !!(active || queued || unconfirmed) &&
+    daybreakEnabled !== !!agent.daybreakEnabled;
+  const modeLabel = daybreakEnabled ? "Daybreak" : "Standard";
+  const modelOptions = models.map((row) => ({
     value: row.model as string,
     label: row.displayName || shortModel(row.model),
+    disabled: !supportsMode(row),
   }));
   if (teamDefaults)
     modelOptions.unshift({
       value: DEFAULT,
       label: `Same as main agent (${shortModel(agent.model)})`,
+      disabled: !supportsMode(infoFor(catalog, agent.model)),
     });
   if (!modelOptions.some((row) => row.value === (current.model || DEFAULT)))
     modelOptions.unshift({
       value: current.model || DEFAULT,
       label: shortModel(selectedModel),
+      disabled: true,
     });
   const options = effortOptions(info);
   if (current.effort && !options.some((row) => row.value === current.effort))
@@ -282,7 +305,40 @@ function ScopedExecutionSettings({
     if (disabled) return;
     const next = { ...current, ...patch };
     const adjustments: string[] = [];
-    if ("model" in patch) {
+    if ("daybreak_enabled" in patch) {
+      if (
+        !supportsMode(
+          infoFor(catalog, next.model || agent.model),
+          next.daybreak_enabled,
+        )
+      ) {
+        const eligible = models.filter((row) =>
+          supportsMode(row, next.daybreak_enabled),
+        );
+        const replacement =
+          eligible.find((row) => row.isDefault) || eligible[0];
+        if (!replacement) {
+          setError("No model supports this mode for the selected account.");
+          return;
+        }
+        next.model = replacement.model;
+        adjustments.push(
+          `Model changed to ${shortModel(next.model)} for ${next.daybreak_enabled ? "Daybreak" : "standard mode"}.`,
+        );
+      }
+    }
+    if (
+      !supportsMode(
+        infoFor(catalog, next.model || agent.model),
+        !!next.daybreak_enabled,
+      )
+    ) {
+      setError(
+        "Select a model that supports this mode for the selected account.",
+      );
+      return;
+    }
+    if ("model" in patch || next.model !== current.model) {
       const nextInfo = infoFor(catalog, next.model || agent.model);
       if (
         !nextInfo?.supportedReasoningEfforts?.some(
@@ -374,6 +430,7 @@ function ScopedExecutionSettings({
             selectedModel,
             current.effort || "Default reasoning",
             current.fast_mode ? "Fast" : "Standard",
+            `${modeLabel}${modeQueued ? " (next turn)" : ""}`,
           ].join(" · ")}
           onClick={() => {
             setError("");
@@ -386,6 +443,8 @@ function ScopedExecutionSettings({
               ? "Main agent"
               : "Subagent"}{" "}
           · {shortModel(selectedModel)}
+          {(daybreakEnabled || modeQueued) &&
+            ` · ${modeLabel}${modeQueued ? " next turn" : ""}`}
         </Button>
       </Popover.Target>
       <Popover.Dropdown
@@ -408,11 +467,45 @@ function ScopedExecutionSettings({
             })
           }
         />
+        {agent.provider !== "claude" && (
+          <Switch
+            label="Daybreak"
+            aria-label="Daybreak"
+            checked={daybreakEnabled}
+            disabled={
+              disabled ||
+              (daybreakEnabled ? !canDisableDaybreak : !canEnableDaybreak)
+            }
+            description={
+              canEnableDaybreak
+                ? "Use Daybreak with supported models."
+                : "Unavailable for this account. Refresh the model list after an access or Codex update."
+            }
+            onChange={(event) =>
+              void change({ daybreak_enabled: event.currentTarget.checked })
+            }
+          />
+        )}
+        {!catalog.loading && !catalog.error && !modeSupported && (
+          <p className="notice" role="status">
+            {isDaybreakAlias(selectedModel)
+              ? "This chat uses a Daybreak model alias. Select a model and enable Daybreak to use the separate mode."
+              : "The selected model does not support this mode in the account model list. Select another model or change the mode."}
+          </p>
+        )}
+        {agent.provider !== "claude" &&
+          !catalog.loading &&
+          !catalog.error &&
+          !canEnableDaybreak && (
+            <Button variant="subtle" size="compact-xs" onClick={catalog.retry}>
+              Refresh model list
+            </Button>
+          )}
         <NativeSelect
           label={prefix + " reasoning"}
           data={options}
           value={current.effort || DEFAULT}
-          disabled={disabled || !info}
+          disabled={disabled || !modeSupported}
           onChange={(event) =>
             void change({
               effort:
@@ -426,7 +519,11 @@ function ScopedExecutionSettings({
           label="Fast mode"
           aria-label="Fast mode"
           checked={current.fast_mode}
-          disabled={disabled || (!current.fast_mode && !fastTier(info))}
+          disabled={
+            disabled ||
+            !modeSupported ||
+            (!current.fast_mode && !fastTier(info))
+          }
           description={
             fastTier(info)?.description || "Unavailable for this model"
           }
@@ -472,6 +569,8 @@ function ScopedExecutionSettings({
           <p className="notice" role="status">
             Model settings apply to the next turn. The current response keeps
             its settings.
+            {modeQueued &&
+              ` Current mode: ${agent.daybreakEnabled ? "Daybreak" : "Standard"}. Next turn: ${modeLabel}.`}
           </p>
         )}
         {active && !canQueueSettings && (
@@ -500,6 +599,7 @@ function ScopedExecutionSettings({
                   model: unconfirmed.model,
                   effort: unconfirmed.effort,
                   fast_mode: unconfirmed.fast_mode,
+                  daybreak_enabled: !!unconfirmed.daybreak_enabled,
                 })
               }
             >

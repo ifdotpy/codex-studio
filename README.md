@@ -49,6 +49,19 @@ custom models, launch options, and compaction limits. Sign in with the native CL
 before adding a profile. Active sessions keep their current connection; profile
 changes apply when that connection is idle.
 
+Codex model settings include a separate **Daybreak** switch. Studio checks the
+selected account's native model grants before it enables the mode. A change
+during an active turn applies to the next turn. Subagent defaults have their
+own switch. Account transfers preserve the mode only when the destination
+supports it; a provider change clears it. Native `review/start` cannot select
+Daybreak, so use a review task in the chat when this mode is required.
+
+Studio reads Codex model metadata through a short-lived native process without
+interrupting active sessions. It uses the Codex executable bundled with ChatGPT
+when installed, or the executable on PATH. `CODEX_CATALOG_BIN` sets an explicit
+metadata executable. The reader uses the selected account's native credentials
+and starts no model tasks. Model grants remain cached for five minutes.
+
 Claude Code uses its native permission rules for its tools. Studio command
 monitors use the installed Codex command executor with the Studio sandbox policy.
 This executor does not start model sessions or use account credentials. Monitors

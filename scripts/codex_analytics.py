@@ -135,15 +135,19 @@ class AnalyticsMixin:
         db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)', (account_key, time.time(), json.dumps(value)))
 
     def analytics_agent(self, db, a):
-        record = {key: a.get(key) for key in ('id', 'name', 'rootId', 'parentId', 'accountKey', 'threadId', 'model', 'effort', 'fastMode', 'cwd', 'deletedAt')}
+        record = {key: a.get(key) for key in ('id', 'name', 'rootId', 'parentId', 'accountKey', 'threadId', 'model', 'effort', 'fastMode', 'daybreakEnabled', 'cyberAccessProgram', 'cwd', 'deletedAt')}
         db.execute('INSERT INTO analytics_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record', (a['id'], json.dumps(record)))
         return {'agentId': a['id'], 'agentName': a.get('name'), 'rootId': a.get('rootId') or a['id'],
                 'accountKey': a.get('accountKey', 'default'), 'threadId': a.get('threadId'),
-                'model': a.get('model'), 'effort': a.get('effort'), 'fastMode': a.get('fastMode')}
+                'model': a.get('model'), 'effort': a.get('effort'), 'fastMode': a.get('fastMode'),
+                'daybreakEnabled': a.get('daybreakEnabled'), 'cyberAccessProgram': a.get('cyberAccessProgram')}
 
     def analytics_event(self, db, a, method, p, *, at=None, source='live'):
         at = time.time() if at is None else at
         meta = self.analytics_agent(db, a)
+        if source != 'live':
+            # A historical record must not inherit the current chat's access mode.
+            meta.update(daybreakEnabled=None, cyberAccessProgram=None)
         if source == 'live':
             hour = int(at // 3600) * 3600
             key = encoded([a['id'], method, hour])
@@ -152,6 +156,13 @@ class AnalyticsMixin:
         turn = p.get('turnId') or (p.get('turn') or {}).get('id') or a.get('turnId')
         meta.update(threadId=p.get('threadId') or a.get('threadId'), turnId=turn)
         if method == 'thread/tokenUsage/updated':
+            if turn:
+                turn_key = ':'.join((a['id'], str(meta['threadId']), str(turn)))
+                known = db.execute('SELECT record FROM analytics_turns WHERE id=?', (turn_key,)).fetchone()
+                known = json.loads(known[0]) if known else {}
+                if known.get('accountKey') == meta['accountKey'] and known.get('cyberAccessProgram') is not None:
+                    meta.update(daybreakEnabled=known.get('daybreakEnabled'),
+                                cyberAccessProgram=known['cyberAccessProgram'])
             budget_capture(db, a, p, at=at, source=source)
             usage = p.get('tokenUsage') or {}
             current, last = usage.get('total') or {}, usage.get('last') or {}
@@ -213,6 +224,9 @@ class AnalyticsMixin:
             record = json.loads(row[0]) if row else {**meta, 'id': key, 'at': at, 'startedAt': None, 'finishedAt': None,
                 'firstOutputAt': None, 'durationMs': None, 'firstOutputDelayMs': None, 'status': 'unknown', 'source': source}
             if method == 'turn/started':
+                if source == 'live':
+                    record.update(daybreakEnabled=meta.get('daybreakEnabled'),
+                                  cyberAccessProgram=meta.get('cyberAccessProgram'))
                 record['startedAt'] = min(at, record['startedAt']) if record['startedAt'] is not None else at
                 if record['finishedAt'] is None:
                     record['status'] = 'running'

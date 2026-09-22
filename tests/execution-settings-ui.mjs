@@ -187,6 +187,8 @@ try {
     model: "gpt-5.6-luna",
     effort: "high",
     fastMode: true,
+    daybreakEnabled: false,
+    cyberAccessProgram: "standard",
   });
   const spawnWorker = async (name, overrides = {}) => {
     proc.stdin.write(

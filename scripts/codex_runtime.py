@@ -21,6 +21,7 @@ import uuid
 from codex_accounts import AccountStore
 from codex_account_transfer import transfer_store
 from codex_catalog import runtime_catalog
+from codex_daybreak import resolve_program, turn_program, turn_params
 from codex_analytics import AnalyticsMixin
 from codex_analytics_history import AnalyticsHistoryMixin
 from codex_shell import monitor_command
@@ -1006,7 +1007,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     @staticmethod
     def worker_defaults(root):
-        return {"model": "sonnet" if root.get("provider") == "claude" else "gpt-5.6-luna", "effort": "max", "fastMode": False,
+        return {"model": "sonnet" if root.get("provider") == "claude" else "gpt-5.6-luna", "effort": "max", "fastMode": False, "daybreakEnabled": False,
                 **root.get("workerDefaults", {})}
 
     @staticmethod
@@ -1032,12 +1033,16 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         return effort, effort if effort is not None else info.get("defaultReasoningEffort")
 
     def validate_worker_defaults(self, value, root_model, catalog):
-        if not isinstance(value, dict) or set(value) != {"model", "effort", "fast_mode"}:
+        if (not isinstance(value, dict) or not {"model", "effort", "fast_mode"} <= set(value)
+                or set(value) - {"model", "effort", "fast_mode", "daybreak_enabled"}):
             raise ValueError("worker_defaults needs model, effort and fast_mode")
         if value["model"] is not None and (not isinstance(value["model"], str) or not value["model"].strip()):
             raise ValueError("Default model must be a model name or null")
         self.validate_execution(catalog, value["model"] or root_model, value["effort"], value["fast_mode"])
-        return {"model": value["model"], "effort": value["effort"], "fastMode": value["fast_mode"]}
+        enabled = value.get("daybreak_enabled", False)
+        program = resolve_program(catalog, value["model"] or root_model, enabled)
+        return {"model": value["model"], "effort": value["effort"], "fastMode": value["fast_mode"],
+                "daybreakEnabled": enabled, "cyberAccessProgram": program}
 
     def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False):
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
@@ -1070,7 +1075,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 }
         # Obtain remote metadata before taking the database write lock. Batch spawn
         # passes one catalogue snapshot for all children and validates under its lock.
-        needs_catalog = parent is not None or any(k in data for k in ("model", "effort", "fast_mode", "worker_defaults"))
+        needs_catalog = parent is not None or any(k in data for k in ("model", "effort", "fast_mode", "daybreak_enabled", "worker_defaults"))
         catalog_account = (self.agent(parent).get("accountKey", "default") if parent
                            else data["account_key"] if "account_key" in data
                            else self.project_account(data.get("cwd") or os.getcwd()))
@@ -1096,7 +1101,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     raise ValueError("This conversation was deleted")
                 if a["name"] != name.strip() or a["prompt"] != prompt.strip() or ("account_key" in data and a.get("accountKey", "default") != data["account_key"]):
                     raise ValueError("This request id has different content")
-                for request_field, stored_field in (("model", "model"), ("effort", "effort"), ("fast_mode", "fastMode"), ("yolo_mode", "yoloMode")):
+                for request_field, stored_field in (("model", "model"), ("effort", "effort"), ("fast_mode", "fastMode"), ("daybreak_enabled", "daybreakEnabled"), ("yolo_mode", "yoloMode")):
                     if request_field in data and data[request_field] != a.get(stored_field):
                         raise ValueError("This request id has different execution settings")
                 return a
@@ -1119,6 +1124,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError("The account changed. Create the worker again")
             effort = data.get("effort", defaults["effort"] if root else "medium")
             fast_mode = data.get("fast_mode", defaults["fastMode"] if root else False)
+            daybreak = data.get("daybreak_enabled", defaults.get("daybreakEnabled", False) if root else False)
+            program = resolve_program(catalog or {}, model, daybreak, provider)
             native_effort = effort
             if catalog is not None:
                 effort, native_effort = self.validate_execution(
@@ -1162,6 +1169,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "model": model,
                 "effort": effort,
                 "fastMode": fast_mode,
+                "daybreakEnabled": daybreak,
+                "cyberAccessProgram": program,
                 "concurrency": root["concurrency"] if root else concurrency,
                 "maxAgents": root["maxAgents"] if root else max_agents,
                 "tokenBudget": root["tokenBudget"] if root else budget,
@@ -1284,12 +1293,20 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if data.get("model"):
                         effort, native_effort = self.validate_execution(catalog, data["model"], previous.get("effort"),
                             previous.get("fastMode", False), fallback_effort=True)
-                        previous.update(model=data["model"], effort=effort, nativeEffort=native_effort)
+                        enabled = previous.get("daybreakEnabled", False) if previous.get("accountKey", "default") == account_key else False
+                        program = resolve_program(catalog, data["model"], enabled, previous.get("provider", "codex"))
+                        previous.update(model=data["model"], effort=effort, nativeEffort=native_effort, cyberAccessProgram=program)
                         self.loaded.discard(previous["id"])
                     if "yolo_mode" in data:
                         previous["yoloMode"] = data["yolo_mode"]
                     if previous.get('projectFolder') != project_folder or previous['cwd'] != cwd:
                         previous['projectFolderRevision'] = previous.get('projectFolderRevision', 0) + 1
+                    if previous.get("accountKey", "default") != account_key:
+                        previous.update(daybreakEnabled=False, cyberAccessProgram="standard")
+                        previous.pop("pendingSettings", None)
+                        previous.pop("pendingSettingsAccountKey", None)
+                        if previous.get("workerDefaults"):
+                            previous["workerDefaults"].update(daybreakEnabled=False, cyberAccessProgram="standard")
                     previous.update(accountKey=account_key, cwd=cwd)
                     previous['projectFolder'] = project_folder
                     self.ensure_project(cwd, account_key, db)
@@ -1340,6 +1357,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 a["workerDefaults"] = self.worker_defaults({"provider": provider})
                 a.pop("pendingSettings", None)
                 a.pop("pendingSettingsAccountKey", None)
+            if a.get("accountKey", "default") != account_key:
+                a.update(daybreakEnabled=False, cyberAccessProgram="standard")
+                a.pop("pendingSettings", None)
+                a.pop("pendingSettingsAccountKey", None)
+                if a.get("workerDefaults"):
+                    a["workerDefaults"].update(daybreakEnabled=False, cyberAccessProgram="standard")
             a.update(accountKey=account_key, cwd=directory)
             self.ensure_project(directory, account_key, db)
             self.put(db, "agents", a)
@@ -1375,7 +1398,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             raise ValueError("Expected account identity must be a non-empty string")
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
-        execution_fields = {"model", "effort", "fast_mode"}
+        execution_fields = {"model", "effort", "fast_mode", "daybreak_enabled"}
         if data.get("next_turn") is True:
             if set(data) - {"id", "request_id", "next_turn", "expected_account_key", *execution_fields}:
                 raise ValueError("Only execution settings can apply to the next turn")
@@ -1406,8 +1429,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     catalog, model, data.get("effort", base.get("effort")),
                     data.get("fast_mode", base.get("fastMode", False)),
                     fallback_effort="model" in data and "effort" not in data)
+                daybreak = data.get("daybreak_enabled", base.get("daybreakEnabled", False))
+                program = resolve_program(catalog, model, daybreak, a.get("provider", "codex"))
                 a["pendingSettings"] = dict(model=model, effort=effort, nativeEffort=native_effort,
-                    fastMode=data.get("fast_mode", base.get("fastMode", False)))
+                    fastMode=data.get("fast_mode", base.get("fastMode", False)),
+                    daybreakEnabled=daybreak, cyberAccessProgram=program)
                 a["pendingSettingsAccountKey"] = a.get("accountKey", "default")
                 self.put(db, "agents", a)
                 self.save_receipt(db, request_id, signature, {"applied": True})
@@ -1467,8 +1493,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 # explicit level. A null user preference remains null.
                 if "effort" not in data and a.get("effort") is not None and effort is None:
                     effort = native_effort
+                daybreak = data.get("daybreak_enabled", a.get("daybreakEnabled", False))
+                program = resolve_program(catalog, model, daybreak, a.get("provider", "codex"))
                 a.update(model=model, effort=effort, nativeEffort=native_effort,
-                         fastMode=data.get("fast_mode", a.get("fastMode", False)))
+                         fastMode=data.get("fast_mode", a.get("fastMode", False)),
+                         daybreakEnabled=daybreak, cyberAccessProgram=program)
             if "worker_defaults" in data:
                 a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], catalog)
             if "cwd" in data:
@@ -1489,6 +1518,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     a.update(provider=provider, model="default" if provider == "claude" else DEFAULT_LEAD_MODEL,
                              effort="medium", nativeEffort="medium", fastMode=False)
                     a["workerDefaults"] = self.worker_defaults({"provider": provider})
+                if account_key != a.get("accountKey", "default"):
+                    a.update(daybreakEnabled=False, cyberAccessProgram="standard")
+                    a.pop("pendingSettings", None)
+                    a.pop("pendingSettingsAccountKey", None)
+                    if a.get("workerDefaults"):
+                        a["workerDefaults"].update(daybreakEnabled=False, cyberAccessProgram="standard")
                 a["accountKey"] = account_key
                 self.ensure_project(str(cwd), a["accountKey"], db)
             self.put(db, "agents", a)
@@ -1940,8 +1975,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     @staticmethod
     def preparation_settings(a):
-        return {key: a.get(key) for key in ("model", "effort", "nativeEffort", "fastMode", "yoloMode",
-                "profileInstructions", "role")}
+        return {**{key: a.get(key) for key in ("model", "effort", "nativeEffort", "fastMode", "yoloMode",
+                "profileInstructions", "role")},
+                **{key: a[key] for key in ("daybreakEnabled", "cyberAccessProgram") if key in a}}
 
     def prepare_locked(self, a):
         from codex_context_repair import assert_context_available
@@ -2276,6 +2312,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     self.put(db, "agents", current)
                 a = current
             from codex_context_repair import repair_before_start
+            program = turn_program(self, a)
             a = repair_before_start(self, a)
             a = self.prepare(a)
             with self.lock, self.db() as db:
@@ -2374,6 +2411,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     params["claudeCommand"] = rows[0]["text"].strip()
                 params.update(self.turn_permissions(a))
                 params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
+                params.update(turn_params(a, program))
+                current["cyberAccessProgram"] = program
                 if a.get("nativeEffort", a.get("effort")) is not None:
                     params["effort"] = a.get("nativeEffort", a.get("effort"))
                 current["startAttempt"]["submitted"] = True
@@ -4525,6 +4564,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 a.pop("pendingSettingsAccountKey", None)
                 a.update(a.pop("pendingSettings"))
                 self.loaded.discard(a["id"])
+            if action == "review" and a.get("daybreakEnabled"):
+                raise ValueError("Native review cannot select Daybreak. Send a review task in the chat instead")
             from codex_budget import budget_admission
             budget_admission(self, db, a)
             attempt_id = uid()
@@ -4555,6 +4596,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         try:
             a = self.agent(key)
             assert_identity(a, attempt)
+            if attempt['action'] == 'review' and a.get('daybreakEnabled'):
+                raise ValueError('Native review cannot select Daybreak. Send a review task in the chat instead')
+            program = turn_program(self, a) if attempt["action"] == "capacity" else None
             from codex_context_repair import repair_before_start
             a = repair_before_start(self, a)
             current_attempt = a.get("startAttempt") or {}
@@ -4595,6 +4639,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     method = "turn/start"
                     params.update(input=[], model=a["model"], **self.turn_permissions(a))
                     params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
+                    params.update(turn_params(a, program))
+                    a["cyberAccessProgram"] = program
+                    self.put(db, "agents", a)
                     if a.get("nativeEffort", a.get("effort")) is not None:
                         params["effort"] = a.get("nativeEffort", a.get("effort"))
                 if attempt["action"] == "review":

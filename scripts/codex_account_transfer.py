@@ -111,15 +111,22 @@ class AccountTransfers:
             tier.get('id') == 'priority' for tier in current.get('serviceTiers', []))
         effort, native = rt.validate_execution(catalog, model, agent.get('effort'), fast,
                                                fallback_effort=True)
-        resolved = dict(provider=provider, model=model, effort=effort, nativeEffort=native, fastMode=fast)
+        from codex_daybreak import resolve_program
+        daybreak = False if changed else agent.get("daybreakEnabled", False)
+        program = resolve_program(catalog, model, daybreak, provider)
+        resolved = dict(provider=provider, model=model, effort=effort, nativeEffort=native, fastMode=fast,
+                        daybreakEnabled=daybreak, cyberAccessProgram=program)
         defaults = rt.worker_defaults({'provider': provider} if changed else agent)
         worker = next((row for row in rows if row.get('model') == (defaults.get('model') or model)), current)
         worker_fast = bool(defaults.get('fastMode', False)) and any(
             tier.get('id') == 'priority' for tier in worker.get('serviceTiers', []))
         worker_effort, _ = rt.validate_execution(catalog, worker['model'], defaults.get('effort'), worker_fast,
                                                 fallback_effort=True)
+        worker_daybreak = False if changed else defaults.get('daybreakEnabled', False)
+        worker_program = resolve_program(catalog, worker['model'], worker_daybreak, provider)
         resolved['workerDefaults'] = dict(model=None if defaults.get('model') is None else worker['model'],
-                                          effort=worker_effort, fastMode=worker_fast)
+                                          effort=worker_effort, fastMode=worker_fast,
+                                          daybreakEnabled=worker_daybreak, cyberAccessProgram=worker_program)
         if changed:
             resolved['claudeOptions'] = {}
         if agent.get('pendingSettings'):
@@ -131,7 +138,9 @@ class AccountTransfers:
                 pending = agent['pendingSettings']
                 pending_effort, pending_native = rt.validate_execution(
                     catalog, pending['model'], pending.get('effort'), pending.get('fastMode', False))
-                resolved.update(pendingSettings={**pending, 'effort': pending_effort, 'nativeEffort': pending_native},
+                pending_program = resolve_program(catalog, pending['model'], pending.get('daybreakEnabled', False), provider)
+                resolved.update(pendingSettings={**pending, 'effort': pending_effort, 'nativeEffort': pending_native,
+                                                'cyberAccessProgram': pending_program},
                                 pendingSettingsAccountKey=target)
         return resolved
 
@@ -419,15 +428,25 @@ class AccountTransfers:
                 resolved = self.destination_settings(a, target, catalog)
             else:
                 # Preserve the native Codex fork's strict settings contract.
+                from codex_daybreak import resolve_program
                 effort, native_effort = rt.validate_execution(catalog, a['model'], a.get('effort'), a.get('fastMode', False))
-                resolved = dict(effort=effort, nativeEffort=native_effort)
+                daybreak = a.get('daybreakEnabled', False)
+                program = resolve_program(catalog, a['model'], daybreak, target_provider)
+                defaults = rt.worker_defaults(a)
+                worker_program = resolve_program(catalog, defaults.get('model') or a['model'],
+                                                 defaults.get('daybreakEnabled', False), target_provider)
+                resolved = dict(effort=effort, nativeEffort=native_effort,
+                                daybreakEnabled=daybreak, cyberAccessProgram=program,
+                                workerDefaults={**defaults, 'cyberAccessProgram': worker_program})
                 if a.get('pendingSettings'):
                     if a.get('pendingSettingsAccountKey', a.get('accountKey', 'default')) != a.get('accountKey', 'default'):
                         raise ValueError('Queued settings belong to another account. Save them again before transfer')
                     pending = a['pendingSettings']
                     pending_effort, pending_native = rt.validate_execution(
                         catalog, pending['model'], pending.get('effort'), pending.get('fastMode', False))
-                    resolved.update(pendingSettings={**pending, 'effort': pending_effort, 'nativeEffort': pending_native},
+                    pending_program = resolve_program(catalog, pending['model'], pending.get('daybreakEnabled', False), target_provider)
+                    resolved.update(pendingSettings={**pending, 'effort': pending_effort, 'nativeEffort': pending_native,
+                                                    'cyberAccessProgram': pending_program},
                                     pendingSettingsAccountKey=target)
             if m.get('portableHistory'):
                 resolved['portableHistory'] = m['portableHistory']

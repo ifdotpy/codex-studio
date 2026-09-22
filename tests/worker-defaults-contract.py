@@ -93,7 +93,7 @@ class WorkerDefaults(unittest.TestCase):
         self.assertEqual(self.runtime.agent(child["id"])["model"], "gpt-5.6-luna")
 
     def test_luna_max_default_preserves_explicit_choices(self):
-        expected = {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False}
+        expected = {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False, "daybreakEnabled": False}
         self.assertEqual(self.lead["workerDefaults"], expected)
         self.assertEqual(self.runtime.worker_defaults({}), expected)
         child = self.worker()
@@ -258,7 +258,7 @@ class WorkerDefaults(unittest.TestCase):
         self.assertNotEqual(new["id"], self.lead["id"])
         self.assertEqual(
             new["workerDefaults"],
-            {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False},
+            {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False, "daybreakEnabled": False},
         )
         self.assertEqual((new["model"], new["effort"], new["fastMode"]),
                          ("gpt-6-astra", "medium", False))
@@ -321,7 +321,8 @@ class WorkerDefaults(unittest.TestCase):
         self.defaults("worker", "high", True)
         self.assertEqual(
             self.runtime.team(lead["id"])["workerDefaults"],
-            {"model": "worker", "effort": "high", "fastMode": True},
+            {"model": "worker", "effort": "high", "fastMode": True,
+             "daybreakEnabled": False, "cyberAccessProgram": "standard"},
         )
 
         def call(key, agents):
