@@ -936,6 +936,12 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/login":
                         return self.send(runtime.accounts.start_login(runtime, body.get("request_id")))
+                    if self.path == "/api/claude/profiles":
+                        from codex_claude_controls import profile
+                        return self.send(profile(runtime, body))
+                    if self.path == "/api/claude/session":
+                        from codex_claude_controls import action
+                        return self.send(action(runtime, body))
                     if self.path == "/api/agents/account-transfer":
                         from codex_account_transfer import transfer_store
                         transfers = transfer_store(runtime)

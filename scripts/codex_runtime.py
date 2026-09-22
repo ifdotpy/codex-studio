@@ -256,7 +256,7 @@ class AppServer:
     CALLBACK_QUEUE_LIMIT = 4096
     CLOCK_QUEUE_LIMIT = 128
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex"):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None):
         import queue
         self.notification, self.request, self.died = notification, request, died
         self.lock = threading.RLock()
@@ -279,9 +279,10 @@ class AppServer:
             env.pop("OPENAI_API_KEY", None)
             env.pop("CODEX_API_KEY", None)
             command.extend(["-c", 'cli_auth_credentials_store="file"'])
+        self.provider_options = (provider_options or {}).get("claudeOptions", {})
         if provider == "claude":
             from codex_claude import transport
-            command, env = transport(root)
+            command, env = transport(root, provider_options) if provider_options else transport(root)
         self.proc = subprocess.Popen(
             command, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
@@ -293,7 +294,7 @@ class AppServer:
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
         try:
-            self.call("initialize", {"clientInfo": {"name": "codex_agents_canvas",
+            self.initialize_result = self.call("initialize", {"clientInfo": {"name": "codex_agents_canvas",
                 "version": "1.0.0"}, "capabilities": {"experimentalApi": True}})
             self.write({"method": "initialized"})
         except Exception:
@@ -855,6 +856,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if self.closed:
                 raise RuntimeError("Runtime is stopped")
             server = self.servers.get(account_key)
+            if provider == "claude" and server is not None and self.factory is AppServer:
+                from codex_claude_controls import retire_idle_bridge
+                if retire_idle_bridge(self, account_key, account, server):
+                    server = None
             if account_key in self.offline_accounts and server:
                 server.close()
                 self.servers.pop(account_key, None)
@@ -874,7 +879,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 root.mkdir(parents=True, exist_ok=True)
                 if self.factory is AppServer:
                     server = self.factory(root, *callbacks, home=home,
-                                          isolated=account_key != "default", provider=provider)
+                                          isolated=account_key != "default", provider=provider, provider_options=account if provider == "claude" else None)
                 else:
                     # Existing fixtures implement the original four-argument factory.
                     server = self.factory(root, *callbacks)
@@ -1636,10 +1641,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             from codex_context_repair import blocked as context_repair_blocked
             if a.get("accountTransferId") or context_repair_blocked(a):
                 delivery = "queue"
-            if a.get("provider") == "claude" and delivery == "after_tool":
-                delivery = "queue"
-            if a.get("provider") == "claude" and delivery == "steer":
-                raise ValueError("Claude Code accepts messages between turns. Choose queue.")
             if delivery == "after_tool":
                 delivery = "steer" if a.get("turnId") and a.get("inFlight") and a["autoWake"] else "queue"
             if delivery == "steer" and (
@@ -1932,8 +1933,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         if a.get("provider") == "claude":
             params["developerInstructions"] += ("\nThis session uses Claude Code and its native tools. "
                 "Use Bash for commands. Studio command monitors and voice are unavailable. "
-                "Use Studio orchestration tools for subagents. Messages to active Claude agents wait in the queue. "
-                "Use delivery=queue; turn steer is unavailable.\n")
+                "Use Studio orchestration tools for managed subagents. "
+                "Use delivery=steer for active turns or delivery=queue to wait for completion.\n")
+            params["claude"] = a.get("claudeOptions", {})
         params["dynamicTools"] = self.tool_definitions(a)
         from codex_browser import configure_browser
         if a.get("provider") != "claude":
@@ -2242,6 +2244,13 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     selected.append(event)
                     asset_count += count
                 rows = selected
+                if a.get("provider") == "claude":
+                    # Native slash commands must reach the CLI as a separate input.
+                    command_index = next((i for i, event in enumerate(rows)
+                        if event["kind"] == "user" and event["text"].lstrip().startswith(("/", "$"))
+                        and "\n" not in event["text"]), None)
+                    if command_index is not None:
+                        rows = rows[:command_index] if command_index else rows[:1]
                 for event in rows:
                     db.execute(
                         "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
@@ -2381,6 +2390,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 }
                 # A subscribed native thread ignores resume overrides. Each turn must
                 # receive the selected policy, including an explicit downgrade from YOLO.
+                if (a.get("provider") == "claude" and len(rows) == 1
+                        and rows[0]["kind"] == "user" and not asset_ids
+                        and rows[0]["text"].lstrip().startswith(("/", "$"))
+                        and "\n" not in rows[0]["text"]):
+                    params["claudeCommand"] = rows[0]["text"].strip()
                 params.update(self.turn_permissions(a))
                 params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
                 if a.get("nativeEffort", a.get("effort")) is not None:
@@ -3383,9 +3397,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     def limits(self, account_key="default", force=False, connection_id=None):
         account = self.accounts.get(account_key)
-        if account.get("provider") == "claude":
-            return {"accountKey": account_key, "accountId": account.get("accountId"),
-                    "error": "Claude Code does not expose subscription limits", "at": None}
         with self.limit_refresh_lock(account_key):
             with self.lock:
                 cached = self.rate_limits_for(account_key)

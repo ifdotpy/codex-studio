@@ -69,7 +69,43 @@ let limitReads = 0;
 let delayCostWork = false;
 let delayedCosts;
 let snapshotLimits = {};
+let claudeQueue = [];
+const claudeSession = {
+  version: "2.1.fixture",
+  settings: { permissionMode: "default", thinking: true },
+  turns: [
+    { id: "claude-turn-one", text: "Original request", status: "completed" },
+    { id: "claude-turn-two", text: "Later request", status: "completed" },
+  ],
+};
+let failClaudeRollback = true;
+let failClaudeCommand = true;
 const limits = (key) => {
+  if (key === "claude") {
+    const main = {
+      limitId: "claude",
+      limitName: "Claude",
+      planType: "max",
+      primary: { usedPercent: 11, windowDurationMins: 300 },
+      secondary: { usedPercent: 4, windowDurationMins: 10080 },
+    };
+    return {
+      accountKey: key,
+      at: Date.now() / 1000,
+      data: {
+        accountId: "native-claude",
+        rateLimits: main,
+        rateLimitsByLimitId: {
+          "claude-fable": {
+            limitId: "claude-fable",
+            limitName: "Fable",
+            secondary: { usedPercent: 7, windowDurationMins: 10080 },
+          },
+          claude: main,
+        },
+      },
+    };
+  }
   const codex = {
     limitId: "codex",
     planType: "pro",
@@ -232,6 +268,69 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/api/transcript/stream") {
     res.writeHead(503);
     return res.end();
+  }
+  if (url.pathname === "/api/queue") {
+    if (req.method === "POST" && body.action === "steer")
+      claudeQueue = claudeQueue.filter((item) => item.id !== body.id);
+    return json({
+      items: claudeQueue,
+      revision: `claude-queue-${claudeQueue.length}`,
+      capabilities: {
+        receipts: true,
+        edit: true,
+        cancel: true,
+        reorder: true,
+        steer: true,
+      },
+    });
+  }
+  if (url.pathname === "/api/claude/session") {
+    if (body.action === "state") return json(claudeSession);
+    if (body.action === "settings") {
+      claudeSession.settings = body.settings;
+      return json({ ok: true });
+    }
+    if (body.action === "commands")
+      return json([
+        { name: "context", description: "Show context use" },
+        { name: "fixture-skill", description: "A native skill" },
+      ]);
+    if (body.action === "command") {
+      if (failClaudeCommand) {
+        failClaudeCommand = false;
+        res.statusCode = 503;
+        return json({ error: "The command response was lost." });
+      }
+      return json({ ok: true });
+    }
+    if (body.action === "rollback") {
+      const boundary = claudeSession.turns.findIndex(
+        (turn) => turn.id === body.turn_id,
+      );
+      if (boundary >= 0)
+        claudeSession.turns = claudeSession.turns.slice(0, boundary);
+      if (failClaudeRollback) {
+        failClaudeRollback = false;
+        claudeSession.controlOperation = {
+          turnId: body.turn_id,
+          requestId: body.request_id,
+        };
+        res.statusCode = 503;
+        return json({ error: "Rollback receipt is not available yet." });
+      }
+      delete claudeSession.controlOperation;
+      return json({ ok: true });
+    }
+    res.statusCode = 400;
+    return json({ error: "Unsupported fixture Claude action" });
+  }
+  if (url.pathname === "/api/claude/profiles") {
+    const account = body.account_key
+      ? accounts.find((account) => account.id === body.account_key)
+      : { id: "claude-added", provider: "claude", status: "ready" };
+    Object.assign(account, { label: body.label, claudeOptions: body.options });
+    if (!body.account_key) accounts.push(account);
+    return json({ accounts, defaultAccountKey, logins });
   }
   if (url.pathname === "/api/voice/records")
     return json({ records: [], delivered: [], cursor: 0 });
@@ -713,6 +812,306 @@ try {
     ),
     /\$12.00/,
   );
+  accounts.push({
+    id: "claude",
+    email: "claude@example.com",
+    label: "Claude Code",
+    provider: "claude",
+    status: "ready",
+    accountId: "native-claude",
+  });
+  const claude = {
+    ...makeLead("claude-chat", "Claude conversation", "claude", false),
+    provider: "claude",
+    model: "default",
+    inFlight: true,
+    turnId: "claude-turn",
+    status: "running",
+  };
+  agents.push(claude);
+  claudeQueue = [
+    {
+      id: "claude-queued",
+      agentId: claude.id,
+      text: "Change the Claude task",
+      status: "queued",
+      created: Date.now() / 1000,
+    },
+  ];
+  await page.reload();
+  await page.locator(`[data-chat="${claude.id}"]`).click();
+  await openSettings();
+  await picker.click();
+  const claudeOption = page
+    .getByRole("menuitem")
+    .filter({ hasText: "claude@example.com" });
+  await claudeOption.getByText("Weekly: 96% left", { exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await closeSettings();
+  await quota.click();
+  await details.waitFor();
+  await details.getByText("89% left", { exact: true }).waitFor();
+  await details.getByText("96% left", { exact: true }).waitFor();
+  await details.getByText("93% left", { exact: true }).waitFor();
+  assert.equal(
+    (
+      await details
+        .locator(".account-limit-group > header > strong")
+        .allTextContents()
+    )[0],
+    "Claude",
+  );
+  await page.screenshot({
+    path: join(evidence, "claude-limits.png"),
+    animations: "disabled",
+  });
+  await quota.click();
+  await page
+    .getByRole("button", { name: "Steer queued message 1", exact: true })
+    .click();
+  await page.waitForFunction(
+    () => !document.querySelector('[aria-label="Steer queued message 1"]'),
+  );
+  const steer = bodies.find(
+    (request) =>
+      request.path === "/api/queue" && request.body.action === "steer",
+  );
+  assert.equal(steer?.body.id, "claude-queued");
+  assert.equal(steer?.body.expectedText, "Change the Claude task");
+  assert.ok(steer?.body.request_id);
+  await openSettings();
+  await picker.click();
+  await page
+    .getByRole("menuitem")
+    .filter({ hasText: "Manage accounts" })
+    .click();
+  const manager = page.getByRole("dialog", { name: "Accounts", exact: true });
+  const profile = manager.locator('[data-account="claude"]');
+  await profile.getByText("Configure Claude", { exact: true }).click();
+  assert.equal(
+    await profile
+      .getByLabel("Claude executable", { exact: true })
+      .getAttribute("readonly"),
+    "",
+  );
+  await profile
+    .getByLabel("Custom models", { exact: true })
+    .fill("custom-claude | Custom Claude");
+  await profile
+    .getByLabel("Automatic compaction threshold (tokens)", { exact: true })
+    .fill("200000");
+  await profile
+    .getByRole("button", { name: "Save Claude profile", exact: true })
+    .click();
+  await profile.getByText("Claude profile saved.", { exact: true }).waitFor();
+  const updatedProfile = bodies.find(
+    (request) => request.path === "/api/claude/profiles",
+  );
+  assert.equal(updatedProfile.body.account_key, "claude");
+  assert.equal(updatedProfile.body.options.autoCompactWindow, 200000);
+  assert.deepEqual(updatedProfile.body.options.customModels, [
+    { id: "custom-claude", label: "Custom Claude" },
+  ]);
+  await manager
+    .getByRole("button", { name: "Add account", exact: true })
+    .click();
+  const addManager = page.getByRole("dialog", {
+    name: "Add account",
+    exact: true,
+  });
+  await addManager
+    .getByText("Add a Claude Code profile", { exact: true })
+    .click();
+  await addManager
+    .getByRole("textbox", { name: /^Profile name/ })
+    .fill("Second Claude");
+  await addManager
+    .getByLabel("Claude configuration directory", { exact: true })
+    .fill("/tmp/second-claude");
+  await addManager
+    .getByRole("button", { name: "Add Claude profile", exact: true })
+    .click();
+  await addManager
+    .getByText("Claude profile saved.", { exact: true })
+    .waitFor();
+  const createdProfile = bodies
+    .filter((request) => request.path === "/api/claude/profiles")
+    .at(-1);
+  assert.equal(createdProfile.body.account_key, undefined);
+  assert.equal(createdProfile.body.options.configDir, "/tmp/second-claude");
+
+  await addManager.getByRole("button", { name: "Close", exact: true }).click();
+  await closeSettings();
+  Object.assign(claude, { status: "completed", inFlight: false });
+  await page.reload();
+  await page.locator(`[data-chat="${claude.id}"]`).click();
+  await openSettings();
+  const claudeSettings = settings.getByRole("region", {
+    name: "Claude settings",
+    exact: true,
+  });
+  await claudeSettings
+    .getByRole("heading", { name: "Claude Code 2.1.fixture", exact: true })
+    .waitFor();
+  await claudeSettings
+    .getByLabel("Permission mode", { exact: true })
+    .selectOption("plan");
+  await claudeSettings
+    .getByRole("switch", { name: "Extended thinking", exact: true })
+    .uncheck();
+  await claudeSettings
+    .getByLabel("Auto-compact token limit", { exact: true })
+    .fill("250000");
+  await claudeSettings
+    .getByRole("button", { name: "Save Claude settings", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector('[aria-label="Claude settings"] button')
+        ?.disabled,
+  );
+  const sessionSettings = bodies
+    .filter(
+      (request) =>
+        request.path === "/api/claude/session" &&
+        request.body.action === "settings",
+    )
+    .at(-1);
+  assert.equal(sessionSettings.body.id, claude.id);
+  assert.deepEqual(sessionSettings.body.settings, {
+    permissionMode: "plan",
+    thinking: false,
+    autoCompactWindow: 250000,
+  });
+  await claudeSettings
+    .getByText("Commands and skills", { exact: true })
+    .click();
+  await claudeSettings
+    .getByRole("button", { name: "Load commands", exact: true })
+    .click();
+  await claudeSettings
+    .getByRole("option", { name: "/fixture-skill A native skill", exact: true })
+    .waitFor({ state: "attached" });
+  await claudeSettings
+    .getByLabel("Command", { exact: true })
+    .selectOption("/fixture-skill");
+  assert.equal(
+    await claudeSettings
+      .getByLabel("Command and arguments", { exact: true })
+      .inputValue(),
+    "/fixture-skill",
+  );
+  await claudeSettings
+    .getByLabel("Command and arguments", { exact: true })
+    .fill("/fixture-skill check this");
+  await claudeSettings
+    .getByRole("button", { name: "Send command", exact: true })
+    .click();
+  await claudeSettings
+    .getByRole("alert")
+    .filter({ hasText: "The command response was lost." })
+    .waitFor();
+  await closeSettings();
+  await page.reload();
+  await page.locator(`[data-chat="${claude.id}"]`).click();
+  await openSettings();
+  await claudeSettings
+    .getByRole("heading", { name: "Claude Code 2.1.fixture", exact: true })
+    .waitFor();
+  assert.equal(
+    await claudeSettings
+      .getByLabel("Permission mode", { exact: true })
+      .inputValue(),
+    "plan",
+  );
+  assert.equal(
+    await claudeSettings
+      .getByRole("switch", { name: "Extended thinking", exact: true })
+      .isChecked(),
+    false,
+  );
+  assert.equal(
+    await claudeSettings
+      .getByLabel("Auto-compact token limit", { exact: true })
+      .inputValue(),
+    "250000",
+  );
+  await claudeSettings
+    .getByText("Commands and skills", { exact: true })
+    .click();
+  await claudeSettings
+    .getByLabel("Command and arguments", { exact: true })
+    .fill("/fixture-skill check this");
+  await claudeSettings
+    .getByRole("button", { name: "Send command", exact: true })
+    .click();
+  await claudeSettings
+    .getByRole("button", { name: "Compact conversation", exact: true })
+    .click();
+  const commandsSent = bodies.filter(
+    (request) =>
+      request.path === "/api/claude/session" &&
+      request.body.action === "command",
+  );
+  assert.deepEqual(
+    commandsSent.map((request) => request.body.command),
+    ["/fixture-skill check this", "/fixture-skill check this", "/compact"],
+  );
+  assert.deepEqual(commandsSent[1].body, commandsSent[0].body);
+  for (const request of commandsSent) {
+    assert.equal(request.body.id, claude.id);
+    assert.match(request.body.request_id, /^[0-9a-f-]{36}$/);
+  }
+  assert.notEqual(
+    commandsSent[0].body.request_id,
+    commandsSent[2].body.request_id,
+  );
+  await claudeSettings
+    .getByText("Conversation history", { exact: true })
+    .click();
+  await claudeSettings
+    .getByLabel("First turn to remove", { exact: true })
+    .selectOption("claude-turn-two");
+  await claudeSettings
+    .getByRole("button", { name: "Roll back context", exact: true })
+    .click();
+  await claudeSettings
+    .getByRole("alert")
+    .filter({ hasText: "Rollback receipt is not available yet." })
+    .waitFor();
+  await claudeSettings
+    .getByRole("button", { name: "Roll back context", exact: true })
+    .click();
+  await claudeSettings
+    .locator('option[value="claude-turn-two"]')
+    .waitFor({ state: "detached" });
+  const rollbacks = bodies.filter(
+    (request) =>
+      request.path === "/api/claude/session" &&
+      request.body.action === "rollback",
+  );
+  assert.equal(rollbacks.length, 2);
+  assert.equal(rollbacks[0].body.id, claude.id);
+  assert.equal(rollbacks[0].body.turn_id, "claude-turn-two");
+  assert.match(rollbacks[0].body.request_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(rollbacks[1].body, rollbacks[0].body);
+  assert.equal(
+    await claudeSettings
+      .getByLabel("First turn to remove", { exact: true })
+      .inputValue(),
+    "",
+  );
+  assert.equal(
+    await claudeSettings
+      .getByRole("button", { name: "Roll back context", exact: true })
+      .isEnabled(),
+    false,
+  );
+  await page.screenshot({
+    path: join(evidence, "claude-session-controls.png"),
+    animations: "disabled",
+  });
+
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -734,6 +1133,11 @@ try {
         "device login",
         "Codex and Spark dual-window quotas",
         "820px and 780px desktop layouts",
+        "Claude native quotas and weekly picker",
+        "Claude queue Steer request identity",
+        "Claude profile create and update",
+        "Claude session settings and native commands",
+        "Claude rollback error and exact retry receipt",
       ],
       evidence,
     }),

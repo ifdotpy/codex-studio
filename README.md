@@ -33,12 +33,27 @@ reads the model list from Claude Code and keeps credentials in its native store.
 It uses the Claude Agent SDK with the installed executable, as in
 [T3 Code](https://github.com/pingdotgg/t3code). No Anthropic API key is required.
 
-Claude chats support streamed replies, native tools, action approvals, user
-questions, Studio agent tools, and session continuation. Active-turn messages wait
-in Studio's queue. Steer, Studio command monitors, voice, subscription limit reads,
-and account transfers are unavailable for Claude. Use Claude's Bash tool for
-commands. Native background tasks are disabled; Studio manages subagents.
-Claude Code uses its own permission rules, not the Codex sandbox.
+Claude chats support live Steer, an explicit message queue, native tools,
+background tasks, questions, action approvals, and Studio agent tools. Limits shows
+five-hour, weekly, and model-specific subscription windows. The account menu shows
+the remaining weekly allowance.
+
+Chat settings includes Claude permission modes, extended thinking, automatic
+compaction, native commands and skills, and context rollback. Model, effort, and
+fast-mode controls use the native model catalog. A proposed plan waits for a
+separate implementation request. Rollback preserves the original saved history.
+Commands and rollback retain their request identities after a lost response.
+
+Accounts includes Claude profiles with separate executable and configuration paths,
+custom models, launch options, and compaction limits. Sign in with the native CLI
+before adding a profile. Active sessions keep their current connection; profile
+changes apply when that connection is idle.
+
+Claude Code uses its own permission rules, not the Codex sandbox. Studio command
+monitors, voice, and transfers between Claude accounts remain unavailable. Use
+Claude's Bash tool for commands. Files remain native attachments or file references.
+See [the parity checks](docs/verification/2026-09-22-claude-parity.md) for evidence
+and the tested reference revision.
 
 The command installer creates links in `~/.local/bin`. Add that directory to PATH
 if your shell does not include it. Use `--bin-dir` for another directory.

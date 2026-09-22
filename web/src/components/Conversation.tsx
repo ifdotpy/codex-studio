@@ -1258,9 +1258,7 @@ export default function Conversation(p: {
                 onEdit={messageQueue.edit}
                 onCancel={messageQueue.cancel}
                 onSteer={
-                  agent?.inFlight &&
-                  agent?.turnId &&
-                  agent?.provider !== "claude"
+                  agent?.inFlight && agent?.turnId
                     ? messageQueue.steer
                     : undefined
                 }

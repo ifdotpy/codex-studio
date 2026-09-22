@@ -136,7 +136,7 @@ class AccountStore:
                 return {k: v for k, v in row.items() if not k.startswith("_") and k != "projectRules"}
             if row.get("provider") == "claude":
                 from codex_claude import auth_metadata as claude_auth
-                metadata = claude_auth()
+                metadata = claude_auth(row.get("claudeOptions"))
             else:
                 metadata = auth_metadata(row["home"])
             expected = row.get("accountId")
@@ -282,6 +282,54 @@ class AccountStore:
             }
             self._save()
             return key
+
+    def register_claude(self, options=None, label=None):
+        """Register native config without copying credentials or starting sign-in."""
+        from codex_claude import profile_options, auth_metadata as claude_auth, installed
+        options = profile_options(options)
+        if not installed(options):
+            raise ValueError("The Claude Code executable is missing")
+        metadata = claude_auth(options, force=True)
+        if metadata["status"] != "ready":
+            raise ValueError("Sign in to this Claude Code configuration with a subscription first")
+        identity = json.dumps({k: options.get(k, "") for k in ("binaryPath", "configDir")}, sort_keys=True)
+        key = "claude-profile-" + hashlib.sha256(identity.encode()).hexdigest()[:20]
+        if label is not None and (not isinstance(label, str) or not label.strip() or len(label) > 200):
+            raise ValueError("Invalid Claude profile label")
+        with self.lock:
+            if key in self.data["accounts"]:
+                existing = self.get(key)
+                if existing.get("status") != "ready":
+                    raise ValueError("Restore this profile's original Claude login")
+                if existing.get("claudeOptions") != options:
+                    raise ValueError("This Claude configuration already exists. Update its settings")
+                return key
+            self.data["accounts"][key] = {
+                "id": key, "provider": "claude", "claudeOptions": options,
+                "home": options.get("configDir") or os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"),
+                "label": (label or "Claude Code").strip(), "source": "Claude Code", **metadata,
+            }
+            self._save()
+            return key
+
+    def update_claude(self, key, options, label=None):
+        """Update launch settings; native identity paths need a separate profile."""
+        from codex_claude import profile_options
+        options = profile_options(options)
+        with self.lock:
+            row = self._row(key)
+            if row.get("provider") != "claude":
+                raise ValueError("Select a Claude Code profile")
+            previous = profile_options(row.get("claudeOptions"))
+            if any(options.get(k) != previous.get(k) for k in ("binaryPath", "configDir")):
+                raise ValueError("Add a separate Claude profile to change the executable or config directory")
+            if label is not None and (not isinstance(label, str) or not label.strip() or len(label) > 200):
+                raise ValueError("Invalid Claude profile label")
+            row["claudeOptions"] = options
+            if label is not None:
+                row["label"] = label.strip()
+            self._save()
+            return self.get(key)
 
     def discover(self):
         """Bounded known profile locations; no recursive credential search."""

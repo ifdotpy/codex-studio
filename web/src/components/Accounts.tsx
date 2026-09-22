@@ -1,4 +1,5 @@
 import ErrorDescription from "./ErrorDescription";
+import ClaudeProfile from "./ClaudeProfile";
 import { accountLimits } from "../accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
 import {
@@ -24,6 +25,7 @@ export interface Account {
   accountId?: string | null;
   source?: string;
   provider?: string;
+  claudeOptions?: Json;
   status: string;
   disconnected?: boolean;
   error?: unknown;
@@ -71,8 +73,7 @@ function AccountCapacity({
 }) {
   const [limits, setLimits] = useState<Json | null>(null);
   useEffect(() => {
-    if (!opened || account.status !== "ready" || account.provider === "claude")
-      return;
+    if (!opened || account.status !== "ready") return;
     let live = true;
     setLimits(null);
     void api(
@@ -93,16 +94,13 @@ function AccountCapacity({
     };
   }, [account.id, account.accountId, account.status, account.provider, opened]);
   if (account.status !== "ready") return null;
-  if (account.provider === "claude")
-    return (
-      <small>
-        Claude Code · {account.plan || "Subscription"} · Limits unavailable
-      </small>
-    );
   const buckets = readBuckets(limits, Date.now() / 1000);
   if (compact) {
     const bucket = buckets.find(
-      (bucket) => bucket.id === "codex" || bucket.data.limitId === "codex",
+      (bucket) =>
+        bucket.id === (account.provider === "claude" ? "claude" : "codex") ||
+        bucket.data.limitId ===
+          (account.provider === "claude" ? "claude" : "codex"),
     );
     const weekly = bucket?.windows.find((window) => window.label === "7d");
     const label = !limits
@@ -592,6 +590,9 @@ export default function Accounts({
                   {!account.disconnected && (
                     <AccountCapacity account={account} opened={opened} />
                   )}
+                  {account.provider === "claude" && (
+                    <ClaudeProfile account={account} onSaved={state.setData} />
+                  )}
                   {state.data.supportsDisconnect && (
                     <Button
                       variant="subtle"
@@ -642,6 +643,7 @@ export default function Accounts({
             </div>
           </>
         )}
+        {adding && <ClaudeProfile onSaved={state.setData} />}
         {adding && (
           <details className="account-register">
             <summary>Add a Codex home directory</summary>

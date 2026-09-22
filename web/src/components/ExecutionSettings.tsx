@@ -438,7 +438,7 @@ function ScopedExecutionSettings({
             void change({ fast_mode: event.currentTarget.checked })
           }
         />
-        {!teamDefaults && agent.isLead && (
+        {!teamDefaults && agent.isLead && agent.provider !== "claude" && (
           <details className="execution-permissions">
             <summary>Permissions</summary>
             <p>

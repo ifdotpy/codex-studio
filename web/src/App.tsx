@@ -1,3 +1,4 @@
+import { ClaudeSettings } from "./components/ClaudeSettings";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
@@ -1697,6 +1698,9 @@ export default function App() {
               />
             )}
           </section>
+          {agent?.provider === "claude" && (
+            <ClaudeSettings agent={agent} refresh={refresh} />
+          )}
           <section className="settings-appearance">
             <NativeSelect
               label="Appearance"

@@ -78,14 +78,17 @@ export function readBuckets(limits: Json | null, now: number): LimitBucket[] {
         });
       return {
         id,
-        name: data.limitName || (id === "codex" ? "Codex" : id),
+        name:
+          data.limitName ||
+          (id === "codex" ? "Codex" : id === "claude" ? "Claude" : id),
         data,
         windows,
       };
     })
     .sort((a, b) => {
       const rank = (bucket: LimitBucket) =>
-        bucket.id === "codex" || bucket.data.limitId === "codex"
+        ["codex", "claude"].includes(bucket.id) ||
+        ["codex", "claude"].includes(bucket.data.limitId)
           ? 0
           : /spark/i.test(bucket.name)
             ? 2
@@ -119,7 +122,9 @@ function selectedBucket(buckets: LimitBucket[], model: string) {
   return (
     matches[0] ||
     buckets.find(
-      (bucket) => bucket.id === "codex" || bucket.data.limitId === "codex",
+      (bucket) =>
+        ["codex", "claude"].includes(bucket.id) ||
+        ["codex", "claude"].includes(bucket.data.limitId),
     ) ||
     null
   );
