@@ -223,7 +223,7 @@ export default function WorkerCard({
                 leftSection={<Trash2 size={14} />}
                 onClick={remove}
               >
-                Delete subagent
+                Delete
               </Menu.Item>
             </Menu.Dropdown>
           </Menu>

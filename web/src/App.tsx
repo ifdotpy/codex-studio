@@ -873,7 +873,7 @@ export default function App() {
   };
   const remove = (id: string, isRoom: boolean, isWorker = false) =>
     setModal({
-      title: isWorker ? "Delete subagent?" : "Delete chat?",
+      title: isWorker ? "Delete?" : "Delete chat?",
       body: (
         <>
           <p>
@@ -902,7 +902,7 @@ export default function App() {
               })
             }
           >
-            {isWorker ? "Delete subagent" : "Delete chat"}
+            {isWorker ? "Delete" : "Delete chat"}
           </Button>
         </>
       ),

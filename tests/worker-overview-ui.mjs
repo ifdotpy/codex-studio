@@ -334,7 +334,7 @@ try {
     })
     .click();
   await page
-    .getByRole("menuitem", { name: "Delete subagent", exact: true })
+    .getByRole("menuitem", { name: "Delete", exact: true })
     .click();
   const [deletedResponse] = await Promise.all([
     page.waitForResponse(
