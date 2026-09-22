@@ -110,14 +110,15 @@ def request_result_outcome(record, result):
         "orchestration_task": {"Supply a review decision with 1 to 32000 characters"},
         "orchestration_result": {"Supply a review decision with 1 to 32000 characters"},
         "orchestration_message": {"This record belongs to another team"},
-        "orchestration_agent_manage": {"You can manage only your own descendant workers"},
+        "orchestration_agent_manage": {"You can manage only your own descendant workers", "Unknown managed agent"},
         "orchestration_resource": {
             "Resource reservations were removed. Continue without a board claim.",
             "Unknown workspace tool",
         },
         "orchestration_monitor": {"Command timeout must be 1 second to 24 hours", "Supply a command with 1 to 12000 characters"},
         "orchestration_monitor_input": {"This interactive monitor is not active"},
-        "orchestration_user_task": {"Wait for the user to check this task before accepting it"},
+        "orchestration_user_task": {"Wait for the user to check this task before accepting it",
+            "This task changed. Read the current task before trying again"},
         "orchestration_watch": {"The file is outside this agent workspace", "Choose a date within the next year", "Interval must be 10 seconds to one year"},
         "orchestration_context": {"Unknown monitor in this team", "Unknown context topic"},
     }

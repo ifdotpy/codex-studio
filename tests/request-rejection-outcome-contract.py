@@ -12,6 +12,7 @@ from codex_tool_requests import request_result_outcome
 
 
 REJECTIONS = (
+    ("orchestration_user_task", "This task changed. Read the current task before trying again"),
     ('orchestration_task', 'Supply a review decision with 1 to 32000 characters'),
     ('orchestration_result', 'Supply a review decision with 1 to 32000 characters'),
     ('orchestration_message', 'This record belongs to another team'),
@@ -28,6 +29,12 @@ class RejectionOutcomes(unittest.TestCase):
     reserve = f.Receipts.reserve
     failed_request = f.Receipts.failed_request
     save_operation_receipt = f.Receipts.save_operation_receipt
+
+    def test_missing_managed_agent_is_a_prewrite_rejection(self):
+        row = self.failed_request("missing", "orchestration_agent_manage", error="Unknown managed agent", legacy=True)
+        found = self.runtime.request_action("lead", {"action": "get", "request_id": row["id"]})
+        self.assertEqual(found["outcome"], "not_applied")
+        self.assertFalse(self.runtime.begin_tool_request(row["id"]))
 
     def test_new_exact_rejections_cannot_restart_the_operation(self):
         for index, (tool, error) in enumerate(REJECTIONS):
