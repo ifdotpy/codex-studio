@@ -215,11 +215,13 @@ export function AccountTransferConfirmation({
   opened,
   onClose,
   target,
+  sourceProvider,
   onConfirm,
 }: {
   opened: boolean;
   onClose: () => void;
   target: Account | null;
+  sourceProvider: string;
   onConfirm: () => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
@@ -246,6 +248,9 @@ export function AccountTransferConfirmation({
         The current turn finishes first. The chat keeps its conversation
         history. Subagents stay on their current accounts.
       </p>
+      {target && sourceProvider !== (target.provider || "codex") && (
+        <p>The destination model uses the saved chat context.</p>
+      )}
       <p>
         This changes the account for this chat. It does not change the project
         default.
@@ -304,6 +309,7 @@ export default function Accounts({
   const [adding, setAdding] = useState(false);
   const [transferChoice, setTransferChoice] = useState<{
     target: Account;
+    sourceProvider: string;
     agentId: string;
     requestId: string;
   } | null>(null);
@@ -404,10 +410,6 @@ export default function Accounts({
                   account.status !== "ready" ||
                   account.disconnected ||
                   (pinned && !owner) ||
-                  (pinned &&
-                    account.id !== accountKey &&
-                    (account.provider === "claude" ||
-                      selected?.provider === "claude")) ||
                   transferring
                 }
                 leftSection={
@@ -422,6 +424,8 @@ export default function Accounts({
                   if (pinned && owner)
                     setTransferChoice({
                       target: account,
+                      sourceProvider:
+                        selected?.provider || owner.provider || "codex",
                       agentId: owner.id,
                       requestId: crypto.randomUUID(),
                     });
@@ -686,6 +690,7 @@ export default function Accounts({
       <AccountTransferConfirmation
         opened={!!transferChoice}
         target={transferChoice?.target || null}
+        sourceProvider={transferChoice?.sourceProvider || "codex"}
         onClose={() => setTransferChoice(null)}
         onConfirm={async () => {
           if (!transferChoice) return;

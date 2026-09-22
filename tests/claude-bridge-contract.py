@@ -180,6 +180,15 @@ class Bridge(unittest.TestCase):
         self.assertNotIn('PRIVATE_SIGNATURE',json.dumps(history))
         self.assertTrue(any(x.get('method')=='item/agentMessage/delta' for x in self.notifications))
 
+    def test_history_version_tracks_content_and_survives_read(self):
+        before = self.call('thread/read', {'threadId':self.thread})['thread']
+        again = self.call('thread/read', {'threadId':self.thread})['thread']
+        self.assertEqual(before['historyVersion'], again['historyVersion'])
+        self.turn('hello', 'version-one'); self.completed()
+        after = self.call('thread/read', {'threadId':self.thread})['thread']
+        self.assertNotEqual(before['historyVersion'], after['historyVersion'])
+        self.assertEqual(after['historyVersion'], self.call('thread/read', {'threadId':self.thread})['thread']['historyVersion'])
+
     def test_account_change_blocks_prompt_before_model_call(self):
         (self.root / '.wrong-account').touch()
         self.turn('hello','wrong-account')

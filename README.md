@@ -49,9 +49,19 @@ custom models, launch options, and compaction limits. Sign in with the native CL
 before adding a profile. Active sessions keep their current connection; profile
 changes apply when that connection is idle.
 
-Claude Code uses its own permission rules, not the Codex sandbox. Studio command
-monitors, voice, and transfers between Claude accounts remain unavailable. Use
-Claude's Bash tool for commands. Files remain native attachments or file references.
+Claude Code uses its native permission rules for its tools. Studio command
+monitors use the installed Codex command executor with the Studio sandbox policy.
+This executor does not start model sessions or use account credentials. Monitors
+support output, terminal input, resize, cancellation, and timeouts. Voice remains
+unavailable for Claude. Files remain native attachments or file references.
+
+Existing chats can move between Codex and Claude accounts. The chat keeps its
+identity and displayed history. Subagents stay on their current accounts. A
+transfer involving Claude creates a destination session with recent text and a
+path to the complete saved history. It preserves the original native session and
+does not replay old commands. A provider change selects the destination model
+and clears queued settings for the previous provider. Codex account transfers
+continue to use native history copies.
 See [the parity checks](docs/verification/2026-09-22-claude-parity.md) for evidence
 and the tested reference revision.
 

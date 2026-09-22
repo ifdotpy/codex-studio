@@ -154,6 +154,15 @@ class Controls(unittest.TestCase):
         self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {'customModels': []}}, self.server))
         self.assertNotIn('default', self.rt.servers)
 
+    def test_bridge_upgrade_waits_for_studio_monitors(self):
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 2}}
+        self.server.provider_options = {}
+        for status in ('approval', 'starting', 'running'):
+            with self.subTest(status=status), self.rt.lock, self.rt.db() as db:
+                self.rt.put(db, 'monitors', {'id': 'monitor', 'agent': self.key, 'status': status})
+            self.assertFalse(retire_idle_bridge(self.rt, 'default', {}, self.server))
+            self.assertIs(self.rt.servers['default'], self.server)
+
 
 if __name__ == '__main__':
     unittest.main()

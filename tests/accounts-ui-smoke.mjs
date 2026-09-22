@@ -80,6 +80,8 @@ const claudeSession = {
 };
 let failClaudeRollback = true;
 let failClaudeCommand = true;
+const transferReceipts = new Map();
+let loseTransferResponse = true;
 const limits = (key) => {
   if (key === "claude") {
     const main = {
@@ -283,6 +285,25 @@ const server = createServer(async (req, res) => {
         steer: true,
       },
     });
+  }
+  if (url.pathname === "/api/agents/account-transfer") {
+    const previous = transferReceipts.get(body.request_id);
+    if (previous) {
+      assert.deepEqual(body, previous);
+      return json({ id: body.request_id, status: "completed" });
+    }
+    transferReceipts.set(body.request_id, body);
+    const agent = agents.find((agent) => agent.id === body.id);
+    agent.accountKey = body.account_key;
+    agent.provider =
+      accounts.find((account) => account.id === body.account_key)?.provider ||
+      "codex";
+    if (loseTransferResponse) {
+      loseTransferResponse = false;
+      res.statusCode = 503;
+      return json({ error: "The transfer response was lost." });
+    }
+    return json({ id: body.request_id, status: "completed" });
   }
   if (url.pathname === "/api/claude/session") {
     if (body.action === "state") return json(claudeSession);
@@ -599,7 +620,7 @@ try {
     .filter({ hasText: "work@example.com" })
     .click();
   const transferDialog = page.getByRole("dialog", {
-    name: "Transfer this team",
+    name: "Transfer this chat",
     exact: true,
   });
   await transferDialog.waitFor();
@@ -1112,6 +1133,76 @@ try {
     animations: "disabled",
   });
 
+  await closeSettings();
+  await page.locator('[data-chat="started"]').click();
+  await openSettings();
+  await picker.click();
+  await page
+    .getByRole("menuitem")
+    .filter({ hasText: "claude@example.com" })
+    .click();
+  await transferDialog.waitFor();
+  await transferDialog
+    .getByText("The destination model uses the saved chat context.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.match(
+    await transferDialog.innerText(),
+    /Subagents stay on their current accounts/,
+  );
+  await transferDialog
+    .getByRole("button", { name: "Transfer chat", exact: true })
+    .click();
+  await transferDialog
+    .getByRole("alert")
+    .filter({ hasText: "The transfer response was lost." })
+    .waitFor();
+  await transferDialog
+    .getByRole("button", { name: "Transfer chat", exact: true })
+    .click();
+  await transferDialog.waitFor({ state: "hidden" });
+  const forwardTransfers = bodies.filter(
+    (request) => request.path === "/api/agents/account-transfer",
+  );
+  assert.equal(forwardTransfers.length, 2);
+  assert.deepEqual(forwardTransfers[0].body, forwardTransfers[1].body);
+  assert.equal(forwardTransfers[0].body.id, "started");
+  assert.equal(forwardTransfers[0].body.account_key, "claude");
+  assert.match(forwardTransfers[0].body.request_id, /^[0-9a-f-]{36}$/);
+  await closeSettings();
+  await page.reload();
+  await page.locator('[data-chat="started"]').click();
+  await openSettings();
+  await picker.click();
+  await page
+    .getByRole("menuitem")
+    .filter({ hasText: "personal@example.com" })
+    .click();
+  await transferDialog.waitFor();
+  await transferDialog
+    .getByText("The destination model uses the saved chat context.", {
+      exact: true,
+    })
+    .waitFor();
+  await transferDialog
+    .getByRole("button", { name: "Transfer chat", exact: true })
+    .click();
+  await transferDialog.waitFor({ state: "hidden" });
+  const reverseTransfer = bodies
+    .filter((request) => request.path === "/api/agents/account-transfer")
+    .at(-1);
+  assert.equal(reverseTransfer.body.id, "started");
+  assert.equal(reverseTransfer.body.account_key, "default");
+  assert.notEqual(
+    reverseTransfer.body.request_id,
+    forwardTransfers[0].body.request_id,
+  );
+  assert.equal(
+    agents.find((agent) => agent.id === "started").provider,
+    "codex",
+  );
+
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -1138,6 +1229,7 @@ try {
         "Claude profile create and update",
         "Claude session settings and native commands",
         "Claude rollback error and exact retry receipt",
+        "Codex and Claude transfers with exact confirmation retry",
       ],
       evidence,
     }),

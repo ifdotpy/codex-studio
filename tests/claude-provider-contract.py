@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Claude account selection, identity and delivery boundaries. No model calls."""
+import base64
 import importlib.util
 import os
 from pathlib import Path
@@ -14,6 +15,17 @@ from codex_accounts import AccountStore
 
 AUTH={'status':'ready','accountId':'claude:test@example.test','email':'test@example.test','plan':'max','_credentialIdentity':'claude:test@example.test'}
 
+class MonitorServer(f.AccountServer):
+    def call(self, method, params, timeout=60):
+        if method == 'model/list':
+            result=super().call(method, params, timeout)
+            result['data'].extend([{**result['data'][0],'model':name} for name in ('default','sonnet')])
+            return result
+        if method in {'command/exec/write', 'command/exec/resize'}:
+            self.calls.append((method, params))
+            return {}
+        return super().call(method, params, timeout)
+
 class ClaudeProvider(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -21,7 +33,7 @@ class ClaudeProvider(unittest.TestCase):
         self.env=patch.dict(os.environ,{'CODEX_HOME':str(self.root/'codex')});self.env.start();self.addCleanup(self.env.stop)
         self.auth=patch('codex_claude.auth_metadata',return_value=AUTH.copy());self.auth.start();self.addCleanup(self.auth.stop)
         self.installed=patch('codex_claude.installed',return_value='/fake/claude');self.installed.start();self.addCleanup(self.installed.stop)
-        self.runtime=f.ControlledRuntime(self.root/'state',f.AccountServer);self.addCleanup(self.runtime.close)
+        self.runtime=f.ControlledRuntime(self.root/'state',MonitorServer);self.addCleanup(self.runtime.close)
         self.runtime.accounts.discover()
 
     def test_subscription_identity_and_provider_selection(self):
@@ -41,7 +53,10 @@ class ClaudeProvider(unittest.TestCase):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
         self.assertEqual(a['model'],'default')
         names={t['name'] for t in self.runtime.tool_definitions(a)}
-        self.assertIn('orchestration_spawn',names);self.assertNotIn('orchestration_monitor',names)
+        self.assertIn('orchestration_spawn',names)
+        for name in ('orchestration_monitor','orchestration_cancel_monitor','orchestration_monitor_input'):
+            self.assertIn(name,names)
+        self.assertNotIn('orchestration_speak',names)
         with self.runtime.lock, self.runtime.db() as db:
             a.update(inFlight=True,turnId='active-turn',status='running')
             self.runtime.put(db,'agents',a)
@@ -50,6 +65,48 @@ class ClaudeProvider(unittest.TestCase):
         self.assertEqual(self.runtime.send(a['id'],'now',delivery='steer')['status'],'delivered')
         self.runtime.limits('claude-local')
         self.assertIn('claude-local',self.runtime.servers)
+
+    def test_monitor_approval_sandbox_input_and_cancel_use_claude_connection(self):
+        a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
+        with self.runtime.lock, self.runtime.db() as db:
+            a.update(autoWake=True,yoloMode=False)
+            self.runtime.put(db,'agents',a)
+        monitor=self.runtime.monitor(a['id'],{'command':'fixture','interactive':True})
+        self.assertEqual(monitor['status'],'approval')
+        self.assertFalse(any(method=='command/exec' for server in self.runtime.servers.values() for method,_ in server.calls))
+        with self.runtime.db() as db:
+            request=next(r for r in self.runtime.records(db,'requests') if r.get('params',{}).get('monitorId')==monitor['id'])
+        self.runtime.answer(request['id'],{'decision':'accept'})
+        server=self.runtime.connect('claude-local')
+        f.f.eventually(lambda:any(method=='command/exec' for method,_ in server.calls))
+        params=next(p for method,p in server.calls if method=='command/exec')
+        self.assertEqual(params['sandboxPolicy']['type'],'workspaceWrite')
+        self.assertIn(str(self.root.resolve()),params['sandboxPolicy']['writableRoots'])
+        self.assertFalse(params['sandboxPolicy']['networkAccess'])
+        self.assertTrue(params['tty']);self.assertTrue(params['streamStdin'])
+        self.runtime.monitor_input(monitor['id'],{'text':'hello\n'},owner=a['id'])
+        self.runtime.monitor_input(monitor['id'],{'rows':30,'cols':100},owner=a['id'])
+        write=next(p for method,p in server.calls if method=='command/exec/write')
+        self.assertEqual(base64.b64decode(write['deltaBase64']),b'hello\n')
+        self.assertEqual(write['processId'],monitor['id'])
+        size=next(p for method,p in server.calls if method=='command/exec/resize')
+        self.assertEqual(size['size'],{'rows':30,'cols':100})
+        self.runtime.cancel_monitor(monitor['id'],owner=a['id'])
+        self.assertTrue(any(method=='command/exec/terminate' and p['processId']==monitor['id'] for method,p in server.calls))
+        with self.assertRaisesRegex(ValueError,'not active'):
+            self.runtime.monitor_input(monitor['id'],{'text':'late'},owner=a['id'])
+        self.assertNotIn('default',self.runtime.servers)
+
+    def test_claude_resume_refreshes_studio_tools(self):
+        a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
+        a=self.runtime.prepare(a)
+        self.runtime.loaded.discard(a['id'])
+        self.runtime.prepare(a)
+        server=self.runtime.connect('claude-local')
+        resumed=next(p for method,p in reversed(server.calls) if method=='thread/resume')
+        names={tool['name'] for tool in resumed['dynamicTools']}
+        self.assertIn('orchestration_monitor',names)
+        self.assertNotIn('orchestration_speak',names)
 
     def test_native_command_has_its_own_queued_batch(self):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})

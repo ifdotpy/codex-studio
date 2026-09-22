@@ -197,7 +197,7 @@ def action(rt, body):
 def retire_idle_bridge(rt, key, account, server):
     """Retire only an idle native process; Runtime.connect holds start_lock."""
     version = getattr(server, 'initialize_result', {}).get('capabilities', {}).get('claudeVersion')
-    if version == 2 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
+    if version == 3 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
         return False
 
     def eligible(db):
@@ -213,6 +213,9 @@ def retire_idle_bridge(rt, key, account, server):
         if any(p.get('accountKey', 'default') == key and not p['future'].done() for p in rt.preparations.values()):
             return False
         ids = {a['id'] for a in agents}
+        if any(m.get('agent') in ids and m.get('status') in {'approval', 'starting', 'running'}
+               for m in rt.records(db, 'monitors')):
+            return False
         from codex_workspace import active_task_records
         if any(t.get('agent') in ids for t in active_task_records(db)):
             return False
@@ -224,7 +227,7 @@ def retire_idle_bridge(rt, key, account, server):
         agents = eligible(db)
         if agents is False:
             return False
-    if version == 2:
+    if version in {2, 3}:
         try:
             for agent in agents:
                 if agent.get('threadId'):

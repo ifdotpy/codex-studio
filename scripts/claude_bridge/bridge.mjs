@@ -20,10 +20,11 @@ import {
   forkAtTurn,
 } from "./controls.mjs";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createCommandTransport, commandMethods } from "./commands.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 let lastLimits;
@@ -35,6 +36,7 @@ const sessions = new Map(),
   pending = new Map();
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const emit = (method, params) => send({ method, params });
+const commands = createCommandTransport({ root, emit });
 const request = (method, params, signal) =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("Claude request cancelled"));
@@ -163,6 +165,9 @@ async function catalog() {
 }
 function wireThread(s) {
   return {
+    historyVersion: createHash("sha256")
+      .update(JSON.stringify([s.nativeId || s.id, s.turns]))
+      .digest("hex"),
     id: s.id,
     cwd: s.cwd,
     createdAt: s.createdAt,
@@ -821,6 +826,7 @@ function userMessage(s, turn, blocks, id) {
   };
 }
 async function handle(method, p) {
+  if (commandMethods.has(method)) return commands.handle(method, p);
   if (
     p.threadId &&
     [
@@ -846,7 +852,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 2 },
+      capabilities: { claudeVersion: 3 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1279,15 +1285,33 @@ lines.on("line", (line) => {
       if (message.id !== undefined)
         send({
           id: message.id,
-          error: { code: -32000, message: error.message },
+          error: {
+            code: Number.isInteger(error.code) ? error.code : -32000,
+            message: error.message,
+            ...(error.data === undefined ? {} : { data: error.data }),
+          },
         });
     },
   );
 });
-lines.on("close", () => {
-  for (const { q, input } of queries.values()) {
-    input.close();
-    q?.close();
-  }
-  process.exit(0);
-});
+let closing;
+function shutdown() {
+  if (closing) return closing;
+  closing = (async () => {
+    for (const { q, input } of queries.values()) {
+      try {
+        input.close();
+        q?.close();
+      } catch (error) {
+        process.stderr.write("Claude shutdown: " + error.message + "\n");
+      }
+    }
+    await commands.close();
+    await Promise.allSettled(writes.values());
+    process.exit(0);
+  })();
+  return closing;
+}
+lines.on("close", shutdown);
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);

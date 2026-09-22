@@ -1826,7 +1826,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         definitions = []
         for definition in TOOLS:
             if actor.get("provider") == "claude" and definition["name"] in {
-                "orchestration_monitor", "orchestration_cancel_monitor", "orchestration_monitor_input", "orchestration_speak"
+                "orchestration_speak"
             }:
                 continue
             if not lead and definition["name"] in {"orchestration_user_task", "orchestration_speak", "orchestration_agent_manage"}:
@@ -1932,11 +1932,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             params["config"]["sandbox_workspace_write.writable_roots"] = [str(progress.parent)]
         if a.get("provider") == "claude":
             params["developerInstructions"] += ("\nThis session uses Claude Code and its native tools. "
-                "Use Bash for commands. Studio command monitors and voice are unavailable. "
+                "Use Studio command monitors for long-running commands that need output, input, or cancellation. "
+                "Use Bash for other commands. Studio voice is unavailable. "
                 "Use Studio orchestration tools for managed subagents. "
                 "Use delivery=steer for active turns or delivery=queue to wait for completion.\n")
             params["claude"] = a.get("claudeOptions", {})
         params["dynamicTools"] = self.tool_definitions(a)
+        if a.get("portableHistory"):
+            from codex_portable_history import history_context
+            params["developerInstructions"] += "\n" + history_context(self, a["portableHistory"])
         from codex_browser import configure_browser
         if a.get("provider") != "claude":
             configure_browser(self, a, params)
@@ -2043,7 +2047,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             context_versions = self.preparation_context_versions(a, params)
             if a["threadId"]:
                 method = "thread/resume"
-                params.pop("dynamicTools", None)
+                if a.get("provider") != "claude":
+                    params.pop("dynamicTools", None)
                 params.update(threadId=a["threadId"], excludeTurns=True)
             else:
                 method = "thread/start"
