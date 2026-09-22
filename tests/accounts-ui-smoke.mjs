@@ -323,6 +323,18 @@ try {
     );
     await closeSettings();
   };
+  await openSettings();
+  await picker.click();
+  await page.waitForFunction(() => {
+    const labels = [...document.querySelectorAll(".account-weekly-limit")];
+    return (
+      labels.length === 3 &&
+      labels.every((node) => node.textContent === "Weekly: 65% left")
+    );
+  });
+  await page.screenshot({ path: join(evidence, "account-picker-weekly.png") });
+  await page.keyboard.press("Escape");
+  await closeSettings();
   const details = page.getByRole("region", {
     name: "Account limits details",
     exact: true,
@@ -388,12 +400,12 @@ try {
   await choose("work@example.com");
   await waitCost("$12.00");
 
-  // Fresh account cache must avoid another GET on return navigation.
+  // Each menu open reads all accounts; the Limits panel still reuses its cache.
   const readsBeforeSwitch = limitReads;
   await choose("personal@example.com");
   await choose("work@example.com");
   await page.waitForTimeout(100);
-  assert.equal(limitReads, readsBeforeSwitch);
+  assert.equal(limitReads, readsBeforeSwitch + accounts.length * 2);
   const forceRefresh = async () => {
     await quota.click();
     await page.getByRole("button", { name: "Refresh", exact: true }).click();

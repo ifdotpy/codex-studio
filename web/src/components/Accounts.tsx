@@ -62,9 +62,11 @@ export function useAccounts(stateDir?: string) {
 function AccountCapacity({
   account,
   opened,
+  compact = false,
 }: {
   account: Account;
   opened: boolean;
+  compact?: boolean;
 }) {
   const [limits, setLimits] = useState<Json | null>(null);
   useEffect(() => {
@@ -87,9 +89,24 @@ function AccountCapacity({
     return () => {
       live = false;
     };
-  }, [account.id, account.status, opened]);
+  }, [account.id, account.accountId, account.status, opened]);
   if (account.status !== "ready") return null;
   const buckets = readBuckets(limits, Date.now() / 1000);
+  if (compact) {
+    const bucket = buckets.find(
+      (bucket) => bucket.id === "codex" || bucket.data.limitId === "codex",
+    );
+    const weekly = bucket?.windows.find((window) => window.label === "7d");
+    const label = !limits
+      ? "Weekly: loading…"
+      : limits.error || !weekly || weekly.remaining === null
+        ? "Weekly: unavailable"
+        : weekly.expired
+          ? "Weekly: awaiting update"
+          : `Weekly: ${formatPercent(weekly.remaining)} left`;
+    return <small className="account-weekly-limit">{label}</small>;
+  }
+
   return (
     <div
       className="account-capacity"
@@ -275,6 +292,7 @@ export default function Accounts({
   onError: (message: string) => void;
 }) {
   const [opened, setOpened] = useState(false);
+  const [menuOpened, setMenuOpened] = useState(false);
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [home, setHome] = useState("");
@@ -334,7 +352,12 @@ export default function Accounts({
   }, [opened, state.refresh]);
   return (
     <>
-      <Menu position="bottom-end" width={300} withinPortal>
+      <Menu
+        position="bottom-end"
+        width={300}
+        withinPortal
+        onChange={setMenuOpened}
+      >
         <Menu.Target>
           <Button
             className="account-picker"
@@ -413,6 +436,11 @@ export default function Accounts({
                       ? " · Application default"
                       : ""}
                   </small>
+                  <AccountCapacity
+                    account={account}
+                    opened={menuOpened}
+                    compact
+                  />
                 </span>
               </Menu.Item>
             ))}
