@@ -157,7 +157,7 @@ _LAST_REASON = {}
 def configure_browser(runtime, actor, params):
     key = actor.get("accountKey", "default")
     config, reason = browser_status(runtime.accounts.home(key), runtime.accounts.base_home)
-    if _LAST_REASON.get(key, "") != (reason or ""):
+    if _LAST_REASON.get(key) != (reason or ""):
         # Report each change once. A disabled browser must not be silent.
         _LAST_REASON[key] = reason or ""
         print(f"Studio browser for account {key}: " + (reason or "enabled"), file=sys.stderr, flush=True)
