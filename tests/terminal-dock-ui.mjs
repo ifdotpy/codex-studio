@@ -620,6 +620,10 @@ try {
   await page.keyboard.type("exit");
   await page.keyboard.press("Enter");
   await dock.getByText("Session ended", { exact: true }).waitFor();
+  await page.waitForFunction(async (id) => {
+    const { items } = await (await fetch("/api/terminals")).json();
+    return items.find((item) => item.id === id)?.status === "exited";
+  }, liveShell);
   const after = await (await fetch(liveOrigin + "/api/state")).json();
   const ownerBefore = initial.threads.find(
     (item) => item.id === sessions.items[0].agent,
