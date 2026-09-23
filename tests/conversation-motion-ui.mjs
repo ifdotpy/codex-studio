@@ -20,12 +20,33 @@ const proc = spawn(
 let log = "",
   browser;
 proc.stderr.on("data", (d) => (log += d));
-const afterPaint = (page) =>
+const afterPaint = (page, selector) =>
   page.evaluate(
-    () =>
-      new Promise((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(resolve)),
-      ),
+    (rootSelector) =>
+      new Promise((resolve) => {
+        let previous = "";
+        let stableFrames = 0;
+        const sample = () => {
+          const root = document.querySelector(rootSelector);
+          if (!root)
+            throw new Error(`Transcript root missing: ${rootSelector}`);
+          const composer = root
+            .closest("#conversation")
+            ?.querySelector("#message");
+          const values = [
+            root?.scrollTop,
+            root?.scrollHeight,
+            root?.clientHeight,
+            composer?.getBoundingClientRect().height,
+          ].join(":");
+          stableFrames = values === previous ? stableFrames + 1 : 0;
+          previous = values;
+          if (stableFrames === 3) resolve();
+          else requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      }),
+    selector,
   );
 try {
   const port = await new Promise((resolve, reject) => {
@@ -133,44 +154,51 @@ try {
       });
     };
     await emit();
-    await page.locator('[data-message="note35"]').waitFor();
+    const rootSelector = `#messages[data-motion-root="${width}"]`;
+    const markTranscriptRoot = async () => {
+      const visibleRoot = page.locator(
+        "#conversation #messages:visible:has([data-message=note35])",
+      );
+      await visibleRoot.locator('[data-message="note35"]').waitFor();
+      await visibleRoot.evaluate((root, id) => {
+        root.dataset.motionRoot = String(id);
+      }, width);
+    };
+    await markTranscriptRoot();
+    const transcriptRoot = page.locator(rootSelector);
+    const conversationSelector = `#conversation:has(${rootSelector})`;
+    const composerSelector = `${conversationSelector} #message`;
+    const composer = page.locator(composerSelector);
     const gap = () =>
       page
-        .locator("#messages")
+        .locator(rootSelector)
         .evaluate((e) => e.scrollHeight - e.scrollTop - e.clientHeight);
     assert.ok((await gap()) < 2, "initial history follows bottom");
-    await page.locator("#messages").evaluate((root) => {
+    await page.locator(rootSelector).evaluate((root) => {
       root.scrollTop -= 18;
       root.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
-    await afterPaint(page);
-    await page.locator("#message").fill("A small draft");
-    await afterPaint(page);
+    await afterPaint(page, rootSelector);
+    await composer.fill("A small draft");
+    await afterPaint(page, rootSelector);
     assert.ok(
       Math.abs((await gap()) - 18) < 2,
       "A render preserves the reader's small bottom distance",
     );
-    await page.locator("#messages").evaluate((root) => {
+    await page.locator(rootSelector).evaluate((root) => {
       root.scrollTop = root.scrollHeight;
       root.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
 
     await page
-      .locator("#message")
+      .locator(composerSelector)
       .fill(Array.from({ length: 6 }, (_, i) => `Draft line ${i}`).join("\n"));
-    await afterPaint(page);
+    await afterPaint(page, rootSelector);
     assert.ok((await gap()) < 2, "growing composer retains bottom");
     await page.route("**/api/sync/identity", (route) =>
       route.fulfill({ json: syncIdentity }),
     );
-    const sendRequest = page.waitForRequest(
-      (request) =>
-        new URL(request.url()).pathname === "/api/messages" &&
-        request.method() === "POST",
-      { timeout: 1000 },
-    );
-    await page.locator("#send").click();
-    await sendRequest;
+    await page.locator(`${conversationSelector} #send`).click();
     await sendRouteCaptured;
     assert.ok(pendingSend, "send request captured");
     items.push({
@@ -184,14 +212,53 @@ try {
       json: { status: "saved", deliveries: { [lead.id]: "queued" } },
     });
     await page.waitForFunction(
-      () => document.querySelector("#message").value === "",
+      (selector) => document.querySelector(selector).value === "",
+      composerSelector,
     );
-    await afterPaint(page);
+    await afterPaint(page, rootSelector);
     assert.ok((await gap()) < 2, "send and composer shrink retain bottom");
-    await page.locator("#messages").hover();
-    await page.mouse.wheel(0, -1200);
-    await page.locator("#jump-latest").waitFor();
-    const anchor = await page.locator("#messages").evaluate((root) => {
+    const scrollBeforePageUp = await page
+      .locator(rootSelector)
+      .evaluate((root) => root.scrollTop);
+    await page.locator(rootSelector).evaluate((root) => {
+      root.tabIndex = -1;
+      root.focus();
+    });
+    const scrollEnd = page
+      .locator(rootSelector)
+      .evaluate(
+        (root) =>
+          new Promise((resolve) =>
+            root.addEventListener("scrollend", resolve, { once: true }),
+          ),
+      );
+    await page.locator(rootSelector).press("PageUp");
+    await page.waitForFunction(
+      ({ before, selector }) =>
+        document.querySelector(selector).scrollTop < before,
+      { before: scrollBeforePageUp, selector: rootSelector },
+    );
+    await scrollEnd;
+    try {
+      await page.locator(`${conversationSelector} #jump-latest`).waitFor();
+    } catch (error) {
+      const state = await page.locator(rootSelector).evaluate((root) => ({
+        scrollTop: root.scrollTop,
+        scrollHeight: root.scrollHeight,
+        clientHeight: root.clientHeight,
+        gap: root.scrollHeight - root.scrollTop - root.clientHeight,
+        button: !!document.querySelector(
+          `${conversationSelector} #jump-latest`,
+        ),
+      }));
+      throw new Error(
+        `Latest button did not appear: ${JSON.stringify(state)}`,
+        {
+          cause: error,
+        },
+      );
+    }
+    const anchor = await page.locator(rootSelector).evaluate((root) => {
       const bounds = root.getBoundingClientRect();
       const p = [...root.querySelectorAll("[data-message] p")].find((p) => {
         const box = p.getBoundingClientRect();
@@ -203,14 +270,52 @@ try {
       return {
         messageId: message.dataset.message,
         paragraph: [...message.querySelectorAll("p")].indexOf(p),
-        top: p.getBoundingClientRect().top,
+        top: p.getBoundingClientRect().top - bounds.top,
+        scrollTop: root.scrollTop,
+        scrollHeight: root.scrollHeight,
       };
     });
     const anchorParagraph = page
-      .locator(`[data-message="${anchor.messageId}"] p`)
+      .locator(`${rootSelector} [data-message="${anchor.messageId}"] p`)
       .nth(anchor.paragraph);
+    const waitForStableAnchor = () =>
+      page.waitForFunction(
+        ({ rootSelector, messageId, paragraph }) =>
+          new Promise((resolve) => {
+            let previous = Number.NaN;
+            let stableFrames = 0;
+            const sample = () => {
+              const root = document.querySelector(rootSelector);
+              const message = Array.from(
+                root.querySelectorAll("[data-message]"),
+              ).find((item) => item.dataset.message === messageId);
+              const element = message?.querySelectorAll("p")[paragraph];
+              if (!element) {
+                requestAnimationFrame(sample);
+                return;
+              }
+              const top =
+                element.getBoundingClientRect().top -
+                root.getBoundingClientRect().top;
+              stableFrames =
+                Math.abs(top - previous) < 0.1 ? stableFrames + 1 : 0;
+              previous = top;
+              if (stableFrames === 3) resolve(true);
+              else requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+          }),
+        {
+          rootSelector,
+          messageId: anchor.messageId,
+          paragraph: anchor.paragraph,
+        },
+      );
     const anchorY = () =>
-      anchorParagraph.evaluate((e) => e.getBoundingClientRect().top);
+      anchorParagraph.evaluate((e) => {
+        const root = e.closest("#messages");
+        return e.getBoundingClientRect().top - root.getBoundingClientRect().top;
+      });
     items.push({
       id: `stream-${width}`,
       role: "assistant",
@@ -219,37 +324,46 @@ try {
       turnId: "live-turn",
     });
     await emit();
-    await page
+    await transcriptRoot
       .locator(`[data-message="stream-${width}"]`)
       .waitFor({ state: "visible" });
-    await afterPaint(page);
+    await afterPaint(page, rootSelector);
+    await waitForStableAnchor();
+    const streamAnchorTop = await anchorY();
     assert.ok(
-      Math.abs((await anchorY()) - anchor.top) < 2,
-      "stream does not move reader",
+      Math.abs(streamAnchorTop - anchor.top) < 2,
+      `stream does not move reader (expected ${anchor.top}, got ${streamAnchorTop})`,
     );
-    await page.locator("#message").fill("A\nB\nC\nD\nE\nF");
-    await afterPaint(page);
+    await composer.fill("A\nB\nC\nD\nE\nF");
+    await afterPaint(page, rootSelector);
+    await waitForStableAnchor();
+    const expandedAnchorTop = await anchorY();
     assert.ok(
-      Math.abs((await anchorY()) - anchor.top) < 2,
-      "composer expansion does not move reader",
+      Math.abs(expandedAnchorTop - anchor.top) < 2,
+      `composer expansion does not move reader (${JSON.stringify({ anchor, expandedAnchorTop, scrollTop: await transcriptRoot.evaluate((root) => root.scrollTop) })})`,
     );
-    await page.locator("#message").fill("");
-    await afterPaint(page);
+    await composer.fill("");
+    await afterPaint(page, rootSelector);
+    await waitForStableAnchor();
     assert.ok(
       Math.abs((await anchorY()) - anchor.top) < 2,
       "composer contraction does not move reader",
     );
     // Async image/layout growth above the reading point must preserve this paragraph.
-    const earlyMessage = page.locator('[data-message="note0"]');
+    const earlyMessage = transcriptRoot.locator('[data-message="note0"]');
     const earlyMessageHeight = await earlyMessage.evaluate(
       (e) => e.getBoundingClientRect().height,
     );
+    const scrollBeforeGrowth = await page
+      .locator(rootSelector)
+      .evaluate((root) => root.scrollTop);
     await earlyMessage.evaluate((e) => {
       e.style.paddingTop = "180px";
     });
     await page.waitForFunction(
-      ({ id, minHeight }) => {
-        const message = document.querySelector(
+      ({ id, minHeight, selector }) => {
+        const root = document.querySelector(selector);
+        const message = root?.querySelector(
           `[data-message="${CSS.escape(id)}"]`,
         );
         return (
@@ -258,25 +372,36 @@ try {
           message.getBoundingClientRect().height > minHeight
         );
       },
-      { id: "note0", minHeight: earlyMessageHeight },
+      { id: "note0", minHeight: earlyMessageHeight, selector: rootSelector },
     );
-    await afterPaint(page);
+    await afterPaint(page, rootSelector);
+    await waitForStableAnchor();
+    const lateAnchorTop = await anchorY();
+    const scrollAfterGrowth = await page
+      .locator(rootSelector)
+      .evaluate((root) => root.scrollTop);
     assert.ok(
-      Math.abs((await anchorY()) - anchor.top) < 2,
-      "late content height above reader is anchored",
+      Math.abs(lateAnchorTop - anchor.top) < 2,
+      `late content height above reader is anchored (expected ${anchor.top}, got ${lateAnchorTop}, scroll ${scrollBeforeGrowth} to ${scrollAfterGrowth})`,
     );
     await earlyMessage.evaluate((e) => {
       e.style.paddingTop = "";
     });
     await page.waitForFunction(
-      ({ id, maxHeight }) =>
+      ({ id, maxHeight, selector }) =>
         document
-          .querySelector(`[data-message="${CSS.escape(id)}"]`)
+          .querySelector(selector)
+          ?.querySelector(`[data-message="${CSS.escape(id)}"]`)
           ?.getBoundingClientRect().height <= maxHeight,
-      { id: "note0", maxHeight: earlyMessageHeight + 1 },
+      {
+        id: "note0",
+        maxHeight: earlyMessageHeight + 1,
+        selector: rootSelector,
+      },
     );
-    await afterPaint(page);
-    await page
+    await afterPaint(page, rootSelector);
+    await waitForStableAnchor();
+    await transcriptRoot
       .locator('[data-message="note35"]')
       .evaluate((e) => (e.dataset.retained = "yes"));
     items = items.map((i) => ({
@@ -292,8 +417,14 @@ try {
       activity: null,
     };
     await emit();
+    await transcriptRoot
+      .locator('[data-turn="live-turn"][data-outcome="completed"]')
+      .first()
+      .waitFor();
+    await afterPaint(page, rootSelector);
+    await waitForStableAnchor();
     assert.equal(
-      await page
+      await transcriptRoot
         .locator('[data-message="note35"]')
         .getAttribute("data-retained"),
       "yes",
@@ -304,8 +435,9 @@ try {
       "completion does not rearrange reader history",
     );
     const beforeSwitch = await page
-      .locator("#messages")
+      .locator(rootSelector)
       .evaluate((e) => e.scrollTop);
+    await transcriptRoot.evaluate((root) => delete root.dataset.motionRoot);
     if (width < 700) await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${other.id}"]`).click();
     await page.evaluate(
@@ -316,12 +448,18 @@ try {
     if (width < 700) await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await emit();
+    await markTranscriptRoot();
+    await afterPaint(page, rootSelector);
+    const restoredCompletion = await page
+      .locator(rootSelector)
+      .evaluate((e) => ({
+        scrollTop: e.scrollTop,
+        scrollHeight: e.scrollHeight,
+        clientHeight: e.clientHeight,
+      }));
     assert.ok(
-      Math.abs(
-        (await page.locator("#messages").evaluate((e) => e.scrollTop)) -
-          beforeSwitch,
-      ) < 2,
-      "completed chat retains chronological layout and reading position",
+      Math.abs(restoredCompletion.scrollTop - beforeSwitch) < 2,
+      `completed chat retains chronological layout and reading position (${JSON.stringify({ beforeSwitch, restoredCompletion })})`,
     );
     items = items.map(({ turnStatus, ...i }) => i);
     agent = {
@@ -331,12 +469,15 @@ try {
       turnId: "live-turn",
     };
     await emit();
-    await page.locator("#messages").evaluate((e) => {
+    await page.locator(rootSelector).evaluate((e) => {
       e.scrollTop = 1400;
       e.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
-    await afterPaint(page);
-    const stored = await page.locator("#messages").evaluate((e) => e.scrollTop);
+    await afterPaint(page, rootSelector);
+    const stored = await page
+      .locator(rootSelector)
+      .evaluate((e) => e.scrollTop);
+    await transcriptRoot.evaluate((root) => delete root.dataset.motionRoot);
     if (width < 700) await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${other.id}"]`).click();
     await page.evaluate(
@@ -347,14 +488,17 @@ try {
     if (width < 700) await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await emit();
+    await markTranscriptRoot();
+    await afterPaint(page, rootSelector);
     assert.ok(
       Math.abs(
-        (await page.locator("#messages").evaluate((e) => e.scrollTop)) - stored,
+        (await page.locator(rootSelector).evaluate((e) => e.scrollTop)) -
+          stored,
       ) < 2,
       "chat switch restores reading position",
     );
-    await page.locator("#jump-latest").click();
-    await afterPaint(page);
+    await page.locator(`${conversationSelector} #jump-latest`).click();
+    await afterPaint(page, rootSelector);
     assert.ok((await gap()) < 2, "Latest resumes following");
     items.push({
       id: `tail-${width}`,
