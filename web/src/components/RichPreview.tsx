@@ -267,9 +267,7 @@ export default memo(function RichPreview({
         />
       )}
       <div className="rich-preview-note">
-        {kind === "html"
-          ? "Static preview. Scripts and external resources are disabled."
-          : "Diagram preview. Source remains available."}
+        {kind === "html" ? "Static preview." : "Diagram preview."}
       </div>
     </section>
   );

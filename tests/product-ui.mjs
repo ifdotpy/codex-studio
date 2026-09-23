@@ -134,9 +134,7 @@ try {
     /Context 40%/,
   );
   await page.getByRole("button", { name: "Chat context", exact: true }).click();
-  await page
-    .getByText("2 automatic context summaries.", { exact: true })
-    .waitFor();
+  await page.getByText("Compacted 2 times.", { exact: true }).waitFor();
   await page.keyboard.press("Escape");
   await page.screenshot({ path: join(root, "ai-conversation.png") });
   assert.equal(

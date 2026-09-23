@@ -276,11 +276,7 @@ export default function FilePreview({
           <>
             {table.error && <p role="alert">{table.error}</p>}
             {table.truncated && (
-              <p role="status">
-                Table preview is limited to 200 rows and 100 columns. Large
-                tables are truncated. Source and Save a copy retain the complete
-                file.
-              </p>
+              <p role="status">Shows up to 200 rows and 100 columns.</p>
             )}
             <div className="file-preview-table">
               <table aria-label="File table">
@@ -340,10 +336,7 @@ export default function FilePreview({
             src={file.url}
           />
         ) : (
-          <p>
-            Preview is unavailable for this file type. Use Quick Look, Open or
-            Save a copy.
-          </p>
+          <p>No preview for this file type.</p>
         ))}
     </PreviewModal>
   );

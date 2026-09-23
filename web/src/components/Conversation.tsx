@@ -1038,8 +1038,7 @@ export default function Conversation(p: {
         }
       >
         <p>
-          This creates a new chat with a draft. Review the draft before you send
-          it. Your files are not restored.
+          Opens a new chat with this message as a draft. Files are not included.
         </p>
         <Textarea
           label="Draft for the new chat"
@@ -1165,7 +1164,7 @@ export default function Conversation(p: {
                 <p>
                   {p.room
                     ? "Agent messages will appear here."
-                    : "Give your lead a task. It can delegate work and report the results here."}
+                    : "The lead can split the work across agents."}
                 </p>
               </div>
             )}
@@ -1240,7 +1239,7 @@ export default function Conversation(p: {
       {p.room ? (
         <p className="room-footer">
           {p.room.kind === "private"
-            ? "Private between participants. Visible to you."
+            ? "Private agent chat."
             : "Broadcast to " +
               (p.room.rootId === "all"
                 ? "all teams (historical, read only)."

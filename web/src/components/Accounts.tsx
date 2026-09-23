@@ -246,16 +246,13 @@ export function AccountTransferConfirmation({
         Transfer this chat to <strong>{target?.email || target?.label}</strong>?
       </p>
       <p>
-        The current turn finishes first. The chat keeps its conversation
-        history. Subagents stay on their current accounts.
+        The switch happens after the current turn. Subagents keep their
+        accounts.
       </p>
       {target && sourceProvider !== (target.provider || "codex") && (
         <p>The destination model uses the saved chat context.</p>
       )}
-      <p>
-        This changes the account for this chat. It does not change the project
-        default.
-      </p>
+      <p>Applies to this chat only.</p>
       {error && <p role="alert">{error}</p>}
       <Button variant="default" disabled={pending} onClick={onClose}>
         Cancel
@@ -526,8 +523,7 @@ export default function Accounts({
         {!adding && (
           <>
             <p className="accounts-intro">
-              The application default applies when a project has no default.
-              Existing chats keep their account.
+              Used when a project has no default.
             </p>
             <NativeRuntimeStatus opened={opened} accounts={accounts} />
             <div className="accounts-list" aria-label="Saved accounts">
@@ -586,12 +582,7 @@ export default function Accounts({
                       value={account.error}
                     />
                   )}
-                  {account.disconnected && (
-                    <p>
-                      Disconnected from new chat choices. Existing chats keep
-                      this account.
-                    </p>
-                  )}
+                  {account.disconnected && <p>Hidden from new chats.</p>}
                   {!account.disconnected && (
                     <AccountCapacity account={account} opened={opened} />
                   )}
@@ -719,8 +710,8 @@ export default function Accounts({
           from new chat choices?
         </p>
         <p>
-          Existing chats continue with this account. This does not sign out of
-          Codex or delete credentials. You can reconnect it here.
+          New chats cannot use it. Existing chats keep it. You can reconnect it
+          later.
         </p>
         {disconnectsDefault && (
           <p>

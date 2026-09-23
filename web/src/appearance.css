@@ -40,6 +40,39 @@
 .simple-workspace-header > button {
   flex-shrink: 0;
 }
+/* Status and agent mode share one line so the header stays one row high. */
+.conversation-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 2px;
+}
+.conversation-meta #conversation-status {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  margin-top: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-meta .agent-mode-control {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  margin-top: 0;
+}
+.conversation-meta .agent-mode-switch {
+  min-height: 20px;
+  margin-block: -4px;
+  padding: 2px 4px;
+  border: 0;
+  color: var(--muted);
+}
+.conversation-meta .agent-mode-switch:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+}
 
 .chat-settings-panel {
   display: grid;
@@ -93,9 +126,26 @@
   padding: 12px 0;
 }
 .settings-reviews > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.settings-reviews > summary::-webkit-details-marker {
+  display: none;
+}
+.settings-reviews > summary > svg {
+  transition: transform 0.15s;
+}
+.settings-reviews[open] > summary > svg {
+  transform: rotate(90deg);
+}
+.settings-reviews > summary:hover {
+  color: var(--text);
 }
 .settings-reviews[open] > summary {
   margin-bottom: 14px;
@@ -104,10 +154,21 @@
   justify-self: start;
   font-size: 12px;
   min-height: 30px;
-  padding: 0;
+  padding: 0 8px;
+  margin-left: -8px;
 }
-.sidebar-search {
-  margin: 0 8px 8px;
+.sidebar-nav {
+  display: grid;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.sidebar-nav-button {
+  width: 100%;
+  height: 34px;
+  padding-inline: 10px;
+  color: var(--text);
+}
+.sidebar-nav-button .mantine-Button-inner {
   justify-content: flex-start;
 }
 @media (max-width: 760px) {
@@ -116,11 +177,28 @@
     padding: 8px;
     flex-wrap: wrap;
   }
+  .workspace-header.simple-workspace-header {
+    flex-wrap: nowrap;
+  }
   .simple-workspace-header .conversation-heading {
-    flex-basis: calc(100% - 48px);
+    flex: 1 1 0;
+  }
+  .conversation-meta .agent-mode-switch {
+    min-height: 32px;
+    margin-block: -8px;
+  }
+  .conversation-meta .agent-mode-note {
+    display: none;
   }
   .simple-workspace-header #messages-toggle {
-    margin-left: auto;
+    padding-inline: 8px;
+  }
+  .simple-workspace-header .messages-toggle-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
   .simple-workspace-header #team-toggle {
     min-height: 36px;
@@ -149,7 +227,6 @@
 :root[data-mantine-color-scheme="light"]
   :is(
     #chat-search,
-    #message,
     .composer,
     .composer-shell,
     .chat-composer,
@@ -179,11 +256,31 @@
   color: var(--text);
 }
 :root[data-mantine-color-scheme="light"]
-  :is(.attention-count, .tasks-count, .team-button-count) {
+  :is(.attention-count, .team-button-count) {
   background: var(--raised);
   color: var(--accent);
 }
 .chat-settings-panel #project {
   width: 100%;
   max-width: 100%;
+  height: 36px;
+  padding-inline: 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+  border: 1px solid var(--line);
+}
+.chat-settings-panel #project .mantine-Button-inner {
+  justify-content: flex-start;
+}
+/* In the unified inbox, request cards align with the message cards. */
+.unified-messages #requests {
+  padding: 0;
+}
+/* Mantine fills disabled buttons. Subtle controls stay flat and only dim. */
+:is(.mantine-ActionIcon-root, .mantine-Button-root)[data-variant="subtle"]:is(
+    :disabled,
+    [data-disabled]
+  ) {
+  background: transparent;
 }

@@ -3821,7 +3821,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.put(db, "monitors", m)
             if not approved:
                 self.put(db, "requests", {"id": uid(), "method": "monitor/approve", "agent": agent_id,
-                    "params": {"monitorId": key, "command": command, "cwd": a["cwd"]}, "status": "pending"})
+                    "params": {"monitorId": key, "command": command, "cwd": a["cwd"]}, "status": "pending",
+                    "createdAt": m["created"]})
         if approved:
             self.launch_monitor(key)
         return m

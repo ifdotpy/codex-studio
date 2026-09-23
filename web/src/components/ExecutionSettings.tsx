@@ -487,7 +487,7 @@ function ScopedExecutionSettings({
             description={
               canEnableDaybreak
                 ? "Use Daybreak with supported models."
-                : "Unavailable for this account. Refresh the model list after an access or Codex update."
+                : "Not available for this account."
             }
             onChange={(event) =>
               void change({ daybreak_enabled: event.currentTarget.checked })
@@ -542,10 +542,7 @@ function ScopedExecutionSettings({
         {!teamDefaults && agent.isLead && agent.provider !== "claude" && (
           <details className="execution-permissions">
             <summary>Permissions</summary>
-            <p>
-              These permissions apply to the main agent and every subagent in
-              this team.
-            </p>
+            <p>Applies to the whole team.</p>
             <Switch
               label="Full access without approval"
               aria-label="Full access without approval"
@@ -555,8 +552,8 @@ function ScopedExecutionSettings({
                 !("yoloMode" in agent)
                   ? "Available after the server update."
                   : agent.yoloMode == null
-                    ? "The team currently uses the existing Codex permissions."
-                    : "When enabled, the team can use tools without permission prompts."
+                    ? "The team uses normal Codex permissions."
+                    : "Tools run without permission prompts."
               }
               onChange={(event) => void changeYolo(event.currentTarget.checked)}
             />
@@ -567,12 +564,7 @@ function ScopedExecutionSettings({
             {adjustment}
           </p>
         )}
-        {teamDefaults && (
-          <p className="notice">
-            For new subagents. The main agent can change these settings when it
-            starts a subagent.
-          </p>
-        )}
+        {teamDefaults && <p className="notice">Default for new subagents.</p>}
         {((!teamDefaults && queued) || (active && canQueueSettings)) && (
           <p className="notice" role="status">
             Model settings apply to the next turn. The current response keeps

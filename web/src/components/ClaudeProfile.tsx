@@ -106,7 +106,7 @@ export default function ClaudeProfile({
           />
           <small>
             {account
-              ? "Add a separate profile to change these paths. Changes apply at the next idle connection."
+              ? "To change these paths, add another profile."
               : "Sign in to this Claude Code configuration with your subscription before you add it."}
           </small>
           <NumberInput

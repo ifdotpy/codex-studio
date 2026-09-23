@@ -339,7 +339,7 @@ try {
   assert.match(await cacheRate.innerText(), /Unavailable/);
   assert.ok(
     await dialog
-      .getByText("Exact token use per tool is unavailable.", { exact: false })
+      .getByText("Tool sizes are in bytes.", { exact: false })
       .isVisible(),
   );
   assert.ok(
@@ -400,7 +400,7 @@ try {
   await dialog.getByText("1 to 1 of 1", { exact: true }).waitFor();
   assert.ok(
     await dialog
-      .getByText("Tool filter applies to tool calls.", { exact: false })
+      .getByText("The tool filter applies to tool calls only.", { exact: true })
       .isVisible(),
   );
   const downloaded = page.waitForEvent("download");

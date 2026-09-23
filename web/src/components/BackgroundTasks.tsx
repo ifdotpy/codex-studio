@@ -349,7 +349,7 @@ export default function BackgroundTasks({
                 <p>
                   {query
                     ? "Try another command or agent name."
-                    : "Commands, monitors and tool calls appear here as agents use them."}
+                    : "Agent commands and tool calls appear here."}
                 </p>
               </div>
             )}

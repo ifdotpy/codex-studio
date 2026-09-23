@@ -594,8 +594,7 @@ export default function Analytics({
             </Tabs.List>
             <div className="analytics-scroll">
               <p className="analytics-definition">
-                Token use comes from provider reports. Tool payloads use bytes,
-                not tokens. Exact token use per tool is unavailable.
+                Tokens come from provider reports. Tool sizes are in bytes.
               </p>
               {(data.coverage?.captureErrors?.count > 0 ||
                 data.coverage?.historyErrors?.length > 0) && (
@@ -613,8 +612,7 @@ export default function Analytics({
               )}
               {tool && (
                 <p className="analytics-filter-note">
-                  Tool filter applies to tool calls. Provider token use covers
-                  the selected agents and period.
+                  The tool filter applies to tool calls only.
                 </p>
               )}
               <Tabs.Panel value="overview">
@@ -682,9 +680,7 @@ export default function Analytics({
                     compactions={data.compactions || []}
                   />
                   <p className="analytics-note">
-                    Each line follows one agent. Points show provider reports,
-                    not continuous measurements. Dotted vertical lines mark
-                    compactions. Up to 500 recent reports appear here.
+                    One line per agent. Dotted lines mark compactions.
                   </p>
                 </section>
                 <section className="analytics-section">
@@ -752,9 +748,7 @@ export default function Analytics({
                   label="Tool measurement coverage and duration distributions"
                 />
                 <p className="analytics-note">
-                  Native output may be truncated or wrapped before the model
-                  receives it. These two groups overlap and must not be added
-                  together.
+                  These groups overlap. Do not add them together.
                 </p>
                 <section className="analytics-section">
                   <header>
@@ -988,9 +982,7 @@ export default function Analytics({
                 <section className="analytics-section">
                   <header>
                     <h3>Protocol events</h3>
-                    <span>
-                      Full UTC-hour buckets may overlap the selected period
-                    </span>
+                    <span>Grouped by UTC hour</span>
                   </header>
                   <div className="analytics-table-scroll">
                     <table className="analytics-table">
@@ -1036,7 +1028,7 @@ export default function Analytics({
                 <section className="analytics-section">
                   <header>
                     <h3>Account limit history</h3>
-                    <span>Latest 100 allowance snapshots, not cost</span>
+                    <span>Latest 100 allowance snapshots</span>
                   </header>
                   <div className="analytics-observations">
                     {[...(data.rateLimits || [])]
@@ -1179,14 +1171,9 @@ export default function Analytics({
                   <p key={i}>{note}</p>
                 ))}
                 <p>
-                  Cached input is part of input. Reasoning output is part of
-                  output. Parallel tool durations can overlap. Payload sizes do
-                  not measure billable tokens.
+                  Cached input is part of input. Reasoning is part of output.
                 </p>
-                <p>
-                  Cost estimates remain in Account limits. They are shared
-                  across chats and cannot identify exact spend for these calls.
-                </p>
+                <p>Cost estimates are in Account limits.</p>
                 {data.coverage?.captureErrors?.count > 0 && (
                   <p className="analytics-error">
                     {count(data.coverage.captureErrors.count)} collection errors

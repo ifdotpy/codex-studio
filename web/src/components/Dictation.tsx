@@ -348,9 +348,7 @@ function NativeDictation({
           <strong>Dictation</strong>
           <span>Audio saved on this device</span>
         </header>
-        <p className="dictation-note">
-          Stop to transcribe on this Mac. Review the text before you insert it.
-        </p>
+        <p className="dictation-note">Stop to transcribe.</p>
         {!supported && (
           <p role="status">
             Update the desktop app before you record dictation.

@@ -309,7 +309,7 @@ function ReviewRow({
       <Text fw={500}>{target?.name || "Unavailable chat"}</Text>
       <Text size="sm" c="dimmed">
         {!availableChat
-          ? "Chat unavailable. History remains available."
+          ? "Chat unavailable."
           : !item.enabled
             ? "Paused"
             : item.reason || item.status || "Scheduled"}

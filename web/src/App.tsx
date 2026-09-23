@@ -21,6 +21,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
   BookOpen,
+  ChevronRight,
   Clock3,
   FileDiff,
   Minimize2,
@@ -33,6 +34,7 @@ import {
   MessageSquare,
   Mail,
   PanelLeft,
+  Plus,
   Search,
   Users,
   X,
@@ -867,8 +869,8 @@ export default function App() {
         <>
           <p>
             {isRoom
-              ? "Remove this agent chat from your list. A new agent message makes it appear again."
-              : "Stop this agent and its workers, and remove their conversations. Files and stored history remain on disk."}
+              ? "Hide this chat. It returns on a new message."
+              : "Stop this agent and its workers, and remove their chats. Files and history stay on disk."}
           </p>
           <Button
             color="red"
@@ -920,10 +922,7 @@ export default function App() {
         body: (
           <>
             <p>{agent.cwd}</p>
-            <p>
-              This chat keeps its project. Start a new chat to choose another
-              folder.
-            </p>
+            <p>To use another folder, start a new chat.</p>
             {window.codexDesktop && (
               <Button
                 onClick={() =>
@@ -1239,30 +1238,32 @@ export default function App() {
               />
               {title}
             </h1>
-            <span id="conversation-status">
-              {mobileClient && agent?.cwd ? `${projectName} · ` : ""}
-              {agent
-                ? indicators.get(agent.id)?.kind === "answer" ||
-                  (indicators.get(agent.id)?.kind === "working" &&
-                    !agent.inFlight)
-                  ? indicators.get(agent.id)?.label
-                  : livePhase?.id === agent.id
-                    ? livePhase.label
-                    : statusLabel(agent.status, agent.activity?.phase)
-                : room?.kind === "private"
-                  ? "Private between agents · Visible to you"
-                  : room
-                    ? "Broadcast"
-                    : ""}
-            </span>
-            {lead?.source === "managed" && (
-              <AgentModeSwitch
-                lead={lead}
-                stateDir={data.stateDir}
-                workspaceId={workspaceId}
-                refresh={refresh}
-              />
-            )}
+            <div className="conversation-meta">
+              <span id="conversation-status">
+                {mobileClient && agent?.cwd ? `${projectName} · ` : ""}
+                {agent
+                  ? indicators.get(agent.id)?.kind === "answer" ||
+                    (indicators.get(agent.id)?.kind === "working" &&
+                      !agent.inFlight)
+                    ? indicators.get(agent.id)?.label
+                    : livePhase?.id === agent.id
+                      ? livePhase.label
+                      : statusLabel(agent.status, agent.activity?.phase)
+                  : room?.kind === "private"
+                    ? "Private agent chat"
+                    : room
+                      ? "Broadcast"
+                      : ""}
+              </span>
+              {lead?.source === "managed" && (
+                <AgentModeSwitch
+                  lead={lead}
+                  stateDir={data.stateDir}
+                  workspaceId={workspaceId}
+                  refresh={refresh}
+                />
+              )}
+            </div>
           </div>
           {
             <ActionIcon
@@ -1295,21 +1296,6 @@ export default function App() {
               )}
             </Button>
           )}
-          {agent?.source === "managed" && (
-            <Button
-              id="mark-unread"
-              leftSection={<Mail size={15} />}
-              aria-label="Mark chat unread"
-              disabled={
-                !agent.readStateSupported ||
-                !hasCompletedResult(agent) ||
-                readState.marking.has(agent.id)
-              }
-              onClick={() => void readState.markUnread(agent)}
-            >
-              Unread
-            </Button>
-          )}
           <Button
             id="messages-toggle"
             leftSection={<MessageSquare size={16} />}
@@ -1320,7 +1306,7 @@ export default function App() {
               setWorkspaceOpen(true);
             }}
           >
-            Messages{" "}
+            <span className="messages-toggle-label">Messages</span>{" "}
             {attentionCount > 0 && (
               <span className="attention-count">{attentionCount}</span>
             )}
@@ -1368,6 +1354,21 @@ export default function App() {
               >
                 Activity {taskCount || ""}
               </Menu.Item>
+              {agent?.source === "managed" && (
+                <Menu.Item
+                  id="mark-unread"
+                  aria-label="Mark chat unread"
+                  leftSection={<Mail size={14} />}
+                  disabled={
+                    !agent.readStateSupported ||
+                    !hasCompletedResult(agent) ||
+                    readState.marking.has(agent.id)
+                  }
+                  onClick={() => void readState.markUnread(agent)}
+                >
+                  Mark as unread
+                </Menu.Item>
+              )}
               {agent?.source === "managed" && (
                 <>
                   <Menu.Divider />
@@ -1699,9 +1700,9 @@ export default function App() {
           {agent?.provider === "claude" && (
             <ClaudeSettings agent={agent} refresh={refresh} />
           )}
-          <section className="settings-appearance">
+          <section className="settings-group settings-appearance">
+            <h2>Appearance</h2>
             <NativeSelect
-              label="Appearance"
               aria-label="Appearance"
               value={colorScheme}
               data={[
@@ -1718,7 +1719,10 @@ export default function App() {
           </section>
           {agent?.source === "managed" && (
             <details className="settings-reviews">
-              <summary>Review other chats</summary>
+              <summary>
+                <ChevronRight size={14} aria-hidden="true" />
+                Review other chats
+              </summary>
               <ReviewSchedules
                 key={`reviews:${data.stateDir}:${workspaceId}:${agent.id}`}
                 agent={agent}
@@ -1743,6 +1747,7 @@ export default function App() {
             <Button
               variant="subtle"
               className="settings-new-chat"
+              leftSection={<Plus size={14} />}
               disabled={creating}
               onClick={() => {
                 setSettingsOpen(false);

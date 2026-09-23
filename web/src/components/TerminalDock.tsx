@@ -718,11 +718,7 @@ function ShellView({
         </p>
       )}
       <footer className="terminal-output-actions">
-        <span>
-          {running(status)
-            ? "Direct shell input · No model call"
-            : "Session ended · Output retained"}
-        </span>
+        <span>{running(status) ? "Direct shell input" : "Session ended"}</span>
         <span className="terminal-dock-spacer" />
         <Button
           size="compact-xs"

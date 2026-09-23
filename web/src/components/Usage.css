@@ -1,5 +1,5 @@
 .usage-footer .account-limits-toggle {
-  flex: 1 1 180px;
+  flex: 0 1 auto;
   min-width: 0;
   height: 26px;
   min-height: 26px;
@@ -271,6 +271,11 @@
   font-size: 18px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+.account-cost-values strong.account-cost-missing {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
 }
 .account-costs p {
   margin: 4px 0 0;

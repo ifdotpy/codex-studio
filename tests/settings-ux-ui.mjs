@@ -114,9 +114,7 @@ try {
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await page.getByRole("button", { name: "Chat context", exact: true }).click();
   await page
-    .getByText(
-      "The context is the information the model can use in one response.",
-    )
+    .getByText("80,000 of 200,000 tokens used (40%).", { exact: true })
     .waitFor();
   assert.equal(analyticsCalls, 0);
   assert.equal(await page.locator(".usage-footer .compactions").count(), 0);

@@ -208,7 +208,7 @@ function ScopedAgentModeSwitch({
         aria-label="Multi-agent mode"
         aria-checked={confirmed.mode === "multi"}
         disabled={!workspaceId || saving || !!stored.pending || !!initial.error}
-        title="Single agent prevents new worker tasks. Current work can finish and report. Multi agent allows new worker tasks."
+        title="Single agent: no new workers. Multi agent: the lead can start workers."
         onClick={() => void submit()}
       >
         <span className="agent-mode-track" aria-hidden="true">

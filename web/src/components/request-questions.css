@@ -32,6 +32,20 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.request-card pre.request-command {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+}
+.request-actions .request-delete:not(:disabled) {
+  color: light-dark(#c92a2a, #ff8787);
+}
+.request-card .request-copy p {
+  overflow-wrap: anywhere;
+}
+.request-card .request-copy .request-cwd {
+  margin-top: 6px;
+  font-size: 11px;
+}
 .request-inline-answer {
   margin-top: 14px;
   padding-top: 14px;

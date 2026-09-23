@@ -291,6 +291,7 @@ try {
       document.querySelector("#conversation-title [data-chat-status]") === null,
   );
   assert.equal(other.readState.read, true);
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#mark-unread").click();
   await status(page.locator("#conversation-title"), "unread");
   await status(row(other), "unread");
@@ -329,6 +330,7 @@ try {
         "Other project" &&
       !document.querySelector("#conversation-title [data-chat-status]"),
   );
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#mark-unread").click();
   await status(page.locator("#conversation-title"), "unread");
   await page.waitForTimeout(150);

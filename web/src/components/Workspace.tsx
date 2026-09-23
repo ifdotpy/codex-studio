@@ -70,18 +70,14 @@ const sections = [
   ["rules", "Rules", Clock3],
 ] as const;
 const descriptions: Record<string, string> = {
-  changes:
-    "Latest changes reported by this agent. File previews show the current files.",
+  changes: "Latest changes by this agent.",
   messages: "Your messages and this team’s conversations.",
   search: "Find messages, work, plans, and agent conversations.",
-  plan: "The agent reports its plan here. Request changes in its chat.",
-  checkpoints:
-    "Save a point in the work. Preview file changes before a restore.",
-  tools:
-    "Tools available through orchestration, connected services, and observed native calls.",
+  plan: "The agent's current plan.",
+  checkpoints: "Save and restore points in the work.",
+  tools: "Tools the agents can use.",
   profiles: "Reusable instructions and model choices for subagents.",
-  rules:
-    "Wait for a time, file change, or event. Script checks can prevent unnecessary agent turns.",
+  rules: "Wake the agent on a time, file change, or event.",
 };
 const date = (value: number | string | undefined) =>
   value
@@ -650,11 +646,7 @@ function Find(c: Context) {
       {search && state.data && !state.data.results?.length && (
         <Empty>No results for “{search}”.</Empty>
       )}
-      {!search && (
-        <Empty>
-          Search the full message history, including archived conversations.
-        </Empty>
-      )}
+      {!search && <Empty>Searches all messages, archived chats too.</Empty>}
       <Modal
         opened={!!source}
         onClose={() => {
@@ -834,10 +826,7 @@ function Checkpoints(c: Context) {
       >
         {preview && (
           <>
-            <p>
-              Restore changes files and conversation state. The agent remains
-              stopped after the restore.
-            </p>
+            <p>Restores files and chat state. The agent stays stopped.</p>
             <pre className="workspace-code workspace-diff-preview">
               {preview.diff || "No file changes."}
             </pre>
@@ -1405,7 +1394,7 @@ function Rules(c: Context) {
                           : "Too few active subagents",
                         text: draft.text.trim()
                           ? draft.text
-                          : "The active subagent count stayed below the minimum. Review the team workload and assign independent work where useful.",
+                          : "Fewer subagents than the minimum were active.",
                       }
                     : {}),
                 });
@@ -1452,11 +1441,8 @@ function Rules(c: Context) {
                   }
                 />
                 <p className="workspace-muted">
-                  Counts subagents that start, run, or have active command
-                  monitors. Queued or idle subagents without active monitors do
-                  not count. Alerts the main agent once per continuous period
-                  below the minimum. The alert resets when the count reaches the
-                  minimum.
+                  Alerts the main agent once when fewer subagents than the
+                  minimum are active.
                 </p>
               </>
             )}

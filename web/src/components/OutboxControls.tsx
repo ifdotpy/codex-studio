@@ -63,10 +63,7 @@ export default function OutboxControls({
         )}
       </div>
       {entry.attempted !== false && (
-        <p>
-          Delivery may have started. This button stops retries. It does not
-          cancel work on the server.
-        </p>
+        <p>Stops retries. Work already sent continues.</p>
       )}
       {error && <p role="alert">{error}</p>}
     </div>

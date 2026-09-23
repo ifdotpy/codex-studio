@@ -132,9 +132,7 @@ try {
   assert.equal((await toggle().innerText()).trim(), "Limits");
   assert.match(await page.locator("#usage-footer").innerText(), /Context 40%/);
   await page.getByRole("button", { name: "Chat context", exact: true }).click();
-  await page
-    .getByText("2 automatic context summaries.", { exact: true })
-    .waitFor();
+  await page.getByText("Compacted 2 times.", { exact: true }).waitFor();
   await page.keyboard.press("Escape");
   await toggle().click();
   await details().waitFor();

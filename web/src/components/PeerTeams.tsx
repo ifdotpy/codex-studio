@@ -160,10 +160,7 @@ export function PeerTeamForm({
             onChange={(e) => setName(e.currentTarget.value)}
             autoFocus
           />
-          <p>
-            Choose chats in this project. Each chat keeps its own work. Agents
-            can send messages to each other.
-          </p>
+          <p>Chosen chats can message each other.</p>
           <div className="peer-team-options">
             {available.map((a) => (
               <Checkbox

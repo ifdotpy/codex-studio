@@ -200,7 +200,7 @@ export default function Usage({
         setConfirmReset(null);
         setResetNotice(
           result.outcome === "reset"
-            ? "Reset applied. Allowance updates from Codex."
+            ? "Reset applied."
             : "This reset credit was already used.",
         );
       } else if (result.outcome === "nothingToReset") {
@@ -316,22 +316,13 @@ export default function Usage({
         <Popover.Dropdown>
           <strong>Chat context</strong>
           <p>
-            The context is the information the model can use in one response.
-          </p>
-          <p>
             {known
               ? `${c!.tokens!.toLocaleString()} of ${c!.window!.toLocaleString()} tokens used (${percent}%).`
-              : "Codex has not reported context use yet."}
+              : "No context data yet."}
           </p>
-          <p>
-            Long chats can be shortened automatically. The conversation history
-            remains available.
-          </p>
-          <small>
-            {agent.compactions === undefined
-              ? "No summary count reported."
-              : `${agent.compactions} automatic context summaries${agent.compactionsObservedOnly ? " observed" : ""}.`}
-          </small>
+          {agent.compactions !== undefined && (
+            <small>Compacted {agent.compactions} times.</small>
+          )}
           <Button
             variant="subtle"
             onClick={() => {
@@ -390,7 +381,7 @@ export default function Usage({
             <header className="account-limits-heading">
               <div>
                 <h3>Account limits</h3>
-                <p>{accountLabel || "Allowance left · local time"}</p>
+                <p>{accountLabel || "Allowance left"}</p>
               </div>
               <Button
                 size="compact-xs"
@@ -532,8 +523,8 @@ export default function Usage({
                   <span>Check on Claude</span>
                 </header>
                 <p>
-                  Claude shows available resets and their expiry. Use the same
-                  account shown above, then confirm “Reset for free” on Claude.
+                  Opens Claude. Use the same account, then confirm “Reset for
+                  free”.
                 </p>
                 <div className="account-reset-credit-row">
                   <Button
@@ -679,14 +670,23 @@ export default function Usage({
                 <span>USD</span>
               </header>
               <div className="account-cost-values">
-                <div>
-                  <span>Today</span>
-                  <strong>{dollars(costs?.data?.todayUSD)}</strong>
-                </div>
-                <div>
-                  <span>Last 30 days</span>
-                  <strong>{dollars(costs?.data?.last30DaysUSD)}</strong>
-                </div>
+                {(
+                  [
+                    ["Today", costs?.data?.todayUSD],
+                    ["Last 30 days", costs?.data?.last30DaysUSD],
+                  ] as const
+                ).map(([label, value]) => (
+                  <div key={label}>
+                    <span>{label}</span>
+                    <strong
+                      className={
+                        number(value) ? undefined : "account-cost-missing"
+                      }
+                    >
+                      {dollars(value)}
+                    </strong>
+                  </div>
+                ))}
               </div>
               {(costs?.data?.coverage === "partial" ||
                 costs?.stale ||

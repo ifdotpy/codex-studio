@@ -330,7 +330,7 @@ export default function Sidebar(p: Props) {
               .map((a) => a.id),
           )}
           title={row.name}
-          aria-description="Drag to reorder or move to a folder. Alt + Up or Down reorders this chat."
+          aria-description="Drag to reorder. Alt + Up or Down also works."
           className="chat-row"
           data-chat={row.id}
           onClick={() => p.open(row.id)}
@@ -622,20 +622,23 @@ export default function Sidebar(p: Props) {
           </ActionIcon>
         }
       </div>
-      <Button
-        className="sidebar-search"
-        leftSection={<Search size={15} />}
-        onClick={p.onSearch}
-      >
-        Search chats
-      </Button>
-      <Button
-        leftSection={<Plus size={15} />}
-        disabled={p.creating}
-        onClick={() => p.newChat()}
-      >
-        New chat
-      </Button>
+      <div className="sidebar-nav">
+        <Button
+          className="sidebar-nav-button"
+          leftSection={<Plus size={15} />}
+          disabled={p.creating}
+          onClick={() => p.newChat()}
+        >
+          New chat
+        </Button>
+        <Button
+          className="sidebar-search sidebar-nav-button"
+          leftSection={<Search size={15} />}
+          onClick={p.onSearch}
+        >
+          Search chats
+        </Button>
+      </div>
       <TextInput
         id="chat-search"
         type="search"
@@ -700,7 +703,7 @@ export default function Sidebar(p: Props) {
                       group.path,
                       allProjectGroups.map((item) => item.path),
                     )}
-                    aria-description="Drag to reorder. Alt + Up or Down moves this project."
+                    aria-description="Drag to reorder. Alt + Up or Down also works."
                     className="project-tree-toggle"
                     title={group.path}
                     aria-expanded={!isCollapsed}

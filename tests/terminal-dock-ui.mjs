@@ -289,9 +289,7 @@ try {
   );
   await dock.getByLabel("Find terminal", { exact: true }).fill("Shell 249");
   await dock.getByRole("button", { name: /Shell 249 Your terminal/ }).click();
-  await dock
-    .getByText("Session ended · Output retained", { exact: true })
-    .waitFor();
+  await dock.getByText("Session ended", { exact: true }).waitFor();
   // Output polls faster than the session list. Wait for the close control's
   // session record to report the exit before checking the completed-session path.
   await dock
@@ -621,9 +619,7 @@ try {
   await dock.locator(".xterm-helper-textarea").focus();
   await page.keyboard.type("exit");
   await page.keyboard.press("Enter");
-  await dock
-    .getByText("Session ended · Output retained", { exact: true })
-    .waitFor();
+  await dock.getByText("Session ended", { exact: true }).waitFor();
   const after = await (await fetch(liveOrigin + "/api/state")).json();
   const ownerBefore = initial.threads.find(
     (item) => item.id === sessions.items[0].agent,

@@ -77,10 +77,7 @@ export default function ProjectAccount({
             ))}
         </div>
       </Checkbox.Group>
-      <p className="notice">
-        These accounts appear first in the chat account menu. This list does not
-        restrict file access or switch accounts automatically.
-      </p>
+      <p className="notice">Shown first in the chat account menu.</p>
       <NativeSelect
         label="Default account for new chats"
         value={key}
@@ -94,11 +91,7 @@ export default function ProjectAccount({
             disabled: account.status !== "ready" || account.disconnected,
           }))}
       />
-      <p className="notice">
-        New chats in this project use this account. Existing chats keep their
-        account. Other projects use their own default, or the application
-        default.
-      </p>
+      <p className="notice">New chats in this project use this account.</p>
       {error && (
         <p role="alert" className="account-action-error">
           {error}

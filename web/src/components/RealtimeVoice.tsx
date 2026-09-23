@@ -117,10 +117,7 @@ function NativeVoice({
       const hadVoice = !!peer.current;
       mounted.current = false;
       close();
-      if (hadVoice)
-        notify(
-          "Voice ended because you left the chat. The microphone is off. The task can continue.",
-        );
+      if (hadVoice) notify("Voice ended because you left the chat.");
     };
   }, []);
   useEffect(() => {
@@ -405,8 +402,7 @@ function NativeVoice({
           {partial && <p className="realtime-voice-note">{partial}</p>}
           {active && (
             <small>
-              Voice ends when you leave this chat. End voice stops the
-              microphone. It does not stop the task.
+              Voice ends when you leave this chat. The task keeps running.
             </small>
           )}
           {!!rows.length && (

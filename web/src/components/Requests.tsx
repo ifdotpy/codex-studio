@@ -39,6 +39,23 @@ function requestQuestions(request: Json): Json[] {
 type AnswerValues = Record<string, string>;
 // Secret answers remain in memory. Other answers survive a reload.
 const answerDrafts = new Map<string, AnswerValues>();
+// Show a command as the shell line the user would type, not as JSON.
+function commandText(command: unknown): string {
+  if (typeof command === "string") return command;
+  if (
+    Array.isArray(command) &&
+    command.every((part) => typeof part === "string")
+  )
+    return command
+      .map((part) =>
+        /^[\w@%+=:,./-]+$/.test(part)
+          ? part
+          : `'${part.replace(/'/g, `'\\''`)}'`,
+      )
+      .join(" ");
+  return JSON.stringify(command, null, 2);
+}
+
 const answerKey = (scope: string, request: Json) =>
   JSON.stringify([
     scope,
@@ -333,19 +350,18 @@ function RequestCard({
                       : "Request"}
             </span>
           </div>
-          {showDates && (
-            <MessageDate at={r.createdAt ?? r.created ?? r.at} />
-          )}
-          {(!open || blocked || !question) && (
-            <p className="request-prompt">
-              {questions[0]?.question || (
-                <ErrorDescription
-                  value={p.reason || p.message || "Approval required."}
-                  role="status"
-                />
-              )}
-            </p>
-          )}
+          {showDates && <MessageDate at={r.createdAt ?? r.created ?? r.at} />}
+          {(!open || blocked || !question) &&
+            (questions[0]?.question || p.reason || p.message || !approval) && (
+              <p className="request-prompt">
+                {questions[0]?.question || (
+                  <ErrorDescription
+                    value={p.reason || p.message || "The agent needs a reply."}
+                    role="status"
+                  />
+                )}
+              </p>
+            )}
           {questions[0]?.question &&
             (p.reason || p.message) &&
             (p.reason || p.message) !== questions[0].question && (
@@ -355,9 +371,15 @@ function RequestCard({
             )}
           {!open && questions.length > 1 && <p>{questions.length} questions</p>}
           {(p.command || r.preview?.command) && (
-            <pre>{JSON.stringify(p.command || r.preview.command)}</pre>
+            <pre className="request-command">
+              {commandText(p.command || r.preview.command)}
+            </pre>
           )}
-          {p.cwd && <p>{p.cwd}</p>}
+          {p.cwd && (
+            <p className="request-cwd" title={p.cwd}>
+              in {p.cwd}
+            </p>
+          )}
           {(p.permissions || r.preview?.changes) && (
             <pre>
               {JSON.stringify(p.permissions || r.preview.changes, null, 2)}
@@ -373,6 +395,7 @@ function RequestCard({
           {question && (
             <Button
               variant="subtle"
+              className="request-delete"
               disabled={sending}
               onClick={() => void defer(true)}
             >
@@ -395,6 +418,8 @@ function RequestCard({
               <Button
                 ref={trigger}
                 data-answer={r.id}
+                variant={open ? "subtle" : "filled"}
+                color={open ? "gray" : "indigo"}
                 disabled={sending}
                 aria-expanded={open}
                 aria-controls={`answer-${r.id}`}
@@ -407,15 +432,17 @@ function RequestCard({
             <>
               <Button
                 disabled={sending}
-                onClick={() => void post({ decision: "accept" })}
-              >
-                Approve
-              </Button>
-              <Button
-                disabled={sending}
                 onClick={() => void post({ decision: "decline" })}
               >
                 Decline
+              </Button>
+              <Button
+                variant="filled"
+                color="indigo"
+                disabled={sending}
+                onClick={() => void post({ decision: "accept" })}
+              >
+                Approve
               </Button>
             </>
           ) : (
@@ -461,10 +488,7 @@ export default function Requests({ requests, allRequests, ...props }: Props) {
           <summary>
             Deferred questions <span>{deferred.length}</span>
           </summary>
-          <p className="request-deferred-note">
-            Deferred questions stay unanswered. Required answers still pause the
-            agent.
-          </p>
+          <p className="request-deferred-note">Deferred questions stay open.</p>
           {deferred.map((r) => (
             <RequestCard
               key={answerKey(props.scope, r)}

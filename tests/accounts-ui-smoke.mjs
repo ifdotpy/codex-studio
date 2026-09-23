@@ -557,9 +557,7 @@ try {
   await page
     .getByRole("button", { name: "Use one reset credit", exact: true })
     .click();
-  await page
-    .getByText("Reset applied. Allowance updates from Codex.")
-    .waitFor();
+  await page.getByText("Reset applied.", { exact: true }).waitFor();
   const reset = bodies.find((r) => r.path === "/api/limits/reset").body;
   assert.equal(reset.account_key, "other");
   assert.equal(reset.account_id, "native-other");
@@ -1149,7 +1147,7 @@ try {
     .waitFor();
   assert.match(
     await transferDialog.innerText(),
-    /Subagents stay on their current accounts/,
+    /Subagents keep their accounts/,
   );
   await transferDialog
     .getByRole("button", { name: "Transfer chat", exact: true })

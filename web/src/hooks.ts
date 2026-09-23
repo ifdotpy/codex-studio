@@ -153,7 +153,7 @@ export function useSnapshot() {
       if (!stopped) timer = setTimeout(poll, replicated.current ? 30000 : 1600);
     };
     const offline = () =>
-      setError("Offline. Saved chats and drafts remain on this device.");
+      setError("Offline. Your chats and drafts are saved here.");
     window.addEventListener("offline", offline);
     if (navigator.onLine === false) offline();
     const stopResume = onResume(() => void poll());
@@ -190,6 +190,22 @@ export function useSnapshot() {
     creationScope: scope,
   };
 }
+// Name the sender of team events, so a list of events is not identical rows.
+function eventSender(input: Json): string {
+  if (input.kind !== "agent_message" && input.kind !== "child_result")
+    return "";
+  try {
+    const event = JSON.parse(String(input.text || ""));
+    const name = event?.sender_name || event?.name;
+    if (typeof name !== "string" || !name.trim()) return "";
+    return input.kind === "child_result"
+      ? `Result from ${name.trim()}`
+      : `Message from ${name.trim()}`;
+  } catch {
+    return "";
+  }
+}
+
 // Native input batches have separate user-visible message identities.
 export function transcriptMessages(
   source: Message[],
@@ -217,7 +233,8 @@ export function transcriptMessages(
           title:
             r.kind === "user"
               ? "You"
-              : (
+              : eventSender(r) ||
+                (
                   {
                     agent_message: "Agent message received",
                     child_result: "Worker result received",
@@ -227,7 +244,8 @@ export function transcriptMessages(
                     followup: "Agent follow-up",
                     complaint: "Complaint requires a response",
                   } as Record<string, string>
-                )[r.kind] || "Team activity",
+                )[r.kind] ||
+                "Team activity",
         }))
       : [m],
   );
@@ -410,9 +428,7 @@ export function useMessages(
       latest.current = { scope, data: d };
       const nextNotice =
         d.unavailable ||
-        (d.truncated && !managed
-          ? "Recent messages only. Full history remains on disk."
-          : "");
+        (d.truncated && !managed ? "Recent messages only." : "");
       setItems(nextItems);
       setNotice(nextNotice);
       // Keep only bounded, display-only history. Current agent state always comes

@@ -186,8 +186,8 @@ export function BrowserDictation({
             <strong>Dictation</strong>
           </header>
           <p className="dictation-note">
-            Your browser converts speech to text. Its speech service may receive
-            audio. Studio saves only the text on this device.
+            Your browser converts speech to text. Its speech service may get the
+            audio.
           </p>
           {!supported && (
             <p role="status">
