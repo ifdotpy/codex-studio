@@ -269,6 +269,45 @@ class ReaderContract(unittest.TestCase):
         self.assertTrue(all(len(m.get('_studioNotificationSamples', [])) <= 128 for m in before))
         self.assertIsNone(server.transport_error)
 
+    def test_deep_queue_sheds_interleaved_fragments_and_keeps_connection(self):
+        server, proc = self.start(limit=64)
+        self.block(proc)
+        seen = []
+        server.notification = lambda message: seen.append(message)
+        server.request = lambda message: seen.append(message)
+        for i in range(100):
+            # Different items never merge, so the queue grows until shedding starts.
+            proc.emit({'method': 'item/commandExecution/outputDelta',
+                       'params': {'threadId': 't', 'itemId': f'item-{i}', 'delta': f'{i}\n'}})
+        for i in range(10):
+            proc.emit({'method': 'item/started', 'params': {'threadId': 't', 'item': {'id': f'x-{i}'}}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {'ready': True}})
+        self.assertEqual(server.wait(marker, 2), {'ready': True})
+        self.assertIsNone(proc.poll())
+        self.assertIsNone(server.transport_error)
+        shed_before = set(server._shed_items)
+        self.assertTrue(shed_before)
+        dropped = sorted(shed_before)[0][1]
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(3))
+        started = [m['params']['item']['id'] for m in seen if m.get('method') == 'item/started']
+        self.assertEqual(started, [f'x-{i}' for i in range(10)])
+        self.assertLess(len([m for m in seen if m.get('method') == 'item/commandExecution/outputDelta']), 100)
+        # With a shallow queue a shed item stays shed until it completes.
+        seen.clear()
+        proc.emit({'method': 'item/commandExecution/outputDelta', 'params': {'threadId': 't', 'itemId': dropped, 'delta': 'late'}})
+        proc.emit({'method': 'item/completed', 'params': {'threadId': 't', 'item': {'id': dropped, 'aggregatedOutput': 'full'}}})
+        proc.emit({'method': 'item/commandExecution/outputDelta', 'params': {'threadId': 't', 'itemId': dropped, 'delta': 'next'}})
+        done = threading.Event()
+        server.after_events(done.set)
+        self.assertTrue(done.wait(2))
+        self.assertEqual([(m['method'], m['params'].get('delta')) for m in seen],
+                         [('item/completed', None), ('item/commandExecution/outputDelta', 'next')])
+        self.assertIn('streamed fragments', (self.root / 'app-server.log').read_text())
+
     def test_queue_saturation_is_explicit_and_preserves_accepted_order(self):
         server, proc = self.start(limit=2)
         self.block(proc)

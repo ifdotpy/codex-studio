@@ -268,7 +268,11 @@ class SubmissionUnknown(ResponseTimeout):
 
 class AppServer:
     WRITE_TIMEOUT = 5
-    CALLBACK_QUEUE_LIMIT = 4096
+    CALLBACK_QUEUE_LIMIT = 65536
+    # Streamed fragments are redundant: item/completed carries the full text.
+    # Past this depth they are shed so the queue never closes the connection.
+    DELTA_SHED_DEPTH = 2048
+    SHED_METHODS = frozenset({"item/agentMessage/delta", "item/commandExecution/outputDelta"})
     CLOCK_QUEUE_LIMIT = 128
 
     def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None):
@@ -454,11 +458,43 @@ class AppServer:
             finally:
                 self.clock_replies.task_done()
 
+    def shed_fragment(self, message):
+        """Drop a streamed fragment when the queue is deep. Caller holds callback_lock.
+
+        Once one fragment of an item is dropped, later fragments of that item are
+        dropped too, so streamed text stays a correct prefix until item/completed
+        replaces it with the full text.
+        """
+        method = message.get("method")
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        shed = self.__dict__.setdefault("_shed_items", set())
+        if method == "item/completed":
+            shed.discard((params.get("threadId"), (params.get("item") or {}).get("id")))
+            return False
+        if method not in self.SHED_METHODS:
+            return False
+        key = (params.get("threadId"), params.get("itemId"))
+        if key not in shed:
+            depth = min(self.DELTA_SHED_DEPTH, self.callbacks.maxsize * 3 // 4 or self.DELTA_SHED_DEPTH)
+            if self.callbacks.qsize() < depth:
+                return False
+            if len(shed) > 10000:
+                shed.clear()
+            shed.add(key)
+        self._shed_count = getattr(self, "_shed_count", 0) + 1
+        if self._shed_count % 1000 == 1:
+            self.protocol_error(f"Studio skipped {self._shed_count} streamed fragments while the event queue "
+                                f"was deep ({self.callbacks.qsize()}); completed items keep their full text")
+        return True
+
     def enqueue(self, callback, message):
         import queue
         try:
             with self.callback_lock:
                 if not self.dispatch_stopped:
+                    if (callback == self.notification and isinstance(message, dict)
+                            and "id" not in message and self.shed_fragment(message)):
+                        return
                     # Compact terminal fragments before admission. Consumer-only
                     # batching cannot protect a queue whose producer is faster.
                     if (callback == self.notification and isinstance(message, dict)
