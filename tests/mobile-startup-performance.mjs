@@ -70,6 +70,8 @@ try {
       (agent.isLead || (!!root && agent.rootId === root)),
   ).length;
   const expectedPullScopes = backgroundHistoryTargets + 3;
+  // Current fixture: 41 background targets, plus drafts, chat state, and selected transcript.
+  // The +12 is the repeated-pull limit below for the 6.5-second idle window.
   const maxIdlePulls = expectedPullScopes + 12;
   Object.assign(measurements, {
     fixture,
