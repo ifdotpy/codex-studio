@@ -30,12 +30,17 @@ export const getSessionMessages=async()=>[];
 export function query({prompt,options}){
  if(options.systemPrompt&&!(options.disallowedTools||[]).includes('Agent'))throw new Error('Native subagents must stay disabled');
  let abort=new AbortController();
+ if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'initial',model:options.model,settings:options.settings})+'\n');
  return {
-  supportedModels:async()=>[{value:'default',displayName:'Default',supportsEffort:true,supportedEffortLevels:['low','medium','high']}],
+  supportedModels:async()=>[
+   {value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5',supportsEffort:true,supportedEffortLevels:['low','medium','high']},
+   {value:'opus[1m]',resolvedModel:'claude-opus-5-5'},
+   {value:'sonnet',resolvedModel:'claude-sonnet-5'},
+  ],
   accountInfo:async()=>({email:fs.existsSync(options.cwd+'/.wrong-account')?'different@example.test':'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
   initializationResult:async()=>({commands:[{name:'compact',description:'Compact history'}]}),
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>({rate_limits_available:true,subscription_type:'max',rate_limits:{five_hour:{utilization:11,resets_at:'2026-09-22T08:00:00Z'},seven_day:{utilization:4},model_scoped:[{display_name:'Fable',utilization:7}]}}),
-  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
+  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');},setPermissionMode:async()=>{},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
   close(){abort.abort();},interrupt:async()=>abort.abort(),
   async *[Symbol.asyncIterator](){
    while(!abort.signal.aborted){
@@ -180,6 +185,27 @@ class Bridge(unittest.TestCase):
         self.assertEqual(final[-1]['text'],'Visible answer')
         self.assertNotIn('PRIVATE_SIGNATURE',json.dumps(history))
         self.assertTrue(any(x.get('method')=='item/agentMessage/delta' for x in self.notifications))
+
+    def test_required_thinking_overrides_saved_off_and_optional_switch_restores_it(self):
+        self.call('claude/settings', {'threadId': self.thread, 'settings': {'thinking': False}})
+        for index, model in enumerate(('opus[1m]', 'sonnet', 'claude-fable-5-1[1m]')):
+            self.call('turn/start', {'threadId': self.thread, 'model': model,
+                'clientUserMessageId': 'thinking-' + str(index),
+                'input': [{'type': 'text', 'text': 'hello'}]})
+            self.assertEqual(self.completed()['status'], 'completed')
+        flags = [json.loads(line) for line in (self.root / '.thinking-flags').read_text().splitlines()]
+        self.assertEqual([row['phase'] for row in flags], ['initial', 'live', 'live'])
+        self.assertEqual([row['settings']['alwaysThinkingEnabled'] for row in flags], [True, False, True])
+
+    def test_required_thinking_switch_clears_override_when_preference_is_unset(self):
+        for index, model in enumerate(('default', 'sonnet')):
+            self.call('turn/start', {'threadId': self.thread, 'model': model,
+                'clientUserMessageId': 'thinking-default-' + str(index),
+                'input': [{'type': 'text', 'text': 'hello'}]})
+            self.assertEqual(self.completed()['status'], 'completed')
+        flags = [json.loads(line) for line in (self.root / '.thinking-flags').read_text().splitlines()]
+        self.assertEqual(flags[0]['settings']['alwaysThinkingEnabled'], True)
+        self.assertIsNone(flags[1]['settings']['alwaysThinkingEnabled'])
 
     def test_history_version_tracks_content_and_survives_read(self):
         before = self.call('thread/read', {'threadId':self.thread})['thread']

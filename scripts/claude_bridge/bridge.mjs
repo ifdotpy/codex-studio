@@ -26,6 +26,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
+import { thinkingFlag } from "./thinking.mjs";
+
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 let lastLimits;
 const root = process.argv[2];
@@ -306,13 +308,12 @@ const permissionMode = (s, p = {}) =>
     : s.sandbox === "read-only"
       ? "plan"
       : "default");
-function flags(s, p = {}) {
+async function flags(s, p = {}, live = false) {
+  const native = await catalog();
   return {
     fastMode: p.serviceTier === "priority",
     ...(p.effort !== undefined ? { effortLevel: p.effort } : {}),
-    ...(s.claude?.thinking !== undefined
-      ? { alwaysThinkingEnabled: s.claude.thinking }
-      : {}),
+    ...thinkingFlag(p.model || s.model, native.models, s.claude?.thinking, live),
     ...(s.claude?.autoCompactWindow || providerOptions.autoCompactWindow
       ? {
           autoCompactWindow:
@@ -413,7 +414,7 @@ async function startSession(s, active, p) {
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
         ...(p.effort ? { effort: p.effort } : {}),
-        settings: flags(s, p),
+        settings: await flags(s, p),
         extraArgs: {
           ...providerOptions.extraArgs,
           "replay-user-messages": null,
@@ -854,7 +855,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 3 },
+      capabilities: { claudeVersion: 4 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1097,7 +1098,7 @@ async function handle(method, p) {
       await active.ready;
       await active.q.setModel(p.model || s.model);
       await active.q.setPermissionMode(permissionMode(s, p));
-      await active.q.applyFlagSettings(flags(s, p));
+      await active.q.applyFlagSettings(await flags(s, p, true));
       if (queries.get(s.id) !== active || active.input.closed)
         throw new Error("Claude closed before this turn could start");
       if (active.turn)

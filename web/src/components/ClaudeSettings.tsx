@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Button, NativeSelect, Switch, TextInput } from "@mantine/core";
 import { api, errorText, saved } from "../api";
 import { busy, type Agent, type Json } from "../types";
+import { useWorkerModels } from "./WorkerModelPicker";
+import { requiresThinking } from "../../../scripts/claude_bridge/thinking.mjs";
 
 export function ClaudeSettings({
   agent,
@@ -10,6 +12,8 @@ export function ClaudeSettings({
   agent: Agent;
   refresh: () => Promise<unknown>;
 }) {
+  const catalog = useWorkerModels(agent.accountKey || "default", true);
+  const thinkingRequired = requiresThinking(agent.model, catalog.models);
   const [state, setState] = useState<Json>({}),
     [commands, setCommands] = useState<Json[]>([]);
   const [mode, setMode] = useState("default"),
@@ -101,12 +105,20 @@ export function ClaudeSettings({
           { value: "bypassPermissions", label: "Full access" },
         ]}
       />
-      <Switch
-        label="Extended thinking"
-        checked={thinking}
-        disabled={locked}
-        onChange={(e) => setThinking(e.currentTarget.checked)}
-      />
+      {thinkingRequired ? (
+        <p>
+          Thinking is always on for this model. Use the reasoning level to set
+          its depth.
+        </p>
+      ) : (
+        <Switch
+          label="Extended thinking"
+          description="Allow reasoning before the answer. The reasoning level controls its depth."
+          checked={thinking}
+          disabled={locked || catalog.loading || !!catalog.error}
+          onChange={(e) => setThinking(e.currentTarget.checked)}
+        />
+      )}
       <TextInput
         label="Auto-compact token limit"
         placeholder="Use the Claude default"
