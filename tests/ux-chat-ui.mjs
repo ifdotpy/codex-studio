@@ -115,6 +115,8 @@ try {
     const url = new URL(request.url());
     const path = url.pathname;
     const id = url.searchParams.get("id");
+    if (path === "/api/sync/identity")
+      return route.fulfill({ json: { workspaceId: "a".repeat(32) } });
     if (request.method() === "POST")
       writes.push({ path, body: request.postDataJSON() });
     if (path === "/api/transcript/stream")
@@ -171,18 +173,6 @@ try {
         json: { items, nextCursor, nextAfterCursor, historyVersion },
       });
     }
-    if (path === "/api/assets")
-      return route.fulfill({
-        json: {
-          asset: {
-            id: "text-asset",
-            name: "message.txt",
-            mime: "text/plain",
-            size: 12050,
-            image: false,
-          },
-        },
-      });
     if (path === "/api/branch") {
       if (failBranch) {
         failBranch = false;
@@ -211,28 +201,70 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.locator('[data-message="item-10"]').waitFor();
   const composer = page.locator("#message");
+  const sendSettled = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const status = document.querySelector("#send-state");
+          let active = !!status.textContent;
+          const observer = new MutationObserver(() => {
+            if (status.textContent) active = true;
+            else if (active) {
+              observer.disconnect();
+              resolve();
+            }
+          });
+          observer.observe(status, {
+            childList: true,
+            characterData: true,
+            subtree: true,
+          });
+        }),
+    );
   await composer.fill("Draft must remain unsent");
+  const tabSettled = sendSettled();
+  const tabSend = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/fixture-send",
+  );
   await composer.press("Tab");
-  assert.equal(await composer.inputValue(), "Draft must remain unsent");
-  assert.equal(
-    writes.filter((write) => write.path === "/api/fixture-send").length,
-    0,
-  );
-  assert.equal(
-    await composer.evaluate((element) => element === document.activeElement),
-    false,
-  );
-  await page
-    .getByRole("button", { name: "Queue after turn", exact: true })
-    .click();
+  await tabSend;
+  await tabSettled;
   await page.waitForFunction(
     () => document.querySelector("#message").value === "",
   );
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].path, "/api/fixture-send");
+  assert.equal(writes[0].body.text, "Draft must remain unsent");
+  assert.equal(writes[0].body.delivery, "queue");
   assert.equal(
-    writes.find((write) => write.path === "/api/fixture-send").body.delivery,
-    "queue",
+    await page
+      .locator("#message")
+      .evaluate((element) => element === document.activeElement),
+    true,
+    "Tab queues the draft without moving focus out of the composer",
   );
-
+  await composer.fill("Queue from button");
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Queue after turn", exact: true })
+      .isEnabled(),
+    true,
+  );
+  const buttonSend = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/fixture-send",
+  );
+  const buttonSettled = sendSettled();
+  await page
+    .getByRole("button", { name: "Queue after turn", exact: true })
+    .click();
+  await buttonSend;
+  await buttonSettled;
+  await page.waitForFunction(
+    () => document.querySelector("#message").value === "",
+  );
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].body.delivery, "queue");
+  assert.equal(writes[1].body.text, "Queue from button");
   const longDraft = "L".repeat(12050);
   await composer.fill(longDraft);
   assert.equal(await composer.inputValue(), longDraft);
@@ -241,23 +273,54 @@ try {
   await composer.press("Enter");
   assert.equal(
     writes.filter((write) => write.path === "/api/fixture-send").length,
-    1,
+    2,
   );
-  await page
-    .getByRole("button", { name: "Attach text as a file", exact: true })
-    .click();
+  const attach = page.getByRole("button", {
+    name: "Attach text as a file",
+    exact: true,
+  });
+  assert.equal(await attach.isEnabled(), true, "Long draft can become a file");
+  await attach.click();
   await page.waitForFunction(
     () => document.querySelector("#message").value === "",
   );
-  assert.equal(
-    Buffer.from(
-      writes.find((write) => write.path === "/api/assets").body.base64,
-      "base64",
-    ).toString(),
-    longDraft,
-  );
   await page
-    .getByRole("button", { name: "Remove message.txt", exact: true })
+    .getByRole("button", { name: "Remove pending message.txt", exact: true })
+    .waitFor();
+  const savedUpload = await page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const request = indexedDB.open("codex-studio-uploads", 2);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const database = request.result;
+          const transaction = database.transaction(
+            ["uploads", "contents"],
+            "readonly",
+          );
+          const rows = transaction.objectStore("uploads").getAll();
+          rows.onerror = () => reject(rows.error);
+          rows.onsuccess = () => {
+            const row = rows.result.find((item) => item.name === "message.txt");
+            if (!row) return resolve(null);
+            const content = transaction.objectStore("contents").get(row.id);
+            content.onerror = () => reject(content.error);
+            content.onsuccess = () => {
+              database.close();
+              resolve({
+                name: row.name,
+                bytes: Array.from(new Uint8Array(content.result.bytes)),
+              });
+            };
+          };
+        };
+      }),
+  );
+  assert.ok(savedUpload);
+  assert.equal(savedUpload.name, "message.txt");
+  assert.equal(Buffer.from(savedUpload.bytes).toString(), longDraft);
+  await page
+    .getByRole("button", { name: "Remove pending message.txt", exact: true })
     .click();
 
   await page.locator("#earlier-messages").click();
@@ -394,9 +457,15 @@ try {
     "item-10",
     "edit preserves the selected input identity inside a native batch",
   );
-  assert.equal(
-    writes.filter((write) => write.path === "/api/fixture-send").length,
-    2,
+  assert.deepEqual(
+    writes
+      .filter((write) => write.path === "/api/fixture-send")
+      .map((write) => write.body.text),
+    [
+      "Draft must remain unsent",
+      "Queue from button",
+      "Send while history loads",
+    ],
     "branch creation never sends the reviewed draft",
   );
   await page.evaluate(() => window.chatFixture.select("lead"));
@@ -419,9 +488,15 @@ try {
     ["edited-branch", "answer-branch"],
   );
   assert.match(await composer.inputValue(), /Use the existing results/);
-  assert.equal(
-    writes.filter((write) => write.path === "/api/fixture-send").length,
-    2,
+  assert.deepEqual(
+    writes
+      .filter((write) => write.path === "/api/fixture-send")
+      .map((write) => write.body.text),
+    [
+      "Draft must remain unsent",
+      "Queue from button",
+      "Send while history loads",
+    ],
   );
   assert.equal(
     writes.filter((write) => write.path === "/api/branch").at(-1).body.before,

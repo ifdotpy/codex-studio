@@ -53,35 +53,42 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(origin);
-  await page.locator(`[data-chat="${lead.id}"]`).click();
+  const leadChat = page.locator(`[data-chat="${lead.id}"]`);
+  await leadChat.click();
+  await page.waitForFunction(
+    (id) =>
+      document
+        .querySelector(`[data-chat="${CSS.escape(id)}"]`)
+        ?.getAttribute("aria-current") === "true",
+    lead.id,
+  );
   await page.locator("#message").fill("Keep my main conversation draft.");
   await page.locator("#messages-toggle").click();
   const drawer = page.getByRole("dialog", { name: "Messages", exact: true });
   await drawer.waitFor();
   assert.equal(await drawer.locator(".workspace-nav").count(), 0);
+  const youRow = drawer.locator('.team-room-row[data-room="you"]');
+  await youRow.waitFor();
   assert.equal(
-    await drawer
-      .getByRole("tab", { name: "For you" })
-      .getAttribute("aria-selected"),
+    await youRow.getAttribute("aria-pressed"),
     "true",
+    "Messages opens on the For you conversation",
   );
-  assert.equal(await drawer.locator(".team-chat-placeholder").count(), 0);
-  await drawer.locator(`[data-complaint="${leadMessage.id}"]`).click();
-  let modal = page.getByRole("dialog", { name: "Message to you", exact: true });
-  await modal
+  assert.equal(await drawer.locator(".team-chat-empty").count(), 0);
+  const complaint = drawer.locator(`[data-complaint="${leadMessage.id}"]`);
+  await complaint.getByRole("button", { name: "Reply", exact: true }).click();
+  await complaint
     .getByLabel("Reply", { exact: true })
     .fill("Unsent reply\nwith two lines");
-  await modal.getByRole("button", { name: "Close", exact: true }).click();
+  await complaint
+    .getByRole("button", { name: "Close reply", exact: true })
+    .click();
   await drawer.locator(".mantine-Drawer-close").click();
   await page.locator("#messages-toggle").click();
-  await drawer.locator(`[data-complaint="${leadMessage.id}"]`).click();
+  await complaint.getByRole("button", { name: "Reply", exact: true }).click();
   assert.equal(
-    await modal.getByLabel("Reply", { exact: true }).inputValue(),
+    await complaint.getByLabel("Reply", { exact: true }).inputValue(),
     "Unsent reply\nwith two lines",
-  );
-  assert.equal(
-    await modal.getByLabel("Message status", { exact: true }).count(),
-    0,
   );
   const attempts = [];
   await page.route("**/api/complaints", async (route) => {
@@ -91,19 +98,32 @@ try {
     if (attempts.length === 1) await route.abort("failed");
     else await route.fulfill({ response });
   });
-  await modal.getByRole("button", { name: "Send reply", exact: true }).click();
-  await modal
+  await complaint
+    .getByRole("button", { name: "Send reply", exact: true })
+    .click();
+  await complaint
     .getByRole("button", { name: "Retry response", exact: true })
     .waitFor();
-  await modal.getByRole("button", { name: "Close", exact: true }).click();
   await drawer.locator(".mantine-Drawer-close").click();
   await page.locator("#messages-toggle").click();
-  await drawer.getByLabel("Show messages to you").selectOption("all");
-  await drawer.locator(`[data-complaint="${leadMessage.id}"]`).click();
-  await modal
+  const retry = complaint.getByRole("button", {
+    name: "Retry response",
+    exact: true,
+  });
+  const replyToggle = complaint.getByRole("button", {
+    name: "Reply",
+    exact: true,
+  });
+  const replyState = await Promise.race([
+    retry.waitFor().then(() => "retry"),
+    replyToggle.waitFor().then(() => "closed"),
+  ]);
+  if (replyState === "closed") await replyToggle.click();
+  await retry.waitFor();
+  await complaint
     .getByRole("button", { name: "Retry response", exact: true })
     .click();
-  await modal
+  await complaint
     .getByRole("button", { name: "Send reply", exact: true })
     .waitFor();
   assert.equal(attempts.length, 2);
@@ -137,21 +157,19 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     leadMessage.author,
     "response reaches the lead who sent the message",
   );
-  await modal.getByRole("button", { name: "Close", exact: true }).click();
-  await drawer.getByLabel("Show messages to you").selectOption("pending");
-  assert.equal(
-    await drawer.locator(".messages-for-you [data-complaint]").count(),
-    0,
+  await complaint
+    .getByRole("button", { name: "Close reply", exact: true })
+    .click();
+  const broadcast = state.runtime.rooms.find(
+    (room) => room.kind === "broadcast" && room.rootId === lead.id,
   );
-  await drawer.getByRole("tab", { name: "Team", exact: true }).click();
-  for (const group of ["orchestrator", "broadcast", "agents"]) {
-    assert.ok(
-      await drawer
-        .locator(`[data-message-group="${group}"] [data-room]`)
-        .count(),
-      group,
-    );
-  }
+  assert.ok(broadcast);
+  if (!(await drawer.locator(`[data-room="${broadcast.id}"]`).count()))
+    await drawer
+      .getByRole("button", { name: "More chats", exact: true })
+      .click();
+  await drawer.locator(`[data-room="${broadcast.id}"]`).waitFor();
+  await drawer.locator(`[data-room="${direct.id}"]`).waitFor();
   await drawer.locator(`[data-room="${direct.id}"]`).click();
   await drawer
     .locator(".team-message")
@@ -167,6 +185,7 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
   await drawer
     .getByRole("button", { name: "Latest messages", exact: true })
     .click();
+  await youRow.click();
   for (const width of [1280, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await page.waitForTimeout(500);
@@ -183,17 +202,20 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
           .click();
       }
     }
-    await drawer.getByRole("tab", { name: "For you", exact: true }).click();
-    const tab = await drawer
-      .getByRole("tab", { name: "For you", exact: true })
-      .boundingBox();
+    if (!(await youRow.isVisible()))
+      await drawer
+        .getByRole("button", { name: "Back to chats", exact: true })
+        .click();
+    await youRow.waitFor();
+    assert.equal(await youRow.getAttribute("aria-pressed"), "true");
+    const row = await youRow.boundingBox();
     assert.ok(
-      tab.x >= 0 && tab.x + tab.width <= width,
-      `selected tab visible at ${width}`,
+      row.x >= 0 && row.x + row.width <= width,
+      `selected conversation visible at ${width}`,
     );
     assert.ok(
       await drawer
-        .locator(".messages-for-you")
+        .locator(".unified-message-scroll")
         .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
     );
     await page.screenshot({
@@ -239,12 +261,12 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     exact: true,
   });
   await stableDrawer.waitFor();
-  const empty = stableDrawer.getByText("No messages need your attention.", {
+  const empty = stableDrawer.getByText("No messages yet.", {
     exact: true,
   });
   await empty.waitFor();
   await stable.evaluate(() => {
-    const empty = document.querySelector(".workspace-empty");
+    const empty = document.querySelector(".team-chat-empty");
     window.stability = { empty, failures: [] };
     window.observer = new MutationObserver(() => {
       if (!empty.isConnected) window.stability.failures.push("empty removed");
@@ -262,16 +284,22 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
   );
   assert.deepEqual(await stable.evaluate(() => window.stability.failures), []);
   await stable.evaluate(() => window.observer.disconnect());
-  quietState.runtime.work = [
+  quietState.runtime.requests = [
     {
-      id: "stability-work",
-      rootId: lead.id,
-      status: "review",
-      title: "Review the new result",
+      id: "stability-request",
+      createdAt: Date.now() / 1000,
+      method: "agent/asyncQuestion",
+      agent: lead.id,
+      epoch: 0,
+      status: "pending",
+      params: {
+        questions: [{ id: "0", question: "Review the new result" }],
+      },
     },
   ];
   await stableDrawer.getByRole("button", { name: "Refresh messages" }).click();
   await stableDrawer
+    .locator("p.request-prompt")
     .getByText("Review the new result", { exact: true })
     .waitFor();
   assert.equal(

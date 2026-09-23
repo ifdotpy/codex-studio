@@ -13,7 +13,7 @@ const { chromium } = require("playwright-core");
 const { createServer } = await import(require.resolve("vite"));
 const evidence = await mkdtemp(join(tmpdir(), "studio-outbox-controls-"));
 const fixture = spawn(
-  "python3",
+  process.env.PYTHON_BIN || "python3.14",
   ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
@@ -87,17 +87,33 @@ try {
     return route.fallback();
   });
   await context.route("**/api/messages", async (route) => {
-    assert.equal(route.request().method(), "POST");
+    if (route.request().method() !== "POST") return route.fallback();
     const body = route.request().postDataJSON();
     posts.push(body);
     if (holdPost) return holdPost(route);
-    await route.fulfill({ json: { id: body.id, status: "accepted" } });
+    const response = await fetch(target + "/api/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: target,
+        "X-Canvas-Token": route.request().headers()["x-canvas-token"],
+      },
+      body: JSON.stringify(body),
+    });
+    await route.fulfill({
+      status: response.status,
+      contentType: "application/json",
+      body: await response.text(),
+    });
   });
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
-    if (message.type() === "error" && message.text().includes("Encountered two children"))
+    if (
+      message.type() === "error" &&
+      message.text().includes("Encountered two children")
+    )
       errors.push(message.text());
   });
   await page.goto(origin);
@@ -108,19 +124,53 @@ try {
     await window.syncModule.syncDatabase();
   });
   const entry = (text) => page.locator(".message").filter({ hasText: text });
-  const accepted = async (text) => {
-    await until(() => page.evaluate(async (text) => {
-      const { syncDatabase } = await import("/src/sync/client.ts");
-      const { db } = await syncDatabase();
-      const rows = await db.outbox.find().exec();
-      return rows.some((row) => {
-        const value = JSON.parse(row.payload);
-        return value.body.text === text && value.status === "accepted";
+  const accepted = async (text, { rendered = true } = {}) => {
+    try {
+      await until(() =>
+        page.evaluate(async (text) => {
+          const { syncDatabase } = await import("/src/sync/client.ts");
+          const { db } = await syncDatabase();
+          const rows = await db.outbox.find().exec();
+          return rows.some((row) => {
+            const value = JSON.parse(row.payload);
+            return value.body.text === text && value.status === "accepted";
+          });
+        }, text),
+      );
+    } catch {
+      const rows = await page.evaluate(async () => {
+        const { db } = await (
+          await import("/src/sync/client.ts")
+        ).syncDatabase();
+        return (await db.outbox.find().exec()).map((row) => ({
+          payload: row.payload,
+          status: row.status,
+          error: row.error,
+        }));
       });
-    }, text));
-    await entry(text).waitFor();
-    assert.equal(await entry(text).getByRole("status").count(), 0,
-      "Confirmed messages do not retain a delivery heading");
+      throw new Error(
+        `Expected accepted outbox state for ${text}: ${JSON.stringify({ posts, rows })}`,
+      );
+    }
+    if (rendered) {
+      await entry(text).waitFor();
+      assert.equal(
+        await entry(text).getByRole("status").innerText(),
+        "Sending…",
+        "A queued after-tool message remains marked as sending",
+      );
+    } else {
+      const body = posts.at(-1);
+      const transcript = await (
+        await fetch(`${target}/api/transcript?id=${body.room}`)
+      ).json();
+      assert.ok(
+        transcript.items.some(
+          (item) => item.clientMessageId === body.id && item.text === text,
+        ),
+        "The accepted outbox request appears in the server transcript",
+      );
+    }
   };
   available = false;
   await page.locator("#message").fill("Cancel while offline");
@@ -143,13 +193,11 @@ try {
     .waitFor();
   assert.equal(posts.length, 0, "Cancellation survives reload and resume");
 
-  await page
-    .locator('input[type="file"]')
-    .setInputFiles({
-      name: "notes.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from("Saved attachment"),
-    });
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "notes.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("Saved attachment"),
+  });
   await page
     .getByRole("button", { name: "Remove notes.txt", exact: true })
     .waitFor();
@@ -289,7 +337,7 @@ try {
   await entry("Keep the immutable request")
     .getByRole("button", { name: "Resume retries", exact: true })
     .click();
-  await accepted("Keep the immutable request");
+  await accepted("Keep the immutable request", { rendered: false });
   assert.deepEqual(
     posts.slice(-2),
     [body, body],

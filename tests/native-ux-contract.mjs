@@ -2,24 +2,31 @@ import assert from "node:assert/strict";
 import { readFile, mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
 import vm from "node:vm";
 const require = createRequire(import.meta.url);
 const folder = await mkdtemp(join(tmpdir(), "studio-native-ux-"));
+const desktop = fileURLToPath(new URL("../desktop/", import.meta.url));
 const main = await readFile(
   new URL("../desktop/main.cjs", import.meta.url),
   "utf8",
 );
 async function fixture() {
   let window, handler, notification, ready;
+  const display = {
+    id: 1,
+    workArea: { x: 0, y: 0, width: 1440, height: 960 },
+  };
   const started = new Promise((resolve) => {
     ready = resolve;
   });
   const events = [];
   let backendBuild = "installed";
-  class Window {
+  class Window extends EventEmitter {
     constructor() {
+      super();
       window = this;
       this.webContents = Object.assign(new EventEmitter(), {
         mainFrame: { url: "http://localhost:1234/" },
@@ -61,6 +68,7 @@ async function fixture() {
     }
     show() {
       events.push(["notice"]);
+      this.emit("show");
     }
   }
   const app = {
@@ -89,6 +97,10 @@ async function fixture() {
             },
             Notification: Notice,
             Menu: { setApplicationMenu() {}, buildFromTemplate() {} },
+            screen: {
+              getPrimaryDisplay: () => display,
+              getAllDisplays: () => [display],
+            },
           }
         : name === "./backend.cjs"
           ? {
@@ -108,11 +120,17 @@ async function fixture() {
             }
           : name === "./speech.cjs"
             ? require("../desktop/speech.cjs")
-            : require(name),
+            : name === "./recovery.cjs"
+              ? require("../desktop/recovery.cjs")
+              : name.startsWith("./")
+                ? require(join(desktop, name.slice(2)))
+                : require(name),
     process: { argv: ["--hidden"], env: {}, platform: "darwin" },
     __dirname: join(folder, "desktop"),
     module: { exports: {} },
     AbortController,
+    setTimeout,
+    clearTimeout,
     console: { log: ready, error: console.error },
   });
   await started;
@@ -145,17 +163,6 @@ try {
     ),
     /restricted/,
   );
-  assert.equal(await f.invoke("getNotifications"), false);
-  assert.equal(await f.invoke("setNotifications", true), true);
-  f = await fixture();
-  assert.equal(await f.invoke("getNotifications"), true);
-  await assert.rejects(
-    f.handler(
-      { sender: {}, senderFrame: f.event.senderFrame },
-      { method: "getNotifications" },
-    ),
-    /restricted/,
-  );
   await assert.rejects(
     f.invoke("notify", {
       title: "a",
@@ -181,9 +188,6 @@ try {
     ["focus"],
     ["codex-desktop-navigate", target],
   ]);
-  await f.invoke("setNotifications", false);
-  f = await fixture();
-  assert.equal(await f.invoke("getNotifications"), false);
   assert.equal(await f.invoke("cancelTranscription", "unknown"), false);
   await assert.rejects(
     f.invoke("transcribeAudio", { id: "a", permit: "invalid" }),
@@ -219,11 +223,12 @@ try {
   const updateCall = await api.getBackendUpdate();
   assert.equal(updateCall[0], "codex-desktop");
   assert.equal(updateCall[1].method, "getBackendUpdate");
-  await api.getNotifications();
-  await assert.rejects(api.setNotifications(true), /button/);
+  assert.equal(api.getNotifications, undefined);
+  assert.equal(api.setNotifications, undefined);
   listeners.click({ isTrusted: true });
-  await api.setNotifications(true);
-  await assert.rejects(api.cancelTranscription("a"), /button/);
+  const cancelCall = await api.cancelTranscription("a");
+  assert.equal(cancelCall[0], "codex-desktop");
+  assert.equal(cancelCall[1].method, "cancelTranscription");
   const received = [];
   const unsubscribe = api.onNavigate((value) => received.push(value));
   ipc.emit("codex-desktop-navigate", {}, target);

@@ -187,7 +187,7 @@ createRoot(document.getElementById("root")!).render(<Harness/>);
   ]) {
     await page.locator(selector).click();
     await page.getByRole("dialog").waitFor();
-    await page.locator(".workspace-image").waitFor();
+    await page.locator(".image-viewer").waitFor();
     await page.keyboard.press("Escape");
     await page.getByRole("dialog").waitFor({ state: "hidden" });
   }

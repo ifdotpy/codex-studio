@@ -67,6 +67,7 @@ function Fixture() {
         )}
         <Conversation
           id={id}
+          syncWorkspaceId={"a".repeat(32)}
           agent={agent}
           data={data}
           draft={drafts[id] || ""}

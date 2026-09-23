@@ -85,12 +85,18 @@ try {
       ),
     other.id,
   );
-  await page.getByRole("dialog", { name: "Messages", exact: true }).waitFor();
   await page.waitForFunction(
     () =>
       document.querySelector("#conversation-title").textContent ===
       "Other project",
   );
+  assert.equal(
+    await page.getByRole("dialog", { name: "Messages", exact: true }).count(),
+    0,
+    "Navigation without a message selects the chat without opening Messages",
+  );
+  await page.getByRole("button", { name: "Messages" }).click();
+  await page.getByRole("dialog", { name: "Messages", exact: true }).waitFor();
   await page.keyboard.press("Escape");
   await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
   for (const width of [1440, 390, 320]) {
@@ -329,7 +335,7 @@ try {
   assert.equal(
     await branchPage.evaluate((id) => {
       const workspace = JSON.parse(
-        localStorage.getItem("codex-sync-workspace") || '"legacy"',
+        localStorage.getItem("codex-sync-workspace") || '"unassigned"',
       );
       return JSON.parse(localStorage.getItem(`codex-drafts:${workspace}`))[id];
     }, sourceAgent.id),

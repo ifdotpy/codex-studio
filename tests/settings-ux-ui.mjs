@@ -145,7 +145,7 @@ try {
   );
   await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
   const transfer = page.getByRole("dialog", {
-    name: "Transfer this team",
+    name: "Transfer this chat",
     exact: true,
   });
   await transfer.waitFor();
@@ -159,7 +159,7 @@ try {
   await picker.click();
   await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
   await transfer
-    .getByRole("button", { name: "Transfer team", exact: true })
+    .getByRole("button", { name: "Transfer chat", exact: true })
     .click();
   await transfer.waitFor({ state: "hidden" });
   assert.equal(transferCalls, 1);
