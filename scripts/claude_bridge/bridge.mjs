@@ -855,7 +855,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 4 },
+      capabilities: { claudeVersion: 5 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1094,8 +1094,24 @@ async function handle(method, p) {
       ],
     };
     let active = queries.get(s.id);
+    const toolsChanged =
+      Array.isArray(p.dynamicTools) &&
+      JSON.stringify(p.dynamicTools) !== JSON.stringify(s.dynamicTools || []);
+    if (toolsChanged) s.dynamicTools = p.dynamicTools;
     if (active) {
       await active.ready;
+      if (toolsChanged) {
+        // Replace only the Studio MCP server; background tasks keep running.
+        try {
+          await active.q.setMcpServers({
+            studio: studioTools(s, () => active.turn),
+          });
+        } catch (error) {
+          process.stderr.write(
+            `Studio tools were not updated for ${s.id}: ${error?.message || error}\n`,
+          );
+        }
+      }
       await active.q.setModel(p.model || s.model);
       await active.q.setPermissionMode(permissionMode(s, p));
       await active.q.applyFlagSettings(await flags(s, p, true));

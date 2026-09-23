@@ -1884,6 +1884,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 continue
             if not lead and definition["name"] in {"orchestration_speak", "orchestration_agent_manage", "orchestration_spawn"}:
                 continue
+            if definition["name"] == "orchestration_spawn" and actor.get("cwd"):
+                definition = {**definition, "description": definition["description"] + (
+                    " Default cwd for your workers: " + actor["cwd"] + ". A shell cd does not change it;"
+                    " pass cwd when you work in a subfolder.")}
             if definition["name"] == "orchestration_complaint":
                 definition = {**definition, "description": (
                     "Send a message to the user with action=submit. Only the user can answer or close it. "
@@ -2517,6 +2521,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         and "\n" not in rows[0]["text"]):
                     params["claudeCommand"] = rows[0]["text"].strip()
                 params.update(self.turn_permissions(a))
+                if a.get("provider") == "claude":
+                    # A live Claude session keeps its MCP tools until told otherwise.
+                    # Send the current set so schema changes reach it without a restart.
+                    params["dynamicTools"] = self.tool_definitions(a)
                 params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
                 params.update(turn_params(a, program))
                 current["cyberAccessProgram"] = program

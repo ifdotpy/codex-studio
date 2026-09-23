@@ -40,7 +40,7 @@ export function query({prompt,options}){
   accountInfo:async()=>({email:fs.existsSync(options.cwd+'/.wrong-account')?'different@example.test':'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
   initializationResult:async()=>({commands:[{name:'compact',description:'Compact history'}]}),
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>({rate_limits_available:true,subscription_type:'max',rate_limits:{five_hour:{utilization:11,resets_at:'2026-09-22T08:00:00Z'},seven_day:{utilization:4},model_scoped:[{display_name:'Fable',utilization:7}]}}),
-  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');},setPermissionMode:async()=>{},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
+  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');},setPermissionMode:async()=>{},setMcpServers:async servers=>{fs.appendFileSync(options.cwd+'/.mcp-sets',JSON.stringify(Object.keys(servers).map(name=>[name,servers[name].tools.map(t=>t.name)]))+'\n');return {added:[],removed:[],errors:{}};},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
   close(){abort.abort();},interrupt:async()=>abort.abort(),
   async *[Symbol.asyncIterator](){
    while(!abort.signal.aborted){
@@ -206,6 +206,15 @@ class Bridge(unittest.TestCase):
         flags = [json.loads(line) for line in (self.root / '.thinking-flags').read_text().splitlines()]
         self.assertEqual(flags[0]['settings']['alwaysThinkingEnabled'], True)
         self.assertIsNone(flags[1]['settings']['alwaysThinkingEnabled'])
+
+    def test_changed_studio_tools_reach_the_live_session_once(self):
+        tool = lambda name: {'name': name, 'description': name, 'inputSchema': {'type': 'object', 'properties': {}}}
+        for index, tools in enumerate(([tool('a')], [tool('a'), tool('b')], [tool('a'), tool('b')])):
+            self.call('turn/start', {'threadId': self.thread, 'dynamicTools': tools,
+                'clientUserMessageId': 'tools-' + str(index), 'input': [{'type': 'text', 'text': 'hello'}]})
+            self.assertEqual(self.completed()['status'], 'completed')
+        sets = [json.loads(line) for line in (self.root / '.mcp-sets').read_text().splitlines()]
+        self.assertEqual(sets, [[['studio', ['a', 'b']]]])
 
     def test_history_version_tracks_content_and_survives_read(self):
         before = self.call('thread/read', {'threadId':self.thread})['thread']

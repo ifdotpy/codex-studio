@@ -12,6 +12,11 @@ f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 
 
+def codex_runtime_tools():
+    import codex_runtime
+    return codex_runtime.TOOLS
+
+
 class SpawnTask(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -77,6 +82,9 @@ class SpawnTask(unittest.TestCase):
         names = lambda actor: {d['name'] for d in self.rt.tool_definitions(actor)}
         self.assertNotIn('orchestration_spawn', names(worker))
         self.assertIn('orchestration_spawn', names(self.rt.agent(self.lead['id'])))
+        spawn = next(d for d in self.rt.tool_definitions(self.rt.agent(self.lead['id'])) if d['name'] == 'orchestration_spawn')
+        self.assertIn('Default cwd for your workers: ' + self.lead['cwd'], spawn['description'])
+        self.assertNotIn('Default cwd for your workers', next(d for d in codex_runtime_tools() if d['name'] == 'orchestration_spawn')['description'])
 
 
     def spawn(self, key, **spec):
