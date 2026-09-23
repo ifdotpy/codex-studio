@@ -106,6 +106,12 @@ try {
   const team = page.getByRole("complementary", { name: "Team", exact: true });
   const search = team.getByRole("searchbox", { name: "Find a subagent" });
   const row = (n) => team.locator(`[data-worker="${worker(n).id}"]`);
+  const waitForTeamInViewport = () =>
+    page.waitForFunction(() => {
+      const panel = document.querySelector("#team");
+      const rect = panel?.getBoundingClientRect();
+      return !!rect && rect.left >= 0 && rect.right <= innerWidth;
+    });
   const groupIds = (name) =>
     team
       .getByRole("region", { name, exact: true })
@@ -221,7 +227,7 @@ try {
     await row(2).evaluate((node) => node.scrollWidth <= node.clientWidth),
     true,
   );
-  await page.waitForTimeout(350);
+  await waitForTeamInViewport();
   await page.screenshot({ path: join(root, "team-narrow.png") });
   await row(2).click();
   await team.waitFor({ state: "hidden" });
@@ -234,7 +240,6 @@ try {
   );
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
-    await page.waitForTimeout(350);
     if (await page.locator("#sidebar").isVisible())
       await page.locator("#sidebar-toggle").click();
     await page.locator("#message").fill(`Lead draft ${width}`);
@@ -242,15 +247,39 @@ try {
     await search.waitFor({ state: "visible" });
     await search.fill("Worker 39");
     await row(39).waitFor({ state: "visible" });
-    await page.waitForTimeout(350);
+    await waitForTeamInViewport();
+    const layout = await team.evaluate((n) => {
+      const r = n.getBoundingClientRect();
+      return {
+        rect: { left: r.left, right: r.right, width: r.width },
+        viewport: innerWidth,
+        scrollWidth: n.scrollWidth,
+        clientWidth: n.clientWidth,
+        overflowingChildren: [...n.querySelectorAll("*")]
+          .map((child) => {
+            const box = child.getBoundingClientRect();
+            return {
+              tag: child.tagName,
+              className:
+                typeof child.className === "string" ? child.className : "",
+              left: box.left,
+              right: box.right,
+              width: box.width,
+              scrollWidth: child.scrollWidth,
+              clientWidth: child.clientWidth,
+            };
+          })
+          .filter(
+            (child) => child.right > r.right + 0.5 || child.left < r.left - 0.5,
+          )
+          .slice(0, 8),
+      };
+    });
     assert.ok(
-      await team.evaluate((n) => {
-        const r = n.getBoundingClientRect();
-        return (
-          r.left >= 0 && r.right <= innerWidth && n.scrollWidth <= n.clientWidth
-        );
-      }),
-      "the team list fits the mobile viewport",
+      layout.rect.left >= 0 &&
+        layout.rect.right <= layout.viewport &&
+        layout.scrollWidth <= layout.clientWidth,
+      `the team list fits the mobile viewport: ${JSON.stringify(layout)}`,
     );
     await page.screenshot({ path: join(root, `team-mobile-${width}.png`) });
     await row(39).click();
