@@ -19,7 +19,9 @@ Drag a chat onto a team to join or move between teams. Drop it onto the project
 name to leave. A team dissolves when fewer than two chats remain.
 Dissolution preserves the chats and saved messages but removes peer access.
 
-For a team with exactly two chats, select **Open shared chat** in its menu.
+Select **New shared chat** to create one conversation with two agents.
+Choose a project and each participant's account and model before creation.
+The sidebar shows one chat. No existing chats or peer team are required.
 Both agents receive the shared messages and reply in sequence. Each agent keeps
 its own account, model, and context. Independent work stays outside this chat.
 Select **Both agents** for one reply each, or select one participant.
@@ -28,7 +30,8 @@ next speaker. **Stop** ends the exchange and interrupts only its current reply.
 A new message replaces the remaining reply order after the current reply ends.
 The exchange waits for answers to agent questions. Personal chat instructions
 must use the queue while that agent gives a shared reply.
-The shared history stays with its original members when the team changes.
+Existing two-member teams can also open a shared chat from their menu.
+That history stays with its original members when the team changes.
 
 ## Setup
 

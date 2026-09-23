@@ -31,11 +31,15 @@ export function useDesktopNotifications(
       current.initialized = true;
       return;
     }
+    const openedShared = data.runtime.rooms.find(
+      (room) => room.id === opened && room.radio,
+    );
     for (const alert of added) {
       if (
         document.visibilityState === "visible" &&
         document.hasFocus() &&
-        opened === alert.target.agentId
+        (opened === alert.target.agentId ||
+          openedShared?.members.includes(alert.target.agentId))
       )
         continue;
       const { id, ...notification } = alert;

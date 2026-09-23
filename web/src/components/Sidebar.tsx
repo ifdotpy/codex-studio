@@ -46,6 +46,7 @@ type Props = {
   lead?: Agent;
   open: (id: string) => void;
   newChat: (path?: string, folder?: string) => void;
+  newSharedChat?: (path?: string) => void;
   addProject: () => void;
   changeProject: (agent: Agent) => void;
   projectAccount: (path: string) => void;
@@ -160,14 +161,30 @@ export default function Sidebar(p: Props) {
     }
   };
   const agents = p.data.threads.filter(
-    (a) => a.source === "managed" && a.isLead && !a.deletedAt,
+    (a) =>
+      a.source === "managed" && a.isLead && !a.deletedAt && !a.sharedRoomId,
   );
+  const sharedRooms = p.data.runtime.rooms.filter(
+    (r) => r.radio?.direct && !r.userHidden,
+  );
+  const visibleSharedRooms = archive
+    ? []
+    : sharedRooms.filter((r) =>
+        `${r.name} ${r.projectPath || ""} ${p.data.runtime.projects?.find((project) => project.path === r.projectPath)?.name || ""}`
+          .toLowerCase()
+          .includes(query.toLowerCase()),
+      );
   const selectedFolder = agents.find((a) => a.id === p.opened)?.projectFolder;
   useEffect(() => {
-    if (agents.some((a) => a.id === p.opened)) {
+    if (
+      agents.some((a) => a.id === p.opened) ||
+      sharedRooms.some((r) => r.id === p.opened)
+    ) {
       setQuery("");
       setProjectsOpen(true);
-      const path = agents.find((a) => a.id === p.opened)?.cwd;
+      const path =
+        agents.find((a) => a.id === p.opened)?.cwd ||
+        sharedRooms.find((r) => r.id === p.opened)?.projectPath;
       if (path && collapsed[path]) {
         const next = { ...collapsed, [path]: false };
         setCollapsed(next);
@@ -297,10 +314,25 @@ export default function Sidebar(p: Props) {
       ...project,
       chats: [],
       registered: true,
-      hasChats: agents.some((a) => a.cwd === project.path),
+      hasChats:
+        agents.some((a) => a.cwd === project.path) ||
+        sharedRooms.some((r) => r.projectPath === project.path),
     });
   for (const a of agents) {
     const path = a.cwd || "";
+    if (!groupMap.has(path))
+      groupMap.set(path, {
+        id: path,
+        created: 0,
+        path,
+        name: path.split("/").filter(Boolean).at(-1) || "Other chats",
+        chats: [],
+        registered: false,
+        hasChats: true,
+      });
+  }
+  for (const room of sharedRooms) {
+    const path = room.projectPath || "";
     if (!groupMap.has(path))
       groupMap.set(path, {
         id: path,
@@ -322,6 +354,7 @@ export default function Sidebar(p: Props) {
     (group) =>
       !query ||
       group.chats.length ||
+      visibleSharedRooms.some((r) => r.projectPath === group.path) ||
       `${group.path} ${group.name}`.toLowerCase().includes(query.toLowerCase()),
   );
   const renderRow = (row: Agent) => {
@@ -599,6 +632,8 @@ export default function Sidebar(p: Props) {
         {!chats.length &&
           !children.length &&
           (parent ||
+            !visibleSharedRooms.some((r) => r.projectPath === group.path)) &&
+          (parent ||
             !peerTeams.some((team) => team.projectPath === group.path)) && (
             <p className="project-empty">No chats</p>
           )}
@@ -641,6 +676,15 @@ export default function Sidebar(p: Props) {
         >
           New chat
         </Button>
+        {p.newSharedChat && (
+          <Button
+            className="sidebar-nav-button"
+            variant="subtle"
+            onClick={() => p.newSharedChat?.()}
+          >
+            New shared chat
+          </Button>
+        )}
         <Button
           className="sidebar-search sidebar-nav-button"
           leftSection={<Search size={15} />}
@@ -748,6 +792,13 @@ export default function Sidebar(p: Props) {
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
+                        {p.newSharedChat && (
+                          <Menu.Item
+                            onClick={() => p.newSharedChat?.(group.path)}
+                          >
+                            New shared chat
+                          </Menu.Item>
+                        )}
                         {p.data.runtime.peerTeamsVersion === 1 && (
                           <Menu.Item
                             onClick={() =>
@@ -905,6 +956,26 @@ export default function Sidebar(p: Props) {
                           </PeerTeamGroup>
                         );
                       })}
+                    {visibleSharedRooms
+                      .filter((r) => r.projectPath === group.path)
+                      .map((room) => (
+                        <div
+                          key={room.id}
+                          className={`sidebar-row lead-row ${p.opened === room.id ? "selected" : ""}`}
+                        >
+                          <UnstyledButton
+                            className="chat-row"
+                            aria-current={
+                              p.opened === room.id ? "page" : undefined
+                            }
+                            onClick={() => p.open(room.id)}
+                          >
+                            <span className="row-copy">
+                              <strong>{room.name}</strong>
+                            </span>
+                          </UnstyledButton>
+                        </div>
+                      ))}
                     {renderProjectChats(group)}
                   </div>
                 )}

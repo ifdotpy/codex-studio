@@ -74,6 +74,9 @@ import { ExecutionSettings } from "./components/ExecutionSettings";
 import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import RadioChat from "./components/RadioChat";
+import SharedChatCreate, {
+  sharedCreationKey,
+} from "./components/SharedChatCreate";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import TerminalDock from "./components/TerminalDock";
 import "./desktop";
@@ -193,6 +196,7 @@ export default function App() {
     [workerQuery, setWorkerQuery] = useState(""),
     [workerFilter, setWorkerFilter] = useState("all"),
     [completedOpen, setCompletedOpen] = useState(false),
+    [sharedCreate, setSharedCreate] = useState<{ path?: string } | null>(null),
     [creating, setCreating] = useState(false),
     [sending, setSending] = useState(false),
     [toast, setToast] = useState(""),
@@ -200,6 +204,10 @@ export default function App() {
       null,
     ),
     [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({});
+  useEffect(() => {
+    if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
+      setSharedCreate({});
+  }, [data?.stateDir]);
   const receipts = useMemo(
     () =>
       new Map((data?.runtime.events || []).map((event) => [event.id, event])),
@@ -272,7 +280,9 @@ export default function App() {
     return response;
   };
   const agents = data?.threads || [],
-    leads = agents.filter((a) => a.source === "managed" && a.isLead),
+    leads = agents.filter(
+      (a) => a.source === "managed" && a.isLead && !a.sharedRoomId,
+    ),
     agent = agents.find((a) => a.id === opened),
     room = data?.runtime.rooms?.find((r) => r.id === opened),
     legacy = data?.chats.find((c) => c.id === opened),
@@ -375,6 +385,15 @@ export default function App() {
   };
   useEffect(() => {
     if (!data) return;
+    if (
+      agent?.sharedRoomId &&
+      data.runtime.rooms.some(
+        (room) => room.id === agent.sharedRoomId && !room.userHidden,
+      )
+    ) {
+      setOpened(agent.sharedRoomId);
+      return;
+    }
     const scope = `${data.stateDir}:${mobileClient ? "mobile" : "desktop"}`;
     const key = mobileClient
       ? "codex-mobile-opened"
@@ -401,7 +420,13 @@ export default function App() {
       return;
     if (agent?.id === createdSelection.current) createdSelection.current = null;
     if (!opened || (!agent && !room && !legacy))
-      setOpened(leads.at(-1)?.id || null);
+      setOpened(
+        leads.at(-1)?.id ||
+          data.runtime.rooms
+            .filter((room) => room.radio?.direct && !room.userHidden)
+            .at(-1)?.id ||
+          null,
+      );
     else save(key, opened);
   }, [data, opened, agent, room, legacy, mobileClient]);
   useEffect(() => {
@@ -1136,6 +1161,7 @@ export default function App() {
         lead={lead}
         open={open}
         newChat={(path, folder) => void newChat(path, folder)}
+        newSharedChat={(path) => setSharedCreate({ path })}
         addProject={() => {
           setSidebar(false);
           setModal({
@@ -1760,6 +1786,25 @@ export default function App() {
         title={modal?.title}
       >
         <div className="picker">{modal?.body}</div>
+      </Modal>
+      <Modal
+        opened={!!sharedCreate}
+        onClose={() => setSharedCreate(null)}
+        title="New shared chat"
+        size="md"
+      >
+        {sharedCreate && (
+          <SharedChatCreate
+            data={data}
+            accounts={accounts.data}
+            initialPath={sharedCreate.path}
+            refresh={refresh}
+            created={(id) => {
+              setSharedCreate(null);
+              open(id);
+            }}
+          />
+        )}
       </Modal>
       {toast && (
         <div id="toast" role="status">

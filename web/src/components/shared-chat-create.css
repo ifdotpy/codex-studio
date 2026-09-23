@@ -1,0 +1,27 @@
+.shared-chat-create {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.shared-chat-create > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.shared-create-participant {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  min-width: 0;
+}
+.shared-create-participant legend {
+  padding: 0 6px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.shared-create-participant .mantine-NativeSelect-input {
+  text-overflow: ellipsis;
+}

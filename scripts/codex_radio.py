@@ -18,11 +18,19 @@ def _save(runtime, db, room):
 
 
 def _valid(runtime, db, room, ready=False):
-    team = next((t for t in snapshot(runtime, db) if t['id'] == room['radio']['teamId']
-                 and t['projectPath'] == room['projectPath']), None)
-    if not team or len(team['members']) != 2 or set(team['members']) != set(room['members']):
-        return 'The shared chat membership changed. Its history stays with its original members.'
     agents = _agents(db)
+    if room['radio'].get('direct') is True:
+        from codex_peer_teams import _lead
+        members = room.get('members', [])
+        if (len(members) != 2 or len(set(members)) != 2
+                or any(key not in agents or not _lead(agents[key], room['projectPath'])
+                       or agents[key].get('sharedRoomId') != room['id'] for key in members)):
+            return 'The shared chat participants are no longer available in this project.'
+    else:
+        team = next((t for t in snapshot(runtime, db) if t['id'] == room['radio']['teamId']
+                     and t['projectPath'] == room['projectPath']), None)
+        if not team or len(team['members']) != 2 or set(team['members']) != set(room['members']):
+            return 'The shared chat membership changed. Its history stays with its original members.'
     for key in room['members']:
         a = agents[key]
         if a.get('accountTransferId') or a.get('nativeThreadBlock'):
@@ -59,6 +67,8 @@ def _cancel_pending(db, active):
 
 def manage(runtime, data):
     action = data.get('radio_action')
+    if action == 'create':
+        return create(runtime, data)
     if action not in {'open', 'send', 'pass', 'stop'}:
         raise ValueError('Unknown shared chat action')
     path = _path(data.get('path'))
@@ -458,3 +468,64 @@ def route_question_answer(runtime, db, question, text, accepted=False):
             return True
         return False
     return False
+
+
+def create(runtime, data):
+    """Create one shared room and both private execution records atomically."""
+    request_id = text_field(data.get('request_id'), 'a request ID', 255)
+    receipt_id = 'radio:' + request_id
+    body = {'operation': 'radio', 'body': data}
+    # Replays never depend on provider catalog availability.
+    with runtime.lock, runtime.db() as db:
+        _, previous = runtime.operation_receipt(db, receipt_id, body)
+        if previous is not None:
+            return previous
+    path = runtime.project_directory(data.get('path'))
+    name = text_field(data.get('name'), 'a shared chat name', 80)
+    participants = data.get('participants')
+    if not isinstance(participants, list) or len(participants) != 2:
+        raise ValueError('Select exactly two participants')
+    namespace = uuid.uuid5(uuid.NAMESPACE_URL, 'codex-studio:radio:' + request_id)
+    room_id = 'radio:' + str(namespace)
+    prepared = []
+    identities = []
+    for index, participant in enumerate(participants):
+        if not isinstance(participant, dict) or set(participant) - {'account_key', 'model', 'effort'}:
+            raise ValueError('Supply an account, model, and optional reasoning level for each participant')
+        account_key = text_field(participant.get('account_key'), 'an account', 255)
+        model = text_field(participant.get('model'), 'a model', 255)
+        account = runtime.accounts.get(account_key)
+        identity = {key: account.get(key) for key in ('provider', 'home', 'accountId', 'email')}
+        record = runtime.create({'id': str(uuid.uuid5(namespace, str(index))),
+                                 'name': model + ' (' + str(index + 1) + ')', 'cwd': path,
+                                 'prompt': '', 'account_key': account_key, 'model': model,
+                                 **({'effort': participant['effort']} if 'effort' in participant else {})},
+                                draft=True, _validate_only=True)
+        record.update(sharedRoomId=room_id, needsTitle=False)
+        prepared.append(record)
+        identities.append(identity)
+    with runtime.lock, runtime.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        signature, previous = runtime.operation_receipt(db, receipt_id, body)
+        if previous is not None:
+            return previous
+        if runtime.project_directory(path) != path:
+            raise ValueError('The project directory changed. Create the shared chat again')
+        for record, identity in zip(prepared, identities):
+            account = runtime.accounts.get(record['accountKey'])
+            if (account.get('disconnected') or account.get('status') in {'changed', 'error'}
+                    or any(account.get(key) != value for key, value in identity.items())):
+                raise ValueError('A participant account changed. Create the shared chat again')
+            if db.execute('SELECT 1 FROM runtime_agents WHERE id=?', (record['id'],)).fetchone():
+                raise ValueError('A shared participant identity already exists without its creation receipt')
+        if db.execute('SELECT 1 FROM runtime_rooms WHERE id=?', (room_id,)).fetchone():
+            raise ValueError('The shared room already exists without its creation receipt')
+        runtime.ensure_project(path, prepared[0]['accountKey'], db)
+        for record in prepared:
+            runtime.put(db, 'agents', record)
+        room = {'id': room_id, 'kind': 'private', 'members': [a['id'] for a in prepared],
+                'projectPath': path, 'customName': name, 'created': time.time(), 'userHidden': False,
+                'radio': {'direct': True, 'teamId': str(namespace), 'revision': 0, 'status': 'idle',
+                          'speaker': None, 'next': [], 'active': None, 'error': None, 'seen': {}}}
+        _save(runtime, db, room)
+        return runtime.save_receipt(db, receipt_id, signature, {'room': room})

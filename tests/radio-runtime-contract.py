@@ -25,6 +25,30 @@ class RadioRuntime(unittest.TestCase):
         self.base = {'action':'radio','path':str(self.project),'team_id':self.team}
         self.room = manage(self.runtime, {**self.base,'radio_action':'open','request_id':str(uuid.uuid4())})['room']
 
+    def test_direct_creation_starts_one_shared_conversation(self):
+        result=manage(self.runtime, {'action':'radio','radio_action':'create',
+            'request_id':str(uuid.uuid4()),'path':str(self.project),'name':'Design discussion',
+            'participants':[{'account_key':'default','model':'gpt-6-astra'},
+                            {'account_key':'default','model':'gpt-6-sol'}]})
+        self.room=result['room']
+        self.left,self.right=[self.runtime.agent(key) for key in self.room['members']]
+        self.base={'action':'radio','path':str(self.project),'team_id':self.room['radio']['teamId']}
+        self.assertEqual([m for m,_ in self.runtime.server.calls if m=='turn/start'],[])
+        for agent in (self.left,self.right):
+            self.assertEqual(self.runtime.chat_read(self.room['id'],agent['id'])['room']['id'],self.room['id'])
+        outsider=self.lead('Outside')
+        with self.assertRaises(ValueError):
+            self.runtime.chat_read(self.room['id'],outsider['id'])
+        self.command('send',text='Compare options.',target='both',rounds=1)
+        first=self.active(self.left)
+        self.finish(first,'First view.')
+        second=self.active(self.right)
+        self.finish(second,'Second view.')
+        self.runtime.dispatch()
+        page=self.runtime.chat_read(self.room['id'])
+        self.assertEqual([m['text'] for m in page['messages']],['Compare options.','First view.','Second view.'])
+        self.assertEqual(page['room']['radio']['status'],'idle')
+
     def command(self, action, **data):
         self.room = manage(self.runtime, {**self.base,'radio_action':action,
             'expected_revision':self.room['radio']['revision'], 'request_id':str(uuid.uuid4()), **data})['room']

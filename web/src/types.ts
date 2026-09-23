@@ -5,6 +5,7 @@ export interface Agent extends Json {
   id: string;
   name: string;
   isLead?: boolean;
+  sharedRoomId?: string;
   rootId?: string;
   parentId?: string;
   source: string;
@@ -35,8 +36,10 @@ export interface PeerTeam {
   members: string[];
 }
 export interface Room {
+  userHidden?: boolean;
   projectPath?: string;
   radio?: {
+    direct?: boolean;
     teamId: string;
     revision: number;
     status: "idle" | "waiting" | "speaking" | "stopping" | "blocked";

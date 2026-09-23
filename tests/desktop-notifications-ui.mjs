@@ -248,6 +248,28 @@ try {
     0,
     "reload does not repeat old alerts",
   );
+  const sharedId = "radio:notification-fixture";
+  snapshot.runtime.rooms.push({
+    id: sharedId, name: "Shared notification chat", kind: "private",
+    members: [lead.id, other.id], projectPath: evidence,
+    radio: { direct: true, teamId: "notification-fixture", revision: 0,
+      status: "idle", speaker: null, next: [], active: null, error: null },
+  });
+  change(lead.id, { sharedRoomId: sharedId });
+  change(other.id, { sharedRoomId: sharedId });
+  await page.route("**/api/agent-chat?*", (route) =>
+    route.fulfill({ json: { messages: [], nextBefore: null } }));
+  await page.evaluate(({ scope, id }) => {
+    localStorage.setItem(`codex-desktop-opened:${scope}`, JSON.stringify(id));
+  }, { scope: snapshot.stateDir, id: other.id });
+  await page.reload();
+  await page.locator("#conversation-title").getByText("Shared notification chat", { exact: true }).waitFor();
+  await page.evaluate(() => { window.fakeFocus = true; });
+  change(lead.id, { lastCompletedTurn: "shared-visible-a" });
+  change(other.id, { lastCompletedTurn: "shared-visible-b" });
+  await refresh();
+  assert.equal(await page.evaluate(() => window.alerts.length), 0,
+    "both participants in the focused shared chat are silent");
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, evidence }));
 } catch (error) {

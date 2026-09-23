@@ -3613,7 +3613,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if peer_team:
                 room.update(peerTeamId=peer_team["id"], peerTeamName=peer_team["name"])
             if viewer and any(agents[m].get("rootId") != viewer_root for m in members):
-                if room['kind'] != 'private' or len(members) != 2 or not peer_team:
+                direct_shared = (room.get("radio", {}).get("direct") is True
+                                 and room['kind'] == 'private' and len(members) == 2
+                                 and all(agents[m].get("sharedRoomId") == room['id']
+                                         and agents[m].get("cwd") == room.get("projectPath") for m in members))
+                if room['kind'] != 'private' or len(members) != 2 or not (peer_team or direct_shared):
                     continue
             room["members"] = members
             room["name"] = ("All agents" if room.get("rootId") == "all" else
