@@ -188,11 +188,8 @@ try {
     );
     await afterPaint(page);
     assert.ok((await gap()) < 2, "send and composer shrink retain bottom");
-    await page.locator("#messages").evaluate((e) => {
-      e.scrollTop = 1200;
-      e.dispatchEvent(new Event("scroll", { bubbles: true }));
-    });
-    await afterPaint(page);
+    await page.locator("#messages").hover();
+    await page.mouse.wheel(0, -1200);
     await page.locator("#jump-latest").waitFor();
     const anchor = await page.locator("#messages").evaluate((root) => {
       const bounds = root.getBoundingClientRect();
