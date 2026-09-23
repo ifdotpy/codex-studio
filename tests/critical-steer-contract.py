@@ -165,6 +165,39 @@ class CriticalSteerContract(unittest.TestCase):
         self.assertEqual(self.transcript_count(agent, message_id), 1)
         self.assertFalse(self.metadata(message_id).get("notSubmitted", False))
 
+    def test_offline_steer_is_not_submitted_and_can_retry(self):
+        agent = self.lead()
+        message_id = "steer-offline"
+        with patch.object(self.server, "submit", side_effect=RuntimeError("Codex app-server is offline")):
+            with self.assertRaisesRegex(RuntimeError, "offline"):
+                self.runtime.send(agent, "Correction", message_id, delivery="steer")
+        receipt = self.runtime.delivery_receipt(message_id)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertTrue(self.metadata(message_id)["notSubmitted"])
+        retry = self.runtime.send(agent, "Correction", message_id, delivery="steer")
+        self.assertEqual(retry["status"], "delivered")
+        self.assertEqual(self.transcript_count(agent, message_id), 1)
+
+    def test_saved_offline_steer_uncertainty_is_settled_by_repair(self):
+        from codex_context_repair import _settle_offline_steer
+        agent = self.lead()
+        message_id = "steer-saved-offline"
+        with patch.object(self.server, "submit", side_effect=RuntimeError("write failed")):
+            with self.assertRaises(RuntimeError):
+                self.runtime.send(agent, "Correction", message_id, delivery="steer")
+        self.assertEqual(self.runtime.delivery_receipt(message_id)["status"], "uncertain")
+        with self.runtime.lock, self.runtime.db() as db:
+            # Older code saved an offline steer as uncertain; unrelated errors stay uncertain.
+            row = db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e LEFT JOIN runtime_event_meta m "
+                             "ON m.id=e.id WHERE e.id=?", (message_id,)).fetchone()
+            self.assertFalse(_settle_offline_steer(db, row))
+            db.execute("UPDATE runtime_events SET error='Codex app-server is offline' WHERE id=?", (message_id,))
+            row = db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e LEFT JOIN runtime_event_meta m "
+                             "ON m.id=e.id WHERE e.id=?", (message_id,)).fetchone()
+            self.assertTrue(_settle_offline_steer(db, row))
+        self.assertEqual(self.runtime.delivery_receipt(message_id)["status"], "failed")
+        self.assertTrue(self.metadata(message_id)["notSubmitted"])
+
     def test_unsent_retry_rechecks_turn_identity_without_project_restrictions(self):
         agent = self.lead()
         message_id = "steer-permission"

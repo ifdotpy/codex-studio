@@ -1852,17 +1852,19 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 submitted = self.submit_reserved(server,
                     "turn/steer", {"threadId": a["threadId"], "expectedTurnId": a["turnId"],
                                    "clientUserMessageId": message_id, "input": inputs})
-            except SubmissionRejected as error:
-                meta["notSubmitted"] = True
-                db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?",
-                           (json.dumps(meta), message_id))
-                db.execute("UPDATE runtime_events SET status='failed',error=? WHERE id=?",
-                           (str(error), message_id))
-                db.commit()
-                raise
             except Exception as error:
-                db.execute("UPDATE runtime_events SET status='uncertain',error=? WHERE id=?",
-                           (str(error), message_id))
+                # AppServer.write rejects an offline connection before it writes a
+                # byte, so that steer was never submitted, like SubmissionRejected.
+                if isinstance(error, SubmissionRejected) or (
+                        isinstance(error, RuntimeError) and str(error) == "Codex app-server is offline"):
+                    meta["notSubmitted"] = True
+                    db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?",
+                               (json.dumps(meta), message_id))
+                    db.execute("UPDATE runtime_events SET status='failed',error=? WHERE id=?",
+                               (str(error), message_id))
+                else:
+                    db.execute("UPDATE runtime_events SET status='uncertain',error=? WHERE id=?",
+                               (str(error), message_id))
                 db.commit()
                 raise
         try:

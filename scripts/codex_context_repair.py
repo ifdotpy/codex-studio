@@ -66,6 +66,24 @@ def _save(rt, db, a, op):
     rt.put(db, 'agents', a)
 
 
+def _settle_offline_steer(db, row):
+    """A steer that failed with an offline connection never left Studio.
+
+    AppServer.write raises this exact error before it writes a byte. Older code
+    saved such a steer as uncertain, so repair waited for a receipt that cannot
+    exist. Record it as not submitted, which the send path can retry.
+    """
+    if row['status'] != 'uncertain' or row['error'] != 'Codex app-server is offline' or not row['metadata']:
+        return False
+    meta = json.loads(row['metadata'])
+    if meta.get('delivery') != 'steer' or not meta.get('native'):
+        return False
+    meta['notSubmitted'] = True
+    db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?", (json.dumps(meta), row['id']))
+    db.execute("UPDATE runtime_events SET status='failed' WHERE id=? AND status='uncertain'", (row['id'],))
+    return True
+
+
 def _unsettled_inputs(db, a, attempt_id):
     attempt = a.get('startAttempt') or {}
     permitted = set(attempt.get('events', [])) if attempt_id else set()
@@ -75,6 +93,8 @@ def _unsettled_inputs(db, a, attempt_id):
         "AND e.status IN ('reserved','dispatching','uncertain') ORDER BY e.id", (a['id'], a['epoch']))
     for row in rows:
         if row['id'] in permitted and row['status'] != 'uncertain':
+            continue
+        if _settle_offline_steer(db, row):
             continue
         # AppServer.write rejects offline before writing bytes; submit removes
         # its pending future. Keep saved offline uncertainty without replay.
