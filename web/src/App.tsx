@@ -1233,6 +1233,7 @@ export default function App() {
             )}
             <h1 id="conversation-title" title={title}>
               <ChatStatus
+                provider={agent?.provider}
                 status={agent ? indicators.get(agent.id) : undefined}
               />
               {title}

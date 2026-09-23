@@ -1,0 +1,11 @@
+[data-agent-provider="codex"] {
+  --agent-activity-color: light-dark(#1971c2, #74c0fc);
+}
+[data-agent-provider="claude"] {
+  --agent-activity-color: light-dark(#c45b14, #ffa94d);
+}
+.chat-status-working[data-agent-provider],
+.agent-phase.active[data-agent-provider] > svg,
+.agent-phase.active[data-agent-provider] > .phase-dots {
+  color: var(--agent-activity-color, var(--muted));
+}

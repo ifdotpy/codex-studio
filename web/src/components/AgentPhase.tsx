@@ -14,6 +14,7 @@ import { currentCapacityRetry } from "../capacityRetry";
 import { nativeThreadError } from "../nativeErrors";
 import { displayError, errorDetails } from "../errorPresentation";
 import ErrorDescription from "./ErrorDescription";
+import "./provider-activity.css";
 export default function AgentPhase({
   agent,
   connection,
@@ -104,6 +105,7 @@ export default function AgentPhase({
       className={`agent-phase ${active ? "active" : ""}`}
       role="status"
       data-phase={phase}
+      data-agent-provider={agent.provider || "codex"}
     >
       <Icon size={15} />
       <div className="agent-phase-copy">

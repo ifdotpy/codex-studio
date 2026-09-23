@@ -342,7 +342,7 @@ export default function Sidebar(p: Props) {
               {row.name}
             </strong>
           </span>
-          <ChatStatus status={p.indicators.get(a.id)} />
+          <ChatStatus status={p.indicators.get(a.id)} provider={a.provider} />
         </UnstyledButton>
         {renaming !== row.id && (
           <ActionIcon

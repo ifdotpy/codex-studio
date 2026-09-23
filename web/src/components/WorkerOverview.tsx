@@ -170,7 +170,7 @@ export default function WorkerCard({
           aria-current={selected ? "page" : undefined}
           onClick={open}
         >
-          <ChatStatus status={indicator} />
+          <ChatStatus status={indicator} provider={agent.provider} />
           <span className="worker-text">
             <strong>{agent.name}</strong>
             <span className="worker-meta">
