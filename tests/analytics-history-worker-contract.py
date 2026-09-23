@@ -202,7 +202,9 @@ class WorkerTests(unittest.TestCase):
         eventually(complete)
         with self.f.db() as db:
             self.assertIsNotNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='analytics_usage_migration'").fetchone())
+            budget_state = json.loads(db.execute("SELECT value FROM analytics_meta WHERE key='budgetUsageMigrationV1:agent'").fetchone()[0])
             state = json.loads(db.execute("SELECT value FROM analytics_meta WHERE key='terminalErrorRepairV1'").fetchone()[0])
+        self.assertEqual(budget_state['cursor'], budget_state['end'])
         self.assertEqual(state['repaired'], 1)
         self.assertEqual(self.f.state()['status'], 'current')
 

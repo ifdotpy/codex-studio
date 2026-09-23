@@ -14,6 +14,8 @@ import threading
 import time
 import uuid
 
+from codex_budget import budget_capture
+
 
 TOKEN_FIELDS = {
     "input_tokens": "inputTokens", "cached_input_tokens": "cachedInputTokens",
@@ -270,6 +272,46 @@ def repair_terminal_errors(db, limit=64):
                (key, json.dumps(state)))
 
 
+def prepare_budget_migration(runtime):
+    """Create the bounded history-scan index before the worker takes the writer lock."""
+    if getattr(runtime, "_budget_index_ready", False):
+        return
+    with runtime.db() as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone():
+            db.execute("CREATE INDEX IF NOT EXISTS analytics_usage_migration ON analytics_usage(agent,seq)")
+    runtime._budget_index_ready = True
+
+
+def migrate_budget_usage(db, agent, limit=64):
+    """Import one idempotent page of stored usage into the durable budget ledger."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone():
+        return False
+    key = "budgetUsageMigrationV1:" + agent["id"]
+    row = db.execute("SELECT value FROM analytics_meta WHERE key=?", (key,)).fetchone()
+    if row:
+        state = json.loads(row[0])
+    else:
+        state = {"cursor": 0, "end": db.execute("SELECT COALESCE(MAX(seq),0) FROM analytics_usage").fetchone()[0]}
+    if state["cursor"] >= state["end"]:
+        return False
+    rows = db.execute("SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
+                      (agent["id"], state["cursor"], state["end"], limit)).fetchall()
+    for seq, raw in rows:
+        record = json.loads(raw)
+        payload = {"threadId": record.get("threadId"), "turnId": record.get("turnId"),
+                   "responseId": record.get("responseId"), "rawTokenUsageRecord": record.get("rawTokenUsageRecord"),
+                   "requestUsage": record.get("requestUsage"),
+                   "tokenUsage": {"total": record.get("total"), "last": record.get("last")},
+                   "_analyticsTimestampSource": record.get("timestampSource")}
+        budget_capture(db, agent, payload, at=record.get("at", 0), source="rollout")
+        state["cursor"] = seq
+    if len(rows) < limit:
+        state["cursor"] = state["end"]
+    db.execute("INSERT INTO analytics_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+               (key, json.dumps(state)))
+    return bool(rows)
+
+
 def _history_worker_error(error, prefix):
     detail = ''.join(character if character.isprintable() else ' ' for character in str(error)[:1000])
     return f'{prefix} ({type(error).__name__}): {detail}'
@@ -395,6 +437,7 @@ class AnalyticsHistoryMixin:
             if not getattr(self, "_analytics_history_schema_ready", False):
                 with self.lock, self.db() as db:
                     self.analytics_history_init(db)
+            prepare_budget_migration(self)
             with self.lock, self.db() as db:
                 repair_terminal_errors(db)
                 agents = [a for a in self.records(db, "agents") if a.get("threadId")]
@@ -405,6 +448,7 @@ class AnalyticsHistoryMixin:
             self._analytics_history_cursor = (self._analytics_history_cursor + 1) % len(agents)
             key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
             with self.lock, self.db() as db:
+                budget_advanced = migrate_budget_usage(db, a)
                 row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()
             state = json.loads(row[0]) if row else {
                 "id": key, "agent": a["id"], "accountKey": a.get("accountKey", "default"),
@@ -524,7 +568,7 @@ class AnalyticsHistoryMixin:
                     else:
                         state["coverage"] = "availableRecords"
                     db.execute("INSERT OR REPLACE INTO analytics_history VALUES (?,?,?)", (key, a["id"], json.dumps(state)))
-                return bool(consumed)
+                return bool(consumed) or budget_advanced
             except OSError:
                 state.update(status="unreadable", error="Cannot read the managed account's native rollout")
                 return self._analytics_history_save(key, a, state)
