@@ -20,7 +20,13 @@ const proc = spawn(
 let log = "",
   browser;
 proc.stderr.on("data", (d) => (log += d));
-const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+const afterPaint = (page) =>
+  page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
 try {
   const port = await new Promise((resolve, reject) => {
     proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
@@ -28,6 +34,9 @@ try {
   });
   const origin = `http://127.0.0.1:${port}`;
   const state = await (await fetch(origin + "/api/state")).json();
+  const syncIdentity = await (
+    await fetch(origin + "/api/sync/identity")
+  ).json();
   const lead = state.threads.find((a) => a.name === "Other project");
   const other = state.threads.find((a) => a.name === "Release lead");
   let items = Array.from({ length: 36 }, (_, i) => ({
@@ -84,8 +93,8 @@ try {
       };
     });
     // These controlled snapshots use the HTTP path, not fixture replication.
-    await page.route("**/api/sync/**", (r) =>
-      r.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
+    await page.route("**/api/sync/**", (route) =>
+      route.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
     );
     await page.route(/\/api\/state(?:\?.*)?$/, (r) =>
       r.fulfill({
@@ -105,8 +114,13 @@ try {
       }),
     );
     let pendingSend;
-    await page.route("**/api/messages", (r) => {
+    let resolveSendRoute;
+    const sendRouteCaptured = new Promise((resolve) => {
+      resolveSendRoute = resolve;
+    });
+    await page.route(/\/api\/messages(?:\?.*)?$/, (r) => {
       pendingSend = r;
+      resolveSendRoute(r);
     });
     await page.goto(origin);
 
@@ -117,7 +131,6 @@ try {
         id: lead.id,
         data: transcript(),
       });
-      await pause(100);
     };
     await emit();
     await page.locator('[data-message="note35"]').waitFor();
@@ -130,9 +143,9 @@ try {
       root.scrollTop -= 18;
       root.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
-    await pause(100);
+    await afterPaint(page);
     await page.locator("#message").fill("A small draft");
-    await pause(100);
+    await afterPaint(page);
     assert.ok(
       Math.abs((await gap()) - 18) < 2,
       "A render preserves the reader's small bottom distance",
@@ -145,10 +158,20 @@ try {
     await page
       .locator("#message")
       .fill(Array.from({ length: 6 }, (_, i) => `Draft line ${i}`).join("\n"));
-    await pause(100);
+    await afterPaint(page);
     assert.ok((await gap()) < 2, "growing composer retains bottom");
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: syncIdentity }),
+    );
+    const sendRequest = page.waitForRequest(
+      (request) =>
+        new URL(request.url()).pathname === "/api/messages" &&
+        request.method() === "POST",
+      { timeout: 1000 },
+    );
     await page.locator("#send").click();
-    for (let i = 0; !pendingSend && i < 100; i++) await pause(10);
+    await sendRequest;
+    await sendRouteCaptured;
     assert.ok(pendingSend, "send request captured");
     items.push({
       id: `sent-${width}`,
@@ -163,25 +186,34 @@ try {
     await page.waitForFunction(
       () => document.querySelector("#message").value === "",
     );
-    await pause(100);
+    await afterPaint(page);
     assert.ok((await gap()) < 2, "send and composer shrink retain bottom");
     await page.locator("#messages").evaluate((e) => {
       e.scrollTop = 1200;
       e.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
+    await afterPaint(page);
     await page.locator("#jump-latest").waitFor();
     const anchor = await page.locator("#messages").evaluate((root) => {
-      const p = [...root.querySelectorAll("[data-message] p")].find(
-        (p) =>
-          p.getBoundingClientRect().top >= root.getBoundingClientRect().top,
-      );
-      p.dataset.motionAnchor = "yes";
-      return p.getBoundingClientRect().top;
+      const bounds = root.getBoundingClientRect();
+      const p = [...root.querySelectorAll("[data-message] p")].find((p) => {
+        const box = p.getBoundingClientRect();
+        return (
+          box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom
+        );
+      });
+      const message = p.closest("[data-message]");
+      return {
+        messageId: message.dataset.message,
+        paragraph: [...message.querySelectorAll("p")].indexOf(p),
+        top: p.getBoundingClientRect().top,
+      };
     });
+    const anchorParagraph = page
+      .locator(`[data-message="${anchor.messageId}"] p`)
+      .nth(anchor.paragraph);
     const anchorY = () =>
-      page
-        .locator('[data-motion-anchor="yes"]')
-        .evaluate((e) => e.getBoundingClientRect().top);
+      anchorParagraph.evaluate((e) => e.getBoundingClientRect().top);
     items.push({
       id: `stream-${width}`,
       role: "assistant",
@@ -190,35 +222,63 @@ try {
       turnId: "live-turn",
     });
     await emit();
+    await page
+      .locator(`[data-message="stream-${width}"]`)
+      .waitFor({ state: "visible" });
+    await afterPaint(page);
     assert.ok(
-      Math.abs((await anchorY()) - anchor) < 2,
+      Math.abs((await anchorY()) - anchor.top) < 2,
       "stream does not move reader",
     );
     await page.locator("#message").fill("A\nB\nC\nD\nE\nF");
-    await pause(100);
+    await afterPaint(page);
     assert.ok(
-      Math.abs((await anchorY()) - anchor) < 2,
+      Math.abs((await anchorY()) - anchor.top) < 2,
       "composer expansion does not move reader",
     );
     await page.locator("#message").fill("");
-    await pause(100);
+    await afterPaint(page);
     assert.ok(
-      Math.abs((await anchorY()) - anchor) < 2,
+      Math.abs((await anchorY()) - anchor.top) < 2,
       "composer contraction does not move reader",
     );
     // Async image/layout growth above the reading point must preserve this paragraph.
-    await page.locator('[data-message="note0"]').evaluate((e) => {
+    const earlyMessage = page.locator('[data-message="note0"]');
+    const earlyMessageHeight = await earlyMessage.evaluate(
+      (e) => e.getBoundingClientRect().height,
+    );
+    await earlyMessage.evaluate((e) => {
       e.style.paddingTop = "180px";
     });
-    await pause(100);
+    await page.waitForFunction(
+      ({ id, minHeight }) => {
+        const message = document.querySelector(
+          `[data-message="${CSS.escape(id)}"]`,
+        );
+        return (
+          message &&
+          getComputedStyle(message).paddingTop === "180px" &&
+          message.getBoundingClientRect().height > minHeight
+        );
+      },
+      { id: "note0", minHeight: earlyMessageHeight },
+    );
+    await afterPaint(page);
     assert.ok(
-      Math.abs((await anchorY()) - anchor) < 2,
+      Math.abs((await anchorY()) - anchor.top) < 2,
       "late content height above reader is anchored",
     );
-    await page.locator('[data-message="note0"]').evaluate((e) => {
+    await earlyMessage.evaluate((e) => {
       e.style.paddingTop = "";
     });
-    await pause(100);
+    await page.waitForFunction(
+      ({ id, maxHeight }) =>
+        document
+          .querySelector(`[data-message="${CSS.escape(id)}"]`)
+          ?.getBoundingClientRect().height <= maxHeight,
+      { id: "note0", maxHeight: earlyMessageHeight + 1 },
+    );
+    await afterPaint(page);
     await page
       .locator('[data-message="note35"]')
       .evaluate((e) => (e.dataset.retained = "yes"));
@@ -243,7 +303,7 @@ try {
       "completion retains live message nodes",
     );
     assert.ok(
-      Math.abs((await anchorY()) - anchor) < 2,
+      Math.abs((await anchorY()) - anchor.top) < 2,
       "completion does not rearrange reader history",
     );
     const beforeSwitch = await page
@@ -278,7 +338,7 @@ try {
       e.scrollTop = 1400;
       e.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
-    await pause(100);
+    await afterPaint(page);
     const stored = await page.locator("#messages").evaluate((e) => e.scrollTop);
     if (width < 700) await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${other.id}"]`).click();
@@ -297,7 +357,7 @@ try {
       "chat switch restores reading position",
     );
     await page.locator("#jump-latest").click();
-    await pause(100);
+    await afterPaint(page);
     assert.ok((await gap()) < 2, "Latest resumes following");
     items.push({
       id: `tail-${width}`,
@@ -310,7 +370,7 @@ try {
     assert.deepEqual(errors, []);
     records.push({
       width,
-      anchor,
+      anchor: anchor.top,
       restored: stored,
       beforeSwitch,
       bottomGap: await gap(),

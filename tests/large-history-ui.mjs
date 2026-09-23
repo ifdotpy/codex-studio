@@ -29,7 +29,8 @@ try {
   const origin = `http://127.0.0.1:${port}`;
   const state = await (await fetch(origin + "/api/state")).json();
   const lead = state.threads.find((x) => x.name === "Other project");
-  const items = [];
+  const other = state.threads.find((x) => x.name === "Release lead");
+  let items = [];
   const turns = Number(process.env.HISTORY_TURNS || 70);
   const steps = Number(process.env.HISTORY_STEPS || 12);
   for (let t = 0; t < turns; t++) {
@@ -91,6 +92,10 @@ try {
       window.longTasks.push(...list.getEntries().map((x) => x.duration)),
     ).observe({ type: "longtask", buffered: true });
   });
+  await page.addInitScript(({ key, id }) => localStorage.setItem(key, id), {
+    key: `codex-desktop-opened:${state.stateDir}`,
+    id: other.id,
+  });
   // Small tool groups open by default. Exercise a reader's saved collapsed
   // history here; turn-history-ui separately checks the small-group default.
   await page.addInitScript(
@@ -121,6 +126,14 @@ try {
     });
   });
   await page.goto(origin);
+  await page.locator(`[data-chat="${other.id}"]`).waitFor({ state: "visible" });
+  await page.locator("#messages").waitFor({ state: "visible" });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   const start = Date.now();
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await page.locator(`[data-message="result-${turns - 1}"]`).waitFor();
@@ -155,31 +168,52 @@ try {
       measurement.responseToContent < 1800,
       "Large history becomes readable without a multi-second render",
     );
+    // Completed historical commands are hidden. Reopen the newest turn as
+    // active to check its saved disclosure and selected tool details.
+    items = items.map((item) => {
+      if (item.turnId !== `turn-${turns - 1}`) return item;
+      const { turnStatus, ...activeItem } = item;
+      return activeItem;
+    });
+    await page.reload();
+    await page.locator(`[data-chat="${lead.id}"]`).click();
     await page
-      .locator('[data-message="result-0"]')
+      .locator(`[data-message="result-${turns - 1}"]`)
       .waitFor({ state: "visible" });
     await page
-      .locator('[data-turn="turn-0"] .turn-work > summary')
+      .locator(`[data-turn="turn-${turns - 1}"] .turn-work > summary`)
       .first()
       .click();
-    await page.locator('[data-message="text-0-0"]').waitFor();
+    await page.locator(`[data-message="text-${turns - 1}-0"]`).waitFor();
 
-    await page.locator('[data-message="tool-0-0"] > summary').click();
-    await page.locator('[data-message="tool-0-0"] .tool-output').waitFor();
+    await page
+      .locator(`[data-message="tool-${turns - 1}-0"] > summary`)
+      .click();
+    await page
+      .locator(`[data-message="tool-${turns - 1}-0"] .tool-output`)
+      .waitFor();
     assert.match(
-      await page.locator('[data-message="tool-0-0"] .tool-output').innerText(),
+      await page
+        .locator(`[data-message="tool-${turns - 1}-0"] .tool-output`)
+        .innerText(),
       /check passed/,
     );
-    const tool = await page.locator('[data-message="tool-0-0"]').elementHandle();
-    const output = await page
-      .locator('[data-message="tool-0-0"] .tool-output')
+    const tool = await page
+      .locator(`[data-message="tool-${turns - 1}-0"]`)
       .elementHandle();
-    const group = page.locator('[data-turn="turn-0"] .turn-work').first();
+    const output = await page
+      .locator(`[data-message="tool-${turns - 1}-0"] .tool-output`)
+      .elementHandle();
+    const group = page
+      .locator(`[data-turn="turn-${turns - 1}"] .turn-work`)
+      .first();
     await group.locator(":scope > summary").click();
     assert.equal(await tool.evaluate((node) => node.isConnected), true);
     assert.equal(await output.evaluate((node) => node.isConnected), true);
     await group.locator(":scope > summary").click();
-    await page.locator('[data-message="tool-0-0"] .tool-output').waitFor();
+    await page
+      .locator(`[data-message="tool-${turns - 1}-0"] .tool-output`)
+      .waitFor();
     assert.equal(
       await tool.evaluate((node) => node.open),
       true,
