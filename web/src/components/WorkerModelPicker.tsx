@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorText } from "../api";
 import { type Json } from "../types";
+import { claudeModelLabel } from "../claude-model-label";
 
 export const isDaybreakAlias = (model: string) =>
   /^gpt-daybreak-(blue|red)-latest$/.test(model);
@@ -50,7 +51,14 @@ export function useWorkerModels(accountKey: string, enabled: boolean) {
   const current = result?.key === accountKey ? result : null;
   return {
     models:
-      current?.models.filter((model) => model.model && !model.hidden) || [],
+      current?.models
+        .filter((model) => model.model && !model.hidden)
+        .map((model): Json => ({
+          ...model,
+          displayName: model.displayName
+            ? claudeModelLabel(model.displayName, model.description || "")
+            : model.displayName,
+        })) || [],
     loading: !current,
     error: current?.error || "",
     retry: () => setAttempt((value) => value + 1),

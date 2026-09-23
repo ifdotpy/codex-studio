@@ -63,11 +63,15 @@ const settingsFor = (agent: Agent, teamDefaults: boolean) => {
     return {
       model:
         agent.workerDefaults?.model === undefined
-          ? (agent.provider === "claude" ? "sonnet" : "gpt-6-luna")
+          ? agent.provider === "claude"
+            ? "sonnet"
+            : "gpt-6-luna"
           : agent.workerDefaults.model,
       effort:
         agent.workerDefaults?.effort === undefined
-          ? (agent.provider === "claude" ? "max" : "xhigh")
+          ? agent.provider === "claude"
+            ? "max"
+            : "xhigh"
           : agent.workerDefaults.effort,
       fast_mode: !!agent.workerDefaults?.fastMode,
       daybreak_enabled: !!agent.workerDefaults?.daybreakEnabled,
@@ -223,7 +227,7 @@ function ScopedExecutionSettings({
   if (teamDefaults)
     modelOptions.unshift({
       value: DEFAULT,
-      label: `Same as main agent (${shortModel(agent.model)})`,
+      label: `Same as main agent (${agent.provider === "claude" ? infoFor(catalog, agent.model)?.displayName || shortModel(agent.model) : shortModel(agent.model)})`,
       disabled: !supportsMode(infoFor(catalog, agent.model)),
     });
   if (!modelOptions.some((row) => row.value === (current.model || DEFAULT)))
@@ -443,7 +447,10 @@ function ScopedExecutionSettings({
             : agent.isLead
               ? "Main agent"
               : "Subagent"}{" "}
-          · {shortModel(selectedModel)}
+          ·{" "}
+          {agent.provider === "claude"
+            ? info?.displayName || shortModel(selectedModel)
+            : shortModel(selectedModel)}
           {(daybreakEnabled || modeQueued) &&
             ` · ${modeLabel}${modeQueued ? " next turn" : ""}`}
         </Button>
