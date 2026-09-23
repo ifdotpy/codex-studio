@@ -275,3 +275,9 @@
 #team.team-compact .team-heading {
   padding-bottom: 16px;
 }
+#team .worker-warning {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: light-dark(#8a4700, #ffbd78);
+}

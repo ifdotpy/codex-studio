@@ -243,6 +243,7 @@ export function transcriptMessages(
                     complaint_response: "Complaint response received",
                     followup: "Agent follow-up",
                     complaint: "Complaint requires a response",
+                    work_released: "Task released from a failed worker",
                   } as Record<string, string>
                 )[r.kind] ||
                 "Team activity",

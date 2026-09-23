@@ -364,6 +364,40 @@ class WorkMixin:
                 self.work_view(w, [t for t in works if t["id"] != w["id"]] + [w]),
             )
 
+    def release_failed_work(self, db, agents):
+        """Return unfinished work of failed or deleted workers to the board.
+
+        A failed worker cannot submit, so its claim would block the task forever.
+        Work under review keeps its owner: the lead still reviews the evidence.
+        """
+        gone = {
+            a["id"]: ("The worker was deleted" if a.get("deletedAt")
+                      else a.get("error") or "The worker failed")
+            for a in agents
+            if a.get("parentId") and (a.get("deletedAt") or a.get("status") == "failed")
+        }
+        if not gone:
+            return []
+        released = []
+        for w in self.records(db, "work"):
+            owner = w.get("owner")
+            if owner not in gone or w["status"] not in {"ready", "running", "blocked"}:
+                continue
+            reason = str(gone[owner])[:500]
+            w.setdefault("releases", []).append(
+                {"agent": owner, "reason": reason, "created": time.time()})
+            w.update(owner=None, status="blocked" if w["status"] == "blocked" else "ready",
+                     version=w["version"] + 1, updated=time.time())
+            self.put(db, "work", w)
+            lead = self.agent(w["rootId"], db)
+            if not lead.get("deletedAt"):
+                self.enqueue(db, lead, "work_released",
+                             json.dumps({"task": w["id"], "title": w["title"], "agent": owner,
+                                         "reason": reason}, ensure_ascii=False),
+                             "work-released:" + w["id"] + ":" + str(w["version"]))
+            released.append(w["id"])
+        return released
+
     @staticmethod
     def work_view(w, works):
         statuses = {t["id"]: t["status"] for t in works}

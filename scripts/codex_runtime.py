@@ -161,6 +161,10 @@ for definition in TOOLS:
         definition["inputSchema"]["properties"]["agents"]["items"]["properties"][
             "task_id"
         ] = TEXT
+        definition["inputSchema"]["properties"]["agents"]["items"]["properties"]["cwd"] = TEXT
+        definition["description"] += (" cwd sets the worker's folder (absolute, or relative to your folder); default is your folder."
+                                      " An implementer gets a git worktree of the repository that contains cwd."
+                                      " Outside a git repository it works directly in cwd and the result carries a warning.")
         definition["description"] += (" Pass task_id to assign an orchestration_task item to the new worker."
                                       " The worker receives the task id and submits its evidence to it.")
 
@@ -193,7 +197,8 @@ Choose the tool:
 Scope and authority:
 - The project directory is a working directory, not an access boundary. Use files and skills outside it when the task needs them.
   Native sandbox and approval settings still apply.
-- Implementer worktrees start from committed HEAD, not from uncommitted changes.
+- An implementer gets a worktree at committed HEAD of the git repository that contains its cwd.
+  Outside git it works directly in cwd; give such workers separate folders or files.
 - Only the orchestrator contacts the user. Subagents send requests to the orchestrator.
   Only the user answers or closes a user message. The answer notifies you automatically. Do not create tasks for the user.
 - The user can group lead chats of one project into a peer team. Peers exchange private messages
@@ -208,6 +213,37 @@ Output:
 - Plans and complaints arrive when they change and after compaction. orchestration_context returns the full current context.
 - Your PROGRESS.md rules follow below. orchestration_context topic=background explains script-driven panels.
 """
+
+
+def git_toplevel(directory):
+    """Return the git repository root that contains directory, or None."""
+    try:
+        result = subprocess.run(["git", "-C", str(directory), "rev-parse", "--show-toplevel"],
+                                capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (result.stdout.strip() or None) if result.returncode == 0 else None
+
+
+def no_worktree_warning(directory):
+    return (f"{directory} is not in a git repository. This agent works directly in the folder, "
+            "without an isolated worktree. Other agents in this folder can change the same files.")
+
+
+def spawn_directory(parent_cwd, requested):
+    """Resolve a worker folder: default to the parent's folder; relative paths start there."""
+    if requested is None:
+        path = Path(parent_cwd)
+    else:
+        if not isinstance(requested, str) or not 1 <= len(requested.strip()) <= 4096:
+            raise ValueError("cwd must be a folder path")
+        path = Path(requested.strip()).expanduser()
+        if not path.is_absolute():
+            path = Path(parent_cwd) / path
+    path = path.resolve()
+    if not path.is_dir():
+        raise ValueError(f"cwd must be an existing folder: {path}")
+    return str(path)
 
 
 class ResponseTimeout(RuntimeError):
@@ -1155,7 +1191,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError("The parent turn was stopped")
             if root and sum(a["rootId"] == root["id"] and not a.get("deletedAt") for a in self.records(db, "agents")) >= root["maxAgents"]:
                 raise ValueError("Team agent limit reached")
-            cwd = str(Path(p["cwd"] if p else data.get("cwd", "")).expanduser().resolve())
+            cwd = str(Path((data.get("cwd") or p["cwd"]) if p else data.get("cwd", "")).expanduser().resolve())
             if not Path(cwd).is_dir() or (not p and not data.get("cwd")):
                 raise ValueError("Select an existing project directory")
             concurrency = int(data.get("concurrency", 8))
@@ -1204,8 +1240,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "profileId": data.get("profile_id"),
                 "profileInstructions": data.get("profileInstructions", ""),
                 "tail": "",
-                "worktree": bool(p and role == "implementer"),
+                "worktree": bool(p and role == "implementer") and data.get("_worktree", True),
                 "worktreeReady": False,
+                "worktreeWarning": (None if not (p and role == "implementer") or data.get("_worktree", True)
+                                    else no_worktree_warning(cwd)),
             }
             if is_lead:
                 a["workerDefaults"] = defaults
@@ -2025,7 +2063,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         if previous and not previous["future"].done():
             return previous["future"]
         if a["worktree"] and not a["worktreeReady"]:
-            repo = subprocess.check_output(["git", "-C", a["cwd"], "rev-parse", "--show-toplevel"], text=True).strip()
+            repo = git_toplevel(a["cwd"])
+            if repo is None:
+                # The folder left git after spawn. Work in place and say so; do not fail the agent.
+                with self.lock, self.db() as db:
+                    latest = self.agent(a["id"], db)
+                    latest.update(worktree=False, worktreeWarning=no_worktree_warning(latest["cwd"]))
+                    self.put(db, "agents", latest)
+                    a = latest
+        if a["worktree"] and not a["worktreeReady"]:
             relative_project = Path(a["cwd"]).resolve().relative_to(Path(repo).resolve())
             directory = str(Path(repo) / ".worktrees" / "codex-agents" / a["id"])
             project_directory = str(Path(directory) / relative_project)
@@ -2180,6 +2226,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             agents = self.records(db, "agents")
             transfer_store(self).tick(agents)
             agents = self.records(db, "agents")
+            self.release_failed_work(db, agents)
             self.queue_turn_recovery(agents)
             from codex_connection_recovery import tick as connection_recovery_tick
             connection_recovery_tick(self, agents)
@@ -3103,6 +3150,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 raise ValueError("Every worker needs a name, task and valid role")
             if "task_id" in spec and (not isinstance(spec["task_id"], str) or not spec["task_id"]):
                 raise ValueError("task_id must be a task id")
+        resolved = []
+        for spec in specs:
+            directory = spawn_directory(actor["cwd"], spec.get("cwd"))
+            repo = git_toplevel(directory) if spec.get("role", "implementer") == "implementer" else None
+            resolved.append({**spec, "cwd": directory, "_worktree": repo is not None})
+        specs = resolved
         assigned = [spec["task_id"] for spec in specs if "task_id" in spec]
         if len(assigned) != len(set(assigned)):
             raise ValueError("Assign each task to one worker in a batch")
@@ -3149,8 +3202,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         text += ("\n\n[Studio task " + w["id"] + "] " + w["title"] + "\nYou own this task. When the result is ready, "
                                  "call orchestration_task action=submit task_id=" + w["id"] + " with result, checks and revision.")
                     self.enqueue(db, child, "user", text, child["id"] + ":initial")
-            value = {"requestId": key, "agents": [{**{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode", "accountKey", "provider")},
-                                                  **({"taskId": s["task_id"]} if "task_id" in s else {})}
+            value = {"requestId": key, "agents": [{**{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode", "accountKey", "provider", "cwd", "worktree")},
+                                                  **({"taskId": s["task_id"]} if "task_id" in s else {}),
+                                                  **({"warning": c["worktreeWarning"]} if c.get("worktreeWarning") else {})}
                                                  for s, c in zip(planned, children)],
                      "delivery": "Results wake you automatically. Finish your turn while waiting."}
             result = stamp_tool_result({"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}, time.time())

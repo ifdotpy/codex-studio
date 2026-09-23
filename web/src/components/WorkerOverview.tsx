@@ -207,6 +207,11 @@ export default function WorkerCard({
             {Boolean(agent.error) && (
               <span className="worker-error">{errorSummary}</span>
             )}
+            {Boolean(agent.worktreeWarning) && (
+              <span className="worker-warning" title={agent.worktreeWarning}>
+                No git worktree: works directly in the folder
+              </span>
+            )}
           </span>
         </UnstyledButton>
         {remove && (
