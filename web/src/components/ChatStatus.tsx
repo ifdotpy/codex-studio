@@ -12,22 +12,8 @@ export default function ChatStatus({
   provider?: string;
   model?: string;
 }) {
-  if ((!status || status.kind === "none") && !model) return null;
-  const kind = status?.kind === "none" || !status ? "idle" : status.kind;
-  const family = model
-    ?.toLowerCase()
-    .match(/astra|sol|luna|terra|opus|sonnet|haiku|fable/)?.[0];
-  const angles: Record<string, number> = {
-    astra: 0,
-    opus: 0,
-    sol: 90,
-    sonnet: 90,
-    luna: 180,
-    haiku: 180,
-    terra: 270,
-    fable: 270,
-  };
-  const angle = family ? angles[family] : 45;
+  if (!status || status.kind === "none" || status.kind === "paused") return null;
+  const kind = status.kind;
   const modelLabel = model
     ? `${provider === "claude" ? "Claude" : "Codex"} · ${model}`
     : "";
@@ -41,7 +27,7 @@ export default function ChatStatus({
       aria-label={label}
       title={label}
     >
-      {kind === "working" || kind === "idle" || kind === "paused" ? (
+      {kind === "working" ? (
         <svg
           width="13"
           height="13"
@@ -58,12 +44,10 @@ export default function ChatStatus({
             strokeWidth="1.5"
             strokeLinecap="round"
             strokeDasharray="76 24"
-            transform={`rotate(${angle} 8 8)`}
           />
         </svg>
       ) : kind === "error" ? (
         <CircleAlert size={13} />
-
       ) : (
         <span className="chat-status-dot" />
       )}
