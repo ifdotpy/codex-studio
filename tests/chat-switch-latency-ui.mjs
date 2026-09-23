@@ -90,9 +90,20 @@ try {
   });
   const requests = [];
   let hold = false;
+  let resolveNextA;
+  let resolveHeldB;
   await page.route("**/api/transcript?*", async (r) => {
     const id = new URL(r.request().url()).searchParams.get("id");
     requests.push({ id, at: Date.now(), route: r });
+    if (id === a.id && resolveNextA) {
+      resolveNextA(r);
+      resolveNextA = undefined;
+    }
+    if (hold && id === b.id && resolveHeldB) {
+      resolveHeldB(r);
+      resolveHeldB = undefined;
+      return;
+    }
     if (!hold)
       await r.fulfill({
         json: payload(id === a.id ? a : b, id === a.id ? "a" : "b"),
@@ -118,6 +129,7 @@ try {
   await open(b.id, "b-29");
   hold = true;
   const previousReads = requests.filter((x) => x.id === a.id).length;
+  const refresh = new Promise((resolve) => (resolveNextA = resolve));
   const cached = await open(a.id, "a-29");
   assert.ok(
     cached < 500,
@@ -134,12 +146,11 @@ try {
     ) < 2,
     "Saved scroll position survives instant history restore",
   );
-  await page.waitForTimeout(250);
+  const pending = await refresh;
   assert.ok(
     requests.filter((x) => x.id === a.id).length > previousReads,
     "Revisit still refreshes",
   );
-  const pending = requests.filter((x) => x.id === a.id).at(-1);
   const fresh = payload(a, "fresh");
   fresh.order = fresh.items.map((x) => x.id);
   await page.evaluate(({ id, data }) => window.emitTranscript(id, data), {
@@ -147,20 +158,36 @@ try {
     data: fresh,
   });
   await page.locator('[data-message="fresh-29"]').waitFor();
-  await pending.route.fulfill({ json: payload(a, "obsolete") });
-  await page.waitForTimeout(120);
+  await pending.fulfill({ json: payload(a, "obsolete") });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   assert.equal(
     await page.locator('[data-message="obsolete-29"]').count(),
     0,
     "Delayed HTTP cannot replace a newer stream",
   );
+  const heldB = new Promise((resolve) => (resolveHeldB = resolve));
   await open(b.id, "b-29");
-  await page.waitForTimeout(250);
-  const lateOther = requests.filter((x) => x.id === b.id).at(-1);
+  await page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === "/api/transcript" && url.searchParams.get("id") === b.id
+    );
+  });
+  const lateOther = await heldB;
   const refreshed = await open(a.id, "fresh-29");
   assert.ok(refreshed < 500, "Cache retains the newest stream");
-  await lateOther.route.fulfill({ json: payload(b, "late-other") });
-  await page.waitForTimeout(100);
+  await lateOther.fulfill({ json: payload(b, "late-other") });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   assert.equal(
     await page.locator('[data-message="late-other-29"]').count(),
     0,
@@ -171,6 +198,41 @@ try {
   const identity = await (await fetch(origin + "/api/sync/identity")).json();
   let projectionDelay = 0;
   let syncPulls = 0;
+  const waitForProjection = async (id, sequence) =>
+    page.waitForFunction(
+      async ({ databaseName, documentId, sequence }) => {
+        const request = indexedDB.open(databaseName);
+        const db = await new Promise((resolve, reject) => {
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const matches = await Promise.all(
+          [...db.objectStoreNames].map(
+            (store) =>
+              new Promise((resolve) => {
+                const query = db
+                  .transaction(store, "readonly")
+                  .objectStore(store)
+                  .getAll();
+                query.onsuccess = () =>
+                  resolve(
+                    query.result.some(
+                      (row) => row.id === documentId && row.seq === sequence,
+                    ),
+                  );
+                query.onerror = () => resolve(false);
+              }),
+          ),
+        );
+        db.close();
+        return matches.some(Boolean);
+      },
+      {
+        databaseName: `rxdb-dexie-studio${identity.workspaceId}--0--projections`,
+        documentId: `transcript:${id}`,
+        sequence,
+      },
+    );
   await page.route("**/api/sync/pull?*", async (r) => {
     const url = new URL(r.request().url());
     const scope = url.searchParams.get("scope");
@@ -248,7 +310,9 @@ try {
   const beforeQuickReturn = await streamCount();
   projectionDelay = 1000;
   await page.locator(`[data-chat="${b.id}"]`).click();
-  await page.waitForTimeout(50);
+  await page.locator('[data-message="sync-b-29"]').waitFor();
+  await waitForProjection(a.id, 100);
+  await waitForProjection(b.id, 101);
   await open(a.id, "sync-a-29");
   assert.equal(
     await streamCount(),

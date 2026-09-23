@@ -86,6 +86,7 @@ try {
       text: `${tag} exact message ${index}. ${"Saved conversation text. ".repeat(18)}`,
     })),
     historyVersion: "fixture-history",
+    truncated: agent.id === a.id,
     nextCursor: agent.id === a.id ? "older-a" : null,
     replace: true,
   });
@@ -305,7 +306,42 @@ try {
     "B must refresh in the background after the shared invalidation",
   );
   assert.equal(await selected(), a.name);
-  await page.waitForTimeout(200); // Let the real RxDB transaction finish before the network stops.
+  await until(
+    () =>
+      page.evaluate(
+        async ({ databaseName, documentId, sequence }) => {
+          const request = indexedDB.open(databaseName);
+          const db = await new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+          const tx = db.transaction([...db.objectStoreNames], "readonly");
+          const matches = await Promise.all(
+            [...db.objectStoreNames].map(
+              (store) =>
+                new Promise((resolve) => {
+                  const query = tx.objectStore(store).getAll();
+                  query.onsuccess = () =>
+                    resolve(
+                      query.result.some(
+                        (row) => row.id === documentId && row.seq === sequence,
+                      ),
+                    );
+                  query.onerror = () => resolve(false);
+                }),
+            ),
+          );
+          db.close();
+          return matches.some(Boolean);
+        },
+        {
+          databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
+          documentId: `transcript:${b.id}`,
+          sequence: 301,
+        },
+      ),
+    "RxDB must persist B's refreshed projection before network interruption",
+  );
   await page.locator("#messages").evaluate((element) => {
     element.scrollTop = 900;
     element.dispatchEvent(new Event("scroll"));
@@ -348,10 +384,21 @@ try {
       },
       { title, tag, forbidden },
     );
-    const start = Date.now();
-    await page.locator(`[data-chat="${id}"]`).click();
+    const chatButton = page.locator(`[data-chat="${id}"]`);
+    await chatButton.click({ trial: true });
+    await chatButton.evaluate((button) => {
+      window.switchStartedAt = null;
+      button.addEventListener(
+        "pointerdown",
+        () => (window.switchStartedAt = performance.now()),
+        { once: true, capture: true },
+      );
+    });
+    await chatButton.click();
     await marker(tag).waitFor();
-    const elapsed = Date.now() - start;
+    const elapsed = await page.evaluate(
+      () => performance.now() - window.switchStartedAt,
+    );
     assert.ok(elapsed < 500, `Cached ${tag} switch took ${elapsed} ms`);
     await page.waitForFunction(() => window.switchFrames.length >= 3);
     const frames = await page.evaluate(() => {
@@ -378,7 +425,7 @@ try {
   const savedB = await page
     .locator("#messages")
     .evaluate((element) => element.scrollTop);
-  const revisitA = await switchCached(a.id, a.name, "A-current", "B-");
+  const revisitA = await switchCached(a.id, a.name, "A-current", "B-", savedA);
   assert.ok(
     Math.abs(
       (await page

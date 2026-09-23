@@ -67,6 +67,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   const restore = () => {
     const root = scroll.current;
     if (!root || !available.current) return;
+    const hadAnchor = !!anchor.current;
     if (following.current)
       root.scrollTop =
         root.scrollHeight - root.clientHeight - bottomDistance.current;
@@ -80,6 +81,8 @@ export function useConversationScroll(id: string, ready: boolean) {
         anchor.current.offset;
     } else root.scrollTop = lastTop.current;
     remember();
+    // A first restore uses the saved offset. Do not replace it with a layout anchor.
+    if (!hadAnchor && !following.current) anchor.current = null;
   };
   const setFollow = (value: boolean) => {
     following.current = value;
