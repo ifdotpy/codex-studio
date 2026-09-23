@@ -364,12 +364,18 @@ class WorkMixin:
                 self.work_view(w, [t for t in works if t["id"] != w["id"]] + [w]),
             )
 
-    def release_failed_work(self, db, agents):
+    def release_failed_work(self, db, agents, force=False):
         """Return unfinished work of failed or deleted workers to the board.
 
         A failed worker cannot submit, so its claim would block the task forever.
         Work under review keeps its owner: the lead still reviews the evidence.
+        dispatch calls this under Runtime.lock, so it runs at most every 30
+        seconds and reads only the matching rows, never the whole board.
         """
+        now = time.monotonic()
+        if not force and now < getattr(self, "_release_work_after", 0):
+            return []
+        self._release_work_after = now + 30
         gone = {
             a["id"]: ("The worker was deleted" if a.get("deletedAt")
                       else a.get("error") or "The worker failed")
@@ -378,11 +384,14 @@ class WorkMixin:
         }
         if not gone:
             return []
+        marks = ",".join("?" * len(gone))
+        rows = db.execute(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner') IN (" + marks + ")"
+            " AND json_extract(record,'$.status') IN ('ready','running','blocked')", list(gone)).fetchall()
         released = []
-        for w in self.records(db, "work"):
-            owner = w.get("owner")
-            if owner not in gone or w["status"] not in {"ready", "running", "blocked"}:
-                continue
+        for (raw,) in rows:
+            w = json.loads(raw)
+            owner = w["owner"]
             reason = str(gone[owner])[:500]
             w.setdefault("releases", []).append(
                 {"agent": owner, "reason": reason, "created": time.time()})
