@@ -163,10 +163,15 @@ def configure_browser(runtime, actor, params):
         print(f"Studio browser for account {key}: " + (reason or "enabled"), file=sys.stderr, flush=True)
     params["config"].update(config)
     if config:
-        ensure_skill(runtime.connect(actor.get("accountKey", "default")), skill_root(runtime.accounts.base_home))
+        # Catalog refresh already holds start_lock and owns this connection.
+        # Reentering connect would deadlock its nonreentrant lock.
+        server = getattr(runtime, "servers", {}).get(key)
+        if server is None or key in getattr(runtime, "offline_accounts", set()):
+            server = runtime.connect(key)
+        ensure_skill(server, skill_root(runtime.accounts.base_home))
         params["developerInstructions"] += "\n" + GUIDANCE
     else:
-        server = getattr(runtime, "servers", {}).get(actor.get("accountKey", "default"))
+        server = getattr(runtime, "servers", {}).get(key)
         if server is not None:
             ensure_skill(server, None)
     return params
