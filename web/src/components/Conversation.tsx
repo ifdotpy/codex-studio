@@ -853,7 +853,9 @@ export default function Conversation(p: {
           </div>
         )}
       {m.truncated && <p className="notice">This message is clipped.</p>}
-      <MessageDate at={m.at ?? m.created ?? m.timestamp} />
+      {(p.room || m.role === "user") && (
+        <MessageDate at={m.at ?? m.created ?? m.timestamp} />
+      )}
       <div className="message-bottom" hidden={!!m.streaming}>
         <ActionIcon
           size="sm"
@@ -1164,6 +1166,7 @@ export default function Conversation(p: {
             <AgentPhase agent={agent} connection={connection} />
           )}
           <Requests
+            showDates={!!p.room}
             scope={p.data.stateDir}
             allRequests={p.data.runtime.requests}
             requests={requests}

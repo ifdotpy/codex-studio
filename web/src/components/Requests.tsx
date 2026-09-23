@@ -10,6 +10,7 @@ import "./request-questions.css";
 import { nativeThreadError } from "../nativeErrors";
 
 type Props = {
+  showDates?: boolean;
   requests: Json[];
   allRequests: Json[];
   scope: string;
@@ -219,6 +220,7 @@ function AnswerForm({
 
 function RequestCard({
   request: r,
+  showDates = true,
   agents,
   refresh,
   notify,
@@ -331,7 +333,9 @@ function RequestCard({
                       : "Request"}
             </span>
           </div>
-          <MessageDate at={r.createdAt ?? r.created ?? r.at} />
+          {showDates && (
+            <MessageDate at={r.createdAt ?? r.created ?? r.at} />
+          )}
           {(!open || blocked || !question) && (
             <p className="request-prompt">
               {questions[0]?.question || (
