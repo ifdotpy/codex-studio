@@ -836,6 +836,14 @@ export default function Sidebar(p: Props) {
                           <PeerTeamGroup
                             key={team.id}
                             team={team}
+                            roomId={
+                              p.data.runtime.rooms.find(
+                                (r) => r.radio?.teamId === team.id,
+                              )?.id
+                            }
+                            scope={p.data.stateDir}
+                            openRoom={p.open}
+                            refresh={p.refresh}
                             drop={sorting.dropBindings(
                               `peer-team:${team.id}`,
                               (source) => {
@@ -871,6 +879,24 @@ export default function Sidebar(p: Props) {
                             }
                           >
                             <div className="peer-team-chats">
+                              {p.data.runtime.rooms
+                                .filter(
+                                  (r) =>
+                                    r.radio?.teamId === team.id &&
+                                    (!closed || r.id === p.opened),
+                                )
+                                .map((r) => (
+                                  <UnstyledButton
+                                    key={r.id}
+                                    className="peer-team-shared-chat"
+                                    aria-current={
+                                      r.id === p.opened ? "page" : undefined
+                                    }
+                                    onClick={() => p.open(r.id)}
+                                  >
+                                    Shared chat
+                                  </UnstyledButton>
+                                ))}
                               {(closed
                                 ? members.filter((a) => a.id === p.opened)
                                 : members

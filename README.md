@@ -19,6 +19,17 @@ Drag a chat onto a team to join or move between teams. Drop it onto the project
 name to leave. A team dissolves when fewer than two chats remain.
 Dissolution preserves the chats and saved messages but removes peer access.
 
+For a team with exactly two chats, select **Open shared chat** in its menu.
+Both agents receive the shared messages and reply in sequence. Each agent keeps
+its own account, model, and context. Independent work stays outside this chat.
+Select **Both agents** for one reply each, or select one participant.
+**Discuss (4 replies)** gives each agent two turns. **Reply next** selects the
+next speaker. **Stop** ends the exchange and interrupts only its current reply.
+A new message replaces the remaining reply order after the current reply ends.
+The exchange waits for answers to agent questions. Personal chat instructions
+must use the queue while that agent gives a shared reply.
+The shared history stays with its original members when the team changes.
+
 ## Setup
 
 Requirements: Python 3.11 or later, Node.js 22.15 or later, and the signed-in Codex CLI.

@@ -31,6 +31,9 @@ def validate_event(runtime, db, recipient, event):
     """Return a denial reason, or None. Do not mutate records or call a model."""
     from codex_peer_teams import peer_pair_allowed
     kind = event['kind']
+    if kind == 'radio_turn':
+        from codex_radio import validate_event as validate_radio_event
+        return validate_radio_event(runtime, db, recipient, event)
     if kind == 'chat_review':
         return 'Scheduled chat reviews have been removed'
     if kind not in SENSITIVE_KINDS:
@@ -102,7 +105,7 @@ def assert_events(runtime, db, recipient, rows):
 def cancel_pending(runtime, db):
     """Cancel only unsent forbidden events. Retain messages and delivery history."""
     rows = db.execute("SELECT id,agent,kind,text FROM runtime_events WHERE status='pending' "
-                      "AND kind IN ('agent_message','chat_review','complaint_response','followup')").fetchall()
+                      "AND kind IN ('agent_message','chat_review','complaint_response','followup','radio_turn')").fetchall()
     cancelled = 0
     for event in rows:
         reason = validate_event(runtime, db, {'id': event['agent']}, event)

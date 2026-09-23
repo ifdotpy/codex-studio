@@ -74,6 +74,9 @@ def peers_for(runtime, db, viewer):
 
 def manage(runtime, data):
     action = data.get('action')
+    if action == 'radio':
+        from codex_radio import manage as manage_radio
+        return manage_radio(runtime, data)
     if action not in ('save', 'delete', 'move'):
         raise ValueError('Unknown peer team action')
     path = runtime.project_directory(data.get('path'), require_existing=False)

@@ -7,8 +7,14 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import { ChevronDown, MoreHorizontal } from "lucide-react";
-import { useRef, useState, type HTMLAttributes, type ReactNode } from "react";
-import { api, ApiError, errorText } from "../api";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type HTMLAttributes,
+  type ReactNode,
+} from "react";
+import { api, ApiError, errorText, save, saved } from "../api";
 import type { Agent, PeerTeam } from "../types";
 import type { Project } from "./ProjectOrganization";
 import "./peer-teams.css";
@@ -21,7 +27,15 @@ export function PeerTeamGroup({
   dissolve,
   children,
   drop,
+  roomId,
+  openRoom,
+  refresh,
+  scope,
 }: {
+  roomId?: string;
+  openRoom: (id: string) => void;
+  refresh?: () => Promise<void>;
+  scope: string;
   team: PeerTeam;
   closed: boolean;
   toggle: () => void;
@@ -30,6 +44,71 @@ export function PeerTeamGroup({
   children: ReactNode;
   drop?: HTMLAttributes<HTMLElement> & { "data-folder-drop"?: string };
 }) {
+  const requestKey = `studio-radio-open:${scope}:${team.id}`;
+  const [request, setRequest] = useState<{
+    body: Record<string, unknown>;
+    acknowledged?: boolean;
+    rejected?: boolean;
+  } | null>(() => saved(requestKey, null));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [selectRoom, setSelectRoom] = useState(false);
+  const lock = useRef(false);
+  useEffect(() => {
+    if (selectRoom && roomId) {
+      setSelectRoom(false);
+      openRoom(roomId);
+    }
+  }, [selectRoom, roomId, openRoom]);
+  const openShared = async () => {
+    if (lock.current) return;
+    if (roomId && !request) {
+      openRoom(roomId);
+      return;
+    }
+    lock.current = true;
+    setPending(true);
+    setError("");
+    let next = request || {
+      body: {
+        action: "radio",
+        radio_action: "open",
+        path: team.projectPath,
+        team_id: team.id,
+        request_id: crypto.randomUUID(),
+      },
+    };
+    const remember = () => {
+      setRequest(next);
+      save(requestKey, next);
+    };
+    remember();
+    try {
+      if (!next.acknowledged && !next.rejected) {
+        await api("/api/peer-teams", next.body, { timeoutMs: 15000 });
+        next = { ...next, acknowledged: true };
+        remember();
+      }
+      await refresh?.();
+      if (next.acknowledged) setSelectRoom(true);
+      setRequest(null);
+      save(requestKey, null);
+    } catch (e) {
+      if (
+        !next.acknowledged &&
+        e instanceof ApiError &&
+        e.status >= 400 &&
+        e.status < 500
+      ) {
+        next = { ...next, rejected: true };
+        remember();
+      }
+      setError(errorText(e));
+    } finally {
+      lock.current = false;
+      setPending(false);
+    }
+  };
   return (
     <section className="peer-team" data-peer-team={team.id} {...drop}>
       <div className="project-tree-heading">
@@ -51,11 +130,33 @@ export function PeerTeamGroup({
             </ActionIcon>
           </Menu.Target>
           <Menu.Dropdown>
+            {(team.members.length === 2 || roomId) && (
+              <Menu.Item disabled={pending} onClick={() => void openShared()}>
+                Open shared chat
+              </Menu.Item>
+            )}
             <Menu.Item onClick={edit}>Edit team</Menu.Item>
             <Menu.Item onClick={dissolve}>Dissolve team</Menu.Item>
           </Menu.Dropdown>
         </Menu>
       </div>
+      {request && (
+        <div className="peer-team-form" role="alert">
+          <p>
+            {error || "Shared chat request needs confirmation."}{" "}
+            {request.acknowledged || request.rejected
+              ? "Refresh to continue."
+              : "Retry the same request."}
+          </p>
+          <Button
+            size="compact-xs"
+            disabled={pending}
+            onClick={() => void openShared()}
+          >
+            {request.acknowledged || request.rejected ? "Refresh" : "Retry"}
+          </Button>
+        </div>
+      )}
       {children}
     </section>
   );

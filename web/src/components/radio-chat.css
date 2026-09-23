@@ -1,0 +1,148 @@
+.radio-chat {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.radio-participants {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.radio-participant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.radio-participant > div {
+  min-width: 0;
+}
+.radio-participant strong,
+.radio-participant small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.radio-participant small,
+.radio-speaker {
+  color: var(--muted);
+  font-size: 11px;
+}
+.radio-participant[data-speaking="true"] .radio-speaker {
+  color: var(--text);
+}
+.radio-participant[data-speaking="true"] .radio-speaker::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.radio-history {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+}
+.radio-history-content,
+.radio-composer {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.radio-message {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.radio-message[data-sender="user"] {
+  margin-left: 10%;
+  background: var(--surface);
+}
+.radio-author {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.radio-author .message-date {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.radio-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 30px 0;
+}
+.radio-composer {
+  flex-shrink: 0;
+  padding: 12px 20px 20px;
+  box-sizing: border-box;
+}
+.radio-compose-actions,
+.radio-retry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.radio-compose-actions > .mantine-Select-root {
+  max-width: 190px;
+}
+.radio-compose-actions > span {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+.radio-retry {
+  margin-bottom: 8px;
+}
+.radio-retry > span {
+  flex: 1;
+}
+.peer-team-shared-chat {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: left;
+  border-radius: 6px;
+}
+.peer-team-shared-chat[aria-current="page"] {
+  color: var(--text);
+  background: var(--surface);
+}
+@media (max-width: 600px) {
+  .radio-participants,
+  .radio-history,
+  .radio-composer {
+    padding: 10px;
+  }
+  .radio-participant {
+    width: 100%;
+  }
+  .radio-speaker {
+    margin-left: auto;
+  }
+  .radio-compose-actions > span {
+    flex-basis: 100%;
+    order: 3;
+  }
+  .radio-message {
+    padding: 10px;
+  }
+}

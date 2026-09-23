@@ -945,6 +945,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     (key, receipt_id, receipt_id, agent),
                 )
         self.index_item(db, key, agent, title or role, text)
+        if role == "assistant":
+            from codex_radio import observe_item
+            observe_item(self, db, agent, key, role, text, metadata)
         self.touch_ui(agent)
 
     def enqueue(self, db, a, kind, text, key=None):
@@ -1547,6 +1550,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         sender=None,
         sender_epoch=None,
         promote=False,
+        radio_question=None,
     ):
         assets = assets or []
         if (
@@ -1628,6 +1632,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 delivery = "queue"
             if delivery == "after_tool":
                 delivery = "steer" if a.get("turnId") and a.get("inFlight") and a["autoWake"] else "queue"
+            if delivery == "steer":
+                from codex_radio import guard_input
+                guard_input(self, db, a, question=radio_question)
             if delivery == "steer" and (
                 not a.get("turnId") or not a.get("inFlight") or not a["autoWake"]
             ):
@@ -2143,6 +2150,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         session_names(self).tick()
         from codex_team_isolation import cancel_pending
         with self.lock, self.db() as db:
+            from codex_radio import tick as radio_tick
+            radio_tick(self, db)
             cancel_pending(self, db)
             from codex_context_repair import recover_context_failures
             recover_context_failures(self, db, self.records(db, "agents"))
@@ -2181,6 +2190,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             )
             global_limit = max(1, min(64, int(os.environ.get("CODEX_CANVAS_CONCURRENCY", "16"))))
             for a in candidates:
+                from codex_radio import holds_floor
+                if holds_floor(self, db, a):
+                    continue
                 if len(active) >= global_limit:
                     break
                 if sum(t["rootId"] == a["rootId"] for t in active) >= a["concurrency"]:
@@ -2232,6 +2244,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     continue
                 from codex_wakeups import pending_batch
                 pending = pending_batch(self, db, a)
+                from codex_radio import select_pending
+                pending = select_pending(self, db, a, pending)
                 rows = pending[:32]
                 if not rows:
                     a["status"] = "waiting"
@@ -2787,7 +2801,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 key = a["id"] + ":" + p.get("itemId", "message")
                 row = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
                 previous = json.loads(row[0]) if row else {}
-                text = previous.get("text", "") + p.get("delta", "")
+                full = (db.execute("SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid "
+                                   "FROM runtime_search_rows WHERE id=?)", (key,)).fetchone()
+                        if previous.get("truncated") else None)
+                text = (full[0] if full is not None else previous.get("text", "")) + p.get("delta", "")
                 self.item(db, a["id"], p.get("itemId", "message"), "assistant", text,
                           streaming=True, turnId=p.get("turnId") or a.get("turnId"), phase=previous.get("phase"))
                 a["activity"] = {"phase": "writing", "at": time.time()}
@@ -2837,7 +2854,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                                          for i, q in enumerate(item["questions"])]
                             if a.get("isLead"):
                                 self.put(db, "requests", {"id": request_id, "method": "agent/asyncQuestion",
-                                    "agent": a["id"], "epoch": a["epoch"], "params": {"questions": questions}, "status": "pending", "createdAt": time.time()})
+                                    "agent": a["id"], "epoch": a["epoch"], "turnId": p.get("turnId") or a.get("turnId"),
+                                    "params": {"questions": questions}, "status": "pending", "createdAt": time.time()})
                             else:
                                 lead = self.agent(a["rootId"], db)
                                 question_text = "Questions for the orchestrator:\n" + json.dumps(questions, ensure_ascii=False)
@@ -3707,8 +3725,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     raise ValueError("This message id has different content")
                 return {"id": key, "room": room["id"], "deliveries": json.loads(previous["deliveries"])}
             from codex_agent_modes import assert_worker_input
+            from codex_radio import guard_message
             for recipient in recipients:
                 if recipient["id"] != sender_id:
+                    guard_message(self, db, sender, recipient)
                     assert_worker_input(self, db, recipient)
             old_room = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room["id"],)).fetchone()
             if old_room:
@@ -4257,8 +4277,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if a["epoch"] != r["epoch"] or not a["autoWake"]:
                     raise ValueError("This question belongs to a stopped turn")
                 text = "\n".join(q["question"] + "\n" + "\n".join(answers.get(q["id"], {}).get("answers", [])) for q in r["params"]["questions"])
-                db.commit()
-                self.send(a["id"], text, key + ":answer", delivery="after_tool")
+                from codex_radio import route_question_answer
+                if not route_question_answer(self, db, r, text):
+                    db.commit()
+                    self.send(a["id"], text, key + ":answer", delivery="after_tool", radio_question=r)
+                    route_question_answer(self, db, r, text, accepted=True)
                 r["status"] = "answered"
                 record_answer(r, data)
                 self.put(db, "requests", r)

@@ -577,7 +577,7 @@ class EfficiencyMixin:
                                            'history': 'Read earlier progress with orchestration_chat_read in this room.'})
                 except (ValueError, KeyError, TypeError):
                     pass
-            if row['kind'] not in {'user', 'followup'}:
+            if row['kind'] not in {'user', 'followup', 'radio_turn'}:
                 text = EfficiencyMixin.bounded_event(row, text, event_limit)
             parts.append(text if row['kind'] == 'user' else '[Orchestration event: ' + row['kind'] + ']\n' + text)
         return '\n\n'.join(parts)

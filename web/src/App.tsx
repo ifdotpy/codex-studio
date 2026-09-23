@@ -73,6 +73,7 @@ import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
 import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
+import RadioChat from "./components/RadioChat";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import TerminalDock from "./components/TerminalDock";
 import "./desktop";
@@ -276,16 +277,18 @@ export default function App() {
     room = data?.runtime.rooms?.find((r) => r.id === opened),
     legacy = data?.chats.find((c) => c.id === opened),
     roomRoots = room ? roomLeadIds(room, agents) : [],
-    lead = agents.find(
-      (a) =>
-        a.id ===
-        (agent?.rootId ||
-          (agent?.isLead ? agent.id : undefined) ||
-          (roomContext && roomRoots.includes(roomContext)
-            ? roomContext
-            : roomRoots[0])),
-    ),
-    team = agents.filter((a) => a.rootId === lead?.id),
+    lead = room?.radio
+      ? undefined
+      : agents.find(
+          (a) =>
+            a.id ===
+            (agent?.rootId ||
+              (agent?.isLead ? agent.id : undefined) ||
+              (roomContext && roomRoots.includes(roomContext)
+                ? roomContext
+                : roomRoots[0])),
+        ),
+    team = lead ? agents.filter((a) => a.rootId === lead.id) : [],
     workers = team.filter((a) => !a.isLead);
   const readState = useChatReadState(
     data,
@@ -1247,11 +1250,13 @@ export default function App() {
                     : livePhase?.id === agent.id
                       ? livePhase.label
                       : statusLabel(agent.status, agent.activity?.phase)
-                  : room?.kind === "private"
-                    ? "Private agent chat"
-                    : room
-                      ? "Broadcast"
-                      : ""}
+                  : room?.radio
+                    ? "Shared chat · One agent speaks at a time"
+                    : room?.kind === "private"
+                      ? "Private agent chat"
+                      : room
+                        ? "Broadcast"
+                        : ""}
               </span>
               {lead?.source === "managed" && (
                 <AgentModeSwitch
@@ -1263,14 +1268,14 @@ export default function App() {
               )}
             </div>
           </div>
-          {
+          {!room?.radio && (
             <ActionIcon
               aria-label="Chat settings"
               onClick={() => setSettingsOpen(true)}
             >
               <Settings size={20} />
             </ActionIcon>
-          }
+          )}
           {!!workers.length && (
             <Button
               leftSection={<Users size={16} />}
@@ -1294,132 +1299,136 @@ export default function App() {
               )}
             </Button>
           )}
-          <Button
-            id="messages-toggle"
-            leftSection={<MessageSquare size={16} />}
-            disabled={!lead}
-            onClick={() => {
-              setWorkspaceSection("messages");
-              setWorkspaceFocus(undefined);
-              setWorkspaceOpen(true);
-            }}
-          >
-            <span className="messages-toggle-label">Messages</span>{" "}
-            {attentionCount > 0 && (
-              <span className="attention-count">{attentionCount}</span>
-            )}
-          </Button>
-          <Menu position="bottom-end" withinPortal>
-            <Menu.Target>
-              <ActionIcon
-                ref={chatActionsButton}
-                aria-label="Chat actions"
-                title="Chat actions"
-              >
-                <MoreHorizontal size={18} />
-              </ActionIcon>
-            </Menu.Target>
-            <Menu.Dropdown>
-              {(
-                [
-                  ["changes", "Changes", FileDiff],
-                  ["plan", "Plan", BookOpen],
-                  ["rules", "Rules", Clock3],
-                  ["search", "Search", Search],
-                ] as const
-              ).map(([section, label, Icon]) => (
+          {!room?.radio && (
+            <Button
+              id="messages-toggle"
+              leftSection={<MessageSquare size={16} />}
+              disabled={!lead}
+              onClick={() => {
+                setWorkspaceSection("messages");
+                setWorkspaceFocus(undefined);
+                setWorkspaceOpen(true);
+              }}
+            >
+              <span className="messages-toggle-label">Messages</span>{" "}
+              {attentionCount > 0 && (
+                <span className="attention-count">{attentionCount}</span>
+              )}
+            </Button>
+          )}
+          {!room?.radio && (
+            <Menu position="bottom-end" withinPortal>
+              <Menu.Target>
+                <ActionIcon
+                  ref={chatActionsButton}
+                  aria-label="Chat actions"
+                  title="Chat actions"
+                >
+                  <MoreHorizontal size={18} />
+                </ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown>
+                {(
+                  [
+                    ["changes", "Changes", FileDiff],
+                    ["plan", "Plan", BookOpen],
+                    ["rules", "Rules", Clock3],
+                    ["search", "Search", Search],
+                  ] as const
+                ).map(([section, label, Icon]) => (
+                  <Menu.Item
+                    key={section}
+                    aria-label={label}
+                    data-workspace-section={section}
+                    leftSection={<Icon size={14} />}
+                    onClick={() => {
+                      setWorkspaceSection(section);
+                      setWorkspaceOpen(true);
+                    }}
+                  >
+                    {label}
+                  </Menu.Item>
+                ))}
                 <Menu.Item
-                  key={section}
-                  aria-label={label}
-                  data-workspace-section={section}
-                  leftSection={<Icon size={14} />}
+                  id="tasks-toggle"
+                  aria-label={`Current activity${taskCount ? `, ${taskCount} active` : ""}`}
+                  leftSection={<Activity size={14} />}
                   onClick={() => {
-                    setWorkspaceSection(section);
-                    setWorkspaceOpen(true);
+                    setTaskFocus(undefined);
+                    setTasksOpen(true);
                   }}
                 >
-                  {label}
+                  Activity {taskCount || ""}
                 </Menu.Item>
-              ))}
-              <Menu.Item
-                id="tasks-toggle"
-                aria-label={`Current activity${taskCount ? `, ${taskCount} active` : ""}`}
-                leftSection={<Activity size={14} />}
-                onClick={() => {
-                  setTaskFocus(undefined);
-                  setTasksOpen(true);
-                }}
-              >
-                Activity {taskCount || ""}
-              </Menu.Item>
-              {agent?.source === "managed" && (
-                <Menu.Item
-                  id="mark-unread"
-                  aria-label="Mark chat unread"
-                  leftSection={<Mail size={14} />}
-                  disabled={
-                    !agent.readStateSupported ||
-                    !hasCompletedResult(agent) ||
-                    readState.marking.has(agent.id)
-                  }
-                  onClick={() => void readState.markUnread(agent)}
-                >
-                  Mark as unread
-                </Menu.Item>
-              )}
-              {agent?.source === "managed" && (
-                <>
-                  <Menu.Divider />
-                  {(
-                    [
-                      ["compact", "Compact", Minimize2],
-                      ["review", "Review", ShieldCheck],
-                    ] as const
-                  ).map(([action, label, Icon]) => (
-                    <Menu.Item
-                      key={action}
-                      data-action={action}
-                      leftSection={<Icon size={14} />}
-                      disabled={
-                        busy.has(agent.status) ||
-                        !!agent.inFlight ||
-                        !!nativeThreadError(agent) ||
-                        !agent.threadId
-                      }
-                      onClick={() => {
-                        void run(() => submitNativeAction(agent, action));
-                      }}
-                    >
-                      {label}
-                    </Menu.Item>
-                  ))}
-                  {(!!agent.inFlight ||
-                    team.some(
-                      (member) =>
-                        busy.has(member.status) ||
-                        member.status === "queued" ||
-                        member.inFlight,
-                    )) && (
-                    <Menu.Item
-                      data-action="stop-team"
-                      color="red"
-                      leftSection={<Square size={14} />}
-                      onClick={() => {
-                        void run(() =>
-                          api("/api/stop", {
-                            id: agent.rootId,
-                            descendants: true,
-                          }),
-                        );
-                      }}
-                    >
-                      Stop team
-                    </Menu.Item>
-                  )}
-                </>
-              )}
-            </Menu.Dropdown>
-          </Menu>
+                {agent?.source === "managed" && (
+                  <Menu.Item
+                    id="mark-unread"
+                    aria-label="Mark chat unread"
+                    leftSection={<Mail size={14} />}
+                    disabled={
+                      !agent.readStateSupported ||
+                      !hasCompletedResult(agent) ||
+                      readState.marking.has(agent.id)
+                    }
+                    onClick={() => void readState.markUnread(agent)}
+                  >
+                    Mark as unread
+                  </Menu.Item>
+                )}
+                {agent?.source === "managed" && (
+                  <>
+                    <Menu.Divider />
+                    {(
+                      [
+                        ["compact", "Compact", Minimize2],
+                        ["review", "Review", ShieldCheck],
+                      ] as const
+                    ).map(([action, label, Icon]) => (
+                      <Menu.Item
+                        key={action}
+                        data-action={action}
+                        leftSection={<Icon size={14} />}
+                        disabled={
+                          busy.has(agent.status) ||
+                          !!agent.inFlight ||
+                          !!nativeThreadError(agent) ||
+                          !agent.threadId
+                        }
+                        onClick={() => {
+                          void run(() => submitNativeAction(agent, action));
+                        }}
+                      >
+                        {label}
+                      </Menu.Item>
+                    ))}
+                    {(!!agent.inFlight ||
+                      team.some(
+                        (member) =>
+                          busy.has(member.status) ||
+                          member.status === "queued" ||
+                          member.inFlight,
+                      )) && (
+                      <Menu.Item
+                        data-action="stop-team"
+                        color="red"
+                        leftSection={<Square size={14} />}
+                        onClick={() => {
+                          void run(() =>
+                            api("/api/stop", {
+                              id: agent.rootId,
+                              descendants: true,
+                            }),
+                          );
+                        }}
+                      >
+                        Stop team
+                      </Menu.Item>
+                    )}
+                  </>
+                )}
+              </Menu.Dropdown>
+            </Menu>
+          )}
         </header>
         {agent && nativeActions.pending(agent.id) && (
           <div
@@ -1491,56 +1500,70 @@ export default function App() {
           )}
         </div>
         <UIErrorBoundary label="this conversation" resetKey={opened}>
-          <Conversation
-            syncWorkspaceId={workspaceId}
-            id={opened}
-            agent={agent}
-            room={room}
-            legacy={legacy}
-            data={data}
-            draft={drafts[opened || "new"] || ""}
-            setDraft={setDraft}
-            draftConflicts={draftConflicts.filter(
-              (version) => version.session === (opened || "new"),
-            )}
-            dismissDraft={dismissDraft}
-            send={send}
-            sending={sending}
-            outgoing={visibleOutgoing}
-            onObserved={observeSends}
-            onReadResult={readState.observeRead}
-            onOutgoingEdit={editSend}
-            refresh={refresh}
-            notify={notify}
-            limits={visibleLimits}
-            limitsLoading={!!limitsLoading[accountKey]}
-            jumpTarget={jumpTarget?.chatId === opened ? jumpTarget : undefined}
-            limitsAccountLabel={
-              selectedAccount?.email || selectedAccount?.label
-            }
-            reloadLimits={forceReloadLimits}
-            onPhase={onPhase}
-            onSelect={open}
-            onBranchCreated={(id) => {
-              createdSelection.current = id;
-              setOpened(id);
-              setSidebar(false);
-              setTeamOpen(false);
-            }}
-            onNewChat={() => void newChat(agent?.cwd || lead?.cwd)}
-            onChooseChat={() => {
-              setSidebar(true);
-              setSidebarCollapsed(false);
-              save("codex-sidebar-collapsed", false);
-              requestAnimationFrame(() =>
-                document
-                  .querySelector<HTMLInputElement>(
-                    '#sidebar [aria-label="Filter projects and chats"]',
-                  )
-                  ?.focus(),
-              );
-            }}
-          />
+          {room?.radio ? (
+            <RadioChat
+              key={room.id}
+              room={room}
+              data={data}
+              draft={drafts[opened || "new"] || ""}
+              setDraft={setDraft}
+              refresh={refresh}
+              notify={notify}
+            />
+          ) : (
+            <Conversation
+              syncWorkspaceId={workspaceId}
+              id={opened}
+              agent={agent}
+              room={room}
+              legacy={legacy}
+              data={data}
+              draft={drafts[opened || "new"] || ""}
+              setDraft={setDraft}
+              draftConflicts={draftConflicts.filter(
+                (version) => version.session === (opened || "new"),
+              )}
+              dismissDraft={dismissDraft}
+              send={send}
+              sending={sending}
+              outgoing={visibleOutgoing}
+              onObserved={observeSends}
+              onReadResult={readState.observeRead}
+              onOutgoingEdit={editSend}
+              refresh={refresh}
+              notify={notify}
+              limits={visibleLimits}
+              limitsLoading={!!limitsLoading[accountKey]}
+              jumpTarget={
+                jumpTarget?.chatId === opened ? jumpTarget : undefined
+              }
+              limitsAccountLabel={
+                selectedAccount?.email || selectedAccount?.label
+              }
+              reloadLimits={forceReloadLimits}
+              onPhase={onPhase}
+              onSelect={open}
+              onBranchCreated={(id) => {
+                createdSelection.current = id;
+                setOpened(id);
+                setSidebar(false);
+                setTeamOpen(false);
+              }}
+              onNewChat={() => void newChat(agent?.cwd || lead?.cwd)}
+              onChooseChat={() => {
+                setSidebar(true);
+                setSidebarCollapsed(false);
+                save("codex-sidebar-collapsed", false);
+                requestAnimationFrame(() =>
+                  document
+                    .querySelector<HTMLInputElement>(
+                      '#sidebar [aria-label="Filter projects and chats"]',
+                    )
+                    ?.focus(),
+                );
+              }}
+            />
+          )}
         </UIErrorBoundary>
       </main>
       {!!workers.length &&

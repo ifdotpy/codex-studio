@@ -35,6 +35,16 @@ export interface PeerTeam {
   members: string[];
 }
 export interface Room {
+  projectPath?: string;
+  radio?: {
+    teamId: string;
+    revision: number;
+    status: "idle" | "waiting" | "speaking" | "stopping" | "blocked";
+    speaker: string | null;
+    next: string[];
+    active: { eventId: string; agentId: string; turnId?: string } | null;
+    error: string | null;
+  };
   peerTeamId?: string;
   peerTeamName?: string;
   id: string;
