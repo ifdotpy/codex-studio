@@ -237,6 +237,9 @@ class HistoryContract(unittest.TestCase):
         (home / 'auth.json').write_text(json.dumps({'tokens':{'account_id':'isolated-second','access_token':'fixture'}}))
         account = self.runtime.accounts.register(str(home))
         self.runtime.set_account(lead['id'], account)
+        self.runtime.catalog = lambda selected: {
+            'data': [{'model':'gpt-6-astra','defaultReasoningEffort':'low',
+                      'supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]}
         selected = self.runtime.agent(lead['id'])
         self.assertEqual(selected['accountKey'],account)
         self.assertNotIn('pendingSettings',selected)
@@ -244,14 +247,40 @@ class HistoryContract(unittest.TestCase):
         self.runtime.send(lead['id'],'Do work')
         self.runtime.dispatch()
         f.eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'failed')
-        self.assertIn('account changed',self.runtime.agent(lead['id'])['error'])
+        self.assertIn('reasoning level is not supported',self.runtime.agent(lead['id'])['error'])
         native_starts = {'thread/start','thread/resume','turn/start'}
         self.assertFalse(any(method in native_starts for server in self.runtime.servers.values() for method, _ in server.calls))
+        self.runtime.catalog = lambda selected: {
+            'data': [{'model':'gpt-6-astra','defaultReasoningEffort':'low',
+                      'supportedReasoningEfforts':[{'reasoningEffort':'high'}]}]}
         self.runtime.conversation_settings(lead['id'], {'next_turn':True,'effort':'high','request_id':'new-account-choice'})
         current = self.start(lead,'Retry after validation')
         self.assertEqual(current['effort'],'high')
         self.assertEqual(current['executionSettingsAccountKey'],account)
         self.assertNotIn('pendingSettings',current)
+
+    def test_account_change_revalidates_supported_settings_without_resaving(self):
+        lead = self.lead()
+        self.runtime.conversation_settings(lead['id'], {'effort':'high'})
+        home = self.root / 'valid-account'
+        home.mkdir()
+        (home / 'auth.json').write_text(json.dumps({'tokens':{'account_id':'isolated-valid','access_token':'fixture'}}))
+        account = self.runtime.accounts.register(str(home))
+        self.runtime.set_account(lead['id'], account)
+        catalogs = []
+        self.runtime.catalog = lambda selected: catalogs.append(selected) or {
+            'data': [{'model':'gpt-6-astra','defaultReasoningEffort':'low',
+                      'supportedReasoningEfforts':[{'reasoningEffort':'high'}]}]}
+
+        current = self.start(lead, 'Send after account switch')
+
+        self.assertEqual(catalogs, [account])
+        self.assertEqual(current['accountKey'], account)
+        self.assertEqual(current['effort'], 'high')
+        self.assertEqual(current['executionSettingsAccountKey'], account)
+        starts = [method for server in self.runtime.servers.values() for method, _ in server.calls]
+        self.assertIn('thread/start', starts)
+        self.assertIn('turn/start', starts)
 
     def test_idle_settings_replace_pending_choice(self):
         lead = self.lead()

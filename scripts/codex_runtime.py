@@ -2317,6 +2317,21 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         epoch = a["epoch"]
         attempt_id = a["startAttempt"]["id"]
         try:
+            revalidated_execution = None
+            account_key = a.get("accountKey", "default")
+            settings_account = a.get("executionSettingsAccountKey", account_key)
+            if settings_account != account_key and not a.get("pendingSettings"):
+                catalog = self.catalog(account_key)
+                effort, native_effort = self.validate_execution(
+                    catalog, a["model"], a.get("effort"), a.get("fastMode", False))
+                revalidated_execution = {
+                    "accountKey": account_key,
+                    "model": a["model"],
+                    "effort": a.get("effort"),
+                    "fastMode": a.get("fastMode", False),
+                    "validatedEffort": effort,
+                    "nativeEffort": native_effort,
+                }
             with self.lock:
                 current = self.agent(a["id"])
                 if (current.get("startAttempt") or {}).get("notSubmittedReason"):
@@ -2345,7 +2360,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         current["executionSettingsAccountKey"] = current.get("accountKey", "default")
                         self.loaded.discard(current["id"])
                     elif current.get("executionSettingsAccountKey", current.get("accountKey", "default")) != current.get("accountKey", "default"):
-                        raise ValueError("The account changed. Save conversation settings for this account before sending")
+                        if (revalidated_execution is None
+                                or current.get("accountKey", "default") != revalidated_execution["accountKey"]
+                                or current.get("model") != revalidated_execution["model"]
+                                or current.get("effort") != revalidated_execution["effort"]
+                                or current.get("fastMode", False) != revalidated_execution["fastMode"]):
+                            raise ValueError("Conversation settings changed during account validation. Send again")
+                        current.update(effort=revalidated_execution["validatedEffort"],
+                                       nativeEffort=revalidated_execution["nativeEffort"],
+                                       executionSettingsAccountKey=revalidated_execution["accountKey"])
                     attempt["settingsFixed"] = True
                     self.put(db, "agents", current)
                 a = current
