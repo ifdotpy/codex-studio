@@ -177,13 +177,13 @@ def configure_browser(runtime, actor, params):
     return params
 
 
-def diagnostics(runtime):
-    """Browser state of the default account for /api/desktop."""
+def diagnostics(runtime, account_key="default"):
+    """Browser state of one account for /api/desktop."""
     accounts = getattr(runtime, "accounts", None)
     if accounts is None:
         return None
     try:
-        config, reason = browser_status(accounts.home("default"), accounts.base_home)
+        config, reason = browser_status(accounts.home(account_key), accounts.base_home)
     except (OSError, ValueError) as error:
         return {"enabled": False, "reason": str(error)}
     root = skill_root(accounts.base_home)

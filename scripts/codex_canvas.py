@@ -699,6 +699,7 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/desktop":
                     from codex_native_runtime import status as native_runtime_status
                     from codex_browser import diagnostics as browser_diagnostics
+                    browser_account = parse_qs(path.query).get("account_key", ["default"])[0]
                     return self.send(
                         {
                             "application": "codex-agents",
@@ -706,7 +707,7 @@ def make_server(canvas, port=0, public_origin=None):
                             "mobileProtocol": 1,
                             "backendBuild": BACKEND_BUILD,
                             "nativeRuntime": native_runtime_status(canvas.runtime),
-                            "browser": browser_diagnostics(canvas.runtime),
+                            "browser": browser_diagnostics(canvas.runtime, browser_account),
                             "liveUpdate": (canvas.runtime.live_updates.status()
                                            if getattr(canvas.runtime, "live_updates", None) else None),
                             "restartEnvironment": {key: os.environ[key] for key in (

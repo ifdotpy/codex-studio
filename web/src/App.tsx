@@ -71,6 +71,7 @@ import ProjectAccount from "./components/ProjectAccount";
 import SessionActivity from "./components/SessionActivity";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
+import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
 import Conversation from "./components/Conversation";
 import RadioChat from "./components/RadioChat";
@@ -1669,6 +1670,10 @@ export default function App() {
             aria-label="Conversation settings"
           >
             <h2>Conversation</h2>
+            <BrowserAccessNotice
+              accountKey={accountKey}
+              active={settingsOpen && (agent || lead)?.provider !== "claude"}
+            />
             <div className="settings-field">
               <span className="settings-label">Account</span>
               <Accounts

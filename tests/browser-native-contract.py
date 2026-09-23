@@ -10,7 +10,15 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from codex_browser import GUIDANCE, browser_config, browser_status, configure_browser, ensure_skill, skill_root
+from codex_browser import (
+    GUIDANCE,
+    browser_config,
+    browser_status,
+    configure_browser,
+    diagnostics,
+    ensure_skill,
+    skill_root,
+)
 
 
 class SkillServer:
@@ -138,6 +146,23 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(browser_status(self.target, self.shared), ({}, "The browser service file is missing"))
         self.service.touch()
         self.assertIsNone(browser_status(self.target, self.shared)[1])
+
+    def test_diagnostics_are_selected_per_account(self):
+        second = self.shared / "second"
+        second.mkdir()
+        (second / "config.toml").write_text('[plugins."chrome@openai-bundled"]\nenabled=false')
+        accounts = SimpleNamespace(
+            home=lambda key: self.target if key == "default" else second,
+            base_home=self.shared,
+        )
+        runtime = SimpleNamespace(accounts=accounts)
+        self.assertTrue(diagnostics(runtime)["enabled"])
+        result = diagnostics(runtime, "second")
+        self.assertFalse(result["enabled"])
+        self.assertEqual(
+            result["reason"],
+            "The Chrome plugin is disabled in this account's Codex configuration",
+        )
 
     def test_invalid_config_error_does_not_expose_contents(self):
         (self.target / "config.toml").write_text('secret-credential=[bad')
