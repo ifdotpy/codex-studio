@@ -67,7 +67,7 @@ export default function TeamChats({
         ? room.rootId === leadId
         : room.members.length > 0 &&
           (room.members.every((id) => members.has(id)) ||
-            (!!room.reviewTargets?.length &&
+            ((!!room.reviewTargets?.length || !!room.peerTeamId) &&
               room.members.some((id) => members.has(id))))),
   );
   const name = (room: (typeof rooms)[number]) => {

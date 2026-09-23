@@ -99,10 +99,12 @@ class EfficiencyMixin:
                 scope = args.get('scope', 'team')
                 if scope != 'team':
                     raise ValueError('Agent discovery is limited to your team')
+                from codex_peer_teams import peers_for
+                peer_ids = {peer['id'] for peer in peers_for(self, db, actor)}
                 rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
-                        for a in agents if a['rootId'] == actor['rootId']]
+                        for a in agents if a['rootId'] == actor['rootId'] or a['id'] in peer_ids]
                 rows.sort(key=lambda a: a['id'])
-                rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId')}
+                rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId', 'peerTeamId', 'peerTeamName')}
                          for r in self.chat_rooms(db, actor_id)]
                 rooms.sort(key=lambda r: r['id'])
                 # One cursor covers both collections. Room discovery continues
@@ -114,7 +116,9 @@ class EfficiencyMixin:
                 result.update(self=actor_id, lead=actor['rootId'], parent=actor.get('parentId'),
                               items=[r['value'] for r in page if r['entry'] == 'agent'],
                               rooms=[r['value'] for r in page if r['entry'] == 'room'],
-                              total=len(rows), roomTotal=len(rooms), totalRecords=len(entries))
+                              total=len(rows), roomTotal=len(rooms), totalRecords=len(entries),
+                              peerChatIds=sorted(peer_ids),
+                              peerChatPolicy='Peer chats are equal and independent. Send explicit private messages only. Do not assign work or forward results automatically.')
                 return result
             team = [a for a in agents if a['rootId'] == actor['rootId']]
             ids = {a['id'] for a in team}

@@ -28,7 +28,15 @@ export interface Agent extends Json {
   panelDataVersion?: number;
   contextUsage?: { tokens: number | null; window: number | null; at: number };
 }
+export interface PeerTeam {
+  id: string;
+  name: string;
+  projectPath: string;
+  members: string[];
+}
 export interface Room {
+  peerTeamId?: string;
+  peerTeamName?: string;
   id: string;
   name: string;
   kind: "private" | "broadcast";
@@ -94,6 +102,8 @@ export interface Snapshot {
   chats: Json[];
   runtime: {
     projectOrganizationVersion?: number;
+    peerTeamsVersion?: number;
+    peerTeams?: PeerTeam[];
     agents: Agent[];
     projects?: {
       id: string;
@@ -104,6 +114,7 @@ export interface Snapshot {
       accountRevision?: number;
       accountKeys?: string[];
       organizationRevision?: number;
+      peerTeamsRevision?: number;
       folders?: { id: string; name: string; parentId: string | null }[];
     }[];
     rooms: Room[];

@@ -913,6 +913,9 @@ def make_server(canvas, port=0, public_origin=None):
                             return self.send(record_layout(runtime, body))
                         except LayoutConflict as error:
                             return self.send({"error": str(error)}, 409)
+                    if self.path == "/api/peer-teams":
+                        from codex_peer_teams import manage
+                        return self.send(manage(runtime, body))
                     if self.path == "/api/projects":
                         return self.send(runtime.projects(body))
                     if self.path == "/api/accounts/discover":

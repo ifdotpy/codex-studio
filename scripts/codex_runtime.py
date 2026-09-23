@@ -77,16 +77,16 @@ TOOLS = [
           "complaint_id": TEXT, "text": TEXT,
           "status": {"type": "string", "enum": ["in_progress", "resolved", "declined"]}}, ["action"]),
     tool("orchestration_peers", "List agents and readable chat rooms in your team. "
-         "Returns a paged team directory without histories. Other teams are unavailable. Do not poll.",
+         "Returns a paged directory without histories, including equal peer chats grouped by the user. Do not poll.",
          {"scope": {"type": "string", "enum": ["team"]},
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_message", "Share a finding, question, or answer with other agents during work. "
-         "target is a teammate, an assigned review partner, parent, lead, or broadcast (your team). "
+         "target is a teammate, a user-grouped peer chat, an assigned review partner, parent, lead, or broadcast (your own agent tree). "
          "Broadcasts notify only active agents; other recipients can read them in chat history. "
          "Private chats are visible to their participants and the user. Direct messages wake idle "
          "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
          {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}, "review_event_id": TEXT, "review_outcome": {"type": "string", "enum": ["no_issue"]}}, ["target", "text"]),
-    tool("orchestration_chat_read", "Read messages in your team rooms or an assigned review pair room. "
+    tool("orchestration_chat_read", "Read messages in your team rooms, a user-grouped peer private room, or an assigned review pair room. "
          "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
          {"room_id": TEXT, "before": {"type": "integer", "minimum": 1}}, ["room_id"]),
     tool("orchestration_title", "Set a short conversation title from the user's task. "
@@ -181,8 +181,12 @@ Choose the operation from the work transition:
 Use orchestration_peers to discover agents, then orchestration_message to talk to them.
 Report useful early progress with importance=progress; questions and blockers use their own importance.
 The server delivers submitted evidence and child completion to the lead.
-Use a same-team agent id for a private chat or broadcast for your team. Communication and
-chat history access stay within one team, except the exact participants of an enabled user-assigned review. The user can read these chats. Private means other agents cannot read it through the chat tools.
+Use a same-team agent id for a private chat or broadcast for your own agent tree.
+The user can group independent lead chats from one project into a peer team.
+Discover these peers with orchestration_peers. They can exchange explicit private messages,
+but keep separate tasks, histories, and subagents. Do not assign work or forward results automatically.
+Other cross-root communication requires an enabled user-assigned review between the exact participants.
+The user can read these chats. Other agents cannot read private rooms through chat tools.
 Direct messages wake recipients automatically. Broadcasts notify only active agents; idle and
 finished agents can read them in history. Use a direct follow-up to resume an assignment.
 Send a message when you have a new finding, question, or answer for its recipient.
@@ -3576,6 +3580,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
     def chat_rooms(self, db, viewer=None):
         agents = {a["id"]: a for a in self.records(db, "agents") if not a.get("deletedAt")}
         viewer_root = agents.get(viewer, {}).get("rootId") if viewer else None
+        from codex_peer_teams import snapshot as peer_snapshot
+        peer_teams = peer_snapshot(self, db)
         rooms = []
         for room in self.records(db, "rooms"):
             members = ([a["id"] for a in agents.values() if room.get("rootId") in {"all", a["rootId"]}]
@@ -3584,9 +3590,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 continue
             if viewer and (not viewer_root or room.get("rootId") == "all"):
                 continue
+            peer_team = next((team for team in peer_teams if room["kind"] == "private"
+                              and len(members) == 2 and set(members).issubset(team["members"])), None)
+            room.pop("peerTeamId", None)
+            room.pop("peerTeamName", None)
+            if peer_team:
+                room.update(peerTeamId=peer_team["id"], peerTeamName=peer_team["name"])
             if viewer and any(agents[m].get("rootId") != viewer_root for m in members):
                 from codex_chat_reviews import review_pair_allowed
-                if room['kind'] != 'private' or len(members) != 2 or not review_pair_allowed(db, *members):
+                if room['kind'] != 'private' or len(members) != 2 or not (peer_team or review_pair_allowed(db, *members)):
                     continue
             room["members"] = members
             room["name"] = ("All agents" if room.get("rootId") == "all" else
@@ -3603,9 +3615,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             a = self.agent(viewer, db)
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")
+            from codex_peer_teams import peers_for
+            peer_ids = {p["id"] for p in peers_for(self, db, a)}
             return {"self": viewer, "lead": a["rootId"], "parent": a["parentId"],
                     "peers": [{k: p.get(k) for k in ("id", "name", "role", "rootId", "parentId", "status")}
-                              for p in self.records(db, "agents") if not p.get("deletedAt") and p["rootId"] == a["rootId"]],
+                              for p in self.records(db, "agents") if not p.get("deletedAt") and (p["rootId"] == a["rootId"] or p["id"] in peer_ids)],
                     "rooms": self.chat_rooms(db, viewer)}
 
     def chat_read(self, room_id, viewer=None, before=None, limit=100, *, model=False):
@@ -3626,7 +3640,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                        (r.get("kind") == "broadcast" and r.get("rootId") == root_id) or
                        (r.get("kind") != "broadcast" and r.get("members") and
                         (set(r["members"]).issubset(members) or
-                         (r.get("reviewTargets") and set(r["members"]) & members)))]
+                         ((r.get("reviewTargets") or r.get("peerTeamId")) and set(r["members"]) & members)))]
                 room = {"id": room_id, "name": root["name"], "members": sorted(members)}
                 rows = db.execute(
                     "SELECT * FROM runtime_chat_messages WHERE room IN (SELECT value FROM json_each(?)) "
@@ -3671,7 +3685,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                               if root == a["rootId"] and not a.get("deletedAt")]
             else:
                 from codex_chat_reviews import review_pair_allowed
-                recipient = (self.agent(target, db) if review_pair_allowed(db, sender_id, target)
+                from codex_peer_teams import peer_pair_allowed
+                recipient = (self.agent(target, db) if (review_pair_allowed(db, sender_id, target)
+                             or peer_pair_allowed(db, sender_id, target))
                              else self.checked_actor(db, target, sender_id))
                 if recipient.get("deletedAt"):
                     raise ValueError("Recipient conversation was deleted")
@@ -4341,6 +4357,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             return task
 
     def snapshot(self, *, include_work=True):
+        from codex_peer_teams import snapshot as peer_snapshot
         with self.lock, self.db() as db:
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
             for a in agents:
@@ -4375,6 +4392,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "agents": agents,
                 "projects": self.projects(db=db)["items"],
                 "projectOrganizationVersion": 1,
+                "peerTeamsVersion": 1,
+                "peerTeams": peer_snapshot(self, db),
                 "tasks": self.recent_tasks(db),
                 "userTasks": self.user_tasks(db=db)["items"],
                 "tasksHistoryLimit": 100,

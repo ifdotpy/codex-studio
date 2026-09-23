@@ -277,3 +277,21 @@
     padding-right: 84px;
   }
 }
+
+/* Project and team menus remain reachable without a prior pointer hover. */
+#sidebar .project-tree-action[aria-haspopup="menu"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+#sidebar
+  .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
+  .project-tree-toggle {
+  padding-right: 28px;
+}
+@media (hover: none), (max-width: 760px) {
+  #sidebar
+    .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
+    .project-tree-toggle {
+    padding-right: 84px;
+  }
+}

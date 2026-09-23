@@ -37,6 +37,7 @@ import {
   type ProjectFolder,
 } from "./ProjectOrganization";
 import { type Agent, type Snapshot } from "../types";
+import { PeerTeamForm, PeerTeamGroup } from "./PeerTeams";
 import ChatStatus from "./ChatStatus";
 import { hasCompletedResult, type ChatIndicator } from "./chatStatusModel";
 type Props = {
@@ -74,6 +75,20 @@ export default function Sidebar(p: Props) {
   );
   const [organizing, setOrganizing] = useState<string | null>(null);
   const organizationLock = useRef(false);
+  const [teamDialog, setTeamDialog] = useState<{
+    path: string;
+    id?: string;
+    action: "save" | "delete";
+  } | null>(null);
+  const peerTeams =
+    p.data.runtime.peerTeamsVersion === 1 ? p.data.runtime.peerTeams || [] : [];
+  const grouped = new Set(
+    peerTeams.flatMap((team) =>
+      team.members.filter((id) =>
+        p.data.threads.some((a) => a.id === id && a.cwd === team.projectPath),
+      ),
+    ),
+  );
   const [dialog, setDialog] = useState<{
     title: string;
     path: string;
@@ -142,7 +157,7 @@ export default function Sidebar(p: Props) {
     }
   };
   const agents = p.data.threads.filter(
-    (a) => a.source === "managed" && a.isLead,
+    (a) => a.source === "managed" && a.isLead && !a.deletedAt,
   );
   const selectedFolder = agents.find((a) => a.id === p.opened)?.projectFolder;
   useEffect(() => {
@@ -241,7 +256,12 @@ export default function Sidebar(p: Props) {
       const project = p.data.runtime.projects?.find(
         (item) => item.path === a.cwd,
       );
-      return `${a.name} ${a.cwd || ""} ${project?.name || a.project || ""} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`
+      if (a.id === p.opened && grouped.has(a.id)) return true;
+      const teamName =
+        peerTeams.find(
+          (team) => team.members.includes(a.id) && team.projectPath === a.cwd,
+        )?.name || "";
+      return `${teamName} ${a.name} ${a.cwd || ""} ${project?.name || a.project || ""} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`
         .toLowerCase()
         .includes(query.toLowerCase());
     });
@@ -457,11 +477,13 @@ export default function Sidebar(p: Props) {
   ): ReactNode => {
     const folders = group.folders || [];
     const key = parent ? folderKey(group.path, parent.id) : group.path;
-    const assigned = group.chats.filter((chat) =>
-      parent
-        ? chat.projectFolder === parent.id
-        : !folders.some((folder) => folder.id === chat.projectFolder),
-    );
+    const assigned = group.chats
+      .filter((chat) => !grouped.has(chat.id))
+      .filter((chat) =>
+        parent
+          ? chat.projectFolder === parent.id
+          : !folders.some((folder) => folder.id === chat.projectFolder),
+      );
     const shown = projectLimits[key] || 5;
     const chats = assigned.slice(0, query ? assigned.length : shown);
     const selected = assigned.find((chat) => chat.id === p.opened);
@@ -560,9 +582,12 @@ export default function Sidebar(p: Props) {
           );
         })}
         {chats.map(renderRow)}
-        {!chats.length && !children.length && (
-          <p className="project-empty">No chats</p>
-        )}
+        {!chats.length &&
+          !children.length &&
+          (parent ||
+            !peerTeams.some((team) => team.projectPath === group.path)) && (
+            <p className="project-empty">No chats</p>
+          )}
         {!query && assigned.length > shown && (
           <UnstyledButton
             className="project-show-more"
@@ -705,6 +730,18 @@ export default function Sidebar(p: Props) {
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
+                        {p.data.runtime.peerTeamsVersion === 1 && (
+                          <Menu.Item
+                            onClick={() =>
+                              setTeamDialog({
+                                path: group.path,
+                                action: "save",
+                              })
+                            }
+                          >
+                            New team
+                          </Menu.Item>
+                        )}
                         <Menu.Item onClick={() => editProject(group)}>
                           Rename project
                         </Menu.Item>
@@ -735,8 +772,78 @@ export default function Sidebar(p: Props) {
                     </Menu>
                   )}
                 </div>
+                {teamDialog?.path === group.path &&
+                  (teamDialog.id &&
+                  !peerTeams.some((t) => t.id === teamDialog.id) ? (
+                    <p role="alert">
+                      This team is no longer available.{" "}
+                      <UnstyledButton onClick={() => setTeamDialog(null)}>
+                        Close
+                      </UnstyledButton>
+                    </p>
+                  ) : (
+                    <PeerTeamForm
+                      key={`${teamDialog.path}:${teamDialog.id || "new"}:${teamDialog.action}`}
+                      project={group}
+                      team={peerTeams.find((t) => t.id === teamDialog.id)}
+                      teams={peerTeams}
+                      agents={agents}
+                      action={teamDialog.action}
+                      refresh={p.refresh}
+                      close={() => setTeamDialog(null)}
+                    />
+                  ))}
                 {!isCollapsed && (
                   <div className="project-chats">
+                    {peerTeams
+                      .filter((team) => team.projectPath === group.path)
+                      .map((team) => {
+                        const members = group.chats.filter((a) =>
+                          team.members.includes(a.id),
+                        );
+                        const selected = agents.find(
+                          (a) =>
+                            a.id === p.opened && team.members.includes(a.id),
+                        );
+                        if (selected && !members.includes(selected))
+                          members.push(selected);
+                        if (!members.length && (query || archive)) return null;
+                        const key = JSON.stringify([
+                          group.path,
+                          "team",
+                          team.id,
+                        ]);
+                        const closed = !!collapsed[key] && !query;
+                        return (
+                          <PeerTeamGroup
+                            key={team.id}
+                            team={team}
+                            closed={closed}
+                            toggle={() => toggleProject(key)}
+                            edit={() =>
+                              setTeamDialog({
+                                path: group.path,
+                                id: team.id,
+                                action: "save",
+                              })
+                            }
+                            dissolve={() =>
+                              setTeamDialog({
+                                path: group.path,
+                                id: team.id,
+                                action: "delete",
+                              })
+                            }
+                          >
+                            <div className="peer-team-chats">
+                              {(closed
+                                ? members.filter((a) => a.id === p.opened)
+                                : members
+                              ).map(renderRow)}
+                            </div>
+                          </PeerTeamGroup>
+                        );
+                      })}
                     {renderProjectChats(group)}
                   </div>
                 )}

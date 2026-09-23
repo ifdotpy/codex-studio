@@ -1,0 +1,45 @@
+.peer-team {
+  margin: 4px 0;
+}
+.peer-team-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+.peer-team-chats {
+  padding-left: 8px;
+}
+.peer-team-form {
+  margin: 6px 4px 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+.peer-team-form > strong {
+  display: block;
+  margin-bottom: 8px;
+}
+.peer-team-form p {
+  margin: 8px 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.peer-team-form [role="alert"] {
+  color: var(--mantine-color-red-6);
+}
+.peer-team-options {
+  display: grid;
+  gap: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 3px 0;
+}
+.peer-team-options label {
+  overflow-wrap: anywhere;
+}
+.peer-team-form-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}

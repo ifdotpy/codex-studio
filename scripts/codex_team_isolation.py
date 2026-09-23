@@ -30,6 +30,7 @@ def _same_team(db, recipient, sender_id):
 def validate_event(runtime, db, recipient, event):
     """Return a denial reason, or None. Do not mutate records or call a model."""
     from codex_chat_reviews import review_pair_allowed
+    from codex_peer_teams import peer_pair_allowed
     kind = event['kind']
     if kind not in SENSITIVE_KINDS:
         return None
@@ -69,7 +70,8 @@ def validate_event(runtime, db, recipient, event):
                 if (not isinstance(members, list) or sender_id not in members
                         or recipient['id'] not in members
                         or (not all(_same_team(db, recipient, member) for member in members)
-                            and not (len(members) == 2 and review_pair_allowed(db, *members)))):
+                            and not (len(members) == 2 and (review_pair_allowed(db, *members)
+                                                        or peer_pair_allowed(db, *members))))):
                     return DENIED + ': the message room crosses team boundaries'
             else:
                 return DENIED + ': the message room is unavailable'
@@ -90,7 +92,9 @@ def validate_event(runtime, db, recipient, event):
             if complaint.get('leadId') != sender_id:
                 return DENIED + ': the complaint responder does not match'
     if not _same_team(db, recipient, sender_id):
-        if kind not in {'agent_message', 'chat_review'} or not review_pair_allowed(db, recipient['id'], sender_id):
+        review_allowed = kind in {'agent_message', 'chat_review'} and review_pair_allowed(db, recipient['id'], sender_id)
+        peer_allowed = kind == 'agent_message' and peer_pair_allowed(db, recipient['id'], sender_id)
+        if not (review_allowed or peer_allowed):
             return DENIED
         if kind == 'chat_review':
             target = _agent(db, sender_id)

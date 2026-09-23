@@ -10,6 +10,13 @@ describes managed tools and application workflows. No external skill repository
 is required. Standard Codex CLI delegation belongs to the independent native
 agent skill, not this application skill.
 
+In the left sidebar, open a project's menu and select **New team** to group
+independent chats. Select at least two chats from that project. Each chat keeps
+its own tasks, history, and subagents. Team members can discover each other and
+send explicit private messages. Broadcasts and automatic results stay within
+each chat's original agent tree. The team menu supports edits and dissolution.
+Dissolution preserves the chats and saved messages but removes peer access.
+
 ## Setup
 
 Requirements: Python 3.11 or later, Node.js 22.15 or later, and the signed-in Codex CLI.
