@@ -503,3 +503,28 @@
     display: flex;
   }
 }
+
+.message-date {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.messages-chat-list .team-room-title {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+}
+.messages-chat-list .team-room-title time {
+  white-space: normal;
+}
+.message-inline-thread .complaint-response {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--raised, #27272e);
+}
+.message-inline-thread > .message-date {
+  margin-top: 5px;
+}

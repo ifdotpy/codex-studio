@@ -32,10 +32,25 @@ class RoleSkillsContract(unittest.TestCase):
             advertised = {d["name"] for d in params["dynamicTools"]}
             context = self.runtime.model_context(actor["id"], {"topic": "tools"})
             self.assertEqual(advertised, {d["name"] for d in context["content"]})
-            self.assertEqual("orchestration_user_task" in advertised, actor["isLead"])
+            self.assertNotIn("orchestration_user_task", advertised)
+            self.assertIn("orchestration_message", advertised)
             self.assertEqual("orchestration_speak" in advertised, actor["isLead"])
             self.assertIn("orchestration_complaint", advertised)
-        self.assertIn("orchestration_user_task", {d["name"] for d in self.runtime.tool_definitions()})
+        self.assertNotIn("orchestration_user_task", {d["name"] for d in self.runtime.tool_definitions()})
+
+    def test_message_tool_allows_only_lead_to_contact_user(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        result = self.tool(lead, "orchestration_message", {"target": "user", "text": "Please check access"})
+        self.assertTrue(result["success"], result)
+        result = self.tool(worker, "orchestration_message", {"target": "user", "text": "Please check access"})
+        self.assertFalse(result["success"], result)
+        self.assertIn("Only the lead", json.dumps(result))
+        with self.runtime.db() as db:
+            messages = self.runtime.records(db, "complaints")
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]["author"], lead["id"])
+            self.assertEqual(messages[0]["recipient"], "user")
 
     def test_real_start_and_resume_receive_role_skill(self):
         lead = self.start(self.lead())
@@ -43,7 +58,9 @@ class RoleSkillsContract(unittest.TestCase):
         starts = [p for method, p in self.runtime.server.calls if method == "thread/start"]
         self.assertIn("[Studio role skill: codex-orchestrator]", starts[0]["developerInstructions"])
         self.assertIn("[Studio role skill: codex-subagent]", starts[1]["developerInstructions"])
-        self.assertIn("orchestration_user_task", {d["name"] for d in starts[0]["dynamicTools"]})
+        self.assertNotIn("orchestration_user_task", {d["name"] for d in starts[0]["dynamicTools"]})
+        for params in starts:
+            self.assertIn("orchestration_message", {d["name"] for d in params["dynamicTools"]})
         self.assertNotIn("orchestration_user_task", {d["name"] for d in starts[1]["dynamicTools"]})
         self.assertNotIn("orchestration_speak", {d["name"] for d in starts[1]["dynamicTools"]})
         turns = [p for method, p in self.runtime.server.calls if method == "turn/start"]
@@ -85,7 +102,7 @@ class RoleSkillsContract(unittest.TestCase):
         request = self.runtime.complaint(worker["id"], {"action": "submit", "text": "Need a decision", "recipient": "user"}, "request")
         self.assertEqual(request["recipient"], "lead")
         self.assertFalse(any(c["recipient"] == "user" for c in self.runtime.snapshot()["complaints"]))
-        with self.assertRaisesRegex(ValueError, "Unknown managed agent"):
+        with self.assertRaisesRegex(ValueError, "Only the lead"):
             self.runtime.chat_message(worker["id"], "user", "Bypass lead", "bypass")
         forwarded = self.runtime.complaint(lead["id"], {"action": "submit", "text": "Please decide the scope"}, "forward")
         self.assertEqual(forwarded["recipient"], "user")

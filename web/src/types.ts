@@ -122,7 +122,6 @@ export interface Snapshot {
     monitors: Json[];
     tasks?: BackgroundTask[];
     work?: Json[];
-    userTasks?: UserTask[];
     rules?: Json[];
     tasksHistoryLimit?: number;
     requests: Json[];
@@ -177,22 +176,6 @@ export const complaintLabel = (status: string) =>
     resolved: "Resolved",
     declined: "Declined",
   })[status] || status;
-
-export interface UserTask extends Json {
-  id: string;
-  agent: string;
-  rootId: string;
-  title: string;
-  description: string;
-  criteria: string;
-  status: "open" | "review" | "accepted" | "cancelled";
-  version: number;
-  created: number;
-  updated: number;
-  history: { action: string; text: string; actor: string; at: number }[];
-  reason: string;
-  completionNote: string;
-}
 
 // A stored turn failure is not the current health of the account connection.
 export function agentErrorLabel(agent: Agent): string {

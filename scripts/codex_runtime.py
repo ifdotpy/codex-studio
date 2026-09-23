@@ -30,7 +30,6 @@ from codex_work import WorkMixin, work_tools
 from codex_efficiency import EfficiencyMixin, efficiency_tools
 from codex_workspace import WorkspaceMixin, active_task_records
 from codex_rules import RulesMixin, rule_tools
-from codex_user_tasks import UserTasksMixin, user_task_tools
 from codex_questions import QuestionsMixin, is_question, answer_signature, record_answer
 from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
@@ -81,7 +80,7 @@ TOOLS = [
          {"scope": {"type": "string", "enum": ["team"]},
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_message", "Share a finding, question, or answer with other agents during work. "
-         "target is a teammate, a user-grouped peer chat, an assigned review partner, parent, lead, or broadcast (your own agent tree). "
+         "target is user (lead only), a teammate, a user-grouped peer chat, an assigned review partner, parent, lead, or broadcast (your own agent tree). "
          "Broadcasts notify only active agents; other recipients can read them in chat history. "
          "Private chats are visible to their participants and the user. Direct messages wake idle "
          "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
@@ -132,7 +131,7 @@ def voice_tools():
 
 from codex_agent_review import review_tools
 
-TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + user_task_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
+TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -191,7 +190,8 @@ Direct messages wake recipients automatically. Broadcasts notify only active age
 finished agents can read them in history. Use a direct follow-up to resume an assignment.
 Send a message when you have a new finding, question, or answer for its recipient.
 Use orchestration_chat_read for message history; orchestration_send also accepts peer ids and these targets.
-Use orchestration_complaint action=submit for a message that requires a recorded response.
+Use orchestration_message target=user for user requests, questions, and problems.
+Use orchestration_complaint to record replies to internal requests between agents.
 Subagent messages go to the orchestrator and wake it. The orchestrator decides whether
 to handle the request or send its own message to the user. Do not forward requests automatically.
 Only the orchestrator can send messages to the user. Only the user can answer or close them.
@@ -213,10 +213,10 @@ Only the orchestrator uses orchestration_speak(text) for additional speech. Do n
 Without active voice the text is saved silently. Voice interruption does not stop your task.
 Use your per-agent PROGRESS.md file for status above the composer. Read and edit it with ordinary file tools.
 A background script can write the file directly. File changes do not wake the model.
-Only the orchestrator uses orchestration_user_task for things the user must do. Supply clear completion criteria.
-Subagents ask their orchestrator to contact the user. Do not create direct user questions or tasks.
-A user check wakes the orchestrator and awaits its review. Accept the result or return
-it with a concrete reason and next action. Do not treat the user check as your acceptance.
+Send requests for user action through orchestration_message with target=user.
+Describe the needed action in the message. Read the user's reply as a normal message.
+Do not create a separate task or require task acceptance from the user.
+Subagents ask their orchestrator to contact the user. Do not create direct user questions.
 Use fenced mermaid blocks for diagrams and fenced html blocks for HTML/CSS previews.
 HTML previews are static and isolated; scripts and remote resources do not run.
 The user can inspect the source of each preview.
@@ -602,7 +602,7 @@ class AppServer:
             self.reader.join(timeout=1)
 
 
-class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, UserTasksMixin, PanelMixin):
+class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.started_at = time.time()
         self.root = Path(root)
@@ -730,7 +730,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.analytics_history_init(db)
             self.setup_work(db)
             self.setup_tool_requests(db)
-            self.setup_user_tasks(db)
+            from codex_user_messages import migrate
+            migrate(self, db)
             self.setup_workspace(db)
             self.setup_rules(db)
             from codex_monitor_recovery import recover_monitor_results, acknowledge_monitor_result
@@ -1835,7 +1836,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "orchestration_speak", "orchestration_review"
             }:
                 continue
-            if not lead and definition["name"] in {"orchestration_user_task", "orchestration_speak", "orchestration_agent_manage"}:
+            if not lead and definition["name"] in {"orchestration_speak", "orchestration_agent_manage"}:
                 continue
             if definition["name"] == "orchestration_complaint":
                 definition = {**definition, "description": (
@@ -2398,7 +2399,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                             message_clock(event["id"], metadata["acceptedAt"])
                         )
                 latest = current
-                text += self.user_task_review_context(db, a["id"])
                 required = self.unanswered_complaints(db, a["id"])
                 latest["complaintsPresented"] = [c["id"] for c in required]
                 self.put(db, "agents", latest)
@@ -3165,8 +3165,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     value = self.request_action(a["id"], args)
                 elif name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
-                elif name == "orchestration_user_task":
-                    value = self.user_task_action(a["id"], args, key, epoch=a["epoch"])
                 elif name == "orchestration_task":
                     value = self.model_work(a["id"], args, key, a["epoch"])
                 elif name == "orchestration_search":
@@ -3258,6 +3256,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 elif name == "orchestration_cancel_monitor":
                     value = self.cancel_monitor(args["monitor_id"], a["id"])
                 else:
+                    request_outcome = "not_applied"
                     raise ValueError("Unknown orchestration tool")
                 result = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
                 result = stamp_tool_result(result, time.time())
@@ -3451,6 +3450,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     @staticmethod
     def complaint_needs_response(c):
+        if c.get("status") in {"resolved", "declined"}:
+            return False
+        if c.get("sourceType") == "user_task" and c.get("status") == "open":
+            return True
         responsible = "user" if Runtime.complaint_recipient(c) == "user" else c["leadId"]
         return not any(r["author"] == responsible for r in c["responses"])
 
@@ -3485,7 +3488,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         result = []
         for c in self.records(db, "complaints"):
             result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
-                           "title": c["text"][:140], "recipient": self.complaint_recipient(c),
+                           "title": c["text"][:140], "text": c["text"], "responses": c["responses"], "recipient": self.complaint_recipient(c),
                            "version": c["version"], "needsResponse": self.complaint_needs_response(c),
                            "authorName": agents.get(c["author"], {}).get("name", "You" if c["author"] == "user" else c["author"]),
                            "leadName": agents.get(c["leadId"], {}).get("name", c["leadId"]),
@@ -3671,6 +3674,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
             raise ValueError("Message must have 1 to 12000 characters")
         text = text.strip()
+        if target == "user":
+            from codex_user_messages import send_to_user
+            return send_to_user(self, sender_id, text, key, epoch)
         with self.lock, self.db() as db:
             sender = self.agent(sender_id, db)
             if sender.get("deletedAt") or not sender["autoWake"] or (epoch is not None and sender["epoch"] != epoch):
@@ -4395,7 +4401,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "peerTeamsVersion": 1,
                 "peerTeams": peer_snapshot(self, db),
                 "tasks": self.recent_tasks(db),
-                "userTasks": self.user_tasks(db=db)["items"],
                 "tasksHistoryLimit": 100,
                 "monitors": [
                     m

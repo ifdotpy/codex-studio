@@ -66,10 +66,6 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
       request.id,
     );
   }
-  for (const task of data.runtime.userTasks || []) {
-    if (task.status === "open")
-      add(`task:${task.id}`, task.agent, "Action needed", task.title, task.id);
-  }
   for (const complaint of data.runtime.complaints || []) {
     if (
       complaint.needsResponse &&

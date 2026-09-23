@@ -52,7 +52,6 @@ export function chatSnapshot(
       work: data.runtime.work?.filter(
         (task) => !!rootId && task.rootId === rootId,
       ),
-      userTasks: data.runtime.userTasks?.filter((task) => owns(task.agent)),
       rules: data.runtime.rules?.filter((rule) => owns(rule.agent)),
     },
   };
@@ -62,8 +61,6 @@ export function messageAttentionCount(data: Snapshot | null): number {
   if (!data) return 0;
   return (
     data.runtime.requests.filter((request) => !request.deferred).length +
-    (data.runtime.userTasks || []).filter((task) => task.status === "open")
-      .length +
     data.runtime.complaints.filter(complaintNeedsUserResponse).length
   );
 }

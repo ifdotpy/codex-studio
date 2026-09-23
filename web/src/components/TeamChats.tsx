@@ -1,3 +1,4 @@
+import MessageDate from "./MessageDate";
 import AgentAvatar from "./AgentAvatar";
 import {
   ActionIcon,
@@ -6,7 +7,7 @@ import {
   TextInput,
   UnstyledButton,
 } from "@mantine/core";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, Inbox, Megaphone, Search, Users } from "lucide-react";
 import { save, saved } from "../api";
 import { useMessages } from "../hooks";
@@ -20,7 +21,6 @@ import "./team-chats.css";
 export default function TeamChats({
   data,
   leadId,
-  forYou,
   focusRequestId,
   focusItemId,
   focusRoomId,
@@ -29,7 +29,6 @@ export default function TeamChats({
 }: {
   data: Snapshot;
   leadId?: string;
-  forYou?: ReactNode;
   focusRequestId?: string;
   focusItemId?: string;
   focusRoomId?: string;
@@ -90,14 +89,18 @@ export default function TeamChats({
   const attention = data.runtime.requests.filter(
     (request) => request.status === "pending" || !request.status,
   );
-  const latestPersonal = [...data.runtime.complaints].sort(
-    (a, b) => (b.created || 0) - (a.created || 0),
-  )[0];
+  const latestPersonal = [
+    ...data.runtime.complaints.map((item) => ({
+      created: item.created,
+      text: item.title,
+    })),
+    ...data.runtime.requests.map((item) => ({
+      created: item.createdAt ?? item.created ?? item.at,
+      text: item.params?.questions?.[0]?.question || item.title,
+    })),
+  ].sort((a, b) => (b.created || 0) - (a.created || 0))[0];
   const personalPreview =
-    attention[0]?.params?.questions?.[0]?.question ||
-    attention[0]?.title ||
-    latestPersonal?.title ||
-    "Questions, messages and replies";
+    latestPersonal?.text || "Questions, messages and replies";
   const icon = (item?: (typeof rooms)[number]) =>
     !item ? (
       <span className="team-conversation-icon personal">
@@ -117,13 +120,6 @@ export default function TeamChats({
         size={42}
       />
     );
-  const clock = (at?: number) =>
-    at
-      ? new Date(at * 1000).toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "";
   const filteredRooms = rooms
     .filter((item) =>
       `${name(item)} ${item.lastMessage?.text || ""}`
@@ -170,11 +166,7 @@ export default function TeamChats({
             <strong>{message.senderName || "Agent"}</strong>
           </div>
           <StreamingText text={message.text || ""} agentId={message.sender} />
-          <time>
-            {message.created
-              ? new Date(message.created * 1000).toLocaleString()
-              : ""}
-          </time>
+          <MessageDate at={message.created} />
         </article>
       ),
     })),
@@ -182,7 +174,7 @@ export default function TeamChats({
       .filter((request) => request.status === "pending" || !request.status)
       .map((request) => ({
         id: `request:${request.id}`,
-        created: request.created || request.at || 0,
+        created: request.createdAt ?? request.created ?? request.at ?? 0,
         content: (
           <Requests
             scope={data.stateDir}
@@ -203,11 +195,7 @@ export default function TeamChats({
             ...data,
             runtime: { ...data.runtime, complaints: [message] },
           }}
-          target={
-            message.recipient as
-              | "user"
-              | "lead"
-          }
+          target={message.recipient as "user" | "lead"}
           hideEmpty
           focusId={focusItemId}
           focusRequestId={focusRequestId}
@@ -259,7 +247,9 @@ export default function TeamChats({
               <div className="team-room-copy">
                 <div className="team-room-title">
                   <strong>For you</strong>
-                  <time>{clock(latestPersonal?.created)}</time>
+                  {latestPersonal && (
+                    <MessageDate at={latestPersonal.created} />
+                  )}
                 </div>
                 <div className="team-room-preview">
                   <span>{personalPreview}</span>
@@ -285,7 +275,9 @@ export default function TeamChats({
               <div className="team-room-copy">
                 <div className="team-room-title">
                   <strong>{name(item)}</strong>
-                  <time>{clock(item.lastMessage?.created)}</time>
+                  {item.lastMessage && (
+                    <MessageDate at={item.lastMessage.created} />
+                  )}
                 </div>
                 <div className="team-room-preview">
                   <span>{item.lastMessage?.text || "No messages yet"}</span>
@@ -365,8 +357,7 @@ export default function TeamChats({
                 {event.content}
               </div>
             ))}
-            {showYou && forYou}
-            {!showYou && loaded && !events.length && (
+            {(showYou || loaded) && !events.length && (
               <p className="team-chat-empty">No messages yet.</p>
             )}
           </div>

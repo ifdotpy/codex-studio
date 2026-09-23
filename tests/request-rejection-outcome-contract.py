@@ -12,7 +12,7 @@ from codex_tool_requests import request_result_outcome
 
 
 REJECTIONS = (
-    ("orchestration_user_task", "This task changed. Read the current task before trying again"),
+    ('orchestration_user_task', 'User tasks were removed. Send a message with orchestration_message target=user.'),
     ('orchestration_task', 'Supply a review decision with 1 to 32000 characters'),
     ('orchestration_message', 'This record belongs to another team'),
     ('orchestration_agent_manage', 'You can manage only your own descendant workers'),

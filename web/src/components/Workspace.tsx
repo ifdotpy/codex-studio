@@ -1,15 +1,12 @@
 import ErrorDescription from "./ErrorDescription";
-import { workspaceInbox } from "./workspaceInbox";
 import { useWorkspaceResource as useResource } from "./useWorkspaceResource";
 import { messageAttentionCount } from "../chatScope";
-import { complaintNeedsUserResponse } from "../types";
 import {
   Badge,
   Button,
   Drawer,
   Loader,
   Modal,
-  MultiSelect,
   NativeSelect,
   NumberInput,
   Textarea,
@@ -18,7 +15,6 @@ import {
 } from "@mantine/core";
 import {
   BookOpen,
-  CheckCheck,
   ChevronRight,
   Clock3,
   FileDiff,
@@ -26,7 +22,6 @@ import {
   GitBranch,
   Inbox,
   Layers3,
-  ListTodo,
   Plus,
   RefreshCw,
   Search,
@@ -37,7 +32,6 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import type { Agent, Json, Snapshot } from "../types";
-import UserTasks from "./UserTasks";
 import { useFormDraft } from "./useFormDraft";
 import TeamChats from "./TeamChats";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
@@ -66,8 +60,6 @@ type Context = Props & {
   resourceCache: Map<string, Json>;
 };
 const sections = [
-  ["work", "Agent tasks", ListTodo],
-  ["user-tasks", "Your tasks", CheckCheck],
   ["changes", "Changes", FileDiff],
   ["messages", "Messages", Inbox],
   ["search", "Search", Search],
@@ -78,9 +70,6 @@ const sections = [
   ["rules", "Rules", Clock3],
 ] as const;
 const descriptions: Record<string, string> = {
-  work: "Assign work, track dependencies, and accept results.",
-  "user-tasks":
-    "Tasks agents need you to complete. Each result goes back to its agent for review.",
   changes:
     "Latest changes reported by this agent. File previews show the current files.",
   messages: "Your messages and this team’s conversations.",
@@ -145,7 +134,7 @@ function ownerName(data: Snapshot, id?: string) {
 
 export function Workspace(props: Props) {
   const resourceCache = useRef(new Map<string, Json>()).current;
-  const [section, setSection] = useState(props.initialSection || "work"),
+  const [section, setSection] = useState(props.initialSection || "messages"),
     [agentId, setAgentId] = useState(props.agent?.id || ""),
     [revision, setRevision] = useState(0),
     [preview, setPreview] = useState<PreviewTarget | null>(null);
@@ -234,7 +223,6 @@ export function Workspace(props: Props) {
     },
   };
   const needAgent = [
-    "work",
     "changes",
     "plan",
     "checkpoints",
@@ -316,7 +304,7 @@ export function Workspace(props: Props) {
               <RefreshCw size={16} />
             </Button>
           </header>
-          {!["user-tasks", "messages"].includes(section) && (
+          {section !== "messages" && (
             <div className="workspace-scope">
               <NativeSelect
                 label="Agent"
@@ -357,20 +345,6 @@ export function Workspace(props: Props) {
               }
               key={`${section}:${section === "messages" ? "team" : selected?.id || "all"}`}
             >
-              {section === "work" && <Work {...context} />}
-              {section === "user-tasks" && (
-                <UserTasks
-                  data={props.data}
-                  focusId={focusId}
-                  refresh={props.refresh}
-                  notify={props.notify}
-                  onSelect={(id) => {
-                    props.onSelect(id);
-                    props.onClose();
-                  }}
-                />
-              )}
-
               {section === "changes" && <Changes {...context} />}
               {section === "messages" && (
                 <TeamChats
@@ -384,7 +358,6 @@ export function Workspace(props: Props) {
                     props.agent?.rootId ||
                     (props.agent?.isLead ? props.agent.id : undefined)
                   }
-                  forYou={<Attention {...context} />}
                 />
               )}
               {section === "search" && <Find {...context} />}
@@ -402,483 +375,6 @@ export function Workspace(props: Props) {
   );
 }
 export default Workspace;
-
-function Work(c: Context) {
-  const state = useResource(endpoint("work", c.selected), c.revision),
-    tasks: Json[] = state.data?.tasks || [];
-  const [filter, setFilter] = useState("all"),
-    [id, setId] = useState(c.focusId),
-    [editor, setEditor] = useState<Json | null>(null),
-    [submission, setSubmission] = useState<Json | null>(null),
-    [decision, setDecision] = useState<Json | null>(null),
-    [saving, setSaving] = useState(false);
-  const selected = tasks.find((task) => task.id === id),
-    root = c.selected?.rootId || c.selected?.id;
-  const team = c.data.threads.filter(
-    (a) => (a.rootId || a.id) === root && a.source === "managed",
-  );
-  const request = useRef<{ signature: string; id: string } | null>(null);
-  const submit = async (body: Json, done: () => void) => {
-    const signature = JSON.stringify(body);
-    if (request.current?.signature !== signature)
-      request.current = { signature, id: crypto.randomUUID() };
-    setSaving(true);
-    try {
-      await c.run("/api/work", {
-        agent: c.selected!.id,
-        ...body,
-        id: request.current.id,
-      });
-      request.current = null;
-      done();
-    } catch {
-      /* Retain the draft after a failed request. */
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <>
-      <ResourceState state={state} />
-      <div className="workspace-toolbar">
-        <NativeSelect
-          aria-label="Work status"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          data={[
-            { value: "all", label: "All work" },
-            { value: "ready", label: "Ready" },
-            { value: "running", label: "In progress" },
-            { value: "blocked", label: "Blocked" },
-            { value: "review", label: "Needs acceptance" },
-            { value: "accepted", label: "Accepted" },
-          ]}
-        />
-        <Button
-          size="xs"
-          variant="filled"
-          color="indigo"
-          leftSection={<Plus size={14} />}
-          onClick={() =>
-            setEditor({
-              title: "",
-              description: "",
-              owner: "",
-              dependencies: [],
-              status: "ready",
-            })
-          }
-        >
-          New work
-        </Button>
-      </div>
-      <div className="workspace-master-detail">
-        <div className="workspace-list">
-          {tasks
-            .filter(
-              (t) =>
-                filter === "all" || (t.displayStatus || t.status) === filter,
-            )
-            .map((task) => (
-              <UnstyledButton
-                key={task.id}
-                className={`workspace-row ${id === task.id ? "selected" : ""}`}
-                onClick={() => setId(task.id)}
-              >
-                <div className="workspace-row-head">
-                  <strong>{task.title}</strong>
-                  <Status value={task.displayStatus || task.status} />
-                </div>
-                <small>
-                  {ownerName(c.data, task.owner)}
-                  {task.blockedBy?.length
-                    ? ` · ${task.blockedBy.length} dependencies`
-                    : ""}
-                </small>
-              </UnstyledButton>
-            ))}
-          {!tasks.length && state.data !== null && (
-            <Empty>No work yet. Create the first task for this team.</Empty>
-          )}
-        </div>
-        {selected ? (
-          <article className="workspace-detail">
-            <div className="workspace-toolbar">
-              <Status value={selected.displayStatus || selected.status} />
-              <Button
-                size="compact-xs"
-                variant="subtle"
-                disabled={selected.status === "accepted"}
-                onClick={() =>
-                  setEditor({ ...selected, owner: selected.owner || "" })
-                }
-              >
-                Edit
-              </Button>
-            </div>
-            <h3>{selected.title}</h3>
-            <p className="workspace-prose">
-              {selected.description || "No description."}
-            </p>
-            <dl className="workspace-facts">
-              <dt>Owner</dt>
-              <dd>{ownerName(c.data, selected.owner)}</dd>
-              <dt>Dependencies</dt>
-              <dd>
-                {(selected.dependencies || [])
-                  .map(
-                    (dep: string) =>
-                      tasks.find((t) => t.id === dep)?.title || dep,
-                  )
-                  .join(", ") || "None"}
-              </dd>
-            </dl>
-            {selected.status !== "accepted" && (
-              <div className="workspace-actions">
-                <Button
-                  size="xs"
-                  variant="light"
-                  disabled={
-                    !selected.owner ||
-                    !!selected.blockedBy?.length ||
-                    !["ready", "running"].includes(selected.status)
-                  }
-                  onClick={() =>
-                    void submit(
-                      {
-                        action: "claim",
-                        task_id: selected.id,
-                        owner: selected.owner,
-                        version: selected.version,
-                      },
-                      () => {},
-                    )
-                  }
-                >
-                  Claim for owner
-                </Button>
-                <Button
-                  size="xs"
-                  disabled={!selected.owner || !!selected.blockedBy?.length}
-                  onClick={() =>
-                    setSubmission({
-                      task_id: selected.id,
-                      result: "",
-                      checks: "",
-                      revision: "",
-                      files: "",
-                      version: selected.version,
-                    })
-                  }
-                >
-                  Submit result
-                </Button>
-              </div>
-            )}
-            {(selected.results || [])
-              .slice()
-              .reverse()
-              .map((result: Json, index: number) => (
-                <section className="workspace-result" key={result.id || index}>
-                  <div className="workspace-row-head">
-                    <strong>Submitted result</strong>
-                    <small>{date(result.created)}</small>
-                  </div>
-                  <p className="workspace-prose">
-                    {result.text || result.result || result.summary}
-                  </p>
-                  <dl className="workspace-facts">
-                    <dt>Checks reported</dt>
-                    <dd className="workspace-prose">
-                      {result.checks || "None"}
-                    </dd>
-                    <dt>Revision reported</dt>
-                    <dd>
-                      <code>{result.revision || "None"}</code>
-                    </dd>
-                  </dl>
-                  <div className="workspace-actions">
-                    {(result.files || []).map((path: string) => (
-                      <Button
-                        key={path}
-                        variant="light"
-                        size="xs"
-                        leftSection={<Files size={13} />}
-                        onClick={() =>
-                          c.preview({
-                            agent: selected.owner || c.selected!.id,
-                            path,
-                          })
-                        }
-                      >
-                        {path}
-                      </Button>
-                    ))}
-                  </div>
-                  {index === 0 && selected.status === "review" && (
-                    <div className="workspace-actions">
-                      <Button
-                        color="teal"
-                        size="xs"
-                        leftSection={<CheckCheck size={14} />}
-                        onClick={() =>
-                          setDecision({
-                            action: "accept",
-                            task_id: selected.id,
-                            version: selected.version,
-                            result: "",
-                          })
-                        }
-                      >
-                        Accept
-                      </Button>
-                      <Button
-                        variant="light"
-                        color="orange"
-                        size="xs"
-                        onClick={() =>
-                          setDecision({
-                            action: "reject",
-                            task_id: selected.id,
-                            version: selected.version,
-                            result: "",
-                          })
-                        }
-                      >
-                        Request changes
-                      </Button>
-                    </div>
-                  )}
-                </section>
-              ))}
-            {!!selected.decisions?.length && (
-              <section className="workspace-result">
-                <h4>Acceptance history</h4>
-                {selected.decisions.map((entry: Json, index: number) => (
-                  <div key={entry.id || index}>
-                    <Status
-                      value={
-                        entry.decision ||
-                        entry.action ||
-                        entry.status ||
-                        "decision"
-                      }
-                    />
-                    <p className="workspace-prose">
-                      {entry.reason || entry.result}
-                    </p>
-                    <small>{date(entry.created)}</small>
-                  </div>
-                ))}
-              </section>
-            )}
-          </article>
-        ) : (
-          !!tasks.length && (
-            <Empty>Select work to view its dependencies and results.</Empty>
-          )
-        )}
-      </div>
-      <Modal
-        opened={!!editor}
-        onClose={() => !saving && setEditor(null)}
-        title={editor?.id ? "Edit work" : "New work"}
-        size="lg"
-      >
-        {editor && (
-          <form
-            className="workspace-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submit(
-                {
-                  title: editor.title,
-                  description: editor.description,
-                  dependencies: editor.dependencies,
-                  status: ["ready", "blocked"].includes(editor.status)
-                    ? editor.status
-                    : undefined,
-                  version: editor.version,
-                  action: editor.id ? "update" : "create",
-                  task_id: editor.id,
-                  owner: editor.owner || null,
-                },
-                () => setEditor(null),
-              );
-            }}
-          >
-            <TextInput
-              label="Title"
-              required
-              maxLength={160}
-              value={editor.title}
-              onChange={(e) => setEditor({ ...editor, title: e.target.value })}
-            />
-            <Textarea
-              label="Description"
-              autosize
-              minRows={4}
-              value={editor.description}
-              onChange={(e) =>
-                setEditor({ ...editor, description: e.target.value })
-              }
-            />
-            <NativeSelect
-              label="Owner"
-              value={editor.owner}
-              onChange={(e) => setEditor({ ...editor, owner: e.target.value })}
-            >
-              <option value="">Unassigned</option>
-              {team.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </NativeSelect>
-            <MultiSelect
-              label="Dependencies"
-              searchable
-              data={tasks
-                .filter((t) => t.id !== editor.id)
-                .map((t) => ({ value: t.id, label: t.title }))}
-              value={editor.dependencies || []}
-              onChange={(dependencies) =>
-                setEditor({ ...editor, dependencies })
-              }
-            />
-            {editor.id && (
-              <NativeSelect
-                label="Availability"
-                value={
-                  ["ready", "blocked"].includes(editor.status)
-                    ? editor.status
-                    : "unchanged"
-                }
-                onChange={(e) =>
-                  setEditor({ ...editor, status: e.target.value })
-                }
-                data={[
-                  { value: "unchanged", label: "Keep current status" },
-                  { value: "ready", label: "Ready" },
-                  { value: "blocked", label: "Blocked" },
-                ]}
-              />
-            )}
-            <Button variant="filled" type="submit" loading={saving}>
-              Save work
-            </Button>
-          </form>
-        )}
-      </Modal>
-      <Modal
-        opened={!!submission}
-        onClose={() => !saving && setSubmission(null)}
-        title="Submit a result"
-        size="lg"
-      >
-        {submission && (
-          <form
-            className="workspace-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submit(
-                {
-                  ...submission,
-                  action: "submit",
-                  files: submission.files
-                    .split("\n")
-                    .map((s: string) => s.trim())
-                    .filter(Boolean),
-                },
-                () => setSubmission(null),
-              );
-            }}
-          >
-            <p className="workspace-muted">
-              Submission requires a separate acceptance decision.
-            </p>
-            <Textarea
-              label="Result"
-              required
-              minRows={3}
-              value={submission.result}
-              onChange={(e) =>
-                setSubmission({ ...submission, result: e.target.value })
-              }
-            />
-            <Textarea
-              label="Checks and evidence"
-              required
-              minRows={3}
-              value={submission.checks}
-              onChange={(e) =>
-                setSubmission({ ...submission, checks: e.target.value })
-              }
-            />
-            <TextInput
-              label="Revision or artifact identity"
-              required
-              value={submission.revision}
-              onChange={(e) =>
-                setSubmission({ ...submission, revision: e.target.value })
-              }
-            />
-            <Textarea
-              label="Report files"
-              description="One path per line, relative to the owner's workspace."
-              value={submission.files}
-              onChange={(e) =>
-                setSubmission({ ...submission, files: e.target.value })
-              }
-            />
-            <Button variant="filled" type="submit" loading={saving}>
-              Submit for acceptance
-            </Button>
-          </form>
-        )}
-      </Modal>
-      <Modal
-        opened={!!decision}
-        onClose={() => !saving && setDecision(null)}
-        title={
-          decision?.action === "accept"
-            ? "Accept this result"
-            : "Request changes"
-        }
-      >
-        {decision && (
-          <form
-            className="workspace-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submit(decision, () => setDecision(null));
-            }}
-          >
-            <Textarea
-              label="Decision and evidence"
-              required
-              minRows={3}
-              value={decision.result}
-              onChange={(e) =>
-                setDecision({ ...decision, result: e.target.value })
-              }
-            />
-            <Button
-              variant="filled"
-              type="submit"
-              color={decision.action === "accept" ? "teal" : "orange"}
-              loading={saving}
-            >
-              {decision.action === "accept"
-                ? "Accept result"
-                : "Request changes"}
-            </Button>
-          </form>
-        )}
-      </Modal>
-    </>
-  );
-}
 
 function Changes(c: Context) {
   const state = useResource(
@@ -1076,69 +572,6 @@ function Changes(c: Context) {
   );
 }
 
-function Attention(c: Context) {
-  // Chat projections omit work history. Its read must not delay user messages.
-  const work = useResource(
-    c.data.runtime.work === undefined && c.agent
-      ? endpoint("work", c.agent)
-      : null,
-    c.revision,
-    { scope: c.data.stateDir, values: c.resourceCache },
-  );
-  const items = workspaceInbox(
-    c.data,
-    c.data.runtime.work || work.data?.tasks || [],
-  ).filter((item) => item.kind !== "monitor");
-  const groups = [...new Set(items.map((item) => item.kind))];
-  return (
-    <>
-      {groups.map((kind) => (
-        <div className="unified-action-items" key={kind}>
-          {items
-            .filter((item) => item.kind === kind)
-            .map((item) => (
-              <UnstyledButton
-                className="workspace-row"
-                key={`${kind}:${item.id}`}
-                onClick={() => {
-                  if (item.kind === "work")
-                    c.navigate("work", item.agent, item.id);
-                  else if (item.kind === "user_task")
-                    c.navigate("user-tasks", item.agent, item.id);
-                  else if (item.kind === "rule")
-                    c.navigate("rules", item.agent, item.id);
-                  else if (item.agent) {
-                    c.onSelect(item.agent);
-                    c.onClose();
-                  }
-                }}
-              >
-                <div className="workspace-row-head">
-                  <strong>{item.title || item.kind}</strong>
-                  <ChevronRight size={15} />
-                </div>
-                <p>{errorText(item.text)}</p>
-                <small>{ownerName(c.data, item.agent)}</small>
-              </UnstyledButton>
-            ))}
-        </div>
-      ))}
-      {work.loading && !work.data ? (
-        <p className="messages-background-load" role="status">
-          <Loader size={12} /> Checking review tasks…
-        </p>
-      ) : (
-        <ResourceState state={work} />
-      )}
-      {!groups.length &&
-        !c.data.runtime.requests.length &&
-        !c.data.runtime.complaints.some(complaintNeedsUserResponse) &&
-        !work.loading &&
-        !work.error && <Empty>No messages need your attention.</Empty>}
-    </>
-  );
-}
-
 function Find(c: Context) {
   const sourceRequest = useRef(0);
   useEffect(
@@ -1256,10 +689,7 @@ function Find(c: Context) {
             <Button
               variant="light"
               onClick={() => {
-                if (source.kind === "work")
-                  c.navigate("work", source.agent, source.id);
-                else if (source.kind === "plan")
-                  c.navigate("plan", source.agent);
+                if (source.kind === "plan") c.navigate("plan", source.agent);
                 else {
                   c.onSelect(source.room || source.agent, source.id);
                   c.onClose();
@@ -1267,12 +697,7 @@ function Find(c: Context) {
                 setSource(null);
               }}
             >
-              Open{" "}
-              {source.kind === "work"
-                ? "work"
-                : source.kind === "plan"
-                  ? "plan"
-                  : "chat"}
+              Open {source.kind === "plan" ? "plan" : "chat"}
             </Button>
           </>
         )}

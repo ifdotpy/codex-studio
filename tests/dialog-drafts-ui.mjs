@@ -18,20 +18,19 @@ import {createRoot} from 'react-dom/client';
 import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
 import Picker from '/src/components/ProjectDirectoryPicker.tsx';
-import UserTasks from '/src/components/UserTasks.tsx';
 import UserMessages from '/src/components/UserMessages.tsx';
+import MessageDate from '/src/components/MessageDate.tsx';
 import Requests from '/src/components/Requests.tsx';
 const lead={id:'lead',rootId:'lead',name:'Lead',isLead:true,source:'managed'};
-const task={id:'task',agent:'lead',rootId:'lead',title:'Check release',description:'Check it',criteria:'Confirmed',status:'open',version:1};
 const complaint={id:'complaint',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'Help needed',status:'open',needsResponse:true,created:1};
 const request={id:'question',agent:'lead',method:'item/tool/requestUserInput',params:{questions:[{id:'public',question:'Public answer'},{id:'secret',question:'Private answer',isSecret:true}]}};
-const base={stateDir:'workspace-a',token:'fixture',threads:[lead],runtime:{userTasks:[task],complaints:[complaint]}};
-function Fixture(){const [show,setShow]=useState(true),[compact,setCompact]=useState(true),[workspace,setWorkspace]=useState('workspace-a');
-return <MantineProvider><button onClick={()=>setShow(!show)}>Toggle tasks</button><button onClick={()=>setCompact(!compact)}>Toggle compact</button><button onClick={()=>setWorkspace(workspace==='workspace-a'?'workspace-b':'workspace-a')}>Switch workspace</button>
+const base={stateDir:'workspace-a',token:'fixture',threads:[lead],runtime:{complaints:[complaint]}};
+function Fixture(){const [show,setShow]=useState(false),[workspace,setWorkspace]=useState('workspace-a');
+return <MantineProvider><button onClick={()=>setShow(!show)}>Toggle messages</button><button onClick={()=>setWorkspace(workspace==='workspace-a'?'workspace-b':'workspace-a')}>Switch workspace</button>
+<div data-missing-date><MessageDate at={0}/></div>
 <Requests requests={[request]} allRequests={[request]} scope={workspace} agents={[lead]} refresh={async()=>{}} notify={message=>window.notices.push(message)}/>
 <Picker initialPath='/project' onSelect={async()=>{}}/>
-{show&&<UserTasks data={{...base,stateDir:workspace}} agent={lead} compact={compact} refresh={async()=>{}} notify={()=>{}}/>}
-<UserMessages data={base} refresh={async()=>{}} notify={()=>{}}/>
+{show&&<UserMessages data={{...base,stateDir:workspace}} refresh={async()=>{}} notify={()=>{}}/>}
 </MantineProvider>}
 window.notices=[];
 createRoot(document.getElementById('root')).render(<Fixture/>);`;
@@ -79,7 +78,6 @@ try {
     detailReads = 0,
     releaseSend;
   const sent = [];
-  const completions = [];
   const waitForSent = async (count) => {
     for (let attempt = 0; attempt < 100 && sent.length < count; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -110,31 +108,14 @@ try {
         });
       return route.fulfill({ json: message });
     }
-    if (path === "/api/user-tasks/complete") {
-      const body = route.request().postDataJSON();
-      completions.push(body);
-      if (completions.length === 1)
-        return route.fulfill({
-          status: 503,
-          json: { error: "Lost completion reply" },
-        });
-      return route.fulfill({
-        json: {
-          task: {
-            id: "task",
-            agent: "lead",
-            rootId: "lead",
-            title: "Check release",
-            status: "review",
-            version: 2,
-            completionNote: body.note,
-          },
-        },
-      });
-    }
     if (path === "/api/complaints") {
       const body = route.request().postDataJSON();
       sent.push(body);
+      if (sent.length === 1)
+        return route.fulfill({
+          status: 503,
+          json: { error: "Lost reply response" },
+        });
       await new Promise((resolve) => {
         releaseSend = resolve;
       });
@@ -158,6 +139,14 @@ try {
     return route.fulfill({ json: {} });
   });
   await page.goto(server.resolvedUrls.local[0]);
+  await page
+    .locator("[data-missing-date]")
+    .getByText("Date unavailable", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.locator("[data-missing-date] time").getAttribute("datetime"),
+    null,
+  );
   const useFolder = page.getByRole("button", {
     name: "Use this folder",
     exact: true,
@@ -231,104 +220,103 @@ try {
     /could not be saved/,
   );
   await page.evaluate(() => window.restoreStorage());
-  const taskSection = page.locator(".user-tasks");
-  const expand = () =>
-    taskSection.getByRole("button", { name: /Your tasks/ }).click();
-  const openTask = () =>
-    taskSection
-      .getByRole("button", { name: "Check release", exact: true })
-      .click();
-  await expand();
-  await openTask();
-  const note = taskSection.getByLabel("Result note (optional)");
-  await note.fill("Keep this note");
-  await expand();
-  await expand();
-  await openTask();
-  assert.equal(await note.inputValue(), "Keep this note");
-  await page.getByRole("button", { name: "Toggle tasks", exact: true }).click();
-  await page.getByRole("button", { name: "Toggle tasks", exact: true }).click();
-  await expand();
-  await openTask();
-  assert.equal(await note.inputValue(), "Keep this note");
-  await page
-    .getByRole("button", { name: "Toggle compact", exact: true })
-    .click();
-  await taskSection.getByLabel("Search your tasks").fill("absent");
-  assert.equal(await taskSection.locator("[data-user-task]").count(), 0);
-  await taskSection.getByLabel("Search your tasks").fill("");
-  await openTask();
-  assert.equal(await note.inputValue(), "Keep this note");
-  await page
-    .getByRole("button", { name: "Switch workspace", exact: true })
-    .click();
-  assert.equal(await note.inputValue(), "");
-  await note.fill("Separate note");
-  await page
-    .getByRole("button", { name: "Switch workspace", exact: true })
-    .click();
-  assert.equal(await note.inputValue(), "Keep this note");
-  await page.reload();
-  await expand();
-  await openTask();
-  assert.equal(
-    await note.inputValue(),
-    "Keep this note",
-    "Task notes survive a reload",
-  );
-  await taskSection
-    .getByRole("button", { name: "Send for review", exact: true })
-    .click();
-  await taskSection.getByRole("alert").waitFor();
-  assert.equal(completions.length, 1);
-  await page.reload();
-  await expand();
-  await openTask();
-  assert.equal(await note.inputValue(), "Keep this note");
-  await taskSection
-    .getByRole("button", { name: "Send for review", exact: true })
-    .click();
-  await taskSection
-    .getByText("Waiting for the agent to check your result.")
-    .waitFor();
-  assert.equal(completions.length, 2);
-  assert.deepEqual(
-    completions[1],
-    completions[0],
-    "Completion retry must keep its exact identity after reload",
-  );
-  await page.locator('[data-complaint="complaint"]').click();
-  const detail = page.getByRole("dialog", {
-    name: "Message to you",
-    exact: true,
-  });
+  const toggle = () =>
+    page.getByRole("button", { name: "Toggle messages", exact: true }).click();
+  await toggle();
+  const detail = page.locator('[data-complaint="complaint"]');
   await detail.getByRole("alert").waitFor();
-  assert.equal(await detail.getByText("Loading…", { exact: true }).count(), 0);
+  assert.equal(
+    await detail.getByText("Loading message…", { exact: true }).count(),
+    0,
+  );
   await detail.getByRole("button", { name: "Retry", exact: true }).click();
   await detail.getByText("Please help", { exact: true }).waitFor();
   assert.equal(await detail.getByRole("alert").count(), 0);
+  const openReply = () =>
+    detail.getByRole("button", { name: "Reply", exact: true }).click();
   const reply = detail.getByLabel("Reply", { exact: true });
+  await openReply();
   await reply.fill("Original text");
-  await page.keyboard.press("Escape");
-  await detail.waitFor({ state: "hidden" });
-  await page.locator('[data-complaint="complaint"]').click();
+  await detail
+    .getByRole("button", { name: "Close reply", exact: true })
+    .click();
+  await openReply();
   assert.equal(await reply.inputValue(), "Original text");
-  await page.reload();
-  await page.locator('[data-complaint="complaint"]').click();
-  await reply.waitFor();
+  await toggle();
+  await toggle();
+  await openReply();
   assert.equal(
     await reply.inputValue(),
     "Original text",
-    "Complaint reply survives a reload",
+    "Reply survives remount",
   );
-
+  await page
+    .getByRole("button", { name: "Switch workspace", exact: true })
+    .click();
+  await openReply();
+  assert.equal(await reply.inputValue(), "");
+  await reply.fill("Separate reply");
+  await page
+    .getByRole("button", { name: "Switch workspace", exact: true })
+    .click();
+  await openReply();
+  assert.equal(
+    await reply.inputValue(),
+    "Original text",
+    "Reply drafts belong to a workspace",
+  );
+  await page.reload();
+  await toggle();
+  await openReply();
+  assert.equal(
+    await reply.inputValue(),
+    "Original text",
+    "Reply survives reload",
+  );
   await detail.getByRole("button", { name: "Send reply", exact: true }).click();
-  await page.waitForFunction(
-    () => document.querySelector(".complaint-reply textarea")?.disabled,
+  await detail
+    .getByRole("button", { name: "Retry response", exact: true })
+    .waitFor();
+  assert.equal(sent.length, 1);
+  await page
+    .getByRole("button", { name: "Switch workspace", exact: true })
+    .click();
+  await openReply();
+  assert.equal(
+    await reply.inputValue(),
+    "Separate reply",
+    "Another workspace cannot inherit the pending payload",
   );
-  await waitForSent(1);
+  assert.equal(await reply.isDisabled(), false);
+  assert.equal(
+    await detail
+      .getByRole("button", { name: "Retry response", exact: true })
+      .count(),
+    0,
+  );
+  await page
+    .getByRole("button", { name: "Switch workspace", exact: true })
+    .click();
+  await detail
+    .getByRole("button", { name: "Retry response", exact: true })
+    .waitFor();
+  assert.equal(await reply.inputValue(), "Original text");
+  await page.reload();
+  await toggle();
+  await detail
+    .getByRole("button", { name: "Retry response", exact: true })
+    .waitFor();
+  assert.equal(await reply.inputValue(), "Original text");
   assert.equal(await reply.isDisabled(), true);
-  assert.equal(sent[0].text, "Original text");
+  await detail
+    .getByRole("button", { name: "Retry response", exact: true })
+    .click();
+  await waitForSent(2);
+  assert.deepEqual(
+    sent[1],
+    sent[0],
+    "Retry after reload retains the exact message identity and payload",
+  );
   releaseSend();
   await page.waitForFunction(
     () => !document.querySelector(".complaint-reply textarea")?.disabled,
@@ -340,30 +328,28 @@ try {
     .waitFor();
   await reply.fill("New reply");
   await detail.getByRole("button", { name: "Send reply", exact: true }).click();
-  await page.waitForFunction(
-    () => document.querySelector(".complaint-reply textarea")?.disabled,
-  );
-  await waitForSent(2);
+  await waitForSent(3);
+  assert.equal(await reply.isDisabled(), true);
   releaseSend();
   await detail.locator(".complaint-response").getByText("New reply").waitFor();
-  assert.equal(sent[1].text, "New reply");
+  assert.equal(sent[2].text, "New reply");
   assert.equal(sent[0].action, "respond");
   assert.equal(sent[0].complaint_id, "complaint");
   assert.equal(sent[0].version, 1);
-  assert.equal(sent[1].version, 2);
-  assert.notEqual(sent[0].id, sent[1].id);
+  assert.equal(sent[2].version, 2);
+  assert.notEqual(sent[0].id, sent[2].id);
   assert.deepEqual(pageErrors, []);
   console.log(
     JSON.stringify({
       ok: true,
       checks: [
         "same-folder retry",
-        "task note collapse, remount, filter, workspace isolation",
+        "message reply collapse, remount and workspace isolation",
         "message detail error and retry",
         "reply draft retained after reopen and reload",
         "non-secret answers survive reload, secrets do not persist",
         "answer workspace isolation and storage failure notice",
-        "task completion retry retains its exact identity after reload",
+        "message reply retry retains its exact identity after reload",
         "reply fixed during send, subsequent response uses new identity and version",
       ],
     }),

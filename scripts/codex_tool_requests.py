@@ -54,6 +54,7 @@ _MESSAGE_REJECTIONS = {
     "Unknown message importance", "Message must have 1 to 12000 characters", "Select another agent",
     "Unknown managed agent",
     "Recipient conversation was deleted",
+    "Only the lead can contact the user. Send your message to your lead.",
 }
 
 
@@ -76,6 +77,8 @@ def request_result_outcome(record, result):
     texts = [item.get("text") for item in result.get("contentItems", [])
              if isinstance(item, dict) and item.get("type") == "inputText"]
     error = texts[0] if texts and isinstance(texts[0], str) else None
+    if tool == "orchestration_user_task" and error == "User tasks were removed. Send a message with orchestration_message target=user.":
+        return "not_applied"
     if tool == "orchestration_task" and error in _WORK_REJECTIONS:
         return "not_applied"
     if tool == "orchestration_message" and error in _MESSAGE_REJECTIONS:
@@ -87,8 +90,6 @@ def request_result_outcome(record, result):
         "orchestration_agent_manage": {"You can manage only your own descendant workers", "Unknown managed agent"},
         "orchestration_monitor": {"Command timeout must be 1 second to 24 hours", "Supply a command with 1 to 12000 characters"},
         "orchestration_monitor_input": {"This interactive monitor is not active"},
-        "orchestration_user_task": {"Wait for the user to check this task before accepting it",
-            "This task changed. Read the current task before trying again"},
         "orchestration_watch": {"The file is outside this agent workspace", "Choose a date within the next year", "Interval must be 10 seconds to one year"},
         "orchestration_context": {"Unknown monitor in this team", "Unknown context topic"},
     }

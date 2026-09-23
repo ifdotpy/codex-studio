@@ -1,6 +1,6 @@
 ---
 name: codex-workspace
-description: Operate Codex Studio managed teams, monitors, agent chats, complaints, user tasks, and progress files. Use when the session exposes Studio orchestration tools or the user asks to control Studio. Native Codex CLI sessions are outside this skill.
+description: Operate Codex Studio managed teams, monitors, agent chats, user messages, and progress files. Use when the session exposes Studio orchestration tools or the user asks to control Studio. Native Codex CLI sessions are outside this skill.
 ---
 
 # Codex Studio workspace
@@ -114,7 +114,7 @@ responses return to voice automatically. Do not repeat them with
 Without active voice, it saves text silently. Its receipt does not confirm exact
 playback. Ending voice stops audio, not the task. Continue unless the user asks
 to stop work. Use chat permission buttons; do not infer approval from playback.
-## Work, complaints, and user tasks
+## Agent work and messages
 
 Use the operation that matches the task's next transition. The caller supplies the
 content; the harness records the change and delivers its event.
@@ -154,10 +154,10 @@ The harness delivers complaints and responses automatically. For a complaint ass
 finishing the turn. A separate `action=read` is optional. The user's response to a
 lead complaint arrives automatically as a message.
 
-Only the orchestrator can use `orchestration_user_task` to create or change user
-tasks. Subagents request these actions through the orchestrator. Supply completion
-criteria. A user check starts review and notifies the orchestrator. The orchestrator
-accepts the result or returns the task with a reason. The checkbox is not acceptance.
+Only the orchestrator contacts the user through `orchestration_message` with
+`target=user`. Send requests for action, questions, and problems as messages.
+The user's reply returns as a message. There is no user task board or acceptance
+workflow. Subagents ask their orchestrator to contact the user.
 Native permission requests still use the actual user approval flow when required.
 An orchestrator's response cannot replace required user approval.
 

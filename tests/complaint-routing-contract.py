@@ -49,7 +49,7 @@ class ComplaintRouting(unittest.TestCase):
         self.assertEqual(self.events('complaint'), [])
 
     def test_worker_files_for_lead_and_user_cannot_take_over(self):
-        worker = self.runtime.create({'name':'Worker', 'prompt':'Check', 'role':'reviewer'}, parent=self.lead['id'])
+        worker = self.runtime.create({'name':'Worker', 'prompt':'Check', 'role':'reviewer', 'model':'test-model', 'effort':'medium'}, parent=self.lead['id'])
         c = self.submit(worker['id'])
         self.assertEqual(c['recipient'], 'lead')
         self.assertEqual(self.events('complaint')[0]['agent'], self.lead['id'])

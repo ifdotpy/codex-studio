@@ -1,3 +1,4 @@
+import MessageDate from "./MessageDate";
 import ErrorDescription from "./ErrorDescription";
 import { Button, TextInput, Textarea, UnstyledButton } from "@mantine/core";
 import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
@@ -330,6 +331,7 @@ function RequestCard({
                       : "Request"}
             </span>
           </div>
+          <MessageDate at={r.createdAt ?? r.created ?? r.at} />
           {(!open || blocked || !question) && (
             <p className="request-prompt">
               {questions[0]?.question || (

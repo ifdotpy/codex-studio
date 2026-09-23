@@ -76,7 +76,7 @@ with c.runtime.lock, c.runtime.db() as db:
     c.runtime.item(db, lead['id'], lead['id'] + ':user', 'user', 'Review the release. Split the work across the team and report the blockers.', 'You')
     c.runtime.item(db, lead['id'], lead['id'] + ':reply', 'assistant', 'I assigned 40 workers to the review. Seven workers are active and 15 have finished.\n\nWorker 07 found a failed check. I will collect the remaining results before I prepare the release report.\n\n| Area | Result | Next step |\n| :--- | :--- | :--- |\n| Message delivery | Passed | Review retry evidence |\n| Context and limits | Passed | Check account reset time |\n| Mobile dialogs | Needs a fix | Worker 07 owns the change |\n\n**Evidence:** all reports remain available. [unsafe](javascript:alert(1)) <img src=\"https://invalid.example/track\" onerror=\"alert(1)\">', 'Lead')
     c.runtime.item(db, lead['id'], lead['id'] + ':tool', 'tool', 'Hidden tool fixture', 'Tool')
-    c.runtime.put(db, 'requests', {'id': 'async-question', 'method': 'agent/asyncQuestion', 'agent': lead['id'], 'epoch': 0, 'status': 'pending', 'params': {'questions': [{'id': '0', 'question': 'Which scope?', 'options': [{'label': 'One file'}, {'label': 'All files'}]}]}})
+    c.runtime.put(db, 'requests', {'id': 'async-question', 'createdAt': 1790074800, 'method': 'agent/asyncQuestion', 'agent': lead['id'], 'epoch': 0, 'status': 'pending', 'params': {'questions': [{'id': '0', 'question': 'Which scope?', 'options': [{'label': 'One file'}, {'label': 'All files'}]}]}})
 with c.runtime.lock, c.runtime.db() as db:
     chat_sender = c.runtime.agent(child['id'], db)
     chat_sender['autoWake'] = True

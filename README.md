@@ -2,7 +2,7 @@
 
 A desktop workspace for one lead agent and many workers. The application uses
 Codex app-server for model sessions, tools, and permissions. It adds durable
-orchestration, agent messages, command monitors, and user tasks.
+orchestration, agent messages, command monitors, and user replies.
 
 This repository owns the application, command tools, tests, and runtime prompts.
 Its project-local [codex-workspace skill](.agents/skills/codex-workspace/SKILL.md)
@@ -272,13 +272,15 @@ Team status includes the configured concurrency and each queued agent's current 
 Messages replace the separate Inbox, Agent chats, and Complaint book screens.
 The main conversation and its draft stay open.
 You can close a reply and return to its draft.
-**Send for review** submits a task result to the main agent.
+Requests for user action appear as messages. Reply in the same conversation.
+Saved user tasks retain their original dates and replies as messages.
+Each message shows its send date and time. There is no separate user task board.
 
 The harness reads the repository's `codex-orchestrator` or `codex-subagent` skill
 from the server's `isLead` identity. It adds that skill to the native thread
 instructions. Existing threads receive it on their next turn. The versioned turn
 context repeats it after a skill change or context compaction.
-Workers cannot create or change user tasks or send spoken responses to the user.
+Workers ask their lead to contact the user. Workers cannot send spoken responses to the user.
 
 **Team** shows subagent status and opens subagent chats.
 **Back to main agent** returns to the main agent.

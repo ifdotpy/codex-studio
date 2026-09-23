@@ -21,7 +21,6 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
   BookOpen,
-  CheckCheck,
   Clock3,
   FileDiff,
   Minimize2,
@@ -29,7 +28,6 @@ import {
   ShieldCheck,
   Settings,
   Square,
-  ListTodo,
   ArrowLeft,
   Folder,
   MessageSquare,
@@ -190,7 +188,7 @@ export default function App() {
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
-    [workspaceSection, setWorkspaceSection] = useState("work"),
+    [workspaceSection, setWorkspaceSection] = useState("messages"),
     [workerQuery, setWorkerQuery] = useState(""),
     [workerFilter, setWorkerFilter] = useState("all"),
     [completedOpen, setCompletedOpen] = useState(false),
@@ -1338,8 +1336,6 @@ export default function App() {
             <Menu.Dropdown>
               {(
                 [
-                  ["work", "Agent tasks", ListTodo],
-                  ["user-tasks", "Your tasks", CheckCheck],
                   ["changes", "Changes", FileDiff],
                   ["plan", "Plan", BookOpen],
                   ["rules", "Rules", Clock3],
@@ -1348,8 +1344,7 @@ export default function App() {
               ).map(([section, label, Icon]) => (
                 <Menu.Item
                   key={section}
-                  id={section === "work" ? "workspace-toggle" : undefined}
-                  aria-label={section === "work" ? "Agent tasks" : label}
+                  aria-label={label}
                   data-workspace-section={section}
                   leftSection={<Icon size={14} />}
                   onClick={() => {

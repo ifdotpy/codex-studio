@@ -113,9 +113,10 @@ For a complaint assigned to you, use `action=respond` to record your action,
 reasoned refusal, or next step. If the user must decide, submit your own message
 to the user and tell the subagent that the decision remains pending.
 
-Use `orchestration_user_task` for actions the user must perform. State the completion
-criteria. Inspect the result after the user marks it complete. Accept the result
-or return the task with a reason. Use `orchestration_speak` for spoken responses.
+Use `orchestration_message` with `target=user` for actions the user must perform.
+State the needed action in the message. Read the user's reply as a normal message.
+Do not create a separate user task or require an acceptance workflow.
+Use `orchestration_speak` for spoken responses.
 
 Native tool permission requests still require the real user approval when the
 permission system requires it. Your decision cannot replace that approval.

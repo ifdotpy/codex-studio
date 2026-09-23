@@ -65,7 +65,7 @@ import Usage from "./Usage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
 import Requests from "./Requests";
-import UserTasks from "./UserTasks";
+import MessageDate from "./MessageDate";
 import TurnHistory from "./TurnHistory";
 import { isEmptyAssistantMessage } from "./turnHistoryModel";
 import { Dictation } from "./Dictation";
@@ -853,15 +853,8 @@ export default function Conversation(p: {
           </div>
         )}
       {m.truncated && <p className="notice">This message is clipped.</p>}
+      <MessageDate at={m.at ?? m.created ?? m.timestamp} />
       <div className="message-bottom" hidden={!!m.streaming}>
-        {p.room && m.created && (
-          <time>
-            {new Date(m.created * 1000).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </time>
-        )}
         <ActionIcon
           size="sm"
           className="copy-message"
@@ -1169,25 +1162,6 @@ export default function Conversation(p: {
           </div>
           {!p.room && detailedActivity && (
             <AgentPhase agent={agent} connection={connection} />
-          )}
-          {mobileClient && agent?.source === "managed" && !p.room && (
-            <UserTasks
-              key={`tasks:${agent.rootId || agent.id}`}
-              data={{
-                ...p.data,
-                runtime: {
-                  ...p.data.runtime,
-                  userTasks: p.data.runtime.userTasks?.filter(
-                    (task) => task.agent === agent.id,
-                  ),
-                },
-              }}
-              agent={agent}
-              compact
-              refresh={p.refresh}
-              notify={p.notify}
-              onSelect={p.onSelect}
-            />
           )}
           <Requests
             scope={p.data.stateDir}

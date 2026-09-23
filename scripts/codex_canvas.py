@@ -788,8 +788,6 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.capabilities(agent))
                     if path.path == "/api/panel":
                         return self.send(runtime.get_panel(agent))
-                    if path.path == "/api/user-tasks":
-                        return self.send(runtime.user_tasks(agent))
                     if path.path == "/api/profiles":
                         return self.send(runtime.profiles())
                     if path.path == "/api/rules":
@@ -984,8 +982,6 @@ def make_server(canvas, port=0, public_origin=None):
                         )
                     if self.path == "/api/checkpoint/restore":
                         return self.send(runtime.restore_checkpoint(agent, body))
-                    if self.path == "/api/user-tasks/complete":
-                        return self.send(runtime.complete_user_task(body))
                     if self.path == "/api/tool-requests/cancel":
                         if set(body) != {"agent", "request_id"}:
                             raise ValueError("Supply agent and request_id")

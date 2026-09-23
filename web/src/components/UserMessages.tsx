@@ -1,22 +1,16 @@
-import {
-  Badge,
-  Button,
-  NativeSelect,
-  Textarea,
-  UnstyledButton,
-} from "@mantine/core";
-import { MessageSquare } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Button, Textarea } from "@mantine/core";
+import { useEffect, useMemo, useState } from "react";
 import { api, errorText, save, saved } from "../api";
-import {
-  complaintLabel,
-  type Snapshot,
-  type Json,
-  type Complaint,
-} from "../types";
+import { type Snapshot, type Json, type Complaint } from "../types";
 import "./complaint-book.css";
+import ErrorDescription from "./ErrorDescription";
+import MessageDate from "./MessageDate";
+import StreamingText from "./StreamingText";
+import AgentAvatar from "./AgentAvatar";
 import { writeLocalDraft } from "../sync/localDraft";
 
+// Preserve confirmed replies while a cached snapshot catches up.
+const confirmedMessages = new Map<string, Json>();
 // Keep unsent replies separate from immutable delivery attempts.
 const replyDrafts = new Map<string, { text: string; status: string }>();
 
@@ -46,13 +40,10 @@ function MessageResponse({
     saved<{ text: string; status: string } | null>(storageKey, null);
   const previous = requests.get(detail.id);
   const [text, setText] = useState(previous?.text || draft?.text || "");
-  const [status, setStatus] = useState(
-    previous?.status || draft?.status || "in_progress",
-  );
-  const [resolution, setResolution] = useState(false);
+  const status = previous?.status || "in_progress";
   const [sending, setSending] = useState(false);
   const [retry, setRetry] = useState(!!previous);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<unknown>(null);
   const saveDraft = (value: { text: string; status: string }) => {
     replyDrafts.set(draftKey, value);
     setError(writeLocalDraft(storageKey, value) || "");
@@ -141,30 +132,6 @@ function MessageResponse({
   return (
     <form className="complaint-reply" onSubmit={submit}>
       <h3>Your reply</h3>
-      <Button
-        type="button"
-        variant="subtle"
-        size="compact-xs"
-        onClick={() => setResolution(!resolution)}
-        aria-expanded={resolution}
-      >
-        Change message status (optional)
-      </Button>
-      {(resolution || status !== "in_progress") && (
-        <NativeSelect
-          label="Message status"
-          value={status}
-          disabled={sending || retry}
-          onChange={(event) => {
-            setStatus(event.target.value);
-            saveDraft({ text, status: event.target.value });
-          }}
-        >
-          <option value="in_progress">Keep open</option>
-          <option value="resolved">Resolved</option>
-          <option value="declined">Declined</option>
-        </NativeSelect>
-      )}
       <Textarea
         label="Reply"
         aria-label="Reply"
@@ -184,9 +151,9 @@ function MessageResponse({
           saveDraft({ text: event.target.value, status });
         }}
       />
-      {error && (
+      {!!error && (
         <p className="complaint-reply-error" role="alert">
-          {error}
+          <ErrorDescription value={error} role="status" />
         </p>
       )}
       <Button
@@ -221,241 +188,161 @@ export default function UserMessages({
   notify: (s: string) => void;
 }) {
   const pendingKey = `studio-message-responses:${data.stateDir}`;
-  const responseRequests = useRef(
-    new Map<string, Json>(Object.entries(saved(pendingKey, {}))),
+  const responseRequests = useMemo(
+    () => new Map<string, Json>(Object.entries(saved(pendingKey, {}))),
+    [pendingKey],
   );
-  const [filter, setFilter] = useState("all"),
-    [detail, setDetail] = useState<Json | null>(null),
-    [detailId, setDetailId] = useState<string | null>(null),
-    [detailError, setDetailError] = useState(""),
-    [detailAttempt, setDetailAttempt] = useState(0);
-  const activeDetailId = useRef(detailId);
-  activeDetailId.current = detailId;
-  const changeDetail = (id: string | null) => {
-    activeDetailId.current = id;
-    setDetailError("");
-    setDetailId(id);
-  };
-  const records = data.runtime.complaints || [];
+  const records = data.runtime.complaints.filter(
+    (message) => recipient(message) === target,
+  );
+  return (
+    <section className="user-message-list">
+      {records.map((message) => (
+        <UserMessage
+          key={JSON.stringify([data.stateDir, message.id])}
+          message={message}
+          data={data}
+          focused={message.id === focusId}
+          focusRequestId={focusRequestId}
+          requests={responseRequests}
+          pendingKey={pendingKey}
+          refresh={refresh}
+          notify={notify}
+        />
+      ))}
+      {!hideEmpty && !records.length && (
+        <p className="notice">No messages yet.</p>
+      )}
+    </section>
+  );
+}
+
+function UserMessage({
+  message,
+  data,
+  focused,
+  focusRequestId,
+  requests,
+  pendingKey,
+  refresh,
+  notify,
+}: {
+  message: Complaint;
+  data: Snapshot;
+  focused: boolean;
+  focusRequestId?: string;
+  requests: Map<string, Json>;
+  pendingKey: string;
+  refresh: () => Promise<void>;
+  notify: (s: string) => void;
+}) {
+  const confirmedKey = JSON.stringify([data.stateDir, message.id]);
+  const [detail, setDetail] = useState<Json>(() => {
+    const confirmed = confirmedMessages.get(confirmedKey);
+    return confirmed && confirmed.version > (message.version || 0)
+      ? confirmed
+      : message;
+  });
+  const [reply, setReply] = useState(focused || requests.has(message.id));
+  const [error, setError] = useState<unknown>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    if (
-      !focusId ||
-      !records.some((item) => item.id === focusId && recipient(item) === target)
-    )
+    if (focused) setReply(true);
+  }, [focused, focusRequestId]);
+  useEffect(() => {
+    if (typeof message.text === "string" && Array.isArray(message.responses)) {
+      setDetail((current) =>
+        (current.version || 0) > (message.version || 0) ? current : message,
+      );
+      if (
+        (confirmedMessages.get(confirmedKey)?.version || 0) <=
+        (message.version || 0)
+      )
+        confirmedMessages.delete(confirmedKey);
       return;
-    setDetail(null);
-    changeDetail(focusId);
-  }, [focusId, focusRequestId]);
-  const detailVersion = records.find((item) => item.id === detailId)?.version;
-  useEffect(() => {
-    if (!detailId) return;
+    }
     let live = true;
-    api(`/api/complaint?id=${encodeURIComponent(detailId)}`)
-      .then((c) => {
-        if (live) setDetailError("");
-        if (live)
-          setDetail((current) =>
-            current && current.id === c.id && current.version > c.version
-              ? current
-              : c,
-          );
+    api(`/api/complaint?id=${encodeURIComponent(message.id)}`)
+      .then((result) => {
+        if (live) {
+          setDetail(result);
+          setError("");
+        }
       })
-      .catch((e) => {
-        if (live) setDetailError(errorText(e));
+      .catch((reason) => {
+        if (live) setError(reason);
       });
     return () => {
       live = false;
     };
-  }, [detailId, detailAttempt, detailVersion, data.stateDir]);
-  const shown = records.filter(
-    (c) => recipient(c) === target && (filter === "all" || c.needsResponse),
-  );
-  const summary = records.find((c) => c.id === detailId);
-  const recipientName = (c: Json) =>
-    recipient(c) === "user"
+  }, [message.id, message.version, message.text, message.responses, attempt]);
+  const authorName = (id: string) =>
+    id === "user"
       ? "You"
-      : c.leadName || summary?.leadName || "Main agent";
-  const authorName = (c: Json) =>
-    c.author === "user"
-      ? "You"
-      : data.threads.find((a) => a.id === c.author)?.name ||
-        c.authorName ||
-        c.author;
-  if (
-    target === "lead" &&
-    !records.some((record) => recipient(record) === "lead")
-  )
-    return null;
+      : data.threads.find((agent) => agent.id === id)?.name ||
+        message.authorName ||
+        id;
   return (
-    <section className="user-message-list">
-      {!detailId && records.some((c) => recipient(c) === target) && (
-        <div className="book-filter">
-          <NativeSelect
-            aria-label={
-              target === "user"
-                ? "Show messages to you"
-                : "Show messages to main agent"
-            }
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          >
-            <option value="pending">Needs a response</option>
-            <option value="all">All messages</option>
-          </NativeSelect>
-        </div>
-      )}
-      <div className="user-message-rows" hidden={!!detailId}>
-        {shown.map((c: Complaint) => (
-          <UnstyledButton
-            className="complaint-card"
-            key={c.id}
-            data-complaint={c.id}
-            onClick={() => {
-              setDetail(null);
-              changeDetail(c.id);
-            }}
-          >
-            <span className="complaint-meta">
-              <Badge
-                variant="light"
-                color={c.needsResponse ? "orange" : "gray"}
-              >
-                {complaintLabel(c.status)}
-              </Badge>
-              <span>
-                {c.authorName} → {recipientName(c)}
-              </span>
-            </span>
-            <span className="complaint-title">{c.title}</span>
-            <small>
-              {new Date(c.created * 1000).toLocaleString()} ·{" "}
-              {recipient(c) === "user"
-                ? !c.needsResponse
-                  ? "Responded by you"
-                  : "Awaiting your response"
-                : c.readAt
-                  ? "Read by main agent"
-                  : "Not read by main agent"}
-              {recipient(c) === "lead" && c.leadDeleted
-                ? " · Main agent deleted"
-                : recipient(c) === "lead" && c.leadStopped
-                  ? " · Main agent stopped"
-                  : ""}
-            </small>
-          </UnstyledButton>
-        ))}
+    <article className="message-inline-thread" data-complaint={message.id}>
+      <div className="chat-message-author">
+        <AgentAvatar id={message.author} size={24} />
+        <strong>{authorName(message.author)}</strong>
+        {message.recipient === "lead" && (
+          <span>to {message.leadName || "Main agent"}</span>
+        )}
       </div>
-      {!hideEmpty && !shown.length && (
-        <div className="book-empty">
-          <MessageSquare size={26} />
-          <h2>
-            No messages {filter === "pending" ? "need a response" : "yet"}
-          </h2>
-          <p>
-            {target === "user"
-              ? "The main agent can send you a message here."
-              : "Subagent requests appear here for the main agent."}
-          </p>
-        </div>
+      <MessageDate at={detail.created || message.created} />
+      <StreamingText text={detail.text || ""} agentId={message.author} />
+      {typeof detail.text !== "string" && !error && (
+        <p role="status">Loading message…</p>
       )}
-      {detailId && (
-        <section
-          className="message-inline-thread"
-          aria-label={
-            target === "user" ? "Message to you" : "Message to main agent"
-          }
-        >
+      {!!error && (
+        <p role="alert">
+          <ErrorDescription value={error} role="status" />{" "}
+          <Button onClick={() => setAttempt((value) => value + 1)}>
+            Retry
+          </Button>
+        </p>
+      )}
+      {(detail.responses || []).map((response: Json) => (
+        <article className="complaint-response" key={response.id}>
+          <strong>{authorName(response.author || detail.leadId)}</strong>
+          <MessageDate at={response.at} />
+          <StreamingText text={response.text || ""} agentId={response.author} />
+        </article>
+      ))}
+      {detail.recipient === "user" && Number.isInteger(detail.version) && (
+        <>
           <Button
             variant="subtle"
             size="compact-xs"
-            onClick={() => changeDetail(null)}
+            aria-expanded={reply}
+            onClick={() => setReply(!reply)}
           >
-            Back to messages
+            {reply ? "Close reply" : "Reply"}
           </Button>
-          {detailError && (
-            <div role="alert">
-              <p>Could not load the message: {detailError}</p>
-              <Button
-                onClick={() => {
-                  setDetailError("");
-                  setDetailAttempt((value) => value + 1);
-                }}
-              >
-                Retry
-              </Button>
-            </div>
+          {reply && (
+            <MessageResponse
+              detail={detail}
+              token={data.token}
+              requests={requests}
+              pendingKey={pendingKey}
+              refresh={refresh}
+              notify={notify}
+              onResponse={(result) => {
+                const cached = confirmedMessages.get(confirmedKey);
+                if (!cached || cached.version <= result.version)
+                  confirmedMessages.set(confirmedKey, result);
+                setDetail((current) =>
+                  (current.version || 0) > (result.version || 0)
+                    ? current
+                    : result,
+                );
+              }}
+            />
           )}
-          {detail ? (
-            <>
-              <p className="notice">
-                {summary?.authorName || authorName(detail)} →{" "}
-                {recipientName(detail)} · {complaintLabel(detail.status)}
-              </p>
-              <p className="complaint-text">{detail.text}</p>
-              <p className="notice">
-                {recipient(detail) === "user"
-                  ? detail.responses.some(
-                      (response: Json) => response.author === "user",
-                    )
-                    ? "You responded to this message."
-                    : "Your response is required."
-                  : detail.readAt
-                    ? "Read by main agent: " +
-                      new Date(detail.readAt * 1000).toLocaleString()
-                    : "The main agent has not read this message."}
-              </p>
-              {detail.responses.map((r: Json) => (
-                <article className="complaint-response" key={r.id}>
-                  <strong>
-                    {authorName({ author: r.author || detail.leadId })} ·{" "}
-                    {complaintLabel(r.status)}
-                  </strong>
-                  <small>{new Date(r.at * 1000).toLocaleString()}</small>
-                  <p className="complaint-text">{r.text}</p>
-                </article>
-              ))}
-              {recipient(detail) === "lead" && !detail.responses.length && (
-                <p>A response from the main agent is required.</p>
-              )}
-              {detail.recipient === "user" &&
-                Number.isInteger(detail.version) && (
-                  <MessageResponse
-                    key={detail.id}
-                    detail={detail}
-                    token={data.token}
-                    requests={responseRequests.current}
-                    pendingKey={pendingKey}
-                    refresh={refresh}
-                    notify={notify}
-                    onResponse={(result) => {
-                      if (
-                        activeDetailId.current !== detail.id ||
-                        result.id !== detail.id
-                      )
-                        return;
-                      setDetail((current) => {
-                        if (activeDetailId.current !== result.id)
-                          return current;
-                        return current &&
-                          current.id === result.id &&
-                          current.version > result.version
-                          ? current
-                          : result;
-                      });
-                    }}
-                  />
-                )}
-              {recipient(detail) === "user" &&
-                (detail.recipient !== "user" ||
-                  !Number.isInteger(detail.version)) && (
-                  <p className="notice">Update the server to respond here.</p>
-                )}
-            </>
-          ) : !detailError ? (
-            <p role="status">Loading…</p>
-          ) : null}
-        </section>
+        </>
       )}
-    </section>
+    </article>
   );
 }

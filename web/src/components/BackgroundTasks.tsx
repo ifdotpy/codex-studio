@@ -480,7 +480,7 @@ function TaskDetail({
           leftSection={<ArrowLeft size={14} />}
           onClick={back}
         >
-          Tasks
+          Activity
         </Button>
         <span>
           <Icon size={15} />

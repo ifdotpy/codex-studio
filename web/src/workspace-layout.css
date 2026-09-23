@@ -112,14 +112,7 @@
     padding: 20px var(--chat-inset) 12px;
     scrollbar-gutter: auto;
   }
-  #conversation
-    :is(
-      #composer,
-      .agent-panel,
-      .usage-footer,
-      .message-queue,
-      .user-tasks-compact
-    ) {
+  #conversation :is(#composer, .agent-panel, .usage-footer, .message-queue) {
     width: calc(100% - 2 * var(--chat-gutter));
     max-width: var(--chat-width);
     align-self: center;
@@ -186,14 +179,7 @@
   .workspace {
     --chat-gutter: 14px;
   }
-  #conversation
-    :is(
-      #composer,
-      .agent-panel,
-      .usage-footer,
-      .user-tasks-compact,
-      .message-queue
-    ) {
+  #conversation :is(#composer, .agent-panel, .usage-footer, .message-queue) {
     width: calc(100% - 2 * var(--chat-gutter));
     max-width: none;
     align-self: center;
@@ -205,8 +191,7 @@
 }
 
 /* Questions belong to the transcript, so they cannot shrink its viewport. */
-#conversation #messages #requests,
-#conversation #messages .user-tasks-compact {
+#conversation #messages #requests {
   width: 100%;
   max-width: none;
   margin-inline: 0;

@@ -1435,18 +1435,6 @@ class WorkspaceMixin:
                             "complaint": c,
                         }
                     )
-            for task in self.user_tasks(db=db)["items"]:
-                if task["status"] == "open" and task["agent"] in ids:
-                    inbox.append(
-                        {
-                            "id": task["id"],
-                            "kind": "user_task",
-                            "agent": task["agent"],
-                            "title": task["title"],
-                            "text": task.get("reason") or task["criteria"],
-                            "task": task,
-                        }
-                    )
             works = self.records(db, "work")
             for w in works:
                 if w["rootId"] in ids and w["status"] == "review":

@@ -290,17 +290,14 @@ class WorkspaceContract(unittest.TestCase):
         child = self.worker(worker, "Nested worker", cwd=str(child_project))
         owners = [lead, worker, child, other]
         for owner in owners:
-            user_task = {
-                "action": "create", "title": "User action", "criteria": "Check the result",
-            }
             if owner["isLead"]:
-                self.runtime.user_task_action(owner["id"], user_task)
+                self.runtime.chat_message(owner["id"], "user", "Check the result", "user-message-" + owner["id"])
             else:
-                with self.assertRaisesRegex(ValueError, "Only the orchestrator"):
-                    self.runtime.user_task_action(owner["id"], user_task)
+                with self.assertRaisesRegex(ValueError, "Only the lead"):
+                    self.runtime.chat_message(owner["id"], "user", "Check the result", "user-message-" + owner["id"])
                 with self.runtime.db() as db:
-                    self.assertFalse(any(task["agent"] == owner["id"]
-                        for task in self.runtime.records(db, "user_tasks")))
+                    self.assertFalse(any(message["author"] == owner["id"] and message["recipient"] == "user"
+                        for message in self.runtime.records(db, "complaints")))
             self.runtime.complaint(owner["id"], {
                 "action": "submit", "text": "This chat needs a response",
             }, "complaint-" + owner["id"], user=True)
@@ -334,7 +331,7 @@ class WorkspaceContract(unittest.TestCase):
                     item for item in global_state["inbox"] if item["agent"] in team_ids
                 ])
                 self.assertEqual({item["kind"] for item in scoped["inbox"]}, {
-                    "request", "complaint", "user_task", "work", "agent", "monitor", "rule",
+                    "request", "complaint", "work", "agent", "monitor", "rule",
                 })
                 for field in ["annotations", "rules", "monitors"]:
                     self.assertEqual({item["agent"] for item in scoped[field]}, team_ids)

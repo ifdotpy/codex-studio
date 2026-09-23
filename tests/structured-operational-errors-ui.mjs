@@ -17,7 +17,7 @@ import {createRoot} from 'react-dom/client';
 import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
 import Requests from '/src/components/Requests.tsx';
-import UserTasks from '/src/components/UserTasks.tsx';
+import UserMessages from '/src/components/UserMessages.tsx';
 import BackgroundTasks from '/src/components/BackgroundTasks.tsx';
 import AgentPanel from '/src/components/AgentPanel.tsx';
 import CapacityRetry from '/src/components/CapacityRetry.tsx';
@@ -43,7 +43,7 @@ window.renderCase=async(which,value)=>{
   const request={id:'approval',agent:'lead',method:'item/commandExecution/requestApproval',params:{reason:value}};
   component=React.createElement(Requests,{requests:[request],allRequests:[request],scope:'fixture',agents:[agent],refresh,notify:noop});
  }
- if(which==='task') component=React.createElement(UserTasks,{data:{...snapshot,runtime:{...snapshot.runtime,userTasks:[{id:'user-task',rootId:'lead',agent:'lead',title:'User check',description:'Check the result',criteria:'Pass',reason:value,status:'open',version:1,history:[]}]}},refresh,notify:noop});
+ if(which==='message') component=React.createElement(UserMessages,{data:{...snapshot,runtime:{...snapshot.runtime,complaints:[{id:'message',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'User check',created:1,version:1}]}},refresh,notify:noop});
  if(which==='background') component=React.createElement(BackgroundTasks,{opened:true,close:noop,data:{...snapshot,runtime:{...snapshot.runtime,tasks:[{id:'tool',agent:'lead',kind:'tool',name:'dynamicToolCall',status:'running',created:1,error:value,stdinError:value}]}},leadId:'lead',openAgent:noop,refresh,notify:noop});
  if(which==='capacity') component=React.createElement(CapacityRetry,{agentId:'lead',retry:{id:'retry',status:'scheduled',dueAt:Date.now()/1000+100,reason:value}});
  if(which==='safety') component=React.createElement(SafetyBuffering,{agent:{...agent,nativeSafetyRetry:{epoch:0,accountKey:'default',turnId:'turn',stage:'failed',error:value}}});
@@ -100,6 +100,7 @@ try {
     }),
   );
   let getFailure;
+  let messageFailure;
   await page.route("**/api/**", async (route) => {
     if (route.request().method() === "POST") {
       writes.push(route.request().postDataJSON());
@@ -109,6 +110,8 @@ try {
       });
     }
     const url = new URL(route.request().url());
+    if (url.pathname === "/api/complaint")
+      return route.fulfill({ status: 503, json: { error: messageFailure } });
     if (url.pathname === "/api/panel" && getFailure !== undefined)
       return route.fulfill({ status: 503, json: getFailure });
     return route.fulfill({
@@ -122,9 +125,10 @@ try {
     code: "E_FIXTURE",
     data: { retryable: false, attempt: 7 },
   };
+  messageFailure = value;
   for (const which of [
     "request",
-    "task",
+    "message",
     "background",
     "capacity",
     "safety",
@@ -268,7 +272,7 @@ try {
   assert.deepEqual(await page.evaluate(() => window.crashes), []);
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: structured request/task/retry/safety/dictation and progress read diagnostics preserve render and manual actions",
+    "PASS: structured request/message/retry/safety/dictation and progress read diagnostics preserve render and manual actions",
   );
 } finally {
   await browser?.close();
