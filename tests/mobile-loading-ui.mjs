@@ -22,7 +22,7 @@ const nextBuild = config.build + "-update";
 const bootstrapPath = config.initial.find((path) =>
   path.includes("/studio-startup-"),
 );
-const cssPath = config.initial.find((path) => /\/main-[^/]+\.css$/.test(path));
+const cssPath = config.initial.find((path) => /\/index-[^/]+\.css$/.test(path));
 const replacements = [
   [bootstrapPath, bootstrapPath.replace(".js", "-update.js")],
   [cssPath, cssPath.replace(".css", "-update.css")],
@@ -73,6 +73,8 @@ try {
     documentDelay = 0,
     rejectEntry = false;
   let laptopDisconnected = false;
+  let cacheUnavailable = false;
+  let cacheFailureCount = 0;
   const requests = [];
   const activations = new Set();
   server = createServer(async (request, response) => {
@@ -86,6 +88,12 @@ try {
         new URL(request.url, "http://localhost").searchParams.get("build"),
       );
       response.writeHead(204);
+      response.end();
+      return;
+    }
+    if (path === "/test-cache-storage") {
+      if (cacheUnavailable) cacheFailureCount++;
+      response.writeHead(cacheUnavailable ? 503 : 204);
       response.end();
       return;
     }
@@ -156,7 +164,7 @@ try {
             ),
           );
       }
-      if (rejectEntry && /\/main-[^/]+\.js$/.test(path)) {
+      if (rejectEntry && /\/index-[^/]+\.js$/.test(path)) {
         response.writeHead(503);
         response.end();
         return;
@@ -164,7 +172,7 @@ try {
       if (path === "/studio-sw.js")
         data = Buffer.from(
           String(data) +
-            `\nself.addEventListener("activate", event => event.waitUntil(fetch("/test-worker-activated?build=" + self.STUDIO_SHELL.build)));`,
+            `\nconst studioNativeCacheOpen = caches.open.bind(caches);\ncaches.open = async (...args) => {\n  const response = await fetch("/test-cache-storage").catch(() => null);\n  if (response && !response.ok) throw new Error("Storage unavailable");\n  return studioNativeCacheOpen(...args);\n};\nself.addEventListener("activate", event => event.waitUntil(fetch("/test-worker-activated?build=" + self.STUDIO_SHELL.build)));`,
         );
       const type = path.endsWith(".js")
         ? "text/javascript"
@@ -357,10 +365,16 @@ try {
   lastNavigation = Date.now();
   await page.close();
   const activationDeadline = Date.now() + 15000;
-  while (!activations.has(nextBuild) && Date.now() < activationDeadline)
+  const workerActivated = async () =>
+    nextWorker
+      ? nextWorker.evaluate(
+          () => self.registration.active?.state === "activated",
+        )
+      : activations.has(nextBuild);
+  while (!(await workerActivated()) && Date.now() < activationDeadline)
     await new Promise((resolve) => setTimeout(resolve, 25));
   assert.ok(
-    activations.has(nextBuild),
+    await workerActivated(),
     "The waiting worker activates after the last page closes",
   );
   page = await context.newPage();
@@ -421,26 +435,17 @@ try {
     draft,
   );
   if (nextWorker) {
-    await nextWorker.evaluate(() => {
-      self.originalCacheOpen = caches.open.bind(caches);
-      self.cacheFailures = 0;
-      caches.open = async () => {
-        self.cacheFailures++;
-        throw new Error("Storage unavailable");
-      };
-    });
+    cacheUnavailable = true;
     await reload();
     await page.waitForFunction(
       (text) => document.querySelector("textarea")?.value === text,
       draft,
     );
+    cacheUnavailable = false;
     assert.ok(
-      await nextWorker.evaluate(() => self.cacheFailures > 0),
+      cacheFailureCount > 0,
       "The browser exercised unavailable cache storage",
     );
-    await nextWorker.evaluate(() => {
-      caches.open = self.originalCacheOpen;
-    });
   }
 
   version = 3;

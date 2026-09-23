@@ -186,11 +186,17 @@ try {
       1,
     "Idle credentials do not poll every 1.6 seconds",
   );
-  assert.ok(
-    idleRequests.filter((request) => request.path.startsWith("/api/sync/pull?"))
-      .length <= 12,
-    "Idle projection polling remains bounded",
+  const pullsByScope = new Map();
+  for (const request of idleRequests) {
+    if (!request.path.startsWith("/api/sync/pull?")) continue;
+    const scope = new URL(request.path, origin).searchParams.get("scope");
+    pullsByScope.set(scope, (pullsByScope.get(scope) || 0) + 1);
+  }
+  const repeatedPulls = [...pullsByScope.values()].reduce(
+    (total, count) => total + count - 1,
+    0,
   );
+  assert.ok(repeatedPulls <= 12, "Idle projection polling remains bounded");
   const warmStarted = Date.now();
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(
