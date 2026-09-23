@@ -70,17 +70,26 @@ try {
       assert.deepEqual(body, applied.get(body.request_id));
       return route.fulfill({ json: { ok: true } });
     }
-    state.runtime.peerTeams =
-      body.action === "delete"
-        ? []
-        : [
-            {
-              id: body.team_id,
-              name: body.name,
-              projectPath: body.path,
-              members: body.members,
-            },
-          ];
+    if (body.action === "move") {
+      const target = state.runtime.peerTeams.find((t) => t.id === body.team_id);
+      for (const t of state.runtime.peerTeams)
+        t.members = t.members.filter((id) => id !== body.member);
+      if (target) target.members.push(body.member);
+      state.runtime.peerTeams = state.runtime.peerTeams.filter(
+        (t) => t.members.length >= 2,
+      );
+    } else
+      state.runtime.peerTeams =
+        body.action === "delete"
+          ? []
+          : [
+              {
+                id: body.team_id,
+                name: body.name,
+                projectPath: body.path,
+                members: body.members,
+              },
+            ];
     state.runtime.projects[0].peerTeamsRevision++;
     applied.set(body.request_id, body);
     if (mode === "lost") {
@@ -165,6 +174,66 @@ try {
     await project.locator('[data-folder-id="f"] [data-chat="b"]').count(),
     1,
   );
+  state.threads.push({
+    ...state.threads.find((a) => a.id === "c"),
+    id: "e",
+    name: "Epsilon",
+  });
+  state.runtime.peerTeams = [
+    { id: "t1", name: "First team", projectPath: "/p", members: ["a", "b"] },
+    { id: "t2", name: "Second team", projectPath: "/p", members: ["c", "e"] },
+  ];
+  await page.evaluate((s) => window.setFixture(s), state);
+  const second = page.locator('[data-peer-team="t2"]');
+  const teamTarget = second.locator(".peer-team-toggle");
+  const projectTarget = project.locator(
+    ":scope > .project-tree-heading .project-tree-toggle",
+  );
+  await project.locator('[data-chat="a"]').dragTo(teamTarget);
+  await second.locator('[data-chat="a"]').waitFor();
+  assert.equal(await page.locator('[data-peer-team="t1"]').count(), 0);
+  assert.equal(requests.at(-1).action, "move");
+  await second.locator('[data-chat="a"]').dragTo(projectTarget);
+  await page.waitForFunction(
+    () =>
+      !window.fixture.runtime.peerTeams.some((t) => t.members.includes("a")),
+  );
+  const beforeForeign = requests.length;
+  await page.locator('[data-chat="x"]').dragTo(teamTarget);
+  assert.equal(
+    requests.length,
+    beforeForeign,
+    "Foreign projects cannot join the team",
+  );
+  mode = "lost";
+  await project.locator('[data-chat="b"]').dragTo(teamTarget);
+  await page.getByRole("button", { name: "Retry move", exact: true }).waitFor();
+  const lostMove = requests.at(-1);
+  await page.getByRole("button", { name: "Retry move", exact: true }).click();
+  await second.locator('[data-chat="b"]').waitFor();
+  assert.deepEqual(
+    requests.at(-1),
+    lostMove,
+    "Retry keeps the move identity and original revision",
+  );
+  mode = "stale";
+  await second.locator('[data-chat="b"]').dragTo(projectTarget);
+  await page
+    .getByRole("button", { name: "Reload project", exact: true })
+    .waitFor();
+  mode = "ok";
+  await page
+    .getByRole("button", { name: "Reload project", exact: true })
+    .click();
+  await second.locator('[data-chat="b"]').dragTo(projectTarget);
+  await page.waitForFunction(
+    () =>
+      !window.fixture.runtime.peerTeams.some((t) => t.members.includes("b")),
+  );
+  await page.screenshot({
+    path: process.env.PEER_TEAMS_DRAG_SCREENSHOT || "/tmp/studio-team-drag.png",
+  });
+  state.runtime.peerTeams = [];
   // Only explicitly authorized peer rooms involving this chat appear.
   state.runtime.rooms = [
     {

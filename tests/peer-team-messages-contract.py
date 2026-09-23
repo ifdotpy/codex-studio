@@ -91,6 +91,24 @@ class PeerTeamMessages(unittest.TestCase):
         self.assertEqual(page['messages'][0]['text'], 'Pending question')
         self.assertEqual(page['messages'][0]['deliveries'][right['id']], 'cancelled')
 
+    def test_drag_add_enables_messages_and_remove_revokes_pending_delivery(self):
+        left, right = self.pair()
+        added = self.agent_update(self.lead('Added'), draft=False, prompt='Own work', status='idle')
+        with self.assertRaises(ValueError):
+            self.runtime.chat_message(left['id'], added['id'], 'Before joining', 'before-join')
+        manage(self.runtime, {'action': 'move', 'path': str(self.project), 'member': added['id'],
+            'team_id': self.team_id, 'expected_revision': 1, 'request_id': str(uuid.uuid4())})
+        receipt = self.runtime.chat_message(left['id'], added['id'], 'Explicit peer question', 'after-join')
+        self.assertEqual(self.runtime.chat_read(receipt['room'], added['id'])['messages'][0]['text'], 'Explicit peer question')
+        manage(self.runtime, {'action': 'move', 'path': str(self.project), 'member': added['id'],
+            'team_id': None, 'expected_revision': 2, 'request_id': str(uuid.uuid4())})
+        with self.assertRaises(ValueError): self.runtime.chat_read(receipt['room'], added['id'])
+        with self.runtime.lock, self.runtime.db() as db:
+            cancel_pending(self.runtime, db)
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('chat:after-join:' + added['id'],)).fetchone()[0], 'cancelled')
+        self.assertIn(right['id'], {a['id'] for a in self.runtime.peers(left['id'])['peers']})
+
     def test_project_move_revokes_peer_permission(self):
         left, right = self.pair()
         receipt = self.runtime.chat_message(left['id'], right['id'], 'Before move', 'move')

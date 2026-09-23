@@ -40,17 +40,6 @@ class WorkspaceServer(fixture.FakeServer):
         }
 
     def call(self, method, params, timeout=60):
-        if method == "model/list":
-            catalog = super().call(method, params, timeout)
-            catalog["data"].append({
-                "model": "gpt-6-luna", "defaultReasoningEffort": "medium",
-                "supportedReasoningEfforts": [
-                    {"reasoningEffort": effort}
-                    for effort in ("low", "medium", "high", "xhigh", "max")
-                ],
-                "serviceTiers": [{"id": "priority"}],
-            })
-            return catalog
         if method in {
             "thread/fork",
             "turn/steer",

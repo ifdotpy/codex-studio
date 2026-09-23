@@ -202,6 +202,42 @@ class PeerTeams(unittest.TestCase):
         self.mutate_agent('b', cwd=self.path)
         self.assert_denied()
 
+    def test_drag_move_is_atomic_and_replay_safe(self):
+        manage(self.runtime, self.request())
+        other = str(uuid.uuid4())
+        manage(self.runtime, self.request(team_id=other, members=['c', 'd'], expected_revision=1))
+        move = self.request(action='move', member='a', team_id=other, expected_revision=2)
+        result = manage(self.runtime, move)
+        self.assertEqual(result['peerTeamsRevision'], 3)
+        self.assertEqual(result['peerTeams'], [{'id': other, 'name': 'Team', 'members': ['c', 'd', 'a']}])
+        self.assertEqual(manage(self.runtime, move), result)
+        with self.assertRaises(ValueError):
+            manage(self.runtime, move | {'member': 'b'})
+        with self.runtime.db() as db:
+            self.assertTrue(peer_pair_allowed(db, 'a', 'c'))
+            self.assertFalse(peer_pair_allowed(db, 'a', 'b'))
+
+    def test_drag_remove_preserves_remaining_team_and_revokes_access(self):
+        manage(self.runtime, self.request(members=['a', 'b', 'c']))
+        result = manage(self.runtime, self.request(action='move', member='a', team_id=None, expected_revision=1))
+        self.assertEqual(result['peerTeams'][0]['members'], ['b', 'c'])
+        self.assert_denied()
+        with self.runtime.db() as db:
+            self.assertTrue(peer_pair_allowed(db, 'b', 'c'))
+
+    def test_drag_rejects_foreign_project_worker_stale_or_missing_target(self):
+        manage(self.runtime, self.request())
+        move = self.request(action='move', member='c', expected_revision=1)
+        for change in ({'expected_revision': 0}, {'team_id': str(uuid.uuid4())}):
+            with self.assertRaises(ValueError):
+                manage(self.runtime, move | change)
+        self.mutate_agent('c', cwd=self.other)
+        with self.assertRaises(ValueError): manage(self.runtime, move)
+        self.mutate_agent('c', cwd=self.path, isLead=False, parentId='a')
+        with self.assertRaises(ValueError): manage(self.runtime, move)
+        with self.runtime.db() as db:
+            self.assertEqual(snapshot(self.runtime, db)[0]['members'], ['a', 'b'])
+
     def test_canonical_project_path(self):
         alias = self.root / 'alias'
         Path(self.path).mkdir(parents=True)

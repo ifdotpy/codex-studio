@@ -15,6 +15,8 @@ independent chats. Select at least two chats from that project. Each chat keeps
 its own tasks, history, and subagents. Team members can discover each other and
 send explicit private messages. Broadcasts and automatic results stay within
 each chat's original agent tree. The team menu supports edits and dissolution.
+Drag a chat onto a team to join or move between teams. Drop it onto the project
+name to leave. A team dissolves when fewer than two chats remain.
 Dissolution preserves the chats and saved messages but removes peer access.
 
 ## Setup

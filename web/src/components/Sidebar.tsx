@@ -37,7 +37,7 @@ import {
   type ProjectFolder,
 } from "./ProjectOrganization";
 import { type Agent, type Snapshot } from "../types";
-import { PeerTeamForm, PeerTeamGroup } from "./PeerTeams";
+import { PeerTeamForm, PeerTeamGroup, usePeerTeamMove } from "./PeerTeams";
 import ChatStatus from "./ChatStatus";
 import { hasCompletedResult, type ChatIndicator } from "./chatStatusModel";
 type Props = {
@@ -82,6 +82,9 @@ export default function Sidebar(p: Props) {
   } | null>(null);
   const peerTeams =
     p.data.runtime.peerTeamsVersion === 1 ? p.data.runtime.peerTeams || [] : [];
+  const teamMove = usePeerTeamMove(p.refresh, p.notify);
+  const teamFor = (id: string) =>
+    peerTeams.find((team) => team.members.includes(id));
   const grouped = new Set(
     peerTeams.flatMap((team) =>
       team.members.filter((id) =>
@@ -192,6 +195,7 @@ export default function Sidebar(p: Props) {
       a.cwd,
       !!a.pinned,
       !!a.archived,
+      ...(teamFor(a.id) ? ["team", teamFor(a.id)!.id] : []),
       ...(a.projectFolder ? [a.projectFolder] : []),
     ]);
   const folderDrop = (project: Project, folder: ProjectFolder | null = null) =>
@@ -200,16 +204,22 @@ export default function Sidebar(p: Props) {
       (source) => {
         const chat = agents.find((a) => a.id === source.id);
         return !!(
-          canOrganizeProjects &&
+          (canOrganizeProjects || (!folder && teamFor(source.id))) &&
+          !teamMove.blocked() &&
           !organizationLock.current &&
           chat &&
           source.group === chatGroup(chat) &&
           chat.cwd === project.path &&
-          (chat.projectFolder || null) !== (folder?.id || null)
+          ((!folder && !!teamFor(chat.id)) ||
+            (chat.projectFolder || null) !== (folder?.id || null))
         );
       },
       ({ id }) => {
         const chat = agents.find((a) => a.id === id)!;
+        if (!folder && teamFor(id)) {
+          teamMove.move(project, id, null);
+          return;
+        }
         void organize(id, {
           project_path: project.path,
           project_folder: folder?.id || null,
@@ -330,7 +340,7 @@ export default function Sidebar(p: Props) {
               .map((a) => a.id),
           )}
           title={row.name}
-          aria-description="Drag to reorder. Alt + Up or Down also works."
+          aria-description="Drag onto a team to join it, or onto the project name to leave. Drag within a group to reorder. Alt + Up or Down also works."
           className="chat-row"
           data-chat={row.id}
           onClick={() => p.open(row.id)}
@@ -686,6 +696,7 @@ export default function Sidebar(p: Props) {
           </ActionIcon>
         }
       </div>
+      {teamMove.feedback}
       <nav id="chat-list" className="chat-scroll" aria-label="Chats">
         {projectsOpen &&
           projectGroups.map((group) => {
@@ -825,6 +836,23 @@ export default function Sidebar(p: Props) {
                           <PeerTeamGroup
                             key={team.id}
                             team={team}
+                            drop={sorting.dropBindings(
+                              `peer-team:${team.id}`,
+                              (source) => {
+                                const chat = agents.find(
+                                  (a) => a.id === source.id,
+                                );
+                                return !!(
+                                  chat &&
+                                  source.group === chatGroup(chat) &&
+                                  chat.cwd === group.path &&
+                                  !team.members.includes(chat.id) &&
+                                  !teamMove.blocked() &&
+                                  !organizationLock.current
+                                );
+                              },
+                              ({ id }) => teamMove.move(group, id, team.id),
+                            )}
                             closed={closed}
                             toggle={() => toggleProject(key)}
                             edit={() =>

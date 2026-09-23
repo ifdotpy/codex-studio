@@ -74,14 +74,15 @@ def peers_for(runtime, db, viewer):
 
 def manage(runtime, data):
     action = data.get('action')
-    if action not in ('save', 'delete'):
+    if action not in ('save', 'delete', 'move'):
         raise ValueError('Unknown peer team action')
     path = runtime.project_directory(data.get('path'), require_existing=False)
     revision = data.get('expected_revision')
     if type(revision) is not int or revision < 0:
         raise ValueError('Supply the current peer team revision')
     try:
-        team_id = str(uuid.UUID(data.get('team_id', '')))
+        team_id = (None if action == 'move' and data.get('team_id') is None
+                   else str(uuid.UUID(data.get('team_id', ''))))
     except (ValueError, TypeError, AttributeError):
         raise ValueError('Supply a team ID') from None
     request_id = text_field(data.get('request_id'), 'a request ID', 255)
@@ -106,7 +107,22 @@ def manage(runtime, data):
         agents = _agents(db)
         teams = [{key: team[key] for key in ('id', 'name', 'members')}
                  for team in _teams(project, agents)]
-        if action == 'save':
+        if action == 'move':
+            member = text_field(data.get('member'), 'a lead chat ID', 255)
+            if member not in agents or not _lead(agents[member], path):
+                raise ValueError('Select a live lead chat from this project only')
+            target = next((team for team in teams if team['id'] == team_id), None)
+            if team_id is not None and target is None:
+                raise ValueError('The destination team is no longer available')
+            source = next((team for team in teams if member in team['members']), None)
+            if source is target:
+                raise ValueError('The chat already has this team membership')
+            if source:
+                source['members'].remove(member)
+            if target:
+                target['members'].append(member)
+            teams = [team for team in teams if len(team['members']) >= 2]
+        elif action == 'save':
             for key in members:
                 if key not in agents or not _lead(agents[key], path):
                     raise ValueError('Select live lead chats from this project only')

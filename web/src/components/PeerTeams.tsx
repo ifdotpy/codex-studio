@@ -7,7 +7,7 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import { ChevronDown, MoreHorizontal } from "lucide-react";
-import { useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 import { api, ApiError, errorText } from "../api";
 import type { Agent, PeerTeam } from "../types";
 import type { Project } from "./ProjectOrganization";
@@ -20,6 +20,7 @@ export function PeerTeamGroup({
   edit,
   dissolve,
   children,
+  drop,
 }: {
   team: PeerTeam;
   closed: boolean;
@@ -27,9 +28,10 @@ export function PeerTeamGroup({
   edit: () => void;
   dissolve: () => void;
   children: ReactNode;
+  drop?: HTMLAttributes<HTMLElement> & { "data-folder-drop"?: string };
 }) {
   return (
-    <section className="peer-team" data-peer-team={team.id}>
+    <section className="peer-team" data-peer-team={team.id} {...drop}>
       <div className="project-tree-heading">
         <UnstyledButton
           className="project-tree-toggle peer-team-toggle"
@@ -234,4 +236,104 @@ export function PeerTeamForm({
       </div>
     </form>
   );
+}
+
+// Keep the exact mutation after a lost response. A new drag must not replace it.
+export function usePeerTeamMove(
+  refresh?: () => Promise<void>,
+  notify?: (text: string) => void,
+) {
+  const request = useRef<Record<string, unknown> | null>(null);
+  const committed = useRef(false);
+  const running = useRef(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [rejected, setRejected] = useState(false);
+  const clear = () => {
+    request.current = null;
+    committed.current = false;
+    setError("");
+    setRejected(false);
+  };
+  const submit = async () => {
+    if (running.current || !request.current) return;
+    running.current = true;
+    setPending(true);
+    setError("");
+    try {
+      if (!committed.current) {
+        await api("/api/peer-teams", request.current, { timeoutMs: 15000 });
+        committed.current = true;
+      }
+      await refresh?.();
+      clear();
+      notify?.("Team membership updated.");
+    } catch (e) {
+      setError(errorText(e));
+      setRejected(
+        !committed.current &&
+          e instanceof ApiError &&
+          e.status >= 400 &&
+          e.status < 500,
+      );
+    } finally {
+      running.current = false;
+      setPending(false);
+    }
+  };
+  const move = (project: Project, member: string, teamId: string | null) => {
+    if (request.current) return;
+    request.current = {
+      action: "move",
+      path: project.path,
+      member,
+      team_id: teamId,
+      expected_revision: project.peerTeamsRevision || 0,
+      request_id: crypto.randomUUID(),
+    };
+    void submit();
+  };
+  const reload = async () => {
+    if (running.current) return;
+    running.current = true;
+    setPending(true);
+    try {
+      await refresh?.();
+      clear();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      running.current = false;
+      setPending(false);
+    }
+  };
+  return {
+    move,
+    blocked: () => !!request.current,
+    feedback:
+      pending || error ? (
+        <div className="peer-team-form">
+          {pending ? (
+            <p role="status">Updating team…</p>
+          ) : (
+            <>
+              <p role="alert">
+                {error}{" "}
+                {committed.current
+                  ? "The change was saved. Retry to refresh."
+                  : rejected
+                    ? "Reload the project before another move."
+                    : "The result is unknown. Retry the same move."}
+              </p>
+              <Button
+                size="compact-xs"
+                onClick={() => void (rejected ? reload() : submit())}
+              >
+                {rejected ? "Reload project" : "Retry move"}
+              </Button>
+            </>
+          )}
+        </div>
+      ) : null,
+  };
 }
