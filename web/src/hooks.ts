@@ -809,6 +809,10 @@ export function useMessages(
         : keepPage
           ? retainedPage!.before
           : prefetched?.payload?.nextCursor || null,
+    historyVersion:
+      pages.current.get(scope)?.version ||
+      prefetched?.payload?.historyVersion ||
+      "",
     older,
     newer,
     after:

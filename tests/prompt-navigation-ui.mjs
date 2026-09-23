@@ -72,15 +72,37 @@ try {
     truncated: true,
     nextCursor: "prompt-0",
   };
+  let pauseRecall = false;
+  let releaseRecall;
+  let recallStarted;
   await page.route("**/api/transcript**", async (route) => {
     if (new URL(route.request().url()).searchParams.get("id") !== lead.id)
       return route.continue();
-    if (
-      new URL(route.request().url()).searchParams.get("before") === "prompt-0"
-    ) {
+    const params = new URL(route.request().url()).searchParams;
+    if (params.get("before") === "prompt-0" && params.get("limit") === "500") {
+      if (pauseRecall) {
+        await new Promise((resolve) => {
+          releaseRecall = resolve;
+          recallStarted?.();
+        });
+      }
       return route.fulfill({
         json: {
           ...original,
+          historyVersion: transcript.historyVersion,
+          items: [
+            { id: "older-tool", role: "tool", text: "Tool activity", at: 0 },
+          ],
+          nextCursor: "older-tool",
+          truncated: true,
+        },
+      });
+    }
+    if (["prompt-0", "older-tool"].includes(params.get("before"))) {
+      return route.fulfill({
+        json: {
+          ...original,
+          historyVersion: transcript.historyVersion,
           items: [
             {
               id: "earlier-prompt",
@@ -174,10 +196,29 @@ try {
     "Recall does not navigate the transcript",
   );
   for (let i = 0; i < 10; i++) await composer.press("ArrowUp");
+  await page.waitForFunction(
+    () => document.querySelector("#message").value === "Earlier saved input",
+  );
+  await composer.press("ArrowUp");
+  assert.equal(
+    await composer.inputValue(),
+    "Earlier saved input",
+    "Up loads beyond the visible range and clamps at the true oldest input",
+  );
+  assert.equal(
+    await page.locator('[data-message="earlier-prompt"]').count(),
+    0,
+    "Recall does not insert historical pages into the transcript",
+  );
+  await composer.press("ArrowDown");
+  await page.waitForFunction(
+    (text) => document.querySelector("#message").value === text,
+    prompts[0].text,
+  );
   assert.equal(
     await composer.inputValue(),
     prompts[0].text,
-    "Oldest entry clamps",
+    "Down crosses the fetched page boundary",
   );
   await composer.fill("Draft stays editable\nSecond line");
   await composer.press("ArrowUp");
@@ -239,6 +280,7 @@ try {
       "chat change removes the previous navigation",
     );
   }
+  await page.setViewportSize({ width: 1440, height: 960 });
   await page.reload();
   await openLead();
   await page
@@ -362,6 +404,63 @@ try {
     await page.locator('[data-message="restored-answer"]').count(),
     0,
     "A full authoritative snapshot still removes obsolete records",
+  );
+  Object.assign(transcript, { truncated: true, nextCursor: "prompt-0" });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.reload();
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.locator('[data-message="replacement-answer"]').waitFor();
+  await composer.fill("");
+  await composer.press("ArrowUp");
+  await page.waitForFunction(
+    () => document.querySelector("#message").value === "Earlier saved input",
+  );
+  assert.equal(
+    await page.locator('[data-message="earlier-prompt"]').count(),
+    0,
+    "After reload, Up finds saved input even when no user messages are visible",
+  );
+  await composer.press("ArrowDown");
+  assert.equal(await composer.inputValue(), "");
+  pauseRecall = true;
+  const started = new Promise((resolve) => {
+    recallStarted = resolve;
+  });
+  await composer.press("ArrowUp");
+  await started;
+  await composer.fill("Keep my new draft");
+  const response = page.waitForResponse(
+    (r) => r.url().includes("before=prompt-0") && r.url().includes("limit=500"),
+  );
+  releaseRecall();
+  await response;
+  await page.waitForTimeout(100);
+  assert.equal(
+    await composer.inputValue(),
+    "Keep my new draft",
+    "A late history response cannot overwrite an edited draft",
+  );
+  await composer.fill("");
+  const switched = new Promise((resolve) => {
+    recallStarted = resolve;
+  });
+  await composer.press("ArrowUp");
+  await switched;
+  await page
+    .locator("[data-chat]")
+    .filter({ hasText: "Other project" })
+    .click();
+  await composer.fill("Other chat draft");
+  const stale = page.waitForResponse(
+    (r) => r.url().includes("before=prompt-0") && r.url().includes("limit=500"),
+  );
+  releaseRecall();
+  await stale;
+  await page.waitForTimeout(100);
+  assert.equal(
+    await composer.inputValue(),
+    "Other chat draft",
+    "A late history response cannot write into another chat",
   );
   assert.deepEqual(errors, []);
   console.log(

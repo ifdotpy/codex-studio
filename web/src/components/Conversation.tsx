@@ -35,7 +35,7 @@ import { api, errorText, save, saved } from "../api";
 import SafetyBuffering from "./SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
 import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
-import { useMessages } from "../hooks";
+import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
 import { changeOutbox, type OutgoingMessage } from "../sync/send";
@@ -138,6 +138,7 @@ export default function Conversation(p: {
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const {
     items: history,
+    historyVersion,
     notice,
     before,
     older,
@@ -171,10 +172,39 @@ export default function Conversation(p: {
     [delivery.items, removed.hidden],
   );
   const promptRecall = usePromptRecall(
-    `${p.data.stateDir}:${kind}:${p.id}`,
+    `${p.data.stateDir}:${kind}:${p.id}:${historyVersion}`,
     p.room ? [] : items,
     p.draft,
     p.setDraft,
+    p.agent?.source === "managed" && kind === "agent" && p.id
+      ? {
+          before: before ? String(before) : null,
+          load: async (cursor) => {
+            const params = new URLSearchParams({
+              id: p.id!,
+              before: cursor,
+              limit: "500",
+            });
+            const page = await api(`/api/transcript/page?${params}`);
+            if (page.unavailable) throw new Error(page.unavailable);
+            if (
+              historyVersion &&
+              page.historyVersion &&
+              historyVersion !== page.historyVersion
+            )
+              throw new Error(
+                "The conversation changed. Open its message history again.",
+              );
+            return {
+              messages: transcriptMessages(page.items || [], p.id).filter(
+                (item) => !removed.hidden(item),
+              ),
+              before: page.nextCursor || null,
+            };
+          },
+          onError: (error) => p.notify(errorText(error)),
+        }
+      : undefined,
   );
   const observed = delivery.observed.join(",");
   useEffect(() => {
