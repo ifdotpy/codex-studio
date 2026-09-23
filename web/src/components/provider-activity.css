@@ -4,8 +4,16 @@
 [data-agent-provider="claude"] {
   --agent-activity-color: light-dark(#c45b14, #ffa94d);
 }
+.chat-status-paused[data-agent-provider],
+.chat-status-idle[data-agent-provider],
 .chat-status-working[data-agent-provider],
+.agent-phase.active[data-agent-provider],
 .agent-phase.active[data-agent-provider] > svg,
 .agent-phase.active[data-agent-provider] > .phase-dots {
   color: var(--agent-activity-color, var(--muted));
+}
+
+.chat-status-idle,
+.chat-status-paused {
+  opacity: 0.7;
 }

@@ -1212,9 +1212,6 @@ p {
   color: var(--muted);
   font-size: 12px;
 }
-.agent-phase.active {
-  color: light-dark(#3e51aa, #bcb7ec);
-}
 .agent-phase-copy {
   min-width: 0;
   overflow-wrap: anywhere;
