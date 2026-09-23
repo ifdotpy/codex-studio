@@ -67,7 +67,10 @@ class PrepareSteerContract(unittest.TestCase):
         return self.runtime.agent(a["id"])
 
     def pending_prepare(self, a):
-        eventually(lambda: "preparation acknowledgement" in str(self.runtime.agent(a["id"]).get("error")))
+        # A pending acknowledgement is a wait state, not an agent error.
+        eventually(lambda: "preparation acknowledgement" in str(
+            (self.runtime.agent(a["id"]).get("startAttempt") or {}).get("prepareError")))
+        self.assertNotIn("preparation acknowledgement", str(self.runtime.agent(a["id"]).get("error")))
         return next(e for e in self.server.delayed if e["method"] in {"thread/start", "thread/resume"})
 
     def accept_prepare(self, entry, **extra):
@@ -264,6 +267,45 @@ class PrepareSteerContract(unittest.TestCase):
         eventually(lambda: not self.runtime.agent(a["id"])["inFlight"])
         self.assertEqual(self.count("review/start"), 0)
         self.assertEqual(self.runtime.agent(a["id"])["status"], "paused")
+
+
+
+class BackloggedServer(fixture.FakeServer):
+    """Delivers receipts only through on_result_now, as if the event queue lagged."""
+    def on_result(self, future, callback):
+        self.stuck = getattr(self, "stuck", []) + [(future, callback)]
+
+    def on_result_now(self, future, callback):
+        future.add_done_callback(callback)
+
+
+class PreparationReceiptContract(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.runtime = Runtime(Path(self.temp.name), BackloggedServer)
+
+    def tearDown(self):
+        self.runtime.close()
+        self.temp.cleanup()
+
+    def test_thread_receipt_bypasses_a_lagging_event_queue(self):
+        lead = self.runtime.create({"name": "Lead", "cwd": self.temp.name, "prompt": "Work"})
+        eventually(lambda: self.runtime.agent(lead["id"])["status"] == "running")
+        agent = self.runtime.agent(lead["id"])
+        self.assertTrue(agent["threadId"])
+        self.assertIn(lead["id"], self.runtime.loaded)
+        self.assertNotIn("prepareError", agent.get("startAttempt") or {})
+        self.assertFalse([cb for _, cb in getattr(self.runtime.server, "stuck", [])
+                          if getattr(cb, "__name__", "") == "<lambda>" and "prepared_result" in repr(cb.__code__.co_names)])
+
+    def test_app_server_receipt_runs_on_completion_not_in_the_queue(self):
+        from codex_runtime import AppServer
+        server = AppServer.__new__(AppServer)
+        server.enqueue = lambda *args: self.fail("receipt entered the event queue")
+        future, seen = concurrent.futures.Future(), []
+        AppServer.on_result_now(server, (1, "thread/start", future), seen.append)
+        future.set_result({"thread": {"id": "t"}})
+        self.assertEqual(seen, [future])
 
 
 if __name__ == "__main__":

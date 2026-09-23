@@ -387,6 +387,14 @@ class AppServer:
         # Runtime work off the pipe reader, including late preparation receipts.
         submitted[2].add_done_callback(lambda future: self.enqueue(callback, future))
 
+    def on_result_now(self, submitted, callback):
+        """Run a cheap callback when the response arrives, outside the event queue.
+
+        The callback runs on the pipe reader, so it must only hand work to an
+        executor. Receipts that gate progress must not wait behind streamed output.
+        """
+        submitted[2].add_done_callback(callback)
+
     def after_events(self, callback):
         """Run after callbacks already received from this connection."""
         self.enqueue(lambda _: callback(), None)
@@ -2147,9 +2155,24 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         raise PreparationPending(operation["future"]) from error
                     operation["future"].set_exception(error)
                     raise
-            server.on_result(submitted, lambda future: self.prepared_result(operation, future))
+            # Thread receipts gate every start. Keep them out of the notification
+            # queue, which can lag minutes behind streamed command output.
+            receipt = lambda future: self.preparation_executor().submit(self.prepared_result, operation, future)
+            getattr(server, "on_result_now", server.on_result)(submitted, receipt)
             return operation["future"]
         return a
+
+    def preparation_executor(self):
+        """A small pool for preparation receipts. Start jobs in self.pool wait on
+        these receipts, so the receipts must never need a self.pool worker."""
+        executor = getattr(self, "_preparation_pool", None)
+        if executor is None:
+            with self.lock:
+                executor = getattr(self, "_preparation_pool", None)
+                if executor is None:
+                    executor = self._preparation_pool = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=4, thread_name_prefix="studio-prepare")
+        return executor
 
     def prepared_result(self, operation, future):
         completion = operation["future"]
@@ -2436,8 +2459,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     self.put(db, "agents", current)
                     self.changed.set()
                     return
-                if current.get("error") == current["startAttempt"].get("prepareError"):
-                    current["error"] = None
+                waited = current["startAttempt"].pop("prepareError", None)
+                if waited is not None:
+                    # The acknowledgement arrived. Clear the waiting state it showed.
+                    if current.get("error") == waited:
+                        current["error"] = None
                     self.put(db, "agents", current)
                 for r in rows:
                     db.execute(
@@ -2556,9 +2582,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 current = self.agent(a["id"], db)
                 if (current.get("startAttempt") or {}).get("id") != attempt_id:
                     return
+                # A pending acknowledgement is a wait, not an error. The phase
+                # shows it until the receipt arrives or the attempt fails.
                 current["startAttempt"]["prepareError"] = str(error)
-                if current["epoch"] == epoch and current["autoWake"]:
-                    current["error"] = str(error)
                 self.put(db, "agents", current)
             self.defer_preparation(error, lambda: self.start(a, rows),
                 lambda cause: self.start_error(a["id"], attempt_id, cause,
