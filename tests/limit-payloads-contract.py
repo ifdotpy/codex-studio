@@ -44,7 +44,9 @@ class PayloadContract(unittest.TestCase):
             actor = self.runtime.agent(lead['id'], db)
             actor['compactions'] = actor.get('compactions', 0) + 1
             refresh = self.runtime.model_turn_context(db, actor, 'compacted')
-        self.assertIn(self.runtime.role_guidance(lead), refresh)
+        # d9f56ef keeps confirmed role text out of routine context and sends
+        # only a diff when that text changes.
+        self.assertNotIn(self.runtime.role_guidance(lead), refresh)
 
     def test_unconfirmed_preparation_and_changed_guidance_refresh(self):
         lead = self.lead()

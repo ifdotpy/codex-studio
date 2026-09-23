@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_runtime import Runtime
+from codex_tool_requests import RequestMixin
 from codex_workspace import WorkspaceMixin, active_task_records
 from codex_agent_management import _blockers
 
@@ -18,6 +19,7 @@ from codex_agent_management import _blockers
 class Fixture:
     disconnected = Runtime.disconnected
     _assert_workspace_idle = WorkspaceMixin._assert_workspace_idle
+    reconcile_tool_requests = RequestMixin.reconcile_tool_requests
     records = staticmethod(Runtime.records)
 
     def __init__(self):
@@ -28,7 +30,7 @@ class Fixture:
         self.offline_accounts = set()
         self.loaded = {'first', 'second'}
         self.preparations = {}
-        for table in ('agents', 'tasks', 'monitors', 'requests', 'work'):
+        for table in ('agents', 'tasks', 'monitors', 'requests', 'work', 'tool_requests'):
             self.connection.execute(f'CREATE TABLE runtime_{table}(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
         self.connection.execute("CREATE INDEX runtime_task_status ON runtime_tasks(json_extract(record,'$.status'),json_extract(record,'$.created'))")
         self.connection.execute('CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, epoch INTEGER, status TEXT, error TEXT)')

@@ -151,6 +151,9 @@ def record_layout(runtime, body):
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                  0o444, dir_fd=directory)
             with os.fdopen(descriptor, "wb") as stream:
+                # The mode argument is filtered by umask. Restore the exact
+                # read-only mode required by the renderer feedback contract.
+                os.fchmod(stream.fileno(), 0o444)
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())

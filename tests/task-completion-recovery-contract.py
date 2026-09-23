@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Task decisions bypass slow tools and expose committed evidence before reply."""
+"""Supported task decisions bypass slow tools and expose committed evidence before reply."""
 import importlib.util
 import json
 from pathlib import Path
@@ -29,7 +29,7 @@ class TaskCompletionRecovery(unittest.TestCase):
     def accept(self, task):
         return {'action': 'accept', 'task_id': task['id'], 'result': 'Lead exact-source audit passed'}
 
-    def test_direct_and_old_thread_accept_complete_while_all_slow_tools_are_blocked(self):
+    def test_direct_accept_completes_while_all_slow_tools_are_blocked(self):
         release = threading.Event()
         entered = threading.Barrier(self.runtime.tool_pool._max_workers + 1)
         def hold():
@@ -38,29 +38,38 @@ class TaskCompletionRecovery(unittest.TestCase):
         jobs = [self.runtime.tool_pool.submit(hold) for _ in range(self.runtime.tool_pool._max_workers)]
         try:
             entered.wait(4)
-            for wrapped in (False, True):
-                task = self.review_task()
-                name, args = 'orchestration_task', self.accept(task)
-                if wrapped:
-                    name, args = 'orchestration_send', {'agent_id': 'workspace', 'text': json.dumps({'tool': name, 'arguments': args})}
-                call = 'accept-' + str(wrapped)
-                self.runtime.request(self.message(call, name, args))
-                result = self.response(call)
-                self.assertTrue(result['success'], result)
-                self.assertEqual(self.value(result)['status'], 'accepted')
-                detail = self.value(result)['detail']
-                self.assertEqual(detail, {'tool': 'orchestration_task', 'action': 'get', 'task_id': task['id']})
-                # Mutation replies carry the stable detail route, not full history.
-                self.runtime.request(self.message(call + '-detail', detail['tool'],
-                    {k: v for k, v in detail.items() if k != 'tool'}))
-                saved = self.value(self.response(call + '-detail'))
-                self.assertEqual(saved['history']['decisions'], 1)
-                self.assertEqual(saved['latestDecision']['decision'], 'accept')
-                self.assertTrue(all(not job.done() for job in jobs))
+            task = self.review_task()
+            call = 'accept-direct'
+            self.runtime.request(self.message(call, 'orchestration_task', self.accept(task)))
+            result = self.response(call)
+            self.assertTrue(result['success'], result)
+            self.assertEqual(self.value(result)['status'], 'accepted')
+            detail = self.value(result)['detail']
+            self.assertEqual(detail, {'tool': 'orchestration_task', 'action': 'get', 'task_id': task['id']})
+            # Mutation replies carry the stable detail route, not full history.
+            self.runtime.request(self.message(call + '-detail', detail['tool'],
+                {k: v for k, v in detail.items() if k != 'tool'}))
+            saved = self.value(self.response(call + '-detail'))
+            self.assertEqual(saved['history']['decisions'], 1)
+            self.assertEqual(saved['latestDecision']['decision'], 'accept')
+            self.assertTrue(all(not job.done() for job in jobs))
         finally:
             release.set()
             for job in jobs:
                 job.result(3)
+
+    def test_removed_workspace_bridge_does_not_apply_task_decision(self):
+        task = self.review_task()
+        payload = {'tool': 'orchestration_task', 'arguments': self.accept(task)}
+        self.runtime.request(self.message('legacy-accept', 'orchestration_send', {
+            'agent_id': 'workspace', 'text': json.dumps(payload)}))
+        result = self.response('legacy-accept')
+        self.assertFalse(result['success'], result)
+        self.assertEqual(result['contentItems'][0]['text'], 'Unknown managed agent')
+        with self.runtime.db() as db:
+            saved = next(work for work in self.runtime.records(db, 'work') if work['id'] == task['id'])
+        self.assertEqual(saved['status'], 'review')
+        self.assertEqual(saved.get('decisions', []), [])
 
     def test_committed_accept_is_recoverable_while_its_final_tool_result_is_pending(self):
         task = self.review_task()

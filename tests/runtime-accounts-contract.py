@@ -296,26 +296,29 @@ class AccountContracts(unittest.TestCase):
             defer=True,
         )
         self.assertEqual(child["accountKey"], self.other_key)
-        with self.assertRaisesRegex(ValueError, "parent account"):
-            self.runtime.create(
-                {
-                    "name": "Wrong",
-                    "prompt": "Review",
-                    "role": "reviewer",
-                    "account_key": "default",
-                },
-                parent=lead["id"],
-                defer=True,
-            )
+        # a6f8185 allows a child to select another ready provider account.
+        cross_provider = self.runtime.create(
+            {"name": "Cross provider", "prompt": "Review", "role": "reviewer",
+             "account_key": "default"},
+            parent=lead["id"],
+            defer=True,
+        )
+        self.assertEqual(cross_provider["accountKey"], "default")
+        self.assertEqual(cross_provider["provider"], "codex")
         self.runtime.close()
         self.runtime = ControlledRuntime(self.state, AccountServer)
         self.assertEqual(self.runtime.agent(child["id"])["accountKey"], self.other_key)
+        self.assertEqual(self.runtime.agent(cross_provider["id"])["accountKey"], "default")
         self.assertEqual(
             self.runtime.prepare(self.runtime.agent(child["id"]))["accountKey"],
             self.other_key,
         )
+        self.assertEqual(
+            self.runtime.prepare(self.runtime.agent(cross_provider["id"]))["accountKey"],
+            "default",
+        )
         self.assertIn(self.other_key, self.runtime.servers)
-        self.assertNotIn("default", self.runtime.servers)
+        self.assertIn("default", self.runtime.servers)
 
     def test_only_empty_chat_can_change_account_and_reuses_empty_chat(self):
         a = self.runtime.new_lead({})

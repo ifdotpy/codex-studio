@@ -29,7 +29,7 @@ class HttpCacheContract(unittest.TestCase):
         self.web = patch.object(codex_canvas, 'WEB', web)
         self.web.start()
         canvas = codex_canvas.Canvas(root)
-        canvas.snapshot = lambda: {'stateDir': str(root), 'example': 'repeat ' * 20000}
+        canvas.snapshot = lambda **kwargs: {'stateDir': str(root), 'example': 'repeat ' * 20000}
         self.server = codex_canvas.make_server(canvas)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()

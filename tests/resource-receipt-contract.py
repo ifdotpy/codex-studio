@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retired resource calls cannot mutate state or leave uncertain receipts."""
+"""Removed compatibility routes fail conservatively without changing the board."""
 import importlib.util
 import json
 import os
@@ -20,7 +20,7 @@ class ResourceReceiptContract(unittest.TestCase):
     tool = f.WorkspaceContract.tool
     agent_update = f.WorkspaceContract.agent_update
 
-    def test_retired_resource_calls_fail_without_writes_or_unknown_receipts(self):
+    def test_removed_resource_routes_fail_without_board_writes(self):
         lead = self.lead()
         board = self.root / 'board' / 'codex-board.json'
         board.parent.mkdir()
@@ -35,24 +35,25 @@ class ResourceReceiptContract(unittest.TestCase):
             ):
                 response = self.tool(lead, name, payload)
                 self.assertFalse(response['success'], response)
-                self.assertIn('reservations were removed', response['contentItems'][0]['text'])
+                expected = 'Unknown orchestration tool' if name == 'orchestration_resource' else 'Unknown managed agent'
+                self.assertEqual(response['contentItems'][0]['text'], expected)
                 with self.runtime.db() as db:
                     receipts = self.runtime.records(db, 'tool_requests')
                 saved = receipts[-1]
-                self.assertEqual(saved['outcome'], 'not_applied')
+                # 56e34c9 removed the retirement bridge. Runtime marks this
+                # direct rejection as not applied; an unsupported legacy send
+                # route keeps the conservative unknown outcome.
+                expected_outcome = 'not_applied' if name == 'orchestration_resource' else 'unknown'
+                self.assertEqual(saved['outcome'], expected_outcome)
                 self.assertEqual(saved['stage'], 'failed')
                 self.assertEqual(board.read_text(), original)
 
-    def test_retired_result_classification_preserves_other_uncertainty(self):
+    def test_removed_resource_result_preserves_uncertainty(self):
         from codex_tool_requests import request_result_outcome
         record = {'tool': 'orchestration_resource'}
-        for message, expected in (
-            ('Resource reservations were removed. Continue without a board claim.', 'not_applied'),
-            ('Unknown workspace tool', 'not_applied'),
-            ('write failed', 'unknown'),
-        ):
+        for message in ('Unknown orchestration tool', 'write failed'):
             result = {'success': False, 'contentItems': [{'type': 'inputText', 'text': message}]}
-            self.assertEqual(request_result_outcome(record, result), expected)
+            self.assertEqual(request_result_outcome(record, result), 'unknown')
         self.assertEqual(request_result_outcome(record, {'success': True}), 'applied')
         self.assertEqual(request_result_outcome(record, {}), 'unknown')
 
