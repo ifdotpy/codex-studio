@@ -160,12 +160,16 @@ try {
   }
   await page.locator("#messages").evaluate((el) => {
     el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
-  await page.waitForFunction(
-    () =>
+  await page.waitForFunction(() => {
+    const messages = document.querySelector("#messages");
+    return (
+      messages?.scrollTop === 0 &&
       document.querySelector(".prompt-history-toggle")?.textContent.trim() ===
-      "1 / 8",
-  );
+        "1 / 8"
+    );
+  });
   assert.equal(
     await page
       .getByRole("button", { name: /^(Next|Previous) prompt$/ })
@@ -371,6 +375,12 @@ try {
     exact: true,
   });
   await loadEarlier.waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const button = [
+      ...document.querySelectorAll(".prompt-history-list button"),
+    ].find((item) => item.textContent.trim() === "Load earlier messages");
+    return button instanceof HTMLButtonElement && !button.disabled;
+  });
   const loadEarlierBox = await loadEarlier.boundingBox();
   assert.ok(
     loadEarlierBox &&
@@ -379,9 +389,22 @@ try {
     "Load earlier stays inside the visible prompt history panel",
   );
   // Locator.click scrolls the page and closes this popover before the click.
+  const olderPage = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/transcript/page" &&
+      url.searchParams.get("id") === lead.id &&
+      url.searchParams.has("before")
+    );
+  });
   await page.mouse.click(
     loadEarlierBox.x + loadEarlierBox.width / 2,
     loadEarlierBox.y + loadEarlierBox.height / 2,
+  );
+  assert.equal(
+    (await olderPage).status(),
+    200,
+    "Earlier history request succeeds",
   );
   await history
     .getByRole("button", { name: "1 Earlier saved input", exact: true })
