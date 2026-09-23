@@ -57,8 +57,23 @@ try {
   );
   const full = await (await fetch(origin + "/api/state")).text();
   const compact = await (await fetch(origin + "/api/state?view=chat")).text();
+  const compactState = JSON.parse(compact);
+  const selected = compactState.threads.find(
+    (agent) => agent.id === fixture.lead,
+  );
+  const root = selected?.isLead ? selected.id : selected?.rootId;
+  const backgroundHistoryTargets = compactState.threads.filter(
+    (agent) =>
+      agent.source === "managed" &&
+      agent.id !== fixture.lead &&
+      !agent.archived &&
+      (agent.isLead || (!!root && agent.rootId === root)),
+  ).length;
+  const expectedPullScopes = backgroundHistoryTargets + 3;
+  const maxIdlePulls = expectedPullScopes + 12;
   Object.assign(measurements, {
     fixture,
+    backgroundHistoryTargets,
     fullStateBytes: Buffer.byteLength(full),
     fullStateGzipBytes: gzipSync(full, { level: 3 }).length,
     compactStateBytes: Buffer.byteLength(compact),
@@ -69,7 +84,7 @@ try {
     "Fixture history must remain large after compression",
   );
   assert.ok(
-    !JSON.parse(compact).runtime.work,
+    !compactState.runtime.work,
     "The chat snapshot excludes retained work history",
   );
   browser = await chromium.launch({
@@ -186,17 +201,26 @@ try {
       1,
     "Idle credentials do not poll every 1.6 seconds",
   );
-  const pullsByScope = new Map();
+  // New cursors can reflect one-time prefetch invalidations, not idle polling.
+  // Count repeated requests at the same cursor across every scope.
+  const pullsByCursor = new Map();
   for (const request of idleRequests) {
     if (!request.path.startsWith("/api/sync/pull?")) continue;
-    const scope = new URL(request.path, origin).searchParams.get("scope");
-    pullsByScope.set(scope, (pullsByScope.get(scope) || 0) + 1);
+    pullsByCursor.set(request.path, (pullsByCursor.get(request.path) || 0) + 1);
   }
-  const repeatedPulls = [...pullsByScope.values()].reduce(
+  const repeatedPulls = [...pullsByCursor.values()].reduce(
     (total, count) => total + count - 1,
     0,
   );
-  assert.ok(repeatedPulls <= 12, "Idle projection polling remains bounded");
+  assert.ok(
+    repeatedPulls <= 12,
+    "Repeated pulls at the same cursor remain bounded",
+  );
+  assert.ok(
+    idleRequests.filter((request) => request.path.startsWith("/api/sync/pull?"))
+      .length <= maxIdlePulls,
+    `Idle projection pulls exceed ${expectedPullScopes} one-time scopes plus 12 repeats`,
+  );
   const warmStarted = Date.now();
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(
