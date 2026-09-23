@@ -100,15 +100,13 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   };
-  await page
-    .locator('input[type="file"]')
-    .setInputFiles(
-      Array.from({ length: 9 }, (_, index) => ({
-        name: `too-many-${index}.txt`,
-        mimeType: "text/plain",
-        buffer: Buffer.from("Keep the refused selection"),
-      })),
-    );
+  await page.locator('input[type="file"]').setInputFiles(
+    Array.from({ length: 9 }, (_, index) => ({
+      name: `too-many-${index}.txt`,
+      mimeType: "text/plain",
+      buffer: Buffer.from("Keep the refused selection"),
+    })),
+  );
   await page
     .getByText("Attach at most eight files.", { exact: true })
     .first()
