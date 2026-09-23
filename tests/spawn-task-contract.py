@@ -66,5 +66,17 @@ class SpawnTask(unittest.TestCase):
         self.assertIsNone(task['owner'])
 
 
+    def test_only_the_lead_can_create_agents(self):
+        worker = self.rt.spawn_agents(self.lead, {'agents': [{'name': 'Worker', 'prompt': 'Work'}]}, 'lead-spawn')['agents'][0]
+        worker = self.rt.agent(worker['id'])
+        agents, events = self.count('agents'), self.count('events')
+        with self.assertRaisesRegex(ValueError, 'Only the lead can create agents'):
+            self.rt.spawn_agents(worker, {'agents': [{'name': 'Nested', 'prompt': 'Work'}]}, 'nested-spawn')
+        self.assertEqual((self.count('agents'), self.count('events')), (agents, events))
+        names = lambda actor: {d['name'] for d in self.rt.tool_definitions(actor)}
+        self.assertNotIn('orchestration_spawn', names(worker))
+        self.assertIn('orchestration_spawn', names(self.rt.agent(self.lead['id'])))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

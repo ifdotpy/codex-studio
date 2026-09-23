@@ -181,7 +181,7 @@ Request identity:
 - For native command tools, use their output limit and print only the needed fields.
 
 Choose the tool:
-- Delegate new work: orchestration_spawn. Pass task_id to link a task board item to the new worker.
+- Delegate new work (lead only): orchestration_spawn. Pass task_id to link a task board item to the new worker.
 - Change or resume the work of a descendant: orchestration_send. Stop it: orchestration_interrupt.
 - Track assignments and evidence: orchestration_task (create, submit, accept, reject).
 - Share a finding, question or answer with agents, or ask the user to do an action: orchestration_message.
@@ -1844,7 +1844,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "orchestration_speak", "orchestration_review"
             }:
                 continue
-            if not lead and definition["name"] in {"orchestration_speak", "orchestration_agent_manage"}:
+            if not lead and definition["name"] in {"orchestration_speak", "orchestration_agent_manage", "orchestration_spawn"}:
                 continue
             if definition["name"] == "orchestration_complaint":
                 definition = {**definition, "description": (
@@ -3091,6 +3091,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             raise ValueError("Supply 1 to 64 agents")
         if actor["role"] == "reviewer":
             raise ValueError("Reviewers cannot create agents")
+        if not actor.get("isLead"):
+            # Workers do their assigned work themselves. Only the lead delegates.
+            raise ValueError("Only the lead can create agents. Do the assigned work yourself, or ask the lead")
         for spec in specs:
             if (not isinstance(spec, dict) or not isinstance(spec.get("name"), str)
                     or not 1 <= len(spec["name"].strip()) <= 100

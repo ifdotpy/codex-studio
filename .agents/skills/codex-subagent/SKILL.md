@@ -14,7 +14,8 @@ Use agent messages to coordinate access to shared files.
 
 ## Assigned work
 
-Complete the assigned scope. Keep one agent plan and apply changes received through
+Complete the assigned scope yourself. You cannot create agents; only the orchestrator delegates.
+If the work is too large for one agent, report a proposed split to the orchestrator. Keep one agent plan and apply changes received through
 chat. Report the result to the orchestrator with relevant changes, check results,
 and unresolved limits. Your final result returns to the orchestrator for review.
 If your assignment names a Studio task, submit your evidence with `orchestration_task action=submit` and that `task_id`.
