@@ -1128,7 +1128,27 @@ def make_server(canvas, port=0, public_origin=None):
     return server
 
 
+def raise_open_file_limit(target=65536):
+    """Raise the soft open-file limit before native processes start.
+
+    launchd starts the backend with a soft limit of 256. Each loaded Codex
+    thread keeps pipes to its MCP servers, so a busy app-server reached that
+    limit and could not start commands (OS error 24). Children inherit the
+    raised limit. The hard limit is never changed.
+    """
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    wanted = target if hard == resource.RLIM_INFINITY else min(target, hard)
+    if soft != resource.RLIM_INFINITY and soft < wanted:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
+        except (ValueError, OSError):
+            pass
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+
+
 def main():
+    raise_open_file_limit()
     parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
     parser.add_argument("--port", type=int, default=4620)
     args = parser.parse_args()
