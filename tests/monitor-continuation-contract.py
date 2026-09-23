@@ -259,5 +259,34 @@ class MonitorContinuation(unittest.TestCase):
         self.assertEqual(len(self.server.commands), 1)
 
 
+    def test_success_exit_codes_treat_grep_no_match_as_success(self):
+        m = self.runtime.monitor(self.agent['id'], {'command': 'grep -q x y', 'timeout_ms': 1000,
+                                                    'wake_on': 'failure', 'success_exit_codes': [1, 0]}, approved=True)
+        self.assertTrue(self.server.command_wait_entered.wait(3))
+        self.assertEqual(m['successExitCodes'], [0, 1])
+        self.server.finish(m['id'], 1)
+        f.fixture.eventually(lambda: self.record(m['id'])['status'] == 'completed')
+        self.assertEqual(self.record(m['id'])['exitCode'], 1)
+        self.assertEqual(self.exits(m['id']), [])
+
+    def test_exit_code_outside_success_list_fails_and_wakes(self):
+        m = self.runtime.monitor(self.agent['id'], {'command': 'diff a b', 'timeout_ms': 1000,
+                                                    'wake_on': 'failure', 'success_exit_codes': [0, 1]}, approved=True)
+        self.assertTrue(self.server.command_wait_entered.wait(3))
+        before = len(self.starts())
+        self.server.finish(m['id'], 2)
+        self.assert_delivered(m['id'], before)
+        self.assertEqual(json.loads(self.exits(m['id'])[0]['text'])['status'], 'failed')
+
+    def test_success_exit_codes_validation_and_replay_identity(self):
+        for codes in ([], [256], [-1], ['1'], [True], list(range(17)), 1):
+            with self.assertRaisesRegex(ValueError, 'success_exit_codes'):
+                self.runtime.monitor(self.agent['id'], {'command': 'x', 'success_exit_codes': codes})
+        first = self.runtime.monitor(self.agent['id'], {'command': 'x', 'success_exit_codes': [0, 1]}, 'same-key')
+        self.assertEqual(self.runtime.monitor(self.agent['id'], {'command': 'x', 'success_exit_codes': [1, 0]}, 'same-key')['id'], first['id'])
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.runtime.monitor(self.agent['id'], {'command': 'x'}, 'same-key')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

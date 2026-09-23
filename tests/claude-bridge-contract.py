@@ -28,6 +28,7 @@ export const createSdkMcpServer=value=>value;
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
 export function query({prompt,options}){
+ if(options.systemPrompt&&!(options.disallowedTools||[]).includes('Agent'))throw new Error('Native subagents must stay disabled');
  let abort=new AbortController();
  return {
   supportedModels:async()=>[{value:'default',displayName:'Default',supportsEffort:true,supportedEffortLevels:['low','medium','high']}],

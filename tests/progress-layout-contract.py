@@ -76,9 +76,10 @@ class ProgressLayoutContract(unittest.TestCase):
         with self.assertRaises(layout.LayoutConflict):
             layout.record_layout(self.runtime, body)
         self.assertEqual(self.feedback.read_bytes(), previous)
-        self.assertEqual(layout.layout_status(self.root, "first")["status"], "unmeasured")
+        self.assertEqual(layout.layout_status(self.root, "first")["reason"], "older_revision")
         self.record(sequence=2)
         self.assertEqual(layout.layout_status(self.root, "first")["status"], "fits")
+        self.assertNotIn("reason", layout.layout_status(self.root, "first"))
 
     def test_out_of_order_and_conflicting_equal_sequence_refused(self):
         self.record(sequence=3, fits=False, reason="overflow", contentHeight=170)
@@ -115,6 +116,7 @@ class ProgressLayoutContract(unittest.TestCase):
         for timestamp in (now + layout.FRESH_SECONDS, now - 1):
             with patch.object(layout.time, "time", return_value=timestamp):
                 self.assertEqual(layout.layout_status(self.root, "first")["status"], "unmeasured")
+                self.assertEqual(layout.layout_status(self.root, "first")["reason"], "expired")
         value["reports"][0]["renderer"] = "old-renderer"
         self.rewrite_feedback(value)
         self.assertEqual(layout.layout_status(self.root, "first")["status"], "unmeasured")
@@ -244,6 +246,7 @@ class ProgressLayoutContract(unittest.TestCase):
                                     capture_output=True, text=True, timeout=10)
             return result.returncode, json.loads(result.stdout)["status"]
         self.assertEqual(run(), (2, "unmeasured"))
+        self.assertEqual(layout.layout_status(self.root, "first")["reason"], "no_client")
         self.record()
         self.assertEqual(run(), (0, "fits"))
         self.record(sequence=2, fits=False, reason="unsupported")

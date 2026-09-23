@@ -74,6 +74,7 @@ Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an exit event. Read the exit code, status, and output before
 claiming success. Inspect an uncertain command result before attempting a rerun.
 Use `wake_on=failure` only when a successful exit needs no agent follow-up.
+Set `success_exit_codes` when a nonzero code means success, for example `[0, 1]` for `grep` or `diff`.
 Record verified status in your PROGRESS.md file. Do not poll through model calls to refresh its display.
 
 For an optional low-worker alert, the orchestrator saves an `orchestration_watch`
@@ -122,6 +123,7 @@ content; the harness records the change and delivers its event.
 | Goal | Caller and operation | Input | Harness result |
 |---|---|---|---|
 | Define work | Orchestrator: `orchestration_task action=create` | `title`; scope and completion criteria in `description`; optional `owner` and `dependencies` | Saves the work item. |
+| Delegate defined work | Orchestrator: `orchestration_spawn` | `task_id` on the agent entry | Sets the new worker as owner and names the task in its first message. |
 | Start ready work | Worker: `orchestration_task action=claim` | `task_id` | Reserves the task atomically and sets `running`. |
 | Request review | Owner: `orchestration_task action=submit` | `task_id`, `result`, `checks`, `revision`, `files` | Sets `review` and delivers evidence to the lead. |
 | Accept evidence | Orchestrator: `orchestration_task action=accept` | `task_id` and review reason in `result` | Sets `accepted`, notifies the owner, and releases eligible dependent work. |

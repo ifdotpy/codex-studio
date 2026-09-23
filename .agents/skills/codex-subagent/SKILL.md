@@ -17,6 +17,7 @@ Use agent messages to coordinate access to shared files.
 Complete the assigned scope. Keep one agent plan and apply changes received through
 chat. Report the result to the orchestrator with relevant changes, check results,
 and unresolved limits. Your final result returns to the orchestrator for review.
+If your assignment names a Studio task, submit your evidence with `orchestration_task action=submit` and that `task_id`.
 The orchestrator records acceptance after review.
 
 Choose implementation details within the agreed design and ownership boundaries.

@@ -183,9 +183,17 @@ def layout_status(state_dir, agent_id):
     matching = (value.get("version") == 1 and value.get("agent") == agent_id
                 and value.get("revision") == current["revision"] and value.get("sha256") == digest)
     reports = _fresh_reports(value, time.time()) if matching else []
-    return {"status": _status(reports), "revision": current["revision"], "sha256": digest,
-            "reports": reports,
-            "note": "Only current, recent visible-client measurements count. Without a renderer, fit is unmeasured."}
+    result = {"status": _status(reports), "revision": current["revision"], "sha256": digest,
+              "reports": reports,
+              "note": "Only current, recent visible-client measurements count. Without a renderer, fit is unmeasured."}
+    if result["status"] == "unmeasured":
+        result["reason"], result["next"] = (
+            ("expired", "No visible client measured this revision recently. "
+                        "Keep a short status. Fit stays unmeasured.") if matching else
+            ("older_revision", "A client measured an earlier revision and has not read this edit yet. "
+                               "Check once more after a few seconds. Do not loop.") if value.get("version") == 1 else
+            ("no_client", "No visible Studio client has measured this panel. Keep a short status. Fit stays unmeasured."))
+    return result
 
 
 def progress_fit_context(state_dir, agent_id):
@@ -199,8 +207,7 @@ def progress_fit_context(state_dir, agent_id):
         f"After editing PROGRESS.md, run {command}. Shorten or simplify until the current revision fits. "
         "Check the required and available pixel sizes, not a guessed number of lines or characters. "
         "Exit 0 means the current revision fits recent visible clients (or is empty); 1 means it does not fit; "
-        "2 means no current measurement exists. Allow a visible client to read the new file before another check. "
-        "If no client is open, leave a short status and treat fit as unmeasured. Do not loop or wake another agent. "
+        "2 means no current measurement exists; its reason and next fields say what to do. Do not loop or wake another agent. "
         "A later narrower window can require a shorter status. Studio shows a fit notice instead of partial content."
     )
 

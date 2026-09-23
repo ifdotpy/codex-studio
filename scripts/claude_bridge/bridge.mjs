@@ -408,6 +408,8 @@ async function startSession(s, active, p) {
           preset: "claude_code",
           append: s.developerInstructions || "",
         },
+        // Studio managed agents replace native subagents, as in Codex threads.
+        disallowedTools: ["Agent"],
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
         ...(p.effort ? { effort: p.effort } : {}),
