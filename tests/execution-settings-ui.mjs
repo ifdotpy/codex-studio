@@ -258,10 +258,16 @@ try {
   await dialog
     .getByRole("switch", { name: "Fast mode", exact: true })
     .uncheck();
-  await waitFor(
-    async () =>
-      !(await dialog.getByLabel("Default subagent model").isDisabled()),
-  );
+  await waitFor(async () => {
+    const defaults = (await state()).find(
+      (a) => a.id === lead.id,
+    ).workerDefaults;
+    return (
+      defaults.model === "gpt-5.6-sol" &&
+      defaults.effort === "low" &&
+      defaults.fastMode === false
+    );
+  });
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
   const next = await spawnWorker("New defaults");

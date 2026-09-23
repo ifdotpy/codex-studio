@@ -93,7 +93,7 @@ try {
   await page.goto(origin);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
-  await page.locator('[data-workspace-section="work"]').click();
+  await page.locator('[data-workspace-section="changes"]').click();
   const drawer = page.locator(".workspace-drawer .mantine-Drawer-content");
   const section = async (name) => {
     if (
@@ -105,95 +105,14 @@ try {
       await page
         .getByRole("button", { name: "Chat actions", exact: true })
         .click();
-      await page.locator('[data-workspace-section="work"]').click();
+      await page.locator('[data-workspace-section="changes"]').click();
     }
     await page
       .getByRole("navigation", { name: "Workspace sections" })
-      .getByRole("button", {
-        name: name === "Work" ? "Agent tasks" : name,
-        exact: true,
-      })
+      .getByRole("button", { name, exact: true })
       .click();
   };
-  await drawer.getByRole("button", { name: "New work", exact: true }).click();
-  let modal = page.locator(".mantine-Modal-content:visible").last();
-  await modal.getByLabel("Title").fill("Verify release");
-  await modal
-    .getByLabel("Description")
-    .fill("Verify all release evidence and produce a report.");
-  await modal.getByLabel("Owner").selectOption({ label: "Worker 39" });
-  await modal.getByRole("button", { name: "Save work", exact: true }).click();
-  await poll(
-    async () => (await get("/api/work?agent=" + lead.id)).tasks?.length === 1,
-    "work persisted",
-  );
-  await drawer
-    .getByRole("button")
-    .filter({ hasText: "Verify release" })
-    .click();
-  await drawer
-    .getByRole("button", { name: "Claim for owner", exact: true })
-    .click();
-  await poll(
-    async () =>
-      (await get("/api/work?agent=" + lead.id)).tasks[0].status === "running",
-    "work claimed",
-  );
-  await drawer
-    .getByRole("button", { name: "Submit result", exact: true })
-    .click();
-  modal = page.locator(".mantine-Modal-content:visible").last();
-  await modal.getByLabel("Result").fill("All release checks pass.");
-  await modal
-    .getByLabel("Checks and evidence")
-    .fill("runtime-contract passes; report attached.");
-  await modal.getByLabel("Revision or artifact identity").fill(
-    execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: root,
-      encoding: "utf8",
-    }).trim(),
-  );
-  await modal.getByLabel("Report files").fill("report.md");
-  await modal
-    .getByRole("button", { name: "Submit for acceptance", exact: true })
-    .click();
-  await poll(
-    async () =>
-      (await get("/api/work?agent=" + lead.id)).tasks[0].status === "review",
-    "submitted result",
-  );
-  await drawer.getByText("All release checks pass.", { exact: true }).waitFor();
-  await drawer.getByRole("button", { name: "report.md", exact: true }).click();
-  await page
-    .getByRole("dialog")
-    .last()
-    .getByText("Verified report for orchestration.", { exact: false })
-    .waitFor();
-  await page
-    .getByRole("dialog")
-    .last()
-    .getByRole("button", { name: "Close", exact: true })
-    .click();
-  await drawer.getByRole("button", { name: "Accept", exact: true }).click();
-  modal = page.locator(".mantine-Modal-content:visible").last();
-  await modal
-    .getByLabel("Decision and evidence")
-    .fill("Reviewed the report and the recorded checks.");
-  await modal
-    .getByRole("button", { name: "Accept result", exact: true })
-    .click();
-  await poll(
-    async () =>
-      (await get("/api/work?agent=" + lead.id)).tasks[0].status === "accepted",
-    "accepted result",
-  );
-  await page
-    .locator(".mantine-Modal-content:visible")
-    .waitFor({ state: "hidden" });
-  await page.screenshot({
-    path: join(root, "work-desktop.png"),
-    fullPage: true,
-  });
+  let modal;
   await section("Plan");
   await drawer.getByText("This agent has not reported a plan.").waitFor();
   assert.equal(await drawer.getByRole("textbox").count(), 0);
@@ -258,23 +177,23 @@ try {
   assert.equal(unchangedPlan.text, legacyPlan.text);
   assert.equal(unchangedPlan.version, legacyPlan.version);
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
-  await page.locator('[data-workspace-section="work"]').click();
+  await page.locator('[data-workspace-section="changes"]').click();
   await section("Search");
   await drawer
     .getByRole("textbox", { name: "Search all conversations" })
-    .fill("Verify release");
+    .fill("Review the release");
   await drawer
+    .locator('form:has([aria-label="Search all conversations"])')
     .getByRole("button", { name: "Search", exact: true })
-    .last()
     .click();
-  await drawer.getByText("Verify release", { exact: true }).waitFor();
-  await drawer.getByText("Verify release", { exact: true }).click();
-  modal = page.locator(".mantine-Modal-content:visible").last();
-  await modal.getByText("All release checks pass.", { exact: false }).waitFor();
-  await modal.getByRole("button", { name: "Open work", exact: true }).click();
-  await drawer
-    .getByRole("heading", { name: "Verify release", exact: true })
+  await drawer.getByRole("button", { name: /Review the release/ }).click();
+  const searchSource = page.getByRole("dialog", { name: "Search source" });
+  await searchSource
+    .getByText("Review the release", { exact: false })
     .waitFor();
+  await searchSource
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
   await section("Rules");
   await drawer.getByRole("button", { name: "New rule", exact: true }).click();
   modal = page.locator(".mantine-Modal-content:visible").last();
@@ -284,7 +203,7 @@ try {
     .fill("Check release evidence.");
   await page.reload();
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
-  await page.locator('[data-workspace-section="work"]').click();
+  await page.locator('[data-workspace-section="changes"]').click();
   await section("Rules");
   modal = page.locator(".mantine-Modal-content:visible").last();
   assert.equal(await modal.getByLabel("Name").inputValue(), "Release watch");
@@ -319,7 +238,7 @@ try {
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
-    await page.locator('[data-workspace-section="work"]').click();
+    await page.locator('[data-workspace-section="changes"]').click();
   }
   await drawer.waitFor();
   await section("Rules");
@@ -369,7 +288,7 @@ try {
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
-    await page.locator('[data-workspace-section="work"]').click();
+    await page.locator('[data-workspace-section="changes"]').click();
   }
   await drawer.waitFor();
   await section("Rules");
@@ -410,7 +329,7 @@ try {
     .fill("Read the complete diff and verify the result.");
   await page.reload();
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
-  await page.locator('[data-workspace-section="work"]').click();
+  await page.locator('[data-workspace-section="changes"]').click();
   await section("Profiles");
   modal = page.locator(".mantine-Modal-content:visible").last();
   assert.equal(
@@ -566,30 +485,34 @@ try {
     await section(name);
     await drawer.getByRole("heading", { name, exact: true }).waitFor();
   }
-  await section("Work");
-  await drawer
-    .getByRole("button")
-    .filter({ hasText: "Verify release" })
-    .click();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(500);
   if (!(await drawer.isVisible())) {
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
-    await page.locator('[data-workspace-section="work"]').click();
+    await page.locator('[data-workspace-section="changes"]').click();
   }
   await drawer.waitFor();
-  await section("Work");
+  await section("Changes");
   await page.screenshot({
-    path: join(root, "work-mobile.png"),
+    path: join(root, "changes-mobile.png"),
     fullPage: true,
   });
   assert.ok(
     await drawer.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
     "drawer does not overflow at 390px",
   );
-  for (const name of ["Changes", "Plan", "Profiles", "Rules", "Messages"]) {
+  for (const name of [
+    "Changes",
+    "Search",
+    "Plan",
+    "Checkpoints",
+    "Tools",
+    "Profiles",
+    "Rules",
+    "Messages",
+  ]) {
     await section(name);
     assert.ok(
       await drawer.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
@@ -603,7 +526,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS workspace UI: work lifecycle, report, plan, search, rule lifecycle, profile launch, exact search source, line comment, safe HTML preview, checkpoint preview, 390px sections. Evidence: " +
+    "PASS workspace UI: plan, search, rule lifecycle, profile launch, line comment, safe HTML preview, checkpoint preview, 390px sections. Evidence: " +
       root,
   );
 } catch (error) {

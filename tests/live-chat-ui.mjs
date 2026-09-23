@@ -48,10 +48,6 @@ try {
   page.on("request", (r) => {
     if (r.url().includes("/api/transcript?id=")) transcriptPolls++;
   });
-  // This suite verifies the native transcript transport without optional sync.
-  await page.route("**/api/sync/identity", (r) =>
-    r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-  );
   await page.goto(origin);
   await page
     .locator("[data-chat]")
@@ -74,7 +70,7 @@ try {
       }) + "\n",
     );
   event("item/started", { item: { id: "reason-live", type: "reasoning" } });
-  await page.locator('[data-phase="thinking"]').waitFor();
+  await page.locator('.reasoning-duration[data-running="true"]').waitFor();
   event("item/started", {
     item: { id: "live-text", type: "agentMessage", text: "" },
   });
@@ -208,28 +204,29 @@ try {
     },
   });
   event("turn/completed", { turn: { id: agent.turnId, status: "completed" } });
-  await poll(async () => (await state()).runtime.agents.find((a) => a.id === agent.id).status === "completed", "turn completes");
-  await page.locator('.agent-phase.active').waitFor({ state: "detached" });
+  await poll(
+    async () =>
+      (await state()).runtime.agents.find((a) => a.id === agent.id).status ===
+      "completed",
+    "turn completes",
+  );
+  await page.locator(".agent-phase.active").waitFor({ state: "detached" });
   assert.equal(
     await page.locator('.tool-card[data-tool-status="running"]').count(),
     0,
   );
   assert.equal(transcriptPolls, 0, "healthy stream does not poll transcript");
-  // A reconnect replaces the snapshot instead of duplicating text.
+  // Offline sync status replaces the stale transport reconnect indicator.
   await page.context().setOffline(true);
-  await page
-    .locator(".agent-phase")
-    .filter({ hasText: "Reconnecting" })
-    .waitFor();
+  const offline = page.getByText(
+    "Offline. Your chats and drafts are saved here.",
+    { exact: true },
+  );
+  await offline.waitFor();
   await page.context().setOffline(false);
   await poll(
-    () =>
-      page
-        .locator(".agent-phase")
-        .filter({ hasText: "Reconnecting" })
-        .count()
-        .then((count) => count === 0),
-    "stream reconnects",
+    () => offline.count().then((count) => count === 0),
+    "online recovery",
   );
   assert.equal(
     await page.getByText("First paragraph.", { exact: true }).count(),

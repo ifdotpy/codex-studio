@@ -24,6 +24,11 @@ const models = [
     levels: ["low", "medium", "high", "ultra"],
   },
   {
+    model: "gpt-6-luna",
+    displayName: "Luna",
+    levels: ["low", "medium", "high"],
+  },
+  {
     model: "gpt-5.6-luna",
     displayName: "Luna",
     levels: ["low", "medium", "high"],
@@ -233,14 +238,19 @@ try {
     "Hidden controls return title space",
   );
   await page.mouse.move(1100, 100);
+  const nonMenuActions = group("assistant").locator(
+    '.project-tree-action:not([aria-haspopup="menu"])',
+  );
+  assert.ok(
+    (await nonMenuActions.count()) > 0,
+    "Project creation action exists",
+  );
   assert.equal(
-    await group("assistant")
-      .locator(".project-tree-action")
-      .evaluateAll((elements) =>
-        elements.every((el) => getComputedStyle(el).opacity === "0"),
-      ),
+    await nonMenuActions.evaluateAll((elements) =>
+      elements.every((el) => getComputedStyle(el).opacity === "0"),
+    ),
     true,
-    "Expanded projects hide actions without hover",
+    "Expanded projects hide non-menu actions without hover",
   );
   await page.screenshot({
     path: join(root, "projects-pinned.png"),

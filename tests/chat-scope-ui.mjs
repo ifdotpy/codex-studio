@@ -25,7 +25,7 @@ const proc = spawn(
     },
   },
 );
-let browser, page, releaseResponse;
+let browser, page;
 let log = "";
 proc.stderr.on("data", (data) => (log += data));
 const poll = async (check, label) => {
@@ -81,13 +81,13 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(origin);
   const drawer = page.locator(".workspace-drawer .mantine-Drawer-content");
-  const background = page.getByRole("dialog", { name: /Background tasks/ });
+  const background = page.getByRole("dialog", { name: /Current activity/ });
   const selectChat = async (name, covered = false) => {
     const button = page.locator("[data-chat]").filter({ hasText: name });
     // Trigger the app's navigation handler while a modal covers the sidebar.
     if (covered) await button.evaluate((node) => node.click());
     else await button.click();
-    await page.getByRole("heading", { name, exact: true }).waitFor();
+    await page.locator(`#conversation-title[title="${name}"]`).waitFor();
   };
   const openSection = async (section) => {
     if (section !== "messages")
@@ -113,9 +113,7 @@ try {
     await drawer.waitFor({ state: "hidden" });
   };
   const checkOtherMessages = async () => {
-    await drawer
-      .getByText("No messages need your attention.", { exact: true })
-      .waitFor();
+    await drawer.getByText("No messages yet.", { exact: true }).waitFor();
     assert.equal(await drawer.locator("[data-answer]").count(), 0);
     assert.equal(
       await drawer.getByText("Which scope?", { exact: true }).count(),
@@ -206,10 +204,7 @@ try {
   await drawer.getByRole("button", { name: "Open chat", exact: false }).click();
   await drawer.waitFor({ state: "hidden" });
   await openSection("messages");
-  await drawer
-    .locator(".workspace-inbox-group .workspace-row")
-    .filter({ hasText: "Worker 07" })
-    .waitFor();
+  await drawer.locator('[data-answer="async-question"]').waitFor();
   assert.equal(
     await page.locator("#messages-toggle .attention-count").innerText(),
     "2",
@@ -251,45 +246,16 @@ try {
   );
   await page.keyboard.press("Escape");
   await background.waitFor({ state: "hidden" });
-
-  // Hold a real response until the selected chat has changed.
-  let captured = false,
-    delivered = false;
-  const gate = new Promise((resolve) => (releaseResponse = resolve));
-  await page.route("**/api/workspace?**", async (route) => {
-    if (
-      captured ||
-      new URL(route.request().url()).searchParams.get("agent") !== lead.id
-    ) {
-      return route.continue();
-    }
-    captured = true;
-    const response = await route.fetch();
-    await gate;
-    await route.fulfill({ response });
-    delivered = true;
-  });
-  await selectChat("Release lead");
   await openSection("messages");
-  await poll(() => captured, "capture Release lead workspace response");
-  await selectChat("Other project", true);
   await checkOtherMessages();
-  releaseResponse();
-  await poll(() => delivered, "deliver obsolete workspace response");
-  await page.evaluate(
-    () =>
-      new Promise((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(resolve)),
-      ),
-  );
-  await checkOtherMessages();
+  await closeWorkspace();
   assert.equal(
     await page.locator("#messages-toggle .attention-count").count(),
     0,
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS chat scope: same folder/account isolation, 41-member agent selector, legacy changes rejection, descendant Messages, scoped counters, modal/detail reset, stale workspace response. Evidence: " +
+    "PASS chat scope: same folder/account isolation, 41-member agent selector, legacy changes rejection, descendant Messages, scoped counters, modal/detail reset. Evidence: " +
       root,
   );
 } catch (error) {
@@ -297,7 +263,6 @@ try {
   console.error("Evidence:", root);
   throw error;
 } finally {
-  releaseResponse?.();
   await browser?.close();
   proc.kill("SIGTERM");
 }

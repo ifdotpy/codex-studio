@@ -223,7 +223,7 @@ try {
     390,
   );
   await page.screenshot({ path: join(root, "tasks-mobile-output.png") });
-  await drawer.getByRole("button", { name: "Tasks", exact: true }).click();
+  await drawer.getByRole("button", { name: "Activity", exact: true }).click();
   await page.screenshot({ path: join(root, "tasks-mobile-list.png") });
   await page.setViewportSize({ width: 320, height: 740 });
   assert.equal(

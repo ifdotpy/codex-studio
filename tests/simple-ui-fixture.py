@@ -161,6 +161,14 @@ def fixture_events():
                               key=params['id'], epoch=agent['epoch'])
         elif message.get('method') == 'fixture/create-worker':
             c.runtime.create(message['params'], parent=message['parent'], defer=True)
+        elif message.get('method') == 'fixture/agent-status':
+            params = message['params']
+            with c.runtime.lock, c.runtime.db() as db:
+                agent = c.runtime.agent(params['agent'], db)
+                active = params['status'] in {'starting', 'running', 'approval'}
+                agent.update(status=params['status'], inFlight=active,
+                             turnId='fixture-turn' if active else None)
+                c.runtime.put(db, 'agents', agent)
         elif message.get('method') == 'fixture/panel-action':
             try:
                 result = c.runtime.panel_action(message['agent'], message['params'], key=message['id'])

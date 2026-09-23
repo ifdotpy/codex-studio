@@ -976,7 +976,7 @@ try {
     .getByLabel("Permission mode", { exact: true })
     .selectOption("plan");
   await claudeSettings
-    .getByRole("switch", { name: "Extended thinking", exact: true })
+    .getByRole("switch", { name: /^Extended thinking/ })
     .uncheck();
   await claudeSettings
     .getByLabel("Auto-compact token limit", { exact: true })
@@ -1045,7 +1045,7 @@ try {
   );
   assert.equal(
     await claudeSettings
-      .getByRole("switch", { name: "Extended thinking", exact: true })
+      .getByRole("switch", { name: /^Extended thinking/ })
       .isChecked(),
     false,
   );

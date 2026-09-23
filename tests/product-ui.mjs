@@ -84,7 +84,10 @@ try {
     .getByRole("button", { name: "Main agent settings", exact: true })
     .click();
   await page.locator("#model").waitFor();
-  assert.equal(await page.locator("#model option").count(), 2);
+  assert.ok(
+    await page.locator('#model option[value="gpt-6-luna"]').count(),
+    "lead settings include models beyond the original two-model filter",
+  );
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   assert.equal(
@@ -155,15 +158,14 @@ try {
   assert.equal(await page.locator("[data-node]").count(), 0);
   assert.equal(await page.locator("#open-complaints").count(), 0);
   await page.locator("#messages-toggle").click();
-  await page.getByRole("tab", { name: "Team", exact: true }).click();
+  const messages = page.getByRole("dialog", { name: "Messages", exact: true });
+  await messages.waitFor({ state: "visible" });
   assert.equal(
-    await page.locator("[data-room]").count(),
+    await messages.locator('[data-room]:not([data-room="you"])').count(),
     60,
     "bounded initial room list",
   );
-  await page
-    .getByRole("textbox", { name: "Search team chats" })
-    .fill("Release lead");
+  await page.getByRole("textbox", { name: "Search chats" }).fill("Worker 39");
   const snapshot = await (await fetch(origin + "/api/state")).json();
   const privateRoom = snapshot.runtime.rooms.find(
     (r) =>
@@ -173,7 +175,7 @@ try {
   );
   await page.locator(`[data-room="${privateRoom.id}"]`).click();
   await page
-    .locator(".team-room-messages")
+    .locator(".unified-message-scroll")
     .getByText("A private update before the final answer.", { exact: true })
     .waitFor();
   assert.equal(await page.locator("#message").inputValue(), "Lead draft");
@@ -192,7 +194,7 @@ try {
       .count(),
     0,
   );
-  await page.locator(".team-room-messages").evaluate((el) => {
+  await page.locator(".unified-message-scroll").evaluate((el) => {
     el.scrollTop = el.scrollHeight;
   });
   await page.screenshot({ path: join(root, "agent-chat.png") });
@@ -308,18 +310,6 @@ try {
       ),
     "agent monitor completes",
   );
-  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
-  await page.locator("#tasks-toggle").click();
-  await page.getByText("History", { exact: true }).click();
-  await page
-    .locator("[data-task]")
-    .filter({ hasText: "fixture-command" })
-    .click();
-  await page.getByText("Exit 7", { exact: true }).waitFor();
-  await page.keyboard.press("Escape");
-  await page
-    .getByRole("dialog", { name: /Background tasks/ })
-    .waitFor({ state: "hidden" });
   await page.locator("#usage-footer").waitFor();
   await page.locator(".limits-toggle").click();
   await page.getByText("5h", { exact: true }).waitFor();

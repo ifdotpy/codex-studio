@@ -29,6 +29,8 @@ const electron = {
   BrowserWindow: class {
     constructor() {
       window = this;
+      this.on = () => {};
+      this.isDestroyed = () => false;
       this.webContents = {
         mainFrame: { url: origin + "/" },
         session: {
@@ -48,6 +50,10 @@ const electron = {
   },
   ipcMain: { handle() {} },
   Menu: { setApplicationMenu() {}, buildFromTemplate() {} },
+  screen: {
+    getPrimaryDisplay: () => ({ id: 1 }),
+    getAllDisplays: () => [{ id: 1 }],
+  },
   systemPreferences: {
     async askForMediaAccess() {
       asked++;
@@ -56,14 +62,40 @@ const electron = {
   },
 };
 let ready;
-const started = new Promise((resolve) => { ready = resolve; });
+const started = new Promise((resolve) => {
+  ready = resolve;
+});
 const context = vm.createContext({
   require: (name) =>
     name === "electron"
       ? electron
       : name === "./backend.cjs"
         ? { ensureBackend: async () => ({ origin }) }
-        : require(name),
+        : name === "./recovery.cjs"
+          ? {
+              configureRecovery: async () => ({ enabled: false }),
+              recoveryPreference: () => false,
+              trackDesktopRecovery: () => ({ windowClosing() {} }),
+            }
+          : name === "./window-state.cjs"
+            ? {
+                loadWindowState: () => ({
+                  bounds: {},
+                  minWidth: 800,
+                  minHeight: 600,
+                }),
+                trackWindowState: () => ({ restore() {} }),
+              }
+            : name === "./renderer-recovery.cjs"
+              ? {
+                  createRendererRecovery: () => ({
+                    handleNavigation(event) {
+                      event.preventDefault();
+                    },
+                    reload: async () => {},
+                  }),
+                }
+              : require(name),
   module: { exports: {} },
   process: { argv: [], env: {}, platform: "darwin" },
   console: { log: ready, error: console.error },

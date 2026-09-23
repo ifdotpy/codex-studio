@@ -115,7 +115,10 @@ try {
     "false",
   );
   await page.locator("#team-toggle").click();
-  const card = page.locator(`[data-worker="${target.id}"]`).locator("..");
+  const card = page
+    .locator(`[data-worker="${target.id}"]`)
+    .locator("..")
+    .locator("..");
   const details = card.locator(".worker-excerpt");
   await details.locator("summary").click();
   const node = await details.elementHandle();
@@ -153,6 +156,7 @@ try {
   const other = page
     .locator("[data-worker]")
     .filter({ hasText: "Worker 01" })
+    .locator("..")
     .locator("..");
   assert.equal(
     await other.locator(".worker-excerpt").evaluate((node) => node.open),

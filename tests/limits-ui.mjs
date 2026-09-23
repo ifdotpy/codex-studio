@@ -164,7 +164,12 @@ try {
   await page.keyboard.press("Escape");
   await toggle().click();
   await details().waitFor();
-  await details().getByText("58% left", { exact: true }).waitFor();
+  await page.waitForFunction(() => {
+    const value = document.querySelector(
+      ".account-limits-panel .account-limit-window strong",
+    )?.textContent;
+    return value?.replace(/\s+/g, " ").trim() === "58% left";
+  });
   assert.equal(await details().getByRole("progressbar").count(), 2);
   assert.match(await details().innerText(), /7d/);
   assert.match(await details().innerText(), /Credits\s+12.50/);

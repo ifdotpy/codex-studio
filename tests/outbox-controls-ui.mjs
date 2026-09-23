@@ -124,6 +124,15 @@ try {
     await window.syncModule.syncDatabase();
   });
   const entry = (text) => page.locator(".message").filter({ hasText: text });
+  const confirmedMessage = async (text) => {
+    await entry(text).waitFor();
+    await entry(text).getByRole("status").waitFor({ state: "detached" });
+    assert.equal(
+      await entry(text).getByRole("status").count(),
+      0,
+      "The accepted message is visible without a pending status",
+    );
+  };
   const accepted = async (text, { rendered = true } = {}) => {
     try {
       await until(() =>
@@ -343,6 +352,9 @@ try {
     [body, body],
     "Explicit resume retries the same body and ID",
   );
+  await page.reload();
+  await page.locator("#message").waitFor();
+  await confirmedMessage("Keep the immutable request");
   assert.deepEqual(errors, []);
   console.log(
     "PASS: offline cancel, edit with attachments, existing draft guard, reload, cross-tab cancellation boundary, pause after lost response, immutable resume",

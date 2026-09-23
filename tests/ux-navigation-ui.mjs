@@ -197,13 +197,11 @@ try {
   await mobile.keyboard.press("Escape");
   await mobile.setViewportSize({ width: 1440, height: 960 });
   await mobile.locator(".simple-workspace-header").waitFor();
-  assert.equal(
-    await mobile.evaluate(() =>
+  await mobile.waitForFunction(
+    () =>
       document.documentElement.style.getPropertyValue(
         "--mobile-viewport-height",
-      ),
-    ),
-    "",
+      ) === "",
   );
   assert.deepEqual(errors, []);
   console.log(

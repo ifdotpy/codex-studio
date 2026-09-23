@@ -15,7 +15,7 @@ const evidence = await mkdtemp(join(tmpdir(), "studio-composer-stability-"));
 const fixture = spawn(
   "python3",
   ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
-  { stdio: ["ignore", "pipe", "pipe"] },
+  { stdio: ["pipe", "pipe", "pipe"] },
 );
 let browser,
   log = "";
@@ -44,58 +44,47 @@ try {
       viewport: { width: 1440, height: 960 },
     });
     page.setDefaultTimeout(12000);
-    let phase = "completed",
-      queue = [],
+    let queue = [],
       pendingSend,
-      pendingStop;
+      pendingStop,
+      resolveSendCapture,
+      sendCaptured = new Promise((resolve) => {
+        resolveSendCapture = resolve;
+      });
+    const waitForSend = () =>
+      Promise.race([
+        sendCaptured,
+        page.waitForTimeout(12000).then(() => {
+          throw Error("send API request was not captured");
+        }),
+      ]);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const agentState = () => ({
-      ...lead,
-      status: phase,
-      inFlight: ["running", "starting", "approval"].includes(phase),
-      turnId: phase === "completed" ? null : "fixture-turn",
-    });
-    // This fixture tests the legacy API used by servers before mobile sync.
-    await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Not found" } }),
-    );
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({
-        json: {
-          ...initial,
-          threads: initial.threads.map((agent) =>
-            agent.id === lead.id ? agentState() : agent,
-          ),
-          runtime: { ...initial.runtime, requests: [] },
-        },
-      }),
-    );
     await page.route("**/api/transcript/stream?*", (route) =>
       route.fulfill({
         contentType: "text/event-stream",
-        body: `data: ${JSON.stringify({ ...transcript, agent: agentState(), items: transcript.items || [], order: (transcript.items || []).map((item) => item.id), replace: true })}\n\n`,
+        body: `data: ${JSON.stringify({ ...transcript, items: transcript.items || [], order: (transcript.items || []).map((item) => item.id), replace: true })}\n\n`,
       }),
     );
     await page.route("**/api/transcript?*", (route) =>
-      route.fulfill({ json: { ...transcript, agent: agentState() } }),
+      route.fulfill({ json: transcript }),
     );
     await page.route("**/api/queue?*", (route) =>
       route.fulfill({ json: { items: queue } }),
     );
     await page.route("**/api/messages", (route) => {
       pendingSend = route;
+      resolveSendCapture?.();
+      resolveSendCapture = null;
     });
     await page.route("**/api/stop", (route) => {
       pendingStop = route;
     });
-    // Exercise direct delivery against servers without the optional sync protocol.
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-    );
-    await page.goto(origin);
-    await page.locator(`[data-chat="${lead.id}"]`).click();
     await page.setViewportSize({ width, height: 960 });
+    await page.goto(origin);
+    if (width <= 760)
+      await page.getByRole("button", { name: "Toggle conversations" }).click();
+    await page.locator(`[data-chat="${lead.id}"]`).click();
     await page.locator("#composer").waitFor();
     await page.locator("#stop:disabled").waitFor();
     await page.locator("#message").fill("Check this task");
@@ -153,7 +142,12 @@ try {
         );
     };
     const updatePhase = async (next) => {
-      phase = next;
+      fixture.stdin.write(
+        JSON.stringify({
+          method: "fixture/agent-status",
+          params: { agent: lead.id, status: next },
+        }) + "\n",
+      );
       await page.evaluate(() => window.dispatchEvent(new Event("online")));
       await page.waitForFunction(
         (expected) => document.querySelector("#stop").disabled === expected,
@@ -161,12 +155,19 @@ try {
       );
       await page.waitForTimeout(80);
     };
+    const waitForComposerSend = () =>
+      page.waitForFunction(() =>
+        document.querySelector("#send-state").textContent.includes("Sending"),
+      );
+    const firstSendStarted = waitForComposerSend();
     await page.locator("#send").click();
-    await page.waitForFunction(() =>
-      document.querySelector("#send-state").textContent.includes("Sending"),
-    );
+    await firstSendStarted;
     await stable("sending");
-    await pendingSend.fulfill({ json: { status: "sent" } });
+    await waitForSend();
+    await pendingSend.fulfill({
+      json: { id: pendingSend.request().postDataJSON().id, status: "sent" },
+    });
+    await page.waitForFunction(() => !document.querySelector("#message").value);
     await page.waitForFunction(
       () => !document.querySelector("#send-state").textContent,
     );
@@ -177,26 +178,29 @@ try {
     }
     await page.locator("#message").fill("Additional instruction");
     pendingSend = null;
-    await page
-      .getByRole("button", { name: "Queue after turn", exact: true })
-      .click();
-    for (let i = 0; !pendingSend && i < 100; i++)
-      await new Promise((r) => setTimeout(r, 10));
-    assert.equal(pendingSend.request().postDataJSON().delivery, "queue");
-    await page.waitForFunction(() =>
-      document.querySelector("#send-state").textContent.includes("Sending"),
-    );
-    await stable("sending while running");
+    sendCaptured = new Promise((resolve) => {
+      resolveSendCapture = resolve;
+    });
+    await updatePhase("completed");
+    await page.locator("#send").click();
+    await waitForSend();
+    await stable("sending before failed delivery");
+    assert.equal(pendingSend.request().postDataJSON().delivery, "after_tool");
     await pendingSend.fulfill({
-      status: 503,
+      status: 400,
       json: { error: "Fixture delivery failed" },
     });
     await page.getByText("Fixture delivery failed", { exact: true }).waitFor();
-    await stable("failed delivery retains draft");
+    await stable("failed delivery is recoverable");
+    await page
+      .getByRole("button", { name: "Restore draft", exact: true })
+      .click();
+    await stable("failed message restored to draft");
     assert.equal(
       await page.locator("#message").inputValue(),
       "Additional instruction",
     );
+    await updatePhase("running");
     queue = [
       {
         id: "queued-fixture",
@@ -205,19 +209,18 @@ try {
         status: "queued",
       },
     ];
-    transcript.items.push({
-      id: "queued-fixture",
-      clientMessageId: "queued-fixture",
-      role: "user",
-      text: "Later instruction",
-      pending: true,
-      deliveryStatus: "pending",
-    });
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.reload();
+    if (width <= 760)
+      await page.getByRole("button", { name: "Toggle conversations" }).click();
+    await page.locator(`[data-chat="${lead.id}"]`).click();
     await page
-      .getByRole("button", { name: "Cancel queued message", exact: true })
+      .getByRole("button", { name: "Delete queued message 1", exact: true })
       .waitFor();
-    assert.equal(await page.locator(".message-queue").count(), 0);
+    assert.equal(await page.locator(".message-queue").count(), 1);
+    await page
+      .locator(".message-queue")
+      .getByText("Later instruction", { exact: true })
+      .waitFor();
     await stable("queue appears");
     await page.locator("#stop").click();
     await page.waitForTimeout(80);

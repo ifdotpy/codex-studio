@@ -373,15 +373,23 @@ try {
   await page
     .locator("#message")
     .fill("Steering failure keeps this instruction");
+  await page.route(
+    "**/api/messages",
+    (route) =>
+      route.fulfill({
+        status: 503,
+        json: { error: "Fixture steer transport failure" },
+      }),
+    { times: 1 },
+  );
   await page.locator("#send").click();
   const failedSteer = page
     .locator("#messages .message.user")
     .filter({ hasText: "Steering failure keeps this instruction" });
   await failedSteer.waitFor();
-  await poll(
-    () => log.includes("AssertionError: turn/steer"),
-    "The fixture rejects the steer attempt",
-  );
+  await page
+    .getByText("Fixture steer transport failure", { exact: true })
+    .waitFor();
   await failedSteer
     .getByRole("button", { name: "Stop retries", exact: true })
     .click();

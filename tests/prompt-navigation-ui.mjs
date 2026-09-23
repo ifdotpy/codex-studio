@@ -98,7 +98,9 @@ try {
         },
       });
     }
-    if (["prompt-0", "older-tool"].includes(params.get("before"))) {
+    if (
+      ["prompt-0", "older-tool", "later-answer"].includes(params.get("before"))
+    ) {
       return route.fulfill({
         json: {
           ...original,
@@ -324,6 +326,7 @@ try {
   assert.equal(await nav.count(), 1);
   await page.screenshot({ path: join(root, "prompt-mobile.png") });
   await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1440, height: 960 });
   await composer.fill("");
   const update = {
     id: "later-answer",
@@ -335,7 +338,7 @@ try {
     items: [update],
     order: [update.id],
     truncated: true,
-    nextCursor: update.id,
+    nextCursor: "prompt-0",
   });
   await page.locator('[data-message="later-answer"]').waitFor();
   assert.equal(
@@ -349,6 +352,7 @@ try {
     prompts[7].text,
     "Recall retains user messages after a live page contains only agent activity",
   );
+  await page.locator(".prompt-navigation").scrollIntoViewIfNeeded();
   await page
     .getByRole("button", { name: "Browse prompts", exact: true })
     .click();
@@ -358,9 +362,27 @@ try {
     8,
     "Prompt history retains all loaded user messages after rollover",
   );
-  await history
-    .getByRole("button", { name: "Load earlier messages", exact: true })
-    .click();
+  await history.locator(".prompt-history-list").evaluate((list) => {
+    list.style.scrollBehavior = "auto";
+    list.scrollTop = list.scrollHeight;
+  });
+  const loadEarlier = history.getByRole("button", {
+    name: "Load earlier messages",
+    exact: true,
+  });
+  await loadEarlier.waitFor({ state: "visible" });
+  const loadEarlierBox = await loadEarlier.boundingBox();
+  assert.ok(
+    loadEarlierBox &&
+      loadEarlierBox.y >= 0 &&
+      loadEarlierBox.y + loadEarlierBox.height <= 960,
+    "Load earlier stays inside the visible prompt history panel",
+  );
+  // Locator.click scrolls the page and closes this popover before the click.
+  await page.mouse.click(
+    loadEarlierBox.x + loadEarlierBox.width / 2,
+    loadEarlierBox.y + loadEarlierBox.height / 2,
+  );
   await history
     .getByRole("button", { name: "1 Earlier saved input", exact: true })
     .waitFor();

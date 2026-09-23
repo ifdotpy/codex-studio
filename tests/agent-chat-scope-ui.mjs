@@ -66,14 +66,14 @@ try {
     await page.locator(`[data-chat="${id}"]`).click();
     await page.locator("#messages-toggle").click();
     await dialog.waitFor();
-    await dialog.getByRole("tab", { name: "Team", exact: true }).click();
   };
+  const rooms = () => dialog.locator('[data-room]:not([data-room="you"])');
   const room = (id) => dialog.locator(`[data-room="${id}"]`);
   await select(other.id);
   assert.equal(await page.locator("#sidebar [data-room]").count(), 0);
   assert.equal(await page.locator("#sidebar [role=tab]").count(), 0);
   await room(`broadcast:${other.id}`).waitFor();
-  assert.equal(await dialog.locator("[data-room]").count(), 1);
+  assert.equal(await rooms().count(), 1);
   assert.equal(await room(`broadcast:${lead.id}`).count(), 0);
   assert.equal(await room("broadcast:all").count(), 0);
   assert.equal(
@@ -90,19 +90,16 @@ try {
   await select(lead.id);
   assert.equal(await room(`broadcast:${other.id}`).count(), 0);
   assert.equal(await room("broadcast:all").count(), 0);
-  assert.equal(
-    await dialog.locator("[data-room]").count(),
-    60,
-    "bounded room list",
-  );
-  await dialog.getByRole("button", { name: "Show more chats" }).click();
-  assert.ok((await dialog.locator("[data-room]").count()) > 60);
+  assert.equal(await rooms().count(), 60, "bounded room list");
+  await dialog.getByRole("button", { name: "More chats" }).click();
+  assert.ok((await rooms().count()) > 60);
   const direct = state.runtime.rooms.find(
     (r) => r.kind === "private" && r.members.includes(lead.id),
   );
-  await dialog
-    .getByRole("textbox", { name: "Search team chats" })
-    .fill(direct.name);
+  const directName = state.threads.find(
+    (agent) => direct.members.includes(agent.id) && agent.id !== lead.id,
+  ).name;
+  await dialog.getByRole("textbox", { name: "Search chats" }).fill(directName);
   await room(direct.id).click();
   await dialog
     .locator(".team-message")
@@ -130,10 +127,12 @@ try {
   await page.setViewportSize({ width: 600, height: 900 });
   await page.locator("#messages-toggle").click();
   await dialog.waitFor();
-  await dialog.getByRole("tab", { name: "Team", exact: true }).click();
+  await dialog
+    .getByRole("textbox", { name: "Search chats" })
+    .fill("Team broadcast");
   await room(`broadcast:${lead.id}`).click();
-  await dialog.getByRole("button", { name: "Back to team chats" }).click();
-  await dialog.getByRole("textbox", { name: "Search team chats" }).waitFor();
+  await dialog.getByRole("button", { name: "Back to chats" }).click();
+  await dialog.getByRole("textbox", { name: "Search chats" }).waitFor();
   await page.screenshot({ path: join(root, "narrow-list.png") });
   await room(`broadcast:${lead.id}`).click();
   await page.screenshot({ path: join(root, "narrow-room.png") });
@@ -141,7 +140,7 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
-  await page.getByRole("dialog", { name: /Background tasks/ }).waitFor();
+  await page.getByRole("dialog", { name: /Current activity/ }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({

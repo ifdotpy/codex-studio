@@ -142,7 +142,6 @@ try {
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.locator("#message").fill("Keep my draft");
   for (const [section, title] of [
-    ["user-tasks", "Your tasks"],
     ["messages", "Messages"],
     ["changes", "Changes"],
     ["search", "Search"],
@@ -166,7 +165,7 @@ try {
     0,
     "no manual monitor header action",
   );
-  const background = page.getByRole("dialog", { name: /Background tasks/ });
+  const background = page.getByRole("dialog", { name: /Current activity/ });
   assert.equal(await page.locator("#message").inputValue(), "Keep my draft");
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
@@ -209,7 +208,10 @@ try {
   }
   await page.locator("#message").fill("/monitor must-not-run");
   await page.locator("#send").click();
-  await page.getByText("/monitor must-not-run", { exact: true }).waitFor();
+  await page
+    .locator("#messages")
+    .getByText("/monitor must-not-run", { exact: true })
+    .waitFor();
   const afterMessage = await (await fetch(url + "/api/state")).json();
   assert.equal(
     afterMessage.runtime.monitors.length,

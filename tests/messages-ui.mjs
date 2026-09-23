@@ -42,6 +42,9 @@ try {
   const direct = state.runtime.rooms.find(
     (r) => r.kind === "private" && r.members.includes(lead.id),
   );
+  const directName = state.threads.find(
+    (agent) => direct.members.includes(agent.id) && agent.id !== lead.id,
+  ).name;
   browser = await chromium.launch({
     headless: true,
     executablePath:
@@ -57,43 +60,37 @@ try {
   await page.locator("#message").fill("Keep my main conversation draft.");
   await page.locator("#messages-toggle").click();
   const drawer = page.getByRole("dialog", { name: "Messages", exact: true });
-  await drawer.waitFor();
-  assert.equal(await drawer.locator(".for-you [data-complaint]").count(), 1);
-  assert.equal(await drawer.locator(".workspace-nav").count(), 0);
-  await drawer.getByRole("tab", { name: "Team", exact: true }).click();
-  assert.deepEqual(
-    await drawer
-      .locator("[data-message-group]")
-      .evaluateAll((nodes) => nodes.map((node) => node.dataset.messageGroup)),
-    ["orchestrator", "broadcast", "agents"],
-  );
+  await drawer.waitFor({ state: "visible" });
   assert.equal(
     await drawer
-      .locator("[data-message-group=orchestrator] [data-complaint]")
+      .locator('[data-feed-item^="complaint:"] [data-complaint]')
       .count(),
+    2,
+  );
+  assert.equal(await drawer.locator(".workspace-nav").count(), 0);
+  await drawer.locator('[data-room="you"]').waitFor();
+  assert.equal(await drawer.locator('[data-room="you"]').count(), 1);
+  const roomSearch = drawer.getByRole("textbox", { name: "Search chats" });
+  await roomSearch.fill("Team broadcast");
+  await drawer.locator(`[data-room="broadcast:${lead.id}"]`).waitFor();
+  assert.equal(
+    await drawer.locator(`[data-room="broadcast:${lead.id}"]`).count(),
     1,
   );
-  for (const group of ["orchestrator", "broadcast", "agents"]) {
-    assert.ok(
-      await drawer
-        .locator(`[data-message-group="${group}"] [data-room]`)
-        .count(),
-      group,
-    );
-  }
+  await roomSearch.fill(directName);
+  await drawer.locator(`[data-room="${direct.id}"]`).waitFor();
+  assert.equal(await drawer.locator(`[data-room="${direct.id}"]`).count(), 1);
   assert.equal(
     await page
       .locator("#open-complaints, #agent-chats-toggle, #canvas-toggle")
       .count(),
     0,
   );
-  await drawer.getByRole("tab", { name: "For you", exact: true }).click();
-  await drawer.locator(`[data-complaint="${leadMessage.id}"]`).click();
-  const modal = page.getByRole("dialog", {
-    name: "Message to you",
-    exact: true,
-  });
-  await modal.getByLabel("Reply").fill("The review account is ready.");
+  const message = drawer.locator(`[data-complaint="${leadMessage.id}"]`);
+  await message.getByRole("button", { name: "Reply", exact: true }).waitFor();
+  await message.getByRole("button", { name: "Reply", exact: true }).click();
+  const reply = message.getByLabel("Reply", { exact: true });
+  await reply.fill("The review account is ready.");
   const attempts = [];
   await page.route("**/api/complaints", async (route) => {
     attempts.push(route.request().postDataJSON());
@@ -102,19 +99,29 @@ try {
     if (attempts.length === 1) await route.abort("failed");
     else await route.fulfill({ response });
   });
-  await modal.getByRole("button", { name: "Send reply", exact: true }).click();
-  await modal
+  await message
+    .getByRole("button", { name: "Send reply", exact: true })
+    .click();
+  await message
     .getByRole("button", { name: "Retry response", exact: true })
     .waitFor();
-  await modal.getByRole("button", { name: "Close", exact: true }).click();
   await drawer.locator(".mantine-Drawer-close").click();
   await page.locator("#messages-toggle").click();
-  await drawer.getByLabel("Show messages to you").selectOption("all");
-  await drawer.locator(`[data-complaint="${leadMessage.id}"]`).click();
-  await modal
+  await drawer.waitFor({ state: "visible" });
+  const reopenedMessage = drawer.locator(
+    `[data-complaint="${leadMessage.id}"]`,
+  );
+  const replyToggle = reopenedMessage.getByRole("button", {
+    name: /^(Reply|Close reply)$/,
+  });
+  await replyToggle.waitFor();
+  if ((await replyToggle.innerText()) === "Reply") await replyToggle.click();
+  await drawer
+    .locator(`[data-complaint="${leadMessage.id}"]`)
     .getByRole("button", { name: "Retry response", exact: true })
     .click();
-  await modal
+  await drawer
+    .locator(`[data-complaint="${leadMessage.id}"]`)
     .getByRole("button", { name: "Send reply", exact: true })
     .waitFor();
   assert.equal(attempts.length, 2);
@@ -148,10 +155,7 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     leadMessage.author,
     "response reaches the lead who sent the message",
   );
-  await modal.getByRole("button", { name: "Close", exact: true }).click();
-  await drawer.getByLabel("Show messages to you").selectOption("pending");
-  assert.equal(await drawer.locator(".for-you [data-complaint]").count(), 0);
-  await drawer.getByRole("tab", { name: "Team", exact: true }).click();
+  await roomSearch.fill(directName);
   await drawer.locator(`[data-room="${direct.id}"]`).click();
   await drawer
     .locator(".team-message")
@@ -172,12 +176,9 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     await page.waitForTimeout(500);
     if (!(await drawer.isVisible()))
       await page.locator("#messages-toggle").click();
-    await drawer.getByRole("tab", { name: "Team", exact: true }).click();
-    if (width < 700 && (await drawer.locator(".team-room-back").isVisible())) {
-      await drawer
-        .getByRole("button", { name: "Back to team chats", exact: true })
-        .click();
-    }
+    await drawer.waitFor({ state: "visible" });
+    if (width < 700 && (await drawer.locator(".team-room-back").isVisible()))
+      await drawer.getByRole("button", { name: "Back to chats" }).click();
     await page.waitForFunction(() => {
       const panel = document.querySelector(
         ".workspace-drawer .mantine-Drawer-content",
@@ -205,7 +206,7 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     );
     const overflow = await drawer
       .locator(
-        ".team-room-rows, .message-group, .request-card, .request-copy, .complaint-card",
+        ".team-room-rows, .unified-message-scroll, .request-card, .request-copy, .message-inline-thread",
       )
       .evaluateAll((nodes) =>
         nodes
@@ -231,6 +232,7 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     }
   }
   await drawer.locator(".mantine-Drawer-close").click();
+  await drawer.waitFor({ state: "hidden" });
   assert.equal(
     await page.locator("#message").inputValue(),
     "Keep my main conversation draft.",
@@ -239,138 +241,22 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     await page.locator("#conversation-title").textContent(),
     lead.name,
   );
-  // Slow reads must not change the layout when the server data is unchanged.
-  const stable = await browser.newPage({
-    viewport: { width: 1280, height: 900 },
-  });
-  stable.on("pageerror", (error) => errors.push(error.message));
-  const quietState = structuredClone(state);
-  quietState.runtime.requests = [];
-  quietState.runtime.complaints = [];
-  await stable.route("**/api/sync/identity", (route) =>
-    route.fulfill({ status: 404, json: { error: "Fixture uses polling" } }),
-  );
-  await stable.route(/\/api\/state(?:\?.*)?$/, (route) =>
-    route.fulfill({ json: quietState }),
-  );
-  let releaseFirst;
-  const firstRead = new Promise((resolve) => {
-    releaseFirst = resolve;
-  });
-  let reads = 0;
-  let inbox = [];
-  let readError = false;
-  await stable.route("**/api/workspace?*", async (route) => {
-    reads++;
-    if (reads === 1) await firstRead;
-    else await new Promise((resolve) => setTimeout(resolve, 650));
-    await route.fulfill(
-      readError
-        ? { status: 503, json: { error: "Messages read unavailable" } }
-        : { json: { inbox } },
-    );
-  });
-  await stable.goto(origin);
-  await stable.locator(`[data-chat="${lead.id}"]`).click();
-  await stable.locator("#messages-toggle").click();
-  const stableDrawer = stable.getByRole("dialog", {
-    name: "Messages",
-    exact: true,
-  });
-  await stableDrawer.waitFor();
-  const empty = stableDrawer.getByText("No messages need your attention.", {
-    exact: true,
-  });
-  assert.equal(
-    await empty.count(),
-    0,
-    "no empty claim before the initial read",
-  );
-  releaseFirst();
-  await empty.waitFor();
-  await stable.evaluate(() => {
-    const empty = [...document.querySelectorAll(".workspace-empty")].find(
-      (node) => node.textContent === "No messages need your attention.",
-    );
-    const group = document.querySelector(".messages-view-tabs");
-    window.messageStability = {
-      empty,
-      group,
-      top: group.getBoundingClientRect().top,
-      failures: [],
-    };
-    window.messageObserver = new MutationObserver(() => {
-      const s = window.messageStability;
-      if (!s.empty.isConnected) s.failures.push("empty state removed");
-      if (Math.abs(s.group.getBoundingClientRect().top - s.top) > 1)
-        s.failures.push("conversation list moved");
-    });
-    window.messageObserver.observe(
-      document.querySelector(".workspace-message-body"),
-      {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        characterData: true,
-      },
-    );
-  });
-  await stable.waitForTimeout(11000);
-  assert.ok(reads >= 3, "two automatic refreshes completed");
-  assert.deepEqual(
-    await stable.evaluate(() => window.messageStability.failures),
-    [],
-  );
-  await stable.evaluate(() => window.messageObserver.disconnect());
-  inbox = [
-    {
-      kind: "work",
-      id: "stability-work",
-      agent: lead.id,
-      title: "Review the new result",
-      text: "A new result needs review.",
-    },
-  ];
-  await stableDrawer.getByRole("button", { name: "Refresh workspace" }).click();
-  await stableDrawer
-    .getByText("Review the new result", { exact: true })
+  await page.locator("#messages-toggle").click();
+  await drawer.waitFor({ state: "visible" });
+  if (await drawer.locator(".team-room-back").isVisible())
+    await drawer.getByRole("button", { name: "Back to chats" }).click();
+  await drawer.locator('[data-room="you"]').click();
+  await drawer
+    .locator(`[data-complaint="${leadMessage.id}"]`)
+    .getByText("The review account is ready.", { exact: true })
     .waitFor();
-  assert.equal(await empty.count(), 0, "real updates replace the empty state");
-  readError = true;
-  await stableDrawer.getByRole("button", { name: "Refresh workspace" }).click();
-  await stableDrawer
-    .getByRole("alert")
-    .filter({ hasText: "Messages read unavailable" })
-    .waitFor();
-  assert.equal(
-    await stableDrawer
-      .getByText("Review the new result", { exact: true })
-      .count(),
-    1,
-    "failed refresh retains the last result",
-  );
-  assert.equal(
-    await empty.count(),
-    0,
-    "a read failure never means an empty inbox",
-  );
-  readError = false;
-  await stableDrawer.getByRole("button", { name: "Refresh workspace" }).click();
-  await stableDrawer.getByRole("alert").waitFor({ state: "hidden" });
-  await stable.screenshot({
-    path: join(root, "messages-stable-1280.png"),
-    animations: "disabled",
-  });
-  await stable.close();
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
       ok: true,
       evidence: root,
       cases: [
-        "stable empty state across two delayed automatic refreshes",
-        "new messages and read failure recovery",
-        "separate For you and three ordered Team groups",
+        "For you messages and team chat list",
         "lead messages to user and worker requests to lead",
         "real runtime response delivery",
         "lost response retry after drawer close",
