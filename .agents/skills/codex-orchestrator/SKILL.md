@@ -33,6 +33,11 @@ Let the worker choose implementation details within the agreed design and owners
 Resolve changes to shared contracts or task scope yourself.
 An explicit request to work without subagents takes precedence.
 
+Choose the model and reasoning level for each worker's task. Use `gpt-6-luna`
+with `high` reasoning by default. Override both fields in `orchestration_spawn`
+when the task needs another choice. Codex and Claude workers can share a team.
+Honor the user's explicit model or account constraints.
+
 Define each implementation assignment with:
 
 - The required behavior and its actual caller or user flow.

@@ -41,8 +41,11 @@ registry states before counting workers. Use a new spawn ID only after
 `not_applied` proves the earlier batch did not create workers.
 Queued cancellation prevents execution. Running cancellation requires receipt
 reconciliation; it does not authorize a second mutation.
-Omit model, effort, and `fast_mode` to use the user's team defaults.
-Override a field only for a specific worker. Use `effort: null` for the model's native default.
+Choose each worker's model and reasoning level for its task. The default is
+`gpt-6-luna` with `high` reasoning unless the user sets team defaults.
+Codex and Claude can delegate to each other. Studio selects an account that
+offers the model. Set `account_key` only to select a specific account.
+Omitted fields use team defaults. Use `effort: null` for the model's native default.
 Use `fast_mode: false` to disable Fast for that worker. Explicit profile values override team defaults.
 Only the user can change team defaults. See [the execution contract](../../../ORCHESTRATION.md).
 

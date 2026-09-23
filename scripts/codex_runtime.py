@@ -98,12 +98,14 @@ TOOLS = [
          "Each child completion wakes you, even after your final answer. Use these agents "
          "instead of native subagents. Implementers receive isolated git worktrees at HEAD; "
          "reviewers share your directory read-only. Never poll for their completion. "
-         "Omit model, effort and fast_mode to use the user's team defaults. Override them "
-         "only for a specific worker. effort=null uses that model's native default.",
+         "Default: gpt-6-luna with high reasoning, unless the user sets team defaults. "
+         "Choose model and effort for each task. Codex and Claude can delegate to each other. "
+         "Studio selects a connected account that offers the model; optional account_key selects it explicitly. "
+         "effort=null uses that model's native default.",
          {"agents": {"type": "array", "minItems": 1, "maxItems": 64, "items": {
              "type": "object", "properties": {"name": TEXT, "prompt": TEXT,
                  "role": {"type": "string", "enum": ["implementer", "reviewer"]},
-                 "model": TEXT, "effort": {"type": ["string", "null"]},
+                 "model": TEXT, "account_key": TEXT, "effort": {"type": ["string", "null"]},
                  "fast_mode": {"type": "boolean"}}, "required": ["name", "prompt"],
              "additionalProperties": False}}}, ["agents"]),
     tool("orchestration_send", "Assign a new or revised instruction to an existing descendant, "
@@ -1009,7 +1011,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     @staticmethod
     def worker_defaults(root):
-        return {"model": "sonnet" if root.get("provider") == "claude" else "gpt-6-luna", "effort": "max" if root.get("provider") == "claude" else "xhigh", "fastMode": False, "daybreakEnabled": False,
+        return {"model": "gpt-6-luna", "effort": "high", "fastMode": False, "daybreakEnabled": False,
                 **root.get("workerDefaults", {})}
 
     @staticmethod
@@ -1078,10 +1080,19 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         # Obtain remote metadata before taking the database write lock. Batch spawn
         # passes one catalogue snapshot for all children and validates under its lock.
         needs_catalog = parent is not None or any(k in data for k in ("model", "effort", "fast_mode", "daybreak_enabled", "worker_defaults"))
-        catalog_account = (self.agent(parent).get("accountKey", "default") if parent
-                           else data["account_key"] if "account_key" in data
-                           else self.project_account(data.get("cwd") or os.getcwd()))
-        catalog = _catalog if _catalog is not None else self.catalog(catalog_account) if needs_catalog else None
+        if parent:
+            if _catalog is None:
+                from codex_worker_accounts import resolve
+                catalog_account, catalog = resolve(self, self.agent(parent), data)
+            else:
+                catalog_account, catalog = _catalog
+        else:
+            catalog_account = data.get("account_key", self.project_account(data.get("cwd") or os.getcwd()))
+            catalog = _catalog if _catalog is not None else self.catalog(catalog_account) if needs_catalog else None
+        worker_catalog = catalog
+        if "worker_defaults" in data:
+            from codex_worker_accounts import catalog as available_workers
+            worker_catalog = available_workers(self, catalog_account)
         key = data.get("id") or uid()
         try:
             uuid.UUID(key)
@@ -1112,12 +1123,12 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if root:
                 from codex_agent_modes import assert_delegation
                 assert_delegation(root)
-            account_key = p.get("accountKey", "default") if p else catalog_account
-            if p and data.get("account_key", account_key) != account_key:
-                raise ValueError("A worker must use its parent account")
+            account_key = catalog_account
             account = self.accounts.get(account_key)
-            if not p and account.get("disconnected"):
+            if account.get("disconnected"):
                 raise ValueError("Reconnect this account before creating a chat")
+            if p and account_key != p.get("accountKey", "default") and account.get("status") != "ready":
+                raise ValueError("Sign in to the worker account before creating a worker")
             is_lead = p is None and role == "orchestrator"
             provider = account.get("provider", "codex")
             defaults = self.worker_defaults(root or {"provider": provider})
@@ -1135,7 +1146,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if "worker_defaults" in data:
                 if not is_lead:
                     raise ValueError("Only a lead can store worker defaults")
-                defaults = self.validate_worker_defaults(data["worker_defaults"], model, catalog)
+                defaults = self.validate_worker_defaults(data["worker_defaults"], model, worker_catalog)
             if p and (p.get("deletedAt") or root.get("deletedAt")):
                 raise ValueError("This conversation was deleted")
             if p and (not p["autoWake"] or not root["autoWake"]):
@@ -1455,7 +1466,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if not defaults_only and (target.get("inFlight") or target["status"] in {"running", "starting", "approval"}):
                 raise ValueError("Wait for this turn to end before changing execution settings")
         needs_catalog = bool(execution_fields.intersection(data) or "worker_defaults" in data)
-        catalog = self.catalog(target.get("accountKey", "default")) if needs_catalog else None
+        catalog = self.catalog(target.get("accountKey", "default")) if needs_catalog and not defaults_only else None
+        worker_catalog = None
+        if "worker_defaults" in data:
+            from codex_worker_accounts import catalog as available_workers
+            worker_catalog = available_workers(self, target.get("accountKey", "default"))
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             if a.get("deletedAt"):
@@ -1501,7 +1516,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                          fastMode=data.get("fast_mode", a.get("fastMode", False)),
                          daybreakEnabled=daybreak, cyberAccessProgram=program)
             if "worker_defaults" in data:
-                a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], catalog)
+                a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], worker_catalog)
             if "cwd" in data:
                 if a.get("threadId"):
                     raise ValueError(
@@ -3059,7 +3074,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         with self.lock, self.db() as db:
             from codex_agent_modes import assert_delegation
             assert_delegation(self.agent(actor["rootId"], db))
-        catalog = self.catalog(actor.get("accountKey", "default"))
+        from codex_worker_accounts import resolve
+        catalogs = {}
+        selections = [resolve(self, actor, spec, catalogs=catalogs) for spec in specs]
         with self.lock, self.db() as db:
             request = self.tool_request(key, db)
             if request and request.get("cancelRequested"):
@@ -3077,8 +3094,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if len(roster) + sum(s["id"] not in existing for s in planned) > self.agent(current["rootId"], db)["maxAgents"]:
                 raise ValueError("This batch exceeds the team size limit; no workers were created")
             children = [self.create({k: v for k, v in spec.items() if k != "task_id"}, current["id"],
-                                    parent_epoch=current["epoch"], _catalog=catalog, _validate_only=True)
-                        for spec in planned]
+                                    parent_epoch=current["epoch"], _catalog=selection, _validate_only=True)
+                        for spec, selection in zip(planned, selections)]
             works = {w["id"]: w for w in self.records(db, "work") if w["rootId"] == current["rootId"]}
             for spec in planned:
                 w = works.get(spec.get("task_id")) if "task_id" in spec else None
@@ -3097,7 +3114,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         text += ("\n\n[Studio task " + w["id"] + "] " + w["title"] + "\nYou own this task. When the result is ready, "
                                  "call orchestration_task action=submit task_id=" + w["id"] + " with result, checks and revision.")
                     self.enqueue(db, child, "user", text, child["id"] + ":initial")
-            value = {"requestId": key, "agents": [{**{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode")},
+            value = {"requestId": key, "agents": [{**{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode", "accountKey", "provider")},
                                                   **({"taskId": s["task_id"]} if "task_id" in s else {})}
                                                  for s, c in zip(planned, children)],
                      "delivery": "Results wake you automatically. Finish your turn while waiting."}

@@ -238,7 +238,7 @@ class CatalogRuntimeContract(unittest.TestCase):
         two = self.runtime.create({"name": "Two", "prompt": "Check two"}, self.lead["id"], defer=True)
         self.assertNotEqual(one["id"], two["id"])
         self.assertEqual(len(self.server.metadata.requests), 1)
-        with self.assertRaisesRegex(ValueError, "not available for this account"):
+        with self.assertRaisesRegex(ValueError, "not available for the selected worker accounts"):
             self.runtime.create({"name": "Other", "prompt": "Check", "model": "invented"}, self.lead["id"], defer=True)
 
     def test_native_wait_does_not_hold_runtime_or_connection_lock(self):

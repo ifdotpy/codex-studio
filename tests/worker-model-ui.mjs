@@ -61,7 +61,24 @@ try {
     await page.locator("#message").waitFor();
   }
   let requests = 0;
+  let workerRequests = 0;
   await page.route("**/api/models?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("workers") === "1") {
+      workerRequests++;
+      return route.fulfill({
+        json: {
+          data: [
+            {
+              model: "gpt-6-luna",
+              displayName: "Luna",
+              provider: "codex",
+              accountKey: "other-codex",
+              supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+            },
+          ],
+        },
+      });
+    }
     requests++;
     if (requests === 1)
       return route.fulfill({
@@ -185,17 +202,46 @@ try {
     ["test-model", "gpt-6-astra", "gpt-5.6-sol", "ui-only"],
   );
   await page.locator("#model").selectOption("test-model");
-  await page.waitForFunction(() =>
-    !document.querySelector("#model").disabled &&
-    document.querySelector("#model").value === "test-model",
+  await page.waitForFunction(
+    () =>
+      !document.querySelector("#model").disabled &&
+      document.querySelector("#model").value === "test-model",
   );
   const leadState = await (await fetch(url + "/api/state")).json();
-  const selectedLead = leadState.runtime.agents.find((row) => row.name === "Release lead");
-  assert.equal(selectedLead.pendingSettings?.model || selectedLead.model, "test-model");
+  const selectedLead = leadState.runtime.agents.find(
+    (row) => row.name === "Release lead",
+  );
+  assert.equal(
+    selectedLead.pendingSettings?.model || selectedLead.model,
+    "test-model",
+  );
   assert.equal(
     requests,
     2,
     "one account catalog is shared by the worker list and chat",
+  );
+  await page.keyboard.press("Escape");
+  await openSettings("Subagent defaults");
+  const defaults = page.getByRole("dialog", {
+    name: "Subagent defaults",
+    exact: true,
+  });
+  assert.equal(
+    await defaults
+      .getByLabel("Default subagent model", { exact: true })
+      .inputValue(),
+    "gpt-6-luna",
+  );
+  assert.equal(
+    await defaults
+      .getByLabel("Default subagent reasoning", { exact: true })
+      .inputValue(),
+    "high",
+  );
+  assert.equal(await defaults.locator('option[value="ui-only"]').count(), 0);
+  assert.ok(
+    workerRequests > 0,
+    "Subagent defaults use the cross-account worker catalog",
   );
   assert.deepEqual(errors, []);
   console.log(

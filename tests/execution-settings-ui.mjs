@@ -24,8 +24,13 @@ const models = [
     levels: ["low", "medium", "high", "ultra"],
   },
   {
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     displayName: "Luna",
+    levels: ["low", "medium", "high"],
+  },
+  {
+    model: "gpt-5.6-luna",
+    displayName: "Luna 5.6",
     levels: ["low", "medium", "high"],
   },
   { model: "test-slow", displayName: "Standard only", levels: ["low"] },
@@ -158,7 +163,7 @@ try {
   });
   await dialog
     .getByLabel("Default subagent model", { exact: true })
-    .selectOption("gpt-5.6-luna");
+    .selectOption("gpt-6-luna");
   assert.equal(
     await dialog
       .getByLabel("Default subagent reasoning")
@@ -184,7 +189,7 @@ try {
   await dialog.waitFor({ state: "hidden" });
   let current = (await state()).find((a) => a.id === lead.id);
   assert.deepEqual(current.workerDefaults, {
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     effort: "high",
     fastMode: true,
     daybreakEnabled: false,
@@ -206,7 +211,7 @@ try {
     return waitFor(async () => (await state()).find((a) => a.name === name));
   };
   const first = await spawnWorker("Inherits defaults");
-  assert.equal(first.model, "gpt-5.6-luna");
+  assert.equal(first.model, "gpt-6-luna");
   assert.equal(first.effort, "high");
   assert.equal(first.fastMode, true);
   const overridden = await spawnWorker("Orchestrator override", {
@@ -221,7 +226,7 @@ try {
   await openSettings("Subagent defaults");
   assert.equal(
     await dialog.getByLabel("Default subagent model").inputValue(),
-    "gpt-5.6-luna",
+    "gpt-6-luna",
   );
   await dialog.getByLabel("Default subagent model").selectOption("test-slow");
   assert.ok(
@@ -265,7 +270,7 @@ try {
   assert.equal(next.fastMode, false);
   assert.equal(
     (await state()).find((a) => a.id === first.id).model,
-    "gpt-5.6-luna",
+    "gpt-6-luna",
   );
   await page.screenshot({ path: join(root, "team-defaults.png") });
   for (const width of [1440, 768, 390, 320]) {

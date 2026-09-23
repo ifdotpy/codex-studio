@@ -332,9 +332,14 @@ export default function App() {
     agent?.accountKey ||
     lead?.accountKey ||
     (agent ? "default" : accounts.data.defaultAccountKey);
-  const workerModels = useWorkerModels(
+  const agentModels = useWorkerModels(
     accountKey,
     !!agent && agent.source === "managed",
+  );
+  const workerModels = useWorkerModels(
+    lead?.accountKey || "default",
+    !!lead?.isLead,
+    true,
   );
   const limitsRequests = useRef(new Map<string, Promise<void>>());
   const selectedAccount = accounts.data.accounts.find(
@@ -1729,7 +1734,7 @@ export default function App() {
                 key={"execution:" + agent.id}
                 onOpenChange={setMainSettingsOpen}
                 agent={agent}
-                catalog={workerModels}
+                catalog={agentModels}
                 refresh={refresh}
               />
             )}

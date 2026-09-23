@@ -33,6 +33,14 @@ must use the queue while that agent gives a shared reply.
 Existing two-member teams can also open a shared chat from their menu.
 That history stays with its original members when the team changes.
 
+Managed workers can use a different provider from their parent. The default is
+`gpt-6-luna` with `high` reasoning. The orchestrator selects each worker's model
+and reasoning level through `orchestration_spawn`. Studio selects an available
+account for that model, preferring the parent's account, then the application
+default. `account_key` selects a specific account. Model and account validation
+finish before any worker in the batch is created. Existing worker settings stay
+unchanged when the parent chat moves to another account or provider.
+
 ## Setup
 
 Requirements: Python 3.11 or later, Node.js 22.15 or later, and the signed-in Codex CLI.

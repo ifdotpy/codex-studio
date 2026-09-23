@@ -42,7 +42,7 @@ class ClaudeProvider(unittest.TestCase):
         a=self.runtime.new_lead({'cwd':str(self.root)})
         a=self.runtime.set_account(a['id'],'claude-local')
         self.assertEqual(a['model'],'default');self.assertEqual(a['provider'],'claude')
-        self.assertEqual(self.runtime.worker_defaults(a)['model'],'sonnet')
+        self.assertEqual(self.runtime.worker_defaults(a)['model'],'gpt-6-luna')
         a=self.runtime.set_account(a['id'],'default')
         self.assertEqual(a['model'],'gpt-6-astra');self.assertEqual(a['provider'],'codex')
         with patch('codex_claude.auth_metadata',return_value={**AUTH,'accountId':'claude:changed'}):
@@ -124,11 +124,11 @@ class ClaudeProvider(unittest.TestCase):
             with self.runtime.db() as db:
                 self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='next-message'").fetchone()[0],'pending')
 
-    def test_workers_keep_claude_account_and_model_defaults(self):
+    def test_explicit_claude_worker_keeps_selected_provider(self):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
         catalog={'data':[{'model':'sonnet','supportedReasoningEfforts':[{'reasoningEffort':'max'}],
                          'defaultReasoningEffort':'medium','serviceTiers':[]}]}
-        child=self.runtime.create({'name':'Worker','prompt':'Read the project'},parent=a['id'],defer=True,_catalog=catalog)
+        child=self.runtime.create({'name':'Worker','prompt':'Read the project','model':'sonnet'},parent=a['id'],defer=True,_catalog=('claude-local',catalog))
         self.assertEqual(child['accountKey'],'claude-local')
         self.assertEqual(child['provider'],'claude')
         self.assertEqual(child['model'],'sonnet')

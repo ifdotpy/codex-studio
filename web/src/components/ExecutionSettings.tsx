@@ -63,15 +63,11 @@ const settingsFor = (agent: Agent, teamDefaults: boolean) => {
     return {
       model:
         agent.workerDefaults?.model === undefined
-          ? agent.provider === "claude"
-            ? "sonnet"
-            : "gpt-6-luna"
+          ? "gpt-6-luna"
           : agent.workerDefaults.model,
       effort:
         agent.workerDefaults?.effort === undefined
-          ? agent.provider === "claude"
-            ? "max"
-            : "xhigh"
+          ? "high"
           : agent.workerDefaults.effort,
       fast_mode: !!agent.workerDefaults?.fastMode,
       daybreak_enabled: !!agent.workerDefaults?.daybreakEnabled,
@@ -200,6 +196,7 @@ function ScopedExecutionSettings({
   ]);
   const selectedModel = current.model || agent.model;
   const info = infoFor(catalog, selectedModel);
+  const selectedProvider = teamDefaults ? info?.provider : agent.provider;
   const active = !teamDefaults && (!!agent.inFlight || busy.has(agent.status));
   const disabled =
     saving ||
@@ -448,7 +445,7 @@ function ScopedExecutionSettings({
               ? "Main agent"
               : "Subagent"}{" "}
           ·{" "}
-          {agent.provider === "claude"
+          {selectedProvider === "claude"
             ? info?.displayName || shortModel(selectedModel)
             : shortModel(selectedModel)}
           {(daybreakEnabled || modeQueued) &&
@@ -475,7 +472,7 @@ function ScopedExecutionSettings({
             })
           }
         />
-        {agent.provider !== "claude" && (
+        {selectedProvider !== "claude" && (
           <Switch
             label="Daybreak"
             aria-label="Daybreak"
@@ -501,7 +498,7 @@ function ScopedExecutionSettings({
               : "The selected model does not support this mode in the account model list. Select another model or change the mode."}
           </p>
         )}
-        {agent.provider !== "claude" &&
+        {selectedProvider !== "claude" &&
           !catalog.loading &&
           !catalog.error &&
           !canEnableDaybreak && (

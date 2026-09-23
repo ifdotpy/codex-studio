@@ -820,7 +820,12 @@ def make_server(canvas, port=0, public_origin=None):
                     before = int(query["before"][0]) if query.get("before") else None
                     return self.send(canvas.runtime.chat_read(query.get("room", [""])[0], before=before))
                 if path.path == "/api/models" and canvas.runtime:
-                    return self.send(canvas.runtime.catalog(parse_qs(path.query).get("account_key", ["default"])[0]))
+                    query = parse_qs(path.query)
+                    account = query.get("account_key", ["default"])[0]
+                    if query.get("workers") == ["1"]:
+                        from codex_worker_accounts import catalog
+                        return self.send(catalog(canvas.runtime, account))
+                    return self.send(canvas.runtime.catalog(account))
                 if path.path == "/api/import" and canvas.runtime:
                     query = parse_qs(path.query)
                     return self.send(canvas.runtime.import_list(query.get("cursor", [None])[0], account_key=query.get("account_key", ["default"])[0]))

@@ -116,17 +116,8 @@ class AccountTransfers:
         program = resolve_program(catalog, model, daybreak, provider)
         resolved = dict(provider=provider, model=model, effort=effort, nativeEffort=native, fastMode=fast,
                         daybreakEnabled=daybreak, cyberAccessProgram=program)
-        defaults = rt.worker_defaults({'provider': provider} if changed else agent)
-        worker = next((row for row in rows if row.get('model') == (defaults.get('model') or model)), current)
-        worker_fast = bool(defaults.get('fastMode', False)) and any(
-            tier.get('id') == 'priority' for tier in worker.get('serviceTiers', []))
-        worker_effort, _ = rt.validate_execution(catalog, worker['model'], defaults.get('effort'), worker_fast,
-                                                fallback_effort=True)
-        worker_daybreak = False if changed else defaults.get('daybreakEnabled', False)
-        worker_program = resolve_program(catalog, worker['model'], worker_daybreak, provider)
-        resolved['workerDefaults'] = dict(model=None if defaults.get('model') is None else worker['model'],
-                                          effort=worker_effort, fastMode=worker_fast,
-                                          daybreakEnabled=worker_daybreak, cyberAccessProgram=worker_program)
+        # Worker execution belongs to its own account, not the destination lead.
+        resolved['workerDefaults'] = rt.worker_defaults(agent)
         if changed:
             resolved['claudeOptions'] = {}
         if agent.get('pendingSettings'):
@@ -433,11 +424,9 @@ class AccountTransfers:
                 daybreak = a.get('daybreakEnabled', False)
                 program = resolve_program(catalog, a['model'], daybreak, target_provider)
                 defaults = rt.worker_defaults(a)
-                worker_program = resolve_program(catalog, defaults.get('model') or a['model'],
-                                                 defaults.get('daybreakEnabled', False), target_provider)
                 resolved = dict(effort=effort, nativeEffort=native_effort,
                                 daybreakEnabled=daybreak, cyberAccessProgram=program,
-                                workerDefaults={**defaults, 'cyberAccessProgram': worker_program})
+                                workerDefaults=defaults)
                 if a.get('pendingSettings'):
                     if a.get('pendingSettingsAccountKey', a.get('accountKey', 'default')) != a.get('accountKey', 'default'):
                         raise ValueError('Queued settings belong to another account. Save them again before transfer')

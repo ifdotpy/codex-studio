@@ -24,7 +24,12 @@ export function supportsDaybreakMode(info: Json | undefined, enabled: boolean) {
   );
 }
 
-export function useWorkerModels(accountKey: string, enabled: boolean) {
+export function useWorkerModels(
+  accountKey: string,
+  enabled: boolean,
+  workers = false,
+) {
+  const catalogKey = `${accountKey}:${workers}`;
   const [result, setResult] = useState<{
     key: string;
     models: Json[];
@@ -35,30 +40,36 @@ export function useWorkerModels(accountKey: string, enabled: boolean) {
     if (!enabled) return;
     let active = true;
     setResult(null);
-    api("/api/models?account_key=" + encodeURIComponent(accountKey))
+    api(
+      "/api/models?account_key=" +
+        encodeURIComponent(accountKey) +
+        (workers ? "&workers=1" : ""),
+    )
       .then((data) => {
         if (active)
-          setResult({ key: accountKey, models: data.data || [], error: "" });
+          setResult({ key: catalogKey, models: data.data || [], error: "" });
       })
       .catch((error) => {
         if (active)
-          setResult({ key: accountKey, models: [], error: errorText(error) });
+          setResult({ key: catalogKey, models: [], error: errorText(error) });
       });
     return () => {
       active = false;
     };
-  }, [accountKey, enabled, attempt]);
-  const current = result?.key === accountKey ? result : null;
+  }, [accountKey, catalogKey, workers, enabled, attempt]);
+  const current = result?.key === catalogKey ? result : null;
   return {
     models:
       current?.models
         .filter((model) => model.model && !model.hidden)
-        .map((model): Json => ({
-          ...model,
-          displayName: model.displayName
-            ? claudeModelLabel(model.displayName, model.description || "")
-            : model.displayName,
-        })) || [],
+        .map(
+          (model): Json => ({
+            ...model,
+            displayName: model.displayName
+              ? claudeModelLabel(model.displayName, model.description || "")
+              : model.displayName,
+          }),
+        ) || [],
     loading: !current,
     error: current?.error || "",
     retry: () => setAttempt((value) => value + 1),
