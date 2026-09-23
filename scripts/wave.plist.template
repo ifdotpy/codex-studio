@@ -13,8 +13,8 @@
   <dict>
     <key>CODEX_AGENTS_STATE_DIR</key><string>__STATE_DIR__</string>
     <key>CODEX_TASKS</key><string>__TASKS_FILE__</string>
-    <key>CODEX_MODEL</key><string>gpt-5.6-luna</string>
-    <key>CODEX_EFFORT</key><string>max</string>
+    <key>CODEX_MODEL</key><string>gpt-6-luna</string>
+    <key>CODEX_EFFORT</key><string>xhigh</string>
     <key>CODEX_WAVE</key><string>__WAVE__</string>
     <key>PATH</key><string>__PATH__</string>
   </dict>

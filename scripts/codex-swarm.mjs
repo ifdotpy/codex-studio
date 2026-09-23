@@ -23,8 +23,8 @@ import {
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = dirname(SCRIPT_DIR);
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
-const MODEL = process.env.CODEX_MODEL || "gpt-5.6-luna";
-const EFFORT = process.env.CODEX_EFFORT || "max";
+const MODEL = process.env.CODEX_MODEL || "gpt-6-luna";
+const EFFORT = process.env.CODEX_EFFORT || "xhigh";
 const LOAD_LIMIT = Number(process.env.CODEX_LOAD_LIMIT || 20);
 const CAPACITY_RETRY_MAX = Number(process.env.CODEX_CAPACITY_RETRIES || 6);
 const CAPACITY_BACKOFF_MS = Number(process.env.CODEX_CAPACITY_BACKOFF_MS || 120_000);

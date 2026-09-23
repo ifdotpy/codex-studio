@@ -35,6 +35,7 @@ export function shortModel(model: string) {
         "gpt-5.6-sol": "Sol",
         "gpt-5.6-terra": "Terra",
         "gpt-5.6-luna": "Luna",
+        "gpt-6-luna": "Luna",
         "gpt-daybreak-blue-latest": "Daybreak Blue",
         "gpt-daybreak-red-latest": "Daybreak Red",
       } as Record<string, string>
@@ -62,11 +63,11 @@ const settingsFor = (agent: Agent, teamDefaults: boolean) => {
     return {
       model:
         agent.workerDefaults?.model === undefined
-          ? "gpt-5.6-luna"
+          ? (agent.provider === "claude" ? "sonnet" : "gpt-6-luna")
           : agent.workerDefaults.model,
       effort:
         agent.workerDefaults?.effort === undefined
-          ? "max"
+          ? (agent.provider === "claude" ? "max" : "xhigh")
           : agent.workerDefaults.effort,
       fast_mode: !!agent.workerDefaults?.fastMode,
       daybreak_enabled: !!agent.workerDefaults?.daybreakEnabled,

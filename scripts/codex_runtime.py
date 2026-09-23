@@ -1021,7 +1021,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     @staticmethod
     def worker_defaults(root):
-        return {"model": "sonnet" if root.get("provider") == "claude" else "gpt-5.6-luna", "effort": "max", "fastMode": False, "daybreakEnabled": False,
+        return {"model": "sonnet" if root.get("provider") == "claude" else "gpt-6-luna", "effort": "max" if root.get("provider") == "claude" else "xhigh", "fastMode": False, "daybreakEnabled": False,
                 **root.get("workerDefaults", {})}
 
     @staticmethod

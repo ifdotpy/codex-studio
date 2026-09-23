@@ -30,7 +30,7 @@ CATALOG = {
     "data": [
         model("gpt-6-astra", ("low", "medium", "high")),
         model("gpt-5.6-sol"),
-        model("gpt-5.6-luna", ("low", "high", "max")),
+        model("gpt-6-luna", ("low", "high", "xhigh")),
         model("worker"),
         model("small", ("medium",), "medium", False),
     ]
@@ -82,7 +82,7 @@ class WorkerDefaults(unittest.TestCase):
         child = self.worker(parent=worker["id"])
         self.assertEqual(
             (child["model"], child["effort"], child["fastMode"]),
-            ("gpt-5.6-luna", "max", False),
+            ("gpt-6-luna", "xhigh", False),
         )
         self.defaults("worker", "high", True)
         next_child = self.worker(parent=worker["id"])
@@ -90,15 +90,15 @@ class WorkerDefaults(unittest.TestCase):
             (next_child["model"], next_child["effort"], next_child["fastMode"]),
             ("worker", "high", True),
         )
-        self.assertEqual(self.runtime.agent(child["id"])["model"], "gpt-5.6-luna")
+        self.assertEqual(self.runtime.agent(child["id"])["model"], "gpt-6-luna")
 
-    def test_luna_max_default_preserves_explicit_choices(self):
-        expected = {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False, "daybreakEnabled": False}
+    def test_luna_xhigh_default_preserves_explicit_choices(self):
+        expected = {"model": "gpt-6-luna", "effort": "xhigh", "fastMode": False, "daybreakEnabled": False}
         self.assertEqual(self.lead["workerDefaults"], expected)
         self.assertEqual(self.runtime.worker_defaults({}), expected)
         child = self.worker()
         self.assertEqual((child["model"], child["effort"], child["nativeEffort"]),
-                         ("gpt-5.6-luna", "max", "max"))
+                         ("gpt-6-luna", "xhigh", "xhigh"))
         self.defaults()
         inherited = self.worker()
         self.assertEqual((inherited["model"], inherited["effort"]),
@@ -258,7 +258,7 @@ class WorkerDefaults(unittest.TestCase):
         self.assertNotEqual(new["id"], self.lead["id"])
         self.assertEqual(
             new["workerDefaults"],
-            {"model": "gpt-5.6-luna", "effort": "max", "fastMode": False, "daybreakEnabled": False},
+            {"model": "gpt-6-luna", "effort": "xhigh", "fastMode": False, "daybreakEnabled": False},
         )
         self.assertEqual((new["model"], new["effort"], new["fastMode"]),
                          ("gpt-6-astra", "medium", False))
@@ -266,7 +266,7 @@ class WorkerDefaults(unittest.TestCase):
         self.assertEqual((old["model"], old["effort"], old["fastMode"]),
                          ("gpt-5.6-sol", "high", True))
         self.assertEqual(old["workerDefaults"]["model"], "worker")
-        self.assertEqual(self.worker(parent=new["id"])["effort"], "max")
+        self.assertEqual(self.worker(parent=new["id"])["effort"], "xhigh")
         self.runtime.close()
         self.runtime = ControlledRuntime(self.root, f.FakeServer)
         self.assertEqual(
