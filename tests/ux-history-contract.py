@@ -230,20 +230,27 @@ class HistoryContract(unittest.TestCase):
 
     def test_account_change_requires_new_settings_validation_before_native_start(self):
         lead = self.lead()
-        self.runtime.conversation_settings(lead['id'], {'next_turn':True,'effort':'high','request_id':'old-account-choice'})
+        self.runtime.conversation_settings(lead['id'], {'effort':'high'})
+        self.runtime.conversation_settings(lead['id'], {'next_turn':True,'effort':'low','request_id':'old-account-choice'})
         home = self.root / 'another-account'
         home.mkdir()
         (home / 'auth.json').write_text(json.dumps({'tokens':{'account_id':'isolated-second','access_token':'fixture'}}))
         account = self.runtime.accounts.register(str(home))
         self.runtime.set_account(lead['id'], account)
+        selected = self.runtime.agent(lead['id'])
+        self.assertEqual(selected['accountKey'],account)
+        self.assertNotIn('pendingSettings',selected)
+        self.assertNotIn('pendingSettingsAccountKey',selected)
         self.runtime.send(lead['id'],'Do work')
         self.runtime.dispatch()
         f.eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'failed')
         self.assertIn('account changed',self.runtime.agent(lead['id'])['error'])
-        self.assertFalse(any(method == 'turn/start' for server in self.runtime.servers.values() for method, _ in server.calls))
+        native_starts = {'thread/start','thread/resume','turn/start'}
+        self.assertFalse(any(method in native_starts for server in self.runtime.servers.values() for method, _ in server.calls))
         self.runtime.conversation_settings(lead['id'], {'next_turn':True,'effort':'high','request_id':'new-account-choice'})
         current = self.start(lead,'Retry after validation')
         self.assertEqual(current['effort'],'high')
+        self.assertEqual(current['executionSettingsAccountKey'],account)
         self.assertNotIn('pendingSettings',current)
 
     def test_idle_settings_replace_pending_choice(self):

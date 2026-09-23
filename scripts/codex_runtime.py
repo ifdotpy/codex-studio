@@ -1169,6 +1169,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "id": key,
                 "threadId": None,
                 "accountKey": account_key,
+                "executionSettingsAccountKey": account_key,
                 "provider": provider,
                 "yoloMode": root.get("yoloMode") if root else data.get("yolo_mode", True),
                 "name": name.strip(),
@@ -1309,12 +1310,14 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                         enabled = previous.get("daybreakEnabled", False) if previous.get("accountKey", "default") == account_key else False
                         program = resolve_program(catalog, data["model"], enabled, previous.get("provider", "codex"))
                         previous.update(model=data["model"], effort=effort, nativeEffort=native_effort, cyberAccessProgram=program)
+                        previous["executionSettingsAccountKey"] = account_key
                         self.loaded.discard(previous["id"])
                     if "yolo_mode" in data:
                         previous["yoloMode"] = data["yolo_mode"]
                     if previous.get('projectFolder') != project_folder or previous['cwd'] != cwd:
                         previous['projectFolderRevision'] = previous.get('projectFolderRevision', 0) + 1
                     if previous.get("accountKey", "default") != account_key:
+                        previous.setdefault("executionSettingsAccountKey", previous.get("accountKey", "default"))
                         previous.update(daybreakEnabled=False, cyberAccessProgram="standard")
                         previous.pop("pendingSettings", None)
                         previous.pop("pendingSettingsAccountKey", None)
@@ -1371,6 +1374,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 a.pop("pendingSettings", None)
                 a.pop("pendingSettingsAccountKey", None)
             if a.get("accountKey", "default") != account_key:
+                a.setdefault("executionSettingsAccountKey", a.get("accountKey", "default"))
                 a.update(daybreakEnabled=False, cyberAccessProgram="standard")
                 a.pop("pendingSettings", None)
                 a.pop("pendingSettingsAccountKey", None)
@@ -1515,6 +1519,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 a.update(model=model, effort=effort, nativeEffort=native_effort,
                          fastMode=data.get("fast_mode", a.get("fastMode", False)),
                          daybreakEnabled=daybreak, cyberAccessProgram=program)
+                a["executionSettingsAccountKey"] = a.get("accountKey", "default")
             if "worker_defaults" in data:
                 a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], worker_catalog)
             if "cwd" in data:
@@ -1536,6 +1541,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                              effort="medium", nativeEffort="medium", fastMode=False)
                     a["workerDefaults"] = self.worker_defaults({"provider": provider})
                 if account_key != a.get("accountKey", "default"):
+                    a.setdefault("executionSettingsAccountKey", a.get("accountKey", "default"))
                     a.update(daybreakEnabled=False, cyberAccessProgram="standard")
                     a.pop("pendingSettings", None)
                     a.pop("pendingSettingsAccountKey", None)
@@ -2336,7 +2342,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                             raise ValueError("The account changed. Save the next-turn settings again")
                         current.pop("pendingSettingsAccountKey", None)
                         current.update(current.pop("pendingSettings"))
+                        current["executionSettingsAccountKey"] = current.get("accountKey", "default")
                         self.loaded.discard(current["id"])
+                    elif current.get("executionSettingsAccountKey", current.get("accountKey", "default")) != current.get("accountKey", "default"):
+                        raise ValueError("The account changed. Save conversation settings for this account before sending")
                     attempt["settingsFixed"] = True
                     self.put(db, "agents", current)
                 a = current
