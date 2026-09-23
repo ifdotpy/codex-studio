@@ -1075,6 +1075,15 @@ export default function Conversation(p: {
             compact
             key={p.id}
             messages={items}
+            loadOlder={
+              before
+                ? () => {
+                    setFollow(false);
+                    void older().catch((e) => p.notify(errorText(e)));
+                  }
+                : undefined
+            }
+            loadingOlder={pageLoading}
             agentId={managed ? p.id || undefined : undefined}
             container={scroll}
             storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}

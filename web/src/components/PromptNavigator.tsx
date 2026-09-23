@@ -12,9 +12,13 @@ export default function PromptNavigator({
   jump,
   compact = false,
   agentId,
+  loadOlder,
+  loadingOlder = false,
 }: {
   compact?: boolean;
   agentId?: string;
+  loadOlder?: () => void;
+  loadingOlder?: boolean;
   messages: Message[];
   container: RefObject<HTMLDivElement | null>;
   storageKey: string;
@@ -257,6 +261,16 @@ export default function PromptNavigator({
                 )}
               </div>
             ))}
+            {!searching && loadOlder && (
+              <Button
+                variant="subtle"
+                size="compact-xs"
+                loading={loadingOlder}
+                onClick={loadOlder}
+              >
+                Load earlier messages
+              </Button>
+            )}
             {!visible.length && !searchPending && !searchError && (
               <p className="prompt-history-empty">
                 {onlySaved

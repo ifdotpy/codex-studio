@@ -48,11 +48,13 @@ try {
     role: "user",
     text: `Question ${i + 1}: Review component ${i + 1}`,
     title: "You",
+    at: i * 2 + 1,
   }));
   const items = prompts.flatMap((prompt, i) => [
     prompt,
     {
       id: "answer-" + i,
+      at: i * 2 + 2,
       role: "assistant",
       title: "Lead",
       text: Array.from(
@@ -67,10 +69,31 @@ try {
     items,
     order: items.map((m) => m.id),
     replace: true,
+    truncated: true,
+    nextCursor: "prompt-0",
   };
   await page.route("**/api/transcript**", async (route) => {
     if (new URL(route.request().url()).searchParams.get("id") !== lead.id)
       return route.continue();
+    if (
+      new URL(route.request().url()).searchParams.get("before") === "prompt-0"
+    ) {
+      return route.fulfill({
+        json: {
+          ...original,
+          items: [
+            {
+              id: "earlier-prompt",
+              role: "user",
+              text: "Earlier saved input",
+              at: 0,
+            },
+          ],
+          nextCursor: null,
+          truncated: false,
+        },
+      });
+    }
     if (new URL(route.request().url()).pathname === "/api/transcript/search") {
       const query = new URL(route.request().url()).searchParams
         .get("q")
@@ -258,6 +281,88 @@ try {
   );
   assert.equal(await nav.count(), 1);
   await page.screenshot({ path: join(root, "prompt-mobile.png") });
+  await page.keyboard.press("Escape");
+  await composer.fill("");
+  const update = {
+    id: "later-answer",
+    role: "assistant",
+    text: "New live page",
+    at: 1000,
+  };
+  Object.assign(transcript, {
+    items: [update],
+    order: [update.id],
+    truncated: true,
+    nextCursor: update.id,
+  });
+  await page.locator('[data-message="later-answer"]').waitFor();
+  assert.equal(
+    await page.locator('[data-message="prompt-0"]').count(),
+    1,
+    "Live page rollover retains loaded user messages",
+  );
+  await composer.press("ArrowUp");
+  assert.equal(
+    await composer.inputValue(),
+    prompts[7].text,
+    "Recall retains user messages after a live page contains only agent activity",
+  );
+  await page
+    .getByRole("button", { name: "Browse prompts", exact: true })
+    .click();
+  await history.getByRole("textbox", { name: "Search this chat" }).fill("");
+  assert.equal(
+    await history.locator(".prompt-history-entry").count(),
+    8,
+    "Prompt history retains all loaded user messages after rollover",
+  );
+  await history
+    .getByRole("button", { name: "Load earlier messages", exact: true })
+    .click();
+  await history
+    .getByRole("button", { name: "1 Earlier saved input", exact: true })
+    .waitFor();
+  assert.equal(
+    await history.locator(".prompt-history-entry").count(),
+    9,
+    "Prompt history can load saved messages outside the initial range",
+  );
+  await page.keyboard.press("Escape");
+  const restored = {
+    id: "restored-answer",
+    role: "assistant",
+    text: "Restored conversation",
+    at: 2000,
+  };
+  Object.assign(transcript, {
+    items: [restored],
+    order: [restored.id],
+    historyVersion: "restored-version",
+  });
+  await page.locator('[data-message="restored-answer"]').waitFor();
+  assert.equal(
+    await page.locator('[data-message="prompt-0"]').count(),
+    0,
+    "A changed history version invalidates the retained range",
+  );
+  const replacement = {
+    id: "replacement-answer",
+    role: "assistant",
+    text: "Full replacement",
+    at: 3000,
+  };
+  Object.assign(transcript, {
+    items: [replacement],
+    order: [replacement.id],
+    truncated: false,
+    nextCursor: null,
+  });
+  await page.locator('[data-message="replacement-answer"]').waitFor();
+  assert.equal(
+    await page.locator('[data-message="restored-answer"]').count(),
+    0,
+    "A full authoritative snapshot still removes obsolete records",
+  );
   assert.deepEqual(errors, []);
   console.log(
     "PASS prompt navigation, bookmarks, scroll, chat changes, and responsive layout. Evidence: " +

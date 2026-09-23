@@ -360,6 +360,9 @@ export function useMessages(
             page.items,
             liveItems.filter((item) => present.has(item.id)),
           );
+        } else if (!d.truncated) {
+          page.items = liveItems;
+          page.before = null;
         } else {
           // A live snapshot is authoritative for its current time range, including removed queue rows.
           const firstAt = Math.min(
@@ -372,11 +375,28 @@ export function useMessages(
             page.items.filter(
               (item) =>
                 present.has(item.id) ||
-                Number(item.at ?? item.created ?? 0) < firstAt,
+                (!item.pending &&
+                  item.materialized !== false &&
+                  Number(item.at ?? item.created ?? 0) < firstAt),
             ),
             liveItems,
           );
         }
+      }
+      if (!page && !d.unavailable && managed && kind === "agent") {
+        // Retain the loaded range from the first snapshot. Otherwise each live
+        // update evicts messages as tool activity moves the server's page.
+        page = {
+          items: liveItems,
+          before: d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
+          after: null,
+          focused: false,
+          version: d.historyVersion,
+          latest: d,
+        };
+        pages.current.set(scope, page);
+        while (pages.current.size > 12)
+          pages.current.delete(pages.current.keys().next().value!);
       }
       const nextItems = page?.items || liveItems;
       if (managed && kind === "agent") {
