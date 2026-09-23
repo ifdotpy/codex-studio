@@ -401,14 +401,35 @@ try {
     loadEarlierBox.x + loadEarlierBox.width / 2,
     loadEarlierBox.y + loadEarlierBox.height / 2,
   );
+  const olderResponse = await olderPage;
+  assert.equal(olderResponse.status(), 200, "Earlier history request succeeds");
   assert.equal(
-    (await olderPage).status(),
-    200,
-    "Earlier history request succeeds",
+    new URL(olderResponse.url()).searchParams.get("before"),
+    "prompt-0",
+    "The current transcript cursor selects the older page",
   );
-  await history
-    .getByRole("button", { name: "1 Earlier saved input", exact: true })
-    .waitFor();
+  const olderResult = await olderResponse.json();
+  assert.equal(olderResult.items[0]?.text, "Earlier saved input");
+  const earlierEntry = history.getByRole("button", {
+    name: "1 Earlier saved input",
+    exact: true,
+  });
+  try {
+    await earlierEntry.waitFor();
+  } catch (error) {
+    const state = await history.evaluate((dialog) => ({
+      text: dialog.innerText,
+      entries: [...dialog.querySelectorAll(".prompt-history-entry")].map(
+        (entry) => entry.innerText,
+      ),
+      notices: [...document.querySelectorAll('[role="alert"]')].map(
+        (notice) => notice.textContent,
+      ),
+    }));
+    throw new Error(
+      `Earlier page ${olderResponse.url()} returned ${JSON.stringify(olderResult)} but did not render: ${JSON.stringify(state)}. ${error}`,
+    );
+  }
   assert.equal(
     await history.locator(".prompt-history-entry").count(),
     9,
