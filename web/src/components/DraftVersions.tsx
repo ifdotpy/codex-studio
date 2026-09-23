@@ -1,3 +1,4 @@
+import { localDateTime } from "../local-time";
 import { ActionIcon, Button, Popover } from "@mantine/core";
 import { Files } from "lucide-react";
 import { useState } from "react";
@@ -41,7 +42,7 @@ export default function DraftVersions(p: {
               {version.id.endsWith(":conflict")
                 ? "Saved alternative"
                 : Number.isFinite(version.updated) && version.updated > 0
-                  ? new Date(version.updated).toLocaleString()
+                  ? localDateTime(new Date(version.updated))
                   : "Time unavailable"}
               {version.device && !version.id.endsWith(":conflict") && (
                 <span style={{ display: "block", overflowWrap: "anywhere" }}>

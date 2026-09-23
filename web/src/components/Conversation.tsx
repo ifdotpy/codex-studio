@@ -1,3 +1,4 @@
+import { serviceTimeText } from "../local-time";
 import AgentAvatar from "./AgentAvatar";
 import MessageQueue from "./MessageQueue";
 import { useMessageQueue } from "./useMessageQueue";
@@ -847,7 +848,12 @@ export default function Conversation(p: {
         userText(m)
       ) : (
         <StreamingText
-          text={m.text}
+          text={serviceTimeText(
+            m.text,
+            m.at
+              ? new Date(typeof m.at === "number" ? m.at * 1000 : m.at)
+              : undefined,
+          )}
           streaming={!!m.streaming}
           agentId={
             p.room

@@ -1,3 +1,4 @@
+import { serviceTimeText } from "./local-time.ts";
 // Server diagnostics are data, not React children. Keep their original fields
 // available separately from the short message used in labels and notifications.
 export function errorDetails(value: unknown): string {
@@ -48,7 +49,7 @@ export function displayError(value: unknown): string {
     return "";
   }
   try {
-    return message(value, 0) || errorDetails(value);
+    return serviceTimeText(message(value, 0) || errorDetails(value));
   } catch {
     return errorDetails(value);
   }

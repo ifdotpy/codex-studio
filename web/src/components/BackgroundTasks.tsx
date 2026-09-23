@@ -1,3 +1,4 @@
+import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import { displayError } from "../errorPresentation";
 import {
@@ -620,12 +621,12 @@ function TaskDetail({
         <dl className="task-record">
           <div>
             <dt>Created</dt>
-            <dd>{new Date(task.created * 1000).toLocaleString()}</dd>
+            <dd>{localDateTime(new Date(task.created * 1000))}</dd>
           </div>
           {task.finished && (
             <div>
               <dt>Finished</dt>
-              <dd>{new Date(task.finished * 1000).toLocaleString()}</dd>
+              <dd>{localDateTime(new Date(task.finished * 1000))}</dd>
             </div>
           )}
           {task.log && (

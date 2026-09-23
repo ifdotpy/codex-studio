@@ -1,3 +1,4 @@
+import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import { useWorkspaceResource as useResource } from "./useWorkspaceResource";
 import { messageAttentionCount } from "../chatScope";
@@ -81,9 +82,7 @@ const descriptions: Record<string, string> = {
 };
 const date = (value: number | string | undefined) =>
   value
-    ? new Date(
-        typeof value === "number" ? value * 1000 : value,
-      ).toLocaleString()
+    ? localDateTime(new Date(typeof value === "number" ? value * 1000 : value))
     : "";
 const endpoint = (name: string, agent?: Agent) =>
   `/api/${name}${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`;

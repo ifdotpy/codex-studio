@@ -1,3 +1,4 @@
+import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import ClaudeProfile from "./ClaudeProfile";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
@@ -144,10 +145,10 @@ function AccountCapacity({
                 {window.reset && (
                   <time
                     dateTime={new Date(window.reset * 1000).toISOString()}
-                    title={new Date(window.reset * 1000).toLocaleString()}
+                    title={localDateTime(new Date(window.reset * 1000))}
                   >
                     {window.expired ? "Due " : "Resets "}
-                    {new Date(window.reset * 1000).toLocaleString(undefined, {
+                    {localDateTime(new Date(window.reset * 1000), {
                       month: "short",
                       day: "numeric",
                       hour: "2-digit",

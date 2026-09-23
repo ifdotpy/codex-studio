@@ -1,3 +1,4 @@
+import { localTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import { errorDetails } from "../errorPresentation";
 import { useEffect, useRef, useState } from "react";
@@ -501,7 +502,7 @@ function RecordingItem({
     <section className="dictation-item">
       <div className="dictation-item-heading">
         <span>
-          {new Date(row.created).toLocaleTimeString([], {
+          {localTime(new Date(row.created), {
             hour: "2-digit",
             minute: "2-digit",
           })}{" "}

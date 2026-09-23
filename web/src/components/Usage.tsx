@@ -1,3 +1,4 @@
+import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../accountUsage";
 import { useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress } from "@mantine/core";
@@ -464,15 +465,12 @@ export default function Usage({
                                 ).toISOString()}
                                 title={new Date(window.reset * 1000).toString()}
                               >
-                                {new Date(window.reset * 1000).toLocaleString(
-                                  undefined,
-                                  {
-                                    month: "short",
-                                    day: "numeric",
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  },
-                                )}
+                                {localDateTime(new Date(window.reset * 1000), {
+                                  month: "short",
+                                  day: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
                               </time>
                             </>
                           ) : (
@@ -578,14 +576,15 @@ export default function Usage({
                                   credit.expiresAt * 1000,
                                 ).toISOString()}
                               >
-                                {new Date(
-                                  credit.expiresAt * 1000,
-                                ).toLocaleString(undefined, {
-                                  month: "short",
-                                  day: "numeric",
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
+                                {localDateTime(
+                                  new Date(credit.expiresAt * 1000),
+                                  {
+                                    month: "short",
+                                    day: "numeric",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  },
+                                )}
                               </time>
                             </>
                           ) : (
@@ -710,7 +709,7 @@ export default function Usage({
                   ? "Updated"
                   : ""}
               {number(limits?.at) &&
-                ` · ${new Date(limits!.at * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`}
+                ` · ${localTime(new Date(limits!.at * 1000), { hour: "2-digit", minute: "2-digit" })}`}
             </footer>
           </section>
         </Popover.Dropdown>

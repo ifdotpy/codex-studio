@@ -1,3 +1,4 @@
+import { localDateTime } from "../local-time";
 export default function MessageDate({ at }: { at?: number | string | null }) {
   const value =
     at == null ||
@@ -12,7 +13,7 @@ export default function MessageDate({ at }: { at?: number | string | null }) {
       dateTime={valid ? value.toISOString() : undefined}
     >
       {valid
-        ? value.toLocaleString([], {
+        ? localDateTime(value, {
             year: "numeric",
             month: "short",
             day: "numeric",

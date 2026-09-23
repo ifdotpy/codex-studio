@@ -1,3 +1,4 @@
+import { localDateTime } from "../local-time";
 import { useEffect, useState } from "react";
 import { api, errorText } from "../api";
 import type { Account } from "./Accounts";
@@ -100,7 +101,7 @@ export default function NativeRuntimeStatus({
       </p>
       {data.checkedAt != null && data.checkedAt > 0 && (
         <time dateTime={new Date(data.checkedAt * 1000).toISOString()}>
-          Checked {new Date(data.checkedAt * 1000).toLocaleString()}
+          Checked {localDateTime(new Date(data.checkedAt * 1000))}
         </time>
       )}
       {data.error && <p className="native-runtime-error">{data.error}</p>}

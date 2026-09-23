@@ -1,3 +1,4 @@
+import { localDateTime, localTime } from "../local-time";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActionIcon,
@@ -36,9 +37,9 @@ const duration = (n: unknown) =>
         ? `${(n / 1000).toFixed(1)} s`
         : `${(n / 60000).toFixed(1)} min`;
 const time = (n: unknown) =>
-  finite(n) ? new Date(n * 1000).toLocaleString() : "Unavailable";
+  finite(n) ? localDateTime(new Date(n * 1000)) : "Unavailable";
 const shortTime = (n: number) =>
-  new Date(n * 1000).toLocaleTimeString([], {
+  localTime(new Date(n * 1000), {
     hour: "2-digit",
     minute: "2-digit",
   });

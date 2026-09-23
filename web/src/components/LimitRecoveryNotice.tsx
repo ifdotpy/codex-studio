@@ -1,3 +1,4 @@
+import { localDateTime } from "../local-time";
 import { useState } from "react";
 import { Button } from "@mantine/core";
 import type { LimitRecovery } from "../limitRecovery";
@@ -21,7 +22,7 @@ export default function LimitRecoveryNotice({
         <p>
           Reported reset:{" "}
           <time dateTime={new Date(recovery.resetAt * 1000).toISOString()}>
-            {new Date(recovery.resetAt * 1000).toLocaleString()}
+            {localDateTime(new Date(recovery.resetAt * 1000))}
           </time>
         </p>
       )}
