@@ -1,7 +1,7 @@
 import { accountLimits } from "../accountUsage";
 import { useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress } from "@mantine/core";
-import { ChevronUp, Gauge, RefreshCw } from "lucide-react";
+import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
 import type { Agent, Json } from "../types";
 import { api, errorText } from "../api";
 import { useRecoveredLimit } from "./useRecoveredLimit";
@@ -522,6 +522,42 @@ export default function Usage({
                 </p>
               )}
             </div>
+            {agent.provider === "claude" && (
+              <section
+                className="account-reset-credits"
+                aria-label="Claude free limit resets"
+              >
+                <header>
+                  <strong>Free limit resets</strong>
+                  <span>Check on Claude</span>
+                </header>
+                <p>
+                  Claude shows available resets and their expiry. Use the same
+                  account shown above, then confirm “Reset for free” on Claude.
+                </p>
+                <div className="account-reset-credit-row">
+                  <Button
+                    component="a"
+                    href="https://claude.ai/settings/usage"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    size="compact-xs"
+                    variant="default"
+                    rightSection={<ExternalLink size={13} />}
+                  >
+                    Open free resets
+                  </Button>
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    loading={refreshing || loadingLimits}
+                    onClick={() => void refreshLimits()}
+                  >
+                    Refresh after reset
+                  </Button>
+                </div>
+              </section>
+            )}
             {resetCredits && (
               <section
                 className="account-reset-credits"
