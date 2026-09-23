@@ -71,8 +71,8 @@ class TeamDeliveryContract(unittest.TestCase):
         self.assertIsNotNone(self.reason({'id': 'bad', 'kind': 'complaint_response',
                                          'text': '{"complaint_id": []}'}))
 
-    def test_old_review_ids_resolve_real_team_participants(self):
-        for target, recipient, allowed in [('lead', 'worker', True), ('other', 'worker', False),
+    def test_removed_review_events_are_never_delivered(self):
+        for target, recipient, allowed in [('lead', 'worker', False), ('other', 'worker', False),
                                            ('lead', 'peer', False), ('missing', 'worker', False)]:
             event = {'id': f'review:{target}:{recipient}:1:100.000000', 'kind': 'chat_review', 'text': 'Snapshot'}
             self.assertEqual(self.reason(event) is None, allowed)

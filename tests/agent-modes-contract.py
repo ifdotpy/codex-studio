@@ -13,7 +13,6 @@ spec = importlib.util.spec_from_file_location('mode_fixture', Path(__file__).wit
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_agent_modes import guidance
-from codex_chat_reviews import review_schedule, review_tick
 
 
 class AgentModes(unittest.TestCase):
@@ -117,28 +116,6 @@ class AgentModes(unittest.TestCase):
         accepted = self.rt.work_action(self.lead['id'], {'action': 'accept', 'task_id': task['id'], 'result': 'Checked'})
         self.assertEqual(accepted['status'], 'accepted')
 
-    def test_timer_blocks_future_events_preserves_pending_and_resumes_interval(self):
-        with self.rt.lock, self.rt.db() as db:
-            target = self.rt.agent(self.lead['id'], db)
-            review_schedule(self.rt, db, target, {'review_schedule': {'reviewer_id': self.worker['id'], 'interval_minutes': 1, 'expected_revision': 0}})
-            target = self.rt.agent(self.lead['id'], db)
-            target['reviewSchedules'][0]['nextAt'] = 0
-            self.rt.put(db, 'agents', target)
-            self.rt.enqueue(db, self.worker, 'chat_review', 'Prior accepted review', 'prior-review')
-            target = self.rt.agent(self.lead['id'], db)
-            target['reviewSchedules'][0]['lastEventId'] = 'prior-review'
-            self.rt.put(db, 'agents', target)
-        self.mode()
-        with self.rt.lock, self.rt.db() as db:
-            review_tick(self.rt, db, 100)
-            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='prior-review'").fetchone()[0], 'pending')
-            entry = self.rt.agent(self.lead['id'], db)['reviewSchedules'][0]
-            self.assertEqual(entry['status'], 'blocked')
-            self.assertIn('Single agent', entry['reason'])
-        self.mode('multi')
-        with self.rt.lock, self.rt.db() as db:
-            review_tick(self.rt, db, 200)
-            self.assertEqual(self.rt.agent(self.lead['id'], db)['reviewSchedules'][0]['nextAt'], 260)
 
     def test_canonical_legacy_projection_and_restart(self):
         with self.rt.lock, self.rt.db() as db:

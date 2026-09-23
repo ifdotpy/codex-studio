@@ -40,7 +40,6 @@ export interface Room {
   id: string;
   name: string;
   kind: "private" | "broadcast";
-  reviewTargets?: string[];
   rootId?: string;
   members: string[];
   updated: number;

@@ -238,8 +238,6 @@ class RulesMixin:
         now = time.time()
         launch = []
         with self.lock, self.db() as db:
-            from codex_chat_reviews import review_tick
-            review_tick(self, db, now)
             for r in self.records(db, "rules"):
                 if r["status"] != "active" or r.get("inFlight"):
                     continue

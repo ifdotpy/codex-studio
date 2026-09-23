@@ -29,9 +29,10 @@ def _same_team(db, recipient, sender_id):
 
 def validate_event(runtime, db, recipient, event):
     """Return a denial reason, or None. Do not mutate records or call a model."""
-    from codex_chat_reviews import review_pair_allowed
     from codex_peer_teams import peer_pair_allowed
     kind = event['kind']
+    if kind == 'chat_review':
+        return 'Scheduled chat reviews have been removed'
     if kind not in SENSITIVE_KINDS:
         return None
     recipient = _agent(db, recipient['id'])
@@ -47,12 +48,6 @@ def validate_event(runtime, db, recipient, event):
         if 'senderId' not in metadata:
             return None
         sender_id = metadata['senderId']
-    elif kind == 'chat_review':
-        # The scheduler owns this durable key and its participant identities.
-        parts = str(event['id']).split(':')
-        if len(parts) != 5 or parts[0] != 'review' or parts[2] != recipient['id']:
-            return DENIED + ': the review participants are unavailable'
-        sender_id = parts[1]
     else:
         payload = _object(event['text'])
         if kind == 'agent_message':
@@ -70,8 +65,7 @@ def validate_event(runtime, db, recipient, event):
                 if (not isinstance(members, list) or sender_id not in members
                         or recipient['id'] not in members
                         or (not all(_same_team(db, recipient, member) for member in members)
-                            and not (len(members) == 2 and (review_pair_allowed(db, *members)
-                                                        or peer_pair_allowed(db, *members))))):
+                            and not (len(members) == 2 and peer_pair_allowed(db, *members)))):
                     return DENIED + ': the message room crosses team boundaries'
             else:
                 return DENIED + ': the message room is unavailable'
@@ -92,16 +86,8 @@ def validate_event(runtime, db, recipient, event):
             if complaint.get('leadId') != sender_id:
                 return DENIED + ': the complaint responder does not match'
     if not _same_team(db, recipient, sender_id):
-        review_allowed = kind in {'agent_message', 'chat_review'} and review_pair_allowed(db, recipient['id'], sender_id)
-        peer_allowed = kind == 'agent_message' and peer_pair_allowed(db, recipient['id'], sender_id)
-        if not (review_allowed or peer_allowed):
+        if kind != 'agent_message' or not peer_pair_allowed(db, recipient['id'], sender_id):
             return DENIED
-        if kind == 'chat_review':
-            target = _agent(db, sender_id)
-            entry = next((s for s in target.get('reviewSchedules', []) if s.get('reviewerId') == recipient['id']), None)
-            if (not entry or not entry.get('enabled') or entry.get('removed')
-                    or str(entry.get('revision')) != parts[3]):
-                return DENIED + ': the review assignment changed'
     return None
 
 

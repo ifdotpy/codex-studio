@@ -66,13 +66,13 @@ export default function TeamChats({
         ? room.rootId === leadId
         : room.members.length > 0 &&
           (room.members.every((id) => members.has(id)) ||
-            ((!!room.reviewTargets?.length || !!room.peerTeamId) &&
+            (!!room.peerTeamId &&
               room.members.some((id) => members.has(id))))),
   );
   const name = (room: (typeof rooms)[number]) => {
     if (room.kind === "broadcast") return "Team broadcast";
     const peers = room.members.filter((id) => id !== leadId);
-    return !room.reviewTargets?.length && peers.length === 1
+    return peers.length === 1
       ? data.threads.find((agent) => agent.id === peers[0])?.name || room.name
       : room.name;
   };

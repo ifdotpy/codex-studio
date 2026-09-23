@@ -80,12 +80,12 @@ TOOLS = [
          {"scope": {"type": "string", "enum": ["team"]},
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_message", "Share a finding, question, or answer with other agents during work. "
-         "target is user (lead only), a teammate, a user-grouped peer chat, an assigned review partner, parent, lead, or broadcast (your own agent tree). "
+         "target is user (lead only), a teammate, a user-grouped peer chat, parent, lead, or broadcast (your own agent tree). "
          "Broadcasts notify only active agents; other recipients can read them in chat history. "
          "Private chats are visible to their participants and the user. Direct messages wake idle "
          "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
-         {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}, "review_event_id": TEXT, "review_outcome": {"type": "string", "enum": ["no_issue"]}}, ["target", "text"]),
-    tool("orchestration_chat_read", "Read messages in your team rooms, a user-grouped peer private room, or an assigned review pair room. "
+         {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}}, ["target", "text"]),
+    tool("orchestration_chat_read", "Read messages in your team rooms, a user-grouped peer private room. "
          "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
          {"room_id": TEXT, "before": {"type": "integer", "minimum": 1}}, ["room_id"]),
     tool("orchestration_title", "Set a short conversation title from the user's task. "
@@ -196,7 +196,6 @@ Scope and authority:
   Only the user answers or closes a user message. The answer notifies you automatically. Do not create tasks for the user.
 - The user can group lead chats of one project into a peer team. Peers exchange private messages
   but keep separate tasks and subagents. Do not assign work to peers or forward results automatically.
-  Other cross-team messages need a review pair that the user assigned.
 - Omit model, effort and fast_mode on spawn to use the team defaults. Only the user changes team defaults and agent mode.
   Read profiles with orchestration_context topic=profiles. Profiles do not add permissions.
 - For a confirmed defect, give reproduction, evidence, impact and any workaround. Mark a suspicion as a suspicion.
@@ -711,6 +710,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             self.setup_tool_requests(db)
             from codex_user_messages import migrate
             migrate(self, db)
+            from codex_state_cleanup import remove_review_assignments
+            remove_review_assignments(self, db)
             self.setup_workspace(db)
             self.setup_rules(db)
             from codex_monitor_recovery import recover_monitor_results, acknowledge_monitor_result
@@ -2573,17 +2574,11 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     def parent_event(self, db, a, event_id, text):
         if a.get("parentId") and a["autoWake"]:
-            from codex_chat_reviews import parent_review, _save_metadata
-            provenance, no_issue = parent_review(db, a, event_id)
-            if no_issue:
-                return
             parent = self.agent(a["parentId"], db)
             key = "child:" + a["id"] + ":" + event_id
             self.enqueue(db, parent, "child_result", json.dumps({"agent_id": a["id"],
                 "name": a["name"], "status": a["status"], "cwd": a["cwd"],
                 "branch": a.get("branch"), "result": text[:16000]}, ensure_ascii=False), key)
-            if provenance:
-                _save_metadata(db, key, reviewFeedback=provenance)
 
     def record_task(self, db, a, method, p, stale):
         """Keep process lifetimes separate from model turns, including late exits."""
@@ -3206,7 +3201,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 elif name in {"orchestration_status", "orchestration_peers"}:
                     value = self.model_directory(a["id"], name, args)
                 elif name == "orchestration_message":
-                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"), review_event_id=args.get("review_event_id"), review_outcome=args.get("review_outcome"))
+                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"))
                 elif name == "orchestration_chat_read":
                     value = self.chat_read(args["room_id"], a["id"], args.get("before"), model=True)
                 elif name == "orchestration_send":
@@ -3600,8 +3595,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             if peer_team:
                 room.update(peerTeamId=peer_team["id"], peerTeamName=peer_team["name"])
             if viewer and any(agents[m].get("rootId") != viewer_root for m in members):
-                from codex_chat_reviews import review_pair_allowed
-                if room['kind'] != 'private' or len(members) != 2 or not (peer_team or review_pair_allowed(db, *members)):
+                if room['kind'] != 'private' or len(members) != 2 or not peer_team:
                     continue
             room["members"] = members
             room["name"] = ("All agents" if room.get("rootId") == "all" else
@@ -3643,7 +3637,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                        (r.get("kind") == "broadcast" and r.get("rootId") == root_id) or
                        (r.get("kind") != "broadcast" and r.get("members") and
                         (set(r["members"]).issubset(members) or
-                         ((r.get("reviewTargets") or r.get("peerTeamId")) and set(r["members"]) & members)))]
+                         (r.get("peerTeamId") and set(r["members"]) & members)))]
                 room = {"id": room_id, "name": root["name"], "members": sorted(members)}
                 rows = db.execute(
                     "SELECT * FROM runtime_chat_messages WHERE room IN (SELECT value FROM json_each(?)) "
@@ -3664,7 +3658,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             return {"room": room, "messages": messages,
                     "nextBefore": messages[0]["seq"] if len(rows) > limit else None}
 
-    def chat_message(self, sender_id, target, text, key, epoch=None, *, importance="message", progress_key=None, progress_version=None, review_event_id=None, review_outcome=None):
+    def chat_message(self, sender_id, target, text, key, epoch=None, *, importance="message", progress_key=None, progress_version=None):
         if importance not in {"message", "progress", "question", "blocker", "result"}:
             raise ValueError("Unknown message importance")
         if progress_key is not None or progress_version is not None:
@@ -3690,10 +3684,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 recipients = [a for a in self.records(db, "agents")
                               if root == a["rootId"] and not a.get("deletedAt")]
             else:
-                from codex_chat_reviews import review_pair_allowed
                 from codex_peer_teams import peer_pair_allowed
-                recipient = (self.agent(target, db) if (review_pair_allowed(db, sender_id, target)
-                             or peer_pair_allowed(db, sender_id, target))
+                recipient = (self.agent(target, db) if peer_pair_allowed(db, sender_id, target)
                              else self.checked_actor(db, target, sender_id))
                 if recipient.get("deletedAt"):
                     raise ValueError("Recipient conversation was deleted")
@@ -3704,8 +3696,6 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 recipients = [recipient]
             request = {"sender": sender_id, "room": room["id"], "text": text, "importance": importance,
                        "progress_key": progress_key, "progress_version": progress_version}
-            if review_event_id is not None or review_outcome is not None:
-                request.update(review_event_id=review_event_id, review_outcome=review_outcome)
             signature, saved = self.operation_receipt(db, key, request)
             if saved is not None:
                 return saved
@@ -3716,11 +3706,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if (previous["room"], previous["sender"], previous["text"]) != (room["id"], sender_id, text):
                     raise ValueError("This message id has different content")
                 return {"id": key, "room": room["id"], "deliveries": json.loads(previous["deliveries"])}
-            from codex_chat_reviews import message_review, record_review_message, _save_metadata
-            provenance = message_review(db, sender, target, importance, review_event_id, review_outcome)
             from codex_agent_modes import assert_worker_input
             for recipient in recipients:
-                if recipient["id"] != sender_id and review_outcome != "no_issue":
+                if recipient["id"] != sender_id:
                     assert_worker_input(self, db, recipient)
             old_room = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room["id"],)).fetchone()
             if old_room:
@@ -3731,7 +3719,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             for recipient in recipients:
                 if recipient["id"] == sender_id:
                     continue
-                if (review_outcome == "no_issue" or not recipient["autoWake"] or self.empty_lead(db, recipient)
+                if (not recipient["autoWake"] or self.empty_lead(db, recipient)
                         or (room["kind"] == "broadcast" and (recipient.get("nativeFailureHold")
                             or recipient["status"] not in {"queued", "starting", "running", "waiting", "approval"}))):
                     deliveries[recipient["id"]] = "stored_only"
@@ -3745,10 +3733,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 event = json.dumps(payload, ensure_ascii=False)
                 event_id = "chat:" + key + ":" + recipient["id"]
                 self.enqueue(db, recipient, "agent_message", event, event_id)
-                if provenance:
-                    _save_metadata(db, event_id, reviewFeedback=provenance)
                 deliveries[recipient["id"]] = "queued"
-            record_review_message(db, provenance, key, review_event_id, review_outcome)
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
             return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})

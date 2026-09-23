@@ -459,9 +459,9 @@ class WorkMixin:
     def chat_organization(self, key, data):
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
-            if 'review_schedule' in data:
-                from codex_chat_reviews import review_schedule
-                return review_schedule(self, db, a, data)
+            allowed = {'id', 'read_state', 'project_folder', 'project_path', 'expected_revision', 'expected_folder', 'pinned', 'archived', 'project'}
+            if set(data) - allowed:
+                raise ValueError('Unknown chat organization field')
             if 'read_state' in data:
                 from codex_chat_read_state import read_state
                 return read_state(self, db, a, data)

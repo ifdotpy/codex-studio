@@ -21,7 +21,6 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
   BookOpen,
-  ChevronRight,
   Clock3,
   FileDiff,
   Minimize2,
@@ -69,7 +68,6 @@ import {
 import { useChatReadState } from "./components/useChatReadState";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
-import ReviewSchedules from "./components/ReviewSchedules";
 import SessionActivity from "./components/SessionActivity";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
@@ -1717,32 +1715,6 @@ export default function App() {
               }
             />
           </section>
-          {agent?.source === "managed" && (
-            <details className="settings-reviews">
-              <summary>
-                <ChevronRight size={14} aria-hidden="true" />
-                Review other chats
-              </summary>
-              <ReviewSchedules
-                key={`reviews:${data.stateDir}:${workspaceId}:${agent.id}`}
-                agent={agent}
-                agents={data.threads}
-                workspaceId={workspaceId}
-                stateDir={data.stateDir}
-                refresh={refresh}
-                openRoom={(roomId) => {
-                  setSettingsOpen(false);
-                  setWorkspaceSection("messages");
-                  setWorkspaceFocus({
-                    id: roomId,
-                    roomId,
-                    requestId: crypto.randomUUID(),
-                  });
-                  setWorkspaceOpen(true);
-                }}
-              />
-            </details>
-          )}
           {agent?.cwd && (
             <Button
               variant="subtle"

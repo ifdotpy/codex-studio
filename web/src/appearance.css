@@ -120,36 +120,6 @@
 .settings-models {
   gap: 8px;
 }
-.settings-reviews {
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  padding: 12px 0;
-}
-.settings-reviews > summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  list-style: none;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-}
-.settings-reviews > summary::-webkit-details-marker {
-  display: none;
-}
-.settings-reviews > summary > svg {
-  transition: transform 0.15s;
-}
-.settings-reviews[open] > summary > svg {
-  transform: rotate(90deg);
-}
-.settings-reviews > summary:hover {
-  color: var(--text);
-}
-.settings-reviews[open] > summary {
-  margin-bottom: 14px;
-}
 .chat-settings-panel .settings-new-chat {
   justify-self: start;
   font-size: 12px;

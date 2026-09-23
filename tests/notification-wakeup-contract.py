@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pending notification reconciliation and scheduled review provenance. Fake native only."""
+"""Pending notification reconciliation. Fake native only."""
 
 import importlib.util
 import json
@@ -10,7 +10,6 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('wake_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from codex_chat_reviews import _snapshot
 from codex_wakeups import pending_batch
 
 
@@ -166,104 +165,13 @@ class WakeupContract(unittest.TestCase):
             self.assertTrue(all(row.get('preserveProgress') for row in rows[:-1]))
             self.assertEqual(rows[-1]['text'], '{unknown')
 
-    def review(self):
-        lead = self.start(self.lead())
-        self.complete(lead)
-        reviewer = self.worker(lead, 'Reviewer', prompt='')
-        with patch('codex_chat_reviews.time.time', return_value=1000):
-            self.runtime.chat_organization(lead['id'], {'id': lead['id'], 'review_schedule': {
-                'reviewer_id': reviewer['id'], 'expected_revision': 0, 'interval_minutes': 1}})
-        self.tick(1060)
-        self.dispatch(reviewer)
-        return lead, reviewer, self.runtime.agent(lead['id'])['reviewSchedules'][0]['lastEventId']
 
-    def tick(self, now):
-        with patch('codex_rules.time.time', return_value=now):
-            self.runtime.rules_tick()
 
-    def no_issue(self, reviewer, lead, event, key='no-issue'):
-        return self.runtime.chat_message(reviewer['id'], lead['id'], 'No issue. Checks remain valid.', key,
-            importance='result', review_event_id=event, review_outcome='no_issue')
 
-    def test_no_issue_review_stores_result_and_has_no_feedback_wakeup(self):
-        lead, reviewer, event = self.review()
-        receipt = self.no_issue(reviewer, lead, event)
-        self.assertEqual(receipt['deliveries'][lead['id']], 'stored_only')
-        self.complete(reviewer, 'No issue. Checks remain valid.')
-        self.quiet_dispatch(lead)
-        self.assertEqual(self.events(lead, 'child_result'), [])
-        self.assertEqual(len(self.runtime.chat_read(receipt['room'], lead['id'])['messages']), 1)
-        # Exact retries remain receipts after completion; changed content fails.
-        self.assertEqual(self.no_issue(reviewer, lead, event), receipt)
-        with self.assertRaises(ValueError):
-            self.no_issue(reviewer, lead, event, 'new-no-issue')
-        for now in (1120, 1180, 1240):
-            self.tick(now)
-            self.quiet_dispatch(reviewer)
-        self.assertEqual(len(self.events(reviewer, 'chat_review')), 1)
-        self.assertEqual(self.runtime.agent(lead['id'])['reviewSchedules'][0]['status'], 'unchanged')
 
-    def test_legacy_review_feedback_does_not_change_substantive_fingerprint(self):
-        lead, reviewer, event = self.review()
-        with self.runtime.db() as db:
-            before = _snapshot(db, self.runtime.agent(lead['id'], db))[1]
-        self.runtime.chat_message(reviewer['id'], lead['id'], 'No issue. Checks remain valid.', 'legacy', importance='result')
-        self.complete(reviewer, 'No issue. Checks remain valid.')
-        self.dispatch(lead)
-        self.complete(lead, 'No changes required.')
-        with self.runtime.db() as db:
-            self.assertEqual(_snapshot(db, self.runtime.agent(lead['id'], db))[1], before)
-        self.tick(1120)
-        self.quiet_dispatch(reviewer)
-        self.assertEqual(len(self.events(reviewer, 'chat_review')), 1)
 
-    def test_findings_questions_tools_and_user_changes_remain_substantive(self):
-        lead, reviewer, event = self.review()
-        self.no_issue(reviewer, lead, event)
-        self.runtime.chat_message(reviewer['id'], lead['id'], 'The check fails. Please fix it.', 'finding', importance='result')
-        self.runtime.chat_message(reviewer['id'], lead['id'], 'Which requirement applies?', 'question', importance='question')
-        self.complete(reviewer, 'One issue remains.')
-        self.assertEqual(len(self.events(lead, 'agent_message')), 2)
-        self.assertEqual(len(self.events(lead, 'child_result')), 1)
-        self.dispatch(lead)
-        active = self.runtime.agent(lead['id'])
-        self.runtime.server.notify({'method': 'item/completed', 'params': {'threadId': active['threadId'],
-            'turnId': active['turnId'], 'item': {'id': 'fix-check', 'type': 'commandExecution',
-                'command': 'fixture check', 'exitCode': 0, 'aggregatedOutput': 'Fixed and passed'}}})
-        self.complete(lead)
-        self.tick(1120)
-        self.assertEqual(len(self.events(reviewer, 'chat_review')), 2)
-        with self.runtime.db() as db:
-            prior = _snapshot(db, self.runtime.agent(lead['id'], db))[1]
-        self.runtime.send(lead['id'], 'New user work', 'new-user')
-        with self.runtime.db() as db:
-            self.assertNotEqual(_snapshot(db, self.runtime.agent(lead['id'], db))[1], prior)
 
-    def test_mixed_review_turn_does_not_allow_no_issue_suppression(self):
-        lead, reviewer, event = self.review()
-        current = self.runtime.agent(reviewer['id'])
-        with self.runtime.db() as db:
-            key = self.runtime.enqueue(db, current, 'user', 'Also do accepted work', 'mixed-user')
-            db.execute("UPDATE runtime_events SET status='delivered',turn_id=? WHERE id=?", (current['turnId'], key))
-        with self.assertRaises(ValueError):
-            self.no_issue(reviewer, lead, event)
-        self.runtime.chat_message(reviewer['id'], lead['id'], 'Accepted work result.', 'mixed-result', importance='result')
-        self.complete(reviewer)
-        self.assertEqual(len(self.events(lead, 'child_result')), 1)
-        with self.runtime.db() as db:
-            meta = db.execute('SELECT record FROM runtime_event_meta WHERE id=?',
-                              ('chat:mixed-result:' + lead['id'],)).fetchone()
-            self.assertFalse(meta and json.loads(meta[0]).get('reviewFeedback'))
 
-    def test_legacy_gateway_delivers_explicit_no_issue_receipt(self):
-        lead, reviewer, event = self.review()
-        reply = self.tool(reviewer, 'orchestration_send', {'agent_id': 'workspace', 'text': json.dumps({
-            'tool': 'orchestration_message', 'arguments': {'target': lead['id'], 'text': 'No issue.',
-                'importance': 'result', 'review_event_id': event, 'review_outcome': 'no_issue'}})})
-        self.assertTrue(reply['success'], reply)
-        self.complete(reviewer)
-        self.quiet_dispatch(lead)
-        self.assertEqual(self.events(lead, 'child_result'), [])
 
     def test_unknown_complaint_ids_and_payload_types_are_preserved(self):
         lead = self.start(self.lead())
@@ -290,25 +198,7 @@ class WakeupContract(unittest.TestCase):
         self.dispatch(lead)
         self.assertNotIn('budgetBlocked', self.runtime.agent(lead['id']))
 
-    def test_invalid_no_issue_is_proven_not_applied(self):
-        from codex_tool_requests import request_result_outcome
-        lead, reviewer, event = self.review()
-        reply = self.tool(reviewer, 'orchestration_message', {'target': lead['id'], 'text': 'No issue.',
-            'importance': 'result', 'review_event_id': 'wrong-event', 'review_outcome': 'no_issue'})
-        self.assertFalse(reply['success'])
-        self.assertEqual(request_result_outcome({'tool': 'orchestration_message'}, reply), 'not_applied')
-        self.assertEqual(self.events(lead, 'agent_message'), [])
 
-    def test_failed_no_issue_review_still_reports_failure(self):
-        lead, reviewer, event = self.review()
-        self.no_issue(reviewer, lead, event)
-        current = self.runtime.agent(reviewer['id'])
-        self.runtime.server.notify({'method': 'turn/completed', 'params': {'threadId': current['threadId'],
-            'turn': {'id': current['turnId'], 'status': 'failed', 'error': {'message': 'Review failed'}}}})
-        f.eventually(lambda: not self.runtime.agent(reviewer['id']).get('inFlight'))
-        result = self.events(lead, 'child_result')
-        self.assertEqual(len(result), 1)
-        self.assertIn('Review failed', result[0]['text'])
 
     def hold_start(self):
         captured = []
