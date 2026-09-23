@@ -1,5 +1,6 @@
 """Small model views over durable Studio records. UI storage remains complete."""
 import base64
+import difflib
 import hashlib
 import json
 import os
@@ -337,10 +338,39 @@ class EfficiencyMixin:
         return {'room': room, 'messages': page,
                 'nextBefore': page[0]['seq'] if page and (more or len(page) < len(messages)) else None}
 
+    def remember_role_text(self, text):
+        # A later role change is sent as a diff against the delivered version.
+        # Without this snapshot the full role text is sent again.
+        path = self.root / 'context-snapshots' / (digest(text) + '.txt')
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix('.tmp.' + str(os.getpid()))
+            temporary.write_text(text, encoding='utf-8')
+            os.replace(temporary, path)
+
+    def role_update(self, previous_version, text):
+        try:
+            previous = (self.root / 'context-snapshots' / (previous_version + '.txt')).read_text(encoding='utf-8')
+        except (OSError, TypeError):
+            return text
+        if digest(previous) != previous_version:
+            return text
+        diff = ''.join(difflib.unified_diff((previous + '\n').splitlines(True), (text + '\n').splitlines(True),
+                                            'delivered', 'current', n=2))
+        # A large rewrite is clearer as the complete current text.
+        if not diff or len(diff) * 2 > len(text):
+            return text
+        header, source = text.split('\n', 2)[:2]
+        return ('[Studio role skill update: ' + header.removeprefix('[Studio role skill: ').removesuffix(']') + ']\n'
+                'Studio changed your role skill. Apply this diff to the role skill you received earlier. '
+                'It is not a user message. ' + source + '\n' + diff + '[End Studio role skill update]')
+
     def preparation_context_versions(self, actor, params):
         from codex_progress import progress_context
         values = {'roleSkill': self.role_guidance(actor),
                   'progressFile': progress_context(self.root, actor['id'])}
+        if values['roleSkill'] in params.get('developerInstructions', ''):
+            self.remember_role_text(values['roleSkill'])
         # Guidance can change between construction and capture. Only acknowledge
         # a version whose exact text is present in the submitted instructions.
         instructions = params.get('developerInstructions', '')
@@ -445,7 +475,8 @@ class EfficiencyMixin:
         role_skill = self.role_guidance(actor)
         versions['roleSkill'] = digest(role_skill)
         if known.get('roleSkill') != versions['roleSkill']:
-            blocks.append(role_skill)
+            self.remember_role_text(role_skill)
+            blocks.append(self.role_update(known.get('roleSkill'), role_skill))
         plan = self.reported_plan(db, actor['rootId'])
         if plan is not None or 'plan' in known:
             version = digest(plan); versions['plan'] = version

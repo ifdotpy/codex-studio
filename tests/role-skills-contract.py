@@ -92,9 +92,22 @@ class RoleSkillsContract(unittest.TestCase):
         self.assertNotIn("[Studio role skill:", context("unchanged", True))
         guidance = self.runtime.role_guidance(actor)
         with patch.object(self.runtime, "role_guidance", return_value=guidance + "\nNew role instruction"):
-            self.assertIn("New role instruction", context("updated", True))
+            update = context("updated", True)
+            # A small change arrives as a diff, not as a second full role copy.
+            self.assertIn("[Studio role skill update: codex-subagent]", update)
+            self.assertIn("\n+New role instruction\n", update)
+            self.assertNotIn("[Studio role skill: codex-subagent]", update)
+            self.assertLess(len(update), len(guidance) // 2)
             self.assertNotIn("New role instruction", context("same-update", True))
             self.assertIn("New role instruction", context("compacted", compactions=1))
+        rewrite = "[Studio role skill: codex-subagent]\nSource: x\nShared tool guidance: y\nRewritten\n[End Studio role skill]"
+        with patch.object(self.runtime, "role_guidance", return_value=rewrite):
+            self.assertIn(rewrite, context("rewritten", True))
+        for snapshot in (self.runtime.root / "context-snapshots").glob("*.txt"):
+            snapshot.unlink()
+        with patch.object(self.runtime, "role_guidance", return_value=guidance):
+            # Without the delivered text Studio cannot build a diff.
+            self.assertIn(guidance, context("unknown-previous", True))
 
     def test_worker_request_stays_with_lead_until_explicit_forward(self):
         lead = self.agent_update(self.lead(), autoWake=True)
