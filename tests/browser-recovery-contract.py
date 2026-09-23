@@ -61,7 +61,7 @@ class BrowserRecovery(unittest.TestCase):
         # Browser availability is covered by browser-native-contract and the live test.
         self.available = patch.object(recovery, 'busy', wraps=recovery.busy)
         self.runtime.new_thread_params = lambda a: {'config': {'features.multi_agent': False}, 'developerInstructions': 'Original instructions', 'dynamicTools': [], 'model': a['model']}
-        self.config = patch('codex_browser.browser_config', return_value={'mcp_servers.node_repl': {}})
+        self.config = patch('codex_browser.browser_status', return_value=({'mcp_servers.node_repl': {}}, None))
         self.config.start()
         self.addCleanup(self.config.stop)
 
@@ -158,7 +158,7 @@ class BrowserRecovery(unittest.TestCase):
 
     def test_disabled_integration_does_not_unsubscribe(self):
         self.event();self.idle()
-        with patch('codex_browser.browser_config', return_value={}):
+        with patch('codex_browser.browser_status', return_value=({}, 'The browser service file is missing')):
             self.tick();self.wait_stage('failed')
         self.assertFalse(any(m == 'thread/unsubscribe' for m, _ in self.server.calls))
 

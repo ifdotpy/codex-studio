@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from codex_browser import GUIDANCE, browser_config, configure_browser, ensure_skill, skill_root
+from codex_browser import GUIDANCE, browser_config, browser_status, configure_browser, ensure_skill, skill_root
 
 
 class SkillServer:
@@ -100,6 +100,44 @@ class BrowserContract(unittest.TestCase):
     def test_missing_skill_is_not_advertised(self):
         self.skill.unlink()
         self.assertEqual(self.config(), {})
+
+    def market_layout(self, cache_version="26.917", market_version="26.917"):
+        # Codex 26.917 installs the cache without skills; the marketplace keeps them.
+        self.skill.unlink()
+        cache = self.skills.parent
+        (cache / ".codex-plugin").mkdir(parents=True)
+        (cache / ".codex-plugin/plugin.json").write_text(json.dumps({"name": "chrome", "version": cache_version}))
+        plugin = self.market / "plugins/chrome"
+        (plugin / "skills/control-chrome").mkdir(parents=True)
+        (plugin / "skills/control-chrome/SKILL.md").write_text("---\nname: control-chrome\n---\n")
+        (plugin / "scripts").mkdir()
+        (plugin / "scripts/browser-client.mjs").touch()
+        (plugin / ".codex-plugin").mkdir()
+        (plugin / ".codex-plugin/plugin.json").write_text(json.dumps({"name": "chrome", "version": market_version}))
+        return plugin / "skills"
+
+    def test_marketplace_skills_used_when_cache_has_none(self):
+        expected = self.market_layout()
+        self.assertEqual(skill_root(self.shared), expected.resolve())
+        self.assertEqual(set(self.config()), {"mcp_servers.node_repl"})
+
+    def test_marketplace_skills_of_another_version_are_refused(self):
+        self.market_layout(market_version="26.918")
+        self.assertIsNone(skill_root(self.shared))
+        config, reason = browser_status(self.target, self.shared)
+        self.assertEqual(config, {})
+        self.assertIn("control-chrome skill", reason)
+
+    def test_marketplace_without_browser_client_is_refused(self):
+        plugin = self.market_layout().parent
+        (plugin / "scripts/browser-client.mjs").unlink()
+        self.assertIsNone(skill_root(self.shared))
+
+    def test_disabled_browser_reports_reason(self):
+        self.service.unlink()
+        self.assertEqual(browser_status(self.target, self.shared), ({}, "The browser service file is missing"))
+        self.service.touch()
+        self.assertIsNone(browser_status(self.target, self.shared)[1])
 
     def test_invalid_config_error_does_not_expose_contents(self):
         (self.target / "config.toml").write_text('secret-credential=[bad')

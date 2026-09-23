@@ -157,10 +157,10 @@ def reconnect(runtime, agent_id, operation):
                     actor["browserRecovery"]["stage"] = "pending"
                     runtime.put(db, "agents", actor)
                     return
-            from codex_browser import browser_config
-            config = browser_config(runtime.accounts.home(operation["accountKey"]), runtime.accounts.base_home)
+            from codex_browser import browser_status
+            config, reason = browser_status(runtime.accounts.home(operation["accountKey"]), runtime.accounts.base_home)
             if not config:
-                raise RuntimeError("Native browser integration is disabled or its runtime files are unavailable")
+                raise RuntimeError("Native browser integration is unavailable: " + reason)
             server = runtime.connect(operation["accountKey"])
             params = runtime.new_thread_params(actor)
             params.pop("dynamicTools", None)
