@@ -842,7 +842,15 @@ def recover_context_failures(rt, db, agents):
             and receipt.get('phase') == 'unchanged' and receipt.get('source') == _identity(a)
             and receipt.get('settings') == rt.preparation_settings(a)
             and isinstance(receipt.get('snapshot'), dict))
-        exact_error = isinstance(a.get('error'), str) and a['error'] in errors
+        # Claude has no Codex rollout. Restore only the exact input batch
+        # rejected by the old read-only preflight, never a submitted request.
+        wrong_provider = (a.get('provider') == 'claude'
+            and a.get('error') == 'The native context has no saved rollout path'
+            and receipt.get('error') == a['error'] and receipt.get('phase') == 'failed'
+            and receipt.get('agent') == a['id'] and receipt.get('source') == _identity(a)
+            and receipt.get('settings') == rt.preparation_settings(a)
+            and not any(receipt.get(k) for k in ('rpcMethod', 'rpcId', 'newThreadId', 'snapshot')))
+        exact_error = wrong_provider or (isinstance(a.get('error'), str) and a['error'] in errors)
         if (a.get('status') != 'failed' or (not exact_error and not preparation_race) or a.get('inFlight')
                 or a.get('contextRepairWait') or not attempt.get('events')
                 or not _unsubmitted(a, attempt.get('id'))):
@@ -951,6 +959,9 @@ def repair_before_start(rt, agent):
     try:
         with rt.lock, rt.db() as db:
             current = rt.agent(agent['id'], db)
+            if _identity(current) == _identity(agent) and current.get('provider') == 'claude':
+                assert_context_available(current)
+                return current
             if _identity(current) == _identity(agent) and not current.get('contextRepairWait'):
                 if _optional_monitor_repair(rt, db, current):
                     return current
@@ -972,6 +983,9 @@ def _repair(rt, key, attempt_id):
         a = rt.agent(key, db)
         old = a.get('contextRepair') or {}
         assert_context_available(a)
+        # This operation rewrites Codex JSONL rollouts. Claude owns its history.
+        if a.get('provider') == 'claude':
+            return a
         if not a.get('threadId'):
             return a
         events = verified_events(db, a)
