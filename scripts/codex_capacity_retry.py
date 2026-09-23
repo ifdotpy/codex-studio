@@ -124,7 +124,7 @@ class CapacityRetryMixin:
             raise ValueError('Team token budget reached. Increase the budget before retry.')
         active = [t for t in agents if t['id'] != a['id'] and
                   (t.get('inFlight') or t['status'] in {'running', 'starting', 'approval'})]
-        limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '16'))))
+        limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '32'))))
         if len(active) >= limit or sum(t['rootId'] == a['rootId'] for t in active) >= a['concurrency']:
             raise ValueError('Wait for an available agent slot before retry.')
 

@@ -501,16 +501,19 @@ and all-agent scopes, a period filter, call details, and JSON export.
 
 ## Capacity and work ownership
 
-Each team defaults to 8 concurrent agents and a maximum of 64 total agents,
+Each team defaults to 32 concurrent agents and a maximum of 64 total agents,
 including its lead. `codex-control configure` supports 1 to 64 concurrent agents and 1 to 256
-agents in the team. `CODEX_CANVAS_CONCURRENCY` sets the server-wide cap, default 16,
+agents in the team. `CODEX_CANVAS_CONCURRENCY` sets the server-wide cap, default 32,
 maximum 64. Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
-Implementers receive separate Git worktrees under the parent's repository:
-`.worktrees/codex-agents/<agent-id>`, on branch `codex-agent/<agent-id>`.
-They start from committed HEAD. Parent changes that are not committed are absent.
-Reviewers use the parent's directory. They have a read-only sandbox when YOLO is off.
+`orchestration_spawn` accepts `cwd`, absolute or relative to the lead's folder. The default
+is the lead's folder. An implementer receives a separate Git worktree of the repository that
+contains `cwd`: `.worktrees/codex-agents/<agent-id>`, on branch `codex-agent/<agent-id>`.
+It starts from committed HEAD. Parent changes that are not committed are absent.
+Outside a Git repository the implementer works directly in `cwd`, and Studio shows a warning.
+Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
+Reviewers use the chosen folder. They have a read-only sandbox when YOLO is off.
 The lead owns review and integration. The runtime never merges or deletes worktrees.
 
 An optional team token budget sums Codex's reported thread usage. This includes
@@ -625,7 +628,7 @@ app-server process. Set `CODEX_CANVAS_URL` or pass `--url` for another local por
 ```bash
 scripts/codex-control models
 scripts/codex-control create 'Review the project and delegate independent checks' \
-  --cwd /absolute/project --name Lead --concurrency 8 --max-agents 64
+  --cwd /absolute/project --name Lead --concurrency 32 --max-agents 64
 scripts/codex-control list
 scripts/codex-control send AGENT_ID 'Inspect the worker results and continue'
 scripts/codex-control monitor AGENT_ID 'your-command' --timeout-minutes 60

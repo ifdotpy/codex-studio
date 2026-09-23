@@ -131,7 +131,7 @@ class EfficiencyMixin:
             defaults = self.worker_defaults(self.agent(actor['rootId'], db))
             from codex_native_errors import native_thread_block
             from codex_safety_buffering import active as safety_retry_active
-            global_limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '16'))))
+            global_limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '32'))))
             active = [a for a in agents if a.get('inFlight') or a['status'] in {'running', 'starting', 'approval'}]
             team_active = sum(a['rootId'] == actor['rootId'] for a in active)
             root = self.agent(actor['rootId'], db)

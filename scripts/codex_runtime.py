@@ -1194,7 +1194,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             cwd = str(Path((data.get("cwd") or p["cwd"]) if p else data.get("cwd", "")).expanduser().resolve())
             if not Path(cwd).is_dir() or (not p and not data.get("cwd")):
                 raise ValueError("Select an existing project directory")
-            concurrency = int(data.get("concurrency", 8))
+            concurrency = int(data.get("concurrency", 32))
             max_agents = int(data.get("maxAgents", 64))
             if not 1 <= concurrency <= 64 or not 1 <= max_agents <= 256:
                 raise ValueError("Concurrency must be 1 to 64; team size must be 1 to 256")
@@ -2256,7 +2256,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 ),
                 key=lambda a: (a["parentId"] is not None, a["created"]),
             )
-            global_limit = max(1, min(64, int(os.environ.get("CODEX_CANVAS_CONCURRENCY", "16"))))
+            global_limit = max(1, min(64, int(os.environ.get("CODEX_CANVAS_CONCURRENCY", "32"))))
             for a in candidates:
                 from codex_radio import holds_floor
                 if holds_floor(self, db, a):

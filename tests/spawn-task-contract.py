@@ -154,5 +154,11 @@ class SpawnTask(unittest.TestCase):
         self.assertIn('not in a git repository', stored['worktreeWarning'])
 
 
+    def test_new_teams_allow_32_concurrent_agents(self):
+        self.assertEqual(self.rt.agent(self.lead['id'])['concurrency'], 32)
+        worker = self.spawn('limit')
+        self.assertEqual(self.rt.agent(worker['id'])['concurrency'], 32)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
