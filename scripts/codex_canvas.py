@@ -713,7 +713,9 @@ def make_server(canvas, port=0, public_origin=None):
                         if session_cost_reader[0] is None:
                             from codex_session_costs import SessionCostReader
                             session_cost_reader[0] = SessionCostReader(canvas.root / "canvas.sqlite3",
-                                                                        pricing_catalog[0])
+                                                                        pricing_catalog[0],
+                                                                        accounts=getattr(canvas.runtime, "accounts", None),
+                                                                        state_root=canvas.root)
                     return self.send(session_cost_reader[0].snapshot(agent_id))
                 if path.path == "/api/desktop":
                     from codex_native_runtime import status as native_runtime_status

@@ -126,8 +126,11 @@ try {
     return route.fulfill({ json: { ...costs, accountKey } });
   });
   let selectedAccount = "default";
+  let sessionPricing = "loading";
   await page.route("**/api/session-cost?*", (route) =>
-    route.fulfill({ json: { totalUSD: 0.42, estimated: true, breakdown: { providers: { openai: 0.3, anthropic: 0.12 } }, unknownModels: ["gpt-5.6-luna"], method: "API rates" } }),
+    route.fulfill({ json: sessionPricing === "loading"
+      ? { totalUSD: null, pricingState: "loading", unknownModels: [], method: "Loading public API prices." }
+      : { totalUSD: 0.42, estimated: true, breakdown: { providers: { openai: 0.3, anthropic: 0.12 } }, unknownModels: ["gpt-5.6-luna"], method: "API rates" } }),
   );
   await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
@@ -149,6 +152,10 @@ try {
   await load();
   assert.equal((await toggle().innerText()).trim(), "Limits");
   assert.match(await page.locator("#usage-footer").innerText(), /Context 40%/);
+  await page.getByText("Loading prices", { exact: true }).waitFor();
+  assert.doesNotMatch(await page.locator("#usage-footer").innerText(), /Unpriced:/);
+  sessionPricing = "ready";
+  await load();
   await page.getByText("Session estimate: $0.42", { exact: false }).waitFor();
   assert.match(await page.locator("#usage-footer").innerText(), /Session estimate: \$0\.42/);
   assert.match(await page.locator(".session-cost-summary").getAttribute("title"), /anthropic/);
@@ -813,6 +820,7 @@ try {
         "Codex before Spark",
         "reset countdown and exact time",
         "local cost scope and coverage",
+        "session pricing loading state",
         "unknown cost never zero",
         "reset confirmation and cancel",
         "reset account binding",

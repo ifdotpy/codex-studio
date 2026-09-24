@@ -332,12 +332,17 @@ export default function Usage({
           sessionCost.unknownModels.length
             ? [`Unpriced models: ${sessionCost.unknownModels.join(", ")}`]
             : []),
+          typeof sessionCost?.cacheAgeSeconds === "number"
+            ? `Updated ${Math.round(sessionCost.cacheAgeSeconds)} seconds ago`
+            : "",
           typeof sessionCost?.method === "string" ? sessionCost.method : "",
         ]
           .filter(Boolean)
           .join("\n")}
       >
-        Session estimate: {dollars(sessionCost?.totalUSD)}
+        {sessionCost?.pricingState === "loading"
+          ? "Loading prices"
+          : `Session estimate: ${dollars(sessionCost?.totalUSD)}`}
         {Array.isArray(sessionCost?.unknownModels) &&
           sessionCost.unknownModels.length > 0 &&
           ` · Unpriced: ${sessionCost.unknownModels.join(", ")}`}

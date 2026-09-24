@@ -16,9 +16,8 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime
-
 from codex_pricing import PricingCatalog, price_usage
+from codex_claude_costs import parse_claude_usage
 
 
 def amount(value):
@@ -387,21 +386,12 @@ class ClaudeCostReader:
 
     def snapshot(self):
         with self.lock:
-            if self.clock() - self.checked >= 30:
+            if self.clock() - self.checked >= 300:
                 threading.Thread(target=self._refresh, name="claude-costs", daemon=True).start()
                 self.checked = self.clock()
             return {"at": self.checked or None, "error": self.error,
                     "data": self.data, "refreshing": self.clock() - self.checked < 2,
                     "stale": self.data is None or self.error is not None}
-
-    @staticmethod
-    def _date(value):
-        if not isinstance(value, str):
-            return None
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return None
 
     def _refresh(self):
         try:
@@ -422,34 +412,7 @@ class ClaudeCostReader:
                     if cached and cached.get("signature") == signature:
                         rows = cached.get("rows", [])
                     else:
-                        rows = []
-                        with path.open("r", encoding="utf-8", errors="replace") as source:
-                            for line in source:
-                                try:
-                                    row = json.loads(line)
-                                except ValueError:
-                                    continue
-                                message = row.get("message") if isinstance(row, dict) else None
-                                usage = message.get("usage") if isinstance(message, dict) else None
-                                model = message.get("model") if isinstance(message, dict) else None
-                                if row.get("type") != "assistant" or not isinstance(usage, dict):
-                                    continue
-                                identity = message.get("id") or row.get("requestId") or row.get("uuid")
-                                if not isinstance(identity, str) or not isinstance(model, str):
-                                    continue
-                                at = self._date(row.get("timestamp"))
-                                if at is None:
-                                    continue
-                                cached = usage.get("cache_read_input_tokens", 0)
-                                cache_write = usage.get("cache_creation_input_tokens", 0)
-                                raw_input = usage.get("input_tokens")
-                                rows.append({"id": identity, "model": model, "at": at,
-                                             "usage": {"inputTokens": (raw_input + cached + cache_write)
-                                                               if all(isinstance(value, (int, float)) and not isinstance(value, bool)
-                                                                      for value in (raw_input, cached, cache_write)) else None,
-                                                       "cacheWriteInputTokens": cache_write,
-                                                       "cachedInputTokens": cached,
-                                                       "outputTokens": usage.get("output_tokens")}})
+                        rows = parse_claude_usage(path)
                     files[str(path)] = {"signature": signature, "rows": rows}
                     entries.extend(rows)
                 except OSError:
@@ -481,11 +444,15 @@ class ClaudeCostReader:
                     "modelBreakdown": groups,
                     "note": "API-rate estimate. Uses base rates when request size is unavailable."}
             self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            payload = {"config": str(self.config_dir), "files": files, "data": data, "checked": now}
-            tmp = self.state_path.with_name("." + self.state_path.name + ".tmp")
-            tmp.write_text(json.dumps(payload, separators=(",", ":")))
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, self.state_path)
+            content_changed = self.data != data or {
+                key: value.get("rows", []) for key, value in self.files.items()
+            } != {key: value.get("rows", []) for key, value in files.items()}
+            if content_changed:
+                payload = {"config": str(self.config_dir), "files": files, "data": data, "checked": now}
+                tmp = self.state_path.with_name("." + self.state_path.name + ".tmp")
+                tmp.write_text(json.dumps(payload, separators=(",", ":")))
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, self.state_path)
             with self.lock:
                 self.files, self.data, self.error, self.checked = files, data, None, now
         except Exception as error:
