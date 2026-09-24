@@ -106,13 +106,14 @@ try {
   await activity.getByText("Hidden tool fixture", { exact: false }).waitFor();
   await activity.locator(":scope > summary").click();
   await page.locator("#requests [data-answer]").click();
-  const answerDialog = page.getByRole("form", { name: "Reply to the agent" });
-  await visibleInViewport(answerDialog);
+  const answerForm = page.getByRole("form", { name: "Reply to the agent" });
+  await answerForm.waitFor({ state: "visible" });
+  const answerField = answerForm.getByRole("textbox", { name: "Which scope?" });
+  await answerField.scrollIntoViewIfNeeded();
+  await visibleInViewport(answerField);
   await shot("question");
-  await answerDialog
-    .getByRole("textbox", { name: "Which scope?" })
-    .press("Escape");
-  await answerDialog.waitFor({ state: "hidden" });
+  await answerField.press("Escape");
+  await answerForm.waitFor({ state: "hidden" });
   await poll(
     () =>
       page
@@ -121,7 +122,7 @@ try {
     "focus returns to Answer",
   );
   await page.locator("[data-answer]").click();
-  await answerDialog
+  await answerForm
     .getByRole("button", { name: "One file", exact: true })
     .click();
   await page
