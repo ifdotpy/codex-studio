@@ -230,42 +230,52 @@ try {
     );
     await afterPaint(page, rootSelector);
     assert.ok((await gap()) < 2, "send and composer shrink retain bottom");
-    await page.waitForFunction(
-      (selector) =>
-        document
-          .querySelector(selector)
-          ?.querySelectorAll('[data-message^="note"]').length === 36,
-      rootSelector,
-    );
-    await afterPaint(page, rootSelector);
-    const scrollBeforeWheel = await page
-      .locator(rootSelector)
-      .evaluate((root) => root.scrollTop);
-    await page.locator(rootSelector).hover();
-    await page.mouse.wheel(0, -1200);
-    await page.waitForFunction(
-      ({ before, selector }) => {
-        const root = document.querySelector(selector);
-        return (
-          root.scrollTop < before &&
-          root.scrollHeight - root.scrollTop - root.clientHeight >= 32
-        );
-      },
-      { before: scrollBeforeWheel, selector: rootSelector },
-    );
-    await page.locator(rootSelector).evaluate(
+    await page.waitForLoadState("networkidle");
+    const scrollBefore = await page.locator(rootSelector).evaluate(
       (root) =>
-        new Promise((resolve) => {
-          let previous = Number.NaN;
+        new Promise((resolve, reject) => {
+          let previous = "";
           let stableFrames = 0;
+          const deadline = performance.now() + 10000;
           const sample = () => {
-            stableFrames = root.scrollTop === previous ? stableFrames + 1 : 0;
-            previous = root.scrollTop;
-            if (stableFrames === 3) resolve();
-            else requestAnimationFrame(sample);
+            const noteCount = root.querySelectorAll(
+              '[data-message^="note"]',
+            ).length;
+            const bottomGap =
+              root.scrollHeight - root.scrollTop - root.clientHeight;
+            const values = [
+              noteCount,
+              root.scrollTop,
+              root.scrollHeight,
+              root.clientHeight,
+            ].join(":");
+            const ready = noteCount === 36 && bottomGap < 2 && bottomGap >= 0;
+            stableFrames = ready && values === previous ? stableFrames + 1 : 0;
+            previous = values;
+            if (stableFrames >= 3) {
+              const before = root.scrollTop;
+              root.scrollTop = Math.max(0, before - 1200);
+              root.dispatchEvent(new Event("scroll", { bubbles: true }));
+              resolve({
+                before,
+                top: root.scrollTop,
+                height: root.scrollHeight,
+                clientHeight: root.clientHeight,
+              });
+            } else if (performance.now() >= deadline) {
+              reject(
+                new Error("Transcript did not settle at its latest message."),
+              );
+            } else requestAnimationFrame(sample);
           };
           requestAnimationFrame(sample);
         }),
+    );
+    assert.ok(
+      scrollBefore.top < scrollBefore.before &&
+        scrollBefore.height - scrollBefore.top - scrollBefore.clientHeight >=
+          32,
+      `reader leaves the bottom before stream (${JSON.stringify(scrollBefore)})`,
     );
     try {
       await page.locator(`${conversationSelector} #jump-latest`).waitFor();
@@ -556,6 +566,11 @@ try {
     records.push({
       width,
       anchor: anchor.top,
+      streamAnchorAfter: streamAnchorTop,
+      streamScrollTop: {
+        before: scrollBefore.top,
+        after: streamDebug.scrollTop,
+      },
       restored: stored,
       beforeSwitch,
       bottomGap: await gap(),
