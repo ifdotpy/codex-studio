@@ -130,13 +130,24 @@ class AccountStore:
         return self.data["accounts"][key]
 
     def refresh(self, key):
+        claude_metadata = None
+        with self.lock:
+            row = self._row(key)
+            claude_options = row.get("claudeOptions") if row.get("provider") == "claude" and not row.get("duplicateOf") else None
+            is_claude = row.get("provider") == "claude" and not row.get("duplicateOf")
+        if is_claude:
+            # The Claude CLI can take seconds. Never hold the account lock while it runs.
+            from codex_claude import auth_metadata as claude_auth
+            claude_metadata = claude_auth(claude_options)
         with self.lock:
             row = self._row(key)
             if row.get("duplicateOf"):
                 return {k: v for k, v in row.items() if not k.startswith("_")}
             if row.get("provider") == "claude":
-                from codex_claude import auth_metadata as claude_auth
-                metadata = claude_auth(row.get("claudeOptions"))
+                if claude_metadata is None or row.get("claudeOptions") != claude_options:
+                    from codex_claude import auth_metadata as claude_auth
+                    claude_metadata = claude_auth(row.get("claudeOptions"))
+                metadata = claude_metadata
             else:
                 metadata = auth_metadata(row["home"])
             expected = row.get("accountId")

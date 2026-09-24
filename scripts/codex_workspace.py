@@ -32,6 +32,9 @@ def active_task_records(db, statuses=("running",), *, agent=None):
     return [json.loads(row[0]) for row in rows]
 
 
+# Every status a monitor can end in. recent_monitors reads each one through its index.
+MONITOR_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "lost")
+
 class WorkspaceMixin:
     WORKSPACE_OPERATION_ACTIVE = {
         "provider_pending",
@@ -1637,10 +1640,17 @@ class WorkspaceMixin:
             SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?
             AND json_extract(record,'$.deletedAt') IS NULL)"""
         params = () if root is None else (root, root)
+        # snapshot calls this under Runtime.lock. "NOT IN" cannot use the
+        # (status, created) index and scanned every monitor (26k rows, 2-4 s).
+        # Read the newest 100 of each terminal status through the index instead.
+        terminal = " UNION ALL ".join(
+            f"""SELECT * FROM (SELECT record, json_extract(record,'$.created') AS created FROM runtime_monitors
+            WHERE json_extract(record,'$.status')='{status}' {scope}
+            ORDER BY json_extract(record,'$.created') DESC LIMIT 100)"""
+            for status in MONITOR_TERMINAL_STATUSES)
         rows = db.execute(
             f"""SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') {scope}
-          UNION ALL SELECT record FROM (SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') NOT IN ('running','starting','approval') {scope}
-          ORDER BY json_extract(record,'$.created') DESC LIMIT 100)""",
-            params,
+          UNION ALL SELECT record FROM (SELECT record, created FROM ({terminal}) ORDER BY created DESC LIMIT 100)""",
+            params[:1] * (1 + len(MONITOR_TERMINAL_STATUSES)),
         ).fetchall()
         return [json.loads(row[0]) for row in rows]
