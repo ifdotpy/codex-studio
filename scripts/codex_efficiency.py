@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import threading
 import time
 
 
@@ -344,7 +345,9 @@ class EfficiencyMixin:
         path = self.root / 'context-snapshots' / (digest(text) + '.txt')
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_suffix('.tmp.' + str(os.getpid()))
+            # Parallel preparations can write the same snapshot. A shared
+            # temporary name let one rename remove the other writer's file.
+            temporary = path.with_suffix(f'.tmp.{os.getpid()}.{threading.get_ident()}')
             temporary.write_text(text, encoding='utf-8')
             os.replace(temporary, path)
 

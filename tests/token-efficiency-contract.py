@@ -327,5 +327,33 @@ class EfficiencyContract(unittest.TestCase):
             self.runtime.monitor(lead['id'], {'command': 'true', 'wake_on': 'never'})
 
 
+class RoleSnapshotWrites(unittest.TestCase):
+    def test_parallel_writers_of_one_snapshot_do_not_fail(self):
+        import tempfile
+        import threading
+        with tempfile.TemporaryDirectory() as root:
+            store = EfficiencyMixin.__new__(EfficiencyMixin)
+            store.root = Path(root)
+            text, errors, start = 'Role text ' * 5000, [], threading.Barrier(16)
+
+            def write():
+                start.wait()
+                try:
+                    store.remember_role_text(text)
+                except Exception as error:
+                    errors.append(error)
+            # The writers pass the exists() check together, then race on rename.
+            with patch.object(Path, 'exists', return_value=False):
+                threads = [threading.Thread(target=write) for _ in range(16)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+            self.assertEqual(errors, [])
+            files = list((Path(root) / 'context-snapshots').iterdir())
+            self.assertEqual([p.suffix for p in files], ['.txt'])
+            self.assertEqual(files[0].read_text(encoding='utf-8'), text)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
