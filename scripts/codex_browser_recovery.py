@@ -7,6 +7,9 @@ DISCOVERY_ERRORS = {"No browser is available", "Browser is not available: chrome
                     "Browser is not available: extension"}
 BUSY = {"running", "starting", "approval"}
 HOLD = {"pending", "reconnecting"}
+# Waiting sends nothing. A busy callback queue can lag minutes; a short bound
+# failed a resumed thread whose callbacks were only late.
+DRAIN_SECONDS = 300
 
 
 def text_results(item):
@@ -178,7 +181,7 @@ def reconnect(runtime, agent_id, operation):
                 raise RuntimeError("Browser reconnection returned a different thread; outcome unknown")
             drained = threading.Event()
             server.after_events(drained.set)
-            if not drained.wait(20):
+            if not drained.wait(DRAIN_SECONDS):
                 raise RuntimeError("Browser reconnection callback delivery is unconfirmed")
             with runtime.lock, runtime.db() as db:
                 current = runtime.agent(agent_id, db)

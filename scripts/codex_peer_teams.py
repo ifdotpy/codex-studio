@@ -25,6 +25,16 @@ def _agents(db):
             (json.loads(item[0]) for item in db.execute('SELECT record FROM runtime_agents'))}
 
 
+def _members(db, ids):
+    # Snapshots run under the shared runtime lock. Decode only team members,
+    # not every agent record.
+    ids = sorted(set(ids))
+    if not ids:
+        return {}
+    rows = db.execute('SELECT record FROM runtime_agents WHERE id IN (' + ','.join('?' * len(ids)) + ')', ids)
+    return {row['id']: row for row in (json.loads(item[0]) for item in rows)}
+
+
 def _teams(project, agents):
     path = _path(project.get('path'))
     if path is None:
@@ -40,9 +50,10 @@ def _teams(project, agents):
 
 
 def snapshot(runtime, db):
-    agents = _agents(db)
-    return [team for row in db.execute('SELECT record FROM runtime_projects')
-            for team in _teams(json.loads(row[0]), agents)]
+    projects = [json.loads(row[0]) for row in db.execute('SELECT record FROM runtime_projects')]
+    agents = _members(db, (key for project in projects for team in project.get('peerTeams', [])
+                           for key in team['members']))
+    return [team for project in projects for team in _teams(project, agents)]
 
 
 def peer_pair_allowed(db, left_id, right_id):
@@ -66,9 +77,9 @@ def peer_pair_allowed(db, left_id, right_id):
 
 def peers_for(runtime, db, viewer):
     viewer_id = viewer.get('id') if isinstance(viewer, dict) else viewer
-    agents = _agents(db)
     ids = {key for team in snapshot(runtime, db) if viewer_id in team['members']
            for key in team['members'] if key != viewer_id}
+    agents = _members(db, ids)
     return [agents[key] for key in sorted(ids)]
 
 

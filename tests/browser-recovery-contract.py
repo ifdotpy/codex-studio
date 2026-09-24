@@ -221,6 +221,23 @@ class BrowserRecovery(unittest.TestCase):
         self.assertIn(self.agent['id'], self.runtime.loaded)
 
 
+    def test_late_callbacks_wait_within_the_drain_bound(self):
+        import threading
+        import codex_browser_recovery
+        self.assertGreaterEqual(codex_browser_recovery.DRAIN_SECONDS, 300)
+        self.event();self.idle()
+        self.server.after_events = lambda callback: threading.Timer(0.3, callback).start()
+        with patch.object(codex_browser_recovery, 'DRAIN_SECONDS', 2):
+            self.tick();self.wait_stage('verify')
+
+    def test_undelivered_callbacks_fail_after_the_drain_bound(self):
+        import codex_browser_recovery
+        self.event();self.idle()
+        self.server.after_events = lambda callback: None
+        with patch.object(codex_browser_recovery, 'DRAIN_SECONDS', 0.2):
+            self.tick();self.wait_stage('failed')
+        self.assertIn('callback delivery is unconfirmed', self.runtime.agent(self.agent['id'])['browserRecovery']['error'])
+
     def test_recovery_does_not_use_coordination_executor(self):
         self.event();self.idle()
         with patch.object(self.runtime.recovery_pool, 'submit', side_effect=AssertionError('must stay available')):

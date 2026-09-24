@@ -276,6 +276,15 @@ def steer_turn_ended(error):
     return message in STEER_TURN_ENDED or message.startswith("expected active turn id")
 
 
+def write_generation(db):
+    """The sync trigger counter; it changes with every committed table write."""
+    try:
+        row = db.execute("SELECT value FROM sync_generation WHERE id=1").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row[0] if row else None
+
+
 class SubmissionUnknown(ResponseTimeout):
     def __init__(self, submitted, error):
         super().__init__(f"{submitted[1]} submission failed; outcome unknown: {error}")
@@ -2384,16 +2393,26 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         from codex_session_names import session_names
         session_names(self).tick()
         from codex_team_isolation import cancel_pending
+        decoded = []
+
+        def current_agents(db):
+            # Decoding every agent record costs tens of milliseconds under the
+            # shared lock. Reuse this pass's list until any table write
+            # changes the database generation; each writer saves what it edits.
+            generation = write_generation(db)
+            if generation is None or not decoded or decoded[0] != generation:
+                decoded[:] = [generation, self.records(db, "agents")]
+            return decoded[1]
+
         with self.lock, self.db() as db:
             from codex_radio import tick as radio_tick
             radio_tick(self, db)
             cancel_pending(self, db)
             from codex_context_repair import recover_context_failures
-            recover_context_failures(self, db, self.records(db, "agents"))
+            recover_context_failures(self, db, current_agents(db))
         with self.lock, self.db() as db:
-            agents = self.records(db, "agents")
-            transfer_store(self).tick(agents)
-            agents = self.records(db, "agents")
+            transfer_store(self).tick(current_agents(db))
+            agents = current_agents(db)
             self.release_failed_work(db, agents)
             self.queue_turn_recovery(agents)
             from codex_connection_recovery import tick as connection_recovery_tick
@@ -3782,9 +3801,13 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             return self.save_receipt(db, key, signature, c)
 
     def complaint_summaries(self, db):
-        agents = {a["id"]: a for a in self.records(db, "agents")}
+        complaints = self.records(db, "complaints")
+        # Decode only the agents that the complaints name.
+        ids = sorted({key for c in complaints for key in (c["author"], c["leadId"])})
+        agents = {a["id"]: a for a in (json.loads(r[0]) for r in db.execute(
+            "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))} if ids else {}
         result = []
-        for c in self.records(db, "complaints"):
+        for c in complaints:
             result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
                            "title": c["text"][:140], "text": c["text"], "responses": c["responses"], "recipient": self.complaint_recipient(c),
                            "version": c["version"], "needsResponse": self.complaint_needs_response(c),
@@ -4671,6 +4694,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         from codex_peer_teams import snapshot as peer_snapshot
         with self.lock, self.db() as db:
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
+            team_names = {a["id"]: a["name"] for a in agents}
             for a in agents:
                 a["nextTurnSettingsSupported"] = True
                 a["readStateSupported"] = True
@@ -4697,7 +4721,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if block:
                     a["nativeThreadBlock"] = block
                 a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
-                         wave="Team: " + next((r["name"] for r in agents if r["id"] == a["rootId"]), "Team"))
+                         wave="Team: " + team_names.get(a["rootId"], "Team"))
             events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
             return {
                 "agents": agents,
