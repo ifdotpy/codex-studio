@@ -487,38 +487,75 @@ class AppServer:
                                 f"was deep ({self.callbacks.qsize()}); completed items keep their full text")
         return True
 
+    def close_slots(self, thread):
+        """Stop merging into queued fragments. Caller holds callback_lock."""
+        slots = self.__dict__.setdefault("_slots", {})
+        for key in [k for k, slot in slots.items() if thread is None or slot["thread"] == thread]:
+            slots.pop(key)["open"] = False
+
+    def coalesce_fragment(self, callback, message):
+        """Admit a notification; merge a streamed fragment into its queued entry.
+
+        Caller holds callback_lock. Each item stream has at most one open queued
+        entry, wherever it is in the queue, so many interleaved agents cannot
+        flood the queue. Any other event of the same thread closes that thread's
+        entries, so per-thread order never changes. Returns True when handled.
+        """
+        method = message.get("method")
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        thread = params.get("threadId")
+        if method not in self.SHED_METHODS or not isinstance(params.get("delta"), str):
+            self.shed_fragment(message)
+            self.close_slots(thread)
+            return False
+        shed = self.__dict__.setdefault("_shed_items", set())
+        if (thread, params.get("itemId")) in shed:
+            return self.shed_fragment(message)
+        slots = self.__dict__.setdefault("_slots", {})
+        key = (method, json.dumps({k: v for k, v in params.items() if k != "delta"}, sort_keys=True, default=str))
+        slot = slots.get(key)
+        if slot is not None:
+            queued = slot["message"]
+            if (slot["open"] and len(slot["samples"]) < 128
+                    and len(queued["params"]["delta"]) + len(params["delta"]) <= 65536):
+                queued["params"] = {**queued["params"], "delta": queued["params"]["delta"] + params["delta"]}
+                slot["samples"].append(params)
+                queued["_studioNotificationSamples"] = slot["samples"]
+                return True
+            slots.pop(key)["open"] = False
+        if self.shed_fragment(message):
+            return True
+        slot = {"key": key, "thread": thread, "open": True, "samples": [params]}
+        slot["message"] = {**message, "_studioSlot": slot}
+        self.callbacks.put_nowait((callback, slot["message"]))
+        slots[key] = slot
+        return True
+
+    def release_slot(self, message):
+        """The consumer took this entry; close its slot before reading it.
+
+        Returns True for an entry that the producer already coalesced."""
+        if isinstance(message, dict) and "_studioSlot" in message:
+            with self.callback_lock:
+                slot = message.pop("_studioSlot")
+                slot["open"] = False
+                slots = self.__dict__.get("_slots", {})
+                if slots.get(slot["key"]) is slot:
+                    slots.pop(slot["key"])
+            return True
+        return False
+
     def enqueue(self, callback, message):
         import queue
         try:
             with self.callback_lock:
                 if not self.dispatch_stopped:
-                    if (callback == self.notification and isinstance(message, dict)
-                            and "id" not in message and self.shed_fragment(message)):
-                        return
-                    # Compact terminal fragments before admission. Consumer-only
-                    # batching cannot protect a queue whose producer is faster.
-                    if (callback == self.notification and isinstance(message, dict)
-                            and "id" not in message
-                            and message.get("method") == "item/commandExecution/outputDelta"):
-                        params = message.get("params")
-                        if isinstance(params, dict) and isinstance(params.get("delta"), str):
-                            with self.callbacks.mutex:
-                                previous = self.callbacks.queue[-1] if self.callbacks.queue else None
-                                if previous and previous[0] == callback:
-                                    prior = previous[1]
-                                    old = prior.get("params", {}) if isinstance(prior, dict) else {}
-                                    samples = prior.get("_studioNotificationSamples", [old]) if isinstance(prior, dict) else []
-                                    if (isinstance(prior, dict) and "id" not in prior
-                                            and prior.get("method") == message["method"]
-                                            and isinstance(old, dict) and isinstance(old.get("delta"), str)
-                                            and {k: v for k, v in old.items() if k != "delta"}
-                                                == {k: v for k, v in params.items() if k != "delta"}
-                                            and len(samples) < 128
-                                            and len(old["delta"]) + len(params["delta"]) <= 65536):
-                                        self.callbacks.queue[-1] = (callback, {
-                                            **prior, "params": {**old, "delta": old["delta"] + params["delta"]},
-                                            "_studioNotificationSamples": [*samples, params]})
-                                        return
+                    if callback == self.notification and isinstance(message, dict) and "id" not in message:
+                        if self.coalesce_fragment(callback, message):
+                            return
+                    else:
+                        # Requests and receipts keep their order after every fragment.
+                        self.close_slots(None)
                     self.callbacks.put_nowait((callback, message))
                     return
         except queue.Full:
@@ -537,14 +574,17 @@ class AppServer:
     def dispatch(self):
         import queue
         deferred = None
+        deferred_coalesced = coalesced = False
         try:
             while True:
                 try:
                     if deferred is not None:
                         callback, message = deferred
+                        coalesced = deferred_coalesced
                         deferred = None
                     else:
                         callback, message = self.callbacks.get(timeout=0.05)
+                        coalesced = self.release_slot(message)
                 except queue.Empty:
                     with self.callback_lock:
                         if self.reader_done.is_set() and self.callbacks.empty():
@@ -554,7 +594,9 @@ class AppServer:
                 count = 1
                 # Drain adjacent text fragments in one runtime transaction. Never
                 # cross a request, receipt, lifecycle event, or another item.
-                if callback == self.notification and isinstance(message, dict) and message.get("method") == "item/agentMessage/delta":
+                # Producer-coalesced entries are already batches; never merge them again.
+                if (not coalesced and callback == self.notification and isinstance(message, dict)
+                        and message.get("method") == "item/agentMessage/delta"):
                     params = message.get("params", {})
                     if isinstance(params, dict) and isinstance(params.get("delta"), str):
                         identity = {k: v for k, v in params.items() if k != "delta"}
@@ -565,13 +607,17 @@ class AppServer:
                                 following = self.callbacks.get_nowait()
                             except queue.Empty:
                                 break
+                            following_coalesced = self.release_slot(following[1])
                             next_callback, next_message = following
+                            if following_coalesced:
+                                deferred, deferred_coalesced = following, True
+                                break
                             next_params = next_message.get("params", {}) if isinstance(next_message, dict) else {}
                             if (next_callback != callback or not isinstance(next_message, dict)
                                     or next_message.get("method") != message["method"]
                                     or not isinstance(next_params, dict) or not isinstance(next_params.get("delta"), str)
                                     or {k: v for k, v in next_params.items() if k != "delta"} != identity):
-                                deferred = following
+                                deferred, deferred_coalesced = following, False
                                 break
                             samples.append(next_params)
                             count += 1

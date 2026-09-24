@@ -301,12 +301,49 @@ class ReaderContract(unittest.TestCase):
         proc.emit({'method': 'item/commandExecution/outputDelta', 'params': {'threadId': 't', 'itemId': dropped, 'delta': 'late'}})
         proc.emit({'method': 'item/completed', 'params': {'threadId': 't', 'item': {'id': dropped, 'aggregatedOutput': 'full'}}})
         proc.emit({'method': 'item/commandExecution/outputDelta', 'params': {'threadId': 't', 'itemId': dropped, 'delta': 'next'}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)  # All preceding wire messages are now enqueued.
         done = threading.Event()
         server.after_events(done.set)
         self.assertTrue(done.wait(2))
         self.assertEqual([(m['method'], m['params'].get('delta')) for m in seen],
                          [('item/completed', None), ('item/commandExecution/outputDelta', 'next')])
         self.assertIn('streamed fragments', (self.root / 'app-server.log').read_text())
+
+    def test_interleaved_streams_coalesce_across_the_queue_in_thread_order(self):
+        server, proc = self.start()
+        self.block(proc)
+        seen = []
+        server.notification = lambda message: seen.append(message)
+        server.request = lambda message: seen.append(message)
+        sent = {}
+        for i in range(100):
+            for t in range(10):
+                if t == 3 and i == 50:
+                    proc.emit({'method': 'item/started', 'params': {'threadId': 't3', 'item': {'id': 'marker'}}})
+                params = {'threadId': f't{t}', 'itemId': f'cmd-{t}', 'delta': f'{t}:{i};'}
+                sent.setdefault(f't{t}', []).append(params)
+                proc.emit({'method': 'item/commandExecution/outputDelta', 'params': params})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)
+        self.assertLessEqual(server.callbacks.qsize(), 12)
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        for t in range(10):
+            thread = f't{t}'
+            events = [m for m in seen if m['params'].get('threadId') == thread]
+            fragments = [m for m in events if m['method'] == 'item/commandExecution/outputDelta']
+            self.assertEqual(''.join(m['params']['delta'] for m in fragments), ''.join(p['delta'] for p in sent[thread]))
+            self.assertEqual([p for m in fragments for p in m.get('_studioNotificationSamples', [m['params']])], sent[thread])
+            self.assertTrue(all('_studioSlot' not in m for m in events))
+        t3 = [m['method'] for m in seen if m['params'].get('threadId') == 't3']
+        position = t3.index('item/started')
+        before = [m for m in seen if m['params'].get('threadId') == 't3'][:position]
+        self.assertEqual(''.join(m['params']['delta'] for m in before), ''.join(p['delta'] for p in sent['t3'][:50]))
 
     def test_queue_saturation_is_explicit_and_preserves_accepted_order(self):
         server, proc = self.start(limit=2)
