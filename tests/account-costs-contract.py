@@ -27,6 +27,11 @@ class Accounts:
         if key not in self.rows: raise ValueError('Unknown Codex account')
         return dict(self.rows[key])
 
+class OfflinePricing:
+    def snapshot(self): return None
+    def wait_ready(self, timeout=8): return None
+    def write_scanner_copy(self, cache): pass
+
 class AccountCosts(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
@@ -47,7 +52,7 @@ with gate.open('x'):
             payload = fixture.report(); payload[0]['sessionCostUSD'] = 5 if key == 'default' else 17
             (home/'payload.json').write_text(json.dumps(payload))
         self.factory = lambda home, cache: [sys.executable, str(self.cli), str(home), str(cache), str(self.root/'active-scan')]
-        self.reader = AccountCostReader(self.root, self.accounts, command_factory=self.factory)
+        self.reader = AccountCostReader(self.root, self.accounts, command_factory=self.factory, pricing=OfflinePricing())
     def tearDown(self):
         self.reader.close(); self.temp.cleanup()
     def ready(self, key):
@@ -69,7 +74,7 @@ with gate.open('x'):
         self.assertEqual(len({str(r.path) for r in self.reader.readers.values()}),2)
     def test_restart_reuses_only_own_snapshot(self):
         self.ready('work'); self.reader.close()
-        self.reader = AccountCostReader(self.root,self.accounts,command_factory=self.factory)
+        self.reader = AccountCostReader(self.root,self.accounts,command_factory=self.factory,pricing=OfflinePricing())
         self.assertEqual(self.reader.snapshot('work')['data']['todayUSD'],17)
         self.assertEqual((self.root/'work/calls').read_text(),'scan\n')
         self.assertEqual(self.ready('default')['data']['todayUSD'],5)

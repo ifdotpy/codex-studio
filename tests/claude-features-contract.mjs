@@ -33,7 +33,7 @@ test('native events use fractional utilization without mutating cached windows',
 });
 test('cached and created input tokens remain part of total usage',()=>{
   assert.deepEqual(usageTokens({input_tokens:10,cache_read_input_tokens:20,cache_creation_input_tokens:5,output_tokens:3}),
-    {inputTokens:35,cachedInputTokens:20,outputTokens:3,totalTokens:38});
+    {inputTokens:35,cachedInputTokens:20,cacheWriteInputTokens:5,outputTokens:3,totalTokens:38});
   assert.equal(usageTokens(null),null);
 });
 test('native tools preserve commands and file edits',()=>{

@@ -229,6 +229,32 @@ export default function Usage({
   };
   const accountKey = agent.accountKey || "default";
   const [costs, setCosts] = useState<Json | null>(null);
+  const [sessionCost, setSessionCost] = useState<Json | null>(null);
+  useEffect(() => {
+    let active = true;
+    let timer: number;
+    const load = async () => {
+      try {
+        const value = await api<Json>(
+          `/api/session-cost?agent=${encodeURIComponent(agent.id)}`,
+          undefined,
+          { timeoutMs: 5000 },
+        );
+        if (!active) return;
+        setSessionCost(value);
+      } catch {
+        if (active) setSessionCost(null);
+      } finally {
+        if (active) timer = window.setTimeout(load, 10000);
+      }
+    };
+    setSessionCost(null);
+    void load();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [agent.id]);
   useEffect(() => {
     let active = true;
     let timer: number;
@@ -295,6 +321,27 @@ export default function Usage({
       id="usage-footer"
       data-account-key={agent.accountKey || "default"}
     >
+      <div
+        className="session-cost-summary"
+        aria-label="Current team session API cost estimate"
+        title={[
+          ...Object.entries(sessionCost?.breakdown?.providers || {}).map(
+            ([provider, value]) => `${provider}: ${dollars(value)}`,
+          ),
+          ...(Array.isArray(sessionCost?.unknownModels) &&
+          sessionCost.unknownModels.length
+            ? [`Unpriced models: ${sessionCost.unknownModels.join(", ")}`]
+            : []),
+          typeof sessionCost?.method === "string" ? sessionCost.method : "",
+        ]
+          .filter(Boolean)
+          .join("\n")}
+      >
+        Session estimate: {dollars(sessionCost?.totalUSD)}
+        {Array.isArray(sessionCost?.unknownModels) &&
+          sessionCost.unknownModels.length > 0 &&
+          ` · Unpriced: ${sessionCost.unknownModels.join(", ")}`}
+      </div>
       <Popover
         opened={contextOpen}
         onChange={setContextOpen}
@@ -698,6 +745,9 @@ export default function Usage({
                       : "Estimate unavailable"
                     : "Partial estimate"}
                 </p>
+              )}
+              {typeof costs?.data?.note === "string" && (
+                <p className="account-cost-caption">{costs.data.note}</p>
               )}
             </section>
             <footer className="account-limits-updated" role="status">

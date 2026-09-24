@@ -16,6 +16,9 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime
+
+from codex_pricing import PricingCatalog, price_usage
 
 
 def amount(value):
@@ -113,7 +116,7 @@ def normalize(payload):
         "coverage": status,
         "unknownModels": sorted(unknown),
         "historyDays": row.get("historyDays", 30),
-        "note": "API-rate estimate, not your ChatGPT bill. CodexBar supplies pricing and cached-token accounting.",
+        "note": "API-rate estimate, not your ChatGPT bill. Base rates apply when the scanner cannot resolve a published context tier.",
     }
 
 
@@ -293,7 +296,7 @@ class CostReader:
 class AccountCostReader:
     """Account profile logs and caches. No native API or ambient Pi scan."""
 
-    def __init__(self, root, accounts, *, reader_factory=CostReader, command_factory=None):
+    def __init__(self, root, accounts, *, reader_factory=CostReader, command_factory=None, pricing=None):
         self.root = Path(root) / "account-costs"
         self.accounts = accounts
         self.readers = {}
@@ -301,6 +304,8 @@ class AccountCostReader:
         self.scan_lock = threading.Lock()
         self.reader_factory = reader_factory
         self.command_factory = command_factory or self.command
+        self.pricing = pricing or PricingCatalog(root)
+        self.claude_readers = {}
         self.closed = False
 
     def command(self, home, cache):
@@ -317,6 +322,17 @@ class AccountCostReader:
         account = self.accounts.get(account_key)
         if account.get("status") != "ready":
             raise ValueError("This account's local cost history is unavailable.")
+        if account.get("provider") == "claude" or account_key == "claude-local":
+            with self.lock:
+                if self.closed:
+                    raise ValueError("The local cost reader is closed.")
+                reader = self.claude_readers.get(account_key)
+                if reader is None:
+                    config = Path(account.get("home") or Path.home() / ".claude").expanduser().resolve()
+                    reader = ClaudeCostReader(self.root / "claude" / hashlib.sha256((account_key + str(config)).encode()).hexdigest(),
+                                              config, self.pricing)
+                    self.claude_readers[account_key] = reader
+            return {**reader.snapshot(), "accountKey": account_key}
         home = Path(account["home"]).expanduser().resolve()
         identity = [account_key, account.get("accountId"), str(home)]
         scope = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
@@ -327,7 +343,7 @@ class AccountCostReader:
             if reader is None:
                 cache = self.root / scope
                 reader = self.reader_factory(cache, environment={**os.environ, "CODEX_HOME": str(home)},
-                    scan_lock=self.scan_lock, command=lambda: self.command_factory(home, cache / "scanner"))
+                    scan_lock=self.scan_lock, command=lambda: self._command(home, cache / "scanner"))
                 self.readers[scope] = reader
             value = reader.snapshot()
         data = value.get("data")
@@ -336,8 +352,142 @@ class AccountCostReader:
                         scope="account", note="API-rate estimate", kind="api_estimate")
         return {**value, "accountKey": account_key}
 
+    def _command(self, home, cache):
+        self.pricing.wait_ready()
+        self.pricing.write_scanner_copy(cache)
+        return self.command_factory(home, cache)
+
     def close(self):
         with self.lock:
             self.closed = True
             for reader in self.readers.values():
                 reader.close()
+
+
+class ClaudeCostReader:
+    """Cached estimates from one Claude Code configuration directory."""
+    def __init__(self, state, config_dir, pricing, *, clock=time.time):
+        self.state_path = Path(state) / "claude-costs.json"
+        self.config_dir = Path(config_dir)
+        self.pricing = pricing
+        self.clock = clock
+        self.lock = threading.RLock()
+        self.files = {}
+        self.data = None
+        self.checked = 0
+        self.error = None
+        try:
+            cached = json.loads(self.state_path.read_text())
+            if cached.get("config") == str(self.config_dir):
+                self.files = cached.get("files", {})
+                self.data = cached.get("data")
+                self.checked = cached.get("checked", 0)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def snapshot(self):
+        with self.lock:
+            if self.clock() - self.checked >= 30:
+                threading.Thread(target=self._refresh, name="claude-costs", daemon=True).start()
+                self.checked = self.clock()
+            return {"at": self.checked or None, "error": self.error,
+                    "data": self.data, "refreshing": self.clock() - self.checked < 2,
+                    "stale": self.data is None or self.error is not None}
+
+    @staticmethod
+    def _date(value):
+        if not isinstance(value, str):
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+    def _refresh(self):
+        try:
+            catalog = self.pricing.wait_ready()
+            if not self.config_dir.is_dir():
+                raise ValueError("Claude account logs are unavailable")
+            previous = self.files
+            files = {}
+            now = self.clock()
+            today = time.strftime("%Y-%m-%d", time.localtime(now))
+            day_start = time.mktime(time.strptime(today, "%Y-%m-%d"))
+            entries = []
+            for path in self.config_dir.glob("projects/**/*.jsonl"):
+                try:
+                    stat = path.stat()
+                    signature = [stat.st_size, stat.st_mtime_ns]
+                    cached = previous.get(str(path))
+                    if cached and cached.get("signature") == signature:
+                        rows = cached.get("rows", [])
+                    else:
+                        rows = []
+                        with path.open("r", encoding="utf-8", errors="replace") as source:
+                            for line in source:
+                                try:
+                                    row = json.loads(line)
+                                except ValueError:
+                                    continue
+                                message = row.get("message") if isinstance(row, dict) else None
+                                usage = message.get("usage") if isinstance(message, dict) else None
+                                model = message.get("model") if isinstance(message, dict) else None
+                                if row.get("type") != "assistant" or not isinstance(usage, dict):
+                                    continue
+                                identity = message.get("id") or row.get("requestId") or row.get("uuid")
+                                if not isinstance(identity, str) or not isinstance(model, str):
+                                    continue
+                                at = self._date(row.get("timestamp"))
+                                if at is None:
+                                    continue
+                                cached = usage.get("cache_read_input_tokens", 0)
+                                cache_write = usage.get("cache_creation_input_tokens", 0)
+                                raw_input = usage.get("input_tokens")
+                                rows.append({"id": identity, "model": model, "at": at,
+                                             "usage": {"inputTokens": (raw_input + cached + cache_write)
+                                                               if all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                                                                      for value in (raw_input, cached, cache_write)) else None,
+                                                       "cacheWriteInputTokens": cache_write,
+                                                       "cachedInputTokens": cached,
+                                                       "outputTokens": usage.get("output_tokens")}})
+                    files[str(path)] = {"signature": signature, "rows": rows}
+                    entries.extend(rows)
+                except OSError:
+                    continue
+            unique = {}
+            for row in entries:
+                unique.setdefault(row["id"], row)
+            totals = {"today": 0.0, "month": 0.0}
+            unknown, groups = set(), {}
+            priced_any = {"today": False, "month": False}
+            for row in unique.values():
+                period = ("today" if row["at"] >= day_start else
+                          "month" if row["at"] >= now - 30 * 86400 else None)
+                if not period:
+                    continue
+                cost, status, _ = price_usage(catalog, "anthropic", row["model"], row["usage"],
+                                               context_tokens=row["usage"].get("inputTokens"))
+                if cost is None:
+                    unknown.add(row["model"])
+                    continue
+                totals[period] += cost
+                priced_any[period] = True
+                groups[row["model"]] = groups.get(row["model"], 0.0) + cost
+            data = {"source": "Claude Code local logs", "scope": "account", "kind": "api_estimate",
+                    "currency": "USD", "billedUSD": None,
+                    "todayUSD": (totals["today"] if priced_any["today"] or not unknown else None) if unique else None,
+                    "last30DaysUSD": (totals["month"] + totals["today"] if priced_any["month"] or priced_any["today"] or not unknown else None) if unique else None,
+                    "coverage": "partial" if unknown else "reported" if unique else "unverified", "unknownModels": sorted(unknown),
+                    "modelBreakdown": groups,
+                    "note": "API-rate estimate. Uses base rates when request size is unavailable."}
+            self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            payload = {"config": str(self.config_dir), "files": files, "data": data, "checked": now}
+            tmp = self.state_path.with_name("." + self.state_path.name + ".tmp")
+            tmp.write_text(json.dumps(payload, separators=(",", ":")))
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.state_path)
+            with self.lock:
+                self.files, self.data, self.error, self.checked = files, data, None, now
+        except Exception as error:
+            with self.lock:
+                self.error = str(error)[:300]

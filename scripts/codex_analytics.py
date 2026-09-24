@@ -159,6 +159,9 @@ class AnalyticsMixin:
         turn = p.get('turnId') or (p.get('turn') or {}).get('id') or a.get('turnId')
         meta.update(threadId=p.get('threadId') or a.get('threadId'), turnId=turn)
         if method == 'thread/tokenUsage/updated':
+            generation = db.execute("SELECT value FROM analytics_meta WHERE key='usageGeneration'").fetchone()
+            generation = int(generation[0]) + 1 if generation else 1
+            db.execute("INSERT INTO analytics_meta VALUES ('usageGeneration',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(generation),))
             if turn:
                 turn_key = ':'.join((a['id'], str(meta['threadId']), str(turn)))
                 known = db.execute('SELECT record FROM analytics_turns WHERE id=?', (turn_key,)).fetchone()
@@ -191,6 +194,7 @@ class AnalyticsMixin:
                         db.execute('UPDATE analytics_usage SET record=? WHERE id=?', (json.dumps(record), exact['id']))
                         return
                     existing, key = record, exact['id']
+            response_model = p.get('model')
             if existing and response_id and existing.get('responseId') and response_id != existing['responseId']:
                 key += ':' + response_id
                 existing = db.execute('SELECT record FROM analytics_usage WHERE id=?', (key,)).fetchone()
@@ -199,7 +203,7 @@ class AnalyticsMixin:
                 if response_id and (not existing.get('responseId') or p.get('rawTokenUsageRecord') and not existing.get('rawTokenUsageRecord')):
                     existing.update(responseId=response_id, source=source, at=at, recordedAt=time.time(),
                                     rawTokenUsageRecord=p.get('rawTokenUsageRecord'), turnUsage=p.get('turnUsage'),
-                                    requestUsage=p.get('requestUsage'), model=meta['model'], last=last, total=current,
+                                    requestUsage=p.get('requestUsage'), model=p.get('model') or meta['model'], last=last, total=current,
                                     delta={k: number(last.get(k)) for k in TOKEN_FIELDS},
                                     counterDomain='response' if p.get('rawTokenUsageRecord') else 'nativeNotice',
                                     cumulativeDelta={k: None for k in TOKEN_FIELDS}, reset=None, baselineMissing=True)
@@ -211,6 +215,7 @@ class AnalyticsMixin:
             reset = bool(prior and any(number(current.get(k)) is not None and number(prior['total'].get(k)) is not None and current[k] < prior['total'][k] for k in TOKEN_FIELDS))
             cumulative_delta = {k: current[k] - prior['total'][k] if prior and not reset and number(current.get(k)) is not None and number(prior['total'].get(k)) is not None else None for k in TOKEN_FIELDS}
             record = {**meta, 'id': key, 'at': at, 'recordedAt': time.time(), 'source': source, 'timestampSource': p.get('_analyticsTimestampSource', 'observed' if source == 'live' else 'record'),
+                      'model': response_model or meta['model'],
                       'last': last, 'total': current, 'delta': {k: number(last.get(k)) for k in TOKEN_FIELDS}, 'raw': usage,
                       'cumulativeDelta': cumulative_delta, 'counterDomain': counter_domain,
                       'modelContextWindow': number(usage.get('modelContextWindow')),

@@ -541,6 +541,8 @@ def make_server(canvas, port=0, public_origin=None):
     token = secrets.token_urlsafe(32)
     terminal_manager = [None]
     cost_reader = [None]
+    pricing_catalog = [None]
+    session_cost_reader = [None]
     sync_store = [None]
     terminal_lock = threading.RLock()
 
@@ -690,12 +692,29 @@ def make_server(canvas, port=0, public_origin=None):
                     with terminal_lock:
                         if cost_reader[0] is None:
                             from codex_costs import AccountCostReader
+                            from codex_pricing import PricingCatalog
 
                             if not canvas.runtime:
                                 raise ValueError("The agent runtime is unavailable")
-                            cost_reader[0] = AccountCostReader(canvas.root, canvas.runtime.accounts)
+                            pricing_catalog[0] = PricingCatalog(canvas.root)
+                            cost_reader[0] = AccountCostReader(canvas.root, canvas.runtime.accounts,
+                                                               pricing=pricing_catalog[0])
                     query = parse_qs(path.query)
                     return self.send(cost_reader[0].snapshot(query.get("account_key", ["default"])[0]))
+                if path.path == "/api/session-cost":
+                    query = parse_qs(path.query)
+                    agent_id = query.get("agent", [None])[0]
+                    if not agent_id or not AGENT_ID.fullmatch(agent_id):
+                        raise ValueError("Select a chat")
+                    with terminal_lock:
+                        if pricing_catalog[0] is None:
+                            from codex_pricing import PricingCatalog
+                            pricing_catalog[0] = PricingCatalog(canvas.root)
+                        if session_cost_reader[0] is None:
+                            from codex_session_costs import SessionCostReader
+                            session_cost_reader[0] = SessionCostReader(canvas.root / "canvas.sqlite3",
+                                                                        pricing_catalog[0])
+                    return self.send(session_cost_reader[0].snapshot(agent_id))
                 if path.path == "/api/desktop":
                     from codex_native_runtime import status as native_runtime_status
                     from codex_browser import diagnostics as browser_diagnostics

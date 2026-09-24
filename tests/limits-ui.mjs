@@ -29,6 +29,7 @@ try {
     response.json(),
   );
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
+  const leadAgent = initial.runtime.agents.find((agent) => agent.threadId === lead.threadId);
   let selectedChat = lead;
   const now = Date.now() / 1000;
   const primary = {
@@ -75,6 +76,13 @@ try {
             status: "ready",
             accountId: "test-account",
           },
+          {
+            id: "claude-local",
+            label: "Claude fixture",
+            provider: "claude",
+            status: "ready",
+            accountId: "claude-test-account",
+          },
         ],
       },
     }),
@@ -88,7 +96,7 @@ try {
           status: 503,
           json: { error: "Fixture quota refresh failed" },
         })
-      : route.fulfill({ json: limits }),
+      : route.fulfill({ json: { ...limits, accountKey: selectedAccount } }),
   );
   let costs = {
     at: now,
@@ -105,16 +113,26 @@ try {
   let deferCosts = false,
     pendingCosts;
   await page.route("**/api/costs?*", (route) => {
+    const accountKey = new URL(route.request().url()).searchParams.get("account_key") || "default";
+    if (accountKey === "claude-local")
+      return route.fulfill({ json: { accountKey, at: now, refreshing: false, stale: false, data: {
+        todayUSD: 2.5, last30DaysUSD: 24.5, coverage: "reported", unknownModels: [],
+        note: "API-rate estimate from Claude Code logs.",
+      } } });
     if (deferCosts) {
       pendingCosts = route;
       return;
     }
-    return route.fulfill({ json: { ...costs, accountKey: "default" } });
+    return route.fulfill({ json: { ...costs, accountKey } });
   });
+  let selectedAccount = "default";
+  await page.route("**/api/session-cost?*", (route) =>
+    route.fulfill({ json: { totalUSD: 0.42, estimated: true, breakdown: { providers: { openai: 0.3, anthropic: 0.12 } }, unknownModels: ["gpt-5.6-luna"], method: "API rates" } }),
+  );
   await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const state = await response.json();
-    state.runtime.rateLimits = limits;
+    state.runtime.rateLimits = { ...limits, accountKey: selectedAccount };
     await route.fulfill({ response, json: state });
   });
   const toggle = () =>
@@ -131,6 +149,9 @@ try {
   await load();
   assert.equal((await toggle().innerText()).trim(), "Limits");
   assert.match(await page.locator("#usage-footer").innerText(), /Context 40%/);
+  await page.getByText("Session estimate: $0.42", { exact: false }).waitFor();
+  assert.match(await page.locator("#usage-footer").innerText(), /Session estimate: \$0\.42/);
+  assert.match(await page.locator(".session-cost-summary").getAttribute("title"), /anthropic/);
   await page.getByRole("button", { name: "Chat context", exact: true }).click();
   await page.getByText("Compacted 2 times.", { exact: true }).waitFor();
   await page.keyboard.press("Escape");
@@ -155,6 +176,15 @@ try {
     await details().innerText(),
     /All local chats|All accounts/,
   );
+  selectedAccount = "claude-local";
+  fixture.stdin.write(JSON.stringify({ method: "fixture/account-key", agent: leadAgent.id, accountKey: selectedAccount }) + "\n");
+  await load();
+  await toggle().click();
+  await details().waitFor();
+  await details().getByText("$24.50", { exact: true }).waitFor();
+  assert.match(await details().innerText(), /\$2\.50/);
+  selectedAccount = "default";
+  fixture.stdin.write(JSON.stringify({ method: "fixture/account-key", agent: leadAgent.id, accountKey: selectedAccount }) + "\n");
   assert.doesNotMatch(
     await details().innerText(),
     /CodexBar|coverage unverified|ChatGPT bill|Costs as of/,

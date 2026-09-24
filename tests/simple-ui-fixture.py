@@ -147,7 +147,12 @@ import threading
 def fixture_events():
     for line in sys.stdin:
         message = json.loads(line)
-        if message.get('method') == 'fixture/limits':
+        if message.get('method') == 'fixture/account-key':
+            with c.runtime.lock, c.runtime.db() as db:
+                agent = c.runtime.agent(message['agent'], db)
+                agent['accountKey'] = message['accountKey']
+                c.runtime.put(db, 'agents', agent)
+        elif message.get('method') == 'fixture/limits':
             c.runtime.connect(message.get('accountKey', 'default')).limit_response = message['params']
         elif message.get('method') == 'fixture/agent-monitor':
             params = message['params']

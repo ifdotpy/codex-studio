@@ -132,6 +132,7 @@ export function usageTokens(usage) {
     inputTokens: input,
     outputTokens: n(usage.output_tokens),
     cachedInputTokens: n(usage.cache_read_input_tokens),
+    cacheWriteInputTokens: n(usage.cache_creation_input_tokens),
     totalTokens: input + n(usage.output_tokens),
   };
 }

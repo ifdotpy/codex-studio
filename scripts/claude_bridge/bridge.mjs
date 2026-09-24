@@ -369,6 +369,8 @@ async function finishTurn(s, active, result, error) {
     emit("thread/tokenUsage/updated", {
       threadId: s.id,
       turnId: turn.id,
+      model: active.lastModel,
+      responseId: active.lastMessageId,
       tokenUsage: {
         total: { totalTokens: s.totalTokens },
         last: active.lastUsage || usage,
@@ -714,6 +716,8 @@ async function startSession(s, active, p) {
           });
         }
       } else if (m.type === "assistant") {
+        active.lastModel = m.message.model || active.lastModel;
+        active.lastMessageId = m.message.id || active.lastMessageId;
         active.lastUsage = usageTokens(m.message.usage) || active.lastUsage;
         const text = m.message.content
           .filter((b) => b.type === "text")
