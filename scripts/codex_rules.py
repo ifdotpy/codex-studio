@@ -89,10 +89,11 @@ class RulesMixin:
     def rules(self, data=None, actor=None, epoch=None):
         result = self.rules_action(data, actor, epoch)
         if data and data.get("action") in {"pause", "delete"}:
+            from codex_workspace import active_monitors
             with self.lock, self.db() as db:
                 watches = [
                     m["id"]
-                    for m in self.records(db, "monitors")
+                    for m in active_monitors(db)
                     if m.get("ruleId") == data.get("id")
                     and m["status"] in {"running", "starting", "approval"}
                 ]
@@ -268,9 +269,10 @@ class RulesMixin:
             self.pool.submit(self.run_rule, r)
 
     def low_workers_tick(self, db, rule, lead, now):
+        from codex_workspace import active_monitors
         workers = [a for a in self.records(db, "agents")
                    if a["rootId"] == lead["id"] and not a.get("isLead") and not a.get("deletedAt")]
-        commands = {m["agent"] for m in self.records(db, "monitors")
+        commands = {m["agent"] for m in active_monitors(db)
                     if m.get("status") == "running" and not m.get("cancelRequested")}
         count = sum(a["status"] in {"starting", "running"} or a["id"] in commands for a in workers)
         previous = (rule.get("lowSince"), rule.get("alerted"), rule.get("activeWorkers"))

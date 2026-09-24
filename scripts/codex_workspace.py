@@ -34,6 +34,14 @@ def active_task_records(db, statuses=("running",), *, agent=None):
 
 # Every status a monitor can end in. recent_monitors reads each one through its index.
 MONITOR_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "lost")
+ACTIVE_MONITOR_STATUSES = ("running", "starting", "approval")
+
+
+def active_monitors(db):
+    """Monitors that can still run. The status index skips finished history."""
+    return [json.loads(r[0]) for r in db.execute(
+        "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN (?,?,?) ORDER BY rowid",
+        ACTIVE_MONITOR_STATUSES)]
 
 class WorkspaceMixin:
     WORKSPACE_OPERATION_ACTIVE = {
@@ -1031,7 +1039,7 @@ class WorkspaceMixin:
             if other.get("inFlight") or (other.get("workspaceOperation") and not own_reservation):
                 raise ValueError("An agent is using this workspace")
         if any(Path(m["cwd"]).resolve() == cwd and m["status"] in {"running", "starting", "approval"}
-               for m in self.records(db, "monitors")):
+               for m in active_monitors(db)):
             raise ValueError("A monitor is using this workspace")
         peer_ids = {other["id"] for other in peers}
         if any(t["agent"] in peer_ids for t in active_task_records(db)):

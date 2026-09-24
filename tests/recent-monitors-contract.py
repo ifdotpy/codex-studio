@@ -57,6 +57,19 @@ class RecentMonitors(unittest.TestCase):
         self.assertNotIn("SCAN runtime_monitors", plan)
         self.assertIn("USING INDEX runtime_monitor_status", plan)
 
+    def test_active_monitors_equal_the_full_scan_through_the_index(self):
+        from codex_workspace import active_monitors
+        full = [json.loads(r[0]) for r in self.db.execute("SELECT record FROM runtime_monitors")]
+        full = [m for m in full if m["status"] in {"running", "starting", "approval"}]
+        self.assertTrue(full)
+        self.assertEqual(active_monitors(self.db), full)
+        queries = []
+        self.db.set_trace_callback(queries.append)
+        active_monitors(self.db)
+        self.db.set_trace_callback(None)
+        plan = " ".join(row[3] for row in self.db.execute("EXPLAIN QUERY PLAN " + queries[-1]))
+        self.assertIn("USING INDEX runtime_monitor_status", plan)
+
 
 class ClaudeAccountRefresh(unittest.TestCase):
     def test_claude_cli_runs_without_the_account_lock(self):

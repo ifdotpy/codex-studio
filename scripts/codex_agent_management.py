@@ -36,7 +36,7 @@ def _brief(a):
 
 
 def _blockers(rt, db, a):
-    from codex_workspace import active_task_records
+    from codex_workspace import active_monitors, active_task_records
     key = a['id']
     result = []
     def add(kind, ids):
@@ -49,7 +49,7 @@ def _blockers(rt, db, a):
     add('descendants', [x['id'] for x in rt.records(db, 'agents') if x.get('parentId') == key and not x.get('deletedAt')])
     add('input_delivery', [r[0] for r in db.execute(
         "SELECT id FROM runtime_events WHERE agent=? AND epoch=? AND status IN ('pending','reserved','dispatching','uncertain')", (key, a['epoch']))])
-    add('monitors', [x['id'] for x in rt.records(db, 'monitors') if x.get('agent') == key and x.get('status') in {'starting','running','approval'}])
+    add('monitors', [x['id'] for x in active_monitors(db) if x.get('agent') == key and x.get('status') in {'starting','running','approval'}])
     add('background_tasks', [x['id'] for x in active_task_records(db, ('running','starting','pending','unknown'), agent=key)])
     add('questions', [x['id'] for x in rt.records(db, 'requests') if x.get('agent') == key and x.get('status') == 'pending'])
     add('assigned_work', [x['id'] for x in rt.records(db, 'work') if x.get('owner') == key and x.get('status') not in {'accepted','cancelled'}])

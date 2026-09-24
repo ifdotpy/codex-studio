@@ -910,6 +910,22 @@ class RuntimeContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'turn was stopped'):
             self.runtime.monitor(lead['id'], {'command': 'old command'}, epoch=lead['epoch'])
 
+    def test_lead_waits_only_for_active_children_after_its_turn(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        self.complete(self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['status'], 'waiting')
+        with self.runtime.lock, self.runtime.db() as db:
+            stopped = self.runtime.agent(child['id'], db)
+            stopped['autoWake'] = False
+            self.runtime.put(db, 'agents', stopped)
+            current = self.runtime.agent(lead['id'], db)
+            current.update(status='running', inFlight=True, turnId='lead-turn-2')
+            self.runtime.put(db, 'agents', current)
+        self.complete(self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['status'], 'completed')
+
     def test_child_waiting_for_monitor_reports_only_after_final_result(self):
         lead = self.lead()
         child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])

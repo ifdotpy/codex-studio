@@ -500,6 +500,7 @@ class WorkMixin:
             }
 
     def chat_organization(self, key, data):
+        from codex_workspace import active_monitors
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
             allowed = {'id', 'read_state', 'project_folder', 'project_path', 'expected_revision', 'expected_folder', 'pinned', 'archived', 'project'}
@@ -535,7 +536,7 @@ class WorkMixin:
                             or any(
                                 m["agent"] == key
                                 and m["status"] in {"running", "approval", "starting"}
-                                for m in self.records(db, "monitors")
+                                for m in active_monitors(db)
                             )
                         )
                     ):

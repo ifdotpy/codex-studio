@@ -28,7 +28,7 @@ from codex_shell import monitor_command
 from codex_time import append_message_clocks, message_clock, stamp_tool_result
 from codex_work import WorkMixin, work_tools
 from codex_efficiency import EfficiencyMixin, efficiency_tools
-from codex_workspace import WorkspaceMixin, active_task_records
+from codex_workspace import WorkspaceMixin, active_monitors, active_task_records
 from codex_rules import RulesMixin, rule_tools
 from codex_questions import QuestionsMixin, is_question, answer_signature, record_answer
 from codex_panel import PanelMixin
@@ -828,7 +828,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             for task in active_task_records(db):
                 task.update(status="lost", finished=time.time(), error="Server restarted. Tool outcome unknown.")
                 self.put(db, "tasks", task)
-            for m in self.records(db, "monitors"):
+            for m in active_monitors(db):
                 if m["status"] in {"running", "approval", "starting"}:
                     m.update(status="lost", error="Server restarted. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", m)
@@ -1035,7 +1035,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if task.get("agent") in ids:
                     task.update(status="lost", finished=time.time(), error="Codex disconnected. Tool outcome unknown.")
                     self.put(db, "tasks", task)
-            for monitor in self.records(db, "monitors"):
+            for monitor in active_monitors(db):
                 if monitor.get("agent") in ids and monitor["status"] in {"running", "starting", "approval"}:
                     monitor.update(status="lost", finished=time.time(), error="Codex disconnected. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", monitor)
@@ -1643,7 +1643,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     raise ValueError("Wait for team workspace operations to end before changing YOLO mode")
                 if any(other.get("inFlight") or other["status"] in {"running", "starting", "approval"} for other in team):
                     raise ValueError("Wait for every team turn to end before changing YOLO mode")
-                if any(m["agent"] in team_ids and m["status"] in {"starting", "running", "approval"} for m in self.records(db, "monitors")):
+                if any(m["agent"] in team_ids and m["status"] in {"starting", "running", "approval"} for m in active_monitors(db)):
                     raise ValueError("Wait for team monitors to end before changing YOLO mode")
                 if any(t["agent"] in team_ids for t in active_task_records(db)):
                     raise ValueError("Wait for team tools to end before changing YOLO mode")
@@ -3220,10 +3220,14 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     a["status"] = "paused"
                 watches = any(m["agent"] == a["id"]
                               and m["status"] in {"running", "approval", "starting"}
-                              for m in self.records(db, "monitors"))
-                children = any(c.get("parentId") == a["id"] and c["autoWake"]
-                               and c["status"] in {"queued", "starting", "running", "waiting", "approval"}
-                               for c in self.records(db, "agents"))
+                              for m in active_monitors(db))
+                # Read only this agent's children; decoding every agent record
+                # here held the runtime lock during each turn completion.
+                children = db.execute(
+                    "SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.parentId')=? "
+                    "AND json_extract(record,'$.autoWake') "
+                    "AND json_extract(record,'$.status') IN ('queued','starting','running','waiting','approval') LIMIT 1",
+                    (a["id"],)).fetchone() is not None
                 if a["status"] == "completed" and (watches or children):
                     a["status"] = "waiting"
                 if (a["status"] != "waiting" and a.get("turnEpoch", a["epoch"]) == a["epoch"]
@@ -4527,7 +4531,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 if request.get("agent") in ids and request["status"] == "pending" and request["method"] != "monitor/approve":
                     request["status"] = "expired"
                     self.put(db, "requests", request)
-            monitors = [m["id"] for m in self.records(db, "monitors") if m["agent"] in ids and m["status"] in {"running", "approval", "starting"}]
+            monitors = [m["id"] for m in active_monitors(db) if m["agent"] in ids and m["status"] in {"running", "approval", "starting"}]
         voice = getattr(self, "_voice_store", None)
         for a in stopped:
             if voice:

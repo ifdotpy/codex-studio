@@ -213,10 +213,10 @@ def retire_idle_bridge(rt, key, account, server):
         if any(p.get('accountKey', 'default') == key and not p['future'].done() for p in rt.preparations.values()):
             return False
         ids = {a['id'] for a in agents}
+        from codex_workspace import active_monitors, active_task_records
         if any(m.get('agent') in ids and m.get('status') in {'approval', 'starting', 'running'}
-               for m in rt.records(db, 'monitors')):
+               for m in active_monitors(db)):
             return False
-        from codex_workspace import active_task_records
         if any(t.get('agent') in ids for t in active_task_records(db)):
             return False
         if any(r.get('status') == 'pending' and (r.get('agent') in ids or r.get('accountKey') == key) for r in rt.records(db, 'requests')):
