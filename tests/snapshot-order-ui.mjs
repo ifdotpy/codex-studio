@@ -165,11 +165,23 @@ try {
     const oldRevision = revision;
     revision++;
     stateSeq++;
+    const newerSession = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/session" && response.ok(),
+    );
     await page.locator("#message").fill(`Snapshot refresh ${revision}`);
     await page.locator("#send").click();
     await workerButton
       .getByText(`Worker revision ${revision}`, { exact: true })
       .waitFor();
+    await newerSession;
+    await waitFor(
+      () =>
+        requests.some(
+          (request) => request.revision === revision && !request.held,
+        ),
+      "Newer session request completes before the held response",
+    );
     const expectedStatus = revision === 1 ? "Working" : "Failed";
     assert.equal(
       await workerButton.locator("small").innerText(),

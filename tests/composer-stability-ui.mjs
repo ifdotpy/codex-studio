@@ -111,7 +111,24 @@ try {
         return result;
       }, width <= 760);
     const baseline = await boxes();
+    const waitForStableGeometry = async () => {
+      const selectors = Object.keys(baseline);
+      await page.evaluate(() => {
+        window.composerGeometryFrame = null;
+      });
+      await page.waitForFunction((selectors) => {
+        const current = selectors.map((selector) => {
+          const rect = document.querySelector(selector).getBoundingClientRect();
+          return [rect.x, rect.y, rect.width, rect.height].map(Math.round);
+        });
+        const serialized = JSON.stringify(current);
+        const stable = window.composerGeometryFrame === serialized;
+        window.composerGeometryFrame = serialized;
+        return stable;
+      }, selectors);
+    };
     const stable = async (label) => {
+      await waitForStableGeometry();
       const current = await boxes();
       measurements.push({ width, label, boxes: current });
       for (const [selector, box] of Object.entries(baseline))

@@ -185,7 +185,37 @@ try {
       .first()
       .click();
     await page.locator(`[data-message="text-${turns - 1}-0"]`).waitFor();
-
+    // The matching data-message can be a hidden lazy placeholder until the
+    // work log has committed its visited state. Wait for the real tool card.
+    const firstToolSummary = page.locator(
+      `[data-message="tool-${turns - 1}-0"] > summary`,
+    );
+    try {
+      await firstToolSummary.waitFor({ state: "visible" });
+    } catch (error) {
+      const state = await page.evaluate(
+        ({ id, stateDir, agentId }) => {
+          const turn = document.querySelector(`[data-turn="turn-${id}"]`);
+          const work = turn?.querySelector(".turn-work");
+          const firstTool = document.querySelector(
+            `[data-message="tool-${id}-0"]`,
+          );
+          return {
+            turn: turn?.outerHTML.slice(0, 2400),
+            workOpen: work?.open,
+            workVisited: work?.querySelectorAll("[data-lazy-message]").length,
+            firstTool: firstTool?.outerHTML.slice(0, 1200),
+            saved: localStorage.getItem(
+              `studio-turns:${stateDir}:${agentId}:tools-v3`,
+            ),
+          };
+        },
+        { id: turns - 1, stateDir: state.stateDir, agentId: lead.id },
+      );
+      throw Error(
+        `Newest tool did not render: ${JSON.stringify(state)}. ${error}`,
+      );
+    }
     await page
       .locator(`[data-message="tool-${turns - 1}-0"] > summary`)
       .click();

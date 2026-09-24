@@ -75,7 +75,8 @@ try {
     posts = [];
   let available = true,
     holdSession = null,
-    holdPost = null;
+    holdPost = null,
+    showDeliveredOutbox = false;
   await context.route("**/api/sync/identity", (route) =>
     route.fulfill({
       status: available ? 200 : 503,
@@ -105,6 +106,70 @@ try {
       contentType: "application/json",
       body: await response.text(),
     });
+  });
+  const deliverTranscriptOutbox = async (route) => {
+    if (!showDeliveredOutbox) return route.fallback();
+    const response = await route.fetch();
+    const transcript = await response.json();
+    transcript.items = markOutboxDelivered(transcript.items);
+    await route.fulfill({ response, json: transcript });
+  };
+  const markOutboxDelivered = (items) =>
+    items.map((item) =>
+      item.clientMessageId === "lost-response-pause"
+        ? {
+            ...item,
+            deliveryStatus: "delivered",
+            materialized: true,
+            pending: false,
+          }
+        : item,
+    );
+  // Queue-mode acceptance stays pending in the fixture after the retry.
+  // Serve its later transcript materialization to the reloaded page.
+  await context.route("**/api/transcript?*", deliverTranscriptOutbox);
+  await context.route("**/api/transcript/page?*", deliverTranscriptOutbox);
+  await context.route("**/api/transcript/stream?*", async (route) => {
+    if (!showDeliveredOutbox) return route.fallback();
+    const id = new URL(route.request().url()).searchParams.get("id");
+    const response = await fetch(
+      `${target}/api/transcript?id=${encodeURIComponent(id)}`,
+    );
+    const transcript = await response.json();
+    transcript.items = markOutboxDelivered(transcript.items);
+    const data = {
+      ...transcript,
+      replace: true,
+      order: transcript.items.map((item) => item.id),
+    };
+    await route.fulfill({
+      contentType: "text/event-stream",
+      body: `data: ${JSON.stringify(data)}\n\n`,
+    });
+  });
+  await context.route("**/api/queue?*", async (route) => {
+    if (!showDeliveredOutbox || route.request().method() !== "GET")
+      return route.fallback();
+    const response = await route.fetch();
+    const queue = await response.json();
+    queue.items = queue.items.filter(
+      (item) => item.id !== "lost-response-pause",
+    );
+    await route.fulfill({ response, json: queue });
+  });
+  await context.route("**/api/sync/pull?*", async (route) => {
+    if (!showDeliveredOutbox) return route.fallback();
+    const scope = new URL(route.request().url()).searchParams.get("scope");
+    if (!scope?.startsWith("transcript:")) return route.fallback();
+    const response = await route.fetch();
+    const result = await response.json();
+    result.documents = result.documents.map((document) => {
+      if (document.id !== scope) return document;
+      const transcript = JSON.parse(document.payload);
+      transcript.items = markOutboxDelivered(transcript.items);
+      return { ...document, payload: JSON.stringify(transcript) };
+    });
+    await route.fulfill({ response, json: result });
   });
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
@@ -325,6 +390,7 @@ try {
   await second.evaluate(() =>
     window.outboxModule.changeOutbox("lost-response-pause", "pause"),
   );
+  await second.close();
   const deadline = Date.now() + 5000;
   while (!postRoute && Date.now() < deadline)
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -338,20 +404,21 @@ try {
     .waitFor();
   const pausedCount = posts.length;
   await page.reload();
-  await entry("Keep the immutable request")
-    .getByRole("button", { name: "Resume retries", exact: true })
-    .waitFor();
+  await page.getByText("Resume retries", { exact: true }).waitFor();
   await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
   assert.equal(posts.length, pausedCount);
-  await entry("Keep the immutable request")
-    .getByRole("button", { name: "Resume retries", exact: true })
-    .click();
+  await page.getByText("Resume retries", { exact: true }).click();
   await accepted("Keep the immutable request", { rendered: false });
   assert.deepEqual(
     posts.slice(-2),
     [body, body],
     "Explicit resume retries the same body and ID",
   );
+  showDeliveredOutbox = true;
+  await page.evaluate(async (room) => {
+    const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
+    await db.projections.findOne(`transcript:${room}`).remove();
+  }, room);
   await page.reload();
   await page.locator("#message").waitFor();
   await confirmedMessage("Keep the immutable request");

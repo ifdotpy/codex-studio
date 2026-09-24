@@ -41,6 +41,8 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.addInitScript(() => {
+    window.__chatSwitchStartedAt = undefined;
+    window.__chatSwitchPaintAt = undefined;
     window.testStreams = [];
     window.createdStreams = [];
     window.EventSource = class extends EventTarget {
@@ -111,10 +113,36 @@ try {
   });
   await page.goto(origin);
   const open = async (id, message) => {
-    const start = Date.now();
-    await page.locator(`[data-chat="${id}"]`).click();
-    await page.locator(`[data-message="${message}"]`).waitFor();
-    return Date.now() - start;
+    const chat = page.locator(`[data-chat="${id}"]`);
+    const selector = `[data-message="${message}"]`;
+    await chat.evaluate((element, target) => {
+      window.__chatSwitchStartedAt = undefined;
+      window.__chatSwitchPaintAt = undefined;
+      element.addEventListener(
+        "pointerdown",
+        () => {
+          window.__chatSwitchStartedAt = performance.now();
+          const recordVisibleTarget = () => {
+            const node = document.querySelector(target);
+            if (node?.isConnected && node.getClientRects().length) {
+              window.__chatSwitchPaintAt = performance.now();
+              return;
+            }
+            requestAnimationFrame(recordVisibleTarget);
+          };
+          requestAnimationFrame(recordVisibleTarget);
+        },
+        { once: true },
+      );
+    }, selector);
+    await chat.click();
+    await page.locator(selector).waitFor({ state: "visible" });
+    await page.waitForFunction(
+      () => typeof window.__chatSwitchPaintAt === "number",
+    );
+    return page.evaluate(
+      () => window.__chatSwitchPaintAt - window.__chatSwitchStartedAt,
+    );
   };
   const cold = await open(a.id, "a-29");
   assert.ok(
@@ -171,13 +199,14 @@ try {
     "Delayed HTTP cannot replace a newer stream",
   );
   const heldB = new Promise((resolve) => (resolveHeldB = resolve));
-  await open(b.id, "b-29");
-  await page.waitForRequest((request) => {
+  const lateRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
     return (
       url.pathname === "/api/transcript" && url.searchParams.get("id") === b.id
     );
   });
+  await open(b.id, "b-29");
+  await lateRequest;
   const lateOther = await heldB;
   const refreshed = await open(a.id, "fresh-29");
   assert.ok(refreshed < 500, "Cache retains the newest stream");

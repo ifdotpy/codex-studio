@@ -59,8 +59,53 @@ try {
       name: "Actions for Other project",
       exact: true,
     });
-  await row().hover();
-  await actions().click();
+  const openActions = async () => {
+    await row().hover();
+    try {
+      await page.waitForFunction(() => {
+        const button = document.querySelector(
+          'button[aria-label="Actions for Other project"]',
+        );
+        if (!(button instanceof HTMLButtonElement)) return false;
+        const style = getComputedStyle(button);
+        if (style.opacity !== "1" || style.pointerEvents !== "auto")
+          return false;
+        const rect = button.getBoundingClientRect();
+        const target = document.elementFromPoint(
+          rect.x + rect.width / 2,
+          rect.y + rect.height / 2,
+        );
+        return target === button || button.contains(target);
+      });
+    } catch (error) {
+      const state = await page.evaluate(() => {
+        const button = document.querySelector(
+          'button[aria-label="Actions for Other project"]',
+        );
+        const chat = document.querySelector("[data-chat]");
+        return {
+          button: button?.outerHTML,
+          buttonStyle: button && getComputedStyle(button).cssText,
+          buttonOpacity: button && getComputedStyle(button).opacity,
+          buttonPointerEvents: button && getComputedStyle(button).pointerEvents,
+          row: chat?.parentElement?.parentElement?.outerHTML,
+          hovered: document.querySelector(":hover")?.outerHTML,
+        };
+      });
+      throw Error(
+        `Row actions did not open: ${JSON.stringify(state)}. ${error}`,
+      );
+    }
+    await actions().click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('button[aria-label="Actions for Other project"]')
+          ?.getAttribute("aria-expanded") === "true",
+    );
+    await page.getByRole("menu").waitFor({ state: "visible" });
+  };
+  await openActions();
   await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
   await poll(
     async () =>
@@ -69,8 +114,7 @@ try {
   );
   const folder = join(root, "Release checks");
   await mkdir(folder);
-  await row().hover();
-  await actions().click();
+  await openActions();
   await page
     .getByRole("menuitem", { name: "Change project folder", exact: true })
     .click();
@@ -91,9 +135,22 @@ try {
         .cwd.endsWith("/Release checks"),
     "project directory is persisted",
   );
-  await row().hover();
-  await actions().click();
-  await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
+  await page.getByText("Release checks", { exact: true }).waitFor();
+  await openActions();
+  const archiveAction = page.getByRole("menuitem", {
+    name: "Archive",
+    exact: true,
+  });
+  try {
+    await archiveAction.waitFor({ state: "visible" });
+  } catch (error) {
+    const menuText = await page.getByRole("menu").allTextContents();
+    const thread = (await state()).threads.find((item) => item.id === lead.id);
+    throw Error(
+      `Archive action missing: ${JSON.stringify({ menuText, archived: thread?.archived, cwd: thread?.cwd, inFlight: thread?.inFlight })}. ${error}`,
+    );
+  }
+  await archiveAction.click();
   await poll(
     async () => (await row().count()) === 0,
     "archived chat leaves active list",
@@ -105,8 +162,7 @@ try {
     .getByRole("menuitem", { name: "Show archived chats", exact: true })
     .click();
   await row().waitFor();
-  await row().hover();
-  await actions().click();
+  await openActions();
   await page
     .getByRole("menuitem", { name: "Restore chat", exact: true })
     .click();
@@ -171,6 +227,10 @@ try {
   await page
     .getByRole("button", { name: "Remove dropped.txt", exact: true })
     .waitFor();
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#send");
+    return button instanceof HTMLButtonElement && !button.disabled;
+  });
   assert.equal(
     await page.locator("#send").isEnabled(),
     true,

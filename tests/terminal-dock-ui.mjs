@@ -432,7 +432,24 @@ try {
   await dock
     .getByText("Terminal connection interrupted", { exact: false })
     .waitFor();
-  await dock.getByRole("button", { name: "Reconnect", exact: true }).click();
+  const reconnect = dock.getByRole("button", {
+    name: "Reconnect",
+    exact: true,
+  });
+  await reconnect.evaluate((button) =>
+    button.scrollIntoView({ block: "center", inline: "center" }),
+  );
+  await page.waitForFunction(() => {
+    const button = document.querySelector(".terminal-dock-error button");
+    if (!button) return false;
+    const rect = button.getBoundingClientRect();
+    const target = document.elementFromPoint(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+    );
+    return target === button || button.contains(target);
+  });
+  await reconnect.click();
   await page.waitForFunction(() =>
     document
       .querySelector(".xterm-accessibility-tree")
@@ -638,8 +655,18 @@ try {
   );
   assert.equal(ownerBefore.status, ownerAfter.status);
   await page.screenshot({ path: join(liveRoot, "terminal-live-desktop.png") });
+  const closeResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/terminals/close") &&
+      response.request().postDataJSON()?.id === liveShell,
+  );
   await dock.getByRole("button", { name: "End session", exact: true }).click();
   // This shell already exited. Closing its saved session needs no stop confirmation.
+  assert.equal((await closeResponse).status(), 200, "close request succeeds");
+  await page.waitForFunction(async (id) => {
+    const { items } = await (await fetch("/api/terminals")).json();
+    return !items.some((item) => item.id === id);
+  }, liveShell);
   await dock
     .getByText("Your terminals, always here", { exact: true })
     .waitFor();

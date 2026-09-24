@@ -112,6 +112,17 @@ try {
       const rect = panel?.getBoundingClientRect();
       return !!rect && rect.left >= 0 && rect.right <= innerWidth;
     });
+  const waitForTeamToggleHitTarget = () =>
+    page.waitForFunction(() => {
+      const button = document.querySelector("#team-toggle");
+      if (!button) return false;
+      const rect = button.getBoundingClientRect();
+      const target = document.elementFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height / 2,
+      );
+      return target === button || button.contains(target);
+    });
   const groupIds = (name) =>
     team
       .getByRole("region", { name, exact: true })
@@ -243,6 +254,7 @@ try {
     if (await page.locator("#sidebar").isVisible())
       await page.locator("#sidebar-toggle").click();
     await page.locator("#message").fill(`Lead draft ${width}`);
+    await waitForTeamToggleHitTarget();
     await page.getByRole("button", { name: "Team", exact: true }).click();
     await search.waitFor({ state: "visible" });
     await search.fill("Worker 39");

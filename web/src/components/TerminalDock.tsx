@@ -672,9 +672,14 @@ function ShellView({
             setStatus(output.status);
             instance!.options.disableStdin =
               inputBlocked.current || !running(output.status);
-            setFailure(output.error || "");
+            if (output.error) {
+              setFailure(output.error);
+              return;
+            }
+            setFailure("");
           } catch (e) {
             if (!disposed) setFailure(errorText(e));
+            return;
           }
           if (!disposed) timer = setTimeout(poll, 350);
         };

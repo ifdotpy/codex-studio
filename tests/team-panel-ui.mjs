@@ -87,19 +87,73 @@ try {
   );
   await page.goto(origin);
   await page.locator("#message").waitFor();
-  await page.locator("#team-toggle").click();
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 960 });
     await page.emulateMedia({ colorScheme: width === 320 ? "dark" : "light" });
-    if (!(await page.locator("#team").isVisible()))
-      await page.locator("#team-toggle").click();
+    await page.waitForFunction(
+      (expectedWidth) =>
+        window.innerWidth === expectedWidth &&
+        document
+          .querySelector("#team-toggle")
+          ?.getAttribute("aria-expanded") === "false",
+      width,
+    );
+    await page.locator("#team-toggle").click();
+    await page.locator("#team").waitFor({ state: "visible" });
     const panel = page.locator("#team");
+    await page.waitForFunction(() => {
+      const team = document.querySelector("#team");
+      const card = team?.querySelector(".worker-entry");
+      const heading = team?.querySelector(".team-heading");
+      if (
+        !(team instanceof HTMLElement) ||
+        !(card instanceof HTMLElement) ||
+        !(heading instanceof HTMLElement)
+      )
+        return false;
+      const before = team.getBoundingClientRect().toJSON();
+      return new Promise((resolve) =>
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const after = team.getBoundingClientRect();
+            resolve(
+              team === document.querySelector("#team") &&
+                team.contains(card) &&
+                team.contains(heading) &&
+                team.querySelector(".worker-entry") === card &&
+                team.querySelector(".team-heading") === heading &&
+                before.x === after.x &&
+                before.y === after.y &&
+                before.width === after.width &&
+                before.height === after.height,
+            );
+          }),
+        ),
+      );
+    });
     assert.equal(
       await panel
         .locator(".team-overview, #worker-search, .team-filters")
         .count(),
       0,
     );
+    try {
+      await panel.locator(".team-heading").waitFor();
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        teamCount: document.querySelectorAll("#team").length,
+        teams: [...document.querySelectorAll("#team")].map((team) => ({
+          text: team.innerText,
+          html: team.outerHTML.slice(0, 1200),
+          visible: team.getBoundingClientRect().width > 0,
+        })),
+        headings: document.querySelectorAll(".team-heading").length,
+        viewport: window.innerWidth,
+      }));
+      throw Error(
+        `Team heading missing at ${width}px: ${JSON.stringify(state)}. ${error}`,
+      );
+    }
     assert.match(
       await panel.locator(".team-heading").innerText(),
       /1 subagent\b/,

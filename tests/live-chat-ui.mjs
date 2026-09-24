@@ -48,11 +48,33 @@ try {
   page.on("request", (r) => {
     if (r.url().includes("/api/transcript?id=")) transcriptPolls++;
   });
+  const initial = await state();
+  const lead = initial.runtime.agents.find((a) => a.name === "Other project");
+  await page.addInitScript((agentId) => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url, options) {
+        super(url, options);
+        const target = new URL(url, location.href);
+        if (
+          target.pathname === "/api/transcript/stream" &&
+          target.searchParams.get("id") === agentId
+        )
+          this.addEventListener(
+            "message",
+            () => (window.__transcriptStreamLive = true),
+            { once: true },
+          );
+      }
+    };
+  }, lead.id);
   await page.goto(origin);
   await page
     .locator("[data-chat]")
     .filter({ hasText: "Other project" })
     .click();
+  await page.waitForFunction(() => window.__transcriptStreamLive === true);
+  const transcriptPollsAtStart = transcriptPolls;
   await page.locator("#message").fill("Exercise the live stream");
   await page.locator("#send").click();
   let agent;
@@ -79,6 +101,10 @@ try {
     delta: "First paragraph",
   });
   await page.locator('[data-phase="writing"]').waitFor();
+  await page
+    .locator("#messages .prose")
+    .filter({ hasText: "First paragraph" })
+    .waitFor();
   assert.equal(
     await page
       .locator("#messages .prose")
@@ -215,7 +241,11 @@ try {
     await page.locator('.tool-card[data-tool-status="running"]').count(),
     0,
   );
-  assert.equal(transcriptPolls, 0, "healthy stream does not poll transcript");
+  assert.equal(
+    transcriptPolls,
+    transcriptPollsAtStart,
+    "healthy stream does not poll transcript after initial history loads",
+  );
   // Offline sync status replaces the stale transport reconnect indicator.
   await page.context().setOffline(true);
   const offline = page.getByText(

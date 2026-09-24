@@ -97,6 +97,19 @@ try {
     page.on("pageerror", (e) => errors.push(e.message));
     await page.addInitScript(() => {
       window.motionStreams = [];
+      window.motionScrollTrace = [];
+      document.addEventListener(
+        "scroll",
+        (event) => {
+          if (event.target?.id === "messages")
+            window.motionScrollTrace.push({
+              top: event.target.scrollTop,
+              height: event.target.scrollHeight,
+              time: performance.now(),
+            });
+        },
+        true,
+      );
       window.EventSource = class extends EventTarget {
         constructor(url) {
           super();
@@ -224,6 +237,10 @@ try {
       root.tabIndex = -1;
       root.focus();
     });
+    await page.waitForFunction(
+      (selector) => document.activeElement === document.querySelector(selector),
+      rootSelector,
+    );
     const scrollEnd = page
       .locator(rootSelector)
       .evaluate(
@@ -232,25 +249,31 @@ try {
             root.addEventListener("scrollend", resolve, { once: true }),
           ),
       );
-    await page.locator(rootSelector).press("PageUp");
+    await page.keyboard.press("PageUp");
     await page.waitForFunction(
-      ({ before, selector }) =>
-        document.querySelector(selector).scrollTop < before,
+      ({ before, selector }) => {
+        const root = document.querySelector(selector);
+        return (
+          root.scrollTop < before &&
+          root.scrollHeight - root.scrollTop - root.clientHeight >= 32
+        );
+      },
       { before: scrollBeforePageUp, selector: rootSelector },
     );
     await scrollEnd;
     try {
       await page.locator(`${conversationSelector} #jump-latest`).waitFor();
     } catch (error) {
-      const state = await page.locator(rootSelector).evaluate((root) => ({
-        scrollTop: root.scrollTop,
-        scrollHeight: root.scrollHeight,
-        clientHeight: root.clientHeight,
-        gap: root.scrollHeight - root.scrollTop - root.clientHeight,
-        button: !!document.querySelector(
-          `${conversationSelector} #jump-latest`,
-        ),
-      }));
+      const state = await page.locator(rootSelector).evaluate(
+        (root, selector) => ({
+          scrollTop: root.scrollTop,
+          scrollHeight: root.scrollHeight,
+          clientHeight: root.clientHeight,
+          gap: root.scrollHeight - root.scrollTop - root.clientHeight,
+          button: !!document.querySelector(selector),
+        }),
+        `${conversationSelector} #jump-latest`,
+      );
       throw new Error(
         `Latest button did not appear: ${JSON.stringify(state)}`,
         {
@@ -323,6 +346,7 @@ try {
       streaming: true,
       turnId: "live-turn",
     });
+    await page.evaluate(() => (window.motionScrollTrace = []));
     await emit();
     await transcriptRoot
       .locator(`[data-message="stream-${width}"]`)
@@ -330,9 +354,23 @@ try {
     await afterPaint(page, rootSelector);
     await waitForStableAnchor();
     const streamAnchorTop = await anchorY();
+    const streamDebug = await transcriptRoot.evaluate((root, messageId) => {
+      const message = [...root.querySelectorAll("[data-message]")].find(
+        (node) => node.dataset.message === messageId,
+      );
+      return {
+        scrollTop: root.scrollTop,
+        scrollHeight: root.scrollHeight,
+        clientHeight: root.clientHeight,
+        bottomGap: root.scrollHeight - root.scrollTop - root.clientHeight,
+        jumpLatest: !!document.querySelector("#jump-latest"),
+        stream: message?.outerHTML.slice(0, 500),
+        scrollTrace: window.motionScrollTrace,
+      };
+    }, anchor.messageId);
     assert.ok(
       Math.abs(streamAnchorTop - anchor.top) < 2,
-      `stream does not move reader (expected ${anchor.top}, got ${streamAnchorTop})`,
+      `stream does not move reader (expected ${anchor.top}, got ${streamAnchorTop}; ${JSON.stringify(streamDebug)})`,
     );
     await composer.fill("A\nB\nC\nD\nE\nF");
     await afterPaint(page, rootSelector);

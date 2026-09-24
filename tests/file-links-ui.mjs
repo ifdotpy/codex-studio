@@ -103,7 +103,7 @@ try {
   );
   const check = async (name, expected, line) => {
     await page.getByRole("link", { name, exact: true }).click();
-    const dialog = page.getByRole("dialog");
+    const dialog = page.getByRole("dialog").last();
     if (!line) {
       await dialog.getByRole("button", { name: "Source", exact: true }).click();
     }
@@ -154,13 +154,13 @@ try {
     ["Remote file", /Remote file links are not supported/],
   ]) {
     await page.getByRole("link", { name, exact: true }).click();
+    const dialog = page.getByRole("dialog").last();
+    await dialog.waitFor();
     await poll(async () =>
-      message.test(
-        await page.getByRole("dialog").getByRole("alert").textContent(),
-      ),
+      message.test(await dialog.getByRole("alert").textContent()),
     );
     await page.keyboard.press("Escape");
-    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await dialog.waitFor({ state: "hidden" });
   }
   assert.equal(
     await page

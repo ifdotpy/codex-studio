@@ -329,7 +329,16 @@ try {
   );
   assert.equal(await nav.count(), 1);
   await page.screenshot({ path: join(root, "prompt-mobile.png") });
-  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", { name: "Browse prompts", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector(".prompt-history-toggle")
+        ?.getAttribute("aria-expanded") === "false",
+  );
+  await history.waitFor({ state: "hidden" });
   await page.setViewportSize({ width: 1440, height: 960 });
   await composer.fill("");
   const update = {
@@ -357,9 +366,18 @@ try {
     "Recall retains user messages after a live page contains only agent activity",
   );
   await page.locator(".prompt-navigation").scrollIntoViewIfNeeded();
-  await page
-    .getByRole("button", { name: "Browse prompts", exact: true })
-    .click();
+  const promptToggle = page.getByRole("button", {
+    name: "Browse prompts",
+    exact: true,
+  });
+  await promptToggle.click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector(".prompt-history-toggle")
+        ?.getAttribute("aria-expanded") === "true",
+  );
+  await history.waitFor({ state: "visible" });
   await history.getByRole("textbox", { name: "Search this chat" }).fill("");
   assert.equal(
     await history.locator(".prompt-history-entry").count(),
@@ -374,13 +392,73 @@ try {
     name: "Load earlier messages",
     exact: true,
   });
-  await loadEarlier.waitFor({ state: "visible" });
-  await page.waitForFunction(() => {
-    const button = [
-      ...document.querySelectorAll(".prompt-history-list button"),
-    ].find((item) => item.textContent.trim() === "Load earlier messages");
-    return button instanceof HTMLButtonElement && !button.disabled;
-  });
+  try {
+    await loadEarlier.waitFor({ state: "visible" });
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      dialog: document.querySelector(".prompt-history")?.innerText,
+      historyButtons: [
+        ...document.querySelectorAll(".prompt-history-list button"),
+      ].map((button) => ({
+        text: button.textContent.trim(),
+        disabled: button.disabled,
+        rect: button.getBoundingClientRect().toJSON(),
+      })),
+      nav: document.querySelector(".prompt-navigation")?.outerHTML,
+    }));
+    throw new Error(
+      `Load earlier did not appear: ${JSON.stringify(state)}. ${error}`,
+    );
+  }
+  try {
+    await page.waitForFunction(() => {
+      const dialog = document.querySelector(".prompt-history");
+      const button = [
+        ...document.querySelectorAll(".prompt-history-list button"),
+      ].find((item) => item.textContent.trim() === "Load earlier messages");
+      if (
+        !(dialog instanceof HTMLElement) ||
+        !(button instanceof HTMLButtonElement) ||
+        button.disabled
+      )
+        return false;
+      const dialogBox = dialog.getBoundingClientRect();
+      const buttonBox = button.getBoundingClientRect();
+      return (
+        dialogBox.width > 0 &&
+        buttonBox.width > 0 &&
+        buttonBox.top >= 0 &&
+        buttonBox.bottom <= window.innerHeight
+      );
+    });
+  } catch (error) {
+    const state = await page.evaluate(() => {
+      const dialog = document.querySelector(".prompt-history");
+      const list = document.querySelector(".prompt-history-list");
+      const button = [
+        ...document.querySelectorAll(".prompt-history-list button"),
+      ].find((item) => item.textContent.trim() === "Load earlier messages");
+      return {
+        expanded: document
+          .querySelector(".prompt-history-toggle")
+          ?.getAttribute("aria-expanded"),
+        dialog: dialog?.getBoundingClientRect().toJSON(),
+        list: list && {
+          box: list.getBoundingClientRect().toJSON(),
+          scrollTop: list.scrollTop,
+          scrollHeight: list.scrollHeight,
+          clientHeight: list.clientHeight,
+        },
+        button: button && {
+          disabled: button.disabled,
+          box: button.getBoundingClientRect().toJSON(),
+        },
+      };
+    });
+    throw Error(
+      `Load earlier geometry did not settle: ${JSON.stringify(state)}. ${error}`,
+    );
+  }
   const loadEarlierBox = await loadEarlier.boundingBox();
   assert.ok(
     loadEarlierBox &&
@@ -414,15 +492,28 @@ try {
     name: "1 Earlier saved input",
     exact: true,
   });
+  await page.locator('[data-message="earlier-prompt"]').waitFor();
+  const historyToggle = page.getByRole("button", {
+    name: "Browse prompts",
+    exact: true,
+  });
+  if ((await historyToggle.getAttribute("aria-expanded")) !== "true") {
+    await historyToggle.click();
+  }
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector(".prompt-history-toggle")
+        ?.getAttribute("aria-expanded") === "true",
+  );
+  await history.waitFor({ state: "visible" });
   try {
     await earlierEntry.waitFor();
   } catch (error) {
-    const state = await history.evaluate((dialog) => ({
-      text: dialog.innerText,
-      entries: [...dialog.querySelectorAll(".prompt-history-entry")].map(
-        (entry) => entry.innerText,
-      ),
-      notices: [...document.querySelectorAll('[role="alert"]')].map(
+    const state = await page.evaluate(() => ({
+      dialog: document.querySelector(".prompt-history")?.outerHTML,
+      navigation: document.querySelector(".prompt-navigation")?.outerHTML,
+      alerts: [...document.querySelectorAll('[role="alert"]')].map(
         (notice) => notice.textContent,
       ),
     }));

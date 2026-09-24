@@ -67,6 +67,7 @@ try {
     await page.getByRole("textbox", { name: "Draft" }).inputValue(),
     "Original draft",
   );
+  await page.locator("audio").waitFor();
   assert.equal(await page.locator("audio").count(), 1);
   assert.equal(await page.evaluate(() => window.audioBytes), 32044);
   await page.reload();
@@ -74,6 +75,7 @@ try {
   await page
     .getByText("Recognition unavailable; recording preserved.")
     .waitFor();
+  await page.locator("audio").waitFor();
   assert.equal(await page.locator("audio").count(), 1);
   await page.evaluate(() => (window.retryOK = true));
   await page.getByRole("button", { name: "Retry transcription" }).click();
@@ -104,7 +106,9 @@ try {
   await page.getByRole("button", { name: "Switch chat" }).click();
   await page.waitForFunction(() => window.captureStopped >= 1);
   await page.getByRole("button", { name: "Dictation", exact: true }).click();
-  await page.getByRole("textbox", { name: "Review dictated text" }).fill("Corrected spoken instruction");
+  await page
+    .getByRole("textbox", { name: "Review dictated text" })
+    .fill("Corrected spoken instruction");
   await page.getByRole("button", { name: "Delete recording" }).click();
   await page.waitForFunction(
     () => document.querySelectorAll("audio").length === 0,
@@ -114,7 +118,9 @@ try {
     () => document.querySelectorAll("audio").length === 1,
   );
   assert.equal(
-    await page.getByRole("textbox", { name: "Review dictated text" }).inputValue(),
+    await page
+      .getByRole("textbox", { name: "Review dictated text" })
+      .inputValue(),
     "Corrected spoken instruction",
     "Delete and Undo preserve reviewed text",
   );
@@ -133,6 +139,7 @@ try {
   await page.reload();
   await page.getByRole("button", { name: "Dictation", exact: true }).click();
   await page.getByText(/Recovered$/).waitFor();
+  await page.locator("audio").waitFor();
   assert.equal(await page.locator("audio").count(), 1);
   // The original component can finish after this recording was deleted elsewhere.
   await page.evaluate(() => (window.deferTranscription = true));
@@ -198,6 +205,7 @@ try {
     })
     .first()
     .waitFor();
+  await page.locator("audio").waitFor();
   assert.equal(
     await page.getByRole("button", { name: "Record", exact: true }).isEnabled(),
     true,
@@ -210,6 +218,7 @@ try {
       exact: true,
     })
     .waitFor();
+  await page.locator("audio").waitFor();
   await page.evaluate(() => {
     window.deferTranscription = true;
     window.finishTranscription = null;
@@ -226,6 +235,7 @@ try {
       exact: true,
     })
     .waitFor();
+  await page.locator("audio").waitFor();
   assert.equal(await page.locator("audio").count(), 1);
   assert.deepEqual(errors, []);
   console.log(

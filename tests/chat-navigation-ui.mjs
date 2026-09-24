@@ -35,6 +35,35 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 960 },
   });
+  const chatActions = page.getByRole("button", {
+    name: "Chat actions",
+    exact: true,
+  });
+  const openChatActions = async () => {
+    await page.evaluate(() => {
+      window.__chatActionsHitFrames = 0;
+    });
+    await page.waitForFunction(() => {
+      const button = document.querySelector(
+        'button[aria-label="Chat actions"]',
+      );
+      if (button) {
+        const rect = button.getBoundingClientRect();
+        const target = document.elementFromPoint(
+          rect.x + rect.width / 2,
+          rect.y + rect.height / 2,
+        );
+        window.__chatActionsHitFrames =
+          target === button || button.contains(target)
+            ? window.__chatActionsHitFrames + 1
+            : 0;
+      } else {
+        window.__chatActionsHitFrames = 0;
+      }
+      return window.__chatActionsHitFrames >= 2;
+    });
+    await chatActions.click();
+  };
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(url);
@@ -56,7 +85,7 @@ try {
     0,
     "idle has no loading status below messages",
   );
-  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await openChatActions();
   for (const action of ["compact", "review"])
     assert.ok(
       await page.locator(`[data-action="${action}"]`).isDisabled(),
@@ -150,9 +179,7 @@ try {
   ]) {
     if (section === "messages") await page.locator("#messages-toggle").click();
     else {
-      await page
-        .getByRole("button", { name: "Chat actions", exact: true })
-        .click();
+      await openChatActions();
       await page.locator(`[data-workspace-section="${section}"]`).click();
     }
     const drawer = page.locator(".workspace-drawer");
@@ -167,7 +194,7 @@ try {
   );
   const background = page.getByRole("dialog", { name: /Current activity/ });
   assert.equal(await page.locator("#message").inputValue(), "Keep my draft");
-  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await openChatActions();
   await page.locator("#tasks-toggle").click();
   assert.equal(
     await background.getByLabel("Command", { exact: true }).count(),
@@ -184,9 +211,7 @@ try {
   await background.waitFor({ state: "hidden" });
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
-    await page
-      .getByRole("button", { name: "Chat actions", exact: true })
-      .click();
+    await openChatActions();
     await page.getByRole("menu").waitFor();
     for (const button of await page.getByRole("menuitem").all()) {
       const r = await button.boundingBox();
