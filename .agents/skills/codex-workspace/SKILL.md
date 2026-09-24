@@ -44,7 +44,8 @@ reconciliation; it does not authorize a second mutation.
 Choose each worker's model and reasoning level for its task. The default is
 `gpt-6-luna` with `high` reasoning unless the user sets team defaults.
 Codex and Claude can delegate to each other. Studio selects an account that
-offers the model. Set `account_key` only to select a specific account.
+offers the model. A user-selected subagent account applies to all new workers.
+Set `account_key` only when it respects that choice.
 Omitted fields use team defaults. Use `effort: null` for the model's native default.
 Use `fast_mode: false` to disable Fast for that worker. Explicit profile values override team defaults.
 Only the user can change team defaults. See [the execution contract](../../../ORCHESTRATION.md).

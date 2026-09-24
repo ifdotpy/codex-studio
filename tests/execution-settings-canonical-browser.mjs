@@ -55,9 +55,9 @@ const server = await createServer({
         if (id !== entry) return;
         return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/ExecutionSettings.tsx';
 const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'low',fastMode:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
-const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}]}));
-window.calls=[];window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;const nativeFetch=window.fetch;window.fetch=async(url,options)=>{if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return new Response(JSON.stringify({error:'The account changed. Select the model again'}),{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return new Response(JSON.stringify(window.fail?{error:'Rejected'}:window.reply),{status:window.fail?409:200,headers:{'Content-Type':'application/json'}})};
-function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.calls=[];window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;window.serverAccount=null;});return <MantineProvider><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
+const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}]}));
+window.catalogRequests=[];window.calls=[];window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;const nativeFetch=window.fetch;window.fetch=async(url,options)=>{if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);return new Response(JSON.stringify({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models}),{headers:{'Content-Type':'application/json'}})}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return new Response(JSON.stringify({error:'The account changed. Select the model again'}),{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return new Response(JSON.stringify(window.fail?{error:'Rejected'}:window.reply),{status:window.fail?409:200,headers:{'Content-Type':'application/json'}})};
+function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.catalogRequests=[];window.calls=[];window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;window.serverAccount=null;});return <MantineProvider><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} accounts={[{id:'default',email:'first@example.com',status:'ready'},{id:'second',email:'second@example.com',status:'ready'},{id:'claude',label:'Claude',status:'ready'},{id:'offline',label:'Offline',status:'error'}]} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
       },
     },
   ],
@@ -242,6 +242,89 @@ try {
     await value("medium");
     await page.waitForTimeout(50);
     assert.equal(await page.evaluate(() => window.refreshCount), 0);
+  });
+  await check("subagent-account-draft-and-catalog", async () => {
+    await reset({
+      defaults: true,
+      agent: {
+        workerDefaults: {
+          model: "gpt-5.6-luna",
+          effort: "high",
+          fastMode: false,
+        },
+      },
+    });
+    const account = page.getByLabel("Subagent account", { exact: true });
+    const model = page.getByLabel("Default subagent model", { exact: true });
+    const save = page.getByRole("button", {
+      name: "Save subagent settings",
+      exact: true,
+    });
+    assert.equal(await account.inputValue(), "");
+    assert.equal(await account.locator('option[value="offline"]').count(), 0);
+    await account.selectOption("claude");
+    await page.waitForFunction(() =>
+      window.catalogRequests.some(
+        (url) => url === "/api/models?account_key=claude",
+      ),
+    );
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll("option")].some(
+        (node) => node.value === "claude-opus-4-6",
+      ),
+    );
+    assert.equal(await model.inputValue(), "gpt-5.6-luna");
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(await page.evaluate(() => window.calls.length), 0);
+    await model.selectOption("claude-opus-4-6");
+    await page.evaluate(() => {
+      window.reply = {
+        ...window.agent,
+        workerDefaults: {
+          accountKey: "claude",
+          model: "claude-opus-4-6",
+          effort: "high",
+          fastMode: false,
+        },
+      };
+    });
+    await save.click();
+    await page.waitForFunction(() => window.refreshCount === 1);
+    assert.deepEqual(
+      await page.evaluate(() => window.calls[0].worker_defaults),
+      {
+        account_key: "claude",
+        model: "claude-opus-4-6",
+        effort: "high",
+        fast_mode: false,
+        daybreak_enabled: false,
+      },
+    );
+    assert.equal(await account.inputValue(), "claude");
+    await account.selectOption("second");
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await account.inputValue(), "claude");
+    await account.selectOption("");
+    await page.evaluate(() => {
+      window.reply = {
+        ...window.agent,
+        workerDefaults: {
+          accountKey: null,
+          model: "gpt-5.6-luna",
+          effort: "high",
+          fastMode: false,
+        },
+      };
+    });
+    await model.selectOption("gpt-5.6-luna");
+    await save.click();
+    await page.waitForFunction(() => window.refreshCount === 2);
+    assert.equal(
+      await page.evaluate(() => window.calls[1].worker_defaults.account_key),
+      null,
+    );
+    await reset();
+    assert.equal(await account.count(), 0);
   });
   await check("defaults-and-refresh-failure", async () => {
     await reset({ defaults: true });

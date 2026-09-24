@@ -1164,15 +1164,18 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
 
     def validate_worker_defaults(self, value, root_model, catalog):
         if (not isinstance(value, dict) or not {"model", "effort", "fast_mode"} <= set(value)
-                or set(value) - {"model", "effort", "fast_mode", "daybreak_enabled"}):
+                or set(value) - {"model", "effort", "fast_mode", "daybreak_enabled", "account_key"}):
             raise ValueError("worker_defaults needs model, effort and fast_mode")
         if value["model"] is not None and (not isinstance(value["model"], str) or not value["model"].strip()):
             raise ValueError("Default model must be a model name or null")
+        from codex_worker_accounts import selected_account
+        account = selected_account(self, value)
         self.validate_execution(catalog, value["model"] or root_model, value["effort"], value["fast_mode"])
         enabled = value.get("daybreak_enabled", False)
         program = resolve_program(catalog, value["model"] or root_model, enabled)
         return {"model": value["model"], "effort": value["effort"], "fastMode": value["fast_mode"],
-                "daybreakEnabled": enabled, "cyberAccessProgram": program}
+                "daybreakEnabled": enabled, "cyberAccessProgram": program,
+                **({"accountKey": account} if account is not None else {})}
 
     def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False):
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
@@ -1217,8 +1220,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             catalog = _catalog if _catalog is not None else self.catalog(catalog_account) if needs_catalog else None
         worker_catalog = catalog
         if "worker_defaults" in data:
-            from codex_worker_accounts import catalog as available_workers
-            worker_catalog = available_workers(self, catalog_account)
+            from codex_worker_accounts import settings_catalog
+            worker_catalog = settings_catalog(self, catalog_account, data["worker_defaults"])
         key = data.get("id") or uid()
         try:
             uuid.UUID(key)
@@ -1258,6 +1261,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             is_lead = p is None and role == "orchestrator"
             provider = account.get("provider", "codex")
             defaults = self.worker_defaults(root or {"provider": provider})
+            if p and defaults.get("accountKey") and account_key != defaults["accountKey"]:
+                raise ValueError("The subagent account changed. Read chat settings before creating a worker")
             model = data.get("model") or ((defaults["model"] or root["model"]) if root else "default" if provider == "claude" else DEFAULT_LEAD_MODEL)
             if needs_catalog and account_key != catalog_account:
                 raise ValueError("The account changed. Create the worker again")
@@ -1601,8 +1606,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         catalog = self.catalog(target.get("accountKey", "default")) if needs_catalog and not defaults_only else None
         worker_catalog = None
         if "worker_defaults" in data:
-            from codex_worker_accounts import catalog as available_workers
-            worker_catalog = available_workers(self, target.get("accountKey", "default"))
+            from codex_worker_accounts import settings_catalog
+            worker_catalog = settings_catalog(self, target.get("accountKey", "default"), data["worker_defaults"])
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             if a.get("deletedAt"):

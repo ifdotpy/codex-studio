@@ -21,15 +21,17 @@ Already accepted worker input and active work continue. Workers can report resul
 The lead completes new work itself. Multi agent mode permits delegation again; it sends no task by itself.
 Only the user can change this setting. Studio keeps native Codex delegation disabled in both modes.
 
-**Subagents** sets the model, reasoning level, and Fast default for future workers in this team.
+**Subagents** sets the account, model, reasoning level, and Fast default for future workers in this team.
 The default is `gpt-6-luna` with `high` reasoning for Codex and Claude leads.
 The orchestrator can select another model and reasoning level for each worker.
 A worker can use a different provider from its parent. Studio selects an account
 that offers its model, preferring the parent, then the application default.
-An explicit `account_key` selects one account. The target account catalog defines
+The user can select an account in chat settings. All new workers must use it.
+Existing workers keep their accounts. Automatic permits account selection per worker.
+An explicit `account_key` must respect the user's account choice. The target account catalog defines
 model access and reasoning levels. Each batch validates all targets before it
 creates any worker. Parent transfers preserve independent worker settings.
-The lead can override each value in `orchestration_spawn`.
+The lead can override execution defaults in `orchestration_spawn`, but cannot change the user's account choice.
 Omitted fields use the latest root lead defaults, including for workers created by another worker.
 A null default model uses the root lead model. A null effort uses the selected model's native default.
 Fast defaults to off. The main agent's reasoning and Fast settings do not become worker defaults.

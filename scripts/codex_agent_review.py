@@ -81,7 +81,8 @@ def request(rt, actor, args, key):
         assert_delegation(rt.agent(actor['rootId'], db))
     if actor.get('daybreakEnabled'):
         raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
-    catalog = rt.catalog(actor.get('accountKey', 'default'))
+    from codex_worker_accounts import resolve
+    review_account, catalog = resolve(rt, actor, {'model': actor['model']})
     with rt.lock, rt.db() as db:
         previous = _existing(rt, db, key, actor, target)
         if previous is not None:
@@ -106,7 +107,7 @@ def request(rt, actor, args, key):
         # must stay inside create()'s task size limit.
         spec['prompt'] = spec['prompt'][:32000]
         child = rt.create(spec, current['id'], parent_epoch=current['epoch'],
-                          _catalog=(current.get('accountKey', 'default'), catalog), _validate_only=True)
+                          _catalog=(review_account, catalog), _validate_only=True)
         child.update(yoloMode=False, worktree=False)
         value = {'requestId': key, 'agentId': child['id'], 'status': 'queued',
                  'agents': [{name: child[name] for name in ('id', 'name', 'status', 'model', 'effort', 'fastMode')}],

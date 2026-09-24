@@ -6,8 +6,9 @@ import { busy, type Agent, type Json } from "../types";
 import {
   isDaybreakAlias,
   supportsDaybreakMode,
-  type useWorkerModels,
+  useWorkerModels,
 } from "./WorkerModelPicker";
+import type { Account } from "./Accounts";
 import "./execution-settings.css";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
@@ -46,6 +47,7 @@ export function shortModel(model: string) {
 type SettingsProps = {
   agent: Agent;
   catalog: Catalog;
+  accounts?: Account[];
   refresh: () => Promise<void>;
   teamDefaults?: boolean;
   nextTurnSupported?: boolean;
@@ -61,6 +63,7 @@ const queuedFor = (agent: Agent) =>
 const settingsFor = (agent: Agent, teamDefaults: boolean) => {
   if (teamDefaults)
     return {
+      account_key: agent.workerDefaults?.accountKey ?? null,
       model:
         agent.workerDefaults?.model === undefined
           ? "gpt-6-luna"
@@ -81,6 +84,7 @@ const settingsFor = (agent: Agent, teamDefaults: boolean) => {
   };
 };
 const sameSettings = (left: Json, right: Json) =>
+  left.account_key === right.account_key &&
   left.model === right.model &&
   left.effort === right.effort &&
   left.fast_mode === right.fast_mode &&
@@ -98,7 +102,8 @@ export function ExecutionSettings(props: SettingsProps) {
 
 function ScopedExecutionSettings({
   agent,
-  catalog,
+  catalog: parentCatalog,
+  accounts = [],
   refresh,
   teamDefaults = false,
   nextTurnSupported,
@@ -161,6 +166,7 @@ function ScopedExecutionSettings({
     values: Json;
     baseline: Json;
   } | null>(null);
+  const [accountDraft, setAccountDraft] = useState<Json | null>(null);
   const [error, setError] = useState("");
   const [adjustment, setAdjustment] = useState("");
   const label = teamDefaults
@@ -175,7 +181,35 @@ function ScopedExecutionSettings({
       : "Subagent";
   const queued = queuedFor(agent);
   const stored = settingsFor(agent, teamDefaults);
-  const current = unconfirmed || pending?.values || stored;
+  const current = accountDraft || unconfirmed || pending?.values || stored;
+  const accountCatalog = useWorkerModels(
+    current.account_key || accountOf(agent),
+    teamDefaults && opened && !!current.account_key,
+  );
+  const catalog =
+    teamDefaults && current.account_key ? accountCatalog : parentCatalog;
+  const accountOptions = accounts
+    .filter((account) => !account.disconnected && account.status === "ready")
+    .map((account) => ({
+      value: account.id,
+      label: account.email || account.label || account.id,
+    }));
+  if (
+    current.account_key &&
+    !accountOptions.some((row) => row.value === current.account_key)
+  )
+    accountOptions.push({
+      value: current.account_key,
+      label: `${current.account_key} (unavailable)`,
+    });
+  const accountAvailable =
+    !current.account_key ||
+    accounts.some(
+      (account) =>
+        account.id === current.account_key &&
+        !account.disconnected &&
+        account.status === "ready",
+    );
   useEffect(() => {
     // Keep the acknowledged response while replication still has the old values.
     // A settings change in the snapshot hands ownership back to replication.
@@ -189,6 +223,7 @@ function ScopedExecutionSettings({
   }, [
     saving,
     pending,
+    stored.account_key,
     stored.model,
     stored.effort,
     stored.fast_mode,
@@ -270,6 +305,7 @@ function ScopedExecutionSettings({
           "The settings account changed. Check the current settings.",
         );
       confirmed = true;
+      if (mounted.current && teamDefaults) setAccountDraft(null);
       if (request.next_turn) {
         clearReceipt();
         if (mounted.current) setUnconfirmed(null);
@@ -356,6 +392,12 @@ function ScopedExecutionSettings({
           adjustments.push("Fast mode is unavailable and was turned off.");
         next.fast_mode = false;
       }
+    }
+    if (accountDraft) {
+      setAccountDraft(next);
+      setError("");
+      setAdjustment(adjustments.join(" "));
+      return;
     }
     const request = {
       id: agent.id,
@@ -457,6 +499,23 @@ function ScopedExecutionSettings({
         role="dialog"
         aria-label={label}
       >
+        {teamDefaults && (
+          <NativeSelect
+            label="Subagent account"
+            data={[{ value: "", label: "Automatic" }, ...accountOptions]}
+            value={current.account_key || ""}
+            disabled={saving}
+            onChange={(event) => {
+              setAccountDraft({
+                ...current,
+                account_key: event.currentTarget.value || null,
+              });
+              setError("");
+              setAdjustment("");
+            }}
+            description="Applies to new subagents. The orchestrator chooses their model and reasoning."
+          />
+        )}
         <NativeSelect
           id={teamDefaults ? undefined : "model"}
           label={prefix + " model"}
@@ -562,6 +621,29 @@ function ScopedExecutionSettings({
           </p>
         )}
         {teamDefaults && <p className="notice">Default for new subagents.</p>}
+        {teamDefaults && accountDraft && (
+          <div>
+            <Button
+              disabled={disabled || !modeSupported || !accountAvailable}
+              loading={saving}
+              onClick={() =>
+                void submit({ id: agent.id, worker_defaults: current }, current)
+              }
+            >
+              Save subagent settings
+            </Button>
+            <Button
+              variant="subtle"
+              disabled={saving}
+              onClick={() => {
+                setAccountDraft(null);
+                setError("");
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        )}
         {((!teamDefaults && queued) || (active && canQueueSettings)) && (
           <p className="notice" role="status">
             Model settings apply to the next turn. The current response keeps

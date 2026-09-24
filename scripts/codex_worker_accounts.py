@@ -27,8 +27,11 @@ def resolve(runtime, parent, data, *, catalogs=None):
     if not isinstance(model, str) or not model.strip():
         raise ValueError('Select an available model')
     parent_account = parent.get('accountKey', 'default')
-    explicit = data.get('account_key')
-    if 'account_key' in data:
+    selected = defaults.get('accountKey')
+    explicit = data.get('account_key', selected)
+    if selected and explicit != selected:
+        raise ValueError('Use the subagent account selected in chat settings')
+    if explicit is not None:
         if not isinstance(explicit, str) or not explicit:
             raise ValueError('Select an available worker account')
         row = runtime.accounts.get(explicit)
@@ -71,3 +74,22 @@ def catalog(runtime, parent_account):
     if not models:
         raise ValueError('No worker model catalog is available')
     return {'data': models, 'unavailableAccounts': unavailable}
+
+
+def selected_account(runtime, value):
+    if not isinstance(value, dict):
+        raise ValueError('worker_defaults needs model, effort and fast_mode')
+    key = value.get('account_key')
+    if key is None:
+        return None
+    if not isinstance(key, str) or not key:
+        raise ValueError('Select an available subagent account')
+    account = runtime.accounts.get(key)
+    if account.get('disconnected') or account.get('status') != 'ready':
+        raise ValueError('Sign in to the subagent account before selecting it')
+    return key
+
+
+def settings_catalog(runtime, parent_account, value):
+    key = selected_account(runtime, value)
+    return runtime.catalog(key) if key is not None else catalog(runtime, parent_account)

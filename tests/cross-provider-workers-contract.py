@@ -69,6 +69,51 @@ class CrossProviderWorkers(unittest.TestCase):
             "claude-fixture", self.rt.connection_ids["claude-fixture"])
         return self.rt.servers["claude-fixture"].responses[-1]["result"]
 
+    def select_worker_account(self, key):
+        return self.rt.conversation_settings(self.lead["id"], {"worker_defaults": {
+            "model": "gpt-6-luna", "effort": "high", "fast_mode": False, "account_key": key}})
+
+    def test_user_selected_account_routes_future_workers_and_preserves_existing(self):
+        previous = self.child()
+        prior_get = self.rt.accounts.get.side_effect
+        self.rt.accounts.data["accounts"]["codex-selected"] = {
+            "id": "codex-selected", "provider": "codex", "status": "ready", "home": str(self.root)}
+        self.rt.accounts.get.side_effect = lambda key: (
+            copy.deepcopy(self.rt.accounts.data["accounts"][key]) if key == "codex-selected" else prior_get(key))
+        changed = self.select_worker_account("codex-selected")
+        self.assertEqual(changed["workerDefaults"]["accountKey"], "codex-selected")
+        self.assertEqual(self.child(model="gpt-6-sol", effort="xhigh")["accountKey"], "codex-selected")
+        self.assertEqual(self.rt.agent(previous["id"])["accountKey"], "default")
+        with self.assertRaisesRegex(ValueError, "selected in chat settings"):
+            self.child(account_key="default")
+        self.select_worker_account(None)
+        self.assertEqual(self.child()["accountKey"], "default")
+
+    def test_selected_account_validates_model_and_rejects_invalid_choices(self):
+        before = self.rt.agent(self.lead["id"])["workerDefaults"]
+        for key in ["missing", "claude-fixture", "", 42]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.select_worker_account(key)
+        self.rt.accounts.data["accounts"]["default"]["disconnected"] = True
+        with self.assertRaises(ValueError):
+            self.select_worker_account("default")
+        self.assertEqual(self.rt.agent(self.lead["id"])["workerDefaults"], before)
+
+    def test_changed_account_choice_during_catalog_rejects_whole_batch(self):
+        self.select_worker_account("default")
+        original = self.rt.catalog
+        def changed(account="default"):
+            value = original(account)
+            with self.rt.lock, self.rt.db() as db:
+                lead = self.rt.agent(self.lead["id"], db)
+                lead["workerDefaults"]["accountKey"] = "claude-fixture"
+                self.rt.put(db, "agents", lead)
+            return value
+        self.rt.catalog = changed
+        result = self.spawn([{"name": "Worker", "prompt": "Read", "role": "reviewer"}])
+        self.assertFalse(result["success"])
+        self.assertEqual(self.workers(), [])
+
     def test_claude_parent_defaults_to_codex_luna_high(self):
         child = self.child()
         self.assertEqual((child["accountKey"], child["provider"], child["model"],

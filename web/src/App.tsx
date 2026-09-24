@@ -1749,6 +1749,7 @@ export default function App() {
                 onOpenChange={setSubagentSettingsOpen}
                 agent={lead}
                 catalog={workerModels}
+                accounts={accounts.data.accounts}
                 refresh={refresh}
                 teamDefaults
               />
