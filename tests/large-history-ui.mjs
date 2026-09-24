@@ -87,11 +87,22 @@ try {
     window.EventSource = class extends EventTarget {
       close() {}
     };
-    window.longTasks = [];
-    new PerformanceObserver((list) =>
-      window.longTasks.push(...list.getEntries().map((x) => x.duration)),
-    ).observe({ type: "longtask", buffered: true });
+    window.largeHistoryClickAt = 0;
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (
+          event.target instanceof Element &&
+          event.target.closest(
+            `[data-chat="${CSS.escape(window.largeHistoryChatId)}"]`,
+          )
+        )
+          window.largeHistoryClickAt = Date.now();
+      },
+      true,
+    );
   });
+  await page.addInitScript((id) => (window.largeHistoryChatId = id), lead.id);
   await page.addInitScript(({ key, id }) => localStorage.setItem(key, id), {
     key: `codex-desktop-opened:${state.stateDir}`,
     id: other.id,
@@ -116,11 +127,11 @@ try {
       json: { error: "Isolated transcript transport" },
     }),
   );
-  let deliveredAt;
+  const deliveries = [];
   await page.route("**/api/transcript?*", async (r) => {
     const selected =
       new URL(r.request().url()).searchParams.get("id") === lead.id;
-    if (selected) deliveredAt = Date.now();
+    if (selected) deliveries.push(Date.now());
     await r.fulfill({
       json: { agent: selected ? lead : null, items: selected ? items : [] },
     });
@@ -137,13 +148,17 @@ try {
   const start = Date.now();
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await page.locator(`[data-message="result-${turns - 1}"]`).waitFor();
+  const clickedAt = await page.evaluate(() => window.largeHistoryClickAt);
   const painted = Date.now();
+  assert.ok(clickedAt > 0, "The selected chat receives a pointer event");
+  const relevantDelivery = deliveries.find((time) => time >= clickedAt);
   const measurement = {
     records: items.length,
     clickToContent: painted - start,
-    responseToContent: painted - deliveredAt,
+    pointerToContent: painted - clickedAt,
+    responseToContent: painted - (relevantDelivery || clickedAt),
+    selectedDeliveries: deliveries.length,
     elements: await page.locator("#messages *").count(),
-    longTasks: await page.evaluate(() => window.longTasks),
   };
   console.log(JSON.stringify(measurement));
   await page.screenshot({ path: join(dir, "large-history.png") });
