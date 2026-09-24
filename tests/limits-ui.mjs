@@ -29,7 +29,9 @@ try {
     response.json(),
   );
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
-  const leadAgent = initial.runtime.agents.find((agent) => agent.threadId === lead.threadId);
+  const leadAgent = initial.runtime.agents.find(
+    (agent) => agent.threadId === lead.threadId,
+  );
   let selectedChat = lead;
   const now = Date.now() / 1000;
   const primary = {
@@ -113,12 +115,25 @@ try {
   let deferCosts = false,
     pendingCosts;
   await page.route("**/api/costs?*", (route) => {
-    const accountKey = new URL(route.request().url()).searchParams.get("account_key") || "default";
+    const accountKey =
+      new URL(route.request().url()).searchParams.get("account_key") ||
+      "default";
     if (accountKey === "claude-local")
-      return route.fulfill({ json: { accountKey, at: now, refreshing: false, stale: false, data: {
-        todayUSD: 2.5, last30DaysUSD: 24.5, coverage: "reported", unknownModels: [],
-        note: "API-rate estimate from Claude Code logs.",
-      } } });
+      return route.fulfill({
+        json: {
+          accountKey,
+          at: now,
+          refreshing: false,
+          stale: false,
+          data: {
+            todayUSD: 2.5,
+            last30DaysUSD: 24.5,
+            coverage: "reported",
+            unknownModels: [],
+            note: "API-rate estimate from Claude Code logs.",
+          },
+        },
+      });
     if (deferCosts) {
       pendingCosts = route;
       return;
@@ -128,9 +143,23 @@ try {
   let selectedAccount = "default";
   let sessionPricing = "loading";
   await page.route("**/api/session-cost?*", (route) =>
-    route.fulfill({ json: sessionPricing === "loading"
-      ? { totalUSD: null, pricingState: "loading", unknownModels: [], method: "Loading public API prices." }
-      : { totalUSD: 0.42, estimated: true, breakdown: { providers: { openai: 0.3, anthropic: 0.12 } }, unknownModels: ["gpt-5.6-luna"], method: "API rates" } }),
+    route.fulfill({
+      json:
+        sessionPricing === "loading"
+          ? {
+              totalUSD: null,
+              pricingState: "loading",
+              unknownModels: [],
+              method: "Loading public API prices.",
+            }
+          : {
+              totalUSD: 0.42,
+              estimated: true,
+              breakdown: { providers: { openai: 0.3, anthropic: 0.12 } },
+              unknownModels: ["gpt-5.6-luna"],
+              method: "API rates",
+            },
+    }),
   );
   await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
@@ -153,12 +182,21 @@ try {
   assert.equal((await toggle().innerText()).trim(), "Limits");
   assert.match(await page.locator("#usage-footer").innerText(), /Context 40%/);
   await page.getByText("Loading prices", { exact: true }).waitFor();
-  assert.doesNotMatch(await page.locator("#usage-footer").innerText(), /Unpriced:/);
+  assert.doesNotMatch(
+    await page.locator("#usage-footer").innerText(),
+    /Unpriced:/,
+  );
   sessionPricing = "ready";
   await load();
   await page.getByText("Session estimate: $0.42", { exact: false }).waitFor();
-  assert.match(await page.locator("#usage-footer").innerText(), /Session estimate: \$0\.42/);
-  assert.match(await page.locator(".session-cost-summary").getAttribute("title"), /anthropic/);
+  assert.match(
+    await page.locator("#usage-footer").innerText(),
+    /Session estimate: \$0\.42/,
+  );
+  assert.match(
+    await page.locator(".session-cost-summary").getAttribute("title"),
+    /anthropic/,
+  );
   await page.getByRole("button", { name: "Chat context", exact: true }).click();
   await page.getByText("Compacted 2 times.", { exact: true }).waitFor();
   await page.keyboard.press("Escape");
@@ -189,14 +227,26 @@ try {
     /All local chats|All accounts/,
   );
   selectedAccount = "claude-local";
-  fixture.stdin.write(JSON.stringify({ method: "fixture/account-key", agent: leadAgent.id, accountKey: selectedAccount }) + "\n");
+  fixture.stdin.write(
+    JSON.stringify({
+      method: "fixture/account-key",
+      agent: leadAgent.id,
+      accountKey: selectedAccount,
+    }) + "\n",
+  );
   await load();
   await toggle().click();
   await details().waitFor();
   await details().getByText("$24.50", { exact: true }).waitFor();
   assert.match(await details().innerText(), /\$2\.50/);
   selectedAccount = "default";
-  fixture.stdin.write(JSON.stringify({ method: "fixture/account-key", agent: leadAgent.id, accountKey: selectedAccount }) + "\n");
+  fixture.stdin.write(
+    JSON.stringify({
+      method: "fixture/account-key",
+      agent: leadAgent.id,
+      accountKey: selectedAccount,
+    }) + "\n",
+  );
   assert.doesNotMatch(
     await details().innerText(),
     /CodexBar|coverage unverified|ChatGPT bill|Costs as of/,
