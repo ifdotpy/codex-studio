@@ -3,13 +3,19 @@ import json
 import re
 import threading
 import uuid
+import zlib
+
+SCOPE_STRIPES = 64
 
 
 class SyncStore:
     def __init__(self, connect, snapshot, transcript, chat_snapshot=None):
         self.connect, self.snapshot, self.transcript = connect, snapshot, transcript
         self.chat_snapshot = chat_snapshot
-        self.lock = threading.RLock()
+        # One scope stays serial: its compare-and-replace keeps one checkpoint
+        # per version. Other scopes proceed; a slow state snapshot must not
+        # delay transcript pulls. A fixed stripe count bounds memory.
+        self.locks = tuple(threading.RLock() for _ in range(SCOPE_STRIPES))
         with self.connect() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS sync_identity (id TEXT PRIMARY KEY);
@@ -42,6 +48,9 @@ class SyncStore:
         with self.connect() as db:
             return db.execute('SELECT value FROM sync_generation WHERE id=1').fetchone()[0]
 
+    def scope_lock(self, scope):
+        return self.locks[zlib.crc32(str(scope).encode()) % SCOPE_STRIPES]
+
     @staticmethod
     def document(row):
         return {'id': row[1], 'payload': row[2], 'seq': row[0], '_deleted': bool(row[3])}
@@ -57,7 +66,7 @@ class SyncStore:
 
     def pull(self, scope, after=0, limit=100):
         after, limit = max(0, int(after)), min(100, max(1, int(limit)))
-        with self.lock:
+        with self.scope_lock(scope):
             if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
                 payload = dict(self.chat_snapshot() if scope == 'state:chat' else self.snapshot())
                 payload.pop('token', None)
@@ -83,7 +92,7 @@ class SyncStore:
         if not isinstance(rows, list) or len(rows) > 100:
             raise ValueError('Invalid draft batch')
         conflicts = []
-        with self.lock, self.connect() as db:
+        with self.scope_lock('drafts'), self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             for row in rows:
                 if not isinstance(row, dict) or not isinstance(row.get('newDocumentState'), dict):

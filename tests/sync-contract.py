@@ -84,4 +84,25 @@ with tempfile.TemporaryDirectory() as directory:
             raise AssertionError('Invalid row accepted')
         except ValueError:
             pass
+    # A slow state snapshot does not delay a transcript pull; one scope stays serial.
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    def slow_state():
+        entered.set()
+        assert release.wait(5)
+        return state
+    slow = SyncStore(connect, slow_state, transcript)
+    worker = threading.Thread(target=slow.pull, args=('state',))
+    worker.start()
+    assert entered.wait(5)
+    try:
+        import time
+        started = time.monotonic()
+        assert slow.pull('transcript:one')['documents']
+        assert time.monotonic() - started < 2 and not release.is_set()
+        assert not slow.scope_lock('state').acquire(blocking=False)
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
 print('sync contract passed')
