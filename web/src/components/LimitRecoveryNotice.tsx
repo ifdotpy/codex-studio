@@ -2,6 +2,7 @@ import { localDateTime } from "../local-time";
 import { useState } from "react";
 import { Button } from "@mantine/core";
 import type { LimitRecovery } from "../limitRecovery";
+import { copyText } from "../clipboard";
 
 export default function LimitRecoveryNotice({
   recovery,
@@ -46,7 +47,7 @@ export default function LimitRecoveryNotice({
             size="compact-xs"
             onClick={async () => {
               try {
-                await navigator.clipboard.writeText(recovery.ownerRequest!);
+                await copyText(recovery.ownerRequest!);
                 setCopyStatus(
                   "Request copied. Send it to your workspace owner.",
                 );

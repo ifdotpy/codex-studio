@@ -32,6 +32,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../types";
+import { copyText } from "../clipboard";
 
 export const activeTask = (task: BackgroundTask) =>
   ["running", "starting", "approval", "pending", "stopping"].includes(
@@ -580,8 +581,7 @@ function TaskDetail({
                 aria-label="Copy task output"
                 disabled={!task.tail}
                 onClick={() => {
-                  void navigator.clipboard
-                    .writeText(task.tail || "")
+                  void copyText(task.tail || "")
                     .then(() => setCopied(true))
                     .catch(() => notify("Could not copy output"));
                 }}

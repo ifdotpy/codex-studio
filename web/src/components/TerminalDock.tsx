@@ -14,6 +14,7 @@ import type { Terminal } from "@xterm/xterm";
 import { api, errorText, save, saved } from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
+import { copyText } from "../clipboard";
 
 type Shell = {
   id: string;
@@ -744,9 +745,7 @@ function ShellView({
               notify("Select terminal text first.");
               return;
             }
-            void navigator.clipboard
-              .writeText(text)
-              .catch((e) => notify(errorText(e)));
+            void copyText(text).catch((e) => notify(errorText(e)));
           }}
         >
           Copy selection

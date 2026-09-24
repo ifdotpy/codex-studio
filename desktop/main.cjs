@@ -443,24 +443,33 @@ async function start() {
   win.webContents.session.setPermissionRequestHandler(
     (contents, permission, callback, details) =>
       callback(
-        contents === win.webContents &&
+        // Copy buttons write text only. Clipboard reads stay denied.
+        (contents === win.webContents &&
+          permission === "clipboard-sanitized-write" &&
+          details.isMainFrame === true &&
+          details.requestingUrl?.startsWith(`${backend.origin}/`)) ||
+        (contents === win.webContents &&
           permission === "media" &&
           details.isMainFrame === true &&
           details.requestingUrl === `${backend.origin}/` &&
           microphoneUntil > Date.now() &&
           Array.isArray(details.mediaTypes) &&
           details.mediaTypes.length === 1 &&
-          details.mediaTypes[0] === "audio",
+          details.mediaTypes[0] === "audio"),
       ),
   );
   win.webContents.session.setPermissionCheckHandler(
     (contents, permission, origin, details) =>
-      contents === win.webContents &&
+      (contents === win.webContents &&
+        permission === "clipboard-sanitized-write" &&
+        origin === backend.origin &&
+        details.isMainFrame === true) ||
+      (contents === win.webContents &&
       permission === "media" &&
       origin === backend.origin &&
       details.isMainFrame === true &&
       details.mediaType === "audio" &&
-      microphoneUntil > Date.now(),
+      microphoneUntil > Date.now()),
   );
   win.on("close", () => desktopRecovery?.windowClosing());
   const rendererRecovery = createRendererRecovery({

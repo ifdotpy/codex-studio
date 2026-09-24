@@ -83,6 +83,7 @@ import ComposerAttachments, {
   type Attachment,
 } from "./ComposerAttachments";
 import "./chat-controls.css";
+import { copyText } from "../clipboard";
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
 function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
@@ -683,7 +684,7 @@ export default function Conversation(p: {
   );
   const copy = useMessageAction(async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       p.notify("Copied.");
     } catch {
       p.notify("Clipboard access failed.");

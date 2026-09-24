@@ -14,6 +14,7 @@ import { errorText, saved } from "../api";
 import { writeLocalDraft } from "../sync/localDraft";
 import type { Attachment } from "./ComposerAttachments";
 import "./message-queue.css";
+import { copyText } from "../clipboard";
 
 export type QueueItem = {
   id: string;
@@ -243,7 +244,7 @@ function ScopedMessageQueue(p: Props) {
   };
   const copyDraft = async (draft: EditDraft) => {
     try {
-      await navigator.clipboard.writeText(draft.text);
+      await copyText(draft.text);
       setCopied(true);
     } catch {
       textarea.current?.focus();

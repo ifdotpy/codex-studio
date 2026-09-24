@@ -4,6 +4,7 @@ import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import type { useAccounts } from "./Accounts";
+import { copyText } from "../clipboard";
 
 export interface LoginReceipt {
   requestId: string;
@@ -175,9 +176,7 @@ export default function AccountSignIn({
                       leftSection={<Copy size={13} />}
                       onClick={() =>
                         void run("copy", async () => {
-                          await navigator.clipboard.writeText(
-                            receipt.userCode!,
-                          );
+                          await copyText(receipt.userCode!);
                           setCopied(true);
                         })
                       }

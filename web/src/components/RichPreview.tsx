@@ -2,6 +2,7 @@ import { Button, Loader } from "@mantine/core";
 import { Check, Code, Copy, Download, Eye } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import "./rich-preview.css";
+import { copyText } from "../clipboard";
 
 // A sandbox without permissions has an opaque origin. Remove navigation elements
 // as well: sandbox alone still permits a link to navigate its own frame.
@@ -198,7 +199,7 @@ export default memo(function RichPreview({
           title="Copy source"
           onClick={async () => {
             try {
-              await navigator.clipboard.writeText(source);
+              await copyText(source);
               setCopied(true);
               setCopyError("");
             } catch {

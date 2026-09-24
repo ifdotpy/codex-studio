@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@mantine/core";
 import "./rich-preview.css";
+import { copyText } from "../clipboard";
 
 export default function CodeBlock({
   source,
@@ -25,7 +26,7 @@ export default function CodeBlock({
           variant="subtle"
           onClick={async () => {
             try {
-              await navigator.clipboard.writeText(source);
+              await copyText(source);
               setCopied(true);
               setError("");
             } catch {
