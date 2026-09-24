@@ -50,6 +50,19 @@ try {
   });
   const initial = await state();
   const lead = initial.runtime.agents.find((a) => a.name === "Other project");
+  let resolveInitialTranscript;
+  const initialTranscriptLoaded = new Promise((resolve) => {
+    resolveInitialTranscript = resolve;
+  });
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (
+      url.pathname === "/api/transcript" &&
+      url.searchParams.get("id") === lead.id &&
+      response.ok()
+    )
+      resolveInitialTranscript();
+  });
   await page.addInitScript((agentId) => {
     const NativeEventSource = window.EventSource;
     window.EventSource = class extends NativeEventSource {
@@ -73,7 +86,11 @@ try {
     .locator("[data-chat]")
     .filter({ hasText: "Other project" })
     .click();
-  await page.waitForFunction(() => window.__transcriptStreamLive === true);
+  // The stream snapshot or its completed fallback request means history is ready.
+  await Promise.race([
+    page.waitForFunction(() => window.__transcriptStreamLive === true),
+    initialTranscriptLoaded,
+  ]);
   const transcriptPollsAtStart = transcriptPolls;
   await page.locator("#message").fill("Exercise the live stream");
   await page.locator("#send").click();
