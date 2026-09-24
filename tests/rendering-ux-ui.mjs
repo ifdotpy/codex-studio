@@ -149,6 +149,10 @@ createRoot(document.getElementById("root")!).render(<Harness/>);
       },
     }),
   );
+  await page.evaluate(() => {
+    // Force the legacy fallback to fail too, independent of browser policy.
+    document.execCommand = () => false;
+  });
   await page.getByRole("button", { name: "Copy code", exact: true }).click();
   await page.getByText("Cannot copy. Select the code to copy it.").waitFor();
   await page.evaluate(() => window.setText("```mermaid\nflowchart LR\nA-->B"));
