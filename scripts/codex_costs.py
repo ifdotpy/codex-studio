@@ -144,7 +144,9 @@ def report_fingerprint(data):
 class CostReader:
     """One local scan at a time. GET requests return without waiting for the CLI."""
 
-    def __init__(self, root, interval=120, timeout=90, clock=None, *, command, environment=None, scan_lock=None):
+    # A first scan of a large profile (25 GB of sessions) takes minutes. A kill
+    # discards its progress, so a short bound never let such a profile finish.
+    def __init__(self, root, interval=120, timeout=900, clock=None, *, command, environment=None, scan_lock=None):
         if not callable(command):
             raise ValueError("A local cost scanner command is required.")
         self.environment = dict(environment) if environment is not None else None

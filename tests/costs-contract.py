@@ -214,6 +214,10 @@ class CostsTests(unittest.TestCase):
         finally:
             reader.close()
 
+    def test_default_bound_lets_a_large_first_scan_finish(self):
+        # A 25 GB profile needed 213 s for its first scan; the old 90 s bound killed it every time.
+        self.assertGreaterEqual(self.reader.timeout, 600)
+
     def test_timeout_ends_only_owned_scanner(self):
         (self.root / "delay").touch()
         self.reader.timeout = 0.05
