@@ -43,25 +43,76 @@ try {
     await page.evaluate(() => {
       window.__chatActionsHitFrames = 0;
     });
-    await page.waitForFunction(() => {
-      const button = document.querySelector(
-        'button[aria-label="Chat actions"]',
-      );
-      if (button) {
-        const rect = button.getBoundingClientRect();
-        const target = document.elementFromPoint(
-          rect.x + rect.width / 2,
-          rect.y + rect.height / 2,
+    try {
+      await page.waitForFunction(() => {
+        const button = document.querySelector(
+          'button[aria-label="Chat actions"]',
         );
-        window.__chatActionsHitFrames =
-          target === button || button.contains(target)
-            ? window.__chatActionsHitFrames + 1
-            : 0;
-      } else {
-        window.__chatActionsHitFrames = 0;
-      }
-      return window.__chatActionsHitFrames >= 2;
-    });
+        if (button) {
+          const rect = button.getBoundingClientRect();
+          const target = document.elementFromPoint(
+            rect.x + rect.width / 2,
+            rect.y + rect.height / 2,
+          );
+          window.__chatActionsHitFrames =
+            target === button || button.contains(target)
+              ? window.__chatActionsHitFrames + 1
+              : 0;
+        } else {
+          window.__chatActionsHitFrames = 0;
+        }
+        return window.__chatActionsHitFrames >= 2;
+      });
+    } catch (error) {
+      const state = await page.evaluate(() => {
+        const button = document.querySelector(
+          'button[aria-label="Chat actions"]',
+        );
+        if (!button) return { button: null };
+        const rect = button.getBoundingClientRect();
+        const x = rect.x + rect.width / 2;
+        const y = rect.y + rect.height / 2;
+        return {
+          viewport: { width: innerWidth, height: innerHeight },
+          button: {
+            rect: {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            },
+            style: {
+              display: getComputedStyle(button).display,
+              visibility: getComputedStyle(button).visibility,
+              opacity: getComputedStyle(button).opacity,
+              pointerEvents: getComputedStyle(button).pointerEvents,
+            },
+            hitTargets: document
+              .elementsFromPoint(x, y)
+              .slice(0, 5)
+              .map((node) => ({
+                tag: node.tagName,
+                id: node.id,
+                className:
+                  typeof node.className === "string" ? node.className : "",
+                label: node.getAttribute("aria-label"),
+              })),
+          },
+          frames: window.__chatActionsHitFrames,
+          dialogs: [...document.querySelectorAll('[role="dialog"]')].map(
+            (node) => ({
+              label: node.getAttribute("aria-label"),
+              className: node.className,
+              display: getComputedStyle(node).display,
+              visibility: getComputedStyle(node).visibility,
+            }),
+          ),
+        };
+      });
+      throw Error(
+        `${error.message}\nChat actions hit-test state: ${JSON.stringify(state)}`,
+      );
+    }
     await chatActions.click();
   };
   const errors = [];
@@ -207,8 +258,9 @@ try {
       .count(),
     0,
   );
+  await page.getByRole("menu").waitFor({ state: "hidden" });
   await page.keyboard.press("Escape");
-  await background.waitFor({ state: "hidden" });
+  await page.locator(".tasks-drawer").waitFor({ state: "hidden" });
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
     await openChatActions();
