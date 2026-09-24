@@ -22,8 +22,12 @@ spec.loader.exec_module(fixture)
 
 class SteerServer(fixture.FakeServer):
     rejection = None
+    interrupt_error = None
 
     def call(self, method, params, timeout=60):
+        if method == "turn/interrupt" and self.interrupt_error:
+            self.calls.append((method, params))
+            raise NativeRpcError(self.interrupt_error)
         if method == "turn/steer":
             self.calls.append((method, params))
             if self.rejection:
@@ -283,6 +287,49 @@ class CriticalSteerContract(unittest.TestCase):
         with self.assertRaises(NativeRpcError):
             self.runtime.send(agent, "Correction", "steer-invalid", delivery="steer")
         self.assertEqual(self.runtime.delivery_receipt("steer-invalid")["status"], "failed")
+
+    def test_stop_without_a_native_turn_releases_the_agent(self):
+        agent = self.lead()
+        self.server.interrupt_error = {"code": -32600, "message": "no active turn to interrupt"}
+        self.runtime.stop(agent)
+        stopped = self.runtime.agent(agent)
+        self.assertEqual((stopped["status"], stopped["inFlight"], stopped["turnId"]), ("paused", False, None))
+        self.assertEqual(stopped["error"], "Stopped. Codex reported no active turn.")
+
+    def test_stop_with_an_unknown_interrupt_outcome_keeps_the_turn(self):
+        agent = self.lead()
+        self.server.interrupt_error = {"code": -32603, "message": "internal error"}
+        self.runtime.stop(agent)
+        stopped = self.runtime.agent(agent)
+        self.assertEqual((stopped["inFlight"], stopped["turnId"]), (True, "turn-1"))
+        self.assertIn("interrupt acknowledgement unavailable", stopped["error"])
+
+    def test_long_turn_gets_one_notice_about_waiting_inputs(self):
+        import time
+        agent = self.lead()
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(agent, db)
+            self.runtime.enqueue(db, current, "monitor_exit", json.dumps({"id": "m1"}), "monitor:first")
+            self.runtime.enqueue(db, current, "monitor_exit", json.dumps({"id": "m"}), "monitor:waiting")
+        steers = lambda: [p for m, p in self.server.calls if m == "turn/steer"]
+        self.runtime.dispatch()
+        self.runtime.pool.submit(lambda: None).result(5)
+        self.assertEqual(steers(), [])
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET created=? WHERE id IN ('monitor:first','monitor:waiting')",
+                       (time.time() - 1000,))
+        self.runtime.dispatch()
+        fixture.eventually(lambda: len(steers()) == 1)
+        text = steers()[0]["input"][0]["text"]
+        self.assertIn("2 inputs wait for your next turn (2 monitor results)", text)
+        self.assertEqual(steers()[0]["expectedTurnId"], "turn-1")
+        self.runtime.dispatch()
+        self.runtime.pool.submit(lambda: None).result(5)
+        self.assertEqual(len(steers()), 1)
+        with self.runtime.db() as db:
+            statuses = [r[0] for r in db.execute(
+                "SELECT status FROM runtime_events WHERE id IN ('monitor:first','monitor:waiting')")]
+        self.assertEqual(statuses, ["pending", "pending"])
 
     def test_unknown_write_stays_nonretryable(self):
         agent = self.lead()

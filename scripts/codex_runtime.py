@@ -2419,6 +2419,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             connection_recovery_tick(self, agents)
             from codex_browser_recovery import tick as browser_recovery_tick
             browser_recovery_tick(self, db, agents)
+            from codex_queue_notice import due_notices, send_notice
+            for notice in due_notices(self, db, agents):
+                self.pool.submit(send_notice, self, *notice)
             reserved_cwds = {
                 str(Path(a["cwd"]).resolve())
                 for a in agents
@@ -4526,7 +4529,17 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             except Exception as error:
                 with self.lock, self.db() as db:
                     latest = self.agent(a["id"], db)
-                    latest["error"] = f"Stop requested; interrupt acknowledgement unavailable: {error}"
+                    if (isinstance(error, NativeRpcError) and isinstance(error.error, dict)
+                            and error.error.get("message") == "no active turn to interrupt"
+                            and latest.get("turnId") == a["turnId"] and latest.get("inFlight")
+                            and not latest.get("autoWake")):
+                        # Native has no turn to stop, so this turn already ended. A native
+                        # review can end with only a thread warning and no turn result.
+                        # Keep the stopped chat, but do not show it as working.
+                        latest.update(inFlight=False, turnId=None, activeTools=[], activity=None,
+                                      error="Stopped. Codex reported no active turn.")
+                    else:
+                        latest["error"] = f"Stop requested; interrupt acknowledgement unavailable: {error}"
                     self.put(db, "agents", latest)
 
     def stop(
