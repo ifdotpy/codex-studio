@@ -158,9 +158,18 @@ try {
       .filter({ has: page.locator(".project-tree-toggle", { hasText: name }) });
   await group("assistant").waitFor();
   await waitFor(
-    async () => (await group("assistant").locator("[data-chat]").count()) === 5,
+    async () => (await group("assistant").locator("[data-chat]").count()) >= 5,
   );
-  assert.equal(await group("assistant").locator("[data-chat]").count(), 5);
+  const initialChats = group("assistant").locator("[data-chat]");
+  const initialChatCount = await initialChats.count();
+  assert.ok(
+    initialChatCount === 5 ||
+      (initialChatCount === 6 &&
+        (await group("assistant")
+          .locator(".sidebar-row.selected [data-chat]")
+          .count()) === 1),
+    `five chats plus the selected chat when it is outside the default page, got ${initialChatCount}`,
+  );
   await group("assistant").getByText("Show more", { exact: true }).click();
   await waitFor(
     async () => (await group("assistant").locator("[data-chat]").count()) === 7,
@@ -317,8 +326,17 @@ try {
   );
   await group("assistant").locator(".project-tree-toggle").click();
   assert.equal(await group("assistant").locator("[data-chat]").count(), 0);
+  // A project with the selected chat expands again after reload (e4ef04aa).
+  // Select another project before reload to test collapsed-state persistence.
+  await page.locator(`[data-chat="${legal.id}"]`).click();
   await page.reload();
   await group("assistant").waitFor();
+  assert.equal(
+    await group("assistant")
+      .locator(".project-tree-toggle")
+      .getAttribute("aria-expanded"),
+    "false",
+  );
   assert.equal(await group("assistant").locator("[data-chat]").count(), 0);
   await page.getByLabel("Filter projects and chats").fill("Review component 2");
   await page.locator(`[data-chat="${created[2].id}"]`).click();
