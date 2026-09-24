@@ -440,12 +440,23 @@ class AnalyticsHistoryMixin:
             prepare_budget_migration(self)
             with self.lock, self.db() as db:
                 repair_terminal_errors(db)
-                agents = [a for a in self.records(db, "agents") if a.get("threadId")]
-            if not agents:
+                # Decode all agents once per round, not once per step. Each
+                # step reads only its own agent under the shared lock.
+                ids = getattr(self, "_analytics_history_ids", None)
+                if not ids or self._analytics_history_cursor % len(ids) == 0:
+                    ids = self._analytics_history_ids = [
+                        a["id"] for a in self.records(db, "agents") if a.get("threadId")]
+                if not ids:
+                    return False
+                self._analytics_history_cursor %= len(ids)
+                agent_id = ids[self._analytics_history_cursor]
+                self._analytics_history_cursor = (self._analytics_history_cursor + 1) % len(ids)
+                try:
+                    a = self.agent(agent_id, db)
+                except ValueError:
+                    a = None
+            if a is None or not a.get("threadId"):
                 return False
-            self._analytics_history_cursor %= len(agents)
-            a = agents[self._analytics_history_cursor]
-            self._analytics_history_cursor = (self._analytics_history_cursor + 1) % len(agents)
             key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
             with self.lock, self.db() as db:
                 budget_advanced = migrate_budget_usage(db, a)

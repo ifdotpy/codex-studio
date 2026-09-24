@@ -248,6 +248,35 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(self.f.state()["deletedAt"], 1)
         self.assertEqual(len(self.f.captured()), 1)
 
+    def test_agent_list_is_decoded_once_per_round(self):
+        self.f.path.write_bytes(self.header)
+        with self.f.db() as db:
+            for key in ("second", "third"):
+                db.execute("INSERT INTO runtime_agents VALUES (?,?)", (key, json.dumps(
+                    {"id": key, "accountKey": "first", "threadId": "missing-" + key})))
+        decoded, records = [], self.f.records
+        self.f.records = lambda db, table: decoded.append(table) or records(db, table)
+        agent = self.f.agent
+
+        def current(key, db):
+            if not db.execute("SELECT 1 FROM runtime_agents WHERE id=?", (key,)).fetchone():
+                raise ValueError("Unknown managed agent")
+            return agent(key, db)
+        self.f.agent = current
+        seen, save = [], self.f._analytics_history_save
+        self.f._analytics_history_save = lambda key, a, state: seen.append(a["id"]) or save(key, a, state)
+        self.f.analytics_history_step()
+        self.f.analytics_history_step()
+        # An agent removed during the round is skipped without a new decode.
+        with self.f.db() as db:
+            db.execute("DELETE FROM runtime_agents WHERE id='third'")
+        self.assertFalse(self.f.analytics_history_step())
+        self.assertEqual((decoded, seen), (["agents"], ["second"]))
+        self.f.analytics_history_step()
+        self.assertEqual(decoded, ["agents", "agents"])
+        self.f.analytics_history_step()
+        self.assertEqual(seen, ["second", "second"])
+
     def test_partial_final_line_is_retried_only_when_complete(self):
         output = line("response_item", {"type": "function_call_output", "call_id": "c", "output": "answer"})
         self.f.path.write_bytes(self.header + output[:-5])
