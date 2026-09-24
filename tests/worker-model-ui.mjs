@@ -157,6 +157,35 @@ try {
   assert.equal(await page.locator("#model").inputValue(), "test-model");
   for (const width of [1440, 768, 420]) {
     await page.setViewportSize({ width, height: 960 });
+    await page.waitForFunction(
+      (expectedWidth) =>
+        new Promise((resolve) => {
+          let previous = "";
+          let stableFrames = 0;
+          const sample = () => {
+            const dialog = document.querySelector('[role="dialog"]');
+            const rect = dialog?.getBoundingClientRect();
+            const values = [
+              innerWidth,
+              document.documentElement.scrollWidth,
+              document.body.scrollWidth,
+              rect?.x,
+              rect?.y,
+              rect?.width,
+              rect?.height,
+            ].join(":");
+            stableFrames =
+              innerWidth === expectedWidth && values === previous
+                ? stableFrames + 1
+                : 0;
+            previous = values;
+            if (stableFrames >= 3) resolve(true);
+            else requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        }),
+      width,
+    );
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth + 1,
