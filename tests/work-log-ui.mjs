@@ -268,9 +268,80 @@ try {
     path: join(directory, "thinking-tools-desktop.png"),
   });
   await page.setViewportSize({ width: 390, height: 900 });
-  await page.waitForTimeout(100);
-  if (await page.locator("#jump-latest").isVisible())
+  await page.waitForFunction(
+    () =>
+      new Promise((resolve) => {
+        let previous = "";
+        let stableFrames = 0;
+        const sample = () => {
+          const root = document.querySelector("#messages");
+          const tool = document.querySelector('[data-message="build-first"]');
+          const rootBox = root?.getBoundingClientRect();
+          const toolBox = tool?.getBoundingClientRect();
+          const values = [
+            innerWidth,
+            document.documentElement.scrollWidth,
+            rootBox?.x,
+            rootBox?.y,
+            rootBox?.width,
+            rootBox?.height,
+            root?.scrollTop,
+            root?.scrollHeight,
+            toolBox?.x,
+            toolBox?.y,
+            toolBox?.width,
+            toolBox?.height,
+          ].join(":");
+          stableFrames =
+            innerWidth === 390 && values === previous ? stableFrames + 1 : 0;
+          previous = values;
+          if (stableFrames >= 3) resolve(true);
+          else requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      }),
+  );
+  if (await page.locator("#jump-latest").isVisible()) {
     await page.locator("#jump-latest").click();
+    await page.waitForFunction(() => {
+      const root = document.querySelector("#messages");
+      return (
+        !document.querySelector("#jump-latest") &&
+        root &&
+        root.scrollHeight - root.scrollTop - root.clientHeight < 2
+      );
+    });
+  }
+  await page.waitForFunction(
+    () =>
+      new Promise((resolve) => {
+        let previous = "";
+        let stableFrames = 0;
+        const sample = () => {
+          const tool = document
+            .querySelector('[data-message="build-first"]')
+            ?.getBoundingClientRect();
+          const root = document
+            .querySelector("#messages")
+            ?.getBoundingClientRect();
+          const values = [
+            tool?.x,
+            tool?.y,
+            tool?.width,
+            tool?.height,
+            root?.x,
+            root?.y,
+            root?.width,
+            root?.height,
+          ].join(":");
+          stableFrames = values === previous ? stableFrames + 1 : 0;
+          previous = values;
+          if (stableFrames >= 3) resolve(true);
+          else requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      }),
+  );
   const toolBounds = await build.boundingBox();
   assert.ok(
     toolBounds.y >= 0 && toolBounds.y < 900,
