@@ -910,6 +910,40 @@ class RuntimeContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'turn was stopped'):
             self.runtime.monitor(lead['id'], {'command': 'old command'}, epoch=lead['epoch'])
 
+    def test_turn_status_marks_only_items_since_the_start_attempt(self):
+        lead = self.lead()
+        eventually(lambda: self.runtime.agent(lead['id'])['startAttempt'].get('turnId'))
+        lead = self.runtime.agent(lead['id'])
+        attempt = lead['startAttempt']
+        self.assertEqual(attempt['turnId'], lead['turnId'])
+        self.assertLessEqual(attempt['created'], time.time())
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.item(db, lead['id'], 'current', 'assistant', 'Now', turnId=lead['turnId'])
+            self.runtime.item(db, lead['id'], 'old-copy', 'assistant', 'Old', turnId=lead['turnId'])
+            db.execute("UPDATE runtime_items SET created=? WHERE id=?", (attempt['created'] - 3600, lead['id'] + ':old-copy'))
+        queries = []
+        original = self.runtime.db
+        from contextlib import contextmanager
+
+        @contextmanager
+        def traced():
+            with original() as db:
+                db.set_trace_callback(queries.append)
+                yield db
+        self.runtime.db = traced
+        try:
+            self.complete(self.runtime.agent(lead['id']))
+        finally:
+            self.runtime.db = original
+        with self.runtime.db() as db:
+            status = {r[0]: json.loads(r[1]).get('turnStatus') for r in db.execute(
+                "SELECT id, record FROM runtime_items WHERE id IN (?,?)",
+                (lead['id'] + ':current', lead['id'] + ':old-copy'))}
+            update = next(q for q in queries if "json_set(record,'$.turnStatus'" in q)
+            plan = ' '.join(r[3] for r in db.execute('EXPLAIN QUERY PLAN ' + update))
+        self.assertEqual(status, {lead['id'] + ':current': 'completed', lead['id'] + ':old-copy': None})
+        self.assertIn('created>?', plan)
+
     def test_lead_waits_only_for_active_children_after_its_turn(self):
         lead = self.lead()
         child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])

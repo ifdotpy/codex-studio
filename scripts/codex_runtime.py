@@ -2542,7 +2542,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
                          startAttempt={"id": uid(), "epoch": a["epoch"],
                                        "accountKey": a.get("accountKey", "default"),
-                                       "events": [r["id"] for r in rows], "submitted": False})
+                                       "events": [r["id"] for r in rows], "submitted": False,
+                                       "created": time.time()})
                 self.put(db, "agents", a)
                 active.append(a)
                 self.pool.submit(self.start, a, [dict(r) for r in rows])
@@ -3216,9 +3217,15 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
                 # Preserve the terminal outcome with the messages. Failed and interrupted
                 # work must never acquire a successful summary label in chat history.
+                # Items of this turn are created after its start attempt. The
+                # (agent, created) index then skips the chat's older history;
+                # a long chat otherwise decoded every item under the lock.
+                attempt = a.get("startAttempt") or {}
+                since = (attempt["created"] - 60 if attempt.get("created")
+                         and attempt.get("turnId") == turn.get("id") else 0)
                 db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
-                           "WHERE agent=? AND json_extract(record,'$.turnId')=?",
-                           (turn.get("status") or "ended", a["id"], turn.get("id")))
+                           "WHERE agent=? AND created>=? AND json_extract(record,'$.turnId')=?",
+                           (turn.get("status") or "ended", a["id"], since, turn.get("id")))
                 for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status')='running'", (a["id"],)).fetchall():
                     task = json.loads(row[0])
                     if task.get("turnId") == a.get("turnId") and not (task["kind"] == "command" and task.get("processId")):
@@ -4942,7 +4949,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 receipt = reserve(db, request_id, a, action, context, attempt_id)
             self.capacity_reset(db, a, "A native action replaces this retry.")
             a.update(status="starting", inFlight=True, turnEpoch=a["epoch"],
-                     startAttempt={"id": attempt_id, "epoch": a["epoch"], "events": [], "action": action, "submitted": False})
+                     startAttempt={"id": attempt_id, "epoch": a["epoch"], "events": [], "action": action, "submitted": False,
+                                   "created": time.time()})
             if durable:
                 a["startAttempt"]["actionRequestId"] = request_id
                 a["startAttempt"]["actionIdentity"] = {name: receipt[name] for name in ("accountKey", "threadId", "epoch")}
