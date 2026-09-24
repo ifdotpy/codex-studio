@@ -59,8 +59,10 @@ Codex agents use `orchestration_review` for native code review. Supply a stable
 `request_id`. Omit `target` to review uncommitted changes. Other targets use
 `type: "baseBranch"` with `branch`, `type: "commit"` with `sha`, or
 `type: "custom"` with `instructions`.
-Studio creates a separate reviewer with read-only access to the caller's
-directory. The native `ReviewTask` uses configured `review_model`, or the
+Studio creates a separate reviewer with read-only access to `cwd`. `cwd`
+defaults to the caller's folder; a relative path starts there, and a shell `cd`
+does not change it. `cwd` must be inside a git repository, or the call fails
+before a reviewer exists. The native `ReviewTask` uses configured `review_model`, or the
 caller's model when that setting is absent. The caller continues its current
 turn. Findings arrive as a child result; the reviewer chat retains the complete
 output. Use `orchestration_request` to recover the receipt after a lost reply.

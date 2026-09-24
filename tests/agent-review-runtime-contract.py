@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -78,6 +79,8 @@ class ReviewRuntimeContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-review-test-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        # Native review reads git history; the reviewer folder must be a repository.
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
         self.env = patch.dict(os.environ, {'CODEX_HOME': str(self.root / 'home')})
         self.env.start()
         self.addCleanup(self.env.stop)

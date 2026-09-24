@@ -21,15 +21,18 @@ def review_tools(tool, text):
     return [tool('orchestration_review',
         'Request native Codex review in a separate read-only Studio child. Defaults to all uncommitted changes. '
         'Choose a base branch, commit, or custom instructions through target. The reviewer uses your model and effort, '
-        'subject to the account review_model setting. It shares your current directory and does not receive your chat history. '
+        'subject to the account review_model setting. It works in cwd, which must be inside a git repository. '
+        'cwd defaults to your folder; a relative path starts there, and a shell cd does not change it. '
+        'The reviewer does not receive your chat history. '
         'The result wakes you automatically. Finish your turn while waiting. Use a stable request_id for retries; '
         'read orchestration_request after a lost response. Available in Multi agent mode.',
-        {'target': {'anyOf': variants}, 'request_id': {'type': 'string', 'minLength': 1, 'maxLength': 200}})]
+        {'target': {'anyOf': variants}, 'cwd': {'type': 'string', 'minLength': 1, 'maxLength': 4096},
+         'request_id': {'type': 'string', 'minLength': 1, 'maxLength': 200}})]
 
 
 def validate(args):
-    if not isinstance(args, dict) or set(args) - {'target', 'request_id'}:
-        raise ValueError('Supply only target and optional request_id')
+    if not isinstance(args, dict) or set(args) - {'target', 'cwd', 'request_id'}:
+        raise ValueError('Supply only target, cwd and optional request_id')
     if 'request_id' in args:
         value = args['request_id']
         if (not isinstance(value, str) or not 1 <= len(value) <= 200
@@ -55,7 +58,17 @@ def validate(args):
     return copy.deepcopy(target)
 
 
-def _existing(rt, db, key, actor, target):
+def require_repository(directory):
+    """Native review reads git history in the reviewer folder."""
+    from codex_runtime import git_toplevel
+    if git_toplevel(directory) is None:
+        # Native review/start accepts this folder, then stops with only a thread
+        # warning and no turn result. Reject it before a reviewer exists.
+        raise ValueError(f'Native review needs a git repository. {directory} is not in one. '
+                         'Pass cwd with the repository folder')
+
+
+def _existing(rt, db, key, actor, target, directory):
     child_id = str(uuid.uuid5(uuid.NAMESPACE_URL, key))
     row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (child_id,)).fetchone()
     if not row:
@@ -63,7 +76,8 @@ def _existing(rt, db, key, actor, target):
     child = json.loads(row[0])
     review = child.get('nativeReview') or {}
     if (review.get('requestId') != key or review.get('actorId') != actor['id']
-            or review.get('target') != target):
+            or review.get('target') != target
+            or child.get('cwd') != directory):
         raise ValueError('This review request id has different content')
     return review['response']
 
@@ -74,17 +88,20 @@ def request(rt, actor, args, key):
         raise ValueError('Native review is available only for Codex agents')
     if actor.get('nativeReview'):
         raise ValueError('A native reviewer cannot create another review')
+    from codex_runtime import spawn_directory
+    directory = spawn_directory(actor['cwd'], args.get('cwd'))
     with rt.lock, rt.db() as db:
-        previous = _existing(rt, db, key, actor, target)
+        previous = _existing(rt, db, key, actor, target, directory)
         if previous is not None:
             return previous
         assert_delegation(rt.agent(actor['rootId'], db))
+    require_repository(directory)
     if actor.get('daybreakEnabled'):
         raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
     from codex_worker_accounts import resolve
     review_account, catalog = resolve(rt, actor, {'model': actor['model']})
     with rt.lock, rt.db() as db:
-        previous = _existing(rt, db, key, actor, target)
+        previous = _existing(rt, db, key, actor, target, directory)
         if previous is not None:
             return previous
         receipt = rt.tool_request(key, db)
@@ -99,7 +116,7 @@ def request(rt, actor, args, key):
         assert_delegation(rt.agent(current['rootId'], db))
         if current.get('daybreakEnabled'):
             raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
-        spec = {'id': str(uuid.uuid5(uuid.NAMESPACE_URL, key)), 'name': 'Review',
+        spec = {'id': str(uuid.uuid5(uuid.NAMESPACE_URL, key)), 'name': 'Review', 'cwd': directory,
                 'role': 'reviewer', 'prompt': 'Run a native code review: ' + json.dumps(target, ensure_ascii=False),
                 'model': current['model'], 'effort': current.get('effort'),
                 'fast_mode': current.get('fastMode', False), 'daybreak_enabled': False}

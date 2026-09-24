@@ -2,6 +2,7 @@
 """Native review admission and reservation use isolated Studio databases."""
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -21,6 +22,8 @@ class AgentReviewContract(unittest.TestCase):
 
     def setUp(self):
         fixture.WorkspaceContract.setUp(self)
+        # Native review reads git history; the reviewer folder must be a repository.
+        subprocess.run(['git', 'init', '-q', str(self.project)], check=True)
         self.actor = self.runtime.prepare(self.lead())
         self.actor = self.agent_update(self.actor, status='running', turnId='actor-turn')
         self.key = self.actor['threadId'] + ':review:stable'
@@ -98,6 +101,25 @@ class AgentReviewContract(unittest.TestCase):
         with self.runtime.db() as db:
             result = json.loads(db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (self.key,)).fetchone()[0])
         self.assertEqual(json.loads(result['contentItems'][0]['text']), first)
+
+    def test_folder_outside_git_is_rejected_before_a_reviewer_exists(self):
+        import shutil
+        shutil.rmtree(self.project / '.git')
+        with self.assertRaisesRegex(ValueError, 'needs a git repository.*Pass cwd'):
+            self.make()
+        self.assertEqual(self.children(), [])
+        repo = self.project / 'apeirora' / 'showroom'
+        repo.mkdir(parents=True)
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        value = self.make({'cwd': 'apeirora/showroom'})
+        child = self.runtime.agent(value['agentId'])
+        self.assertEqual(child['cwd'], str(repo.resolve()))
+        self.assertEqual(self.make({'cwd': str(repo)}), value)
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.make({'cwd': '.'})
+        self.assertEqual(len(self.children()), 1)
+        with self.assertRaisesRegex(ValueError, 'Supply only target, cwd'):
+            self.make({'folder': 'x'})
 
     def test_inherits_actor_settings_and_directory_but_forces_read_only(self):
         self.actor = self.agent_update(self.actor, model='gpt-5.6-sol', effort='high', fastMode=True,

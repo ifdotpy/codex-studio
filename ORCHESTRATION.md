@@ -102,8 +102,9 @@ A confirmed request does not execute again. A new explicit action receives a new
 Codex agents can call `orchestration_review` with a stable `request_id` and an
 optional native `target`. The default target is `uncommittedChanges`. Supported
 targets also include `baseBranch`, `commit`, and `custom`.
-The server creates a managed reviewer in the caller's directory without sending
-an initial user turn. It runs `review/start` on that reviewer's native thread.
+The server creates a managed reviewer in `cwd` without sending an initial user
+turn. `cwd` defaults to the caller's folder and must be inside a git repository;
+otherwise the call fails and no reviewer is created. It runs `review/start` on that reviewer's native thread.
 The caller's active turn continues. The reviewer uses read-only permissions and
 the caller's model, unless native `review_model` selects another model.
 Team concurrency, agent limits, and budget admission apply. Completion sends one
