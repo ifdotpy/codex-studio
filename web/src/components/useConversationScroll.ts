@@ -154,11 +154,14 @@ export function useConversationScroll(id: string, ready: boolean) {
     const observer = new ResizeObserver(restore);
     observer.observe(root);
     observer.observe(body);
+    const mutations = new MutationObserver(restore);
+    mutations.observe(body, { childList: true, subtree: true });
     return () => {
       checkpoint();
       window.removeEventListener("pagehide", checkpoint);
       document.removeEventListener("visibilitychange", checkpoint);
       observer.disconnect();
+      mutations.disconnect();
       for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
         root.removeEventListener(type, input);
     };

@@ -88,6 +88,16 @@ try {
     await page.locator("#composer").waitFor();
     await page.locator("#stop:disabled").waitFor();
     await page.locator("#message").fill("Check this task");
+    await page.waitForFunction(() => {
+      const message = document.querySelector("#message");
+      const send = document.querySelector("#send");
+      return (
+        message?.value === "Check this task" &&
+        send &&
+        !send.disabled &&
+        !document.querySelector("#send-state").textContent
+      );
+    });
     const boxes = () =>
       page.evaluate((mobile) => {
         const result = {};
@@ -172,15 +182,21 @@ try {
       );
       await page.waitForTimeout(80);
     };
-    const waitForComposerSend = () =>
-      page.waitForFunction(() =>
-        document.querySelector("#send-state").textContent.includes("Sending"),
-      );
-    const firstSendStarted = waitForComposerSend();
+    const waitForSendingUI = () =>
+      page.waitForFunction(() => {
+        const composerState =
+          document.querySelector("#send-state")?.textContent || "";
+        const messageState = Array.from(
+          document.querySelectorAll(".message-delivery-status"),
+        ).some((node) => node.textContent.includes("Sending"));
+        return composerState.includes("Sending") || messageState;
+      });
     await page.locator("#send").click();
-    await firstSendStarted;
-    await stable("sending");
     await waitForSend();
+    // The composer releases its lock when the durable outbox owns the request.
+    // At that point the message row shows the in-flight state.
+    await waitForSendingUI();
+    await stable("sending");
     await pendingSend.fulfill({
       json: { id: pendingSend.request().postDataJSON().id, status: "sent" },
     });
