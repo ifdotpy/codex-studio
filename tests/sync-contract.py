@@ -31,8 +31,24 @@ with tempfile.TemporaryDirectory() as directory:
     assert 'token' not in json.loads(first['documents'][0]['payload'])
     assert not store.pull('state', first['checkpoint']['seq'])['documents']
     state['nodes'] = [{'id': 'one'}]
+    # Pulls without a write share one snapshot for a short time.
+    assert not store.pull('state', first['checkpoint']['seq'])['documents']
+    import codex_sync
+    import time
+    time.sleep(codex_sync.SNAPSHOT_REUSE_SECONDS)
     second = store.pull('state', first['checkpoint']['seq'])
     assert second['checkpoint']['seq'] > first['checkpoint']['seq']
+    # A write makes the next pull rebuild at once.
+    state['nodes'] = [{'id': 'two'}]
+    with connect() as db:
+        db.execute("INSERT INTO runtime_agents VALUES ('writer', '{}')")
+    third = store.pull('state', second['checkpoint']['seq'])
+    assert json.loads(third['documents'][0]['payload'])['nodes'] == [{'id': 'two'}]
+    with connect() as db:
+        db.execute("DELETE FROM runtime_agents WHERE id='writer'")
+    state['nodes'] = [{'id': 'one'}]
+    time.sleep(codex_sync.SNAPSHOT_REUSE_SECONDS)
+    second = store.pull('state', first['checkpoint']['seq'])
     assert second == store.pull('state', first['checkpoint']['seq'])
     assert store.pull('transcript:gone')['documents'][0]['_deleted']
     generation = store.generation()
@@ -105,4 +121,20 @@ with tempfile.TemporaryDirectory() as directory:
         release.set()
         worker.join(5)
     assert not worker.is_alive()
+    # An unchanged analytics agent row is not rewritten; windows are not told to resync.
+    from codex_analytics import AnalyticsMixin
+    with connect() as db:
+        db.execute('CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    SyncStore(connect, lambda: state, transcript)
+    agent = {'id': 'a1', 'name': 'Worker', 'rootId': 'a1'}
+    with connect() as db:
+        AnalyticsMixin.analytics_agent(None, db, agent)
+    generation = store.generation()
+    with connect() as db:
+        AnalyticsMixin.analytics_agent(None, db, agent)
+    assert store.generation() == generation
+    with connect() as db:
+        AnalyticsMixin.analytics_agent(None, db, {**agent, 'name': 'Renamed'})
+        assert json.loads(db.execute("SELECT record FROM analytics_agents").fetchone()[0])['name'] == 'Renamed'
+    assert store.generation() > generation
 print('sync contract passed')

@@ -2,10 +2,14 @@
 import json
 import re
 import threading
+import time
 import uuid
 import zlib
 
 SCOPE_STRIPES = 64
+# Windows pull state together after each RESYNC. Without a write in between,
+# they share one snapshot. The age bound limits in-memory state staleness.
+SNAPSHOT_REUSE_SECONDS = 2
 
 
 class SyncStore:
@@ -16,6 +20,7 @@ class SyncStore:
         # per version. Other scopes proceed; a slow state snapshot must not
         # delay transcript pulls. A fixed stripe count bounds memory.
         self.locks = tuple(threading.RLock() for _ in range(SCOPE_STRIPES))
+        self.snapshots = {}
         with self.connect() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS sync_identity (id TEXT PRIMARY KEY);
@@ -68,9 +73,7 @@ class SyncStore:
         after, limit = max(0, int(after)), min(100, max(1, int(limit)))
         with self.scope_lock(scope):
             if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
-                payload = dict(self.chat_snapshot() if scope == 'state:chat' else self.snapshot())
-                payload.pop('token', None)
-                payload.pop('at', None)
+                payload = self.shared_snapshot(scope)
                 deleted = False
             elif scope.startswith('transcript:') and len(scope) < 300:
                 try:
@@ -87,6 +90,19 @@ class SyncStore:
                 return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                         'documents': [self.document(row) for row in rows],
                         'checkpoint': {'seq': rows[-1][0] if rows else after}}
+
+    def shared_snapshot(self, scope):
+        # The caller holds this scope's lock.
+        generation = self.generation()
+        cached = self.snapshots.get(scope)
+        if cached and cached[0] == generation and time.monotonic() - cached[1] < SNAPSHOT_REUSE_SECONDS:
+            return cached[2]
+        payload = dict(self.chat_snapshot() if scope == 'state:chat' else self.snapshot())
+        payload.pop('token', None)
+        payload.pop('at', None)
+        # A write during the snapshot changes the generation; the next pull rebuilds.
+        self.snapshots[scope] = (generation, time.monotonic(), payload)
+        return payload
 
     def push_drafts(self, rows):
         if not isinstance(rows, list) or len(rows) > 100:

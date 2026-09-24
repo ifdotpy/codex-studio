@@ -136,7 +136,10 @@ class AnalyticsMixin:
 
     def analytics_agent(self, db, a):
         record = {key: a.get(key) for key in ('id', 'name', 'rootId', 'parentId', 'accountKey', 'threadId', 'model', 'effort', 'fastMode', 'daybreakEnabled', 'cyberAccessProgram', 'cwd', 'deletedAt')}
-        db.execute('INSERT INTO analytics_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record', (a['id'], json.dumps(record)))
+        # Skip an unchanged row: each write advances the sync generation and
+        # makes every open window pull a new state snapshot.
+        db.execute('INSERT INTO analytics_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record '
+                   'WHERE record IS NOT excluded.record', (a['id'], json.dumps(record)))
         return {'agentId': a['id'], 'agentName': a.get('name'), 'rootId': a.get('rootId') or a['id'],
                 'accountKey': a.get('accountKey', 'default'), 'threadId': a.get('threadId'),
                 'model': a.get('model'), 'effort': a.get('effort'), 'fastMode': a.get('fastMode'),
