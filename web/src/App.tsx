@@ -1,4 +1,5 @@
 import { ClaudeSettings } from "./components/ClaudeSettings";
+import { menuActions, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
@@ -724,10 +725,7 @@ export default function App() {
       const id = opened || (await newChat());
       if (!id) return;
       latestSend.current[id] = attempt;
-      if (
-        agent?.source === "managed" &&
-        /^\/(compact|review|stop|stop-team)(\s|$)/.test(text)
-      ) {
+      if (agent?.source === "managed" && studioCommand(text, agent.provider)) {
         const [command] = text.split(/\s+/);
         if (options?.assets?.length)
           throw new Error(
@@ -1415,24 +1413,28 @@ export default function App() {
                         ["compact", "Compact", Minimize2],
                         ["review", "Review", ShieldCheck],
                       ] as const
-                    ).map(([action, label, Icon]) => (
-                      <Menu.Item
-                        key={action}
-                        data-action={action}
-                        leftSection={<Icon size={14} />}
-                        disabled={
-                          busy.has(agent.status) ||
-                          !!agent.inFlight ||
-                          !!nativeThreadError(agent) ||
-                          !agent.threadId
-                        }
-                        onClick={() => {
-                          void run(() => submitNativeAction(agent, action));
-                        }}
-                      >
-                        {label}
-                      </Menu.Item>
-                    ))}
+                    )
+                      .filter(([action]) =>
+                        menuActions(agent.provider).includes(action),
+                      )
+                      .map(([action, label, Icon]) => (
+                        <Menu.Item
+                          key={action}
+                          data-action={action}
+                          leftSection={<Icon size={14} />}
+                          disabled={
+                            busy.has(agent.status) ||
+                            !!agent.inFlight ||
+                            !!nativeThreadError(agent) ||
+                            !agent.threadId
+                          }
+                          onClick={() => {
+                            void run(() => submitNativeAction(agent, action));
+                          }}
+                        >
+                          {label}
+                        </Menu.Item>
+                      ))}
                     {(!!agent.inFlight ||
                       team.some(
                         (member) =>

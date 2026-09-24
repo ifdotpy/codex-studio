@@ -4938,6 +4938,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 receipt = find(db, request_id, key, action, context)
                 if receipt:
                     return {"receipt": receipt, "outcome": outcome(db, request_id), "replayed": True}
+            if action == "review" and a.get("provider", "codex") != "codex":
+                # Same rule as orchestration_review. Claude chats use Claude's own /review.
+                raise ValueError("Native review is available only for Codex agents")
             if action == "review":
                 from codex_agent_modes import assert_worker_input
                 assert_worker_input(self, db, a)
@@ -4999,7 +5002,9 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             a = self.prepare(a)
             assert_identity(a, attempt)
             server = self.connect(a.get("accountKey", "default"))
-            if attempt["action"] in {"compact", "review"}:
+            if attempt["action"] in {"compact", "review"} and a.get("provider", "codex") == "codex":
+                # Claude applies model and permissions with each turn; compaction
+                # is a turn there. Its bridge has no thread settings update.
                 from codex_native_action_settings import ensure
                 ensure(self, a, attempt, server)
             with self.lock, self.db() as db:

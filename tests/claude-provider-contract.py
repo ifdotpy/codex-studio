@@ -24,6 +24,9 @@ class MonitorServer(f.AccountServer):
         if method in {'command/exec/write', 'command/exec/resize'}:
             self.calls.append((method, params))
             return {}
+        if method == 'thread/compact/start':
+            self.calls.append((method, params))
+            return {}
         return super().call(method, params, timeout)
 
 class ClaudeProvider(unittest.TestCase):
@@ -96,6 +99,18 @@ class ClaudeProvider(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'not active'):
             self.runtime.monitor_input(monitor['id'],{'text':'late'},owner=a['id'])
         self.assertNotIn('default',self.runtime.servers)
+
+    def test_native_actions_follow_claude_rules(self):
+        a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
+        a=self.runtime.prepare(a)
+        with self.assertRaisesRegex(ValueError,'only for Codex agents'):
+            self.runtime.native_action(a['id'],'review')
+        server=self.runtime.servers['claude-local']
+        self.runtime.native_action(a['id'],'compact')
+        methods=[m for m,_ in server.calls]
+        self.assertIn('thread/compact/start',methods)
+        # Claude applies settings with each turn and has no thread settings update.
+        self.assertNotIn('thread/settings/update',methods)
 
     def test_claude_resume_refreshes_studio_tools(self):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})

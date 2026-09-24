@@ -175,6 +175,7 @@ function wireThread(s) {
     createdAt: s.createdAt,
     updatedAt: s.updatedAt || s.createdAt,
     preview: s.preview || "",
+    name: s.name ?? null,
     turns: s.turns,
     status: { type: queries.get(s.id)?.turn ? "active" : "idle" },
     modelProvider: "claude",
@@ -855,7 +856,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 5 },
+      capabilities: { claudeVersion: 6 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1220,12 +1221,22 @@ async function handle(method, p) {
   }
   if (method === "turn/interrupt") {
     const active = queries.get(p.threadId);
-    if (!active) return {};
-    if (p.turnId && active.turn && p.turnId !== active.turn.id)
+    // Match Codex: an interrupt without an active turn changes nothing.
+    // Closing an idle session here would also end its background tasks.
+    if (!active?.turn) throw new Error("no active turn to interrupt");
+    if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
-    if (active.turn) active.turn.interrupted = true;
+    active.turn.interrupted = true;
     active.input.close();
     active.q?.close();
+    return {};
+  }
+  if (method === "thread/name/set") {
+    const s = await session(p.threadId);
+    if (typeof p.name !== "string" || !p.name.trim())
+      throw new Error("Thread name must not be empty");
+    s.name = p.name;
+    await persist(s);
     return {};
   }
   if (method === "thread/backgroundTerminals/list") {

@@ -247,6 +247,15 @@ class Bridge(unittest.TestCase):
         else: result=self.completed()
         self.assertEqual(result['status'],'interrupted')
         with self.assertRaisesRegex(ValueError,'different Claude turn'): self.call('turn/steer',{'threadId':self.thread})
+        # Like Codex, an interrupt without an active turn changes nothing and says so.
+        with self.assertRaisesRegex(ValueError,'^no active turn to interrupt$'):
+            self.call('turn/interrupt',{'threadId':self.thread,'turnId':result['id']})
+
+    def test_thread_name_is_stored_like_codex(self):
+        self.assertEqual(self.call('thread/name/set',{'threadId':self.thread,'name':'Review 7'}),{})
+        self.assertEqual(self.call('thread/read',{'threadId':self.thread})['thread']['name'],'Review 7')
+        with self.assertRaisesRegex(ValueError,'must not be empty'):
+            self.call('thread/name/set',{'threadId':self.thread,'name':' '})
 
     def test_failed_setter_does_not_accept_or_duplicate_message(self):
         self.turn('hello','before-setter');self.completed()
