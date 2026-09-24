@@ -433,15 +433,19 @@ try {
   await page
     .locator("#message")
     .fill("Steering failure keeps this instruction");
-  await page.route(
-    "**/api/messages",
-    (route) =>
-      route.fulfill({
-        status: 503,
-        json: { error: "Fixture steer transport failure" },
-      }),
-    { times: 1 },
-  );
+  const failedSteerText = "Steering failure keeps this instruction";
+  let failedSteerId;
+  const failSteerRequests = async (route) => {
+    const body = route.request().postDataJSON();
+    if (body?.text !== failedSteerText) return route.continue();
+    if (failedSteerId) assert.equal(body.id, failedSteerId);
+    else failedSteerId = body.id;
+    return route.fulfill({
+      status: 503,
+      json: { error: "Fixture steer transport failure" },
+    });
+  };
+  await page.route("**/api/messages", failSteerRequests);
   await page.locator("#send").click();
   const failedSteer = page
     .locator("#messages .message.user")
@@ -466,6 +470,7 @@ try {
     priorQueueLength + 1,
     "steer failure does not silently queue",
   );
+  await page.unroute("**/api/messages", failSteerRequests);
 
   await page.locator("#message").fill("Keyboard instruction");
   await page.route(

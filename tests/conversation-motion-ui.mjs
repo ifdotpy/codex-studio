@@ -214,10 +214,17 @@ try {
     await page.locator(`${conversationSelector} #send`).click();
     await sendRouteCaptured;
     assert.ok(pendingSend, "send request captured");
+    const sentBody = pendingSend.request().postDataJSON();
+    assert.equal(
+      typeof sentBody.id,
+      "string",
+      "send fixture keeps exact message ID",
+    );
     items.push({
-      id: `sent-${width}`,
+      id: `${lead.id}:${sentBody.id}`,
+      clientMessageId: sentBody.id,
       role: "user",
-      text: pendingSend.request().postDataJSON().text,
+      text: sentBody.text,
       turnId: "live-turn",
     });
     await emit();

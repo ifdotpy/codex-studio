@@ -112,17 +112,86 @@ try {
       const rect = panel?.getBoundingClientRect();
       return !!rect && rect.left >= 0 && rect.right <= innerWidth;
     });
-  const waitForTeamToggleHitTarget = () =>
-    page.waitForFunction(() => {
-      const button = document.querySelector("#team-toggle");
-      if (!button) return false;
-      const rect = button.getBoundingClientRect();
-      const target = document.elementFromPoint(
-        rect.left + rect.width / 2,
-        rect.top + rect.height / 2,
+  const waitForTeamToggleHitTarget = async () => {
+    try {
+      await page.waitForFunction(
+        () =>
+          new Promise((resolve) => {
+            let previous = "";
+            let stableFrames = 0;
+            const sample = () => {
+              const button = document.querySelector("#team-toggle");
+              if (!button) {
+                stableFrames = 0;
+                requestAnimationFrame(sample);
+                return;
+              }
+              const rect = button.getBoundingClientRect();
+              const target = document.elementFromPoint(
+                rect.left + rect.width / 2,
+                rect.top + rect.height / 2,
+              );
+              const hit = target === button || button.contains(target);
+              const values = [
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+                button.getAttribute("aria-expanded"),
+              ].join(":");
+              stableFrames = hit && values === previous ? stableFrames + 1 : 0;
+              previous = values;
+              if (stableFrames >= 3) resolve(true);
+              else requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+          }),
       );
-      return target === button || button.contains(target);
-    });
+    } catch (error) {
+      const state = await page.evaluate(() => {
+        const button = document.querySelector("#team-toggle");
+        if (!button) return { button: null };
+        const rect = button.getBoundingClientRect();
+        const target = document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        return {
+          viewport: { width: innerWidth, height: innerHeight },
+          button: {
+            rect: {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            },
+            expanded: button.getAttribute("aria-expanded"),
+          },
+          hitTarget: target && {
+            tag: target.tagName,
+            id: target.id,
+            className:
+              typeof target.className === "string" ? target.className : "",
+          },
+          drawers: [
+            ...document.querySelectorAll(
+              ".mantine-Drawer-root, .mantine-Drawer-content, .mantine-Drawer-overlay",
+            ),
+          ].map((node) => ({
+            className: node.className,
+            display: getComputedStyle(node).display,
+            visibility: getComputedStyle(node).visibility,
+            opacity: getComputedStyle(node).opacity,
+            pointerEvents: getComputedStyle(node).pointerEvents,
+          })),
+        };
+      });
+      throw new Error(
+        `Team toggle hit target did not settle: ${JSON.stringify(state)}`,
+        { cause: error },
+      );
+    }
+  };
   const groupIds = (name) =>
     team
       .getByRole("region", { name, exact: true })
@@ -251,8 +320,28 @@ try {
   );
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
-    if (await page.locator("#sidebar").isVisible())
-      await page.locator("#sidebar-toggle").click();
+    await page.waitForFunction(() => {
+      if (!matchMedia("(max-width: 760px)").matches) return false;
+      const toggle = document.querySelector("#sidebar-toggle");
+      const sidebar = document.querySelector("#sidebar");
+      if (!toggle) return false;
+      const expanded = toggle.getAttribute("aria-expanded");
+      const inDrawer = !!sidebar?.closest('[data-portal="true"]');
+      return (
+        (expanded === "false" && !sidebar) || (expanded === "true" && inDrawer)
+      );
+    });
+    const sidebarToggle = page.locator("#sidebar-toggle");
+    if ((await sidebarToggle.getAttribute("aria-expanded")) === "true") {
+      await sidebarToggle.click();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector("#sidebar-toggle")
+            ?.getAttribute("aria-expanded") === "false" &&
+          !document.querySelector("#sidebar"),
+      );
+    }
     await page.locator("#message").fill(`Lead draft ${width}`);
     await waitForTeamToggleHitTarget();
     await page.getByRole("button", { name: "Team", exact: true }).click();
