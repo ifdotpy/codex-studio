@@ -230,26 +230,19 @@ try {
     );
     await afterPaint(page, rootSelector);
     assert.ok((await gap()) < 2, "send and composer shrink retain bottom");
-    const scrollBeforePageUp = await page
-      .locator(rootSelector)
-      .evaluate((root) => root.scrollTop);
-    await page.locator(rootSelector).evaluate((root) => {
-      root.tabIndex = -1;
-      root.focus();
-    });
     await page.waitForFunction(
-      (selector) => document.activeElement === document.querySelector(selector),
+      (selector) =>
+        document
+          .querySelector(selector)
+          ?.querySelectorAll('[data-message^="note"]').length === 36,
       rootSelector,
     );
-    const scrollEnd = page
+    await afterPaint(page, rootSelector);
+    const scrollBeforeWheel = await page
       .locator(rootSelector)
-      .evaluate(
-        (root) =>
-          new Promise((resolve) =>
-            root.addEventListener("scrollend", resolve, { once: true }),
-          ),
-      );
-    await page.keyboard.press("PageUp");
+      .evaluate((root) => root.scrollTop);
+    await page.locator(rootSelector).hover();
+    await page.mouse.wheel(0, -1200);
     await page.waitForFunction(
       ({ before, selector }) => {
         const root = document.querySelector(selector);
@@ -258,9 +251,22 @@ try {
           root.scrollHeight - root.scrollTop - root.clientHeight >= 32
         );
       },
-      { before: scrollBeforePageUp, selector: rootSelector },
+      { before: scrollBeforeWheel, selector: rootSelector },
     );
-    await scrollEnd;
+    await page.locator(rootSelector).evaluate(
+      (root) =>
+        new Promise((resolve) => {
+          let previous = Number.NaN;
+          let stableFrames = 0;
+          const sample = () => {
+            stableFrames = root.scrollTop === previous ? stableFrames + 1 : 0;
+            previous = root.scrollTop;
+            if (stableFrames === 3) resolve();
+            else requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        }),
+    );
     try {
       await page.locator(`${conversationSelector} #jump-latest`).waitFor();
     } catch (error) {
