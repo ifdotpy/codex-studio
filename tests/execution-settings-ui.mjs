@@ -260,18 +260,28 @@ try {
       "gpt-5.6-sol",
   );
   await dialog.getByLabel("Default subagent reasoning").selectOption("low");
-  await waitFor(
-    async () =>
-      (await state()).find((a) => a.id === lead.id).workerDefaults.effort ===
-      "low",
-  );
+  await waitFor(async () => {
+    const defaults = (await state()).find(
+      (a) => a.id === lead.id,
+    ).workerDefaults;
+    return defaults.model === "gpt-5.6-sol" && defaults.effort === "low";
+  });
   await dialog
     .getByRole("switch", { name: "Fast mode", exact: true })
     .uncheck();
+  await waitFor(async () => {
+    const defaults = (await state()).find(
+      (a) => a.id === lead.id,
+    ).workerDefaults;
+    return (
+      defaults.model === "gpt-5.6-sol" &&
+      defaults.effort === "low" &&
+      defaults.fastMode === false
+    );
+  });
   await waitFor(
     async () =>
-      (await state()).find((a) => a.id === lead.id).workerDefaults.fastMode ===
-      false,
+      !(await dialog.getByLabel("Default subagent model").isDisabled()),
   );
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "hidden" });
