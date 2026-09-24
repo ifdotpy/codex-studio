@@ -412,24 +412,50 @@ try {
   }
   try {
     await page.waitForFunction(() => {
-      const dialog = document.querySelector(".prompt-history");
-      const button = [
-        ...document.querySelectorAll(".prompt-history-list button"),
-      ].find((item) => item.textContent.trim() === "Load earlier messages");
-      if (
-        !(dialog instanceof HTMLElement) ||
-        !(button instanceof HTMLButtonElement) ||
-        button.disabled
-      )
-        return false;
-      const dialogBox = dialog.getBoundingClientRect();
-      const buttonBox = button.getBoundingClientRect();
-      return (
-        dialogBox.width > 0 &&
-        buttonBox.width > 0 &&
-        buttonBox.top >= 0 &&
-        buttonBox.bottom <= window.innerHeight
-      );
+      return new Promise((resolve) => {
+        let previous = "";
+        let stableFrames = 0;
+        const sample = () => {
+          const dialog = document.querySelector(".prompt-history");
+          const button = [
+            ...document.querySelectorAll(".prompt-history-list button"),
+          ].find((item) => item.textContent.trim() === "Load earlier messages");
+          if (
+            !(dialog instanceof HTMLElement) ||
+            !(button instanceof HTMLButtonElement) ||
+            button.disabled
+          ) {
+            requestAnimationFrame(sample);
+            return;
+          }
+          const dialogBox = dialog.getBoundingClientRect();
+          const buttonBox = button.getBoundingClientRect();
+          const x = buttonBox.left + buttonBox.width / 2;
+          const y = buttonBox.top + buttonBox.height / 2;
+          const hit = document.elementFromPoint(x, y);
+          const values = [
+            dialogBox.x,
+            dialogBox.y,
+            dialogBox.width,
+            dialogBox.height,
+            buttonBox.x,
+            buttonBox.y,
+            buttonBox.width,
+            buttonBox.height,
+          ].join(":");
+          const ready =
+            dialogBox.width > 0 &&
+            buttonBox.width > 0 &&
+            buttonBox.top >= 0 &&
+            buttonBox.bottom <= window.innerHeight &&
+            (hit === button || button.contains(hit));
+          stableFrames = ready && values === previous ? stableFrames + 1 : 0;
+          previous = values;
+          if (stableFrames >= 3) resolve(true);
+          else requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      });
     });
   } catch (error) {
     const state = await page.evaluate(() => {
