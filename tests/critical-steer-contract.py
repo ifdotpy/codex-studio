@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from codex_native_errors import NativeRpcError
 from codex_runtime import Runtime, SubmissionRejected
 
 spec = importlib.util.spec_from_file_location(
@@ -20,9 +21,13 @@ spec.loader.exec_module(fixture)
 
 
 class SteerServer(fixture.FakeServer):
+    rejection = None
+
     def call(self, method, params, timeout=60):
         if method == "turn/steer":
             self.calls.append((method, params))
+            if self.rejection:
+                raise NativeRpcError(self.rejection)
             return {"turnId": params["expectedTurnId"]}
         return super().call(method, params, timeout)
 
@@ -242,6 +247,42 @@ class CriticalSteerContract(unittest.TestCase):
             1,
         )
         self.assertEqual(self.transcript_count(agent, message_id), 1)
+
+    def test_steer_after_the_turn_ended_waits_in_the_queue(self):
+        rejections = [
+            {"code": -32000, "message": "The steer belongs to a different Claude turn"},
+            {"code": -32000, "message": "Claude finished before this steer could be submitted"},
+            {"code": -32600, "message": "no active turn to steer"},
+            {"code": -32600, "message": "expected active turn id `turn-1` but found `turn-2`"},
+        ]
+        agent = self.lead()
+        for index, rejection in enumerate(rejections):
+            message_id = "steer-ended-" + str(index)
+            self.server.rejection = rejection
+            result = self.runtime.send(agent, "Correction " + str(index), message_id, delivery="steer")
+            self.assertEqual(result, {"id": message_id, "status": "queued", "delivery": "queue"})
+            receipt = self.runtime.delivery_receipt(message_id)
+            self.assertEqual((receipt["status"], receipt["error"]), ("pending", None))
+            meta = self.metadata(message_id)
+            self.assertEqual(meta["delivery"], "queue")
+            self.assertNotIn("transcriptItemId", meta)
+            self.assertEqual(self.transcript_count(agent, message_id), 0)
+            with self.runtime.db() as db:
+                self.assertIsNone(db.execute("SELECT turn_id FROM runtime_events WHERE id=?",
+                                             (message_id,)).fetchone()[0])
+            # The same identity does not submit or queue the message again.
+            self.assertEqual(self.runtime.send(agent, "Correction " + str(index), message_id,
+                                               delivery="steer")["status"], "pending")
+        self.assertEqual(len([m for m, _ in self.server.calls if m == "turn/steer"]), len(rejections))
+        queued = [item["id"] for item in self.runtime.queue_action(agent)["items"]]
+        self.assertEqual(queued, ["steer-ended-" + str(index) for index in range(len(rejections))])
+
+    def test_other_steer_rejections_still_fail(self):
+        agent = self.lead()
+        self.server.rejection = {"code": -32600, "message": "input must not be empty"}
+        with self.assertRaises(NativeRpcError):
+            self.runtime.send(agent, "Correction", "steer-invalid", delivery="steer")
+        self.assertEqual(self.runtime.delivery_receipt("steer-invalid")["status"], "failed")
 
     def test_unknown_write_stays_nonretryable(self):
         agent = self.lead()

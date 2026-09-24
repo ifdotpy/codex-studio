@@ -260,6 +260,22 @@ class SubmissionRejected(RuntimeError):
     """No bytes from this request reached the native process."""
 
 
+STEER_TURN_ENDED = frozenset({
+    "no active turn to steer", "cannot steer a review turn", "cannot steer a compact turn",
+    "The steer belongs to a different Claude turn",
+    "Claude finished before this steer could be submitted",
+    "Claude stopped before this steer could be submitted",
+})
+
+
+def steer_turn_ended(error):
+    """A definitive rejection: the steer reached no model because its turn is not active."""
+    if not isinstance(error, NativeRpcError) or not isinstance(error.error, dict):
+        return False
+    message = str(error.error.get("message") or "")
+    return message in STEER_TURN_ENDED or message.startswith("expected active turn id")
+
+
 class SubmissionUnknown(ResponseTimeout):
     def __init__(self, submitted, error):
         super().__init__(f"{submitted[1]} submission failed; outcome unknown: {error}")
@@ -1928,6 +1944,8 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 self.steer_result, message_id, operation, future) if not self.closed else None)
             return self.delivery_receipt(message_id)
         except Exception as error:
+            if self.steer_requeue(message_id, operation, error):
+                return {"id": message_id, "status": "queued", "delivery": "queue"}
             self.steer_error(message_id, operation, error, uncertain="outcome unknown" in str(error))
             raise
 
@@ -1956,10 +1974,44 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                        "AND status IN ('dispatching','uncertain')",
                        ("uncertain" if uncertain else "failed", str(error), message_id, a["id"], operation["epoch"]))
 
+    def steer_requeue(self, message_id, operation, error):
+        """Queue a steer for the next turn when the native turn already ended.
+
+        Native Codex and the Claude bridge reject such a steer before they
+        submit any input, so the queue cannot deliver the message twice.
+        """
+        if not steer_turn_ended(error):
+            return False
+        with self.lock, self.db() as db:
+            a = self.agent(operation["agent"], db)
+            if (not self.operation_current(a, operation) or a["threadId"] != operation["threadId"]
+                    or not a["autoWake"]):
+                return False
+            row = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)).fetchone()
+            meta = json.loads(row[0]) if row else {}
+            updated = db.execute(
+                "UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id=? AND agent=? "
+                "AND epoch=? AND status IN ('dispatching','uncertain')",
+                (message_id, a["id"], operation["epoch"])).rowcount
+            if not updated:
+                return False
+            meta.update(delivery="queue", steerRejected=str(error))
+            item_id = meta.pop("transcriptItemId", a["id"] + ":" + message_id)
+            db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?", (json.dumps(meta), message_id))
+            # The queued event is shown as pending until its turn materializes it.
+            db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?", (item_id, a["id"]))
+            if not a.get("nativeFailureHold") and a["status"] not in {"running", "starting", "approval"}:
+                a["status"] = "queued"
+                self.put(db, "agents", a)
+            self.changed.set()
+            return True
+
     def steer_result(self, message_id, operation, future):
         try:
             self.steer_accepted(message_id, operation, future.result())
         except Exception as error:
+            if self.steer_requeue(message_id, operation, error):
+                return
             self.steer_error(message_id, operation, error, uncertain="outcome unknown" in str(error))
 
     @staticmethod
