@@ -154,8 +154,14 @@ try {
     ["Remote file", /Remote file links are not supported/],
   ]) {
     await page.getByRole("link", { name, exact: true }).click();
-    const dialog = page.getByRole("dialog").last();
-    await dialog.waitFor();
+    const candidate = page
+      .getByRole("dialog")
+      .filter({ hasText: message })
+      .last();
+    await candidate.waitFor();
+    const labelledBy = await candidate.getAttribute("aria-labelledby");
+    assert.ok(labelledBy, "file error dialog has a stable accessible title");
+    const dialog = page.locator(`[aria-labelledby="${labelledBy}"]`);
     await poll(async () =>
       message.test(await dialog.getByRole("alert").textContent()),
     );
