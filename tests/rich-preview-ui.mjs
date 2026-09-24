@@ -15,7 +15,10 @@ const root = await mkdtemp(join(tmpdir(), "codex-rich-preview-ui-"));
 const proc = spawn(
   "python3",
   ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-  { stdio: ["pipe", "pipe", "pipe"] },
+  {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, RICH_PREVIEW_UI_FIXTURE: "1" },
+  },
 );
 let log = "",
   browser,

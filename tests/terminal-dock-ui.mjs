@@ -641,6 +641,11 @@ try {
     const { items } = await (await fetch("/api/terminals")).json();
     return items.find((item) => item.id === id)?.status === "exited";
   }, liveShell);
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".terminal-detail-status")
+      ?.textContent?.startsWith("exited"),
+  );
   const after = await (await fetch(liveOrigin + "/api/state")).json();
   const ownerBefore = initial.threads.find(
     (item) => item.id === sessions.items[0].agent,
