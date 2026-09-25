@@ -5,6 +5,7 @@ import { Button, Popover, Progress } from "@mantine/core";
 import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
 import type { Agent, Json } from "../types";
 import { api, errorText } from "../api";
+import { peekSessionCost, storeSessionCost } from "../sessionCostCache";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import { limitRecovery } from "../limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
@@ -132,6 +133,7 @@ function selectedBucket(buckets: LimitBucket[], model: string) {
 }
 export default function Usage({
   agent,
+  stateDir,
   limits: reportedLimits,
   accountLabel,
   reload,
@@ -140,6 +142,7 @@ export default function Usage({
   limitsLoading,
 }: {
   agent: Agent;
+  stateDir: string;
   limits: Json | null;
   accountLabel?: string;
   reload: () => void | Promise<void>;
@@ -229,11 +232,38 @@ export default function Usage({
   };
   const accountKey = agent.accountKey || "default";
   const [costs, setCosts] = useState<Json | null>(null);
-  const [sessionCost, setSessionCost] = useState<Json | null>(null);
+  const rootId = agent.rootId || agent.id;
+  const costScope = JSON.stringify([stateDir, rootId]);
+  const [sessionCostState, setSessionCostState] = useState<{
+    scope: string;
+    value: Json | null;
+    updating: boolean;
+  }>(() => ({
+    scope: costScope,
+    value: peekSessionCost(stateDir, rootId),
+    updating: true,
+  }));
+  const sessionCost =
+    sessionCostState.scope === costScope
+      ? sessionCostState.value
+      : peekSessionCost(stateDir, rootId);
+  const sessionCostUpdating =
+    sessionCostState.scope !== costScope || sessionCostState.updating;
   useEffect(() => {
     let active = true;
     let timer: number;
+    setSessionCostState({
+      scope: costScope,
+      value: peekSessionCost(stateDir, rootId),
+      updating: true,
+    });
     const load = async () => {
+      let delay = 10000;
+      setSessionCostState((previous) =>
+        previous.scope === costScope
+          ? { ...previous, updating: true }
+          : { scope: costScope, value: peekSessionCost(stateDir, rootId), updating: true },
+      );
       try {
         const value = await api<Json>(
           `/api/session-cost?agent=${encodeURIComponent(agent.id)}`,
@@ -241,20 +271,42 @@ export default function Usage({
           { timeoutMs: 5000 },
         );
         if (!active) return;
-        setSessionCost(value);
+        if (value.pricingState === "loading") {
+          setSessionCostState((previous) => {
+            const cached = previous.scope === costScope ? previous.value : peekSessionCost(stateDir, rootId);
+            return {
+              scope: costScope,
+              value: cached || value,
+              updating: Boolean(cached),
+            };
+          });
+          delay = 2000;
+        } else {
+          const cached = storeSessionCost(stateDir, rootId, value);
+          setSessionCostState({
+            scope: costScope,
+            value: cached || value,
+            updating: Boolean(value.refreshing),
+          });
+          if (value.refreshing) delay = 2000;
+        }
       } catch {
-        if (active) setSessionCost(null);
+        if (active)
+          setSessionCostState((previous) => ({
+            scope: costScope,
+            value: previous.scope === costScope ? previous.value : peekSessionCost(stateDir, rootId),
+            updating: false,
+          }));
       } finally {
-        if (active) timer = window.setTimeout(load, 10000);
+        if (active) timer = window.setTimeout(load, delay);
       }
     };
-    setSessionCost(null);
     void load();
     return () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [agent.id]);
+  }, [agent.id, costScope, rootId, stateDir]);
   useEffect(() => {
     let active = true;
     let timer: number;
@@ -324,6 +376,7 @@ export default function Usage({
       <div
         className="session-cost-summary"
         aria-label="Current team session API cost estimate"
+        aria-busy={sessionCostUpdating}
         title={[
           ...Object.entries(sessionCost?.breakdown?.providers || {}).map(
             ([provider, value]) => `${provider}: ${dollars(value)}`,
@@ -340,9 +393,12 @@ export default function Usage({
           .filter(Boolean)
           .join("\n")}
       >
+        {sessionCostUpdating && <span className="session-cost-updating">Updating · </span>}
         {sessionCost?.pricingState === "loading"
           ? "Loading prices"
-          : `Session estimate: ${dollars(sessionCost?.totalUSD)}`}
+          : sessionCost
+            ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
+            : "Session estimate updating"}
         {Array.isArray(sessionCost?.unknownModels) &&
           sessionCost.unknownModels.length > 0 &&
           ` · Unpriced: ${sessionCost.unknownModels.join(", ")}`}

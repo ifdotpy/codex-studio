@@ -1,10 +1,12 @@
 """Read-only API price estimates for one managed team."""
 from collections import OrderedDict
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 
@@ -26,7 +28,7 @@ class SessionCostReader:
     CACHE_SECONDS = 30
     CACHE_ROOTS = 16
 
-    def __init__(self, db_path, pricing, accounts=None, *, state_root=None, clock=time.monotonic):
+    def __init__(self, db_path, pricing, accounts=None, *, state_root=None, clock=time.time):
         self.db_path = Path(db_path)
         self.state_root = Path(state_root) if state_root else self.db_path.parent
         self.pricing = pricing
@@ -34,7 +36,138 @@ class SessionCostReader:
         self.clock = clock
         self.cache = OrderedDict()
         self.file_cache = OrderedDict()
+        self.refreshing = set()
+        self.last_refresh_attempt = OrderedDict()
         self.lock = threading.RLock()
+
+    def _cache_path(self, root):
+        digest = hashlib.sha256(root.encode("utf-8")).hexdigest()
+        return self.state_root / "session-costs" / ("cost-" + digest + ".json")
+
+    def _valid_cached(self, root, value):
+        return (isinstance(value, dict) and value.get("rootId") == root
+                and value.get("pricingState") == "ready"
+                and isinstance(value.get("unknownModels"), list)
+                and isinstance(value.get("breakdown"), dict)
+                and (value.get("totalUSD") is None or isinstance(value.get("totalUSD"), (int, float))))
+
+    def _remember(self, root, result, cached_at=None):
+        cached_at = self.clock() if cached_at is None else cached_at
+        with self.lock:
+            self.cache[root] = (cached_at, result)
+            self.cache.move_to_end(root)
+            while len(self.cache) > self.CACHE_ROOTS:
+                self.cache.popitem(last=False)
+        try:
+            self._persist(root, result, cached_at)
+        except OSError:
+            pass
+
+    def _persist(self, root, result, cached_at):
+        path = self._cache_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, temporary = tempfile.mkstemp(prefix=".session-cost-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                json.dump({"version": 1, "rootId": root, "cachedAt": cached_at,
+                           "result": result}, output, separators=(",", ":"))
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+            try:
+                cached_files = sorted(path.parent.glob("cost-*.json"), key=lambda item: item.stat().st_mtime)
+                for old in cached_files[:-self.CACHE_ROOTS]:
+                    old.unlink(missing_ok=True)
+            except OSError:
+                pass
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _load_persisted(self, root):
+        path = self._cache_path(root)
+        try:
+            saved = json.loads(path.read_text())
+            cached_at = saved.get("cachedAt")
+            result = saved.get("result")
+            if (saved.get("version") != 1 or saved.get("rootId") != root
+                    or not isinstance(cached_at, (int, float)) or not self._valid_cached(root, result)):
+                return None
+            try:
+                os.utime(path, None)
+            except OSError:
+                pass
+            return cached_at, result
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+
+    def _start_refresh(self, agent_id, root):
+        with self.lock:
+            now = self.clock()
+            last = self.last_refresh_attempt.get(root)
+            if root in self.refreshing or (last is not None and now - last < self.CACHE_SECONDS):
+                return False
+            self.refreshing.add(root)
+            self.last_refresh_attempt[root] = now
+            self.last_refresh_attempt.move_to_end(root)
+            while len(self.last_refresh_attempt) > self.CACHE_ROOTS:
+                self.last_refresh_attempt.popitem(last=False)
+        try:
+            threading.Thread(target=self._background_refresh, args=(agent_id, root),
+                             name="session-cost-refresh", daemon=True).start()
+        except RuntimeError:
+            with self.lock:
+                self.refreshing.discard(root)
+            return False
+        return True
+
+    def _background_refresh(self, agent_id, root):
+        try:
+            result = self._compute(agent_id, root)
+            if result.get("pricingState") == "ready":
+                self._remember(root, result)
+        except Exception:
+            pass
+        finally:
+            with self.lock:
+                self.refreshing.discard(root)
+
+    def snapshot(self, agent_id):
+        db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=3)
+        db.row_factory = sqlite3.Row
+        try:
+            row = db.execute("SELECT record FROM analytics_agents WHERE id=?", (agent_id,)).fetchone()
+            if not row:
+                row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+            if not row:
+                raise ValueError("Unknown chat")
+            root = json.loads(row["record"]).get("rootId") or agent_id
+        finally:
+            db.close()
+        with self.lock:
+            cached = self.cache.get(root)
+            if cached:
+                self.cache.move_to_end(root)
+        if not cached:
+            cached = self._load_persisted(root)
+            if cached:
+                with self.lock:
+                    self.cache[root] = cached
+                    self.cache.move_to_end(root)
+                    while len(self.cache) > self.CACHE_ROOTS:
+                        self.cache.popitem(last=False)
+        if cached:
+            cached_at, result = cached
+            age = max(0, self.clock() - cached_at)
+            started = self._start_refresh(agent_id, root) if age >= self.CACHE_SECONDS else False
+            with self.lock:
+                refreshing = started or root in self.refreshing
+            return {**result, "cacheAgeSeconds": round(age, 1), "refreshing": refreshing}
+        result = self._compute(agent_id, root)
+        if result.get("pricingState") == "ready":
+            self._remember(root, result)
+        return {**result, "cacheAgeSeconds": 0, "refreshing": False}
 
     def _account(self, key):
         if self.accounts is None:
@@ -113,25 +246,10 @@ class SessionCostReader:
                 self.file_cache.popitem(last=False)
         return rows
 
-    def snapshot(self, agent_id):
+    def _compute(self, agent_id, root):
         db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=3)
         db.row_factory = sqlite3.Row
         try:
-            row = db.execute("SELECT record FROM analytics_agents WHERE id=?", (agent_id,)).fetchone()
-            if not row:
-                row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
-            if not row:
-                raise ValueError("Unknown chat")
-            agent = json.loads(row["record"])
-            root = agent.get("rootId") or agent_id
-            now = self.clock()
-            with self.lock:
-                cached = self.cache.get(root)
-                if cached and now - cached[0] < self.CACHE_SECONDS:
-                    self.cache.move_to_end(root)
-                    result = dict(cached[1])
-                    result["cacheAgeSeconds"] = round(now - cached[0], 1)
-                    return result
             catalog = self.pricing.snapshot()
             if catalog is None:
                 return {"rootId": root, "totalUSD": None, "pricedSamples": 0,

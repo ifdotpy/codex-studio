@@ -142,25 +142,40 @@ try {
   });
   let selectedAccount = "default";
   let sessionPricing = "loading";
-  await page.route("**/api/session-cost?*", (route) =>
-    route.fulfill({
-      json:
-        sessionPricing === "loading"
-          ? {
-              totalUSD: null,
-              pricingState: "loading",
-              unknownModels: [],
-              method: "Loading public API prices.",
-            }
-          : {
-              totalUSD: 0.42,
-              estimated: true,
-              breakdown: { providers: { openai: 0.3, anthropic: 0.12 } },
-              unknownModels: ["gpt-5.6-luna"],
-              method: "API rates",
-            },
-    }),
-  );
+  let sessionCostValue = 0.42;
+  let holdSessionCost = false;
+  let pendingSessionCost;
+  const teamRoot = (agentId) =>
+    initial.threads.find((agent) => agent.id === agentId)?.rootId || lead.id;
+  const sessionCostResult = (agentId) => ({
+    rootId: teamRoot(agentId),
+    totalUSD: sessionCostValue,
+    estimated: true,
+    pricingState: "ready",
+    refreshing: false,
+    cacheAgeSeconds: 0,
+    breakdown: { providers: { openai: 0.3, anthropic: 0.12 } },
+    unknownModels: ["gpt-5.6-luna"],
+    method: "API rates",
+  });
+  await page.route("**/api/session-cost?*", (route) => {
+    const agentId = new URL(route.request().url()).searchParams.get("agent");
+    if (sessionPricing === "loading")
+      return route.fulfill({
+        json: {
+          rootId: teamRoot(agentId),
+          totalUSD: null,
+          pricingState: "loading",
+          unknownModels: [],
+          method: "Loading public API prices.",
+        },
+      });
+    if (holdSessionCost) {
+      pendingSessionCost = route;
+      return;
+    }
+    return route.fulfill({ json: sessionCostResult(agentId) });
+  });
   await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const state = await response.json();
@@ -197,6 +212,46 @@ try {
     await page.locator(".session-cost-summary").getAttribute("title"),
     /anthropic/,
   );
+  selectedChat = initial.threads.find((agent) => agent.name === "Other project");
+  sessionCostValue = 0.84;
+  holdSessionCost = true;
+  await page.locator(`[data-chat="${selectedChat.id}"]`).click();
+  for (let n = 0; n < 100 && !pendingSessionCost; n++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(pendingSessionCost, "team refresh waits in the fixture");
+  assert.match(await page.locator("#usage-footer").innerText(), /Session estimate updating/);
+  assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
+  holdSessionCost = false;
+  await pendingSessionCost.fulfill({ json: sessionCostResult(selectedChat.id) });
+  pendingSessionCost = undefined;
+  await page.getByText("Session estimate: $0.84", { exact: false }).waitFor();
+
+  selectedChat = lead;
+  sessionCostValue = 1.26;
+  holdSessionCost = true;
+  await page.locator(`[data-chat="${selectedChat.id}"]`).click();
+  for (let n = 0; n < 100 && !pendingSessionCost; n++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(pendingSessionCost, "switch refresh waits in the fixture");
+  assert.match(await page.locator("#usage-footer").innerText(), /Session estimate: \$0\.42/);
+  assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
+  holdSessionCost = false;
+  await pendingSessionCost.fulfill({ json: sessionCostResult(selectedChat.id) });
+  pendingSessionCost = undefined;
+  await page.getByText("Session estimate: $1.26", { exact: false }).waitFor();
+
+  sessionCostValue = 1.68;
+  holdSessionCost = true;
+  await load();
+  for (let n = 0; n < 100 && !pendingSessionCost; n++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(pendingSessionCost, "reload refresh waits in the fixture");
+  assert.match(await page.locator("#usage-footer").innerText(), /Session estimate: \$1\.26/);
+  assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
+  holdSessionCost = false;
+  await pendingSessionCost.fulfill({ json: sessionCostResult(selectedChat.id) });
+  pendingSessionCost = undefined;
+  await page.getByText("Session estimate: $1.68", { exact: false }).waitFor();
   await page.getByRole("button", { name: "Chat context", exact: true }).click();
   await page.getByText("Compacted 2 times.", { exact: true }).waitFor();
   await page.keyboard.press("Escape");
@@ -876,6 +931,7 @@ try {
         "reset countdown and exact time",
         "local cost scope and coverage",
         "session pricing loading state",
+        "session estimate cache on chat switch and reload",
         "unknown cost never zero",
         "reset confirmation and cancel",
         "reset account binding",

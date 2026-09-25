@@ -1642,6 +1642,7 @@ export default function Conversation(p: {
             <Usage
               key={p.agent?.accountKey || "default"}
               agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
+              stateDir={p.data.stateDir}
               limits={p.limits}
               limitsLoading={p.limitsLoading}
               accountLabel={p.limitsAccountLabel}

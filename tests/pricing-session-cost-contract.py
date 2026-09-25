@@ -244,8 +244,31 @@ class PricingSessionCostContract(unittest.TestCase):
         self.assertEqual(cached["generation"], first["generation"])
         self.assertIsNone(cached["totalUSD"])
         clock[0] += 1
+        with patch("codex_session_costs.threading.Thread") as worker:
+            with patch.object(reader, "_compute", wraps=reader._compute) as compute:
+                stale = reader.snapshot("lead")
+                again = reader.snapshot("lead")
+                self.assertEqual(stale["cacheAgeSeconds"], 30)
+                self.assertTrue(stale["refreshing"])
+                self.assertEqual(again["cacheAgeSeconds"], 30)
+                self.assertTrue(again["refreshing"])
+                worker.assert_called_once()
+                compute.assert_not_called()
+        reader._background_refresh("lead", "lead")
         updated = reader.snapshot("lead")
         self.assertEqual(updated["pricedSamples"], 1)
+        self.assertEqual(updated["cacheAgeSeconds"], 0)
+
+        restarted = SessionCostReader(db_path, FixedPricing(), state_root=self.root, clock=lambda: clock[0])
+        clock[0] += 31
+        with patch("codex_session_costs.threading.Thread") as worker:
+            with patch.object(restarted, "_compute", wraps=restarted._compute) as compute:
+                restored = restarted.snapshot("lead")
+                self.assertEqual(restored["totalUSD"], updated["totalUSD"])
+                self.assertEqual(restored["cacheAgeSeconds"], 31)
+                self.assertTrue(restored["refreshing"])
+                worker.assert_called_once()
+                compute.assert_not_called()
         db = sqlite3.connect(db_path)
         for index in range(18):
             key = "root-" + str(index)
