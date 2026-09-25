@@ -74,6 +74,7 @@ import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
+import ClaudeSignIn from "./components/ClaudeSignIn";
 import Conversation from "./components/Conversation";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
@@ -144,6 +145,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [claudeLoginKey, setClaudeLoginKey] = useState("");
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
   const [subagentSettingsOpen, setSubagentSettingsOpen] = useState(false);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
@@ -1507,6 +1509,39 @@ export default function App() {
             }}
           />
         )}
+        {claudeLoginKey &&
+          accounts.data.accounts.some((item) => item.id === claudeLoginKey) && (
+            <ClaudeSignIn
+              key={claudeLoginKey}
+              account={
+                accounts.data.accounts.find(
+                  (item) => item.id === claudeLoginKey,
+                )!
+              }
+              scope={data.stateDir}
+              onClose={() => setClaudeLoginKey("")}
+              onReady={accounts.refresh}
+            />
+          )}
+        {selectedAccount?.provider === "claude" &&
+          /oauth|authentication|authenticate|not logged in/i.test(
+            errorText(
+              agent?.error ||
+                agent?.nativeStatus?.error ||
+                selectedAccount.error ||
+                error,
+            ),
+          ) && (
+            <div className="sync-status">
+              <span>Claude needs sign-in.</span>
+              <Button
+                size="compact-sm"
+                onClick={() => setClaudeLoginKey(selectedAccount.id)}
+              >
+                Sign in to Claude
+              </Button>
+            </div>
+          )}
         {error && (
           <div id="error" role="alert">
             {error}

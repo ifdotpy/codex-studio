@@ -770,6 +770,9 @@ def make_server(canvas, port=0, public_origin=None):
                             {"action": "get", "request_id": request_id} if request_id else {"action": "list"}))
                     if path.path == "/api/analytics":
                         return self.send(runtime.analytics(**q))
+                    if path.path == "/api/accounts/claude/login":
+                        from codex_claude_login import manager
+                        return self.send(manager(runtime).status(q.get("request_id")))
                     if path.path == "/api/accounts":
                         return self.send(runtime.accounts.snapshot())
                     if path.path == "/api/projects":
@@ -945,6 +948,14 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(manage(runtime, body))
                     if self.path == "/api/projects":
                         return self.send(runtime.projects(body))
+                    if self.path in {"/api/accounts/claude/login", "/api/accounts/claude/login/code", "/api/accounts/claude/login/cancel"}:
+                        from codex_claude_login import manager
+                        login = manager(runtime)
+                        if self.path.endswith("/code"):
+                            return self.send(login.code(body.get("request_id"), body.get("code")))
+                        if self.path.endswith("/cancel"):
+                            return self.send(login.cancel(body.get("request_id")))
+                        return self.send(login.start(body.get("account_key"), body.get("request_id")))
                     if self.path == "/api/accounts/discover":
                         return self.send(runtime.accounts.discover())
                     if self.path == "/api/accounts/register":

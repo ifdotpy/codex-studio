@@ -1,6 +1,7 @@
 import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import ClaudeProfile from "./ClaudeProfile";
+import ClaudeSignIn from "./ClaudeSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { accountLimits } from "../accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
@@ -306,6 +307,7 @@ export default function Accounts({
   const [error, setError] = useState("");
   const [home, setHome] = useState("");
   const [adding, setAdding] = useState(false);
+  const [claudeLogin, setClaudeLogin] = useState<Account | null>(null);
   const [transferChoice, setTransferChoice] = useState<{
     target: Account;
     sourceProvider: string;
@@ -316,7 +318,8 @@ export default function Accounts({
     null,
   );
   const actionLock = useRef(false);
-  const childModalOpen = opened || !!transferChoice || !!disconnectChoice;
+  const childModalOpen =
+    opened || !!transferChoice || !!disconnectChoice || !!claudeLogin;
   useEffect(() => {
     onModalOpenChange?.(childModalOpen);
     return () => onModalOpenChange?.(false);
@@ -362,6 +365,15 @@ export default function Accounts({
   }, [opened, state.refresh]);
   return (
     <>
+      {claudeLogin && (
+        <ClaudeSignIn
+          key={claudeLogin.id}
+          account={claudeLogin}
+          scope={state.scope}
+          onClose={() => setClaudeLogin(null)}
+          onReady={state.refresh}
+        />
+      )}
       <Menu
         position="bottom-end"
         width={300}
@@ -588,7 +600,19 @@ export default function Accounts({
                     <AccountCapacity account={account} opened={opened} />
                   )}
                   {account.provider === "claude" && (
-                    <ClaudeProfile account={account} onSaved={state.setData} />
+                    <>
+                      <Button
+                        variant="subtle"
+                        size="compact-xs"
+                        onClick={() => setClaudeLogin(account)}
+                      >
+                        Sign in again
+                      </Button>
+                      <ClaudeProfile
+                        account={account}
+                        onSaved={state.setData}
+                      />
+                    </>
                   )}
                   {state.data.supportsDisconnect && (
                     <Button

@@ -79,6 +79,11 @@ Accounts includes Claude profiles with separate executable and configuration pat
 custom models, launch options, and compaction limits. Sign in with the native CLI
 before adding a profile. Active sessions keep their current connection; profile
 changes apply when that connection is idle.
+For an expired Claude session, select **Sign in again** on its account in Accounts.
+Studio opens the native sign-in flow for that profile. Open the sign-in link,
+then paste the confirmation code in Studio. Use the displayed account email.
+Studio checks the account identity before it reports success. It does not resend
+failed chat messages.
 
 Codex model settings include a separate **Daybreak** switch. Studio checks the
 selected account's native model grants before it enables the mode. A change
