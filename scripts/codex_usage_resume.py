@@ -25,12 +25,24 @@ def _limit_error(error):
 
 
 def _reset_at(data):
-    limits = data.get('rateLimits') or {}
-    windows = [limits.get('primary'), limits.get('secondary')]
-    windows.extend(bucket.get(key) for bucket in (data.get('rateLimitsByLimitId') or {}).values()
-                   for key in ('primary', 'secondary'))
-    resets = [window['resetsAt'] for window in windows
-              if isinstance(window, dict) and isinstance(window.get('resetsAt'), (int, float))]
+    """When the exhausted windows reset. Windows with room left do not delay resume.
+
+    The latest reset among exhausted windows is when every blocking window has
+    room again. Without an exhausted window the snapshot names no reset time.
+    """
+    buckets = [data.get('rateLimits') or {}, *(data.get('rateLimitsByLimitId') or {}).values()]
+    resets = []
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        windows = [bucket.get(key) for key in ('primary', 'secondary')]
+        windows = [window for window in windows if isinstance(window, dict)]
+        full = [window for window in windows
+                if isinstance(window.get('usedPercent'), (int, float)) and window['usedPercent'] >= 100]
+        # A reached bucket without a full window blocks until its windows reset.
+        blocking = full or (windows if bucket.get('rateLimitReachedType') is not None else [])
+        resets.extend(window['resetsAt'] for window in blocking
+                      if isinstance(window.get('resetsAt'), (int, float)))
     return max(resets) if resets else None
 
 

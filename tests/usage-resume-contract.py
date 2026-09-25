@@ -67,6 +67,22 @@ class UsageResumeContract(unittest.TestCase):
             self.runtime.usage_resume_save(db, agent, resume)
             self.runtime.put(db, 'agents', agent)
 
+    def test_planned_time_uses_only_exhausted_windows(self):
+        from codex_usage_resume import _reset_at
+        now = 1_000_000
+        five_hour = {'usedPercent': 100, 'resetsAt': now + 3600}
+        weekly = {'usedPercent': 40, 'resetsAt': now + 5 * 86400}
+        data = {'rateLimits': {'primary': five_hour, 'secondary': weekly},
+                'rateLimitsByLimitId': {'codex': {'primary': five_hour, 'secondary': weekly},
+                                        'codex-other': {'secondary': {'usedPercent': 10, 'resetsAt': now + 9 * 86400}}}}
+        # A weekly window with room left must not push the planned resume days away.
+        self.assertEqual(_reset_at(data), now + 3600)
+        data['rateLimits']['secondary'] = {'usedPercent': 100, 'resetsAt': now + 5 * 86400}
+        self.assertEqual(_reset_at(data), now + 5 * 86400)
+        self.assertIsNone(_reset_at({'rateLimits': {'primary': {'usedPercent': 20, 'resetsAt': now + 60}}}))
+        reached = {'rateLimits': {'rateLimitReachedType': 'primary', 'primary': {'usedPercent': 99, 'resetsAt': now + 120}}}
+        self.assertEqual(_reset_at(reached), now + 120)
+
     def test_failed_turn_schedules_once_and_restart_keeps_identity(self):
         fixture.eventually(lambda: self.runtime.rate_limits_for('default').get('at'))
         reset = self.runtime.rate_limits_for('default')['data']['rateLimits']['primary']['resetsAt']
