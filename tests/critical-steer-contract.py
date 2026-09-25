@@ -454,6 +454,27 @@ class CriticalSteerContract(unittest.TestCase):
                 self.assertEqual(self.runtime.delivery_receipt(event_id)["status"], "uncertain")
                 self.assertEqual(len([p for method, p in self.server.calls if method == "turn/steer"]), before)
 
+    def test_reserved_live_steer_returns_to_queue_when_its_turn_ends_before_submission(self):
+        agent = self.lead()
+        self.queue_event(agent, "reserved-only", "child_result", "Response")
+        submit = self.runtime.pool.submit
+        # Hold the submission so that the turn ends between reservation and steer.
+        with patch.object(self.runtime.pool, "submit",
+                          side_effect=lambda fn, *args, **kwargs: None if fn == self.runtime.live_steer
+                          else submit(fn, *args, **kwargs)):
+            self.runtime.dispatch()
+        self.assertEqual(self.runtime.delivery_receipt("reserved-only")["status"], "dispatching")
+        self.server.notify({"method": "turn/completed", "params": {"threadId": "thread-1",
+                            "turn": {"id": "turn-1", "status": "completed"}}})
+        self.runtime.dispatch()
+        self.runtime.pool.submit(lambda: None).result(5)
+        self.assertNotIn("liveSteerAttempt", self.runtime.agent(agent))
+        fixture.eventually(lambda: self.runtime.delivery_receipt("reserved-only")["status"] == "delivered")
+        self.assertEqual([m for m, _ in self.server.calls if m == "turn/steer"], [])
+        starts = [p for m, p in self.server.calls if m == "turn/start"]
+        self.assertEqual(len(starts), 1)
+        self.assertIn("Response", json.dumps(starts[0]["input"]))
+
     def test_unknown_live_steer_is_uncertain_and_is_not_retried(self):
         agent = self.lead()
         self.queue_event(agent, "unknown-live", "child_result", "Response")

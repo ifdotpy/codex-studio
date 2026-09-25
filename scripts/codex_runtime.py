@@ -2775,6 +2775,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         attempt = a.pop("liveSteerAttempt", None)
         if not attempt:
             return
+        if not attempt.get("submitted"):
+            # Dispatch reserved the batch, but no request left Studio. Return it
+            # to the queue; an uncertain status would hold context repair.
+            for event_id in attempt.get("events", []):
+                db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id=? AND agent=? "
+                           "AND epoch=? AND turn_id=? AND status='dispatching'",
+                           (event_id, a["id"], attempt.get("epoch"), attempt.get("turnId")))
+            if attempt.get("events"):
+                db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?",
+                           (a["id"] + ":" + attempt["events"][0], a["id"]))
+            if (a.get("autoWake") and not a.get("nativeFailureHold")
+                    and a.get("status") not in {"running", "starting", "approval"}):
+                a["status"] = "queued"
+            self.changed.set()
+            return
         for event_id in attempt.get("events", []):
             db.execute("UPDATE runtime_events SET status='uncertain',error=? WHERE id=? AND agent=? "
                        "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
@@ -3467,7 +3482,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
                     return
                 steer_attempt = a.get("liveSteerAttempt") or {}
-                if (steer_attempt.get("turnId") == turn.get("id")
+                if steer_attempt.get("turnId") == turn.get("id") and not steer_attempt.get("submitted"):
+                    # The batch never left Studio. Return it before the pending check below.
+                    self.clear_live_steer_attempt(db, a, "The turn ended before steer submission")
+                elif (steer_attempt.get("turnId") == turn.get("id")
                         and steer_attempt.get("uncertain")):
                     # Keep the event uncertain. The turn ending does not prove
                     # whether the native server accepted the steer.
