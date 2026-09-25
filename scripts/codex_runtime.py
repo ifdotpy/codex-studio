@@ -1034,6 +1034,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             ids = {a["id"] for a in agents}
             self.loaded.difference_update(ids)
             for a in agents:
+                self.clear_live_steer_attempt(db, a, "The native connection changed before steer acknowledgement")
                 self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
                 if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
@@ -2469,13 +2470,31 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             by_id = {a["id"]: a for a in agents}
             from codex_context_repair import blocked as context_repair_blocked
             from codex_wakeups import pending_batch
+            for a in agents:
+                attempt = a.get("liveSteerAttempt") or {}
+                account_key = attempt.get("accountKey", a.get("accountKey", "default"))
+                connection_id = attempt.get("connectionId")
+                stale_attempt = bool(attempt) and (
+                    attempt.get("epoch") != a["epoch"]
+                    or attempt.get("threadId") != a.get("threadId")
+                    or attempt.get("accountKey", account_key) != a.get("accountKey", "default")
+                    or (connection_id is not None
+                        and self.connection_ids.get(account_key) != connection_id)
+                    or attempt.get("turnId") != a.get("turnId")
+                    or not a.get("inFlight")
+                )
+                if stale_attempt:
+                    self.clear_live_steer_attempt(
+                        db, a, "The active turn or native connection changed before steer acknowledgement")
+                    self.put(db, "agents", a)
             for pending_agent in pending_agents:
                 a = by_id.get(pending_agent["agent"])
                 if (not a or not a.get("inFlight") or not a.get("turnId") or not a.get("autoWake")
                         or a.get("deletedAt") or a.get("nativeReview") or a.get("nativeFailureHold")
                         or a.get("accountTransferId") or context_repair_blocked(a)
                         or a.get("status") != "running" or safety_retry_active(a)
-                        or native_thread_block(a) or (a.get("liveSteerAttempt") or {}).get("id")):
+                        or native_thread_block(a) or (a.get("liveSteerAttempt") or {}).get("id")
+                        or a.get("liveSteerRejectedTurnId") == a.get("turnId")):
                     continue
                 events = [row for row in pending_batch(self, db, a) if row["kind"] in live_kinds]
                 if not events:
@@ -2742,7 +2761,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                    (a["id"] + ":" + attempt["events"][0], a["id"]))
         a.pop("liveSteerAttempt", None)
         if a.get("turnId") == attempt["turnId"]:
-            a.update(inFlight=False, turnId=None, status="queued")
+            a["liveSteerRejectedTurnId"] = attempt["turnId"]
         self.put(db, "agents", a)
         self.changed.set()
         return True
@@ -2751,6 +2770,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock, self.db() as db:
             a = self.agent(agent_id, db)
             self.live_steer_requeue(db, a, attempt, error)
+
+    def clear_live_steer_attempt(self, db, a, error):
+        attempt = a.pop("liveSteerAttempt", None)
+        if not attempt:
+            return
+        for event_id in attempt.get("events", []):
+            db.execute("UPDATE runtime_events SET status='uncertain',error=? WHERE id=? AND agent=? "
+                       "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
+                       (error, event_id, a["id"], attempt.get("epoch"), attempt.get("turnId")))
 
     def live_steer_error(self, agent_id, attempt, error, *, uncertain):
         with self.lock, self.db() as db:
@@ -2767,6 +2795,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current["error"] = str(error)
                 current["uncertain"] = True
                 a["liveSteerAttempt"] = current
+                if (a.get("turnId") != attempt.get("turnId") or not a.get("inFlight")
+                        or a["epoch"] != attempt.get("epoch")
+                        or a.get("threadId") != attempt.get("threadId")):
+                    self.clear_live_steer_attempt(
+                        db, a, "The active turn ended before steer acknowledgement")
             else:
                 a.pop("liveSteerAttempt", None)
             self.put(db, "agents", a)
@@ -3433,6 +3466,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 completion = a["id"] + ":" + str(turn.get("id"))
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
                     return
+                steer_attempt = a.get("liveSteerAttempt") or {}
+                if (steer_attempt.get("turnId") == turn.get("id")
+                        and steer_attempt.get("uncertain")):
+                    # Keep the event uncertain. The turn ending does not prove
+                    # whether the native server accepted the steer.
+                    self.clear_live_steer_attempt(
+                        db, a, "The turn ended before steer acknowledgement")
+                if a.get("liveSteerRejectedTurnId") == turn.get("id"):
+                    a.pop("liveSteerRejectedTurnId", None)
                 known_capacity_source = bool(a.get("turnId") and a["turnId"] == turn.get("id"))
                 advance_native_status(a, method, p)
                 if turn.get("status") == "failed":

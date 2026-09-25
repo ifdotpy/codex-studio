@@ -369,17 +369,90 @@ class CriticalSteerContract(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in item["inputs"]], ["live-message", "live-child"])
 
     def test_ended_turn_rejection_returns_messages_to_normal_turn_start(self):
-        agent = self.lead()
+        parent = self.lead()
+        child = self.runtime.create(
+            {"name": "Worker", "cwd": str(self.root), "prompt": "Do the work"},
+            parent=parent,
+            defer=True,
+        )
+        agent = child["id"]
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(agent, db)
+            a.update(autoWake=True, status="running", threadId="thread-worker",
+                     turnId="turn-worker-old", inFlight=True)
+            self.runtime.put(db, "agents", a)
         self.queue_event(agent, "ended-live", "work_decision", "Review decision")
         self.server.rejection = {"code": -32600, "message": "no active turn to steer"}
         self.runtime.dispatch()
-        fixture.eventually(lambda: self.runtime.delivery_receipt("ended-live")["status"] == "delivered")
+        fixture.eventually(lambda: self.runtime.delivery_receipt("ended-live")["status"] == "pending")
         self.assertEqual(self.metadata("ended-live")["delivery"], "queue")
         self.assertIn("steerRejected", self.metadata("ended-live"))
         self.assertEqual(len([p for method, p in self.server.calls if method == "turn/steer"]), 1)
+        current = self.runtime.agent(agent)
+        self.assertEqual((current["inFlight"], current["turnId"], current["status"]),
+                         (True, "turn-worker-old", "running"))
+        self.assertEqual(self.runtime.agent(agent).get("liveSteerRejectedTurnId"), "turn-worker-old")
+
+        # The native completion can arrive after the rejected steer response.
+        self.server.rejection = None
+        self.server.notify({"method": "turn/completed", "params": {"threadId": "thread-worker",
+                            "turn": {"id": "turn-worker-old", "status": "completed"}}})
+        fixture.eventually(lambda: len([p for method, p in self.server.calls if method == "turn/start"]) == 1)
         starts = [p for method, p in self.server.calls if method == "turn/start"]
         self.assertEqual(len(starts), 1)
         self.assertIn("Review decision", starts[0]["input"][0]["text"])
+        self.assertEqual([e for e in self.runtime.snapshot()["events"] if e["kind"] == "child_result"], [])
+        new_turn = self.runtime.agent(agent)["turnId"]
+        self.server.complete("thread-worker", new_turn, "Final worker result")
+        fixture.eventually(lambda: len([e for e in self.runtime.snapshot()["events"]
+                                       if e["kind"] == "child_result"]) == 1)
+        with self.runtime.db() as db:
+            result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchall()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(json.loads(result[0]["text"])["result"], "Final worker result")
+        self.assertEqual(len([p for method, p in self.server.calls if method == "turn/start"]), 1)
+
+    def test_uncertain_live_steer_is_released_when_its_turn_completes(self):
+        agent = self.lead()
+        self.queue_event(agent, "uncertain-turn", "child_result", "Response")
+        self.server.unknown_steer = True
+        self.runtime.dispatch()
+        fixture.eventually(lambda: self.runtime.delivery_receipt("uncertain-turn")["status"] == "uncertain")
+        self.assertTrue(self.runtime.agent(agent).get("liveSteerAttempt"))
+
+        self.server.notify({"method": "turn/completed", "params": {"threadId": "thread-1",
+                            "turn": {"id": "turn-1", "status": "completed"}}})
+        current = self.runtime.agent(agent)
+        self.assertNotIn("liveSteerAttempt", current)
+        self.assertEqual(self.runtime.delivery_receipt("uncertain-turn")["status"], "uncertain")
+        self.runtime.dispatch()
+        self.runtime.pool.submit(lambda: None).result(5)
+        self.assertEqual(len([p for method, p in self.server.calls if method == "turn/steer"]), 1)
+
+    def test_uncertain_live_steer_is_released_when_its_epoch_thread_or_connection_changes(self):
+        for change in ("epoch", "thread", "connection"):
+            with self.subTest(change=change):
+                agent = self.lead()
+                event_id = "uncertain-" + change
+                self.queue_event(agent, event_id, "child_result", "Response")
+                self.server.unknown_steer = True
+                self.runtime.dispatch()
+                fixture.eventually(lambda: self.runtime.delivery_receipt(event_id)["status"] == "uncertain")
+                with self.runtime.lock, self.runtime.db() as db:
+                    a = self.runtime.agent(agent, db)
+                    if change == "epoch":
+                        a["epoch"] += 1
+                    elif change == "thread":
+                        a["threadId"] = "replacement-thread"
+                    else:
+                        self.runtime.connection_ids["default"] = "replacement-connection"
+                    self.runtime.put(db, "agents", a)
+                before = len([p for method, p in self.server.calls if method == "turn/steer"])
+                self.runtime.dispatch()
+                self.runtime.pool.submit(lambda: None).result(5)
+                self.assertNotIn("liveSteerAttempt", self.runtime.agent(agent))
+                self.assertEqual(self.runtime.delivery_receipt(event_id)["status"], "uncertain")
+                self.assertEqual(len([p for method, p in self.server.calls if method == "turn/steer"]), before)
 
     def test_unknown_live_steer_is_uncertain_and_is_not_retried(self):
         agent = self.lead()
