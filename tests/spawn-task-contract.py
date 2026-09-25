@@ -147,6 +147,33 @@ class SpawnTask(unittest.TestCase):
         claimed = self.spawn('owner-c', task_id=self.task['id'])
         self.assertEqual(self.work()['owner'], claimed['id'])
 
+    def test_failure_releases_before_parent_event_and_allows_immediate_respawn(self):
+        worker = self.spawn('failed-owner', task_id=self.task['id'])
+        worker = self.rt.agent(worker['id'])
+        attempt = {'id': 'failed-attempt', 'epoch': worker['epoch'], 'accountKey': 'default',
+                   'threadId': worker.get('threadId'), 'events': [], 'submitted': False}
+        stored = self.rt.agent(worker['id'])
+        stored.update(startAttempt=attempt, status='starting', inFlight=True)
+        with self.rt.lock, self.rt.db() as db:
+            self.rt.put(db, 'agents', stored)
+        self.rt.start_error(worker['id'], attempt['id'], RuntimeError('native start failed'))
+        released = self.work()
+        self.assertIsNone(released['owner'])
+        self.assertEqual(released['status'], 'ready')
+        with self.rt.db() as db:
+            events = [row[0] for row in db.execute("SELECT kind FROM runtime_events WHERE agent=? "
+                "AND kind IN ('work_released','child_result') ORDER BY rowid", (self.lead['id'],))]
+        self.assertEqual(events, ['work_released', 'child_result'])
+        replacement = self.spawn('replacement', task_id=self.task['id'])
+        self.assertEqual(self.work()['owner'], replacement['id'])
+
+    def test_deleted_worker_releases_work_in_delete_transaction(self):
+        worker = self.spawn('deleted-owner', task_id=self.task['id'])
+        self.rt.delete_conversation(worker['id'])
+        released = self.work()
+        self.assertIsNone(released['owner'])
+        self.assertEqual(released['status'], 'ready')
+
 
     def test_prepare_works_in_place_when_the_folder_left_git(self):
         repo = Path(self.tmp.name) / 'gone'

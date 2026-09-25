@@ -94,6 +94,8 @@ class EfficiencyMixin:
         return {k: task.get(k) for k in ('id', 'title', 'owner', 'status', 'version', 'blockedBy')}
 
     def model_directory(self, actor_id, name, args):
+        if name == 'orchestration_status' and 'include_finished' in args and type(args['include_finished']) is not bool:
+            raise ValueError('include_finished must be a boolean')
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             agents = [a for a in self.records(db, 'agents') if not a.get('deletedAt')]
@@ -124,11 +126,25 @@ class EfficiencyMixin:
                 return result
             team = [a for a in agents if a['rootId'] == actor['rootId']]
             ids = {a['id'] for a in team}
-            records = [{**{k: a.get(k) for k in ('id', 'name', 'status', 'inFlight', 'parentId')}, 'kind': 'agent',
-                        'error': clip(a.get('error') or '', 600)} for a in team]
-            records += [{**{k: m.get(k) for k in ('id', 'agent', 'status', 'exitCode')}, 'kind': 'monitor',
-                         'error': clip(m.get('error') or '', 600)} for m in self.recent_monitors(db, actor["rootId"]) if m['agent'] in ids]
+            terminal_agents = {'completed', 'failed', 'interrupted'}
+            terminal_monitors = {'completed', 'failed', 'cancelled', 'lost'}
+            def agent_record(a):
+                return {**{k: a.get(k) for k in ('id', 'name', 'status', 'inFlight', 'parentId')}, 'kind': 'agent',
+                        'error': clip(a.get('error') or '', 600)}
+            def monitor_record(m):
+                return {**{k: m.get(k) for k in ('id', 'agent', 'status', 'exitCode')}, 'kind': 'monitor',
+                        'error': clip(m.get('error') or '', 600)}
+            active_team = [a for a in team if a['status'] not in terminal_agents]
+            from codex_workspace import active_monitors
+            records = [agent_record(a) for a in active_team]
+            records += [monitor_record(m) for m in active_monitors(db) if m['agent'] in ids]
             records.sort(key=lambda r: (r['kind'], r['id']))
+            finished_counts = {'agents': sum(a['status'] in terminal_agents for a in team), 'monitors': 0}
+            marks = ','.join('?' for _ in terminal_monitors)
+            finished_counts['monitors'] = db.execute(
+                "SELECT COUNT(*) FROM runtime_monitors WHERE json_extract(record,'$.agent') IN (" +
+                ','.join('?' for _ in ids) + ") AND json_extract(record,'$.status') IN (" + marks + ")",
+                (*sorted(ids), *sorted(terminal_monitors))).fetchone()[0]
             defaults = self.worker_defaults(self.agent(actor['rootId'], db))
             from codex_native_errors import native_thread_block
             from codex_safety_buffering import active as safety_retry_active
@@ -168,7 +184,8 @@ class EfficiencyMixin:
                         'configure': {'command': 'codex-control configure ' + actor['rootId'] + ' --concurrency N',
                                       'minimum': 1, 'maximum': 64,
                                       'note': 'Change team capacity only within user authorization. The global server limit still applies.'}}
-            revision = digest([records, defaults, capacity])
+            counts = {state: sum(a['status'] == state for a in team) for state in sorted({a['status'] for a in team})}
+            revision = digest([records, finished_counts, counts, defaults, capacity])
             db.execute('CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))')
             previous = db.execute('SELECT record FROM runtime_model_status WHERE agent=? AND revision=?',
                                   (actor_id, args.get('since_revision'))).fetchone()
@@ -177,12 +194,48 @@ class EfficiencyMixin:
             changes = [r for k, r in now.items() if old.get(k) != r]
             db.execute('INSERT OR REPLACE INTO runtime_model_status VALUES (?,?,?,?)', (actor_id, revision, time.time(), packed(records)))
             db.execute('DELETE FROM runtime_model_status WHERE agent=? AND revision NOT IN (SELECT revision FROM runtime_model_status WHERE agent=? ORDER BY at DESC LIMIT 8)', (actor_id, actor_id))
-            return {'apiVersion': 2, 'revision': revision, 'reset': previous is None, 'unchanged': previous is not None and args.get('since_revision') == revision,
-                    'counts': {state: sum(a['status'] == state for a in team) for state in sorted({a['status'] for a in team})},
+            result = {'apiVersion': 2, 'revision': revision, 'reset': previous is None, 'unchanged': previous is not None and args.get('since_revision') == revision,
+                    'counts': counts,
                     'changes': changes, 'removed': sorted(old.keys() - now.keys()),
+                    'finishedCounts': finished_counts,
                     'workerDefaults': defaults,
                     'capacity': capacity,
                     'help': 'Use orchestration_context for tools, profiles or monitor details. Use orchestration_peers for rooms.'}
+            if args.get('include_finished') is True:
+                finished_agents = [agent_record(a) for a in team if a['status'] in terminal_agents]
+                finished_agents.sort(key=lambda record: record['id'])
+                limit = args.get('limit', 20)
+                if type(limit) is not int or not 1 <= limit <= 50:
+                    raise ValueError('limit must be 1 to 50')
+                offset = 0
+                if args.get('cursor'):
+                    try:
+                        cursor = json.loads(base64.urlsafe_b64decode(args['cursor']))
+                        offset = cursor['offset']
+                        if type(offset) is not int or offset < 0 or cursor['revision'] != revision:
+                            raise ValueError()
+                    except (ValueError, TypeError, KeyError):
+                        raise ValueError('List changed or cursor is invalid. Read the first page again.') from None
+                total = finished_counts['agents'] + finished_counts['monitors']
+                if offset > total:
+                    raise ValueError('List changed or cursor is invalid. Read the first page again.')
+                agent_page = finished_agents[offset:offset + limit]
+                monitor_offset = max(0, offset - len(finished_agents))
+                remaining = limit - len(agent_page)
+                monitor_rows = []
+                if remaining and monitor_offset < finished_counts['monitors']:
+                    monitor_rows = db.execute(
+                        "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.agent') IN (" +
+                        ','.join('?' for _ in ids) + ") AND json_extract(record,'$.status') IN (" + marks +
+                        ") ORDER BY id LIMIT ? OFFSET ?",
+                        (*sorted(ids), *sorted(terminal_monitors), remaining, monitor_offset)).fetchall()
+                page_items = agent_page + [monitor_record(json.loads(row[0])) for row in monitor_rows]
+                next_offset = offset + len(page_items)
+                next_cursor = (base64.urlsafe_b64encode(packed({'offset': next_offset, 'revision': revision}).encode()).decode()
+                               if next_offset < total else None)
+                result['finished'] = {'apiVersion': 2, 'items': page_items, 'total': total,
+                                      'revision': revision, 'nextCursor': next_cursor}
+            return result
 
     def model_tool_result(self, actor, key, result):
         from codex_agent_modes import tool_mode_context

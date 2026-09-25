@@ -36,6 +36,26 @@ class ContextWait(f.NativeActionRepair):
     def clear_monitor(self):
         self.put('monitors', {'id':'exact-active-monitor','agent':self.a['id'],'status':'completed'})
 
+    def uncertain_input(self, message_id, turns=None, *, unreadable=False):
+        self.runtime.send(self.a['id'], 'Keep this accepted input.', message_id=message_id)
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='uncertain',error='Native response was lost' WHERE id=?", (message_id,))
+        attempt = {'id':'uncertain-attempt', 'epoch':self.a['epoch'], 'threadId':self.tid,
+                   'accountKey':'default', 'events':[message_id], 'submitted':False}
+        self.agent_update(self.a, status='queued', inFlight=False, startAttempt=attempt,
+            contextRepairWait={'source':repair._identity({**self.a,'startAttempt':attempt}), 'events':[message_id],
+                'error':'Context repair waits for a confirmed input receipt: ' + message_id})
+        original = self.server.call
+        def call(method, params, timeout=10):
+            if method == 'thread/read':
+                if unreadable:
+                    raise RuntimeError('history read is offline')
+                return {'thread':{'id':self.tid,'status':{'type':'idle'}}}
+            if method == 'thread/turns/list':
+                return {'data':turns or [], 'nextCursor':None}
+            return original(method, params, timeout)
+        self.server.call = call
+
     def due(self):
         a = self.runtime.agent(self.a['id'])
         a['contextRepairWait']['nextCheckAt'] = 0
@@ -86,6 +106,34 @@ class ContextWait(f.NativeActionRepair):
         starts = [p for m,p in self.server.calls if m == 'turn/start']
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['clientUserMessageId'], 'wait-user')
+
+    def test_recover_marks_native_message_delivered_with_exact_turn(self):
+        self.uncertain_input('recover-present', [{'id':'native-turn','clientUserMessageId':'recover-present'}])
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'], [{'id':'recover-present','decision':'delivered','turnId':'native-turn'}])
+        with self.runtime.db() as db:
+            row = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',('recover-present',)).fetchone()
+        self.assertEqual(tuple(row), ('delivered','native-turn'))
+
+    def test_recover_requeues_absent_idle_input_once(self):
+        self.uncertain_input('recover-absent')
+        first = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        second = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(first['inputs'], [{'id':'recover-absent','decision':'not_delivered'}])
+        self.assertEqual(second['status'], 'not_needed')
+        with self.runtime.db() as db:
+            row = db.execute('SELECT status FROM runtime_events WHERE id=?',('recover-absent',)).fetchone()
+        self.assertEqual(row[0], 'pending')
+
+    def test_unreadable_history_keeps_input_uncertain_and_waiting(self):
+        self.uncertain_input('recover-offline', unreadable=True)
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['status'], 'waiting')
+        self.assertIn('offline', result['reason'])
+        with self.runtime.db() as db:
+            row = db.execute('SELECT status FROM runtime_events WHERE id=?',('recover-offline',)).fetchone()
+        self.assertEqual(row[0], 'uncertain')
+        self.assertTrue(self.runtime.agent(self.a['id']).get('contextRepairWait'))
 
     def command(self, **changes):
         record = {'id':'exact-command', 'agent':self.a['id'], 'kind':'command',

@@ -171,7 +171,9 @@ An orchestrator's response cannot replace required user approval.
 
 ## State and output
 
-Use `since_revision` with `orchestration_status` when you need changes for a decision.
+`orchestration_status` returns active agents and monitors by default, with counts of finished items.
+Set `include_finished=true` to read finished items in pages with `limit` and `cursor`.
+Use `since_revision` when you need changes for a decision.
 Use `orchestration_context` for the shared plan, complaints, profiles, or tool schemas.
 The runtime supplies changed plan and complaint text automatically. An unchanged
 complaint reminder still requires a response. Read context when it is needed for a decision.

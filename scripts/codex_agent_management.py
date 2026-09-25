@@ -4,7 +4,7 @@ import time
 
 def management_tools(tool, text):
     return [tool('orchestration_agent_manage',
-        'Manage your own descendant workers. inspect returns archive blockers. recover reconciles an existing native turn without replaying input. '
+        'Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. '
         'archive hides an inactive worker and preserves its history and files; it refuses active or uncertain work. '
         'restore returns an archived worker paused; use orchestration_send to resume. list_archived is paged. Only the lead may use this tool.',
         {'action': {'type': 'string', 'enum': ['inspect', 'recover', 'archive', 'restore', 'list_archived']},
@@ -136,8 +136,18 @@ def manage_agent(rt, actor_id, args, epoch=None):
             target.update(deletedAt=at, autoWake=False, status='paused', epoch=target['epoch'] + 1)
             target['agentArchive'] = {'at': at, 'by': actor_id, 'reason': reason.strip(), 'epoch': target['epoch']}
             rt.put(db, 'agents', target)
+            if hasattr(rt, 'release_failed_work'):
+                rt.release_failed_work(db, rt.records(db, 'agents'), force=True)
             return {'status': 'archived', 'agent': _brief(target)}
     # Native reads must not hold the runtime lock or a SQLite transaction.
+    input_recovery = None
+    if action == 'recover':
+        from codex_context_repair import recover_unconfirmed_inputs
+        input_recovery = recover_unconfirmed_inputs(rt, target['id'])
+        if input_recovery.get('status') == 'waiting':
+            return {'status': 'waiting', 'recovery': {'status': 'waiting'},
+                    'inputRecovery': input_recovery, 'requests': request_recovery,
+                    'next': 'Native input history is unavailable or the thread is active. Keep the input waiting and recover again later.'}
     result = rt.reconcile_turn(target['id'])
-    return {'status': 'checked', 'recovery': result, 'requests': request_recovery,
+    return {'status': 'checked', 'recovery': result, 'inputRecovery': input_recovery, 'requests': request_recovery,
             'next': 'Inspect the worker. Use orchestration_send for an explicit continuation; never replay unknown mutations'}

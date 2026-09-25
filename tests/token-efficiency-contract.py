@@ -91,15 +91,28 @@ class EfficiencyContract(unittest.TestCase):
         self.assertNotIn('SECRET', packed(status))
         self.assertNotIn('Private evidence', packed(status))
         self.assertEqual(len(status['changes']), 3)
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'monitors', {'id': 'done', 'agent': worker['id'], 'status': 'completed', 'created': time.time()})
+        status = self.runtime.model_directory(lead['id'], 'orchestration_status', {})
+        self.assertNotIn('monitor:done', [item['kind'] + ':' + item['id'] for item in status['changes']])
+        self.assertEqual(status['finishedCounts']['monitors'], 1)
+        page = self.runtime.model_directory(lead['id'], 'orchestration_status', {'include_finished': True, 'limit': 1})['finished']
+        self.assertEqual(page['total'], 1)
+        self.assertEqual(page['items'][0]['id'], 'done')
         same = self.runtime.model_directory(lead['id'], 'orchestration_status', {'since_revision': status['revision']})
         self.assertTrue(same['unchanged']); self.assertEqual(same['changes'], [])
         self.agent_update(worker, status='failed', error='Specific cause')
         changed = self.runtime.model_directory(lead['id'], 'orchestration_status', {'since_revision': status['revision']})
-        self.assertEqual(len(changed['changes']), 1)
-        self.assertEqual(changed['changes'][0]['error'], 'Specific cause')
+        self.assertEqual(changed['changes'], [])
+        self.assertIn('agent:' + worker['id'], changed['removed'])
+        finished = self.runtime.model_directory(lead['id'], 'orchestration_status', {'include_finished': True, 'limit': 1})['finished']
+        self.assertTrue(finished['nextCursor'])
+        next_page = self.runtime.model_directory(lead['id'], 'orchestration_status',
+            {'include_finished': True, 'limit': 1, 'cursor': finished['nextCursor']})['finished']
+        self.assertEqual(next_page['items'][0]['id'], 'done')
         self.agent_update(worker, deletedAt=time.time())
         removed = self.runtime.model_directory(lead['id'], 'orchestration_status', {'since_revision': changed['revision']})
-        self.assertIn('agent:' + worker['id'], removed['removed'])
+        self.assertNotIn('agent:' + worker['id'], [item['kind'] + ':' + item['id'] for item in removed['changes']])
         peers = self.runtime.model_directory(other['id'], 'orchestration_peers', {})
         self.assertEqual([a['id'] for a in peers['items']], [other['id']])
         self.assertNotIn('private:', packed(peers))

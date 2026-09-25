@@ -109,6 +109,121 @@ def _unsettled_inputs(db, a, attempt_id):
     return historical
 
 
+def recover_unconfirmed_inputs(rt, agent_id):
+    """Resolve only exact pending input identities from native thread history."""
+    with rt.lock, rt.db() as db:
+        a = rt.agent(agent_id, db)
+        if a.get('deletedAt') or not a.get('threadId'):
+            return {'status': 'waiting', 'reason': 'The native thread is unavailable', 'inputs': []}
+        wait = a.get('contextRepairWait') or {}
+        if not wait:
+            return {'status': 'not_needed', 'inputs': []}
+        if wait.get('source') != _identity(a):
+            return {'status': 'waiting', 'reason': 'The worker changed since the input became uncertain', 'inputs': []}
+        prefix = 'Context repair waits for a confirmed input receipt: '
+        error = wait.get('error') or ''
+        if not error.startswith(prefix):
+            return {'status': 'not_needed', 'inputs': []}
+        reported_id = error[len(prefix):]
+        attempt = a.get('startAttempt') or {}
+        if reported_id not in attempt.get('events', []):
+            return {'status': 'waiting', 'reason': 'The unconfirmed input is outside the current start attempt', 'inputs': []}
+        events = db.execute("SELECT id,status FROM runtime_events WHERE id=? AND agent=? AND epoch=? "
+            "AND status IN ('reserved','dispatching','uncertain')", (reported_id, agent_id, a['epoch'])).fetchall()
+        if not events:
+            return {'status': 'not_needed', 'inputs': []}
+        identity = (a['epoch'], a.get('threadId'), a.get('accountKey', 'default'))
+        server = rt.servers.get(identity[2])
+        connection_id = rt.connection_ids.get(identity[2])
+    if server is None:
+        return {'status': 'waiting', 'reason': 'The owning native account is offline',
+                'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
+    try:
+        thread = server.call('thread/read', {'threadId': identity[1], 'includeTurns': False}, timeout=10).get('thread')
+        if not isinstance(thread, dict) or thread.get('id') != identity[1]:
+            raise ValueError('Native thread identity did not match')
+        state = (thread.get('status') or {}).get('type')
+        turns, cursor, seen = [], None, set()
+        for _ in range(100):
+            params = {'threadId': identity[1], 'limit': 100, 'sortDirection': 'asc', 'itemsView': 'full'}
+            if cursor:
+                params['cursor'] = cursor
+            page = server.call('thread/turns/list', params, timeout=10)
+            turns.extend(page.get('data', []))
+            cursor = page.get('nextCursor')
+            if not cursor:
+                break
+            if cursor in seen:
+                raise ValueError('Native history repeated its page cursor')
+            seen.add(cursor)
+        else:
+            raise ValueError('Native history has too many pages')
+    except Exception as error:
+        return {'status': 'waiting', 'reason': 'Native history read failed: ' + str(error),
+                'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
+    found = {}
+    for turn in turns:
+        message_id = turn.get('clientUserMessageId')
+        if isinstance(message_id, str):
+            found[message_id] = turn.get('id')
+        for item in turn.get('items', []):
+            item_id = item.get('id')
+            if isinstance(item_id, str):
+                found.setdefault(item_id, turn.get('id'))
+    decisions = []
+    for row in events:
+        if row['id'] in found and found[row['id']]:
+            decisions.append({'id': row['id'], 'decision': 'delivered', 'turnId': found[row['id']]})
+        elif row['id'] in found:
+            decisions.append({'id': row['id'], 'decision': 'waiting', 'reason': 'The matching native turn has no ID'})
+        elif state in {'idle', 'notLoaded'}:
+            decisions.append({'id': row['id'], 'decision': 'not_delivered'})
+        else:
+            decisions.append({'id': row['id'], 'decision': 'waiting'})
+    with rt.lock, rt.db() as db:
+        current = rt.agent(agent_id, db)
+        if ((current['epoch'], current.get('threadId'), current.get('accountKey', 'default')) != identity
+                or rt.connection_ids.get(identity[2]) != connection_id
+                or (current.get('contextRepairWait') or {}).get('error') != error
+                or (current.get('contextRepairWait') or {}).get('source') != _identity(current)
+                or not current.get('autoWake')):
+            return {'status': 'waiting', 'reason': 'The worker changed during native history recovery',
+                    'inputs': [{'id': item['id'], 'decision': 'waiting'} for item in decisions]}
+        for item in decisions:
+            row = db.execute("SELECT status FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
+                             (item['id'], agent_id, identity[0])).fetchone()
+            if not row or row['status'] not in {'reserved', 'dispatching', 'uncertain'}:
+                item['decision'] = 'waiting'
+                item['reason'] = 'The input changed during native history recovery'
+                continue
+            if item['decision'] == 'delivered':
+                db.execute("UPDATE runtime_events SET status='delivered',turn_id=?,error=NULL WHERE id=? AND agent=? "
+                           "AND epoch=? AND status IN ('reserved','dispatching','uncertain')",
+                           (item['turnId'], item['id'], agent_id, identity[0]))
+            elif item['decision'] == 'not_delivered':
+                db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id=? AND agent=? "
+                           "AND epoch=? AND status IN ('reserved','dispatching','uncertain')",
+                           (item['id'], agent_id, identity[0]))
+        delivered = next((item for item in decisions if item['decision'] == 'delivered'), None)
+        if delivered:
+            current_attempt = current.get('startAttempt') or {}
+            if reported_id in current_attempt.get('events', []):
+                current_attempt.update(submitted=True, turnId=delivered['turnId'], observedTurnId=delivered['turnId'])
+                current.update(startAttempt=current_attempt, status='running', inFlight=True,
+                               turnId=delivered['turnId'])
+        if all(item['decision'] != 'waiting' for item in decisions):
+            current.pop('contextRepairWait', None)
+            if (current.get('error') or '').startswith('Context repair waits for a confirmed input receipt:'):
+                current['error'] = None
+            if not delivered:
+                current.update(status='queued', inFlight=False)
+            rt.put(db, 'agents', current)
+            rt.changed.set()
+    return {'status': 'resolved' if all(item['decision'] != 'waiting' for item in decisions) else 'waiting',
+            'reason': None if all(item['decision'] != 'waiting' for item in decisions) else 'Native thread is active; absent inputs remain uncertain',
+            'inputs': decisions}
+
+
 def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
     from codex_native_errors import assert_native_thread_open
     from codex_safety_buffering import active as safety_active

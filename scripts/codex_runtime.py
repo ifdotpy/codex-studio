@@ -113,8 +113,11 @@ TOOLS = [
          "or explicitly resume its authorized work. By default, steer the active turn or start a turn when idle. "
          "Completion returns to its parent automatically. Review corrections travel through orchestration_task action=reject.",
          {"agent_id": TEXT, "text": TEXT}, ["agent_id", "text"]),
-    tool("orchestration_status", "Read compact team and monitor states. since_revision returns only changes and removals. "
-         "Use for a decision, not repeated waiting: completion events arrive automatically.", {"since_revision": TEXT}),
+    tool("orchestration_status", "Read active team and monitor states, plus counts of finished items. Finished agents and monitors are omitted by default. "
+         "Set include_finished=true to read finished items in bounded pages with limit and cursor. since_revision returns only changes and removals. "
+         "Use for a decision, not repeated waiting: completion events arrive automatically.",
+         {"since_revision": TEXT, "include_finished": {"type": "boolean"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_monitor", "Run a command under this thread's sandbox and wait "
          "outside the model. Returns a watch id immediately. At process exit you receive "
          "one event with exit code, bounded output and log path. Finish your turn while waiting. "
@@ -1566,6 +1569,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if a["id"] in ids:
                     a.update(deletedAt=a.get("deletedAt") or time.time(), autoWake=False)
                     self.put(db, "agents", a)
+            self.release_failed_work(db, self.records(db, "agents"), force=True)
             for agent_id in ids:
                 voice.delete_agent(agent_id, db)
         self.stop(key, True, "Conversation deleted")
@@ -2876,7 +2880,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["inFlight"] = False
                 if current_epoch and a["autoWake"]:
                     a.update(status="failed", error=str(error))
-                    self.parent_event(db, a, "start-failed:" + (attempt["events"][0] if attempt["events"] else attempt["id"]), str(error))
             self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
@@ -2884,10 +2887,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "failed" if current_epoch else "cancelled")
                 db.execute("UPDATE runtime_events SET status=?, error=? WHERE id=? "
                            "AND status IN ('pending','reserved','dispatching','uncertain')", (status, str(error), event_id))
+            if current_epoch and not unknown and a.get("status") == "failed":
+                self.parent_event(db, a, "start-failed:" + (attempt["events"][0] if attempt["events"] else attempt["id"]), str(error))
         self.changed.set()
 
     def parent_event(self, db, a, event_id, text):
         if a.get("parentId") and a["autoWake"]:
+            if a.get("deletedAt") or a.get("status") == "failed":
+                self.release_failed_work(db, self.records(db, "agents"), force=True)
             parent = self.agent(a["parentId"], db)
             key = "child:" + a["id"] + ":" + event_id
             self.enqueue(db, parent, "child_result", json.dumps({"agent_id": a["id"],
@@ -3269,6 +3276,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["status"] = "waiting"
                 if (a["status"] != "waiting" and a.get("turnEpoch", a["epoch"]) == a["epoch"]
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
+                    if a.get("status") == "failed":
+                        self.put(db, "agents", a)
                     self.parent_event(db, a, turn.get("id", "unknown"),
                                       json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
                 if turn.get("status") == "completed" and a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
