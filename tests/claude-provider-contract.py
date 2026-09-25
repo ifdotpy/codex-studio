@@ -69,6 +69,20 @@ class ClaudeProvider(unittest.TestCase):
         self.runtime.limits('claude-local')
         self.assertIn('claude-local',self.runtime.servers)
 
+    def test_queued_child_result_steers_through_selected_claude_account(self):
+        a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
+        with self.runtime.lock, self.runtime.db() as db:
+            current=self.runtime.agent(a['id'],db)
+            current.update(inFlight=True,turnId='active-turn',status='running')
+            self.runtime.put(db,'agents',current)
+            self.runtime.enqueue(db,current,'child_result','Claude child result','claude-live-child')
+        self.runtime.dispatch()
+        f.f.eventually(lambda:self.runtime.delivery_receipt('claude-live-child')['status']=='delivered')
+        server=self.runtime.servers['claude-local']
+        calls=[params for method,params in server.calls if method=='turn/steer']
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0]['expectedTurnId'],'active-turn')
+
     def test_monitor_approval_sandbox_input_and_cancel_use_claude_connection(self):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
         with self.runtime.lock, self.runtime.db() as db:

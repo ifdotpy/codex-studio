@@ -2406,6 +2406,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         session_names(self).tick()
         from codex_team_isolation import cancel_pending
         decoded = []
+        pending_notices = []
 
         def current_agents(db):
             # Decoding every agent record costs tens of milliseconds under the
@@ -2432,8 +2433,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             from codex_browser_recovery import tick as browser_recovery_tick
             browser_recovery_tick(self, db, agents)
             from codex_queue_notice import due_notices, send_notice
-            for notice in due_notices(self, db, agents):
-                self.pool.submit(send_notice, self, *notice)
+            pending_notices = due_notices(self, db, agents)
             reserved_cwds = {
                 str(Path(a["cwd"]).resolve())
                 for a in agents
@@ -2459,6 +2459,69 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 key=lambda a: (a["parentId"] is not None, a["created"]),
             )
             global_limit = max(1, min(64, int(os.environ.get("CODEX_CANVAS_CONCURRENCY", "32"))))
+            live_steers = []
+            live_kinds = ("agent_message", "child_result", "complaint_response", "work_decision")
+            placeholders = ",".join("?" for _ in live_kinds)
+            pending_agents = db.execute(
+                "SELECT agent FROM runtime_events WHERE status='pending' AND kind IN (" + placeholders + ") "
+                "GROUP BY agent ORDER BY min(created)", live_kinds,
+            ).fetchall()
+            by_id = {a["id"]: a for a in agents}
+            from codex_context_repair import blocked as context_repair_blocked
+            from codex_wakeups import pending_batch
+            for pending_agent in pending_agents:
+                a = by_id.get(pending_agent["agent"])
+                if (not a or not a.get("inFlight") or not a.get("turnId") or not a.get("autoWake")
+                        or a.get("deletedAt") or a.get("nativeReview") or a.get("nativeFailureHold")
+                        or a.get("accountTransferId") or context_repair_blocked(a)
+                        or a.get("status") != "running" or safety_retry_active(a)
+                        or native_thread_block(a) or (a.get("liveSteerAttempt") or {}).get("id")):
+                    continue
+                events = [row for row in pending_batch(self, db, a) if row["kind"] in live_kinds]
+                if not events:
+                    continue
+                rows = events[:32]
+                if self.progress_only(events) and not self.progress_batch_ready(events):
+                    continue
+                selected = []
+                asset_count = 0
+                for event in rows:
+                    meta_row = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event["id"],)).fetchone()
+                    count = len(json.loads(meta_row[0]).get("assets", [])) if meta_row else 0
+                    if asset_count + count > 8:
+                        break
+                    selected.append(event)
+                    asset_count += count
+                rows = selected
+                if not rows:
+                    continue
+                event_text = self.model_event_text(rows)
+                asset_ids = []
+                for event in rows:
+                    meta_row = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event["id"],)).fetchone()
+                    metadata = json.loads(meta_row[0]) if meta_row else {}
+                    asset_ids.extend(metadata.get("assets", []))
+                    metadata.update(modelEventProjection=1, delivery="steer")
+                    db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)",
+                               (event["id"], json.dumps(metadata)))
+                    event["assets"] = [self.asset_view(self.asset_record(key)) for key in metadata.get("assets", [])]
+                event_text += self.model_turn_context(db, a, rows[0]["id"])
+                attempt = {"id": uid(), "epoch": a["epoch"], "turnId": a["turnId"],
+                           "threadId": a["threadId"], "accountKey": a.get("accountKey", "default"),
+                           "events": [row["id"] for row in rows], "created": time.time()}
+                for row in rows:
+                    db.execute("UPDATE runtime_events SET status='dispatching',turn_id=?,error=NULL "
+                               "WHERE id=? AND agent=? AND epoch=? AND status='pending'",
+                               (a["turnId"], row["id"], a["id"], a["epoch"]))
+                a["liveSteerAttempt"] = attempt
+                self.put(db, "agents", a)
+                self.item(db, a["id"], rows[0]["id"], "user", event_text, inputs=rows,
+                          assets=[self.asset_view(self.asset_record(key)) for key in asset_ids],
+                          turnId=a["turnId"], delivery="steer")
+                params = {"threadId": a["threadId"], "expectedTurnId": a["turnId"],
+                          "clientUserMessageId": rows[0]["id"],
+                          "input": self.message_inputs(a["id"], event_text, asset_ids)}
+                live_steers.append((a["id"], attempt, params))
             for a in candidates:
                 from codex_radio import holds_floor
                 if holds_floor(self, db, a):
@@ -2562,6 +2625,151 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", a)
                 active.append(a)
                 self.pool.submit(self.start, a, [dict(r) for r in rows])
+        for agent_id, attempt, params in live_steers:
+            self.pool.submit(self.live_steer, agent_id, attempt, params)
+        steered_agents = {agent_id for agent_id, _, _ in live_steers}
+        for notice in pending_notices:
+            agent_id = notice[0]
+            if agent_id in steered_agents:
+                with self.lock, self.db() as db:
+                    a = self.agent(agent_id, db)
+                    if (a.get("queueNotice") or {}).get("id") == notice[2]:
+                        a.pop("queueNotice", None)
+                        self.put(db, "agents", a)
+                continue
+            self.pool.submit(send_notice, self, *notice)
+
+    def live_steer(self, agent_id, attempt, params):
+        """Submit a reserved queued batch into its exact active native turn."""
+        try:
+            server = self.connect(attempt["accountKey"])
+            with self.lock, self.db() as db:
+                a = self.agent(agent_id, db)
+                current = a.get("liveSteerAttempt") or {}
+                if (current.get("id") != attempt["id"] or a["epoch"] != attempt["epoch"]
+                        or a.get("threadId") != attempt["threadId"]
+                        or a.get("turnId") != attempt["turnId"] or not a.get("inFlight")
+                        or not a.get("autoWake")):
+                    self.live_steer_requeue(db, a, attempt, "The active turn ended before submission")
+                    return
+                attempt["connectionId"] = self.connection_ids[attempt["accountKey"]]
+                attempt["submitted"] = True
+                a["liveSteerAttempt"] = attempt
+                self.put(db, "agents", a)
+                for event_id in attempt["events"]:
+                    row = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event_id,)).fetchone()
+                    metadata = json.loads(row[0]) if row else {}
+                    metadata["native"] = {"agent": agent_id, "epoch": attempt["epoch"],
+                                           "turnId": attempt["turnId"], "threadId": attempt["threadId"],
+                                           "accountKey": attempt["accountKey"], "connectionId": attempt["connectionId"]}
+                    db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)",
+                               (event_id, json.dumps(metadata)))
+                db.commit()
+            submitted = self.submit_reserved(server, "turn/steer", params)
+            try:
+                result = server.wait(submitted)
+            except ResponseTimeout as error:
+                self.live_steer_error(agent_id, attempt, error, uncertain=True)
+                server.on_result(submitted, lambda future: self.pool.submit(
+                    self.live_steer_result, agent_id, attempt, future) if not self.closed else None)
+            except Exception as error:
+                self.live_steer_settle(agent_id, attempt, error=error)
+            else:
+                self.live_steer_settle(agent_id, attempt, result=result)
+        except (SubmissionRejected, RuntimeError) as error:
+            if isinstance(error, SubmissionRejected) or str(error) == "Codex app-server is offline":
+                self.live_steer_requeue_attempt(agent_id, attempt, error)
+            else:
+                self.live_steer_error(agent_id, attempt, error, uncertain="outcome unknown" in str(error))
+        except Exception as error:
+            self.live_steer_error(agent_id, attempt, error, uncertain="outcome unknown" in str(error))
+
+    def live_steer_result(self, agent_id, attempt, future):
+        try:
+            result = future.result()
+            self.live_steer_settle(agent_id, attempt, result=result)
+        except Exception as error:
+            self.live_steer_settle(agent_id, attempt, error=error)
+
+    def live_steer_settle(self, agent_id, attempt, *, result=None, error=None):
+        if error is None:
+            if not isinstance(result, dict) or result.get("turnId") != attempt["turnId"]:
+                error = RuntimeError("Steer returned a different turn identity; outcome unknown")
+            else:
+                self.live_steer_accepted(agent_id, attempt)
+                return
+        if steer_turn_ended(error):
+            self.live_steer_requeue_attempt(agent_id, attempt, error)
+        else:
+            self.live_steer_error(agent_id, attempt, error, uncertain="outcome unknown" in str(error))
+
+    def live_steer_accepted(self, agent_id, attempt):
+        with self.lock, self.db() as db:
+            a = self.agent(agent_id, db)
+            current = a.get("liveSteerAttempt") or {}
+            if (current.get("id") != attempt["id"] or not self.operation_current(a, attempt, epoch=False)
+                    or a.get("threadId") != attempt["threadId"]):
+                return
+            for event_id in attempt["events"]:
+                db.execute("UPDATE runtime_events SET status='delivered',turn_id=?,error=NULL WHERE id=? AND agent=? "
+                           "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
+                           (attempt["turnId"], event_id, agent_id, attempt["epoch"], attempt["turnId"]))
+            item_id = agent_id + ":" + attempt["events"][0]
+            stored = db.execute("SELECT record FROM runtime_items WHERE id=?", (item_id,)).fetchone()
+            if stored:
+                item = json.loads(stored[0])
+                item["turnId"] = attempt["turnId"]
+                db.execute("UPDATE runtime_items SET record=? WHERE id=?", (json.dumps(item), item_id))
+            a.pop("liveSteerAttempt", None)
+            self.put(db, "agents", a)
+
+    def live_steer_requeue(self, db, a, attempt, error):
+        current = a.get("liveSteerAttempt") or {}
+        if (current.get("id") != attempt["id"] or a["epoch"] != attempt["epoch"]
+                or a.get("threadId") != attempt["threadId"] or not a.get("autoWake")):
+            return False
+        for event_id in attempt["events"]:
+            db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id=? AND agent=? "
+                       "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
+                       (event_id, a["id"], attempt["epoch"], attempt["turnId"]))
+            row = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event_id,)).fetchone()
+            metadata = json.loads(row[0]) if row else {}
+            metadata.update(delivery="queue", steerRejected=str(error))
+            metadata.pop("native", None)
+            metadata.pop("transcriptItemId", None)
+            db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)", (event_id, json.dumps(metadata)))
+        db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?",
+                   (a["id"] + ":" + attempt["events"][0], a["id"]))
+        a.pop("liveSteerAttempt", None)
+        if a.get("turnId") == attempt["turnId"]:
+            a.update(inFlight=False, turnId=None, status="queued")
+        self.put(db, "agents", a)
+        self.changed.set()
+        return True
+
+    def live_steer_requeue_attempt(self, agent_id, attempt, error):
+        with self.lock, self.db() as db:
+            a = self.agent(agent_id, db)
+            self.live_steer_requeue(db, a, attempt, error)
+
+    def live_steer_error(self, agent_id, attempt, error, *, uncertain):
+        with self.lock, self.db() as db:
+            a = self.agent(agent_id, db)
+            current = a.get("liveSteerAttempt") or {}
+            if current.get("id") != attempt["id"]:
+                return
+            status = "uncertain" if uncertain else "failed"
+            for event_id in attempt["events"]:
+                db.execute("UPDATE runtime_events SET status=?,error=? WHERE id=? AND agent=? AND epoch=? "
+                           "AND turn_id=? AND status IN ('dispatching','uncertain')",
+                           (status, str(error), event_id, agent_id, attempt["epoch"], attempt["turnId"]))
+            if uncertain:
+                current["error"] = str(error)
+                current["uncertain"] = True
+                a["liveSteerAttempt"] = current
+            else:
+                a.pop("liveSteerAttempt", None)
+            self.put(db, "agents", a)
 
     def start(self, a, rows):
         epoch = a["epoch"]

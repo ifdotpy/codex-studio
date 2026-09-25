@@ -23,6 +23,14 @@ spec.loader.exec_module(fixture)
 class SteerServer(fixture.FakeServer):
     rejection = None
     interrupt_error = None
+    unknown_steer = False
+
+    def __init__(self, *args):
+        import queue
+        super().__init__(*args)
+        self.pending = {}
+        self.callbacks = queue.Queue()
+        self.clock_replies = queue.Queue()
 
     def call(self, method, params, timeout=60):
         if method == "turn/interrupt" and self.interrupt_error:
@@ -30,6 +38,8 @@ class SteerServer(fixture.FakeServer):
             raise NativeRpcError(self.interrupt_error)
         if method == "turn/steer":
             self.calls.append((method, params))
+            if self.unknown_steer:
+                raise RuntimeError("turn/steer outcome unknown: pipe disconnected")
             if self.rejection:
                 raise NativeRpcError(self.rejection)
             return {"turnId": params["expectedTurnId"]}
@@ -330,6 +340,83 @@ class CriticalSteerContract(unittest.TestCase):
             statuses = [r[0] for r in db.execute(
                 "SELECT status FROM runtime_events WHERE id IN ('monitor:first','monitor:waiting')")]
         self.assertEqual(statuses, ["pending", "pending"])
+
+    def queue_event(self, agent, event_id, kind, text):
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(agent, db)
+            self.runtime.enqueue(db, a, kind, text, event_id)
+
+    def test_active_turn_gets_ordered_queued_messages_in_one_steer(self):
+        agent = self.lead()
+        self.queue_event(agent, "live-message", "child_result", "Peer message")
+        self.queue_event(agent, "live-child", "child_result", "Child result")
+        self.runtime.dispatch()
+        fixture.eventually(lambda: self.metadata("live-child")["delivery"] == "steer"
+                           and self.runtime.delivery_receipt("live-child")["status"] == "delivered")
+        calls = [p for method, p in self.server.calls if method == "turn/steer"]
+        self.assertEqual(len(calls), 1)
+        text = calls[0]["input"][0]["text"]
+        self.assertTrue("Peer message" in text and "Child result" in text, repr(text))
+        self.assertLess(text.index("Peer message"), text.index("Child result"), text)
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT id,status,turn_id FROM runtime_events WHERE id IN (?,?) ORDER BY created",
+                              ("live-message", "live-child")).fetchall()
+            self.assertEqual([(r["status"], r["turn_id"]) for r in rows],
+                             [("delivered", "turn-1"), ("delivered", "turn-1")])
+            item = json.loads(db.execute("SELECT record FROM runtime_items WHERE id=?",
+                                         (agent + ":live-message",)).fetchone()[0])
+        self.assertEqual(item["turnId"], "turn-1")
+        self.assertEqual([entry["id"] for entry in item["inputs"]], ["live-message", "live-child"])
+
+    def test_ended_turn_rejection_returns_messages_to_normal_turn_start(self):
+        agent = self.lead()
+        self.queue_event(agent, "ended-live", "work_decision", "Review decision")
+        self.server.rejection = {"code": -32600, "message": "no active turn to steer"}
+        self.runtime.dispatch()
+        fixture.eventually(lambda: self.runtime.delivery_receipt("ended-live")["status"] == "delivered")
+        self.assertEqual(self.metadata("ended-live")["delivery"], "queue")
+        self.assertIn("steerRejected", self.metadata("ended-live"))
+        self.assertEqual(len([p for method, p in self.server.calls if method == "turn/steer"]), 1)
+        starts = [p for method, p in self.server.calls if method == "turn/start"]
+        self.assertEqual(len(starts), 1)
+        self.assertIn("Review decision", starts[0]["input"][0]["text"])
+
+    def test_unknown_live_steer_is_uncertain_and_is_not_retried(self):
+        agent = self.lead()
+        self.queue_event(agent, "unknown-live", "child_result", "Response")
+        self.server.unknown_steer = True
+        self.runtime.dispatch()
+        fixture.eventually(lambda: bool([p for method, p in self.server.calls if method == "turn/steer"]), timeout=2)
+        fixture.eventually(lambda: self.runtime.delivery_receipt("unknown-live")["status"] != "dispatching", timeout=2)
+        self.assertEqual(self.runtime.delivery_receipt("unknown-live")["status"], "uncertain",
+                         (self.server.calls, self.runtime.agent(agent).get("liveSteerAttempt"), self.runtime.scheduler_error))
+        self.runtime.dispatch()
+        self.runtime.pool.submit(lambda: None).result(5)
+        self.assertEqual(len([p for method, p in self.server.calls if method == "turn/steer"]), 1)
+        self.assertEqual(self.runtime.delivery_receipt("unknown-live")["status"], "uncertain")
+
+    def test_idle_recipient_starts_and_native_review_turn_is_not_steered(self):
+        agent = self.lead()
+        self.queue_event(agent, "idle-live", "child_result", "Idle delivery")
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(agent, db)
+            a.update(inFlight=False, turnId=None, status="queued")
+            self.runtime.put(db, "agents", a)
+        self.runtime.dispatch()
+        fixture.eventually(lambda: self.runtime.delivery_receipt("idle-live")["status"] == "delivered")
+        self.assertEqual([m for m, _ in self.server.calls].count("turn/steer"), 0)
+        self.assertEqual([m for m, _ in self.server.calls].count("turn/start"), 1)
+
+        review = self.lead()
+        self.queue_event(review, "review-live", "child_result", "Review recipient")
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(review, db)
+            a["nativeReview"] = {"status": "started"}
+            self.runtime.put(db, "agents", a)
+        self.runtime.dispatch()
+        self.runtime.pool.submit(lambda: None).result(5)
+        self.assertEqual(self.runtime.delivery_receipt("review-live")["status"], "pending")
+        self.assertEqual([m for m, _ in self.server.calls].count("turn/steer"), 0)
 
     def test_unknown_write_stays_nonretryable(self):
         agent = self.lead()

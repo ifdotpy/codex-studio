@@ -9,8 +9,8 @@ import time
 
 NOTICE_AFTER_SECONDS = 900
 REPEAT_SECONDS = 1800
-KIND_NAMES = {"agent_message": "agent messages", "monitor_exit": "monitor results",
-              "child_result": "child results", "user": "user messages", "followup": "follow-up messages"}
+KIND_NAMES = {"monitor_exit": "monitor results", "user": "user messages", "followup": "follow-up messages",
+              "work_review": "work reviews", "complaint": "complaint notices", "radio_turn": "shared chat turns"}
 
 
 def due_notices(rt, db, agents):
@@ -19,7 +19,8 @@ def due_notices(rt, db, agents):
     waiting = {}
     for agent, epoch, kind, count, oldest in db.execute(
             "SELECT agent, epoch, kind, count(*), min(created) FROM runtime_events "
-            "WHERE status='pending' GROUP BY agent, epoch, kind"):
+            "WHERE status='pending' AND kind NOT IN ('agent_message','child_result','complaint_response','work_decision') "
+            "GROUP BY agent, epoch, kind"):
         waiting.setdefault((agent, epoch), []).append((kind, count, oldest))
     notices = []
     for a in agents:

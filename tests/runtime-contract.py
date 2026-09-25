@@ -700,7 +700,8 @@ class RuntimeContract(unittest.TestCase):
         self.assertGreaterEqual(peak, 2)
         starts = [p for m,p in self.runtime.server.calls if m == 'turn/start' and p['threadId'] == lead['threadId']]
         self.assertGreater(len(starts), 1)
-        text = '\n'.join(p['input'][0]['text'] for p in starts[1:])
+        steers = [p for m,p in self.runtime.server.calls if m == 'turn/steer' and p['threadId'] == lead['threadId']]
+        text = '\n'.join(p['input'][0]['text'] for p in starts[1:] + steers)
         self.assertIn('child_result', text)
         self.assertIn('Review 39', text)
         self.assertIn('Result with evidence', text)
