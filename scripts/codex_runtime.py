@@ -3482,12 +3482,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     (a["id"],)).fetchone() is not None
                 if a["status"] == "completed" and (watches or children):
                     a["status"] = "waiting"
-                if (a["status"] != "waiting" and a.get("turnEpoch", a["epoch"]) == a["epoch"]
-                        and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
-                    if a.get("status") == "failed":
-                        self.put(db, "agents", a)
-                    self.parent_event(db, a, turn.get("id", "unknown"),
-                                      json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
                 if turn.get("status") == "completed" and a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     self.enforce_complaints(db, a, completion)
                     if not watches and not children:
@@ -3495,6 +3489,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.capacity_completed(db, a, turn, known_capacity_source)
                 self.usage_resume_completed(db, a, turn, known_capacity_source)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
+                retrying_after_input = turn.get("status") == "completed" and pending is not None
+                if (a["status"] != "waiting" and not retrying_after_input
+                        and a.get("turnEpoch", a["epoch"]) == a["epoch"]
+                        and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
+                    if a.get("status") == "failed":
+                        self.put(db, "agents", a)
+                    self.parent_event(db, a, turn.get("id", "unknown"),
+                                      json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
                 if pending and a["autoWake"] and not a.get("nativeFailureHold"):
                     a["status"] = "queued"
                 if (a.get("worktreeReady")

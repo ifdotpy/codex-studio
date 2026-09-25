@@ -651,22 +651,28 @@ class RuntimeContract(unittest.TestCase):
     def test_turn_transcript_preserves_user_and_event_sources(self):
         a = self.lead()
         user_text = '[Orchestration event: agent_message]\nThis is literal user text.'
-        self.runtime.send(a['id'], user_text)
+        queued = self.runtime.send(a['id'], user_text)
         with self.runtime.lock, self.runtime.db() as db:
             worker = self.runtime.create({'name': 'Reviewer', 'prompt': 'Review', 'role': 'reviewer'}, a['id'], defer=True)
             worker.update(autoWake=True)
             self.runtime.put(db, 'agents', worker)
-        receipt = self.runtime.chat_message(worker['id'], a['id'], 'Worker result', 'source-result')
+        self.runtime.chat_message(worker['id'], a['id'], 'Worker result', 'source-result')
+        event_id = 'chat:source-result:' + a['id']
+        eventually(lambda: any(e['id'] == event_id and e['status'] == 'delivered'
+                               for e in self.runtime.snapshot()['events']))
         with self.runtime.db() as db:
-            event_text = db.execute("SELECT text FROM runtime_events WHERE id=?", ('chat:source-result:' + a['id'],)).fetchone()[0]
+            event_text = db.execute("SELECT text FROM runtime_events WHERE id=?", (event_id,)).fetchone()[0]
         self.complete(a)
         eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')
-        record = self.runtime.transcript(a['id'])['items'][-1]
-        self.assertEqual([r['kind'] for r in record['inputs']], ['user', 'agent_message'])
-        self.assertEqual(record['inputs'][0]['text'], user_text)
-        self.assertEqual(record['inputs'][1]['text'], event_text)
-        self.assertIn(user_text, record['text'])
-        self.assertIn('[Orchestration event: agent_message]\n' + event_text, record['text'])
+        items = self.runtime.transcript(a['id'])['items']
+        user_record = next(item for item in items if item['id'] == a['id'] + ':' + queued['id'])
+        event_record = next(item for item in items if item['id'] == a['id'] + ':' + event_id)
+        self.assertEqual([r['kind'] for r in user_record['inputs']], ['user'])
+        self.assertEqual(user_record['inputs'][0]['text'], user_text)
+        self.assertEqual([r['kind'] for r in event_record['inputs']], ['agent_message'])
+        self.assertEqual(event_record['inputs'][0]['text'], event_text)
+        self.assertIn(user_text, user_record['text'])
+        self.assertIn('[Orchestration event: agent_message]\n' + event_text, event_record['text'])
 
     def test_pending_user_message_is_visible_before_next_turn(self):
         a = self.lead()
@@ -747,6 +753,36 @@ class RuntimeContract(unittest.TestCase):
         self.complete(child)
         events = [e for e in self.runtime.snapshot()['events'] if e['kind'] == 'child_result']
         self.assertEqual(len(events), 1)
+
+    def test_child_result_waits_until_turn_ends_with_empty_input_queue(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        first = self.runtime.agent(child['id'])
+        self.runtime.send(child['id'], 'The lead answered your question')
+        self.complete(first)
+        eventually(lambda: (self.runtime.agent(child['id'])['status'] == 'running'
+                            and self.runtime.agent(child['id'])['turnId'] != first['turnId']))
+        self.assertFalse(any(e['kind'] == 'child_result' for e in self.runtime.snapshot()['events']))
+        final = self.runtime.agent(child['id'])
+        self.runtime.server.complete(final['threadId'], final['turnId'], 'Final result after the lead answer')
+        eventually(lambda: len([e for e in self.runtime.snapshot()['events'] if e['kind'] == 'child_result']) == 1)
+        with self.runtime.db() as db:
+            result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
+        self.assertEqual(json.loads(result)['result'], 'Final result after the lead answer')
+
+    def test_failed_child_result_is_immediate_with_pending_input(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        current = self.runtime.agent(child['id'])
+        self.runtime.send(child['id'], 'A late answer')
+        self.runtime.server.notify({'method': 'turn/completed', 'params': {'threadId': current['threadId'],
+            'turn': {'id': current['turnId'], 'status': 'failed', 'error': {'message': 'failed now'}}}})
+        eventually(lambda: len([e for e in self.runtime.snapshot()['events'] if e['kind'] == 'child_result']) == 1)
+        with self.runtime.db() as db:
+            result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
+        self.assertEqual(json.loads(result)['status'], 'failed')
 
     def test_restart_keeps_pending_events_without_replaying_unknown_work(self):
         lead = self.lead()
