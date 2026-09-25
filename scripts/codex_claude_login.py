@@ -89,7 +89,35 @@ class LoginManager:
 
     def status(self, rid):
         with self.lock:
-            return dict(self._job(rid)['receipt'])
+            job = self._job(rid)
+            receipt = dict(job['receipt'])
+        if receipt['status'] == 'ready' and not receipt.get('chatsRefreshed'):
+            account = self.runtime.accounts.refresh(receipt['accountKey'])
+            if account.get('status') == 'ready' and account.get('accountId') == 'claude:' + receipt['email']:
+                self._refresh_chats(job)
+        with self.lock:
+            return dict(job['receipt'])
+
+    def _refresh_chats(self, job):
+        # Failed events and transcript items remain historical evidence.
+        # No input is queued and no native turn is resumed here.
+        key = job['receipt']['accountKey']
+        with self.runtime.lock, self.runtime.db() as db:
+            for agent in self.runtime.records(db, 'agents'):
+                if (agent.get('accountKey') != key or agent.get('provider') != 'claude'
+                        or agent.get('deletedAt') or agent.get('status') != 'failed'
+                        or agent.get('inFlight') or agent.get('activeTools') or agent.get('workspaceOperation')):
+                    continue
+                error = agent.get('error')
+                message = error.get('message', '') if isinstance(error, dict) else str(error or '')
+                if not re.search(r'oauth session expired|failed to authenticate|profile.s account changed|sign in with claude auth login', message, re.I):
+                    continue
+                agent.update(status='idle', error=None)
+                agent.pop('nativeStatus', None)
+                self.runtime.put(db, 'agents', agent)
+        with self.lock:
+            job['receipt']['chatsRefreshed'] = True
+            self._save(job)
 
     def start(self, key, rid):
         request_id(rid)
@@ -230,6 +258,8 @@ class LoginManager:
                     self._finish(job, 'error', 'A different Claude account signed in. Sign in with ' + job['receipt']['email'] + '.')
                 else:
                     self._finish(job, 'error', 'Claude sign-in failed. Start a new sign-in request.')
+            if job['receipt']['status'] == 'ready':
+                self._refresh_chats(job)
         except Exception:
             with self.lock:
                 if job['receipt']['status'] in ACTIVE:

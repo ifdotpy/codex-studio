@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exercise native process login with a local fake CLI, without OAuth requests."""
+from contextlib import nullcontext
+import copy
 import json
 import os
 from pathlib import Path
@@ -67,6 +69,11 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         self.profile = {'provider':'claude', 'email':'expected@example.com', 'accountId':'claude:expected@example.com',
                         'claudeOptions':{'configDir':str(self.config), 'binaryPath':str(self.binary)}}
         self.rt = SimpleNamespace(root=self.root, accounts=Accounts(self.profile), lock=threading.RLock())
+        self.agents = []
+        self.rt.db = lambda: nullcontext(None)
+        self.rt.records = lambda db, table: copy.deepcopy(self.agents)
+        self.rt.put = lambda db, table, record: self.agents.__setitem__(
+            next(i for i, row in enumerate(self.agents) if row['id'] == record['id']), record)
         self.login = LoginManager(self.rt, deadline=3)
         self.ids = []
 
@@ -113,6 +120,36 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         self.assertEqual(LoginManager(self.rt).start('claude-test', rid), receipt)
         with self.assertRaises(ValueError):
             self.login.start('other', rid)
+
+    def test_login_refreshes_only_inactive_auth_failures_for_same_account(self):
+        base = {'id':'first', 'provider':'claude', 'accountKey':'claude-test',
+                'status':'failed', 'error':{'message':'Failed to authenticate: OAuth session expired'},
+                'nativeStatus':{'phase':'auth'}, 'turnId':'historical-turn'}
+        self.agents = [base, {**base,'id':'second','error':"This profile's account changed. Restore its original login or add a separate profile."},
+            {**base,'id':'other','accountKey':'another'},
+            {**base,'id':'busy','inFlight':True},
+            {**base,'id':'running','status':'running'},
+            {**base,'id':'network','error':'Network unavailable'}]
+        before = copy.deepcopy(self.agents)
+        rid = self.start()
+        self.await_status(rid, {'pending'})
+        self.login.code(rid, 'valid-code')
+        receipt = self.await_status(rid, {'ready','error'})
+        self.assertEqual(receipt['status'], 'ready')
+        self.assertTrue(receipt['chatsRefreshed'])
+        for agent in self.agents[:2]:
+            self.assertEqual(agent['status'], 'idle')
+            self.assertIsNone(agent['error'])
+            self.assertNotIn('nativeStatus', agent)
+            self.assertEqual(agent['turnId'], 'historical-turn')
+        self.assertEqual(self.agents[2:], before[2:])
+        # An old successful receipt also reconciles previous chat errors once.
+        self.agents = before
+        job = self.login.jobs[rid]
+        job['receipt'].pop('chatsRefreshed')
+        self.login._save(job)
+        self.assertTrue(LoginManager(self.rt).status(rid)['chatsRefreshed'])
+        self.assertEqual(self.agents[0]['status'], 'idle')
 
     def test_wrong_account_is_error_and_saved_identity_unchanged(self):
         rid = self.start()
