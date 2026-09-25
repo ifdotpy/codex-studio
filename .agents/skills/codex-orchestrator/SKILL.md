@@ -73,6 +73,19 @@ harness defect if recovery cannot preserve their context. Follow the shared skil
 request recovery rules before retrying any uncertain operation.
 Base reports of continued work on an active worker, command, or automatic continuation.
 
+## Coordination rules
+
+- Give each worker an explicit list of pre-authorized actions, for example a
+  merge into the integration branch or a one-time annotation.
+- Put decisions into the task (reject or update) or into `orchestration_send`,
+  not only into chat. A chat message can arrive late.
+- Give every shared branch and every shared file one owner. State who may merge
+  into an integration branch.
+- Pass `cwd` with the repository folder when the project root is not a git
+  repository. An implementer then gets its own worktree of that repository.
+- Do not run two live verifications that change the same system state at the
+  same time. Schedule them, or give them independent criteria.
+
 ## Decisions, quality, and progress
 
 Make routine design decisions within the user's task and project constraints.
