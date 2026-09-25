@@ -5,6 +5,14 @@ import time
 
 
 POLL_SECONDS = 180
+# Check once just after a known reset. Poll only without a reset time, or when
+# the account is still blocked after it. Early relief (for example a reset
+# credit) arrives through limit updates and is handled at once.
+RESET_GRACE_SECONDS = 5
+
+
+def _next_check(reset, now):
+    return reset + RESET_GRACE_SECONDS if reset and reset > now else now + POLL_SECONDS
 CONTINUATION = (
     "The previous turn stopped because this account reached a usage or rate limit. "
     "Check the current task and conversation state, then continue the same task. "
@@ -101,7 +109,7 @@ class UsageResumeMixin:
                 if allowed:
                     resume['dueAt'] = now
                 elif reset and reset > now:
-                    resume['dueAt'] = min(now + POLL_SECONDS, reset)
+                    resume['dueAt'] = _next_check(reset, now)
                 resume['updatedAt'] = now
                 db.execute('UPDATE runtime_usage_resumes SET record=? WHERE id=?',
                            (json.dumps(resume), resume['id']))
@@ -113,13 +121,11 @@ class UsageResumeMixin:
     def usage_resume_record(self, agent, turn_id, error):
         account_key = agent.get('accountKey', 'default')
         now = time.time()
-        due = now + POLL_SECONDS
         snapshot = self.rate_limits_for(account_key)
         error_reset = error.get('resetsAt') if isinstance(error.get('resetsAt'), (int, float)) else None
         reset = max(filter(None, (_reset_at(snapshot.get('data') or {}), error_reset)), default=None)
         planned_at = reset if reset and reset > now else None
-        if reset and reset > now:
-            due = min(due, reset)
+        due = _next_check(reset, now)
         return dict(id=_identity(agent, account_key, turn_id), status='scheduled', accountKey=account_key,
                     threadId=agent['threadId'], epoch=agent['epoch'], turnId=turn_id,
                     dueAt=due, plannedAt=planned_at, resetAt=reset, reason=None)
@@ -173,7 +179,7 @@ class UsageResumeMixin:
                         resume.update(status='scheduled', reason=None)
                         now = time.time()
                         reset = resume.get('resetAt')
-                        resume['dueAt'] = min(now + POLL_SECONDS, reset) if reset and reset > now else now + POLL_SECONDS
+                        resume['dueAt'] = _next_check(reset, now)
             self.usage_resume_save(db, agent, resume)
             self.put(db, 'agents', agent)
             self.changed.set()
@@ -210,7 +216,7 @@ class UsageResumeMixin:
                          and isinstance(limits.get('at'), (int, float)) and limits['at'] >= now - 5)
                 allowed = fresh and _allowed(data, now)
                 reset_at = _reset_at(data)
-                next_due = min(now + POLL_SECONDS, reset_at) if reset_at and reset_at > now else now + POLL_SECONDS
+                next_due = _next_check(reset_at, now)
                 for key, resume in candidates:
                     agent = self.agent(key, db)
                     stored = agent.get('usageResume') or {}

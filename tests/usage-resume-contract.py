@@ -83,6 +83,14 @@ class UsageResumeContract(unittest.TestCase):
         reached = {'rateLimits': {'rateLimitReachedType': 'primary', 'primary': {'usedPercent': 99, 'resetsAt': now + 120}}}
         self.assertEqual(_reset_at(reached), now + 120)
 
+    def test_known_reset_is_checked_once_at_that_time(self):
+        from codex_usage_resume import POLL_SECONDS, RESET_GRACE_SECONDS, _next_check
+        now = 1_000_000
+        # A reset hours away needs no polling before it.
+        self.assertEqual(_next_check(now + 4 * 3600, now), now + 4 * 3600 + RESET_GRACE_SECONDS)
+        self.assertEqual(_next_check(None, now), now + POLL_SECONDS)
+        self.assertEqual(_next_check(now - 10, now), now + POLL_SECONDS)
+
     def test_failed_turn_schedules_once_and_restart_keeps_identity(self):
         fixture.eventually(lambda: self.runtime.rate_limits_for('default').get('at'))
         reset = self.runtime.rate_limits_for('default')['data']['rateLimits']['primary']['resetsAt']
