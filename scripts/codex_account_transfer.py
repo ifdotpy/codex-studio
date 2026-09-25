@@ -644,6 +644,7 @@ class AccountTransfers:
             raise TransferSettingsConflict('Destination settings need validation before this saved transfer can finish')
         target = op['targetAccountKey']
         self.check_destination(a, target, db)
+        rt.usage_resume_cancel(db, a, 'The chat moved to another account.')
         result = m['result']
         resume_failed = a.get('autoWake') and a.get('status') in {'failed', 'interrupted'}
         source_provider = rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')

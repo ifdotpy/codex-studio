@@ -111,6 +111,8 @@ export function NativeError({
         <LimitRecoveryNotice
           key={JSON.stringify(recovery)}
           recovery={recovery}
+          agentId={agent.id}
+          usageResume={agent.usageResume}
           inline
         />
       )}

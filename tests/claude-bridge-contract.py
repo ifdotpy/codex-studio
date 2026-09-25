@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,6 +87,12 @@ export function query({prompt,options}){
    if(text==='fail')throw new Error('Native failure');
    if(text==='/compact')yield {type:'system',subtype:'local_command_output',uuid:'compact-result',content:'Native compact received'};
    if(text==='background')yield {type:'system',subtype:'task_started',task_id:'worker-1',description:'Worker',task_type:'agent'};
+   if(text==='claude-limit'){
+    const resetsAt=Math.floor(Date.now()/1000)+3600;
+    yield {type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'five_hour',resetsAt,utilization:1}};
+    yield {type:'result',subtype:'error',errors:['Claude usage limit reached (five_hour). Resets at '+new Date(resetsAt*1000).toISOString()+'. The turn waits.']};
+    continue;
+   }
    if(text==='subagent-text'){
     yield {type:'assistant',parent_tool_use_id:'agent-tool',uuid:'worker-message',message:{id:'worker-answer',content:[
       {type:'text',text:'First worker paragraph'},{type:'text',text:'Second worker paragraph'}]}};
@@ -185,6 +192,17 @@ class Bridge(unittest.TestCase):
         self.assertEqual(final[-1]['text'],'Visible answer')
         self.assertNotIn('PRIVATE_SIGNATURE',json.dumps(history))
         self.assertTrue(any(x.get('method')=='item/agentMessage/delta' for x in self.notifications))
+
+    def test_rejected_claude_rate_limit_has_verified_error_kind_and_reset(self):
+        self.turn('claude-limit', 'limit')
+        failed = self.completed()
+        self.assertEqual(failed['status'], 'failed')
+        self.assertEqual(failed['error']['codexErrorInfo'], 'rateLimitExceeded')
+        self.assertGreater(failed['error']['resetsAt'], time.time())
+        self.assertIn('Claude usage limit reached (five_hour). Resets at ', failed['error']['message'])
+        self.assertTrue(any(row.get('method') == 'item/completed'
+                            and 'Claude usage limit reached (five_hour)' in row.get('params', {}).get('item', {}).get('text', '')
+                            for row in self.notifications))
 
     def test_required_thinking_overrides_saved_off_and_optional_switch_restores_it(self):
         self.call('claude/settings', {'threadId': self.thread, 'settings': {'thinking': False}})

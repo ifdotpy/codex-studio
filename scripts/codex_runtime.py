@@ -35,6 +35,7 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_capacity_retry import CapacityRetryMixin
+from codex_usage_resume import UsageResumeMixin
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
 
@@ -733,7 +734,7 @@ class AppServer:
             self.reader.join(timeout=1)
 
 
-class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
+class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.started_at = time.time()
         self.root = Path(root)
@@ -792,6 +793,10 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'
                          ELSE json_extract(record,'$.accountKey') END);
                 CREATE TABLE IF NOT EXISTS runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_usage_resumes (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_usage_resume_agent ON runtime_usage_resumes(agent);
+                CREATE INDEX IF NOT EXISTS runtime_usage_resume_due ON runtime_usage_resumes(json_extract(record,'$.status'),json_extract(record,'$.dueAt'));
+                CREATE INDEX IF NOT EXISTS runtime_usage_resume_account ON runtime_usage_resumes(json_extract(record,'$.accountKey'),json_extract(record,'$.status'));
                 CREATE TABLE IF NOT EXISTS runtime_events (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,
                   text TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
@@ -1350,6 +1355,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 "turnId": None,
                 "inFlight": False,
                 "turnEpoch": 0,
+                "usageResumeEnabled": True,
                 "tokensUsed": 0,
                 "compactions": 0,
                 "compactionsObservedOnly": False,
@@ -1532,6 +1538,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                 a.pop("pendingSettings", None)
                 a.pop("pendingSettingsAccountKey", None)
             if a.get("accountKey", "default") != account_key:
+                self.usage_resume_cancel(db, a, "The chat moved to another account.")
                 a.setdefault("executionSettingsAccountKey", a.get("accountKey", "default"))
                 a.update(daybreakEnabled=False, cyberAccessProgram="standard")
                 a.pop("pendingSettings", None)
@@ -2372,6 +2379,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             try:
                 self.rules_tick()
                 self.capacity_tick()
+                self.usage_resume_tick()
                 self.dispatch()
             except Exception as error:
                 self.scheduler_error = {"at": time.time(), "error": str(error)}
@@ -3268,6 +3276,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
                     if not watches and not children:
                         self.store_completed_broadcasts(db, a)
                 self.capacity_completed(db, a, turn, known_capacity_source)
+                self.usage_resume_completed(db, a, turn, known_capacity_source)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
                 if pending and a["autoWake"] and not a.get("nativeFailureHold"):
                     a["status"] = "queued"
@@ -3722,6 +3731,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
         self.rate_limits_by_account[account_key] = value
         if account_key == "default":
             self.rate_limits = value
+        self.usage_resume_limits_changed(account_key, value)
 
     def limit_refresh_lock(self, account_key):
         with self.lock:
@@ -4567,6 +4577,7 @@ class Runtime(CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMix
             stopped = [a for a in agents if a["id"] in ids]
             for a in stopped:
                 self.capacity_reset(db, a, "The agent was stopped.")
+                self.usage_resume_cancel(db, a, "The agent was stopped.")
                 a.update(autoWake=False, epoch=a["epoch"] + 1, status="paused", error=reason)
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))

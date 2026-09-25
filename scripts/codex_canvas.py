@@ -1085,6 +1085,8 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send({"id": repaired["id"], "repair": repaired.get("contextRepair")})
                     if self.path == "/api/capacity-retry":
                         return self.send(canvas.runtime.capacity_retry(body.get("id"), body.get("retry_id"), body.get("action")))
+                    if self.path == "/api/usage-resume":
+                        return self.send(canvas.runtime.usage_resume_action(body.get("id"), body.get("resume_id"), body.get("enabled")))
                     if self.path == "/api/action":
                         action = body.get("action")
                         if isinstance(action, dict) and "safety" in action:

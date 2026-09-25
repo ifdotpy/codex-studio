@@ -338,6 +338,7 @@ async function finishTurn(s, active, result, error) {
         result?.errors?.join("\n") ||
         result?.result ||
         "Claude turn failed",
+      ...(turn.limitError || {}),
     };
   const answer = turn.items
     .filter(
@@ -552,6 +553,10 @@ async function startSession(s, active, p) {
           !info.overageInUse &&
           !["allowed", "allowed_warning"].includes(info.overageStatus)
         ) {
+          turn.limitError = {
+            codexErrorInfo: "rateLimitExceeded",
+            ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
+          };
           notice(
             s,
             turn,
