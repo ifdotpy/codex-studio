@@ -75,6 +75,7 @@ import { ExecutionSettings } from "./components/ExecutionSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
 import ClaudeSignIn from "./components/ClaudeSignIn";
+import ClaudeSignInNotice from "./components/ClaudeSignInNotice";
 import Conversation from "./components/Conversation";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
@@ -1523,25 +1524,11 @@ export default function App() {
               onReady={accounts.refresh}
             />
           )}
-        {selectedAccount?.provider === "claude" &&
-          /oauth|authentication|authenticate|not logged in/i.test(
-            errorText(
-              agent?.error ||
-                agent?.nativeStatus?.error ||
-                selectedAccount.error ||
-                error,
-            ),
-          ) && (
-            <div className="sync-status">
-              <span>Claude needs sign-in.</span>
-              <Button
-                size="compact-sm"
-                onClick={() => setClaudeLoginKey(selectedAccount.id)}
-              >
-                Sign in to Claude
-              </Button>
-            </div>
-          )}
+        <ClaudeSignInNotice
+          account={selectedAccount}
+          errors={[agent?.error, agent?.nativeStatus?.error, error]}
+          onSignIn={setClaudeLoginKey}
+        />
         {error && (
           <div id="error" role="alert">
             {error}
