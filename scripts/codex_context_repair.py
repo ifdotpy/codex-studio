@@ -957,9 +957,17 @@ def recover_context_failures(rt, db, agents):
         # A server can die after the repair record is saved but before a turn
         # reservation exists. That record cannot have submitted a native fork.
         # Retire it after a grace period so it cannot block the normal queue.
+        # An unsubmitted start whose inputs all ended (for example a disk error
+        # failed them) has no live reservation left and can never submit.
+        dead_start = bool(attempt.get('events')) and _unsubmitted(a, attempt.get('id')) and not db.execute(
+            "SELECT 1 FROM runtime_events WHERE agent=? AND status IN ('pending','reserved','dispatching','uncertain') "
+            "AND id IN (" + ",".join("?" * len(attempt['events'])) + ")",
+            (a['id'], *attempt['events'])).fetchone()
         if (receipt.get('phase') == 'preparing' and not a.get('inFlight')
-                and not a.get('startAttempt')
+                and (not attempt or dead_start)
                 and time.time() - float(receipt.get('updated', receipt.get('created', 0))) >= 60):
+            if dead_start:
+                a.pop('startAttempt', None)
             retired = copy.deepcopy(receipt)
             retired.update(
                 status='superseded',

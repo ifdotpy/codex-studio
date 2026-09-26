@@ -238,6 +238,49 @@ class ContextRepair(unittest.TestCase):
         self.assertEqual(current['lastContextRepairCheck']['status'], 'superseded')
         self.assertIn('no native fork', current['lastContextRepairCheck']['supersededReason'])
 
+    def test_stale_preparing_repair_releases_a_start_whose_inputs_failed(self):
+        stale = {
+            'id': 'stale-repair-dead-start', 'agent': self.a['id'],
+            'source': {'id': self.a['id'], 'accountKey': self.a['accountKey'],
+                       'epoch': self.a['epoch'], 'threadId': self.tid},
+            'phase': 'preparing', 'created': time.time() - 120,
+            'updated': time.time() - 120,
+        }
+        attempt = {'id': 'dead-start', 'epoch': self.a['epoch'], 'accountKey': self.a['accountKey'],
+                   'events': ['dead-event'], 'submitted': False, 'settingsFixed': True}
+        self.agent_update(self.a, status='queued', autoWake=True, inFlight=False,
+                          contextRepair=stale, startAttempt=attempt)
+        with self.runtime.db() as db:
+            db.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created) "
+                       "VALUES ('dead-event',?,?,'monitor_exit','done','failed',?)",
+                       (self.a['id'], self.a['epoch'], time.time() - 200))
+            repair.recover_context_failures(self.runtime, db, self.runtime.records(db, 'agents'))
+        current = self.runtime.agent(self.a['id'])
+        self.assertNotIn('contextRepair', current)
+        self.assertNotIn('startAttempt', current)
+        self.assertEqual(current['status'], 'queued')
+
+    def test_stale_preparing_repair_keeps_a_start_with_reserved_inputs(self):
+        stale = {
+            'id': 'stale-repair-live-start', 'agent': self.a['id'],
+            'source': {'id': self.a['id'], 'accountKey': self.a['accountKey'],
+                       'epoch': self.a['epoch'], 'threadId': self.tid},
+            'phase': 'preparing', 'created': time.time() - 120,
+            'updated': time.time() - 120,
+        }
+        attempt = {'id': 'live-start', 'epoch': self.a['epoch'], 'accountKey': self.a['accountKey'],
+                   'events': ['live-event'], 'submitted': False}
+        self.agent_update(self.a, status='queued', autoWake=True, inFlight=False,
+                          contextRepair=stale, startAttempt=attempt)
+        with self.runtime.db() as db:
+            db.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created) "
+                       "VALUES ('live-event',?,?,'monitor_exit','done','reserved',?)",
+                       (self.a['id'], self.a['epoch'], time.time() - 200))
+            repair.recover_context_failures(self.runtime, db, self.runtime.records(db, 'agents'))
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['contextRepair']['id'], 'stale-repair-live-start')
+        self.assertEqual(current['startAttempt']['id'], 'live-start')
+
     def test_pending_repair_blocks_prepare_and_dispatch_but_preserves_queued_send(self):
         self.agent_update(self.a, autoWake=True, contextRepair={'id':'repair-exact','phase':'unknown'})
         result = self.runtime.send(self.a['id'], 'Keep this user message.', message_id='queued-exact', delivery='steer')
