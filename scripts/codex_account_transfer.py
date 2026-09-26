@@ -71,8 +71,7 @@ class AccountTransfers:
         current = lead.get('accountTransfer') or {}
         if lead.get('accountTransferId') not in {None, op['id']}:
             return
-        if (current.get('id') not in {None, op['id']}
-                and current.get('status') not in TERMINAL):
+        if current.get('id') not in {None, op['id']} and lead.get('accountTransferId') != op['id']:
             return
         members = list(op['members'].values())
         lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated')}
@@ -216,6 +215,23 @@ class AccountTransfers:
             return
         rt = self.rt
         with rt.lock, rt.db() as db:
+            referenced = set()
+            for agent in rt.records(db, 'agents'):
+                if agent.get('accountTransferId'):
+                    referenced.add(agent['accountTransferId'])
+                summary_id = (agent.get('accountTransfer') or {}).get('id')
+                if summary_id:
+                    referenced.add(summary_id)
+            # A transfer with no surviving owner reference and no submitted native
+            # mutation cannot advance. Settle it through the same durable receipt path.
+            for orphan in rt.records(db, 'account_transfers'):
+                if (orphan.get('status') != 'pending' or orphan['id'] in referenced
+                        or any(member['phase'] not in {'waiting', 'completed'}
+                               for member in orphan['members'].values())):
+                    continue
+                orphan['status'] = 'cancelled'
+                orphan['cancelledAt'] = time.time()
+                self.save(db, orphan)
             operations = set()
             for a in agents:
                 if not a.get('isLead'):

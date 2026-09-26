@@ -327,6 +327,27 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['id'], current['id'])
         self.complete_fork()
 
+    def test_unreferenced_waiting_transfer_settles_without_replacing_current_summary(self):
+        old = self.start_transfer()
+        self.store.action(old['id'], 'cancel')
+        current = self.start_transfer()
+        self.tick()
+        self.until(lambda: bool(self.pending))
+        self.complete_fork()
+        summary = self.runtime.agent(self.lead_agent['id'])['accountTransfer']
+        self.assertEqual(summary['id'], current['id'])
+        self.assertEqual(summary['status'], 'completed')
+
+        with self.runtime.lock, self.runtime.db() as db:
+            # A late save from the older operation must not replace the newer
+            # terminal summary. It also recreates the stale pending receipt.
+            self.store.save(db, old)
+
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['id'], current['id'])
+        self.tick()
+        self.assertEqual(self.receipt(old['id'])['status'], 'cancelled')
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['id'], current['id'])
+
     def test_conflicting_pending_pointer_is_not_submitted(self):
         op = self.start_transfer()
         self.set_agent(self.lead_agent['id'], accountTransfer={'id': 'other-pending', 'status': 'pending'})
