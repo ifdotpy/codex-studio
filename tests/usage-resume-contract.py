@@ -43,6 +43,8 @@ class UsageResumeContract(unittest.TestCase):
         self.runtime.dispatch()
         fixture.eventually(lambda: self.runtime.agent(self.key).get('turnId'))
         self.fail_turn()
+        # The failure starts one background limits read; let it land before tests change limits.
+        fixture.eventually(lambda: self.runtime.rate_limits_for('default').get('at'))
 
     def tearDown(self):
         self.runtime.close()
@@ -65,6 +67,7 @@ class UsageResumeContract(unittest.TestCase):
             agent = self.runtime.agent(self.key, db)
             resume = agent['usageResume']
             resume['dueAt'] = time.time() - 1
+            resume['failedAt'] = time.time() - 120
             self.runtime.usage_resume_save(db, agent, resume)
             self.runtime.put(db, 'agents', agent)
 
@@ -101,6 +104,7 @@ class UsageResumeContract(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             agent = self.runtime.agent(self.key, db)
             agent['usageResume']['dueAt'] = time.time() - 1
+            agent['usageResume']['failedAt'] = time.time() - 120
             self.runtime.usage_resume_save(db, agent, agent['usageResume'])
             self.runtime.put(db, 'agents', agent)
         self.runtime.usage_resume_tick()
@@ -119,6 +123,7 @@ class UsageResumeContract(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             agent = self.runtime.agent(self.key, db)
             agent['usageResume']['dueAt'] = time.time() - 1
+            agent['usageResume']['failedAt'] = time.time() - 120
             self.runtime.usage_resume_save(db, agent, agent['usageResume'])
             self.runtime.put(db, 'agents', agent)
         self.runtime.usage_resume_tick()
@@ -218,6 +223,7 @@ class UsageResumeContract(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             agent = self.runtime.agent(self.key, db)
             agent['usageResume']['dueAt'] = time.time() - 1
+            agent['usageResume']['failedAt'] = time.time() - 120
             self.runtime.usage_resume_save(db, agent, agent['usageResume'])
             self.runtime.put(db, 'agents', agent)
         self.runtime.usage_resume_tick()
@@ -246,6 +252,18 @@ class UsageResumeContract(unittest.TestCase):
         self.assertEqual(_next_check(now + 4 * 3600, now), now + 4 * 3600 + RESET_GRACE_SECONDS)
         self.assertEqual(_next_check(None, now), now + POLL_SECONDS)
         self.assertEqual(_next_check(now - 10, now), now + POLL_SECONDS)
+
+    def test_relief_right_after_failure_waits_the_minimum_pause(self):
+        from codex_usage_resume import RESUME_MIN_SECONDS
+        resume = self.runtime.agent(self.key)['usageResume']
+        self.runtime.usage_resume_limits_changed('default', {'data': {'rateLimits': {'primary': {
+            'usedPercent': 15, 'resetsAt': time.time() + 10000}}}})
+        due = self.runtime.agent(self.key)['usageResume']['dueAt']
+        self.assertAlmostEqual(due, resume['failedAt'] + RESUME_MIN_SECONDS, delta=1)
+        calls = list(self.server.calls)
+        self.runtime.usage_resume_tick()
+        self.assertEqual(self.server.calls, calls)
+        self.assertEqual(self.runtime.agent(self.key)['usageResume']['status'], 'scheduled')
 
     def test_failed_turn_schedules_once_and_restart_keeps_identity(self):
         fixture.eventually(lambda: self.runtime.rate_limits_for('default').get('at'))
@@ -321,6 +339,7 @@ class UsageResumeContract(unittest.TestCase):
             agent = self.runtime.agent(self.key, db)
             agent['accountKey'] = 'new-account'
             resume['dueAt'] = time.time() - 1
+            resume['failedAt'] = time.time() - 120
             self.runtime.usage_resume_save(db, agent, resume)
             self.runtime.put(db, 'agents', agent)
         self.runtime.usage_resume_tick()
@@ -332,10 +351,13 @@ class UsageResumeContract(unittest.TestCase):
         fixture.eventually(lambda: self.runtime.agent(worker['id']).get('turnId'))
         worker_server = self.runtime.servers['default']
         worker_agent = self.runtime.agent(worker['id'])
+        reads = sum(method == 'account/rateLimits/read' for method, _ in worker_server.calls)
         worker_server.notify({'method': 'turn/completed', 'params': {'threadId': worker_agent['threadId'], 'turn': {
             'id': worker_agent['turnId'], 'status': 'failed',
                 'error': {'message': 'Rate limit reached', 'codexErrorInfo': 'rateLimitExceeded'},
         }}})
+        # Let the failure's background limits read land before the test changes limits.
+        fixture.eventually(lambda: sum(method == 'account/rateLimits/read' for method, _ in worker_server.calls) > reads)
         return worker, worker_server
 
     def test_same_account_team_resumes_lead_and_worker(self):
@@ -348,6 +370,7 @@ class UsageResumeContract(unittest.TestCase):
             for key in (self.key, worker['id']):
                 agent = self.runtime.agent(key, db)
                 agent['usageResume']['dueAt'] = time.time() - 1
+                agent['usageResume']['failedAt'] = time.time() - 120
                 self.runtime.usage_resume_save(db, agent, agent['usageResume'])
                 self.runtime.put(db, 'agents', agent)
         self.runtime.usage_resume_tick()
@@ -366,6 +389,7 @@ class UsageResumeContract(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             child = self.runtime.agent(worker['id'], db)
             child['usageResume']['dueAt'] = time.time() - 1
+            child['usageResume']['failedAt'] = time.time() - 120
             self.runtime.usage_resume_save(db, child, child['usageResume'])
             self.runtime.put(db, 'agents', child)
         self.runtime.usage_resume_tick()

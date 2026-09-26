@@ -15,6 +15,9 @@ AUTH_BACKOFF_SECONDS = (180, 600, 1800)
 # the account is still blocked after it. Early relief (for example a reset
 # credit) arrives through limit updates and is handled at once.
 RESET_GRACE_SECONDS = 5
+# A short rate limit can fail a turn while every window still has room.
+# Wait this long after the failure so relief cannot resume in a tight loop.
+RESUME_MIN_SECONDS = 60
 
 
 def _next_check(reset, now):
@@ -158,7 +161,7 @@ class UsageResumeMixin:
                 resume['resetAt'] = reset
                 resume['plannedAt'] = reset if reset and reset > now else None
                 if allowed:
-                    resume['dueAt'] = now
+                    resume['dueAt'] = max(now, resume.get('failedAt', now) + RESUME_MIN_SECONDS)
                 elif reset and reset > now:
                     resume['dueAt'] = _next_check(reset, now)
                 resume['updatedAt'] = now
