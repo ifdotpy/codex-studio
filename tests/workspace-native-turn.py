@@ -28,6 +28,7 @@ class Provider(ThreadingHTTPServer):
         self.started = threading.Event()
         self.release = threading.Event()
         self.requests = []
+        self.request_times = []
         self.unexpected = []
         self.lock = threading.Lock()
 
@@ -56,6 +57,7 @@ class ResponsesHandler(BaseHTTPRequestHandler):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         with self.server.lock:
             self.server.requests.append(request)
+            self.server.request_times.append(time.monotonic())
             number = len(self.server.requests)
         response_id = f"resp_local_{number}"
         answer = f"Local fixture response {number}."

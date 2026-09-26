@@ -85,13 +85,13 @@ for (const delivery of ["after_tool", "steer"]) {
   for (const source of [[], [pending]]) {
     const message = outgoingTranscript(source, [local]).items[0];
     assert.equal(message.requestedDelivery, delivery);
-    assert.equal(explicitQueue(message), false);
-    assert.equal(deliveryLabel(message), "Sending…");
+    assert.equal(explicitQueue(message), true);
+    assert.equal(deliveryLabel(message), "Queued");
     assert.equal(dispatchedMessage(message), false);
   }
 }
-assert.equal(explicitQueue({}), true);
-assert.equal(explicitQueue({ requestedDelivery: "queue" }), true);
+assert.equal(explicitQueue({}), false);
+assert.equal(explicitQueue({ requestedDelivery: "queue" }), false);
 assert.equal(
   dispatchedMessage({ ...pending, pending: false, materialized: true }),
   true,

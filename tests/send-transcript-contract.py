@@ -177,11 +177,17 @@ class SendTranscriptContract(unittest.TestCase):
         self.assertEqual(visible[0]["deliveryStatus"], "failed")
         self.assertEqual(visible[0]["text"], "Keep this instruction")
 
-    def test_steer_failure_is_visible_with_its_exact_receipt(self):
+    def test_start_failure_is_visible_with_its_exact_receipt(self):
         agent = self.start(self.lead())
-        self.runtime.server.steer_error = RuntimeError("Fixture steer rejection")
-        with self.assertRaisesRegex(RuntimeError, "Fixture steer rejection"):
+        original = self.runtime.server.submit
+        def reject(method, params):
+            if method == 'turn/start':
+                raise RuntimeError('Fixture start rejection')
+            return original(method, params)
+        with patch.object(self.runtime.server, 'submit', side_effect=reject):
             self.runtime.send(agent["id"], "Second instruction", "steer-one", delivery="steer")
+            self.runtime.dispatch()
+            f.eventually(lambda: self.runtime.delivery_receipt('steer-one')['status'] == 'failed')
         visible = [r for r in self.messages(agent["id"]) if r.get("clientMessageId") == "steer-one"]
         self.assertEqual(len(visible), 1)
         self.assertEqual(visible[0]["deliveryStatus"], "failed")

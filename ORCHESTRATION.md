@@ -134,7 +134,7 @@ Paused chats and native recovery holds remain stopped.
 
 The reviewer keeps its own model, permissions, and conversation history.
 Review instructions ask it to check evidence and discuss findings, without changing the target's files or task scope.
-The agents use their existing message tools. A busy recipient reads queued feedback on a later turn.
+The agents use their existing message tools. Native delivery steers feedback into a busy recipient's turn.
 Pausing or removing an assignment cancels its pending review event. An already submitted turn can finish.
 Timer events are the only automatic review trigger.
 
@@ -277,22 +277,21 @@ The lead receives these additional tools:
 | `orchestration_title` | Set the conversation title from the task. Only a lead can call this tool. |
 | `orchestration_interrupt` | Stop a descendant and its descendants. A follow-up can resume them. |
 | `orchestration_spawn` | Create up to 64 workers in one request. Each worker has a task, role, and optional model, effort, and `fast_mode` overrides. |
-| `orchestration_send` | Queue a follow-up for a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery. |
+| `orchestration_send` | Send a follow-up to a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery. |
 | `orchestration_status` | Read team status and command watches for a decision. |
 | `orchestration_monitor` | Start a command watch. Deliver one result when the command exits. |
 | `orchestration_cancel_monitor` | Cancel a command watch. |
 | `orchestration_request` | List, recover, or cancel your own durable tool requests. |
 
-After delegation, the lead can finish its turn. The runtime queues each child
-result and starts the next lead turn, including after a final answer.
-Events that arrive during a turn wait for that turn to finish. Up to 32 events
-are combined in one input. Repeated completion notifications share an event id.
+After delegation, the lead can finish its turn. The runtime sends each child
+result into an active lead turn or starts a turn when idle, including after a final answer.
+Up to 32 pending events are combined in one input. Repeated completion notifications share an event id.
 A worker with pending children or command watches stays in the waiting state.
 Its parent receives a result after that work settles. A reported result still needs review.
 
 A `turn/start` timeout does not prove that the turn failed to start.
 The runtime retains its reservation until native events or the response establish the outcome.
-New input cannot start another turn while that outcome is unknown.
+The exact reserved batch stays uncertain and is never submitted again.
 Delivery requires the start response or a user-message event with the matching client ID.
 A late response can acknowledge its original input batch but cannot replace a newer turn's state.
 Unknown input is never replayed automatically.
@@ -383,8 +382,8 @@ include the lead and its descendants. The `all` target includes other teams.
 Agents created later can read earlier broadcasts but do not receive their old wake events.
 
 The message and each recipient event commit in one SQLite transaction. Repeating
-one tool call does not duplicate delivery. Messages wait behind an active turn and
-wake a finished recipient. Stopped agents and unused blank leads receive stored
+one tool call does not duplicate delivery. Native delivery steers an active turn and
+wakes a finished recipient. Stopped agents and unused blank leads receive stored
 history only. Peer messages never resume a stopped agent. Agent messages carry
 agent provenance; they do not add user authority. Instructions prohibit acknowledgement loops.
 
@@ -551,12 +550,9 @@ The underlying Codex configuration supplies model access, skills, tools, MCP ser
 context management and permissions. Agent transcripts include answers, tool results,
 plans and changes. Internal reasoning records are not displayed.
 
-The composer offers **After tool call** (native steer at the next model step) and
-**After turn** (a queued message starts the next turn). Parallel tools must finish
-before steer input is consumed; compaction can delay it.
-
-Tab queues a nonempty composer draft after the current turn. Shift+Tab and Tab
-in an empty composer retain focus navigation. The `/model` command uses Enter.
+Enter sends the composer draft. Native delivery starts an idle turn or steers an active turn.
+Parallel tools must finish before the active turn consumes the input. Compaction can delay it.
+Tab and Shift+Tab move focus. The `/model` command uses Enter.
 The queue appears once, above the composer. Its numbered rows support edit,
 delete, drag reorder, and up/down controls. Edits preserve attachments and the
 composer draft. Queue revisions reject stale changes. Durable operation receipts
@@ -612,10 +608,10 @@ The browser never converts a native transcript into a second Studio message.
 The old REST voice and TTS paths are removed. Legacy transcripts remain readable.
 See [voice lifecycle checks](tests/native-voice-contract.py).
 
-Codex 0.153.4's native user queue persists across app-server restarts. However,
-two `thread/queue/add` calls with the same `clientUserMessageId` create two entries.
-Its idle hook starts queued turns without consulting Studio's workspace or team scheduler.
-Retain the Studio queue and receipts until a replacement preserves these controls.
+The installed Codex 0.155.1 accepts `turn/start` into an active or idle turn.
+Repeating an active `turn/start` with the same `clientUserMessageId` adds duplicate model input.
+Studio reserves each batch once and never resubmits an uncertain batch.
+The `delivery` request field accepts legacy values and has no effect.
 See [native integration checks](tests/native-primitives-integration.py).
 
 Import copies visible user and assistant messages from at most the last 20 turns,

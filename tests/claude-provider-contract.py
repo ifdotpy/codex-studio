@@ -61,11 +61,16 @@ class ClaudeProvider(unittest.TestCase):
             self.assertIn(name,names)
         self.assertNotIn('orchestration_speak',names)
         with self.runtime.lock, self.runtime.db() as db:
-            a.update(inFlight=True,turnId='active-turn',status='running')
+            a.update(inFlight=True,turnId='active-turn',threadId='claude-thread',status='running')
             self.runtime.put(db,'agents',a)
+        self.runtime.loaded.add(a['id'])
         result=self.runtime.send(a['id'],'hello',delivery='after_tool')
-        self.assertEqual(result['status'],'delivered')
-        self.assertEqual(self.runtime.send(a['id'],'now',delivery='steer')['status'],'delivered')
+        self.assertEqual(result['status'],'queued')
+        self.runtime.dispatch()
+        f.f.eventually(lambda:self.runtime.delivery_receipt(result['id'])['status']=='delivered')
+        second=self.runtime.send(a['id'],'now',delivery='steer')
+        self.runtime.dispatch()
+        f.f.eventually(lambda:self.runtime.delivery_receipt(second['id'])['status']=='delivered')
         self.runtime.limits('claude-local')
         self.assertIn('claude-local',self.runtime.servers)
 
@@ -73,15 +78,16 @@ class ClaudeProvider(unittest.TestCase):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
         with self.runtime.lock, self.runtime.db() as db:
             current=self.runtime.agent(a['id'],db)
-            current.update(inFlight=True,turnId='active-turn',status='running')
+            current.update(inFlight=True,turnId='active-turn',threadId='claude-thread',status='running')
             self.runtime.put(db,'agents',current)
             self.runtime.enqueue(db,current,'child_result','Claude child result','claude-live-child')
+        self.runtime.loaded.add(a['id'])
         self.runtime.dispatch()
         f.f.eventually(lambda:self.runtime.delivery_receipt('claude-live-child')['status']=='delivered')
         server=self.runtime.servers['claude-local']
-        calls=[params for method,params in server.calls if method=='turn/steer']
+        calls=[params for method,params in server.calls if method=='turn/start']
         self.assertEqual(len(calls),1)
-        self.assertEqual(calls[0]['expectedTurnId'],'active-turn')
+        self.assertEqual(calls[0]['clientUserMessageId'],'claude-live-child')
 
     def test_monitor_approval_sandbox_input_and_cancel_use_claude_connection(self):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})

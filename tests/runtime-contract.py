@@ -27,7 +27,7 @@ def eventually(predicate, timeout=8):
 
 class FakeServer:
     def __init__(self, root, notify, request, died):
-        self.notify, self.request, self.died = notify, request, died
+        self._notify, self.request, self.died = notify, request, died
         self.calls, self.responses = [], []
         self.seq = 0
         self.gate = threading.Event()
@@ -35,6 +35,15 @@ class FakeServer:
         self.fail_start = False
         self.finish_before_reply = False
         self.start_gate = None
+        self.active_turns = {}
+
+    def notify(self, message):
+        if message.get('method') == 'turn/completed':
+            params = message['params']
+            active = self.active_turns.get(params['threadId'])
+            if active and active['id'] == params['turn']['id']:
+                self.active_turns.pop(params['threadId'], None)
+        self._notify(message)
 
     def call(self, method, params, timeout=60):
         self.calls.append((method, params))
@@ -55,12 +64,15 @@ class FakeServer:
                     'sandbox': {'type': 'readOnly'}, 'approvalPolicy': 'on-request'}
         if method == 'turn/start':
             if self.start_gate is not None:
-                self.start_gate.wait(5)
+                self.start_gate.wait(30)
             if self.fail_start:
                 raise RuntimeError('response timed out; outcome unknown')
-            self.seq += 1
-            turn = {'id': f'turn-{self.seq}', 'status': 'inProgress'}
-            self.notify({'method': 'turn/started', 'params': {'threadId': params['threadId'], 'turn': turn}})
+            turn = self.active_turns.get(params['threadId'])
+            if turn is None:
+                self.seq += 1
+                turn = {'id': f'turn-{self.seq}', 'status': 'inProgress'}
+                self.active_turns[params['threadId']] = turn
+                self.notify({'method': 'turn/started', 'params': {'threadId': params['threadId'], 'turn': turn}})
             if self.finish_before_reply:
                 self.complete(params['threadId'], turn['id'])
             return {'turn': turn}
@@ -76,6 +88,7 @@ class FakeServer:
             self.gate.set()
             return {}
         if method == 'turn/interrupt':
+            self.active_turns.pop(params['threadId'], None)
             self.notify({'method': 'turn/completed', 'params': {'threadId': params['threadId'],
                 'turn': {'id': params['turnId'], 'status': 'interrupted'}}})
             return {}
@@ -111,6 +124,8 @@ class FakeServer:
         return True
 
     def complete(self, tid, turn, text='Result with evidence'):
+        if self.active_turns.get(tid, {}).get('id') == turn:
+            self.active_turns.pop(tid, None)
         self.notify({'method': 'item/completed', 'params': {'threadId': tid,
             'item': {'id': turn + '-answer', 'type': 'agentMessage', 'text': text}}})
         self.notify({'method': 'turn/completed', 'params': {'threadId': tid,
@@ -122,6 +137,20 @@ class FakeServer:
 
 
 class RuntimeContract(unittest.TestCase):
+    def test_busy_input_uses_one_start_request_and_local_identity(self):
+        lead = self.lead()
+        original_turn = lead['turnId']
+        self.runtime.send(lead['id'], 'Busy input', 'exact-busy', delivery='steer')
+        eventually(lambda: self.runtime.delivery_receipt('exact-busy')['status'] == 'delivered')
+        calls = [p for method, p in self.runtime.server.calls if method == 'turn/start']
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[-1]['clientUserMessageId'], 'exact-busy')
+        self.assertEqual(self.runtime.agent(lead['id'])['turnId'], original_turn)
+        self.runtime.send(lead['id'], 'Busy input', 'exact-busy', delivery='queue')
+        self.runtime.dispatch()
+        self.assertEqual(len([1 for method, _ in self.runtime.server.calls if method == 'turn/start']), 2)
+        self.assertFalse(any(method == 'turn/steer' for method, _ in self.runtime.server.calls))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -662,17 +691,13 @@ class RuntimeContract(unittest.TestCase):
                                for e in self.runtime.snapshot()['events']))
         with self.runtime.db() as db:
             event_text = db.execute("SELECT text FROM runtime_events WHERE id=?", (event_id,)).fetchone()[0]
-        self.complete(a)
-        eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')
         items = self.runtime.transcript(a['id'])['items']
         user_record = next(item for item in items if item['id'] == a['id'] + ':' + queued['id'])
-        event_record = next(item for item in items if item['id'] == a['id'] + ':' + event_id)
-        self.assertEqual([r['kind'] for r in user_record['inputs']], ['user'])
+        self.assertEqual([r['kind'] for r in user_record['inputs']], ['user', 'agent_message'])
         self.assertEqual(user_record['inputs'][0]['text'], user_text)
-        self.assertEqual([r['kind'] for r in event_record['inputs']], ['agent_message'])
-        self.assertEqual(event_record['inputs'][0]['text'], event_text)
+        self.assertEqual(user_record['inputs'][1]['text'], event_text)
         self.assertIn(user_text, user_record['text'])
-        self.assertIn('[Orchestration event: agent_message]\n' + event_text, event_record['text'])
+        self.assertIn('[Orchestration event: agent_message]\n' + event_text, user_record['text'])
 
     def test_pending_user_message_is_visible_before_next_turn(self):
         a = self.lead()
@@ -789,7 +814,7 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.send(lead['id'], 'Pending result', 'stable-event')
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
-        self.assertEqual(self.runtime.agent(lead['id'])['status'], 'interrupted')
+        self.assertEqual(self.runtime.agent(lead['id'])['status'], 'queued')
         self.assertIsNone(self.runtime.server)
         self.assertEqual(len([e for e in self.runtime.snapshot()['events'] if e['id'] == 'stable-event']), 1)
         self.runtime.send(lead['id'], 'Review interrupted work and continue')

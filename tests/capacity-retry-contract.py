@@ -392,18 +392,19 @@ class CapacityContract(unittest.TestCase):
         finally:
             release.set()
 
-    def test_new_message_keeps_submitted_unknown_retry_reserved(self):
+    def test_new_message_uses_its_own_reservation_after_unknown_retry(self):
         retry = self.fail()
         self.server.fail_start = True
         self.retry(retry)
         fixture.eventually(lambda: self.agent()['capacityRetry']['status'] == 'unknown')
         self.runtime.send(self.key, 'Follow-up task')
         self.runtime.dispatch()
-        self.assertEqual(len(self.starts()), 2)
+        fixture.eventually(lambda: len(self.starts()) == 3)
         self.assertTrue(self.agent()['inFlight'])
         with self.runtime.db() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND status='pending'",
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND status='uncertain'",
                                         (self.key,)).fetchone()[0], 1)
+        self.assertEqual(sum('Follow-up task' in str(p['input']) for p in self.starts()), 1)
 
     def test_stop_and_new_user_instruction_replace_timer(self):
         retry = self.fail()

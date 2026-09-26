@@ -21,7 +21,6 @@ import {
   Trash2,
   Square,
   Terminal,
-  ListEnd,
   RotateCcw,
 } from "lucide-react";
 import {
@@ -110,7 +109,6 @@ export default function Conversation(p: {
   dismissDraft?: (version: DraftVersion) => void;
   send: (options?: {
     assets?: string[];
-    delivery?: "queue" | "steer" | "after_tool";
     attachments?: Attachment[];
     onPersist?: () => void | Promise<void>;
   }) => Promise<void>;
@@ -492,7 +490,7 @@ export default function Conversation(p: {
       setUploading(false);
     }
   };
-  const submit = async (delivery: "queue" | "after_tool" = "after_tool") => {
+  const submit = async () => {
     if (modelCommand) {
       if (!exactModelCommand) {
         p.notify("Use /model without arguments to choose a model.");
@@ -532,7 +530,6 @@ export default function Conversation(p: {
       await p.send({
         assets: assets.map((asset) => asset.id),
         attachments: assets.map(({ preview: _preview, ...asset }) => asset),
-        delivery,
         onPersist: async () => {
           await setAttachments((current) => ({
             ...current,
@@ -1284,11 +1281,6 @@ export default function Conversation(p: {
                 scope={queueScope}
                 onEdit={messageQueue.edit}
                 onCancel={messageQueue.cancel}
-                onSteer={
-                  agent?.inFlight && agent?.turnId
-                    ? messageQueue.steer
-                    : undefined
-                }
                 onReorder={(ids) =>
                   messageQueue.reorder(
                     mergeQueueOrder(
@@ -1353,7 +1345,7 @@ export default function Conversation(p: {
                 mobileClient
                   ? "Use the send button to send."
                   : managed
-                    ? "Enter sends after tool calls. Tab adds a message to the queue. Shift + Enter adds a new line."
+                    ? "Enter sends the message. Shift + Enter adds a new line."
                     : "Enter to send. Shift + Enter for a new line."
               }
               placeholder={
@@ -1373,26 +1365,6 @@ export default function Conversation(p: {
               aria-describedby={draftTooLong ? "draft-length-error" : undefined}
               rows={1}
               onKeyDown={(e) => {
-                if (
-                  e.key === "Tab" &&
-                  managed &&
-                  canSend &&
-                  !modelCommand &&
-                  !e.shiftKey &&
-                  !e.altKey &&
-                  !e.ctrlKey &&
-                  !e.metaKey &&
-                  !e.repeat &&
-                  !e.nativeEvent.isComposing &&
-                  !p.sending &&
-                  !uploading &&
-                  !draftTooLong &&
-                  (p.draft.trim() || assets.length)
-                ) {
-                  e.preventDefault();
-                  void submit("queue");
-                  return;
-                }
                 if (promptRecall.onKeyDown(e)) return;
                 if (
                   !mobileClient &&
@@ -1554,25 +1526,6 @@ export default function Conversation(p: {
                 {p.sending ? "Sending…" : ""}
               </span>
               <div className="composer-submit-actions">
-                {managed && (
-                  <ActionIcon
-                    type="button"
-                    variant="subtle"
-                    aria-label="Queue after turn"
-                    title="Queue after the current turn (Tab)"
-                    aria-keyshortcuts="Tab"
-                    disabled={
-                      !canSend ||
-                      p.sending ||
-                      uploading ||
-                      draftTooLong ||
-                      (!p.draft.trim() && !assets.length)
-                    }
-                    onClick={() => void submit("queue")}
-                  >
-                    <ListEnd size={18} />
-                  </ActionIcon>
-                )}
                 {agent && (
                   <ActionIcon
                     type="button"
@@ -1625,9 +1578,7 @@ export default function Conversation(p: {
                     (!p.draft.trim() && !assets.length)
                   }
                   aria-label="Send message"
-                  title={
-                    managed ? "Send after tool calls (Enter)" : "Send message"
-                  }
+                  title="Send message (Enter)"
                 >
                   {p.sending ? (
                     <Loader size={19} color="currentColor" />

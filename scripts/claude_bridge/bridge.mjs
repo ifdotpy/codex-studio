@@ -1109,8 +1109,16 @@ async function handle(method, p) {
         throw new Error("This message identity has different content");
       return { turn: { id: prior.id, status: prior.status } };
     }
-    if (queries.get(s.id)?.turn)
-      throw new Error("Claude already has an active turn");
+    const running = queries.get(s.id)?.turn;
+    if (running) {
+      await handle("turn/steer", {
+        threadId: s.id,
+        expectedTurnId: running.id,
+        clientUserMessageId: p.clientUserMessageId,
+        input: p.input,
+      });
+      return { turn: { id: running.id, status: running.status }, steered: true };
+    }
     let nativeCommand;
     if (p.claudeCommand) {
       const commands = await handle("claude/commands", { cwd: s.cwd });

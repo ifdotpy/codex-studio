@@ -172,7 +172,7 @@ class QueueOrderContract(unittest.TestCase):
         self.assertEqual(self.metadata("attachment"), before)
         row = self.queue(key)["items"][0]
         self.assertEqual(row["delivery"], "queue")
-        self.assertEqual(row["requestedDelivery"], "after_tool")
+        self.assertEqual(row["requestedDelivery"], "queue")
         self.assertEqual(row["assets"][0]["id"], asset["id"])
         self.assertNotIn("path", row["assets"][0])
         self.runtime.queue_action(key, self.request(key, "edit", message_id="attachment", text=""))

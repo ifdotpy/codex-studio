@@ -122,7 +122,8 @@ class TurnStartContract(unittest.TestCase):
         self.assertEqual(len(self.server.deferred), 1)
         self.accept()
         eventually(lambda: any(e["status"] == "delivered" for e in self.events()))
-        self.assertEqual(self.runtime.agent(key)["turnId"], "deferred-0")
+        self.wait_start(1)
+        self.assertEqual(self.runtime.agent(key)["turnId"], "deferred-1")
 
     def test_client_id_confirms_only_its_exact_batch(self):
         key = self.start()
@@ -159,8 +160,9 @@ class TurnStartContract(unittest.TestCase):
         key = self.start("completed")
         self.server.mode = "started"
         self.runtime.send(key, "Second input")
-        self.wait_start(1)
+        self.assertEqual(len(self.server.deferred), 1)
         self.accept(0)
+        self.wait_start(1)
         first_id = self.server.deferred[0]["params"]["clientUserMessageId"]
         eventually(lambda: any(e["id"] == first_id and e["status"] == "delivered" for e in self.events()))
         self.assertEqual(self.runtime.agent(key)["turnId"], "deferred-1")
@@ -173,8 +175,11 @@ class TurnStartContract(unittest.TestCase):
         key = self.start("completed")
         self.server.mode = "started"
         self.runtime.send(key, "Second input")
+        self.assertEqual(len(self.server.deferred), 1)
+        old_attempt = self.runtime.agent(key)["startAttempt"]["id"]
+        self.accept(0)
         self.wait_start(1)
-        self.reject(message="late rejection")
+        self.runtime.start_error(key, old_attempt, RuntimeError("late rejection"))
         self.assertEqual(self.runtime.agent(key)["status"], "running")
         self.assertEqual(self.runtime.agent(key)["turnId"], "deferred-1")
 

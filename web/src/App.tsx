@@ -707,7 +707,6 @@ export default function App() {
   };
   const send = async (options?: {
     assets?: string[];
-    delivery?: "queue" | "steer" | "after_tool";
     attachments?: Json[];
     onPersist?: () => void | Promise<void>;
   }) => {
@@ -759,10 +758,8 @@ export default function App() {
             room: id,
             text,
             assets: options?.assets || [],
-            delivery: options?.delivery || "after_tool",
           };
         // Retain the exact request until the durable outbox owns its retry.
-        // A turn ending can change the default delivery mode, not this receipt.
         persistSends();
         request = sends.current[id];
         const entry: OutgoingMessage = {

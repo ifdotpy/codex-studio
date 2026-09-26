@@ -206,14 +206,10 @@ try {
           (element) =>
             element.scrollHeight - element.scrollTop - element.clientHeight < 4,
         );
-    const start = async (text, queue = false) => {
+    const start = async (text) => {
       const count = posts.length;
       await input.fill(text);
-      if (queue)
-        await page
-          .getByRole("button", { name: "Queue after turn", exact: true })
-          .click();
-      else await page.locator("#send").click();
+      await page.locator("#send").click();
       await until(
         () => posts.length === count + 1,
         `${mode}: exactly one POST starts`,
@@ -224,30 +220,14 @@ try {
         "",
         `${mode}: draft clears only after the local outbox owns it`,
       );
-      if (queue) {
-        await page
-          .getByTestId("message-queue")
-          .getByText(text, { exact: true })
-          .waitFor();
-        assert.equal(
-          await row(text).count(),
-          0,
-          `${mode}: queued send never flashes in the transcript`,
-        );
-      } else {
-        await row(text).waitFor();
-        assert.equal(
-          await row(text).count(),
-          1,
-          `${mode}: one immediate local message`,
-        );
-      }
+      await row(text).waitFor();
+      assert.equal(await row(text).count(), 1, `${mode}: one immediate local message`);
       assert.equal(
         await input.evaluate((element) => document.activeElement === element),
         true,
         `${mode}: submit retains composer focus`,
       );
-      assert.equal(sent.body.delivery, queue ? "queue" : "after_tool");
+      assert.equal(sent.body.delivery, undefined);
       return sent;
     };
     const accept = async (sent, status = "accepted", expectedDraft = "") => {
@@ -398,7 +378,7 @@ try {
 
     // A delayed projection cannot remove a receipt before materialization.
     const queuedText = `${mode} queued message survives dispatch`;
-    const queued = await start(queuedText, true);
+    const queued = await start(queuedText);
     const queueRow = () =>
       page.getByTestId("message-queue").getByText(queuedText, { exact: true });
     const assertQueueGeometry = async () => {
@@ -598,7 +578,7 @@ try {
     await accept(stale, "queued");
     await row(staleText)
       .getByRole("status")
-      .filter({ hasText: /^Sending…$/ })
+      .filter({ hasText: /^Queued$/ })
       .waitFor();
     const mutationsBeforeStaleRemoval = mutations.length;
     await row(staleText)

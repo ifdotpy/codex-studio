@@ -399,6 +399,20 @@ class Bridge(unittest.TestCase):
         users=[i for i in history[0]['items'] if i['type']=='userMessage']
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
+    def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
+        first = self.turn('steer', 'start-initial')['turn']['id']
+        params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
+                  'input': [{'type': 'text', 'text': 'Native followup'}]}
+        answer = self.call('turn/start', params)
+        self.assertTrue(answer['steered'])
+        self.assertEqual(answer['turn']['id'], first)
+        self.assertEqual(self.call('turn/start', params)['turn']['id'], first)
+        (self.root / '.release-steer').touch()
+        self.assertEqual(self.completed()['id'], first)
+        turns = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})['thread']['turns']
+        self.assertEqual([i['id'] for i in turns[0]['items'] if i['type'] == 'userMessage'],
+                         ['start-initial', 'start-followup'])
+
     def test_plan_never_executes_after_generic_approval(self):
         self.approval='accept'
         self.turn('plan','plan')
