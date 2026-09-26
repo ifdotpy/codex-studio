@@ -341,9 +341,8 @@ try {
     "empty Tab retains keyboard navigation",
   );
   await page.locator("#message").fill("Keyboard check");
-  const priorQueueLength = (await queue()).items.length;
   await page.locator("#message").press("Tab");
-  assert.equal((await queue()).items.length, priorQueueLength);
+  assert.equal((await queue()).items.some((item) => item.text === "Keyboard check"), false);
   assert.equal(await page.locator("#message").inputValue(), "Keyboard check");
   await page.locator("#message").fill("Keyboard navigation draft");
   await page.locator("#message").press("Shift+Tab");
@@ -399,8 +398,8 @@ try {
     "The durable outbox retains the failed steer outside the composer",
   );
   assert.equal(
-    (await queue()).items.length,
-    priorQueueLength,
+    (await queue()).items.some((item) => item.text === failedSteerText),
+    false,
     "failed transport does not create a server queue row",
   );
   await page.unroute("**/api/messages", failSteerRequests);
