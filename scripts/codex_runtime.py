@@ -4082,11 +4082,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if not row:
                 raise ValueError("Unknown complaint")
             c = json.loads(row[0])
+            text, status = data.get("text"), data.get("status")
             if self.complaint_recipient(c) != "user":
-                raise ValueError("This complaint requires a response from its orchestrator")
+                # The owner may close an orchestrator's complaint after its answer, or when the
+                # orchestrator is stopped and cannot answer; otherwise the orchestrator responds.
+                lead = self.agent(c["leadId"], db)
+                answered = any(r.get("author") == c["leadId"] for r in c["responses"])
+                stopped = lead.get("deletedAt") or not lead.get("autoWake")
+                if status not in {"resolved", "declined"} or not (answered or stopped):
+                    raise ValueError("This complaint requires a response from its orchestrator")
             if type(data.get("version")) is not int or data["version"] != c["version"]:
                 raise ComplaintConflict("This complaint changed. Review the latest response before replying")
-            text, status = data.get("text"), data.get("status")
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000 or status not in {"in_progress", "resolved", "declined"}:
                 raise ValueError("Record an action or reason and select in_progress, resolved, or declined")
             response = {"id": key, "author": "user", "text": text.strip(), "status": status, "at": time.time()}
