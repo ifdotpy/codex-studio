@@ -86,6 +86,22 @@ class CapacityContract(unittest.TestCase):
         self.assertEqual(len(self.starts()), 6)
         self.assertEqual(self.fail()['status'], 'exhausted')
 
+    def test_connection_failures_retry_longer_with_the_same_continuation(self):
+        retry = self.fail({'httpConnectionFailed': {'httpStatusCode': None}})
+        self.assertEqual((retry['cause'], retry['maxAttempts'], retry['status']), ('httpConnectionFailed', 7, 'scheduled'))
+        self.assertAlmostEqual(retry['dueAt'] - time.time(), 10, delta=1)
+        self.expire()
+        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.assertEqual(self.starts()[-1]['input'], [])
+        retry = self.fail('responseStreamDisconnected')
+        self.assertEqual((retry['cause'], retry['attempt']), ('responseStreamDisconnected', 2))
+        self.assertAlmostEqual(retry['dueAt'] - time.time(), 30, delta=1)
+
+    def test_request_and_context_errors_are_not_retried(self):
+        for info in ('badRequest', 'contextWindowExceeded', {'other': {}}):
+            self.assertIsNone(self.fail(info))
+            self.assertEqual(len(self.starts()), 1)
+
     def test_cancel_and_stale_timer_do_not_claim_but_manual_retry_can(self):
         retry = self.fail()
         result = self.retry(retry, 'cancel')

@@ -266,7 +266,26 @@ function studioTools(s, getTurn) {
     }),
   });
 }
+// Codex continues a thread on turn/start without input; Claude needs text.
+const CONTINUE_TEXT =
+  "Continue the previous turn from where it stopped. Check the current state first and do not repeat completed work.";
+// Claude API error types that Studio can retry, in Codex error names.
+function claudeErrorInfo(error, text) {
+  if (error === "overloaded") return "serverOverloaded";
+  if (error === "server_error") return "internalServerError";
+  if (error === "authentication_failed") return "unauthorized";
+  if (
+    error === "unknown" &&
+    /can't reach the api server|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection error|socket hang up|fetch failed/i.test(
+      text || "",
+    )
+  )
+    return "httpConnectionFailed";
+  return null;
+}
 async function content(input) {
+  if (Array.isArray(input) && !input.length)
+    return [{ type: "text", text: CONTINUE_TEXT }];
   const result = [];
   for (const item of input || []) {
     if (item.type === "text") result.push({ type: "text", text: item.text });
@@ -338,6 +357,9 @@ async function finishTurn(s, active, result, error) {
         result?.errors?.join("\n") ||
         result?.result ||
         "Claude turn failed",
+      ...(turn.apiErrorInfo && !turn.limitError
+        ? { codexErrorInfo: turn.apiErrorInfo }
+        : {}),
       ...(turn.limitError || {}),
     };
   const answer = turn.items
@@ -721,6 +743,13 @@ async function startSession(s, active, p) {
           });
         }
       } else if (m.type === "assistant") {
+        if (m.error) {
+          const errorText = (m.message.content || [])
+            .filter((b) => b.type === "text")
+            .map((b) => b.text)
+            .join("\n");
+          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
+        }
         active.lastModel = m.message.model || active.lastModel;
         active.lastMessageId = m.message.id || active.lastMessageId;
         active.lastUsage = usageTokens(m.message.usage) || active.lastUsage;
@@ -865,7 +894,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 7 },
+      capabilities: { claudeVersion: 8 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {

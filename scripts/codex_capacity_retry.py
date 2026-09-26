@@ -4,9 +4,15 @@ import json
 import os
 import time
 
-from codex_native_errors import assert_native_thread_open
+from codex_native_errors import assert_native_thread_open, error_kind
 
 DELAYS = (10, 30, 120, 300)
+# A network outage (DNS, Wi-Fi, sleep) can last longer than a busy server.
+CONNECTION_DELAYS = (10, 30, 120, 300, 600, 1200, 1800)
+SERVER_KINDS = {'serverOverloaded', 'internalServerError'}
+CONNECTION_KINDS = {'httpConnectionFailed', 'responseStreamConnectionFailed',
+                    'responseStreamDisconnected', 'responseTooManyFailedAttempts'}
+
 
 
 class CapacityRetryMixin:
@@ -72,8 +78,9 @@ class CapacityRetryMixin:
             if turn.get('status') == 'completed':
                 a.pop('nativeFailureHold', None)
         error = turn.get('error') or {}
+        kind = error_kind(error)
         if (not known_turn or not turn.get('id') or turn.get('status') != 'failed'
-                or not isinstance(error, dict) or error.get('codexErrorInfo') != 'serverOverloaded'
+                or kind not in SERVER_KINDS | CONNECTION_KINDS
                 or not a.get('autoWake') or a.get('deletedAt')
                 or a.get('turnEpoch', a['epoch']) != a['epoch']):
             return
@@ -86,11 +93,12 @@ class CapacityRetryMixin:
         if db.execute('SELECT 1 FROM runtime_capacity_retries WHERE id=?', (retry_id,)).fetchone():
             return
         count = a.get('capacityRetryCount', 0)
+        delays = CONNECTION_DELAYS if kind in CONNECTION_KINDS else DELAYS
         retry = dict(id=retry_id, threadId=a['threadId'], turnId=turn['id'],
-                     accountKey=a.get('accountKey', 'default'), epoch=a['epoch'],
-                     status='scheduled' if count < len(DELAYS) else 'exhausted',
-                     dueAt=time.time() + DELAYS[count] if count < len(DELAYS) else None,
-                     attempt=count + 1, maxAttempts=len(DELAYS),
+                     accountKey=a.get('accountKey', 'default'), epoch=a['epoch'], cause=kind,
+                     status='scheduled' if count < len(delays) else 'exhausted',
+                     dueAt=time.time() + delays[count] if count < len(delays) else None,
+                     attempt=count + 1, maxAttempts=len(delays),
                      cwd=a['cwd'], settings=self.preparation_settings(a))
         a['capacityRetry'] = retry
         self.capacity_save(db, a, retry)

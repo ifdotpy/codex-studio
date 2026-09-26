@@ -5,6 +5,8 @@ import re
 import time
 from pathlib import Path
 
+from codex_native_errors import error_kind
+
 
 POLL_SECONDS = 180
 AUTH_WAIT_NOTICE_SECONDS = 1800
@@ -41,9 +43,7 @@ def _identity(agent, account_key, turn_id):
 
 
 def _limit_error(error):
-    return isinstance(error, dict) and error.get('codexErrorInfo') in {
-        'usageLimitExceeded', 'rateLimitExceeded',
-    }
+    return error_kind(error) in {'usageLimitExceeded', 'rateLimitExceeded'}
 
 
 def _auth_error(error, provider=None):

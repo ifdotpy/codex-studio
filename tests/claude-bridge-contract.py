@@ -93,6 +93,13 @@ export function query({prompt,options}){
     yield {type:'result',subtype:'error',errors:['Claude usage limit reached (five_hour). Resets at '+new Date(resetsAt*1000).toISOString()+'. The turn waits.']};
     continue;
    }
+   if(text==='claude-offline'){
+    const offline="API Error: Can't reach the API server \u2014 check your internet or DNS (ENOTFOUND)";
+    yield {type:'assistant',error:'unknown',message:{id:'offline',content:[{type:'text',text:offline}]}};
+    yield {type:'result',subtype:'success',is_error:true,result:offline};
+    continue;
+   }
+   if(text.startsWith('Continue the previous turn'))fs.writeFileSync(options.cwd+'/.continued',text);
    if(text==='subagent-text'){
     yield {type:'assistant',parent_tool_use_id:'agent-tool',uuid:'worker-message',message:{id:'worker-answer',content:[
       {type:'text',text:'First worker paragraph'},{type:'text',text:'Second worker paragraph'}]}};
@@ -203,6 +210,16 @@ class Bridge(unittest.TestCase):
         self.assertTrue(any(row.get('method') == 'item/completed'
                             and 'Claude usage limit reached (five_hour)' in row.get('params', {}).get('item', {}).get('text', '')
                             for row in self.notifications))
+
+    def test_claude_network_error_is_typed_and_empty_input_continues(self):
+        self.turn('claude-offline', 'offline')
+        failed = self.completed()
+        self.assertEqual(failed['status'], 'failed')
+        self.assertEqual(failed['error']['codexErrorInfo'], 'httpConnectionFailed')
+        self.assertIn('ENOTFOUND', failed['error']['message'])
+        self.call('turn/start', {'threadId': self.thread, 'input': []})
+        self.assertEqual(self.completed()['status'], 'completed')
+        self.assertTrue(any(self.root.rglob('.continued')))
 
     def test_required_thinking_overrides_saved_off_and_optional_switch_restores_it(self):
         self.call('claude/settings', {'threadId': self.thread, 'settings': {'thinking': False}})
