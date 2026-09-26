@@ -1804,6 +1804,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         a.pop("liveSteerRejectedTurnId", None)
         a.pop("queueNotice", None)
         if not attempt:
+            self.put(db, "agents", a)
             return
         submitted = bool(attempt.get("submitted"))
         for event_id in attempt.get("events", []):
@@ -2929,7 +2930,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["activity"] = {"phase": "thinking", "at": time.time()}
                 a["activeTools"] = []
                 if a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
-                    a["status"] = "running"
+                    # A turn that native started itself (Claude after a result,
+                    # background work, compaction) is busy too; new input steers it.
+                    a.update(status="running", inFlight=True)
                     if attempt and a.get("error") == attempt.get("responseError"):
                         a["error"] = None
                 else:

@@ -49,6 +49,28 @@ class CriticalDelivery(unittest.TestCase):
         self.assertEqual(self.starts()[-1]['clientUserMessageId'], 'busy-exact')
         self.assertFalse(any(method == 'turn/steer' for method, _ in self.server.calls))
 
+    def test_native_started_turn_is_busy_and_receives_input_at_once(self):
+        a = self.runtime.agent(self.agent)
+        self.server.notify({'method': 'turn/completed', 'params': {'threadId': a['threadId'],
+            'turn': {'id': a['turnId'], 'status': 'completed'}}})
+        fixture.eventually(lambda: not self.runtime.agent(self.agent).get('inFlight'))
+        self.server.notify({'method': 'turn/started', 'params': {'threadId': a['threadId'],
+            'turn': {'id': 'native-own-turn', 'status': 'inProgress'}}})
+        fixture.eventually(lambda: self.runtime.agent(self.agent).get('turnId') == 'native-own-turn')
+        self.assertTrue(self.runtime.agent(self.agent)['inFlight'])
+        starts = len(self.starts())
+        self.runtime.send(self.agent, 'During native turn', 'native-busy')
+        fixture.eventually(lambda: len(self.starts()) == starts + 1)
+        self.assertEqual(self.starts()[-1]['clientUserMessageId'], 'native-busy')
+
+    def test_legacy_queue_notice_field_is_removed_once(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(self.agent, db)
+            a['queueNotice'] = {'turnId': a['turnId'], 'at': 1, 'id': 'queue-notice:old'}
+            self.runtime.put(db, 'agents', a)
+        self.runtime.dispatch()
+        self.assertNotIn('queueNotice', self.runtime.agent(self.agent))
+
     def test_busy_agent_message_and_child_result_share_one_batch(self):
         with self.runtime.lock, self.runtime.db() as db:
             a = self.runtime.agent(self.agent, db)
