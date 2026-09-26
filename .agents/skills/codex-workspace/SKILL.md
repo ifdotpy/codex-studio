@@ -138,6 +138,9 @@ content; the harness records the change and delivers its event.
 | Accept evidence | Orchestrator: `orchestration_task action=accept` | `task_id` and review reason in `result` | Sets `accepted`, notifies the owner, and releases eligible dependent work. |
 | Request corrections | Orchestrator: `orchestration_task action=reject` | `task_id`; reason and required corrections in `result` | Sets `ready` and delivers these instructions to the owner as `work_decision`. |
 | Give a new or revised assignment | Parent: `orchestration_send` | `agent_id` and instruction in `text` | Native delivery steers an active turn or starts a turn when idle. The old `delivery` field is accepted and ignored. |
+
+The outbox holds input for stops, account moves, context repair, native Review
+or Compact actions, new turn slot waits, and active shared radio turns.
 | Exchange information during work | Agent: `orchestration_message` | `target` and new finding, question, or answer in `text` | Delivers through the selected chat. |
 
 The owner continues from a rejection's `work_decision`, then submits revised evidence.

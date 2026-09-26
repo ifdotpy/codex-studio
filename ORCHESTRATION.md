@@ -612,6 +612,9 @@ The installed Codex 0.155.1 accepts `turn/start` into an active or idle turn.
 Repeating an active `turn/start` with the same `clientUserMessageId` adds duplicate model input.
 Studio reserves each batch once and never resubmits an uncertain batch.
 The `delivery` request field accepts legacy values and has no effect.
+The outbox holds input for a stopped agent, account move, context repair,
+native Review or Compact action, new turn slot wait, or active shared radio turn.
+Private input held during a radio turn enters the native delivery path after that turn ends.
 See [native integration checks](tests/native-primitives-integration.py).
 
 Import copies visible user and assistant messages from at most the last 20 turns,

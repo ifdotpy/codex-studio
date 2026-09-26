@@ -339,8 +339,13 @@ class RuntimeContract(unittest.TestCase):
             self.runtime.complaint(child['id'], response, 'forged', 0)
         self.complete(lead)
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
-        prompt = [p for method, p in self.runtime.server.calls if method == 'turn/start' and p['threadId'] == lead['threadId']][-1]['input'][0]['text']
-        self.assertEqual(prompt.count(c['text']), 1, 'deliver the full complaint once, not an ID-only reminder')
+        eventually(lambda: any(c['text'] in p['input'][0]['text'] for method, p in self.runtime.server.calls
+                               if method == 'turn/start' and p['threadId'] == lead['threadId']))
+        prompts = [p['input'][0]['text'] for method, p in self.runtime.server.calls
+                   if method == 'turn/start' and p['threadId'] == lead['threadId']]
+        prompt = next(text for text in prompts if c['text'] in text)
+        self.assertEqual(sum(text.count(c['text']) for text in prompts), 1,
+                         'deliver the full complaint once, not an ID-only reminder')
         self.assertIn(c['id'], prompt)
         self.assertIn(child['id'], prompt)
         self.assertIn('Reporter', prompt)

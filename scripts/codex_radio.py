@@ -310,7 +310,24 @@ def validate_event(runtime, db, agent, event):
 def select_pending(runtime, db, agent, rows):
     ordinary = [row for row in rows if row['kind'] != 'radio_turn']
     valid = [row for row in rows if row['kind'] == 'radio_turn' and validate_event(runtime, db, agent, row) is None]
-    return valid[:1] if valid else ordinary
+    if valid:
+        return valid[:1]
+    # Private input waits outside a live shared reply. Only the exact answer to
+    # that turn's shared question can enter it.
+    for room in _rooms(db):
+        active = room['radio'].get('active') or {}
+        if active.get('agentId') != agent['id'] or not agent.get('inFlight'):
+            continue
+        turn = _turn(agent, active, _event(db, active))
+        if turn and turn == agent.get('turnId'):
+            for row in ordinary:
+                receipt = db.execute(
+                    "SELECT json_extract(record,'$.radioAnswerTurnId') FROM runtime_event_meta WHERE id=?",
+                    (row['id'],)).fetchone()
+                if receipt and receipt[0] == turn:
+                    return [row]
+            return []
+    return ordinary
 
 
 def holds_floor(runtime, db, agent):
@@ -383,32 +400,6 @@ def _reconcile(runtime, db, room, a, turn):
         else:
             raise ValueError('The full shared reply is unavailable. No truncated reply was forwarded.')
         _message(db, room, room['id'] + ':' + room['radio']['active']['eventId'] + ':' + row['id'], a['id'], text, created=row['created'])
-
-
-def guard_input(runtime, db, agent, question=None):
-    """Keep independent main-chat instructions out of the current shared reply."""
-    agent_id = agent['id'] if isinstance(agent, dict) else agent
-    rooms = [room for room in _rooms(db)
-             if (room['radio'].get('active') or {}).get('agentId') == agent_id]
-    if not rooms:
-        return
-    row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (agent_id,)).fetchone()
-    if not row:
-        return
-    current = json.loads(row[0])
-    if not current.get('inFlight'):
-        return
-    for room in rooms:
-        active = room['radio']['active']
-        turn = _turn(current, active, _event(db, active))
-        if not turn or turn != current.get('turnId'):
-            continue
-        if (isinstance(question, dict) and question.get('method') == 'agent/asyncQuestion'
-                and question.get('status') == 'pending' and question.get('agent') == agent_id
-                and question.get('epoch') == current.get('epoch')
-                and question.get('turnId') == turn):
-            return
-        raise ValueError('This agent is replying in the shared chat. Send there or choose queue.')
 
 
 def _pending_question(db, agent_id, turn):

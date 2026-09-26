@@ -60,10 +60,11 @@ class CriticalDelivery(unittest.TestCase):
         self.assertEqual(self.event('monitor-input')['turn_id'], self.event('child-input')['turn_id'])
 
     def test_unknown_submission_is_not_sent_again(self):
-        with patch.object(self.server, 'submit', side_effect=OSError('connection lost')):
-            self.runtime.send(self.agent, 'Unknown', 'unknown-exact')
-            fixture.eventually(lambda: self.event('unknown-exact')['status'] == 'uncertain')
+        self.server.fail_start = True
+        self.runtime.send(self.agent, 'Unknown', 'unknown-exact')
+        fixture.eventually(lambda: self.event('unknown-exact')['status'] == 'uncertain')
         before = len(self.starts())
+        self.assertEqual(before, 2, 'the native request was submitted before its response was lost')
         self.runtime.send(self.agent, 'Unknown', 'unknown-exact')
         self.runtime.dispatch()
         self.assertEqual(len(self.starts()), before)
@@ -110,17 +111,25 @@ class CriticalDelivery(unittest.TestCase):
 
     def test_new_native_turn_id_supersedes_stale_active_projection(self):
         old = self.runtime.agent(self.agent)['turnId']
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.item(db, self.agent, 'old-output', 'assistant', 'Prior answer',
+                              'Agent', turnId=old)
         self.server.active_turns.clear()
-        self.runtime.send(self.agent, 'Boundary input', 'boundary-input')
-        fixture.eventually(lambda: self.event('boundary-input')['status'] == 'delivered')
+        with patch.dict('os.environ', {'CODEX_CANVAS_CONCURRENCY': '1'}):
+            self.runtime.send(self.agent, 'Boundary input', 'boundary-input')
+            fixture.eventually(lambda: self.event('boundary-input')['status'] == 'delivered')
         new = self.runtime.agent(self.agent)['turnId']
         self.assertNotEqual(new, old)
+        self.assertTrue(self.runtime.agent(self.agent)['inFlight'])
         self.server.notify({'method': 'turn/completed', 'params': {'threadId': self.runtime.agent(self.agent)['threadId'],
             'turn': {'id': old, 'status': 'completed'}}})
         self.assertEqual(self.runtime.agent(self.agent)['turnId'], new)
         with self.runtime.db() as db:
             self.assertIsNotNone(db.execute('SELECT id FROM runtime_completed_turns WHERE id=?',
                 (self.agent + ':' + old,)).fetchone())
+            item = json.loads(db.execute('SELECT record FROM runtime_items WHERE id=?',
+                (self.agent + ':old-output',)).fetchone()[0])
+        self.assertEqual(item['turnStatus'], 'completed')
 
 
 if __name__ == '__main__':

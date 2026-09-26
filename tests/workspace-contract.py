@@ -755,30 +755,31 @@ class WorkspaceContract(unittest.TestCase):
                 lead["id"], {"action": "cancel", "message_id": "queued-0"}
             )
 
-    def test_steer_uses_exact_turn_and_receipt_without_a_second_turn(self):
+    def test_busy_input_uses_native_start_with_exact_receipt(self):
         lead = self.start(self.lead())
         outcome = self.runtime.send(
             lead["id"], "Correction", "steer-id", delivery="steer"
         )
-        self.assertEqual(outcome["status"], "delivered")
+        self.assertEqual(outcome["status"], "queued")
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.delivery_receipt("steer-id")["status"] == "delivered")
         self.runtime.send(lead["id"], "Correction", "steer-id", delivery="steer")
-        steers = [p for m, p in self.runtime.server.calls if m == "turn/steer"]
-        self.assertEqual(len(steers), 1)
-        self.assertEqual(steers[0]["expectedTurnId"], lead["turnId"])
+        self.runtime.dispatch()
+        self.assertFalse(any(m == "turn/steer" for m, _ in self.runtime.server.calls))
         self.assertEqual(
-            sum(m == "turn/start" for m, _ in self.runtime.server.calls), 1
+            sum(m == "turn/start" for m, _ in self.runtime.server.calls), 2
         )
+        self.assertEqual(self.runtime.agent(lead["id"])["turnId"], lead["turnId"])
         self.assertEqual(self.runtime.queue_action(lead["id"])["items"], [])
 
-    def test_steer_timeout_remains_uncertain_and_never_falls_back_to_queue(self):
+    def test_busy_start_timeout_keeps_reserved_batch_uncertain(self):
         lead = self.start(self.lead())
-        self.runtime.server.steer_error = TimeoutError(
-            "Steer response timed out; outcome unknown"
+        self.runtime.server.fail_start = True
+        self.runtime.send(
+            lead["id"], "Correction", "uncertain-steer", delivery="steer"
         )
-        with self.assertRaises(TimeoutError):
-            self.runtime.send(
-                lead["id"], "Correction", "uncertain-steer", delivery="steer"
-            )
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.delivery_receipt("uncertain-steer")["status"] == "uncertain")
         retry = self.runtime.send(
             lead["id"], "Correction", "uncertain-steer", delivery="steer"
         )
@@ -787,10 +788,8 @@ class WorkspaceContract(unittest.TestCase):
         self.runtime.server.complete(lead["threadId"], lead["turnId"])
         self.runtime.dispatch()
         self.assertEqual(
-            sum(m == "turn/start" for m, _ in self.runtime.server.calls), 1
+            sum(m == "turn/start" for m, _ in self.runtime.server.calls), 2
         )
-        with self.assertRaisesRegex(ValueError, "no active turn"):
-            self.runtime.send(lead["id"], "Late correction", delivery="steer")
 
     def test_file_watch_does_not_infer_until_the_file_changes(self):
         lead = self.lead()

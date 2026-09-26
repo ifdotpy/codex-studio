@@ -1587,11 +1587,7 @@ class WorkspaceMixin:
             f"Use your native write_stdin tool for session {task['processId']}. "
             f"Send exactly this JSON string as chars: {json.dumps(text)}."
         )
-        return self.send(
-            a["id"],
-            instruction,
-            delivery="steer" if a.get("turnId") and a.get("inFlight") else "queue",
-        )
+        return self.send(a["id"], instruction)
 
     def workspace_blockers(self, db, a):
         cwd = Path(a["cwd"]).resolve()

@@ -572,31 +572,19 @@ try {
       expectedPosts,
       `${mode}: no automatic duplicate delivery`,
     );
-    // A saved queue receipt can outlive the server transcript and queue row.
+    // A queued receipt remains in the editable queue until native dispatch.
     const staleText = `${mode} stale queue receipt`;
     const stale = await start(staleText);
     await accept(stale, "queued");
-    await row(staleText)
-      .getByRole("status")
-      .filter({ hasText: /^Queued$/ })
-      .waitFor();
-    const mutationsBeforeStaleRemoval = mutations.length;
-    await row(staleText)
-      .getByRole("button", { name: "Remove message", exact: true })
-      .click();
-    await row(staleText).waitFor({ state: "hidden" });
+    await page.getByTestId("message-queue").getByText(staleText).waitFor();
     await page.reload();
     await page.locator(`[data-chat="${a.id}"]`).click();
     await page.locator(`[data-message="${a.id}-history-35"]`).waitFor();
+    await page.getByTestId("message-queue").getByText(staleText).waitFor();
     assert.equal(
       await row(staleText).count(),
       0,
-      `${mode}: stale receipt stays removed after reload`,
-    );
-    assert.equal(
-      mutations.length,
-      mutationsBeforeStaleRemoval,
-      `${mode}: removal does not cancel or resend`,
+      `${mode}: queued receipt has one visible location`,
     );
     await publish(a.id, [
       ...history.get(a.id).items,
@@ -607,11 +595,7 @@ try {
         text: staleText,
       },
     ]);
-    assert.equal(
-      await row(staleText).count(),
-      0,
-      `${mode}: delayed history does not restore the receipt`,
-    );
+    await row(staleText).waitFor();
     // Dismissal hides one receipt on this device without cancelling delivery.
     const dismissedText = `${mode} uncertain message removed from this device`;
     const dismissed = await start(dismissedText);

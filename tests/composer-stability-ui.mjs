@@ -218,7 +218,7 @@ try {
     await page.locator("#send").click();
     await waitForSend();
     await stable("sending before failed delivery");
-    assert.equal(pendingSend.request().postDataJSON().delivery, "after_tool");
+    assert.equal(pendingSend.request().postDataJSON().delivery, undefined);
     await pendingSend.fulfill({
       status: 400,
       json: { error: "Fixture delivery failed" },

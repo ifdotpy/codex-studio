@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transcript receipts preserve Send and queue intent without changing delivery."""
+"""Transcript receipts preserve native input status and legacy metadata."""
 import importlib.util
 import json
 from pathlib import Path
@@ -36,7 +36,7 @@ class MessageIntentContract(unittest.TestCase):
                 db.execute('UPDATE runtime_events SET status=? WHERE agent=?', (status, agent))
             before = self.database()
             receipts = self.receipts(agent)
-            self.assertEqual(receipts['send']['requestedDelivery'], 'after_tool', status)
+            self.assertEqual(receipts['send']['requestedDelivery'], 'queue', status)
             self.assertEqual(receipts['queue']['requestedDelivery'], 'queue', status)
             self.assertEqual(receipts['send']['deliveryStatus'], status)
             self.assertEqual(receipts['queue']['deliveryStatus'], status)
@@ -53,13 +53,13 @@ class MessageIntentContract(unittest.TestCase):
         before = self.database()
         receipts = self.receipts(agent)
         self.assertEqual(set(receipts), {'send', 'queue'})
-        self.assertEqual(receipts['send']['requestedDelivery'], 'after_tool')
+        self.assertEqual(receipts['send']['requestedDelivery'], 'queue')
         self.assertEqual(receipts['queue']['requestedDelivery'], 'queue')
         self.assertTrue(all(entry['materialized'] for entry in receipts.values()))
         self.assertEqual(self.database(), before)
         self.runtime.server.complete(active['threadId'], active['turnId'])
         f.eventually(lambda: not self.runtime.agent(agent).get('inFlight'))
-        self.assertEqual(self.receipts(agent)['send']['requestedDelivery'], 'after_tool')
+        self.assertEqual(self.receipts(agent)['send']['requestedDelivery'], 'queue')
 
     def test_legacy_metadata_and_missing_event_have_conservative_fallback(self):
         agent = self.lead()['id']

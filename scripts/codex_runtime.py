@@ -1772,8 +1772,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             blockers = self.workspace_blockers(db, a)
             if any(b["operation"] not in {"checkpoint", "capture"} for b in blockers):
                 self.assert_workspace_available(db, a)
-            from codex_radio import guard_input
-            guard_input(self, db, a, question=radio_question)
             from codex_budget import budget_admission
             budget_admission(self, db, a)
             if manual or resume:
@@ -1787,6 +1785,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "INSERT INTO runtime_event_meta VALUES (?,?)",
                 (message_id, json.dumps({"assets": assets,
                     "acceptedAt": time.time(),
+                    **({"radioAnswerTurnId": radio_question["turnId"]}
+                       if isinstance(radio_question, dict) and radio_question.get("turnId") else {}),
                     **({"senderId": sender} if sender else {})})),
             )
             return {"id": self.enqueue(db, a, "user" if manual else "followup",
@@ -2623,8 +2623,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["status"] = "queued"
             stopped = not a["autoWake"] or a["epoch"] != attempt["epoch"]
             if not completed:
+                # Studio submits each reserved batch once. The client message ID
+                # helps recovery identify it; native deduplication is not assumed.
                 # Codex returns the containing turn ID for either start or steer.
-                # Its response has no reliable marker, so both settle identically.
+                # A busy agent needs no new slot before submission. If native
+                # starts a new turn anyway, record it even when slots are full.
                 a.update(turnId=turn, inFlight=True)
                 if not stopped:
                     a.update(status="running", error=None)
@@ -3027,12 +3030,28 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 turn = p.get("turn", {})
                 if a["turnId"] and a["turnId"] != turn.get("id"):
                     # A newer turn/start answer can bind its turn before this
-                    # older completion callback arrives. Keep the older outcome.
+                    # older completion callback arrives. Keep effects keyed to
+                    # that turn without ending the current native turn.
                     completion = a["id"] + ":" + str(turn.get("id"))
+                    if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
+                        return
+                    if turn.get("status") == "failed":
+                        turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
+                        refresh_native_limits(self, db, a, turn["error"], turn.get("id"), account_key, connection_id)
+                        notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
+                               "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"])
                     db.execute("INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)", (completion,))
                     db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
                                "WHERE agent=? AND json_extract(record,'$.turnId')=?",
                                (turn.get("status") or "ended", a["id"], turn.get("id")))
+                    for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
+                                          "AND json_extract(record,'$.status')='running' "
+                                          "AND json_extract(record,'$.turnId')=?",
+                                          (a["id"], turn.get("id"))).fetchall():
+                        task = json.loads(row[0])
+                        if task["kind"] != "command" or not task.get("processId"):
+                            task.update(status="interrupted", finished=time.time())
+                            self.put(db, "tasks", task)
                     return
                 completion = a["id"] + ":" + str(turn.get("id"))
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
@@ -4451,7 +4470,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 from codex_radio import route_question_answer
                 if not route_question_answer(self, db, r, text):
                     db.commit()
-                    self.send(a["id"], text, key + ":answer", delivery="after_tool", radio_question=r)
+                    self.send(a["id"], text, key + ":answer", radio_question=r)
                     route_question_answer(self, db, r, text, accepted=True)
                 r["status"] = "answered"
                 record_answer(r, data)
