@@ -32,6 +32,7 @@ export interface Account {
   status: string;
   disconnected?: boolean;
   error?: unknown;
+  authenticationRecovery?: string;
 }
 export interface AccountsState {
   accounts: Account[];
@@ -594,6 +595,9 @@ export default function Accounts({
                       className="account-action-error"
                       value={account.error}
                     />
+                  )}
+                  {account.authenticationRecovery && (
+                    <p role="alert">{account.authenticationRecovery}</p>
                   )}
                   {account.disconnected && <p>Hidden from new chats.</p>}
                   {!account.disconnected && (

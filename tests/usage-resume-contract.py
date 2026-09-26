@@ -2,6 +2,7 @@
 """Automatic usage-limit continuation keeps the exact thread and queued input."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -66,6 +67,127 @@ class UsageResumeContract(unittest.TestCase):
             resume['dueAt'] = time.time() - 1
             self.runtime.usage_resume_save(db, agent, resume)
             self.runtime.put(db, 'agents', agent)
+
+    def schedule_auth_failure(self, provider='codex', message='unexpected status 401 Unauthorized: sign-in expired'):
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent.update(provider=provider, lastCompletedTurn='auth-failed-turn',
+                         lastCompletedTurnStatus='failed', nativeFailureHold=True,
+                         error={'message': message, 'codexErrorInfo': 'other'})
+            turn = {'id': 'auth-failed-turn', 'status': 'failed', 'error': agent['error']}
+            self.runtime.usage_resume_completed(db, agent, turn, True)
+            self.runtime.put(db, 'agents', agent)
+            self.failed_turn_id = turn['id']
+        return self.runtime.agent(self.key)['usageResume']
+
+    def test_auth_failure_schedules_typed_resume_once_and_waits_for_account_proof(self):
+        resume = self.schedule_auth_failure()
+        self.assertEqual(resume['cause'], 'auth')
+        self.assertEqual(resume['status'], 'scheduled')
+        with self.runtime.db() as db:
+            count = db.execute('SELECT COUNT(*) FROM runtime_usage_resumes').fetchone()[0]
+            agent = self.runtime.agent(self.key, db)
+            self.runtime.usage_resume_completed(db, agent, {'id': self.failed_turn_id,
+                'status': 'failed', 'error': {'message': '401 Unauthorized'}}, True)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_usage_resumes').fetchone()[0], count)
+        original_call = self.server.call
+        def unavailable(method, params, timeout=60):
+            if method in {'account/rateLimits/read', 'account/read'}:
+                raise RuntimeError('Account sign-in is not available')
+            return original_call(method, params, timeout)
+        self.server.call = unavailable
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['usageResume']['dueAt'] = time.time() - 1
+            self.runtime.usage_resume_save(db, agent, agent['usageResume'])
+            self.runtime.put(db, 'agents', agent)
+        self.runtime.usage_resume_tick()
+        waiting = self.runtime.agent(self.key)['usageResume']
+        self.assertEqual(waiting['status'], 'scheduled')
+        self.assertTrue(waiting['waitingForAuth'])
+        self.assertTrue(waiting['dueAt'] > time.time())
+        def recovered(method, params, timeout=60):
+            if method == 'account/rateLimits/read':
+                raise RuntimeError('Account sign-in is not available')
+            if method == 'account/read':
+                return {}
+            return original_call(method, params, timeout)
+        self.server.call = recovered
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['usageResume']['dueAt'] = time.time() - 1
+            self.runtime.usage_resume_save(db, agent, agent['usageResume'])
+            self.runtime.put(db, 'agents', agent)
+        self.runtime.usage_resume_tick()
+        self.assertEqual(self.runtime.agent(self.key)['usageResume']['status'], 'started')
+
+    def test_claude_expired_oauth_error_uses_auth_resume(self):
+        resume = self.schedule_auth_failure('claude', 'Failed to authenticate: OAuth session expired')
+        self.assertEqual(resume['cause'], 'auth')
+        self.assertEqual(resume['status'], 'scheduled')
+
+    def test_auth_resume_can_be_turned_off_and_stop_cancels_it(self):
+        resume = self.schedule_auth_failure()
+        cancelled = self.runtime.usage_resume_action(self.key, resume['id'], False)
+        self.assertEqual(cancelled['status'], 'cancelled')
+        self.runtime.stop(self.key, False, 'Stopped by user')
+        self.assertEqual(self.runtime.agent(self.key)['usageResume']['status'], 'cancelled')
+
+    def test_auth_wait_over_bound_appears_once_at_account_level(self):
+        resume = self.schedule_auth_failure()
+        resume['failedAt'] = time.time() - 1801
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            self.runtime.usage_resume_save(db, agent, resume)
+            self.runtime.put(db, 'agents', agent)
+        snapshot = self.runtime.accounts_snapshot()
+        account = next(item for item in snapshot['accounts'] if item['id'] == 'default')
+        self.assertIn('Sign in again', account['authenticationRecovery'])
+        self.assertNotIn('authenticationRecovery', next(
+            item for item in snapshot['accounts'] if item['id'] != 'default') if len(snapshot['accounts']) > 1 else {})
+
+    def test_auth_classifier_uses_only_explicit_codes_and_verified_claude_text(self):
+        from codex_usage_resume import _auth_error
+        self.assertTrue(_auth_error({'message': 'unexpected status 401 Unauthorized'}))
+        self.assertTrue(_auth_error({'message': '403 Forbidden'}))
+        self.assertTrue(_auth_error({'codexErrorInfo': 'unauthorized'}))
+        self.assertTrue(_auth_error({'message': 'Failed to authenticate: OAuth session expired'}, 'claude'))
+        self.assertFalse(_auth_error({'message': 'HTTP 500 internal error'}))
+        self.assertFalse(_auth_error({'message': 'OAuth session expired'}, 'codex'))
+
+    def test_changed_auth_refresh_timestamp_is_account_recovery_proof(self):
+        path = Path(self.temp.name) / 'auth.json'
+        path.write_text(json.dumps({'last_refresh': 'first-refresh', 'tokens': {}}))
+        with self.runtime.accounts.lock:
+            self.runtime.accounts._row('default')['home'] = self.temp.name
+        before = self.runtime.usage_resume_auth_marker('default')
+        metadata = path.stat()
+        path.write_text(json.dumps({'last_refresh': 'second-refresh', 'tokens': {}}))
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        self.assertNotEqual(self.runtime.usage_resume_auth_marker('default'), before)
+
+    def test_refresh_timestamp_change_starts_auth_resume_without_rpc_success(self):
+        path = Path(self.temp.name) / 'auth.json'
+        path.write_text(json.dumps({'last_refresh': 'first-refresh', 'tokens': {}}))
+        with self.runtime.accounts.lock:
+            self.runtime.accounts._row('default')['home'] = self.temp.name
+        resume = self.schedule_auth_failure()
+        metadata = path.stat()
+        path.write_text(json.dumps({'last_refresh': 'second-refresh', 'tokens': {}}))
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        original_call = self.server.call
+        def unavailable(method, params, timeout=60):
+            if method == 'account/read':
+                raise RuntimeError('Account sign-in is not available')
+            return original_call(method, params, timeout)
+        self.server.call = unavailable
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['usageResume']['dueAt'] = time.time() - 1
+            self.runtime.usage_resume_save(db, agent, agent['usageResume'])
+            self.runtime.put(db, 'agents', agent)
+        self.runtime.usage_resume_tick()
+        self.assertEqual(self.runtime.agent(self.key)['usageResume']['status'], 'started')
 
     def test_planned_time_uses_only_exhausted_windows(self):
         from codex_usage_resume import _reset_at

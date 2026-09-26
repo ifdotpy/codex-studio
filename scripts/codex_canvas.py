@@ -774,7 +774,7 @@ def make_server(canvas, port=0, public_origin=None):
                         from codex_claude_login import manager
                         return self.send(manager(runtime).status(q.get("request_id")))
                     if path.path == "/api/accounts":
-                        return self.send(runtime.accounts.snapshot())
+                        return self.send(runtime.accounts_snapshot())
                     if path.path == "/api/projects":
                         return self.send(runtime.projects())
                     if path.path == "/api/questions":
