@@ -58,7 +58,10 @@ This continuation behavior belongs to the managed runtime.
 Codex agents use `orchestration_review` for native code review. Supply a stable
 `request_id`. Omit `target` to review uncommitted changes. Other targets use
 `type: "baseBranch"` with `branch`, `type: "commit"` with `sha`, or
-`type: "custom"` with `instructions`.
+`type: "custom"` with `instructions`. The reviewer uses your model unless you
+pass `model` (for example `gpt-6-astra`) and optional `effort`.
+A Claude agent cannot run native review. To get a review on another model, use
+`orchestration_spawn` with `role: "reviewer"` and `model: "gpt-6-astra"`.
 Studio creates a separate reviewer with read-only access to `cwd`. `cwd`
 defaults to the caller's folder; a relative path starts there, and a shell `cd`
 does not change it. `cwd` must be inside a git repository, or the call fails

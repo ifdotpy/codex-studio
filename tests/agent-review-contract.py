@@ -102,6 +102,31 @@ class AgentReviewContract(unittest.TestCase):
             result = json.loads(db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (self.key,)).fetchone()[0])
         self.assertEqual(json.loads(result['contentItems'][0]['text']), first)
 
+    def test_review_can_select_another_model(self):
+        import copy
+        from unittest.mock import patch as mock_patch
+        import codex_worker_accounts
+        seen = []
+        other = 'gpt-6-sol' if self.actor['model'] == 'gpt-6-astra' else 'gpt-6-astra'
+        real = codex_worker_accounts.resolve
+        def resolve(rt, parent, data, **kwargs):
+            seen.append(data['model'])
+            key, catalog = real(rt, parent, {**data, 'model': self.actor['model']}, **kwargs)
+            catalog = copy.deepcopy(catalog)
+            row = copy.deepcopy(next(r for r in catalog['data'] if r['model'] == self.actor['model']))
+            row.update(model=other, id=other, isDefault=False)
+            catalog['data'].append(row)
+            return key, catalog
+        with mock_patch.object(codex_worker_accounts, 'resolve', side_effect=resolve):
+            value = self.make({'model': other})
+            with self.assertRaisesRegex(ValueError, 'different content'):
+                self.make({'model': self.actor['model']})
+        child = self.runtime.agent(value['agentId'])
+        self.assertEqual(child['model'], other)
+        self.assertEqual(seen, [other])
+        with self.assertRaisesRegex(ValueError, 'Supply model'):
+            validate({'model': ' '})
+
     def test_folder_outside_git_is_rejected_before_a_reviewer_exists(self):
         import shutil
         shutil.rmtree(self.project / '.git')

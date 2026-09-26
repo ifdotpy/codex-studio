@@ -20,19 +20,25 @@ def review_tools(tool, text):
                          'required': ['type', *required], 'additionalProperties': False})
     return [tool('orchestration_review',
         'Request native Codex review in a separate read-only Studio child. Defaults to all uncommitted changes. '
-        'Choose a base branch, commit, or custom instructions through target. The reviewer uses your model and effort, '
-        'subject to the account review_model setting. It works in cwd, which must be inside a git repository. '
+        'Choose a base branch, commit, or custom instructions through target. The reviewer uses your model and effort '
+        'unless you pass model and effort (for example model=gpt-6-astra), subject to the account review_model setting. '
+        'It works in cwd, which must be inside a git repository. '
         'cwd defaults to your folder; a relative path starts there, and a shell cd does not change it. '
         'The reviewer does not receive your chat history. '
         'The result wakes you automatically. Finish your turn while waiting. Use a stable request_id for retries; '
         'read orchestration_request after a lost response. Available in Multi agent mode.',
         {'target': {'anyOf': variants}, 'cwd': {'type': 'string', 'minLength': 1, 'maxLength': 4096},
+         'model': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+         'effort': {'type': 'string', 'minLength': 1, 'maxLength': 40},
          'request_id': {'type': 'string', 'minLength': 1, 'maxLength': 200}})]
 
 
 def validate(args):
-    if not isinstance(args, dict) or set(args) - {'target', 'cwd', 'request_id'}:
-        raise ValueError('Supply only target, cwd and optional request_id')
+    if not isinstance(args, dict) or set(args) - {'target', 'cwd', 'model', 'effort', 'request_id'}:
+        raise ValueError('Supply only target, cwd, model, effort and optional request_id')
+    for name in ('model', 'effort'):
+        if name in args and (not isinstance(args[name], str) or not args[name].strip() or len(args[name]) > 200):
+            raise ValueError('Supply ' + name + ' as a nonempty name')
     if 'request_id' in args:
         value = args['request_id']
         if (not isinstance(value, str) or not 1 <= len(value) <= 200
@@ -68,7 +74,7 @@ def require_repository(directory):
                          'Pass cwd with the repository folder')
 
 
-def _existing(rt, db, key, actor, target, directory):
+def _existing(rt, db, key, actor, target, directory, model):
     child_id = str(uuid.uuid5(uuid.NAMESPACE_URL, key))
     row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (child_id,)).fetchone()
     if not row:
@@ -77,7 +83,7 @@ def _existing(rt, db, key, actor, target, directory):
     review = child.get('nativeReview') or {}
     if (review.get('requestId') != key or review.get('actorId') != actor['id']
             or review.get('target') != target
-            or child.get('cwd') != directory):
+            or child.get('cwd') != directory or child.get('model') != model):
         raise ValueError('This review request id has different content')
     return review['response']
 
@@ -90,8 +96,11 @@ def request(rt, actor, args, key):
         raise ValueError('A native reviewer cannot create another review')
     from codex_runtime import spawn_directory
     directory = spawn_directory(actor['cwd'], args.get('cwd'))
+    model = args.get('model') or actor['model']
+    # Keep the caller's effort only for its own model; another model uses its default.
+    effort = args.get('effort') or (actor.get('effort') if model == actor['model'] else None)
     with rt.lock, rt.db() as db:
-        previous = _existing(rt, db, key, actor, target, directory)
+        previous = _existing(rt, db, key, actor, target, directory, model)
         if previous is not None:
             return previous
         assert_delegation(rt.agent(actor['rootId'], db))
@@ -99,9 +108,9 @@ def request(rt, actor, args, key):
     if actor.get('daybreakEnabled'):
         raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
     from codex_worker_accounts import resolve
-    review_account, catalog = resolve(rt, actor, {'model': actor['model']})
+    review_account, catalog = resolve(rt, actor, {'model': model})
     with rt.lock, rt.db() as db:
-        previous = _existing(rt, db, key, actor, target, directory)
+        previous = _existing(rt, db, key, actor, target, directory, model)
         if previous is not None:
             return previous
         receipt = rt.tool_request(key, db)
@@ -118,7 +127,7 @@ def request(rt, actor, args, key):
             raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
         spec = {'id': str(uuid.uuid5(uuid.NAMESPACE_URL, key)), 'name': 'Review', 'cwd': directory,
                 'role': 'reviewer', 'prompt': 'Run a native code review: ' + json.dumps(target, ensure_ascii=False),
-                'model': current['model'], 'effort': current.get('effort'),
+                'model': model, **({'effort': effort} if effort else {}),
                 'fast_mode': current.get('fastMode', False), 'daybreak_enabled': False}
         # The native target stores the complete instructions. This display field
         # must stay inside create()'s task size limit.
