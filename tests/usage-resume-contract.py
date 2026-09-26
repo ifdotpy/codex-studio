@@ -92,8 +92,10 @@ class UsageResumeContract(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_usage_resumes').fetchone()[0], count)
         original_call = self.server.call
         def unavailable(method, params, timeout=60):
-            if method in {'account/rateLimits/read', 'account/read'}:
-                raise RuntimeError('Account sign-in is not available')
+            if method == 'account/rateLimits/read':
+                raise RuntimeError('401 Unauthorized: token marker-not-a-secret')
+            if method == 'account/read':
+                return {'account': {'id': 'cached-local-account'}}
             return original_call(method, params, timeout)
         self.server.call = unavailable
         with self.runtime.lock, self.runtime.db() as db:
@@ -106,11 +108,12 @@ class UsageResumeContract(unittest.TestCase):
         self.assertEqual(waiting['status'], 'scheduled')
         self.assertTrue(waiting['waitingForAuth'])
         self.assertTrue(waiting['dueAt'] > time.time())
+        self.assertNotIn('marker-not-a-secret', self.runtime.rate_limits_for('default')['error'])
         def recovered(method, params, timeout=60):
             if method == 'account/rateLimits/read':
-                raise RuntimeError('Account sign-in is not available')
+                return {'rateLimits': {'primary': {'usedPercent': 22}}}
             if method == 'account/read':
-                return {}
+                raise RuntimeError('The local account read is not sufficient proof')
             return original_call(method, params, timeout)
         self.server.call = recovered
         with self.runtime.lock, self.runtime.db() as db:
@@ -133,6 +136,32 @@ class UsageResumeContract(unittest.TestCase):
         self.runtime.stop(self.key, False, 'Stopped by user')
         self.assertEqual(self.runtime.agent(self.key)['usageResume']['status'], 'cancelled')
 
+    def test_repeated_auth_failures_back_off_and_keep_one_scheduled_notice(self):
+        from codex_usage_resume import _auth_backoff
+        resume = self.schedule_auth_failure()
+        self.assertEqual(resume['authAttempt'], 0)
+        self.assertEqual(resume['dueAt'] - resume['failedAt'], 180)
+        for number, delay in enumerate((600, 1800, 1800, 1800), start=1):
+            with self.runtime.lock, self.runtime.db() as db:
+                agent = self.runtime.agent(self.key, db)
+                started = agent['usageResume']
+                started.update(status='started', dueAt=None, startedAt=time.time())
+                self.runtime.usage_resume_save(db, agent, started)
+                turn_id = f'auth-retry-{number}'
+                error = {'message': '401 Unauthorized: token rejected', 'codexErrorInfo': 'other'}
+                agent.update(lastCompletedTurn=turn_id, lastCompletedTurnStatus='failed',
+                             nativeFailureHold=True, error=error)
+                self.runtime.usage_resume_completed(db, agent,
+                    {'id': turn_id, 'status': 'failed', 'error': error}, True)
+                self.runtime.put(db, 'agents', agent)
+                resume = agent['usageResume']
+                self.assertEqual(resume['authAttempt'], number)
+                self.assertAlmostEqual(resume['dueAt'] - resume['failedAt'], delay, delta=.1)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_usage_resumes "
+                    "WHERE json_extract(record,'$.status')='scheduled' "
+                    "AND json_extract(record,'$.cause')='auth'").fetchone()[0], 1)
+        self.assertEqual([_auth_backoff(i) for i in (0, 1, 2, 3, 8)], [180, 600, 1800, 1800, 1800])
+
     def test_auth_wait_over_bound_appears_once_at_account_level(self):
         resume = self.schedule_auth_failure()
         resume['failedAt'] = time.time() - 1801
@@ -149,7 +178,12 @@ class UsageResumeContract(unittest.TestCase):
     def test_auth_classifier_uses_only_explicit_codes_and_verified_claude_text(self):
         from codex_usage_resume import _auth_error
         self.assertTrue(_auth_error({'message': 'unexpected status 401 Unauthorized'}))
-        self.assertTrue(_auth_error({'message': '403 Forbidden'}))
+        self.assertTrue(_auth_error({'message': 'HTTP 401'}))
+        self.assertFalse(_auth_error({'message': '403 Forbidden'}))
+        self.assertTrue(_auth_error({'message': '403 Forbidden: invalid API key'}))
+        self.assertTrue(_auth_error({'message': '403: the token has expired'}))
+        self.assertFalse(_auth_error({'message': '403 permission denied by policy'}))
+        self.assertTrue(_auth_error({'message': '403 Unauthorized'}))
         self.assertTrue(_auth_error({'codexErrorInfo': 'unauthorized'}))
         self.assertTrue(_auth_error({'message': 'Failed to authenticate: OAuth session expired'}, 'claude'))
         self.assertFalse(_auth_error({'message': 'HTTP 500 internal error'}))

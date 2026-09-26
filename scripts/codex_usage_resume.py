@@ -8,6 +8,7 @@ from pathlib import Path
 
 POLL_SECONDS = 180
 AUTH_WAIT_NOTICE_SECONDS = 1800
+AUTH_BACKOFF_SECONDS = (180, 600, 1800)
 # Check once just after a known reset. Poll only without a reset time, or when
 # the account is still blocked after it. Early relief (for example a reset
 # credit) arrives through limit updates and is handled at once.
@@ -16,6 +17,11 @@ RESET_GRACE_SECONDS = 5
 
 def _next_check(reset, now):
     return reset + RESET_GRACE_SECONDS if reset and reset > now else now + POLL_SECONDS
+
+
+def _auth_backoff(attempt):
+    index = max(0, int(attempt or 0))
+    return AUTH_BACKOFF_SECONDS[min(index, len(AUTH_BACKOFF_SECONDS) - 1)]
 CONTINUATION = (
     "The previous turn stopped because this account reached a usage or rate limit. "
     "Check the current task and conversation state, then continue the same task. "
@@ -49,7 +55,14 @@ def _auth_error(error, provider=None):
     if isinstance(info, str) and 'auth' in info.lower():
         return True
     message = str(error.get('message') or '')
-    if re.search(r'\b(?:401|403)\s+(?:unauthorized|forbidden)\b', message, re.I):
+    auth_evidence = re.search(
+        r'\b(?:invalid|expired|revoked).{0,32}\b(?:token|key)\b'
+        r'|\b(?:token|key)\b.{0,32}\b(?:invalid|expired|revoked)\b'
+        r'|\bsign[ -]?in\b|\bauthentication required\b|\bunauthorized\b',
+        message, re.I)
+    if re.search(r'\b401\b', message):
+        return True
+    if re.search(r'\b403\b', message) and auth_evidence:
         return True
     return provider == 'claude' and bool(re.search(
         r'oauth session expired|failed to authenticate', message, re.I))
@@ -156,7 +169,7 @@ class UsageResumeMixin:
                     agent['usageResume'] = resume
                     self.put(db, 'agents', agent)
 
-    def usage_resume_record(self, agent, turn_id, error):
+    def usage_resume_record(self, agent, turn_id, error, *, auth_attempt=0):
         account_key = agent.get('accountKey', 'default')
         now = time.time()
         cause = ('usage_limit' if error.get('codexErrorInfo') == 'usageLimitExceeded' else
@@ -165,11 +178,12 @@ class UsageResumeMixin:
         error_reset = error.get('resetsAt') if isinstance(error.get('resetsAt'), (int, float)) else None
         reset = max(filter(None, (_reset_at(snapshot.get('data') or {}), error_reset)), default=None)
         planned_at = reset if reset and reset > now else None
-        due = now + POLL_SECONDS if cause == 'auth' else _next_check(reset, now)
+        due = now + _auth_backoff(auth_attempt) if cause == 'auth' else _next_check(reset, now)
         auth_marker = self.usage_resume_auth_marker(account_key) if cause == 'auth' else None
         return dict(id=_identity(agent, account_key, turn_id), status='scheduled', accountKey=account_key,
                     threadId=agent['threadId'], epoch=agent['epoch'], turnId=turn_id,
-                    cause=cause, failedAt=now, authRefreshMarker=auth_marker,
+                    cause=cause, failedAt=now, authAttempt=auth_attempt if cause == 'auth' else 0,
+                    authRefreshMarker=auth_marker,
                     dueAt=due, plannedAt=planned_at, resetAt=reset, reason=None)
 
     def usage_resume_auth_marker(self, account_key):
@@ -191,22 +205,6 @@ class UsageResumeMixin:
         except (OSError, KeyError, ValueError, AttributeError):
             return None
 
-    def usage_resume_auth_recovered(self, account_key):
-        try:
-            with self.accounts.lock:
-                provider = self.accounts._row(account_key).get('provider')
-            if provider == 'claude':
-                return self.accounts.get(account_key).get('status') == 'ready'
-        except Exception:
-            return False
-        try:
-            server = self.connect(account_key)
-            server.call('account/read', {'refreshToken': False}, timeout=10)
-            return True
-        except Exception:
-            pass
-        return False
-
     def usage_resume_completed(self, db, agent, turn, known_turn):
         if turn.get('status') == 'completed':
             now = time.time()
@@ -224,6 +222,9 @@ class UsageResumeMixin:
                     if (target.get('usageResume') or {}).get('id') == row['id']:
                         target['usageResume'] = resume
                         self.put(db, 'agents', target)
+            current_resume = agent.get('usageResume') or {}
+            if current_resume.get('cause') == 'auth' and current_resume.get('status') == 'started':
+                agent['authResumeAttempt'] = 0
         error = turn.get('error') or {}
         if (not known_turn or turn.get('status') != 'failed' or not turn.get('id') or not agent.get('threadId')
                 or agent.get('deletedAt') or not agent.get('autoWake') or not agent.get('usageResumeEnabled', True)
@@ -239,8 +240,11 @@ class UsageResumeMixin:
             assert_native_thread_open(agent)
         except ValueError:
             return
-        resume = self.usage_resume_record(agent, turn['id'], error)
+        auth_attempt = max(0, int(agent.get('authResumeAttempt', 0))) if _auth_error(error, agent.get('provider')) else 0
+        resume = self.usage_resume_record(agent, turn['id'], error, auth_attempt=auth_attempt)
         self.usage_resume_save(db, agent, resume)
+        if resume.get('cause') == 'auth':
+            agent['authResumeAttempt'] = auth_attempt + 1
 
     def usage_resume_action(self, key, resume_id, enabled):
         if type(enabled) is not bool:
@@ -268,7 +272,10 @@ class UsageResumeMixin:
                         if existing:
                             resume = json.loads(existing['record'])
                         else:
-                            resume = self.usage_resume_record(agent, turn_id, error)
+                            attempt = max(0, int(agent.get('authResumeAttempt', 0)))
+                            resume = self.usage_resume_record(agent, turn_id, error, auth_attempt=attempt)
+                            if resume.get('cause') == 'auth':
+                                agent['authResumeAttempt'] = attempt + 1
                     if current_id == resume['id'] and resume['status'] in {'scheduled', 'cancelled'}:
                         resume.update(status='scheduled', reason=None)
                         now = time.time()
@@ -297,10 +304,9 @@ class UsageResumeMixin:
             by_account.setdefault(resume['accountKey'], []).append((row['agent'], resume))
         results = {}
         for account_key, candidates in by_account.items():
-            if all(resume.get('cause') == 'auth' for _, resume in candidates):
-                continue
             try:
-                results[account_key] = self.limits(account_key, force=True)
+                redact = any(resume.get('cause') == 'auth' for _, resume in candidates)
+                results[account_key] = self.limits(account_key, force=True, redact_errors=redact)
             except Exception:
                 results[account_key] = None
         auth_proofs = {}
@@ -309,19 +315,17 @@ class UsageResumeMixin:
             if not auth_candidates:
                 continue
             limits = results.get(account_key) or {}
-            fresh_auth_read = (not limits.get('error') and not limits.get('stale')
-                               and isinstance(limits.get('at'), (int, float)))
             current_marker = self.usage_resume_auth_marker(account_key)
             changed_mtime = {resume['id'] for resume in auth_candidates
                              if current_marker is not None and resume.get('authRefreshMarker') is not None
                              and current_marker != resume['authRefreshMarker']}
-            account_probe_ok = self.usage_resume_auth_recovered(account_key)
-            probe_at = time.time() if account_probe_ok else 0
             for resume in auth_candidates:
                 auth_proofs[resume['id']] = (
                     resume.get('proofAt', 0) > resume.get('failedAt', 0)
-                    or fresh_auth_read and limits['at'] > resume.get('failedAt', 0)
-                    or account_probe_ok and probe_at > resume.get('failedAt', 0)
+                    or (not limits.get('error') and not limits.get('stale')
+                        and limits.get('accountKey', account_key) == account_key
+                        and isinstance(limits.get('at'), (int, float))
+                        and limits['at'] > resume.get('failedAt', 0))
                     or resume['id'] in changed_mtime)
         with self.lock, self.db() as db:
             for account_key, candidates in by_account.items():
@@ -332,7 +336,7 @@ class UsageResumeMixin:
                          and isinstance(limits.get('at'), (int, float)) and limits['at'] >= now - 5)
                 allowed = fresh and _allowed(data, now)
                 reset_at = _reset_at(data)
-                next_due = now + POLL_SECONDS if candidates and candidates[0][1].get('cause') == 'auth' else _next_check(reset_at, now)
+                next_due = _next_check(reset_at, now)
                 for key, resume in candidates:
                     agent = self.agent(key, db)
                     stored = agent.get('usageResume') or {}
@@ -362,7 +366,7 @@ class UsageResumeMixin:
                         continue
                     auth_recovered = resume.get('cause') == 'auth' and auth_proofs.get(resume['id'], False)
                     if not (auth_recovered if resume.get('cause') == 'auth' else allowed):
-                        resume.update(dueAt=now + POLL_SECONDS if resume.get('cause') == 'auth' else next_due,
+                        resume.update(dueAt=now + _auth_backoff(resume.get('authAttempt', 0)) if resume.get('cause') == 'auth' else next_due,
                                       plannedAt=reset_at if reset_at and reset_at > now else None,
                                       resetAt=reset_at, lastCheckedAt=limits.get('at'),
                                       waitingForAuth=resume.get('cause') == 'auth',

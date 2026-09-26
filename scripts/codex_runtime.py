@@ -12,6 +12,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import threading
@@ -35,7 +36,7 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_capacity_retry import CapacityRetryMixin
-from codex_usage_resume import UsageResumeMixin
+from codex_usage_resume import UsageResumeMixin, _auth_error
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
 
@@ -4016,7 +4017,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock:
             return self.limit_refresh_locks.setdefault(account_key, threading.Lock())
 
-    def limits(self, account_key="default", force=False, connection_id=None):
+    def limits(self, account_key="default", force=False, connection_id=None, redact_errors=False):
         account = self.accounts.get(account_key)
         with self.limit_refresh_lock(account_key):
             with self.lock:
@@ -4057,7 +4058,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         # Only this read is safe to repeat after a lost response.
                         continue
                     else:
-                        self.set_rate_limits(account_key, {**current, "error": str(error), "checkedAt": time.time()})
+                        error_text = str(error)
+                        payload = getattr(error, "error", None)
+                        is_auth_error = _auth_error(payload if isinstance(payload, dict)
+                                                     else {"message": error_text})
+                        is_auth_status = bool(re.search(
+                            r"\b(?:401|403)\s+(?:unauthorized|forbidden)\b", error_text, re.I))
+                        detail = ("Account limits could not be read."
+                                  if redact_errors or is_auth_error or is_auth_status else error_text)
+                        self.set_rate_limits(account_key, {**current, "error": detail, "checkedAt": time.time()})
                     return self.rate_limits_for(account_key)
 
     @staticmethod
