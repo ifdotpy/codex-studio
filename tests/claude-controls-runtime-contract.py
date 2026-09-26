@@ -154,6 +154,13 @@ class Controls(unittest.TestCase):
         self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {'customModels': []}}, self.server))
         self.assertNotIn('default', self.rt.servers)
 
+    def test_current_bridge_version_stays_and_checks_native_tasks(self):
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 9}}
+        self.server.provider_options = {}
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
+        self.server.state['tasks'] = [{'task_id': 'background'}]
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {'customModels': []}}, self.server))
+
     def test_bridge_upgrade_waits_for_studio_monitors(self):
         self.server.initialize_result = {'capabilities': {'claudeVersion': 2}}
         self.server.provider_options = {}

@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_runtime import Runtime
+from codex_native_errors import NativeRpcError
 
 spec = importlib.util.spec_from_file_location('runtime_fixture', Path(__file__).with_name('runtime-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -69,6 +70,54 @@ class CriticalDelivery(unittest.TestCase):
         self.runtime.dispatch()
         self.assertEqual(len(self.starts()), before)
         self.assertEqual(self.event('unknown-exact')['status'], 'uncertain')
+
+    def test_known_busy_rejection_waits_for_turn_end_then_delivers_once(self):
+        original_turn = self.runtime.agent(self.agent)['turnId']
+        original_call = self.server.call
+        def reject(method, params, timeout=60):
+            if method == 'turn/start' and params.get('clientUserMessageId') == 'rejected-exact':
+                self.server.calls.append((method, params))
+                raise NativeRpcError({'code': -32600, 'message': 'Cannot steer review',
+                    'data': {'codexErrorInfo': {'activeTurnNotSteerable': {'turnKind': 'review'}}}})
+            return original_call(method, params, timeout)
+        with patch.object(self.server, 'call', side_effect=reject):
+            self.runtime.send(self.agent, 'Keep this input', 'rejected-exact')
+            fixture.eventually(lambda: self.runtime.agent(self.agent).get('steerRejectedTurnId') == original_turn)
+        self.assertEqual(self.event('rejected-exact')['status'], 'pending')
+        self.assertEqual(self.runtime.agent(self.agent)['status'], 'running')
+        self.assertIsNone(self.runtime.agent(self.agent)['error'])
+        pending = [item for item in self.runtime.transcript(self.agent)['items']
+                   if item.get('clientMessageId') == 'rejected-exact']
+        self.assertEqual(len(pending), 1)
+        self.assertFalse(pending[0]['materialized'])
+        self.assertEqual(len(self.runtime.queue_action(self.agent)['items']), 1)
+        for _ in range(3):
+            self.runtime.dispatch()
+        self.assertEqual(sum(p.get('clientUserMessageId') == 'rejected-exact' for p in self.starts()), 1)
+        self.server.complete(self.runtime.agent(self.agent)['threadId'], original_turn)
+        fixture.eventually(lambda: self.event('rejected-exact')['status'] == 'delivered')
+        self.assertEqual(sum(p.get('clientUserMessageId') == 'rejected-exact' for p in self.starts()), 2)
+        self.assertNotEqual(self.event('rejected-exact')['turn_id'], original_turn)
+
+    def test_busy_rejection_does_not_report_start_failed_to_parent(self):
+        child = self.runtime.create({'name': 'Worker', 'prompt': 'First child input'}, self.agent)
+        fixture.eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        current = self.runtime.agent(child['id'])
+        original_call = self.server.call
+        def reject(method, params, timeout=60):
+            if method == 'turn/start' and params.get('clientUserMessageId') == 'child-rejected':
+                raise NativeRpcError({'code': -32600, 'message': 'no active turn to steer'})
+            return original_call(method, params, timeout)
+        with patch.object(self.server, 'call', side_effect=reject):
+            self.runtime.send(child['id'], 'Keep child input', 'child-rejected')
+            fixture.eventually(lambda: self.runtime.delivery_receipt('child-rejected')['status'] == 'pending'
+                and self.runtime.agent(child['id']).get('steerRejectedTurnId') == current['turnId'])
+        with self.runtime.db() as db:
+            failures = db.execute("SELECT id FROM runtime_events WHERE kind='child_result' "
+                "AND id LIKE 'child:%start-failed:%'").fetchall()
+        self.assertEqual(failures, [])
+        self.assertEqual(self.runtime.agent(child['id'])['status'], 'running')
+        self.assertIsNone(self.runtime.agent(child['id'])['error'])
 
     def test_busy_input_ignores_full_team_slot(self):
         with patch.dict('os.environ', {'CODEX_CANVAS_CONCURRENCY': '1'}):

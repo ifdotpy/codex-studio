@@ -89,6 +89,34 @@ class ClaudeProvider(unittest.TestCase):
         self.assertEqual(len(calls),1)
         self.assertEqual(calls[0]['clientUserMessageId'],'claude-live-child')
 
+    def test_claude_bridge_steer_rejection_waits_for_idle_turn(self):
+        a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
+        with self.runtime.lock,self.runtime.db() as db:
+            a.update(inFlight=True,turnId='claude-active',threadId='claude-thread',status='running')
+            self.runtime.put(db,'agents',a)
+        self.runtime.loaded.add(a['id'])
+        server=self.runtime.connect('claude-local')
+        original=server.call
+        def reject(method,params,timeout=60):
+            if method=='turn/start' and params.get('clientUserMessageId')=='claude-rejected':
+                server.calls.append((method,params))
+                raise RuntimeError('The steer belongs to a different Claude turn')
+            return original(method,params,timeout)
+        with patch.object(server,'call',side_effect=reject):
+            self.runtime.send(a['id'],'Keep Claude input','claude-rejected')
+            self.runtime.dispatch()
+            f.f.eventually(lambda:self.runtime.agent(a['id']).get('steerRejectedTurnId')=='claude-active')
+        self.assertEqual(self.runtime.delivery_receipt('claude-rejected')['status'],'pending')
+        self.assertIsNone(self.runtime.agent(a['id'])['error'])
+        self.runtime.dispatch()
+        self.assertEqual(sum(p.get('clientUserMessageId')=='claude-rejected'
+            for method,p in server.calls if method=='turn/start'),1)
+        server.complete('claude-thread','claude-active')
+        self.runtime.dispatch()
+        f.f.eventually(lambda:self.runtime.delivery_receipt('claude-rejected')['status']=='delivered')
+        self.assertEqual(sum(p.get('clientUserMessageId')=='claude-rejected'
+            for method,p in server.calls if method=='turn/start'),2)
+
     def test_monitor_approval_sandbox_input_and_cancel_use_claude_connection(self):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
         with self.runtime.lock, self.runtime.db() as db:

@@ -177,7 +177,7 @@ class SendTranscriptContract(unittest.TestCase):
         self.assertEqual(visible[0]["deliveryStatus"], "failed")
         self.assertEqual(visible[0]["text"], "Keep this instruction")
 
-    def test_start_failure_is_visible_with_its_exact_receipt(self):
+    def test_busy_start_rejection_keeps_its_exact_pending_receipt(self):
         agent = self.start(self.lead())
         original = self.runtime.server.submit
         def reject(method, params):
@@ -187,11 +187,12 @@ class SendTranscriptContract(unittest.TestCase):
         with patch.object(self.runtime.server, 'submit', side_effect=reject):
             self.runtime.send(agent["id"], "Second instruction", "steer-one", delivery="steer")
             self.runtime.dispatch()
-            f.eventually(lambda: self.runtime.delivery_receipt('steer-one')['status'] == 'failed')
+            f.eventually(lambda: self.runtime.agent(agent['id']).get('steerRejectedTurnId') == agent['turnId'])
         visible = [r for r in self.messages(agent["id"]) if r.get("clientMessageId") == "steer-one"]
         self.assertEqual(len(visible), 1)
-        self.assertEqual(visible[0]["deliveryStatus"], "failed")
+        self.assertEqual(visible[0]["deliveryStatus"], "pending")
         self.assertEqual(visible[0]["text"], "Second instruction")
+        self.assertFalse(self.runtime.agent(agent['id']).get('error'))
 
     def test_pending_receipts_do_not_scan_older_transcript_payloads(self):
         key = self.lead()["id"]

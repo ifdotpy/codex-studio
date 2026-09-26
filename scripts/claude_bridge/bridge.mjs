@@ -894,7 +894,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 8 },
+      capabilities: { claudeVersion: 9 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {

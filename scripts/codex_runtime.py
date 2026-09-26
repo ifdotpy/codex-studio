@@ -2236,6 +2236,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                     "AND epoch=? LIMIT 1", (a["id"], a["epoch"])).fetchone())
                     and a["autoWake"]
                     and not a.get("nativeFailureHold")
+                    and not (a.get("inFlight") and "steerRejectedTurnId" in a
+                             and (not a.get("turnId") or a["steerRejectedTurnId"] == a["turnId"]))
                     and (not context_repair_blocked(a) or a.get("contextRepairWait"))
                     and not safety_retry_active(a)
                     and (not a.get("inFlight") or
@@ -2348,6 +2350,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         (event["id"],),
                     )
                 self.capacity_reset(db, a)
+                a.pop("steerRejectedTurnId", None)
                 a.update(status="running" if busy else "starting", inFlight=True, turnEpoch=a["epoch"],
                          startAttempt={"id": uid(), "epoch": a["epoch"], "activeAtReservation": busy,
                                        "accountKey": a.get("accountKey", "default"),
@@ -2668,6 +2671,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # Stop/disconnect owns its visible state. Unknown requests retain
             # their reservation until acceptance, rejection, or disconnection.
             current_epoch = a["epoch"] == attempt["epoch"]
+            if (not unknown and attempt.get("activeAtReservation")
+                    and current_epoch and a["autoWake"]):
+                # Native definitively rejected this busy input. It is safe to
+                # return the exact batch to the outbox, but another busy attempt
+                # would repeat the rejection until this native turn ends.
+                a["steerRejectedTurnId"] = a.get("turnId") or ""
+                a.update(status="running" if a.get("inFlight") else "queued", error=None)
+                a.pop("startAttempt", None)
+                for event_id in attempt["events"]:
+                    db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL "
+                               "WHERE id=? AND agent=? AND epoch=? "
+                               "AND status IN ('reserved','dispatching')",
+                               (event_id, agent_id, attempt["epoch"]))
+                if attempt["events"]:
+                    db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?",
+                               (agent_id + ":" + attempt["events"][0], agent_id))
+                self.put(db, "agents", a)
+                self.changed.set()
+                return
             if unknown:
                 if current_epoch and a["autoWake"]:
                     attempt["responseError"] = str(error)

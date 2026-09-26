@@ -9,7 +9,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_radio import manage, tick, observe_item, select_pending, validate_event, guard_message, guard_input, route_question_answer, holds_floor
+from codex_radio import manage, tick, observe_item, select_pending, validate_event, guard_message, route_question_answer, holds_floor
 
 spec = importlib.util.spec_from_file_location('peers', Path(__file__).with_name('peer-teams-contract.py'))
 peers = importlib.util.module_from_spec(spec)
@@ -278,20 +278,24 @@ class Radio(unittest.TestCase):
             rows = db.execute("SELECT text,created FROM runtime_chat_messages WHERE text IN ('earlier','later') ORDER BY seq").fetchall()
             self.assertEqual([(r['text'], r['created']) for r in rows], [('earlier', 10), ('later', 20)])
 
-    def test_private_input_guard_allows_only_current_shared_question(self):
+    def test_private_input_waits_while_shared_answer_can_dispatch(self):
         self.action('send', text='question')
         a, turn = self.start()
         with self.runtime.db() as db:
-            with self.assertRaisesRegex(ValueError, 'Send there or choose queue'):
-                guard_input(self.runtime, db, a)
-            question = dict(agent=a, method='agent/asyncQuestion', status='pending', epoch=1, turnId=turn)
-            guard_input(self.runtime, db, a, question=question)
-            with self.assertRaises(ValueError):
-                guard_input(self.runtime, db, a, question=question | {'turnId': 'old'})
-            guard_input(self.runtime, db, 'b')
+            db.execute('CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT)')
+            agent = json.loads(db.execute('SELECT record FROM runtime_agents WHERE id=?', (a,)).fetchone()[0])
+            self.runtime.enqueue(db, agent, 'user', 'private', 'private')
+            private = [dict(db.execute("SELECT * FROM runtime_events WHERE id='private'").fetchone())]
+            self.assertEqual(select_pending(self.runtime, db, agent, private), [])
+            self.runtime.enqueue(db, agent, 'user', 'shared answer', 'answer')
+            db.execute('INSERT INTO runtime_event_meta VALUES (?,?)',
+                       ('answer', json.dumps({'radioAnswerTurnId': turn})))
+            pending = [dict(row) for row in db.execute("SELECT * FROM runtime_events WHERE id IN ('private','answer')")]
+            self.assertEqual([row['id'] for row in select_pending(self.runtime, db, agent, pending)], ['answer'])
         self.answer(a, turn)
         with self.runtime.db() as db:
-            guard_input(self.runtime, db, a)
+            agent = json.loads(db.execute('SELECT record FROM runtime_agents WHERE id=?', (a,)).fetchone()[0])
+            self.assertEqual([row['id'] for row in select_pending(self.runtime, db, agent, private)], ['private'])
 
     def test_completed_question_holds_floor_and_answer_resumes_same_agent(self):
         self.action('send', text='question')
