@@ -269,9 +269,12 @@ class SessionCostReader:
                     if record.get("rootId") == root or entry["id"] == root:
                         agents.append((entry["id"], record))
             except sqlite3.OperationalError:
-                agents = [(agent_id, agent)]
+                agents = []
             if not any(key == agent_id for key, _ in agents):
-                agents.append((agent_id, agent))
+                # A new chat can reach the runtime before analytics records it.
+                row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+                if row:
+                    agents.append((agent_id, json.loads(row["record"])))
             claude_agents = {}
             for member_id, member in agents:
                 current_key = member.get("accountKey", "default")

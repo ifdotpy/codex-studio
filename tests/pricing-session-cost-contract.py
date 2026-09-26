@@ -218,6 +218,21 @@ class PricingSessionCostContract(unittest.TestCase):
         self.assertIsNone(result["totalUSD"])
         self.assertEqual(result["unknownModels"], [])
 
+    def test_session_cost_reads_a_chat_that_analytics_has_not_recorded(self):
+        db_path = self.root / "canvas.sqlite3"
+        db = sqlite3.connect(db_path)
+        db.executescript("""
+          CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+        """)
+        db.execute("INSERT INTO runtime_agents VALUES ('fresh',?)", (json.dumps({"rootId": "fresh"}),))
+        db.commit()
+        db.close()
+        reader = SessionCostReader(db_path, FixedPricing())
+        result = reader._compute("fresh", "fresh")
+        self.assertEqual((result["rootId"], result["pricedSamples"]), ("fresh", 0))
+
     def test_session_cost_cache_waits_30_seconds_and_keeps_at_most_16_roots(self):
         db_path = self.root / "canvas.sqlite3"
         db = sqlite3.connect(db_path)
