@@ -145,8 +145,15 @@ class PrepareSteerContract(unittest.TestCase):
         entry = self.pending_prepare(a)
         entry["future"].set_exception(RuntimeError("invalid project"))
         eventually(lambda: self.runtime.agent(a["id"])["status"] == "failed")
-        self.assertEqual(self.runtime.snapshot()["events"][0]["status"], "failed")
+        # Never sent, so the first prompt waits for the next start instead of being lost.
+        self.assertEqual(self.runtime.snapshot()["events"][0]["status"], "pending")
         self.assertEqual(self.count("turn/start"), 0)
+        self.server.hold.discard("thread/start")
+        self.runtime.send(a["id"], "Try again", "retry-after-prepare")
+        eventually(lambda: self.count("turn/start") == 1)
+        text = next(p for m, p in self.server.calls if m == "turn/start")["input"][0]["text"]
+        self.assertIn("First", text)
+        self.assertIn("Try again", text)
 
     def test_disconnect_finishes_shared_preparation_without_accepting_late_identity(self):
         self.server.hold.add("thread/start")

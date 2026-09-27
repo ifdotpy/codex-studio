@@ -2731,8 +2731,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
+                # Input never sent to the provider waits for the next start (the agent
+                # stays failed, so nothing retries by itself); sent input stays failed.
                 status = ("uncertain" if attempt.get("submitted") else "reserved") if unknown else (
-                    "failed" if current_epoch else "cancelled")
+                    "cancelled" if not current_epoch else "failed" if attempt.get("submitted") else "pending")
                 db.execute("UPDATE runtime_events SET status=?, error=? WHERE id=? "
                            "AND status IN ('pending','reserved','dispatching','uncertain')", (status, str(error), event_id))
             if current_epoch and not unknown and a.get("status") == "failed":
