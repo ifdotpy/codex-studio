@@ -220,7 +220,8 @@ Existing read-only permissions still apply.
 Only the orchestrator uses `orchestration_agent_manage`. Inspect a worker before
 recovery or archive. `recover` reconciles native turn state; it never replays input.
 Archive only after reviewing the result or assigning its remaining work elsewhere.
-`archive` requires `agent_id` and `reason`. It preserves history and files, and
+`archive_finished` checks finished descendants and removes safe worktrees after archive.
+`archive` requires `agent_id` and `reason`. It preserves history and dirty files, and
 refuses active commands, pending or uncertain requests, unfinished
 assignments, or unarchived children. `list_archived` supports `limit` and `cursor`.
 `restore` returns a worker paused. Use `orchestration_send` for explicit continuation.

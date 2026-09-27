@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -119,6 +120,127 @@ class Contract(unittest.TestCase):
             a=self.rt.agent('lead',db);a['maxAgents']=1;self.rt.put(db,'agents',a)
         with self.assertRaisesRegex(ValueError,'limit'):self.call('restore')
 
+
+class RealWorktreeContract(Contract):
+    def setUp(self):
+        super().setUp()
+        self.repo = Path(self.tmp.name) / 'project'
+        self.repo.mkdir()
+        self.git('init', '-q')
+        self.git('config', 'user.email', 'fixture@example.test')
+        self.git('config', 'user.name', 'Fixture')
+        (self.repo / 'tracked.txt').write_text('initial\n')
+        (self.repo / '.gitignore').write_text('build/\n.worktrees/\n')
+        self.git('add', 'tracked.txt', '.gitignore')
+        self.git('commit', '-qm', 'initial')
+        self.checkout('worker')
+
+    def git(self, *args, cwd=None):
+        return subprocess.run(['git', '-C', str(cwd or self.repo), *args], check=True,
+                              capture_output=True, text=True, timeout=30).stdout.strip()
+
+    def checkout(self, key, status='completed'):
+        path = self.repo / '.worktrees' / 'codex-agents' / key
+        self.git('worktree', 'add', '-q', '-b', 'codex-agent/' + key, str(path))
+        with self.rt.db() as db:
+            try: a = self.rt.agent(key, db)
+            except ValueError:
+                a = {'id': key, 'name': key, 'parentId': 'lead', 'rootId': 'lead',
+                     'isLead': False, 'autoWake': False, 'epoch': 1, 'threadId': key,
+                     'inFlight': False}
+            a.update(cwd=str(path), branch='codex-agent/' + key, worktree=True,
+                     worktreeReady=True, status=status)
+            self.rt.put(db, 'agents', a)
+        return path
+
+    def test_clean_archive_keeps_ref_and_restore_recreates_checkout(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        head = self.git('rev-parse', 'HEAD', cwd=path)
+        (path / 'build').mkdir()
+        (path / 'build' / 'cache').write_text('ignored bytes')
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'removed')
+        self.assertGreater(result['worktree']['bytes'], 0)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.git('rev-parse', 'refs/codex-agents/archive/worker'), head)
+        self.assertEqual(self.git('rev-parse', 'refs/heads/codex-agent/worker'), head)
+        restored = self.call('restore')
+        self.assertEqual(restored['status'], 'restored')
+        self.assertTrue(path.is_dir())
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=path), head)
+        self.assertFalse((path / 'build' / 'cache').exists())
+
+    def test_dirty_and_untracked_worktrees_stay_with_exact_reason(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        (path / 'tracked.txt').write_text('changed\n')
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertIn('tracked or untracked', result['worktree']['reason'])
+        self.assertTrue(path.exists())
+        self.assertEqual(self.call('restore')['status'], 'restored')
+        (path / 'tracked.txt').write_text('initial\n')
+        (path / 'new.txt').write_text('new')
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertIn('tracked or untracked', result['worktree']['reason'])
+
+    def test_bulk_skips_active_and_keeps_deleted_worktrees(self):
+        second = self.checkout('second')
+        third = self.checkout('third')
+        self.worker(inFlight=True)
+        result = self.call('archive_finished')
+        self.assertEqual(result['archived'], 2)
+        self.assertFalse(second.exists())
+        self.assertFalse(third.exists())
+        self.assertTrue(any(item['id'] == 'worker' and 'active_turn' in item['reason']
+                            for item in result['kept']))
+        self.assertEqual(self.call('archive_finished')['archived'], 0)
+        self.assertTrue((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
+        self.worker(inFlight=False, deletedAt=1)
+        report = self.call('maintenance_report')['worktrees']
+        self.assertEqual(report, [{'id': 'worker', 'reason': 'removable'}])
+        self.assertTrue((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
+
+    def test_non_lead_cannot_bulk_archive(self):
+        with self.assertRaisesRegex(ValueError, 'Only the active orchestrator'):
+            manage_agent(self.rt, 'worker', {'action': 'archive_finished'}, 1)
+
+    def test_nested_registered_worktree_is_never_removed_with_ignored_files(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        child = path / '.worktrees' / 'codex-agents' / 'child'
+        self.git('worktree', 'add', '-q', '-b', 'codex-agent/child', str(child))
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertIn('nested', result['worktree']['reason'])
+        self.assertTrue(child.exists())
+
+    def test_retry_finishes_a_removed_worktree_with_saved_cleanup_stage(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        head = self.git('rev-parse', 'HEAD', cwd=path)
+        with self.rt.db() as db:
+            a = self.rt.agent('worker', db)
+            a.update(deletedAt=1, autoWake=False, status='paused', epoch=2,
+                     agentArchive={'at': 1, 'epoch': 2, 'cleanupPending': True},
+                     worktreeCleanup={'root': str(path.resolve()), 'repo': str(self.repo.resolve()),
+                                      'relative': '.', 'branch': 'codex-agent/worker',
+                                      'head': head, 'bytes': 4096,
+                                      'identity': [2, str(path), 1]})
+            self.rt.put(db, 'agents', a)
+        self.git('update-ref', 'refs/codex-agents/archive/worker', head)
+        self.git('worktree', 'remove', '--force', str(path))
+        result = self.call('archive')
+        self.assertEqual(result['worktree'], {'state': 'removed', 'bytes': 4096})
+        with self.rt.db() as db:
+            self.assertFalse(self.rt.agent('worker', db)['worktreeReady'])
+
+    def test_restore_adopts_exact_checkout_after_lost_database_result(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        self.assertEqual(self.call('archive')['worktree']['state'], 'removed')
+        self.git('worktree', 'add', str(path), 'codex-agent/worker')
+        self.assertEqual(self.call('restore')['status'], 'restored')
+        with self.rt.db() as db:
+            self.assertTrue(self.rt.agent('worker', db)['worktreeReady'])
+
 class RuntimeRouteContract(unittest.TestCase):
     def test_native_tool_preserves_receipts_and_ui_visibility(self):
         import importlib.util
@@ -135,8 +257,11 @@ class RuntimeRouteContract(unittest.TestCase):
                 db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?",(a['id'],))
             def invoke(number,tool,args):
                 rt.dynamic({'id':number,'params':{'threadId':lead['threadId'],'callId':str(number),'tool':tool,'arguments':args}})
-                result=next(r for r in rt.server.responses if r['id']==number)['result']
+                result=next(r for r in reversed(rt.server.responses) if r['id']==number)['result']
                 self.assertTrue(result['success'],str(result))
+                return result
+            first_bulk=invoke(9200,'orchestration_agent_manage',{'action':'archive_finished'})
+            self.assertEqual(invoke(9200,'orchestration_agent_manage',{'action':'archive_finished'}),first_bulk)
             invoke(9201,'orchestration_agent_manage',{'action':'inspect','agent_id':worker['id']})
             archive = {'action':'archive','agent_id':worker['id'],'reason':'Reviewed fixture'}
             invoke(9202,'orchestration_agent_manage',archive)
@@ -147,6 +272,37 @@ class RuntimeRouteContract(unittest.TestCase):
             invoke(9203,'orchestration_agent_manage',{'action':'restore','agent_id':worker['id']})
             self.assertIn(worker['id'],[a['id'] for a in rt.snapshot()['agents']])
             self.assertFalse(rt.agent(worker['id'])['autoWake'])
+        finally:case.tearDown()
+
+    def test_lead_reminder_starts_at_three_and_deduplicates_same_set(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('runtime_fixture',Path(__file__).with_name('runtime-contract.py'))
+        f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
+        case=f.RuntimeContract();case.setUp()
+        try:
+            rt=case.runtime;lead=case.lead()
+            workers=[rt.create({'name':f'Worker {i}','prompt':'Review','role':'reviewer'},
+                               lead['id'],defer=True) for i in range(3)]
+            with rt.lock,rt.db() as db:
+                for worker in workers:
+                    a=rt.agent(worker['id'],db)
+                    a.update(status='completed',autoWake=False,worktreeReady=True)
+                    rt.put(db,'agents',a)
+                third=rt.agent(workers[2]['id'],db)
+                third['worktreeReady']=False;rt.put(db,'agents',third)
+                actor=rt.agent(lead['id'],db)
+                rt.enqueue(db,actor,'user','Continue','reminder-two')
+                self.assertNotIn('archive_finished',rt.model_turn_context(db,actor,'reminder-two'))
+                third['worktreeReady']=True;rt.put(db,'agents',third)
+                rt.enqueue(db,actor,'user','Continue','reminder-three')
+                self.assertIn('Studio: 3 finished workers keep worktrees.',
+                              rt.model_turn_context(db,actor,'reminder-three'))
+                db.execute("UPDATE runtime_events SET status='delivered' WHERE id='reminder-three'")
+                rt.enqueue(db,actor,'user','Continue','reminder-repeat')
+                self.assertNotIn('archive_finished',rt.model_turn_context(db,actor,'reminder-repeat'))
+                actor['compactions']=1
+                rt.enqueue(db,actor,'user','Continue','reminder-compacted')
+                self.assertNotIn('archive_finished',rt.model_turn_context(db,actor,'reminder-compacted'))
         finally:case.tearDown()
 
 if __name__=='__main__':unittest.main()

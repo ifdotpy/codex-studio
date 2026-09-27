@@ -551,6 +551,21 @@ class EfficiencyMixin:
         if unchanged:
             blocks.append('[Complaints still requiring a response] ' + ', '.join(c['id'] for c in unchanged)
                           + '. The full text was delivered earlier. Read orchestration_context topic=complaints if needed.')
+        if actor.get('isLead'):
+            from codex_agent_management import _finished
+            waiting = sorted(a['id'] for a in self.records(db, 'agents')
+                             if a['rootId'] == actor['id'] and a['id'] != actor['id']
+                             and not a.get('deletedAt') and a.get('worktreeReady') and _finished(a))
+            if len(waiting) >= 3:
+                versions['worktreeReminder'] = digest(waiting)
+                delivered = db.execute(
+                    "SELECT 1 FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
+                    "WHERE e.agent=? AND e.status='delivered' "
+                    "AND json_extract(m.record,'$.contextManifest.versions.worktreeReminder')=? LIMIT 1",
+                    (actor['id'], versions['worktreeReminder'])).fetchone()
+                if known.get('worktreeReminder') != versions['worktreeReminder'] and not delivered:
+                    blocks.append(f'Studio: {len(waiting)} finished workers keep worktrees. '
+                                  'Run orchestration_agent_manage action=archive_finished.')
         meta = db.execute('SELECT record FROM runtime_event_meta WHERE id=?', (event_id,)).fetchone()
         metadata = json.loads(meta[0]) if meta else {}
         metadata['contextManifest'] = {'epoch': epoch, 'versions': versions, 'sequence': old.get('sequence', 0) + 1}

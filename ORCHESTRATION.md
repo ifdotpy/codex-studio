@@ -765,16 +765,25 @@ account admission, or permission settings change as part of these budgets.
 ## Worker archive and recovery
 
 `orchestration_agent_manage` belongs to the lead. It manages only descendants in
-that lead's team. Actions are `inspect`, `recover`, `archive`, `restore`, and
-`list_archived`. Inspection returns bounded blocker IDs. Recovery reads the exact
+that lead's team. Actions are `inspect`, `recover`, `archive`, `archive_finished`,
+`restore`, `list_archived`, and `maintenance_report`. Inspection returns bounded blocker IDs. Recovery reads the exact
 native turn through the existing reconciler; a failed read leaves its outcome unknown.
 
 Archive requires a reason. It hides a worker through the existing tombstone filter
-and stores a separate archive receipt with its actor, time, and epoch. No history,
-worktree, file, or native thread is deleted. Active work and uncertain
-receipts block archive. Archive children before their parent. Restore checks the
-receipt, parent, and team limit; it leaves automatic continuation disabled. A later
-user deletion or stop invalidates that archive receipt. Repeated calls are safe.
+and stores a separate archive receipt with its actor, time, and epoch. Active work
+and uncertain receipts block archive. A clean, registered Studio worktree is
+removed after an archive ref saves its HEAD. The branch, history, and native thread
+remain. Dirty worktrees stay with an exact reason. Restore recreates a removed
+worktree from its saved ref and branch before it returns the worker paused.
+Archive children before their parent. A later user deletion or stop invalidates
+the archive receipt. Repeated calls keep the same request result.
+
+`archive_finished` checks completed, failed, interrupted, and stopped paused
+descendants. It archives only workers with safe worktrees. The result reports
+the archive count, measured freed bytes, and a reason for each worker kept.
+The lead sees one reminder when three or more finished workers hold worktrees.
+`maintenance_report` lists worktrees of deleted or archived agents without
+removing them.
 
 The shared Studio skill documents the workspace bridge for existing native threads.
 Tests: `tests/agent-management-contract.py`.

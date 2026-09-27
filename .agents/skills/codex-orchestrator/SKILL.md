@@ -20,6 +20,7 @@ acceptance. Request corrections when the evidence does not support completion.
 Create a task for each delegated result and pass its `task_id` to `orchestration_spawn`.
 The worker then submits evidence to that task, and you accept or reject it.
 Inspect the agent's state before recovery if it is stopped or cannot continue.
+Run `orchestration_agent_manage action=archive_finished` after accepting finished worker results.
 
 Keep one agent plan. Send changes to a subagent's plan through its chat.
 Use agent messages for coordination. Use the shared team channel when all team
