@@ -884,6 +884,35 @@ class WorkspaceContract(unittest.TestCase):
             )
         self.assertEqual((self.project / "tracked.txt").read_text(), "unstaged\n")
 
+    def test_snapshot_from_the_real_index_matches_a_full_rehash(self):
+        lead = self.git_project()
+        (self.project / "gone.txt").write_text("gone\n")
+        self.git(self.project, "add", "gone.txt")
+        self.git(self.project, "commit", "-qm", "Second")
+        (self.project / "tracked.txt").write_text("staged\n")
+        self.git(self.project, "add", "tracked.txt")
+        (self.project / "tracked.txt").write_text("unstaged\n")
+        (self.project / "gone.txt").unlink()
+        (self.project / "new.txt").write_text("untracked\n")
+        index = self.git(self.project, "write-tree")
+        tree = self.runtime.snapshot_tree(self.runtime.agent(lead["id"]))
+        scratch = self.root / "full-index"
+        env = {**os.environ, "GIT_INDEX_FILE": str(scratch)}
+        subprocess.run(["git", "-C", str(self.project), "read-tree", "HEAD"], env=env, check=True)
+        subprocess.run(["git", "-C", str(self.project), "add", "-A", "--", "."], env=env, check=True)
+        full = subprocess.run(["git", "-C", str(self.project), "write-tree"], env=env,
+                              check=True, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(tree, full)
+        self.assertEqual(self.git(self.project, "write-tree"), index)
+
+    def test_failed_first_checkpoint_does_not_stop_the_worker(self):
+        worker, path = self.isolated_worker()
+        self.agent_update(worker, worktreeReady=False, threadId=None)
+        with patch.object(type(self.runtime), "snapshot_tree", side_effect=ValueError("git add timed out")):
+            prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
+        self.assertTrue(prepared.get("threadId"))
+        self.assertIn("git add timed out", self.runtime.agent(worker["id"])["checkpointError"])
+
     def test_checkpoint_restore_rejects_stale_preview_and_provider_failure_before_files(
         self,
     ):

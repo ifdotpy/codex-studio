@@ -8,6 +8,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -611,8 +612,16 @@ class WorkspaceMixin:
         with tempfile.TemporaryDirectory(
             prefix="checkpoint-", dir=self.root
         ) as directory:
-            env = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
-            self.git(a, ["read-tree", "HEAD"], env)
+            index = Path(directory) / "index"
+            env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+            # Start from a copy of the real index: its file stat data lets `add -A`
+            # hash only changed files. A fresh read-tree index hashes every file,
+            # which takes minutes in a Chromium-size worktree.
+            source = Path(a["cwd"]) / self.git(a, ["rev-parse", "--git-path", "index"]).decode().strip()
+            if source.is_file():
+                shutil.copyfile(source, index)
+            else:
+                self.git(a, ["read-tree", "HEAD"], env)
             self.git(a, ["add", "-A", "--", "."], env)
             return self.git(a, ["write-tree"], env).decode().strip()
 

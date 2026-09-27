@@ -2057,7 +2057,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 latest.update(cwd=project_directory, branch=branch, worktreeReady=True)
                 self.put(db, "agents", latest)
                 a = latest
-            self.checkpoint_capture(a["id"], "Before first turn", internal=True)
+            try:
+                self.checkpoint_capture(a["id"], "Before first turn", internal=True)
+            except (ValueError, subprocess.SubprocessError, OSError) as error:
+                # The new worktree equals HEAD; a missing first checkpoint must not stop the worker.
+                with self.lock, self.db() as db:
+                    latest = self.agent(a["id"], db)
+                    latest["checkpointError"] = "Checkpoint skipped: " + str(error)[:500]
+                    self.put(db, "agents", latest)
+                    a = latest
         if a["id"] not in self.loaded:
             if "nativeEffort" not in a:
                 catalog = self.catalog(a.get("accountKey", "default"))
