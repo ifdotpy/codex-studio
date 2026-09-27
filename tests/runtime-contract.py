@@ -311,6 +311,24 @@ class RuntimeContract(unittest.TestCase):
         self.assertNotEqual(child['id'], replacement['id'])
         self.assertEqual(len(self.runtime.team(lead['id'])['agents']), 2)
 
+    def test_finished_workers_do_not_consume_active_team_capacity(self):
+        lead = self.lead(maxAgents=2)
+        finished = [self.runtime.create({'name': str(i), 'prompt': 'Review', 'role': 'reviewer'},
+                                        lead['id'], defer=True) for i in range(3)]
+        self.assertEqual(len(finished), 3)
+        active = self.runtime.create({'name': 'Active', 'prompt': 'Review', 'role': 'reviewer'},
+                                     lead['id'], defer=False)
+        self.assertIn(active['status'], {'queued', 'starting', 'running'})
+        with self.assertRaisesRegex(ValueError, '3 finished agents.*archive_finished'):
+            self.runtime.create({'name': 'Overflow', 'prompt': 'Review', 'role': 'reviewer'},
+                                lead['id'], defer=False)
+        self.runtime.dynamic({'id': 7701, 'params': {'threadId': lead['threadId'],
+            'callId': 'capacity-batch', 'tool': 'orchestration_spawn',
+            'arguments': {'agents': [{'name': 'Overflow', 'prompt': 'Review', 'role': 'reviewer'}]}}})
+        reply = next(r for r in self.runtime.server.responses if r['id'] == 7701)['result']
+        self.assertFalse(reply['success'])
+        self.assertIn('3 finished agents', reply['contentItems'][0]['text'])
+
     def test_delete_stops_tree_and_rejects_retry_or_late_wakeup(self):
         lead = self.lead()
         child = self.runtime.create({'name': 'Peer', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])

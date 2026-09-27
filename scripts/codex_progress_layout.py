@@ -227,12 +227,17 @@ def main():
     try:
         if path.name != "PROGRESS.md" or path.parent.parent.name != "progress":
             raise ValueError("Use the exact per-agent PROGRESS.md path from Studio")
-        deadline = time.monotonic() + args.wait
+        started = time.monotonic()
+        deadline = started + args.wait
         while True:
             result = layout_status(path.parent.parent.parent, path.parent.name)
             if result["status"] != "unmeasured" or time.monotonic() >= deadline:
                 break
             time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        if args.wait and result['status'] == 'unmeasured':
+            result['waitedSeconds'] = round(time.monotonic() - started, 3)
+            result['next'] = ('No client measured the current revision during this wait. '
+                              'Keep a short status until a visible client measures it.')
     except (OSError, ValueError) as error:
         result = {"status": "unmeasured", "error": str(error)}
     print(json.dumps(result, ensure_ascii=False, indent=2))

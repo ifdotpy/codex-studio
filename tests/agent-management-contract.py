@@ -2,6 +2,7 @@
 """Team cleanup boundaries with isolated SQLite and no native mutations."""
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_agent_management import manage_agent
@@ -31,6 +33,7 @@ class Store(EfficiencyMixin, RequestMixin):
                 db.execute(f'CREATE TABLE runtime_{table} (id TEXT PRIMARY KEY, record TEXT)')
             db.execute('CREATE TABLE runtime_events (id TEXT PRIMARY KEY, agent TEXT, epoch INT, status TEXT)')
             db.execute('CREATE TABLE runtime_tool_results (id TEXT PRIMARY KEY, result TEXT)')
+            db.execute('CREATE TABLE runtime_completed_turns (id TEXT PRIMARY KEY)')
             for key,parent,root,lead in [('lead',None,'lead',True),('worker','lead','lead',False),('peer',None,'peer',True),('foreign','peer','peer',False)]:
                 self.put(db,'agents',{'id':key,'name':key,'parentId':parent,'rootId':root,'isLead':lead,
                     'autoWake':True,'epoch':1,'status':'completed','inFlight':False,'threadId':key,'maxAgents':20})
@@ -79,12 +82,35 @@ class Contract(unittest.TestCase):
                           ('tasks',{'id':'t','agent':'worker','status':'running'}),
                           ('requests',{'id':'q','agent':'worker','status':'pending'}),
                           ('work',{'id':'w','owner':'worker','status':'review'}),
-                          ('tool_requests',{'id':'r','agent':'worker','stage':'interrupted','outcome':'unknown'})]:
+                          ('tool_requests',{'id':'r','agent':'worker','stage':'running','outcome':'unknown'})]:
             with self.subTest(table=table):
                 self.update(table,row);self.assertEqual(self.call('archive')['status'],'blocked')
                 with self.rt.db() as db:db.execute(f'DELETE FROM runtime_{table}')
         self.worker(inFlight=True);self.assertFalse(self.call('inspect')['canArchive'])
         self.assertEqual(self.call('archive')['status'],'blocked')
+    def test_finished_unknown_receipt_is_preserved_without_false_success(self):
+        self.update('tool_requests', {'id':'unknown-monitor','agent':'worker',
+                                      'stage':'failed','outcome':'unknown'})
+        archived = self.call('archive')
+        self.assertEqual(archived['status'], 'archived')
+        self.assertEqual(archived['agent']['agentArchive']['unknownToolRequests'], ['unknown-monitor'])
+        with self.rt.db() as db:
+            self.assertEqual(self.rt.records(db,'tool_requests')[0]['outcome'],'unknown')
+    def test_dead_command_with_completed_turn_is_settled_unknown(self):
+        self.update('tasks', {'id':'dead','agent':'worker','status':'running','kind':'command',
+                              'turnId':'done','processId':'12345'})
+        with self.rt.db() as db:db.execute("INSERT INTO runtime_completed_turns VALUES ('worker:done')")
+        with patch('codex_agent_management.os.kill', side_effect=ProcessLookupError):
+            self.assertEqual(self.call('archive')['status'],'archived')
+        with self.rt.db() as db:
+            task=self.rt.records(db,'tasks')[0]
+            self.assertEqual(task['status'],'lost')
+            self.assertIn('Outcome unknown',task['error'])
+    def test_live_command_keeps_archive_blocked(self):
+        self.update('tasks', {'id':'live','agent':'worker','status':'running','kind':'command',
+                              'turnId':'done','processId':str(os.getpid())})
+        with self.rt.db() as db:db.execute("INSERT INTO runtime_completed_turns VALUES ('worker:done')")
+        self.assertEqual(self.call('archive')['blockers'][0]['kind'],'background_tasks')
     def test_unknown_input_blocks_archive_but_legacy_claim_does_not(self):
         with self.rt.db() as db:db.execute("INSERT INTO runtime_events VALUES ('e','worker',1,'uncertain')")
         self.assertEqual(self.call('archive')['status'],'blocked')
@@ -105,6 +131,25 @@ class Contract(unittest.TestCase):
     def test_native_activity_blocks_archive_even_when_local_status_is_completed(self):
         self.rt.native_state='active'
         self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
+    def test_completed_native_turn_allows_archive_when_account_is_offline(self):
+        self.worker(lastCompletedTurn='done', startAttempt={'turnId':'done'}, turnId=None)
+        self.rt.servers.clear()
+        self.assertEqual(self.call('archive')['status'],'archived')
+    def test_bulk_archives_finished_worker_without_worktree(self):
+        self.worker(status='failed', worktreeReady=False, lastCompletedTurn='done',
+                    startAttempt={'turnId':'done'}, turnId=None)
+        self.rt.servers.clear()
+        result = self.call('archive_finished')
+        self.assertEqual(result['archived'], 1)
+        self.assertEqual(result['kept'], [])
+    def test_active_native_thread_blocks_archive_despite_completed_turn_record(self):
+        self.worker(lastCompletedTurn='done', startAttempt={'turnId':'done'}, turnId=None)
+        self.rt.native_state='active'
+        self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
+    def test_malformed_native_state_blocks_archive(self):
+        self.rt.servers['default'] = type('Malformed', (), {
+            'call': lambda self, method, params, timeout: {'thread': None}})()
+        self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
     def test_missing_receipt_ledger_cannot_authorize_archive(self):
         with self.rt.db() as db:
             db.execute('DROP TABLE runtime_tool_requests')
@@ -114,11 +159,11 @@ class Contract(unittest.TestCase):
             self.assertNotIn('deletedAt', self.rt.agent('worker', db))
         self.assertEqual(self.rt.calls, [])
 
-    def test_restoration_obeys_team_limit(self):
+    def test_restoration_of_paused_worker_does_not_use_active_limit(self):
         self.call('archive')
         with self.rt.db() as db:
             a=self.rt.agent('lead',db);a['maxAgents']=1;self.rt.put(db,'agents',a)
-        with self.assertRaisesRegex(ValueError,'limit'):self.call('restore')
+        self.assertEqual(self.call('restore')['status'],'restored')
 
 
 class RealWorktreeContract(Contract):
@@ -184,6 +229,19 @@ class RealWorktreeContract(Contract):
         self.assertEqual(result['worktree']['state'], 'kept')
         self.assertIn('tracked or untracked', result['worktree']['reason'])
 
+    def test_changed_branch_and_detached_head_are_removable_and_restorable(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        self.git('switch', '-c', 'reviewed-branch', cwd=path)
+        changed = self.call('archive')
+        self.assertEqual(changed['worktree']['state'], 'removed')
+        self.assertEqual(self.call('restore')['agent']['status'], 'paused')
+        self.assertEqual(self.git('branch', '--show-current', cwd=path), 'reviewed-branch')
+        self.git('switch', '--detach', cwd=path)
+        detached = self.call('archive')
+        self.assertEqual(detached['worktree']['state'], 'removed')
+        self.call('restore')
+        self.assertEqual(self.git('branch', '--show-current', cwd=path), '')
+
     def test_bulk_skips_active_and_keeps_deleted_worktrees(self):
         second = self.checkout('second')
         third = self.checkout('third')
@@ -201,6 +259,16 @@ class RealWorktreeContract(Contract):
         self.assertEqual(report, [{'id': 'worker', 'reason': 'removable'}])
         self.assertTrue((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
 
+    def test_bulk_archives_clean_worktree_with_unknown_receipt(self):
+        self.update('tool_requests', {'id':'unknown-review','agent':'worker',
+                                      'stage':'failed','outcome':'unknown'})
+        result = self.call('archive_finished')
+        self.assertEqual(result['archived'], 1)
+        self.assertFalse((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
+        with self.rt.db() as db:
+            receipt = self.rt.agent('worker', db)['agentArchive']
+        self.assertEqual(receipt['unknownToolRequests'], ['unknown-review'])
+
     def test_non_lead_cannot_bulk_archive(self):
         with self.assertRaisesRegex(ValueError, 'Only the active orchestrator'):
             manage_agent(self.rt, 'worker', {'action': 'archive_finished'}, 1)
@@ -213,6 +281,14 @@ class RealWorktreeContract(Contract):
         self.assertEqual(result['worktree']['state'], 'kept')
         self.assertIn('nested', result['worktree']['reason'])
         self.assertTrue(child.exists())
+
+    def test_path_outside_agent_worktree_folder_is_never_removed(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        self.worker(cwd=str(self.repo))
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertIn('outside', result['worktree']['reason'])
+        self.assertTrue(path.exists())
 
     def test_retry_finishes_a_removed_worktree_with_saved_cleanup_stage(self):
         path = self.repo / '.worktrees' / 'codex-agents' / 'worker'

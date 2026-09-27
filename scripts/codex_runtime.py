@@ -252,6 +252,13 @@ def spawn_directory(parent_cwd, requested):
     return str(path)
 
 
+def team_capacity_counts(agents, root_id):
+    members = [a for a in agents if a['rootId'] == root_id and not a.get('deletedAt')]
+    finished = [a for a in members if a['status'] in {'completed', 'failed', 'interrupted'}
+                or (a['status'] == 'paused' and not a.get('autoWake'))]
+    return len(members) - len(finished), len(finished)
+
+
 class ResponseTimeout(RuntimeError):
     """The request was sent, but its acknowledgement has not arrived."""
 
@@ -985,6 +992,31 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_agent_modes import mode_fields
         return mode_fields(json.loads(row[0]))
 
+    def resolve_visible_agent_id(self, caller_id, supplied, *, include_archived=False):
+        if not isinstance(supplied, str):
+            raise ValueError('Supply an agent ID')
+        with self.lock, self.db() as db:
+            caller = self.agent(caller_id, db)
+            from codex_peer_teams import peer_pair_allowed, peers_for
+            rows = db.execute('SELECT record FROM runtime_agents WHERE id>=? AND id<?',
+                              (supplied, supplied + '\uffff'))
+            matches = sorted(a['id'] for a in (json.loads(row[0]) for row in rows)
+                             if (include_archived or not a.get('deletedAt'))
+                             and (a['rootId'] == caller['rootId']
+                                  or (not include_archived and peer_pair_allowed(db, caller_id, a['id']))))
+            if len(supplied) >= 8 and len(matches) == 1:
+                return matches[0]
+            if matches:
+                candidates = matches[:20]
+            else:
+                visible = {a['id'] for a in self.records(db, 'agents')
+                           if a['rootId'] == caller['rootId'] and (include_archived or not a.get('deletedAt'))}
+                visible.update(a['id'] for a in peers_for(self, db, caller))
+                candidates = sorted(visible)[:20]
+        label = 'Too short' if len(supplied) < 8 else 'Ambiguous' if matches else 'Unknown'
+        raise ValueError(f"{label} agent ID {supplied!r}. Use at least 8 characters. Candidate full IDs: "
+                         + (', '.join(candidates) if candidates else 'none'))
+
     def connect(self, account_key="default"):
         account = self.accounts.get(account_key)
         provider = account.get("provider", "codex")
@@ -1355,8 +1387,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("This team is stopped")
             if p and parent_epoch is not None and p["epoch"] != parent_epoch:
                 raise ValueError("The parent turn was stopped")
-            if root and sum(a["rootId"] == root["id"] and not a.get("deletedAt") for a in self.records(db, "agents")) >= root["maxAgents"]:
-                raise ValueError("Team agent limit reached")
+            if root:
+                active, finished = team_capacity_counts(self.records(db, "agents"), root["id"])
+                if active >= root["maxAgents"]:
+                    raise ValueError(f"Team active agent limit reached; {finished} finished agents. Use archive_finished to free stored records.")
             cwd = str(Path((data.get("cwd") or p["cwd"]) if p else data.get("cwd", "")).expanduser().resolve())
             if not Path(cwd).is_dir() or (not p and not data.get("cwd")):
                 raise ValueError("Select an existing project directory")
@@ -3408,8 +3442,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             roster = [a for a in self.records(db, "agents") if a["rootId"] == current["rootId"] and not a.get("deletedAt")]
             existing = {a["id"] for a in roster}
             planned = [{**spec, "id": str(uuid.uuid5(uuid.NAMESPACE_URL, key + ":" + str(index)))} for index, spec in enumerate(specs)]
-            if len(roster) + sum(s["id"] not in existing for s in planned) > self.agent(current["rootId"], db)["maxAgents"]:
-                raise ValueError("This batch exceeds the team size limit; no workers were created")
+            active, finished = team_capacity_counts(roster, current['rootId'])
+            if active + sum(s["id"] not in existing for s in planned) > self.agent(current["rootId"], db)["maxAgents"]:
+                raise ValueError(f"This batch exceeds the active agent limit; {finished} finished agents. Use archive_finished to free stored records. No workers were created")
             children = [self.create({k: v for k, v in spec.items() if k != "task_id"}, current["id"],
                                     parent_epoch=current["epoch"], _catalog=selection, _validate_only=True)
                         for spec, selection in zip(planned, selections)]
@@ -3502,6 +3537,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if isinstance(args, str):
                     args = json.loads(args)
                 name = p.get("tool")
+                if name in {"orchestration_agent_manage", "orchestration_interrupt", "orchestration_send"} \
+                        and isinstance(args.get('agent_id'), str) and args['agent_id'] not in {'parent', 'lead', 'broadcast', 'all', 'workspace'}:
+                    request_outcome = 'not_applied'
+                    args = {**args, 'agent_id': self.resolve_visible_agent_id(
+                        a['id'], args['agent_id'], include_archived=name == 'orchestration_agent_manage')}
+                    request_outcome = None
+                if name == 'orchestration_message' and isinstance(args.get('target'), str) \
+                        and args['target'] not in {'user', 'parent', 'lead', 'broadcast', 'all'}:
+                    request_outcome = 'not_applied'
+                    args = {**args, 'target': self.resolve_visible_agent_id(a['id'], args['target'])}
+                    request_outcome = None
+                if name == 'orchestration_task' and isinstance(args.get('owner'), str) and args['owner']:
+                    request_outcome = 'not_applied'
+                    args = {**args, 'owner': self.resolve_visible_agent_id(a['id'], args['owner'])}
+                    request_outcome = None
                 if name == "orchestration_agent_manage":
                     from codex_agent_management import manage_agent
                     value = manage_agent(self, a["id"], args, a["epoch"])

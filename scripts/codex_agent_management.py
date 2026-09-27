@@ -1,4 +1,5 @@
 """Lead-only worker inspection and reversible, guarded team cleanup."""
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -39,6 +40,12 @@ def _brief(a):
                                  'turnId', 'error', 'lastEvent', 'agentArchive')}
 
 
+def _completed_native_turn(a):
+    attempt = a.get('startAttempt') or {}
+    return (bool(a.get('lastCompletedTurn')) and a.get('lastCompletedTurn') == attempt.get('turnId')
+            and a.get('turnId') is None and not a.get('inFlight') and _finished(a))
+
+
 def _blockers(rt, db, a):
     from codex_workspace import active_monitors, active_task_records
     key = a['id']
@@ -54,14 +61,29 @@ def _blockers(rt, db, a):
     add('input_delivery', [r[0] for r in db.execute(
         "SELECT id FROM runtime_events WHERE agent=? AND epoch=? AND status IN ('pending','reserved','dispatching','uncertain')", (key, a['epoch']))])
     add('monitors', [x['id'] for x in active_monitors(db) if x.get('agent') == key and x.get('status') in {'starting','running','approval'}])
-    add('background_tasks', [x['id'] for x in active_task_records(db, ('running','starting','pending','unknown'), agent=key)])
+    tasks = active_task_records(db, ('running','starting','pending','unknown'), agent=key)
+    for task in tasks:
+        if (not _finished(a) or task['status'] != 'running' or task.get('kind') != 'command'
+                or not str(task.get('processId', '')).isdigit() or not task.get('turnId')
+                or not db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                                  (key + ':' + task['turnId'],)).fetchone()):
+            continue
+        try:
+            os.kill(int(task['processId']), 0)
+        except ProcessLookupError:
+            task.update(status='lost', finished=time.time(), error='Command process ended without an exit receipt. Outcome unknown.')
+            rt.put(db, 'tasks', task)
+        except (OSError, ValueError):
+            pass
+    add('background_tasks', [x['id'] for x in tasks if x['status'] in {'running','starting','pending','unknown'}])
     add('questions', [x['id'] for x in rt.records(db, 'requests') if x.get('agent') == key and x.get('status') == 'pending'])
     add('assigned_work', [x['id'] for x in rt.records(db, 'work') if x.get('owner') == key and x.get('status') not in {'accepted','cancelled'}])
     rt.reconcile_tool_requests(db, key)
     add('tool_requests', [row[0] for row in db.execute(
         "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
-        "AND (json_extract(record,'$.stage') IN ('queued','running') OR json_extract(record,'$.outcome')='unknown')",
-        (key,))])
+        "AND (json_extract(record,'$.stage') IN ('queued','running') OR "
+        "(json_extract(record,'$.outcome')='unknown' AND ?))",
+        (key, int(not _finished(a))))])
     return result
 
 
@@ -93,9 +115,6 @@ def _worktree_check(rt, actor_id, agent_id, epoch):
         if not a.get('worktreeReady'):
             return None, 'no registered worker worktree'
         cwd = Path(a['cwd']).resolve()
-        branch = 'codex-agent/' + agent_id
-        if a.get('branch') != branch:
-            return None, 'worker branch differs from its identity'
         roots = [p for p in (cwd, *cwd.parents)
                  if p.name == agent_id and p.parent.name == 'codex-agents'
                  and p.parent.parent.name == '.worktrees']
@@ -115,18 +134,21 @@ def _worktree_check(rt, actor_id, agent_id, epoch):
         entries = _worktree_entries(repo)
         entry = next((item for item in entries if item.get('worktree')
                       and Path(item['worktree']).resolve() == root), None)
-        if not entry or entry.get('branch') != 'refs/heads/' + branch:
-            return None, 'worktree registration or branch differs'
+        if not entry:
+            return None, 'worktree registration is missing'
         if any(item.get('worktree') and Path(item['worktree']).resolve() != root
                and Path(item['worktree']).resolve().is_relative_to(root) for item in entries):
             return None, 'another registered worktree is nested inside this path'
         if _git(root, 'status', '--porcelain', '--untracked-files=normal').stdout:
             return None, 'tracked or untracked files have changes'
         head = _git(root, 'rev-parse', 'HEAD').stdout.decode().strip()
+        if entry.get('HEAD') != head:
+            return None, 'worktree registration HEAD differs'
     except (OSError, subprocess.SubprocessError) as error:
         return None, 'git check failed: ' + str(error)[:180]
     return {'root': str(root), 'repo': str(repo), 'relative': str(relative),
-            'branch': branch, 'head': head, 'identity': identity}, None
+            'branch': entry.get('branch', '').removeprefix('refs/heads/') or None,
+            'head': head, 'identity': identity}, None
 
 
 def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
@@ -136,6 +158,8 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
         saved = current.get('worktreeCleanup')
         if not current.get('worktreeReady') and current.get('cleanedWorktree'):
             return {'state': 'removed', 'bytes': current['cleanedWorktree'].get('bytes')}
+        if not current.get('worktreeReady'):
+            return {'state': 'none', 'bytes': 0}
     if saved and not Path(saved['root']).exists():
         try:
             ref = _git(saved['repo'], 'rev-parse', '--verify',
@@ -187,7 +211,9 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
             raise ValueError('HEAD changed after the safety check')
         entries = _worktree_entries(repo)
         if not any(item.get('worktree') and Path(item['worktree']).resolve() == Path(root)
-                   and item.get('branch') == 'refs/heads/' + info['branch'] for item in entries):
+                   and item.get('HEAD') == info['head']
+                   and (item.get('branch', '').removeprefix('refs/heads/') or None) == info['branch']
+                   for item in entries):
             raise ValueError('worktree registration changed after the safety check')
         if any(item.get('worktree') and Path(item['worktree']).resolve() != Path(root)
                and Path(item['worktree']).resolve().is_relative_to(Path(root)) for item in entries):
@@ -232,7 +258,8 @@ def _archive_finished(rt, actor_id, epoch):
         agents.sort(key=lambda a: (-depth(a), a['id']))
     result = {'archived': 0, 'freedBytes': 0, 'unknownBytes': 0, 'kept': []}
     for a in agents:
-        checked = _worktree_check(rt, actor_id, a['id'], epoch)
+        checked = (_worktree_check(rt, actor_id, a['id'], epoch)
+                   if a.get('worktreeReady') else (None, None))
         if checked[1]:
             result['kept'].append({'id': a['id'], 'reason': checked[1]})
             continue
@@ -250,7 +277,7 @@ def _archive_finished(rt, actor_id, epoch):
                     result['unknownBytes'] += 1
                 else:
                     result['freedBytes'] += cleanup['bytes']
-            else:
+            elif cleanup['state'] != 'none':
                 result['kept'].append({'id': a['id'], 'reason': cleanup['reason']})
         else:
             result['kept'].append({'id': a['id'], 'reason': ', '.join(b['kind'] for b in archived['blockers'])})
@@ -271,29 +298,34 @@ def _restore_worktree(info):
     root = Path(info['root'])
     branch = info['branch']
     ref = 'refs/codex-agents/archive/' + root.name
-    if root != repo / '.worktrees' / 'codex-agents' / root.name or branch != 'codex-agent/' + root.name:
-        return 'saved worktree path or branch differs from its identity'
+    if root != repo / '.worktrees' / 'codex-agents' / root.name:
+        return 'saved worktree path differs from its identity', None
     try:
         head = _git(repo, 'rev-parse', '--verify', ref).stdout.decode().strip()
         if head != info['head']:
-            return 'the archive ref changed'
+            return 'the archive ref changed', None
         if root.exists():
             entry = _worktree_registration(repo, root)
-            if (not entry or entry.get('branch') != 'refs/heads/' + branch
-                    or _git(root, 'rev-parse', 'HEAD').stdout.decode().strip() != head):
-                return 'the saved worktree path already exists with different content'
-            return None
-        existing = subprocess.run(['git', '-C', str(repo), 'rev-parse', '--verify',
-                                   'refs/heads/' + branch], capture_output=True, timeout=300)
-        if existing.returncode == 0 and existing.stdout.decode().strip() != head:
-            return 'the worker branch moved from the archive ref'
-        if existing.returncode == 0:
-            _git(repo, 'worktree', 'add', str(root), branch)
-        else:
-            _git(repo, 'worktree', 'add', '-b', branch, str(root), ref)
+            if not entry or _git(root, 'rev-parse', 'HEAD').stdout.decode().strip() != head:
+                return 'the saved worktree path already exists with different content', None
+            return None, entry.get('branch', '').removeprefix('refs/heads/') or None
+        if branch:
+            existing = subprocess.run(['git', '-C', str(repo), 'rev-parse', '--verify',
+                                       'refs/heads/' + branch], capture_output=True, timeout=300)
+            if existing.returncode == 0 and existing.stdout.decode().strip() == head:
+                try:
+                    _git(repo, 'worktree', 'add', str(root), branch)
+                    return None, branch
+                except subprocess.CalledProcessError:
+                    if root.exists():
+                        raise
+            elif existing.returncode != 0:
+                _git(repo, 'worktree', 'add', '-b', branch, str(root), ref)
+                return None, branch
+        _git(repo, 'worktree', 'add', '--detach', str(root), ref)
     except (OSError, subprocess.SubprocessError) as error:
-        return 'worktree restore failed: ' + str(error)[:180]
-    return None
+        return 'worktree restore failed: ' + str(error)[:180], None
+    return None, None
 
 
 def manage_agent(rt, actor_id, args, epoch=None):
@@ -319,11 +351,18 @@ def manage_agent(rt, actor_id, args, epoch=None):
             try:
                 if server is None: raise ValueError('Owning account is offline')
                 native = server.call('thread/read', {'threadId': observed[1], 'includeTurns': False}, timeout=5)['thread']
-                if native.get('id') != observed[1] or native.get('status', {}).get('type') not in {'idle', 'notLoaded'}:
-                    raise ValueError('Native thread is active or its status is unknown')
             except Exception:
-                return {'status': 'blocked', 'agent': _brief(target),
-                        'blockers': [{'kind': 'native_state_unconfirmed', 'count': 1, 'ids': [target['id']]}]}
+                # A durable completion of the last submitted turn proves that
+                # Studio has no native turn to wait for, even if the account is offline.
+                if not _completed_native_turn(target):
+                    return {'status': 'blocked', 'agent': _brief(target),
+                            'blockers': [{'kind': 'native_state_unconfirmed', 'count': 1, 'ids': [target['id']]}]}
+            else:
+                if (not isinstance(native, dict) or native.get('id') != observed[1]
+                        or not isinstance(native.get('status'), dict)
+                        or native['status'].get('type') not in {'idle', 'notLoaded'}):
+                    return {'status': 'blocked', 'agent': _brief(target),
+                            'blockers': [{'kind': 'native_state_unconfirmed', 'count': 1, 'ids': [target['id']]}]}
     with rt.lock, rt.db() as db:
         actor = _authorize(rt, db, actor_id, epoch)
         if action == 'list_archived':
@@ -351,10 +390,6 @@ def manage_agent(rt, actor_id, args, epoch=None):
             parent = rt.agent(target['parentId'], db)
             if parent.get('deletedAt'):
                 raise ValueError('Restore the parent first')
-            root = rt.agent(target['rootId'], db)
-            count = sum(a['rootId'] == root['id'] and not a.get('deletedAt') for a in rt.records(db, 'agents'))
-            if count >= root.get('maxAgents', 64):
-                raise ValueError('The team is at its agent limit')
             restore_info = target.get('cleanedWorktree')
             if target.get('worktreeCleanup'):
                 return {'status': 'blocked', 'reason': 'Worktree removal is incomplete; inspect its saved path'}
@@ -382,10 +417,14 @@ def manage_agent(rt, actor_id, args, epoch=None):
             blockers = _blockers(rt, db, target)
             if blockers:
                 return {'status': 'blocked', 'agent': _brief(target), 'blockers': blockers}
+            unknown = [row[0] for row in db.execute(
+                "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+                "AND json_extract(record,'$.outcome')='unknown' ORDER BY id", (target['id'],))]
             at = time.time()
             target.update(deletedAt=at, autoWake=False, status='paused', epoch=target['epoch'] + 1)
             target['agentArchive'] = {'at': at, 'by': actor_id, 'reason': reason.strip(),
-                                      'epoch': target['epoch'], 'cleanupPending': True}
+                                      'epoch': target['epoch'], 'cleanupPending': True,
+                                      'unknownToolRequests': unknown}
             rt.put(db, 'agents', target)
             if hasattr(rt, 'release_failed_work'):
                 rt.release_failed_work(db, rt.records(db, 'agents'), force=True)
@@ -400,7 +439,7 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 rt.put(db, 'agents', current)
         return {'status': 'archived', 'agent': archived_agent, 'worktree': cleanup}
     if action == 'restore':
-        reason = _restore_worktree(restore_info)
+        reason, restored_branch = _restore_worktree(restore_info)
         if reason:
             return {'status': 'blocked', 'reason': reason}
         with rt.lock, rt.db() as db:
@@ -409,7 +448,7 @@ def manage_agent(rt, actor_id, args, epoch=None):
             if (target['epoch'], target.get('deletedAt')) != restore_identity:
                 raise ValueError('Worker changed during worktree restoration; inspect it')
             target.update(cwd=str(Path(restore_info['root']) / restore_info['relative']), worktreeReady=True,
-                          status='paused', autoWake=False, epoch=target['epoch'] + 1)
+                          branch=restored_branch, status='paused', autoWake=False, epoch=target['epoch'] + 1)
             target.pop('deletedAt', None)
             target.pop('agentArchive', None)
             target.pop('cleanedWorktree', None)

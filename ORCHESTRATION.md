@@ -107,7 +107,9 @@ turn. `cwd` defaults to the caller's folder and must be inside a git repository;
 otherwise the call fails and no reviewer is created. It runs `review/start` on that reviewer's native thread.
 The caller's active turn continues. The reviewer uses read-only permissions and
 the caller's model, unless native `review_model` selects another model.
-Team concurrency, agent limits, and budget admission apply. Completion sends one
+Team concurrency, active agent limits, and budget admission apply. Completed,
+failed, interrupted, and stopped paused agents do not use active agent slots.
+Completion sends one
 child result to the caller. The reviewer transcript retains the complete output.
 Receipt recovery does not create another reviewer or repeat a native review.
 Older threads can invoke the tool through the existing workspace tool bridge.
@@ -516,7 +518,8 @@ It starts from committed HEAD. Parent changes that are not committed are absent.
 Outside a Git repository the implementer works directly in `cwd`, and Studio shows a warning.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
 Reviewers use the chosen folder. They have a read-only sandbox when YOLO is off.
-The lead owns review and integration. The runtime never merges or deletes worktrees.
+The lead owns review and integration. The runtime never merges worker changes.
+The archive action can remove a clean worker worktree after it saves the HEAD.
 
 An optional team token budget sums Codex's reported thread usage. This includes
 input tokens, including cached input. It is not a billing estimate or a strict
@@ -770,20 +773,26 @@ that lead's team. Actions are `inspect`, `recover`, `archive`, `archive_finished
 native turn through the existing reconciler; a failed read leaves its outcome unknown.
 
 Archive requires a reason. It hides a worker through the existing tombstone filter
-and stores a separate archive receipt with its actor, time, and epoch. Active work
-and uncertain receipts block archive. A clean, registered Studio worktree is
-removed after an archive ref saves its HEAD. The branch, history, and native thread
-remain. Dirty worktrees stay with an exact reason. Restore recreates a removed
-worktree from its saved ref and branch before it returns the worker paused.
+and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.
+Active work blocks archive. A finished worker can keep unknown tool outcomes when
+no operation can still run. A command with a completed turn and a missing process
+is marked lost; its outcome stays unknown. A clean, registered Studio worktree is
+removed after an archive ref saves its HEAD. Branch changes and detached HEAD are
+allowed. Dirty and nested worktrees stay with an exact reason. Restore recreates
+the saved HEAD and uses the saved branch when it still points to that commit.
+Otherwise restore uses detached HEAD. History and native threads remain.
 Archive children before their parent. A later user deletion or stop invalidates
 the archive receipt. Repeated calls keep the same request result.
 
 `archive_finished` checks completed, failed, interrupted, and stopped paused
-descendants. It archives only workers with safe worktrees. The result reports
+descendants. It archives workers with safe worktrees or no worktree. The result reports
 the archive count, measured freed bytes, and a reason for each worker kept.
 The lead sees one reminder when three or more finished workers hold worktrees.
 `maintenance_report` lists worktrees of deleted or archived agents without
 removing them.
+
+Agent tools accept a unique ID prefix of at least eight characters among agents
+visible to the caller. Ambiguous and unknown IDs return candidate full IDs.
 
 The shared Studio skill documents the workspace bridge for existing native threads.
 Tests: `tests/agent-management-contract.py`.

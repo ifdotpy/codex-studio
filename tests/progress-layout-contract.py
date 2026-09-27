@@ -306,14 +306,36 @@ class ProgressLayoutContract(unittest.TestCase):
             output = io.StringIO()
             with patch.object(sys, "argv", ["layout", str(self.path), "--wait", "0.2"]), \
                     patch.object(layout, "layout_status", side_effect=statuses), \
-                    patch.object(layout.time, "monotonic", side_effect=[0, 0, 0] if measured else [0, 0.2]), \
+                    patch.object(layout.time, "monotonic", side_effect=[0, 0, 0] if measured else [0, 0.2, 0.2]), \
                     patch.object(layout.time, "sleep") as sleeper, redirect_stdout(output):
                 self.assertEqual(layout.main(), expected)
             self.assertEqual(sleeper.call_count, int(measured))
+            if not measured:
+                self.assertEqual(json.loads(output.getvalue())['waitedSeconds'], 0.2)
         for wait in ("-1", "5.01", "nan", "inf"):
             result = subprocess.run([sys.executable, str(ROOT / "scripts/codex_progress_layout.py"),
                                      str(self.path), "--wait", wait], capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 2)
+
+    def test_cli_wait_reads_later_measurement_for_current_revision(self):
+        self.record()
+        self.path.write_text('A newer revision.\n')
+        command = [sys.executable, str(ROOT / 'scripts/codex_progress_layout.py'),
+                   str(self.path), '--wait', '1']
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(0.2)
+            self.assertIsNone(process.poll())
+            self.record(sequence=2)
+            output, errors = process.communicate(timeout=5)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+        self.assertEqual(process.returncode, 0, errors)
+        result = json.loads(output)
+        self.assertEqual(result['revision'], read_progress(self.root, 'first')['revision'])
+        self.assertEqual(result['status'], 'fits')
 
 
 if __name__ == "__main__":

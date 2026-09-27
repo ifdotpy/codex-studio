@@ -76,6 +76,38 @@ class TeamChatIsolation(unittest.TestCase):
             self.runtime.send(other['id'], 'Forbidden', 'direct-send', manual=False, resume=True,
                               sender=worker['id'], sender_epoch=worker['epoch'])
 
+    def test_short_agent_ids_route_tools_and_reject_ambiguous_or_foreign_ids(self):
+        lead, foreign = self.lead(), self.lead('Foreign')
+        worker = self.worker(lead)
+        short = worker['id'][:8]
+        message = self.tool(lead, 'orchestration_message', {'target': short, 'text': 'Hello'})
+        self.assertTrue(message['success'], message)
+        sent = self.tool(lead, 'orchestration_send', {'agent_id': short, 'text': 'Continue'})
+        self.assertTrue(sent['success'], sent)
+        inspected = self.tool(lead, 'orchestration_agent_manage', {'action': 'inspect', 'agent_id': short})
+        self.assertTrue(inspected['success'], inspected)
+        self.assertEqual(json.loads(inspected['contentItems'][0]['text'])['agent']['id'], worker['id'])
+        assigned = self.tool(lead, 'orchestration_task',
+                             {'action': 'create', 'title': 'Short owner', 'owner': short})
+        self.assertTrue(assigned['success'], assigned)
+        missing = self.tool(lead, 'orchestration_message', {'target': 'ffffffff', 'text': 'Hello'})
+        self.assertFalse(missing['success'])
+        self.assertIn(worker['id'], missing['contentItems'][0]['text'])
+        too_short = self.tool(lead, 'orchestration_message', {'target': worker['id'][:7], 'text': 'Hello'})
+        self.assertFalse(too_short['success'])
+        self.assertIn(worker['id'], too_short['contentItems'][0]['text'])
+        denied = self.tool(lead, 'orchestration_message', {'target': foreign['id'][:8], 'text': 'Hello'})
+        self.assertFalse(denied['success'])
+        with self.runtime.lock, self.runtime.db() as db:
+            for suffix in ('1111', '2222'):
+                clone = {**worker, 'id': 'abcdef12-' + suffix, 'threadId': None,
+                         'status': 'completed', 'autoWake': False}
+                self.runtime.put(db, 'agents', clone)
+        ambiguous = self.tool(lead, 'orchestration_send', {'agent_id': 'abcdef12', 'text': 'Hello'})
+        self.assertFalse(ambiguous['success'])
+        self.assertIn('abcdef12-1111', ambiguous['contentItems'][0]['text'])
+        self.assertIn('abcdef12-2222', ambiguous['contentItems'][0]['text'])
+
     def test_same_team_resume_and_sender_provenance(self):
         lead = self.lead()
         child = self.worker(lead)
