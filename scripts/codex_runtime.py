@@ -2441,8 +2441,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a = self.agent(a["id"])
             else:
                 from codex_context_repair import repair_before_start
-                a = repair_before_start(self, a)
-                a = self.prepare(a)
+                try:
+                    a = repair_before_start(self, a)
+                    a = self.prepare(a)
+                except Exception as error:
+                    # A preparation failure says nothing about the input batch.
+                    error.studioPreparation = True
+                    raise
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
                 if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
@@ -2463,7 +2468,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
                         (r["id"],),
                     )
-            server = self.connect(a.get("accountKey", "default"))
+            try:
+                server = self.connect(a.get("accountKey", "default"))
+            except Exception as error:
+                error.studioPreparation = True
+                raise
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
                 if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
@@ -2582,7 +2591,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current["startAttempt"]["prepareError"] = str(error)
                 self.put(db, "agents", current)
             self.defer_preparation(error, lambda: self.start(a, rows),
-                lambda cause: self.start_error(a["id"], attempt_id, cause,
+                lambda cause: self.start_error(a["id"], attempt_id, cause, preparation=True,
                                               unknown="outcome unknown" in str(cause)))
         except Exception as error:
             self.start_error(a["id"], attempt_id, error, unknown="outcome unknown" in str(error))
@@ -2667,7 +2676,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         except Exception as error:
             self.start_error(agent_id, attempt["id"], error, unknown=True)
 
-    def start_error(self, agent_id, attempt_id, error, *, unknown=False):
+    def start_error(self, agent_id, attempt_id, error, *, unknown=False, preparation=False):
         from codex_context_repair import defer_context_start
         if defer_context_start(self, agent_id, attempt_id, error, unknown=unknown):
             return
@@ -2731,10 +2740,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
-                # Input never sent to the provider waits for the next start (the agent
-                # stays failed, so nothing retries by itself); sent input stays failed.
+                # Input never sent because preparation failed waits for the next start
+                # (the agent stays failed, so nothing retries by itself). Input that was
+                # sent, or that a check rejected (for example team isolation), stays failed.
+                preparation = preparation or getattr(error, "studioPreparation", False)
                 status = ("uncertain" if attempt.get("submitted") else "reserved") if unknown else (
-                    "cancelled" if not current_epoch else "failed" if attempt.get("submitted") else "pending")
+                    "cancelled" if not current_epoch else
+                    "pending" if preparation and not attempt.get("submitted") else "failed")
                 db.execute("UPDATE runtime_events SET status=?, error=? WHERE id=? "
                            "AND status IN ('pending','reserved','dispatching','uncertain')", (status, str(error), event_id))
             if current_epoch and not unknown and a.get("status") == "failed":

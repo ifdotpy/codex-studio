@@ -174,7 +174,8 @@ class SendTranscriptContract(unittest.TestCase):
         visible = self.messages(key)
         self.assertEqual(len(visible), 1)
         self.assertEqual(visible[0]["clientMessageId"], "one")
-        self.assertEqual(visible[0]["deliveryStatus"], "failed")
+        # Preparation failed before the provider saw it, so it waits for the next start.
+        self.assertEqual(visible[0]["deliveryStatus"], "pending")
         self.assertEqual(visible[0]["text"], "Keep this instruction")
 
     def test_busy_start_rejection_keeps_its_exact_pending_receipt(self):
