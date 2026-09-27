@@ -25,6 +25,27 @@ class ManualRuntime(Runtime):
 
 
 class UsageResumeContract(unittest.TestCase):
+    def test_scoped_claude_limit_notification_merges_valid_buckets(self):
+        rt = self.runtime
+        rt.set_rate_limits('default', {'data': {'rateLimits': {'limitId': 'claude', 'primary': {'usedPercent': 10}},
+            'rateLimitsByLimitId': {'claude-sonnet': {'limitId': 'claude-sonnet', 'secondary': {'usedPercent': 1}}}},
+            'at': time.time() - 5})
+        self.server.notify({'method': 'account/rateLimits/updated', 'params': {
+            'rateLimits': {'limitId': 'claude', 'primary': {'usedPercent': 10}},
+            'rateLimitsByLimitId': {'claude-sonnet': {'limitId': 'claude-sonnet', 'secondary': {'usedPercent': 100}}}}})
+        data = rt.rate_limits_for('default')['data']
+        self.assertEqual(data['rateLimitsByLimitId']['claude-sonnet']['secondary']['usedPercent'], 100)
+        self.assertEqual(data['rateLimitsByLimitId']['claude']['primary']['usedPercent'], 10)
+        self.server.notify({'method': 'account/rateLimits/updated', 'params': {
+            'rateLimits': {'limitId': 'claude', 'primary': {'usedPercent': 11}},
+            'rateLimitsByLimitId': {'claude-sonnet': {'limitId': 'other', 'secondary': {'usedPercent': 0}},
+                'claude-opus': 'invalid',
+                'claude-other': {'limitId': 'claude-other', 'secondary': {'usedPercent': 'full'}}}}})
+        data = rt.rate_limits_for('default')['data']
+        self.assertEqual(data['rateLimitsByLimitId']['claude-sonnet']['secondary']['usedPercent'], 100)
+        self.assertNotIn('claude-opus', data['rateLimitsByLimitId'])
+        self.assertNotIn('claude-other', data['rateLimitsByLimitId'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.runtime = ManualRuntime(Path(self.temp.name), fixture.FakeServer)

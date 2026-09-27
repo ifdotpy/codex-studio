@@ -29,6 +29,25 @@ import { createCommandTransport, commandMethods } from "./commands.mjs";
 import { thinkingFlag } from "./thinking.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
+const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
+function nativeUserMessageId(id) {
+  if (/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(id)) return id;
+  const namespace = Buffer.from(STUDIO_INPUT_NAMESPACE.replaceAll("-", ""), "hex");
+  const bytes = createHash("sha1").update(namespace).update(String(id)).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+function assistantBlockState(active, messageId, kind) {
+  const key = messageId + ":" + kind;
+  if (!active.assistantBlocks.has(key))
+    active.assistantBlocks.set(key, { blocks: [], streams: new Map(), frames: new Set() });
+  return active.assistantBlocks.get(key);
+}
+function assistantText(state) {
+  return state.blocks.map((block) => block.text).filter(Boolean).join("\n");
+}
 let lastLimits;
 const root = process.argv[2];
 if (!root) throw new Error("Claude bridge requires its own state directory");
@@ -405,6 +424,7 @@ async function finishTurn(s, active, result, error) {
   await persist(s);
   active.turn = null;
   active.pendingSteers.clear();
+  active.assistantBlocks.clear();
   emit("turn/completed", {
     threadId: s.id,
     turn: { id: turn.id, status: turn.status, error: turn.error },
@@ -531,14 +551,17 @@ async function startSession(s, active, p) {
         continue;
       }
       if (m.type === "user" && m.isReplay) {
-        active.pendingSteers.delete(m.uuid);
-        active.deferredResult = null;
         const item = active.turn?.items.find(
           (i) =>
-            i.id === m.uuid ||
-            (i.type === "userMessage" && active.turn.id === m.uuid),
+            i.type === "userMessage" &&
+            (i.nativeId === m.uuid ||
+              (i.nativeId == null && (i.id === m.uuid || active.turn.id === m.uuid))),
         );
-        if (item) item.nativeId = m.uuid;
+        if (item) {
+          item.nativeId = m.uuid;
+          active.pendingSteers.delete(item.id);
+          active.deferredResult = null;
+        }
         continue;
       }
       if (
@@ -723,6 +746,16 @@ async function startSession(s, active, p) {
           const thinking = e.delta.type === "thinking_delta";
           const id = active.messageId + (thinking ? ":thinking" : "");
           const delta = e.delta.text || e.delta.thinking || "";
+          const state = assistantBlockState(active, active.messageId, thinking ? "thinking" : "text");
+          const index = Number.isInteger(e.index) ? e.index : 0;
+          let block = state.streams.get(index);
+          if (!block) {
+            block = { text: "", complete: false };
+            state.streams.set(index, block);
+            state.blocks.push(block);
+          }
+          const separator = block.text === "" && state.blocks.indexOf(block) > 0 ? "\n" : "";
+          if (!block.complete) block.text += delta;
           let item = turn.items.find((i) => i.id === id);
           if (!item) {
             item = {
@@ -734,13 +767,12 @@ async function startSession(s, active, p) {
             };
             turn.items.push(item);
           }
-          item.text += delta;
-          emit("item/agentMessage/delta", {
-            threadId: s.id,
-            turnId: turn.id,
-            itemId: id,
-            delta,
-          });
+          if (!block.complete) {
+            item.text = assistantText(state);
+            emit("item/agentMessage/delta", {
+              threadId: s.id, turnId: turn.id, itemId: id, delta: separator + delta,
+            });
+          }
         }
       } else if (m.type === "assistant") {
         if (m.error) {
@@ -753,10 +785,20 @@ async function startSession(s, active, p) {
         active.lastModel = m.message.model || active.lastModel;
         active.lastMessageId = m.message.id || active.lastMessageId;
         active.lastUsage = usageTokens(m.message.usage) || active.lastUsage;
-        const text = m.message.content
-          .filter((b) => b.type === "text")
-          .map((b) => b.text)
-          .join("\n");
+        const mergeBlocks = (kind, field) => {
+          const state = assistantBlockState(active, m.message.id, kind);
+          for (const [index, block] of m.message.content.entries()) {
+            if (block.type !== kind || !block[field]) continue;
+            const frame = (m.uuid || JSON.stringify(m.message)) + ":" + index;
+            if (state.frames.has(frame)) continue;
+            state.frames.add(frame);
+            const pending = state.blocks.find((old) => !old.complete && old.text === block[field]);
+            if (pending) pending.complete = true;
+            else state.blocks.push({ text: block[field], complete: true });
+          }
+          return assistantText(state);
+        };
+        const text = mergeBlocks("text", "text");
         if (text)
           finishItem(s, turn, {
             id: m.message.id,
@@ -765,10 +807,7 @@ async function startSession(s, active, p) {
             text,
             phase: "commentary",
           });
-        const thinking = m.message.content
-          .filter((b) => b.type === "thinking" && b.thinking)
-          .map((b) => b.thinking)
-          .join("\n");
+        const thinking = mergeBlocks("thinking", "thinking");
         if (thinking)
           finishItem(s, turn, {
             id: m.message.id + ":thinking",
@@ -848,6 +887,7 @@ function newActive(turn) {
     tasks: new Map(),
     tools: new Map(),
     pendingSteers: new Set(),
+    assistantBlocks: new Map(),
     reportedUsage: 0,
     lastUsage: null,
   };
@@ -861,7 +901,7 @@ function newActive(turn) {
 function userMessage(s, turn, blocks, id) {
   return {
     type: "user",
-    uuid: id || turn.id,
+    uuid: nativeUserMessageId(id || turn.id),
     session_id: s.nativeId || s.id,
     parent_tool_use_id: null,
     message: { role: "user", content: blocks },
@@ -894,7 +934,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 9 },
+      capabilities: { claudeVersion: 10 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1128,8 +1168,9 @@ async function handle(method, p) {
     const blocks = await content(
       nativeCommand ? [{ type: "text", text: nativeCommand }] : p.input,
     );
+    const turnId = randomUUID();
     const turn = {
-      id: randomUUID(),
+      id: turnId,
       clientUserMessageId: p.clientUserMessageId,
       status: "inProgress",
       items: [
@@ -1137,6 +1178,7 @@ async function handle(method, p) {
           id: p.clientUserMessageId || randomUUID(),
           type: "userMessage",
           content: p.input,
+          nativeId: nativeUserMessageId(p.clientUserMessageId || turnId),
         },
       ],
     };
@@ -1199,7 +1241,7 @@ async function handle(method, p) {
       threadId: s.id,
       turn: { id: turn.id, status: "inProgress" },
     });
-    active.input.push(userMessage(s, turn, blocks, turn.id));
+    active.input.push(userMessage(s, turn, blocks, p.clientUserMessageId || turn.id));
     return { turn: { id: turn.id, status: turn.status } };
   }
   if (method === "turn/steer") {
@@ -1232,6 +1274,7 @@ async function handle(method, p) {
         id,
         type: "userMessage",
         content: p.input,
+        nativeId: nativeUserMessageId(id),
         delivery: "steer",
         deliveryStatus: "preparing",
       };

@@ -2,6 +2,7 @@
 """Exercise the bridge protocol with a deterministic SDK. No model calls."""
 import json
 import os
+import uuid
 from pathlib import Path
 import queue
 import shutil
@@ -109,6 +110,22 @@ export function query({prompt,options}){
     yield {type:'assistant',message:{id:'snapshot-only',content:[{type:'text',text:'Snapshot without stream'}]}};
     yield {type:'assistant',message:{id:'native-tool',content:[{type:'tool_use',id:'bash-output',name:'Bash',input:{command:'pwd'}}]}};
     yield {type:'user',message:{content:[{type:'tool_result',tool_use_id:'bash-output',content:'/work'}]}};
+   }
+   if(text==='split-blocks'){
+    yield {type:'assistant',uuid:'11111111-1111-4111-8111-111111111111',message:{id:'split-message',content:[{type:'text',text:'First text block.'}],stop_reason:null}};
+    yield {type:'assistant',uuid:'22222222-2222-4222-8222-222222222222',message:{id:'split-message',content:[{type:'text',text:'Second text block.'}],stop_reason:null}};
+    yield {type:'assistant',uuid:'22222222-2222-4222-8222-222222222222',message:{id:'split-message',content:[{type:'text',text:'Second text block.'}],stop_reason:null}};
+    yield {type:'result',subtype:'success',usage:{input_tokens:10,output_tokens:2},result:'First text block. Second text block.'};
+    continue;
+   }
+   if(text==='split-stream'){
+    yield {type:'stream_event',event:{type:'message_start',message:{id:'stream-blocks'}}};
+    yield {type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'First stream block.'}}};
+    yield {type:'assistant',uuid:'11111111-1111-4111-8111-111111111111',message:{id:'stream-blocks',content:[{type:'text',text:'First stream block.'}],stop_reason:null}};
+    yield {type:'stream_event',event:{type:'content_block_delta',index:1,delta:{type:'text_delta',text:'Second stream block.'}}};
+    yield {type:'assistant',uuid:'22222222-2222-4222-8222-222222222222',message:{id:'stream-blocks',content:[{type:'text',text:'Second stream block.'}],stop_reason:null}};
+    yield {type:'result',subtype:'success',usage:{input_tokens:10,output_tokens:2},result:'First stream block. Second stream block.'};
+    continue;
    }
    yield {type:'stream_event',event:{type:'message_start',message:{id:'answer'}}};
    yield {type:'stream_event',event:{type:'content_block_delta',delta:{type:'text_delta',text:'Visible answer'}}};
@@ -400,7 +417,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
     def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 9)
+        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 10)
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
                   'input': [{'type': 'text', 'text': 'Native followup'}]}
@@ -413,6 +430,48 @@ class Bridge(unittest.TestCase):
         turns = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})['thread']['turns']
         self.assertEqual([i['id'] for i in turns[0]['items'] if i['type'] == 'userMessage'],
                          ['start-initial', 'start-followup'])
+
+    def test_non_uuid_studio_ids_map_to_stable_sdk_uuids_for_start_and_steer(self):
+        studio_id = 'child:worker:turn-123'
+        first = self.turn('steer', studio_id)['turn']['id']
+        steer_id = 'chat:message:recipient'
+        params = {'threadId': self.thread, 'expectedTurnId': first,
+                  'clientUserMessageId': steer_id,
+                  'input': [{'type': 'text', 'text': 'replacement'}]}
+        self.assertEqual(self.call('turn/steer', params)['turnId'], first)
+        self.assertEqual(self.call('turn/steer', params)['turnId'], first)
+        (self.root / '.release-steer').touch()
+        self.assertEqual(self.completed()['status'], 'completed')
+        turn = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})['thread']['turns'][0]
+        self.assertEqual(turn['clientUserMessageId'], studio_id)
+        users = [item for item in turn['items'] if item['type'] == 'userMessage']
+        self.assertEqual([item['id'] for item in users], [studio_id, steer_id])
+        for item in users:
+            self.assertEqual(str(uuid.UUID(item['nativeId'])), item['nativeId'])
+            self.assertEqual(item['nativeId'], str(uuid.uuid5(
+                uuid.UUID('8d95e191-763a-4ee2-a462-7d27f981f138'), item['id'])))
+        self.assertEqual(self.turn('steer', studio_id)['turn']['id'], first)
+
+    def test_same_message_frames_preserve_each_text_block_and_final_answer(self):
+        self.turn('split-blocks', 'split-input')
+        self.assertEqual(self.completed()['status'], 'completed')
+        turn = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})['thread']['turns'][0]
+        answer = [item for item in turn['items'] if item['id'] == 'split-message']
+        self.assertEqual(len(answer), 1)
+        self.assertEqual(answer[0]['text'], 'First text block.\nSecond text block.')
+        self.assertEqual(answer[0]['phase'], 'final_answer')
+
+    def test_stream_deltas_and_block_snapshots_form_one_final_answer(self):
+        self.turn('split-stream', 'stream-input')
+        self.assertEqual(self.completed()['status'], 'completed')
+        turn = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})['thread']['turns'][0]
+        answer = next(item for item in turn['items'] if item['id'] == 'stream-blocks')
+        self.assertEqual(answer['text'], 'First stream block.\nSecond stream block.')
+        self.assertEqual(answer['phase'], 'final_answer')
+        deltas = [row['params']['delta'] for row in self.notifications
+                  if row.get('method') == 'item/agentMessage/delta'
+                  and row['params']['itemId'] == 'stream-blocks']
+        self.assertEqual(''.join(deltas), answer['text'])
 
     def test_plan_never_executes_after_generic_approval(self):
         self.approval='accept'

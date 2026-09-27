@@ -10,6 +10,7 @@ import concurrent.futures
 from contextlib import contextmanager
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -2811,6 +2812,30 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not self.connection_current(account_key, connection_id):
                     return
                 bucket = p.get("rateLimits", {})
+                if (not isinstance(bucket, dict) or
+                        (bucket.get("limitId") is not None and not isinstance(bucket["limitId"], str))):
+                    return
+                incoming = p.get("rateLimitsByLimitId")
+                if incoming is not None and not isinstance(incoming, dict):
+                    return
+                def valid_window(window):
+                    if window is None:
+                        return True
+                    if not isinstance(window, dict):
+                        return False
+                    for name in ("usedPercent", "resetsAt", "windowDurationMins"):
+                        value = window.get(name)
+                        if value is not None and (type(value) not in (int, float) or not math.isfinite(value)):
+                            return False
+                    used = window.get("usedPercent")
+                    return used is None or 0 <= used <= 100
+                valid_buckets = {}
+                for limit_id, value in (incoming or {}).items():
+                    if (not isinstance(limit_id, str) or not limit_id or
+                            not isinstance(value, dict) or value.get("limitId") != limit_id or
+                            not all(valid_window(value.get(name)) for name in ("primary", "secondary"))):
+                        continue
+                    valid_buckets[limit_id] = value
                 processed_at = time.time()
                 received_at = message.get("_studioReceivedAt")
                 received_at = min(processed_at, received_at) if type(received_at) in (int, float) and received_at >= 0 else processed_at
@@ -2825,7 +2850,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
                 data = current.get("data") or {}
                 buckets = dict(data.get("rateLimitsByLimitId") or {})
-                buckets[bucket.get("limitId") or "codex"] = bucket
+                buckets.update(valid_buckets)
+                if bucket:
+                    buckets[bucket.get("limitId") or "codex"] = bucket
                 self.set_rate_limits(account_key, {
                     "data": {
                         **data,
