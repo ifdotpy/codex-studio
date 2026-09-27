@@ -2237,7 +2237,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' "
                                     "AND epoch=? LIMIT 1", (a["id"], a["epoch"])).fetchone())
                     and a["autoWake"]
-                    and not a.get("nativeFailureHold")
+                    and (not a.get("nativeFailureHold") or (
+                        (a.get("budgetActionWait") or {}).get("action") == "capacity"
+                        and (a.get("budgetActionWait") or {}).get("attemptId")
+                            == (a.get("startAttempt") or {}).get("id")
+                        and (a.get("startAttempt") or {}).get("submitted") is False))
                     and not (a.get("inFlight") and "steerRejectedTurnId" in a
                              and (not a.get("turnId") or a["steerRejectedTurnId"] == a["turnId"]))
                     and (not context_repair_blocked(a) or a.get("contextRepairWait"))
@@ -2298,6 +2302,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.pool.submit(self.run_native_action, a["id"], budget_job["attempt"])
                     else:
                         self.pool.submit(self.start, budget_job["agent"], budget_job["rows"])
+                    continue
+                if a.get("nativeFailureHold"):
                     continue
                 a = self.agent(a["id"], db)
                 from codex_native_tools import gate as native_tools_gate
@@ -2620,6 +2626,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
                 self.capacity_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
                                                "error": a.get("error")}, True)
+                self.usage_resume_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
+                                                   "error": a.get("error")}, True)
                 if (a["lastCompletedTurnStatus"] == "completed" and a["autoWake"]
                         and not a.get("nativeFailureHold")
                     and not a.get("accountTransferId") and db.execute(
@@ -2684,7 +2692,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 for event_id in attempt["events"]:
                     db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL "
                                "WHERE id=? AND agent=? AND epoch=? "
-                               "AND status IN ('reserved','dispatching')",
+                               "AND status IN ('reserved','dispatching','uncertain')",
                                (event_id, agent_id, attempt["epoch"]))
                 if attempt["events"]:
                     db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?",
@@ -3107,6 +3115,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
                 completion = a["id"] + ":" + str(turn.get("id"))
                 if db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (completion,)).fetchone():
+                    if a.get("turnId") == turn.get("id") and a.get("inFlight"):
+                        a.update(inFlight=False, turnId=None, activity=None, activeTools=[])
+                        a["status"] = ("completed" if turn.get("status") == "completed" else
+                                       "interrupted" if turn.get("status") == "interrupted" else "failed")
+                        if not a.get("autoWake"):
+                            a["status"] = "paused"
+                        self.put(db, "agents", a)
                     return
                 known_capacity_source = bool(a.get("turnId") and a["turnId"] == turn.get("id"))
                 advance_native_status(a, method, p)

@@ -162,21 +162,29 @@ def recover_unconfirmed_inputs(rt, agent_id):
         return {'status': 'waiting', 'reason': 'Native history read failed: ' + str(error),
                 'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
     found = {}
+    supported_identity = False
+    unidentified_input = False
     for turn in turns:
         message_id = turn.get('clientUserMessageId')
         if isinstance(message_id, str):
+            supported_identity = True
             found[message_id] = turn.get('id')
-        for item in turn.get('items', []):
-            item_id = item.get('id')
-            if isinstance(item_id, str):
-                found.setdefault(item_id, turn.get('id'))
+        for item in turn.get('items') or []:
+            if item.get('type') != 'userMessage':
+                continue
+            client_id = item.get('clientId')
+            if isinstance(client_id, str):
+                supported_identity = True
+                found[client_id] = turn.get('id')
+            elif not isinstance(message_id, str):
+                unidentified_input = True
     decisions = []
     for row in events:
         if row['id'] in found and found[row['id']]:
             decisions.append({'id': row['id'], 'decision': 'delivered', 'turnId': found[row['id']]})
         elif row['id'] in found:
             decisions.append({'id': row['id'], 'decision': 'waiting', 'reason': 'The matching native turn has no ID'})
-        elif state in {'idle', 'notLoaded'}:
+        elif supported_identity and not unidentified_input and state in {'idle', 'notLoaded'}:
             decisions.append({'id': row['id'], 'decision': 'not_delivered'})
         else:
             decisions.append({'id': row['id'], 'decision': 'waiting'})
@@ -209,8 +217,11 @@ def recover_unconfirmed_inputs(rt, agent_id):
             current_attempt = current.get('startAttempt') or {}
             if reported_id in current_attempt.get('events', []):
                 current_attempt.update(submitted=True, turnId=delivered['turnId'], observedTurnId=delivered['turnId'])
-                current.update(startAttempt=current_attempt, status='running', inFlight=True,
-                               turnId=delivered['turnId'])
+                current['startAttempt'] = current_attempt
+                completed = db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                    (agent_id + ':' + delivered['turnId'],)).fetchone()
+                if not completed:
+                    current.update(status='running', inFlight=True, turnId=delivered['turnId'])
         if all(item['decision'] != 'waiting' for item in decisions):
             current.pop('contextRepairWait', None)
             if (current.get('error') or '').startswith('Context repair waits for a confirmed input receipt:'):
@@ -1096,6 +1107,31 @@ def claim_context_wait(rt, db, agent):
     rt.put(db, 'agents', agent)
     return {'kind':'action' if wait.get('action') else 'turn', 'agent':agent,
             'attempt':dict(attempt), 'rows':rows}
+
+
+def retire_unsent_wait_for_transfer(rt, db, agent):
+    """Release only a proven unsent input wait so its pending input can transfer."""
+    wait = agent.get('contextRepairWait') or {}
+    attempt = agent.get('startAttempt') or {}
+    if (not agent.get('accountTransferId') or not wait or wait.get('action')
+            or not _unsubmitted(agent, attempt.get('id'))
+            or wait.get('source') != _identity(agent)
+            or wait.get('events') != attempt.get('events')
+            or not wait.get('events') or agent.get('inFlight')):
+        return False
+    for event_id in wait['events']:
+        row = db.execute("SELECT status,turn_id FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
+                         (event_id, agent['id'], agent['epoch'])).fetchone()
+        if not row or row['status'] != 'pending' or row['turn_id']:
+            return False
+    agent.pop('contextRepairWait', None)
+    agent.pop('startAttempt', None)
+    agent['lastContextRepairWait'] = {**wait, 'status':'superseded',
+                                      'reason':'Account transfer', 'finishedAt':time.time()}
+    if agent.get('error') == wait.get('error'):
+        agent['error'] = None
+    rt.put(db, 'agents', agent)
+    return True
 
 
 def repair_before_start(rt, agent):

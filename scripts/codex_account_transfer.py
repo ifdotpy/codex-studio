@@ -308,13 +308,14 @@ class AccountTransfers:
 
     def local_blocker(self, db, a):
         rt = self.rt
-        from codex_context_repair import blocked
+        from codex_context_repair import blocked, retire_unsent_wait_for_transfer
         from codex_native_tools import account_reserved
         accounts = {a.get('accountKey', 'default')}
         if a.get('accountTransferId'):
             accounts.add(self.get(db, a['accountTransferId'])['targetAccountKey'])
         if any(account_reserved(rt, key) for key in accounts):
             return 'Waiting for the account tool catalog update'
+        retire_unsent_wait_for_transfer(rt, db, a)
         if blocked(a):
             return "Waiting for the exact context repair receipt"
         if a.get('inFlight') or a['status'] in ACTIVE:

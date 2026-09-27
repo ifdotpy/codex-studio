@@ -20,6 +20,34 @@ spec.loader.exec_module(fixture)
 
 
 class CapacityContract(unittest.TestCase):
+    def test_temporary_slot_wait_reschedules_retry(self):
+        retry = self.fail()
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['concurrency'] = 1
+            agent['capacityRetry']['dueAt'] = time.time()-1
+            self.runtime.capacity_save(db, agent, agent['capacityRetry'])
+            self.runtime.put(db, 'agents', agent)
+            sibling = dict(agent, id='busy-sibling', parentId=agent['id'],
+                inFlight=True, status='running', turnId='busy-turn')
+            sibling.pop('capacityRetry', None)
+            self.runtime.put(db, 'agents', sibling)
+        self.runtime.capacity_tick()
+        current = self.runtime.agent(self.key)['capacityRetry']
+        self.assertEqual(current['status'], 'scheduled')
+        self.assertGreater(current['dueAt'], time.time())
+        self.assertFalse(current.get('claimedAt'))
+        with self.runtime.lock, self.runtime.db() as db:
+            sibling = self.runtime.agent('busy-sibling', db)
+            sibling.update(inFlight=False, status='completed', turnId=None)
+            self.runtime.put(db, 'agents', sibling)
+            agent = self.runtime.agent(self.key, db)
+            agent['capacityRetry']['dueAt'] = time.time()-1
+            self.runtime.capacity_save(db, agent, agent['capacityRetry'])
+            self.runtime.put(db, 'agents', agent)
+        self.runtime.capacity_tick()
+        fixture.eventually(lambda: bool(self.runtime.agent(self.key)['capacityRetry'].get('acceptedTurnId')))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -241,7 +269,7 @@ class CapacityContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'budget'):
             self.retry(retry)
         self.expire()
-        self.assertEqual(self.agent()['capacityRetry']['status'], 'cancelled')
+        self.assertEqual(self.agent()['capacityRetry']['status'], 'scheduled')
         self.mutate(tokenBudget=None, epoch=self.agent()['epoch'] + 1)
         with self.assertRaisesRegex(ValueError, 'earlier'):
             self.retry(retry)

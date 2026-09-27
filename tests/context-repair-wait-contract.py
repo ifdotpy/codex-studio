@@ -11,9 +11,36 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('actions', Path(__file__).with_name('native-action-context-repair-contract.py'))
 f = importlib.util.module_from_spec(spec); spec.loader.exec_module(f)
 repair, eventually = f.f.repair, f.f.f.eventually
+from codex_account_transfer import transfer_store
 
 
 class ContextWait(f.NativeActionRepair):
+    def test_transfer_retires_proven_unsent_repair_wait(self):
+        rt = self.runtime
+        transfer_store(rt)
+        rt.send(self.a['id'], 'Keep input', message_id='transfer-wait-input')
+        with rt.lock, rt.db() as db:
+            agent = rt.agent(self.a['id'], db)
+            agent['startAttempt'] = {'id':'transfer-wait-start','events':['transfer-wait-input'],
+                'epoch':agent['epoch'],'accountKey':'default','submitted':False}
+            agent.update(status='starting', inFlight=True, accountTransferId='transfer-wait')
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE id='transfer-wait-input'")
+            rt.put(db, 'agents', agent)
+            rt.put(db, 'account_transfers', {'id':'transfer-wait','leadId':agent['id'],
+                'targetAccountKey':'target','status':'pending',
+                'members':{agent['id']:{'phase':'waiting'}}})
+        with self.assertRaisesRegex(ValueError, 'current agent operation') as caught:
+            repair.repair_before_start(rt, agent)
+        self.assertTrue(repair.defer_context_start(rt, agent['id'], 'transfer-wait-start', caught.exception))
+        with rt.lock, rt.db() as db:
+            agent = rt.agent(self.a['id'], db)
+            self.assertIsNone(transfer_store(rt).local_blocker(db, agent))
+        current = rt.agent(self.a['id'])
+        self.assertFalse(current.get('contextRepairWait'))
+        with rt.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('transfer-wait-input',)).fetchone()[0], 'pending')
+
     def setUp(self):
         super().setUp()
         submit = self.server.submit
@@ -116,7 +143,8 @@ class ContextWait(f.NativeActionRepair):
         self.assertEqual(tuple(row), ('delivered','native-turn'))
 
     def test_recover_requeues_absent_idle_input_once(self):
-        self.uncertain_input('recover-absent')
+        self.uncertain_input('recover-absent', [{'id':'other-turn',
+            'items':[{'type':'userMessage','clientId':'other-input'}]}])
         first = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
         second = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
         self.assertEqual(first['inputs'], [{'id':'recover-absent','decision':'not_delivered'}])
@@ -134,6 +162,44 @@ class ContextWait(f.NativeActionRepair):
             row = db.execute('SELECT status FROM runtime_events WHERE id=?',('recover-offline',)).fetchone()
         self.assertEqual(row[0], 'uncertain')
         self.assertTrue(self.runtime.agent(self.a['id']).get('contextRepairWait'))
+
+    def test_native_client_id_confirms_delivered_input(self):
+        self.uncertain_input('recover-client', [{'id':'native-turn','status':'completed',
+            'items':[{'id':'native-item','type':'userMessage','clientId':'recover-client','content':[]}]}])
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'][0]['decision'], 'delivered')
+        with self.runtime.db() as db:
+            row = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?', ('recover-client',)).fetchone()
+        self.assertEqual(tuple(row), ('delivered', 'native-turn'))
+
+    def test_missing_identity_keeps_input_uncertain(self):
+        self.uncertain_input('unsupported-id', [{'id':'native-turn','status':'completed',
+            'items':[{'id':'unsupported-id','type':'userMessage','content':[]}]}])
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'][0]['decision'], 'waiting')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('unsupported-id',)).fetchone()[0], 'uncertain')
+
+    def test_recovery_does_not_restore_completed_turn_activity(self):
+        self.uncertain_input('recover-completed',
+            [{'id':'native-turn','status':'completed','clientUserMessageId':'recover-completed'}])
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_completed_turns VALUES (?)', (self.a['id'] + ':native-turn',))
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'][0]['decision'], 'delivered')
+        current = self.runtime.agent(self.a['id'])
+        self.assertFalse(current['inFlight'])
+        self.assertNotEqual(current['status'], 'running')
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.a['id'], db)
+            current.update(status='running', inFlight=True, turnId='native-turn')
+            self.runtime.put(db, 'agents', current)
+        self.assertEqual(self.runtime.reconcile_turn(self.a['id'])['status'], 'reconciled')
+        current = self.runtime.agent(self.a['id'])
+        self.assertFalse(current['inFlight'])
+        self.assertIsNone(current['turnId'])
+        self.assertEqual(current['status'], 'completed')
 
     def command(self, **changes):
         record = {'id':'exact-command', 'agent':self.a['id'], 'kind':'command',

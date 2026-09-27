@@ -104,6 +104,40 @@ class UsageResumeContract(unittest.TestCase):
             self.failed_turn_id = turn['id']
         return self.runtime.agent(self.key)['usageResume']
 
+    def test_limits_update_preserves_auth_backoff(self):
+        self.schedule_auth_failure()
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            resume = agent['usageResume']
+            resume.update(failedAt=time.time()-120, authAttempt=3, dueAt=time.time()+1800)
+            due = resume['dueAt']
+            self.runtime.usage_resume_save(db, agent, resume)
+            self.runtime.put(db, 'agents', agent)
+        self.runtime.usage_resume_limits_changed('default', {
+            'data': {'rateLimits': {'primary': {'usedPercent': 10}}}, 'at': time.time()})
+        self.assertEqual(self.runtime.agent(self.key)['usageResume']['dueAt'], due)
+
+    def test_budget_deferred_capacity_retry_resumes_exact_action(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent.update(lastCompletedTurn='capacity-budget',
+                error={'codexErrorInfo':'serverOverloaded'}, tokenBudget=1000000)
+            self.runtime.capacity_completed(db, agent,
+                {'id':'capacity-budget','status':'failed','error':agent['error']}, True)
+            self.runtime.put(db, 'agents', agent)
+        retry_id = self.runtime.agent(self.key)['capacityRetry']['id']
+        self.runtime.capacity_retry(self.key, retry_id, 'retry')
+        fixture.eventually(lambda: bool(self.runtime.agent(self.key).get('budgetActionWait')))
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['tokenBudget'] = None
+            self.runtime.put(db, 'agents', agent)
+        self.runtime.dispatch()
+        fixture.eventually(lambda: not self.runtime.agent(self.key).get('budgetActionWait'))
+        fixture.eventually(lambda: bool(self.runtime.agent(self.key)['capacityRetry'].get('acceptedTurnId')))
+        self.assertEqual(self.runtime.agent(self.key)['capacityRetry']['acceptedTurnId'],
+                         self.runtime.agent(self.key)['turnId'])
+
     def test_auth_failure_schedules_typed_resume_once_and_waits_for_account_proof(self):
         resume = self.schedule_auth_failure()
         self.assertEqual(resume['cause'], 'auth')

@@ -158,6 +158,8 @@ class UsageResumeMixin:
                               "AND json_extract(record,'$.accountKey')=?", (account_key,)).fetchall()
             for row in rows:
                 resume = json.loads(row['record'])
+                if resume.get('cause') not in {'usage_limit', 'rate_limit'}:
+                    continue
                 resume['resetAt'] = reset
                 resume['plannedAt'] = reset if reset and reset > now else None
                 if allowed:

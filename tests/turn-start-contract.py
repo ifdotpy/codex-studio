@@ -105,6 +105,30 @@ class TurnStartContract(unittest.TestCase):
         entry["future"].set_exception(RuntimeError(message))
         self.assertTrue(entry["handled"].wait(3))
 
+    def test_late_busy_rejection_restores_exact_uncertain_input(self):
+        key = self.start()
+        self.accept()
+        self.assertTrue(self.server.deferred[0]['handled'].wait(3))
+        self.server.mode = 'silent'
+        self.runtime.send(key, 'Keep this input', 'late-busy')
+        self.wait_start(1)
+        self.assertEqual(self.runtime.delivery_receipt('late-busy')['status'], 'uncertain')
+        turn = self.runtime.agent(key)['turnId']
+        self.reject(1, 'Cannot steer review')
+        self.assertEqual(self.runtime.delivery_receipt('late-busy')['status'], 'pending')
+        self.assertEqual(self.runtime.agent(key)['steerRejectedTurnId'], turn)
+
+    def test_late_ack_schedules_usage_resume_after_quota_completion(self):
+        key = self.start('silent')
+        entry = self.server.deferred[0]
+        self.server.notify({'method':'turn/completed','params':{
+            'threadId':entry['params']['threadId'],
+            'turn':{'id':entry['turn']['id'],'status':'failed',
+                    'error':{'message':'quota','codexErrorInfo':'usageLimitExceeded'}}}})
+        self.accept()
+        self.assertTrue(entry['handled'].wait(3))
+        self.assertEqual(self.runtime.agent(key)['usageResume']['cause'], 'usage_limit')
+
     def notify_input(self, index=0, client_id=None):
         e = self.server.deferred[index]
         self.server.notify({"method": "item/started", "params": {

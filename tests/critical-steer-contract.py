@@ -37,6 +37,24 @@ class CriticalDelivery(unittest.TestCase):
         with self.runtime.db() as db:
             return db.execute('SELECT * FROM runtime_events WHERE id=?', (event_id,)).fetchone()
 
+    def test_retired_busy_notification_preserves_live_turn(self):
+        from codex_wakeups import reconcile_start
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.agent, db)
+            before = (agent['status'], agent['inFlight'], agent['turnId'])
+            key = 'obsolete-complaint'
+            self.runtime.put(db, 'complaints', {'id':'resolved','leadId':agent['id'],
+                'authorRole':'worker','status':'resolved','responses':[{'authorRole':'lead','text':'Done'}]})
+            self.runtime.enqueue(db, agent, 'complaint',
+                json.dumps({'complaints':[{'complaint_id':'resolved'}]}), key)
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE id=?", (key,))
+            agent['startAttempt'] = {'id':'busy-attempt','events':[key],
+                'epoch':agent['epoch'],'submitted':False,'activeAtReservation':True}
+            rows = [dict(db.execute('SELECT * FROM runtime_events WHERE id=?', (key,)).fetchone())]
+            self.assertTrue(reconcile_start(self.runtime, db, agent, rows))
+        current = self.runtime.agent(self.agent)
+        self.assertEqual((current['status'],current['inFlight'],current['turnId']), before)
+
     def test_busy_user_input_uses_turn_start_and_repeated_id_stays_local(self):
         turn = self.runtime.agent(self.agent)['turnId']
         self.runtime.send(self.agent, 'Second', 'busy-exact', delivery='queue')

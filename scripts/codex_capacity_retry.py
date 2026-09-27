@@ -219,11 +219,14 @@ class CapacityRetryMixin:
             try:
                 self.capacity_retry(key, retry_id, 'retry', _automatic=True)
             except ValueError as error:
-                # A guard failure cancels automatic dispatch; the exact source stays visible.
+                # Local guards can clear without changing the retry identity.
                 with self.lock, self.db() as db:
                     a = self.agent(key, db)
                     retry = a.get('capacityRetry') or {}
                     if retry.get('id') == retry_id and retry.get('status') == 'scheduled':
-                        retry.update(status='cancelled', dueAt=None, reason=str(error))
-                        self.capacity_save(db, a, retry)
+                        if str(error) == 'This retry belongs to an earlier agent state.':
+                            retry.update(status='cancelled', dueAt=None, reason=str(error))
+                            self.capacity_save(db, a, retry)
+                        else:
+                            self.capacity_wait(db, a, retry, str(error))
                         self.put(db, 'agents', a)
