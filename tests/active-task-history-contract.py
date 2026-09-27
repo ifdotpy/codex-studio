@@ -18,6 +18,7 @@ from codex_agent_management import _blockers
 
 class Fixture:
     disconnected = Runtime.disconnected
+    retire_legacy_steer = Runtime.retire_legacy_steer
     _assert_workspace_idle = WorkspaceMixin._assert_workspace_idle
     reconcile_tool_requests = RequestMixin.reconcile_tool_requests
     records = staticmethod(Runtime.records)
