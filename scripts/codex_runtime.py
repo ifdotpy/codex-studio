@@ -606,6 +606,13 @@ class AppServer:
 
     def enqueue(self, callback, message):
         import queue
+        if (callback == self.request and isinstance(message, dict) and "id" in message
+                and message.get("method") == "item/tool/call"):
+            # Tool calls must not wait behind a long notification backlog.
+            with self.callback_lock:
+                self.close_slots(None)
+            self.enqueue_tool_request(message)
+            return
         try:
             with self.callback_lock:
                 if not self.dispatch_stopped:
@@ -727,10 +734,6 @@ class AppServer:
                         if "id" in message:
                             if message["method"] == "currentTime/read":
                                 self.enqueue_clock(message)
-                            elif message["method"] == "item/tool/call":
-                                with self.callback_lock:
-                                    self.close_slots(None)
-                                self.enqueue_tool_request(message)
                             else:
                                 self.enqueue(self.request, message)
                         else:
