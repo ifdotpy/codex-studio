@@ -2059,7 +2059,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a = latest
             try:
                 self.checkpoint_capture(a["id"], "Before first turn", internal=True)
-            except (ValueError, subprocess.SubprocessError, OSError) as error:
+            except Exception as error:
                 # The new worktree equals HEAD; a missing first checkpoint must not stop the worker.
                 with self.lock, self.db() as db:
                     latest = self.agent(a["id"], db)

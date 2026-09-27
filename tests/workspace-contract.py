@@ -908,7 +908,7 @@ class WorkspaceContract(unittest.TestCase):
     def test_failed_first_checkpoint_does_not_stop_the_worker(self):
         worker, path = self.isolated_worker()
         self.agent_update(worker, worktreeReady=False, threadId=None)
-        with patch.object(type(self.runtime), "snapshot_tree", side_effect=ValueError("git add timed out")):
+        with patch.object(type(self.runtime), "snapshot_tree", side_effect=NameError("git add timed out")):
             prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
         self.assertTrue(prepared.get("threadId"))
         self.assertIn("git add timed out", self.runtime.agent(worker["id"])["checkpointError"])
