@@ -945,7 +945,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 11 },
+      capabilities: { claudeVersion: 12 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1214,6 +1214,9 @@ async function handle(method, p) {
       if (toolsChanged) {
         // Replace only the Studio MCP server; background tasks keep running.
         try {
+          // The SDK keeps an already registered in-process server even when its
+          // tools change. Remove it first so the new schema replaces it.
+          await active.q.setMcpServers({});
           await active.q.setMcpServers({
             studio: studioTools(s, () => active.turn),
           });

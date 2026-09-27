@@ -278,7 +278,8 @@ class Bridge(unittest.TestCase):
                 'clientUserMessageId': 'tools-' + str(index), 'input': [{'type': 'text', 'text': 'hello'}]})
             self.assertEqual(self.completed()['status'], 'completed')
         sets = [json.loads(line) for line in (self.root / '.mcp-sets').read_text().splitlines()]
-        self.assertEqual(sets, [[['studio', ['a', 'b']]]])
+        # The SDK keeps a registered in-process server, so the bridge removes it and adds the new one.
+        self.assertEqual(sets, [[], [['studio', ['a', 'b']]]])
 
     def test_history_version_tracks_content_and_survives_read(self):
         before = self.call('thread/read', {'threadId':self.thread})['thread']
@@ -429,7 +430,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
     def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 11)
+        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 12)
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
                   'input': [{'type': 'text', 'text': 'Native followup'}]}
