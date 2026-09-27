@@ -42,7 +42,7 @@ export function query({prompt,options}){
   accountInfo:async()=>({email:fs.existsSync(options.cwd+'/.wrong-account')?'different@example.test':'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
   initializationResult:async()=>({commands:[{name:'compact',description:'Compact history'}]}),
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>({rate_limits_available:true,subscription_type:'max',rate_limits:{five_hour:{utilization:11,resets_at:'2026-09-22T08:00:00Z'},seven_day:{utilization:4},model_scoped:[{display_name:'Fable',utilization:7}]}}),
-  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');},setPermissionMode:async()=>{},setMcpServers:async servers=>{fs.appendFileSync(options.cwd+'/.mcp-sets',JSON.stringify(Object.keys(servers).map(name=>[name,servers[name].tools.map(t=>t.name)]))+'\n');return {added:[],removed:[],errors:{}};},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
+  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');if(fs.existsSync(options.cwd+'/.dead-query'))throw new Error('Claude Code process aborted by user');},setPermissionMode:async()=>{},setMcpServers:async servers=>{fs.appendFileSync(options.cwd+'/.mcp-sets',JSON.stringify(Object.keys(servers).map(name=>[name,servers[name].tools.map(t=>t.name)]))+'\n');return {added:[],removed:[],errors:{}};},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
   close(){abort.abort();},interrupt:async()=>abort.abort(),
   async *[Symbol.asyncIterator](){
    while(!abort.signal.aborted){
@@ -238,6 +238,18 @@ class Bridge(unittest.TestCase):
         self.assertEqual(self.completed()['status'], 'completed')
         self.assertTrue(any(self.root.rglob('.continued')))
 
+    def test_dead_idle_query_is_replaced_for_the_next_turn(self):
+        self.turn('hello', 'before-dead'); self.assertEqual(self.completed()['status'], 'completed')
+        (self.root / '.dead-query').write_text('dead')
+        try:
+            started = self.turn('hello', 'after-dead')
+            self.assertEqual(self.completed()['status'], 'completed')
+        finally:
+            (self.root / '.dead-query').unlink()
+        history = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})['thread']['turns']
+        self.assertEqual(history[-1]['id'], started['turn']['id'])
+        self.assertEqual(history[-1]['items'][0]['id'], 'after-dead')
+
     def test_required_thinking_overrides_saved_off_and_optional_switch_restores_it(self):
         self.call('claude/settings', {'threadId': self.thread, 'settings': {'thinking': False}})
         for index, model in enumerate(('opus[1m]', 'sonnet', 'claude-fable-5-1[1m]')):
@@ -417,7 +429,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
     def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 10)
+        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 11)
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
                   'input': [{'type': 'text', 'text': 'Native followup'}]}

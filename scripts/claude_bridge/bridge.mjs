@@ -879,6 +879,17 @@ async function startSession(s, active, p) {
     if (queries.get(s.id) === active) queries.delete(s.id);
   }
 }
+// The SDK reports a closed or aborted Claude process with these messages.
+function deadQuery(error) {
+  return /process aborted by user|operation aborted|process exited|process terminated|transport is not ready|query (is )?closed/i.test(
+    String(error?.message || error),
+  );
+}
+function discardQuery(s, active) {
+  active.input.close();
+  active.q?.close();
+  if (queries.get(s.id) === active) queries.delete(s.id);
+}
 function newActive(turn) {
   const active = {
     turn,
@@ -934,7 +945,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 10 },
+      capabilities: { claudeVersion: 11 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1187,6 +1198,17 @@ async function handle(method, p) {
       Array.isArray(p.dynamicTools) &&
       JSON.stringify(p.dynamicTools) !== JSON.stringify(s.dynamicTools || []);
     if (toolsChanged) s.dynamicTools = p.dynamicTools;
+    if (active && !active.turn && !active.tasks.size) {
+      // A persistent query can die between turns (its Claude process ends).
+      // Nothing is running in it, so start this turn in a fresh query.
+      try {
+        await active.ready;
+      } catch (error) {
+        if (!deadQuery(error)) throw error;
+        discardQuery(s, active);
+        active = null;
+      }
+    }
     if (active) {
       await active.ready;
       if (toolsChanged) {
@@ -1201,9 +1223,17 @@ async function handle(method, p) {
           );
         }
       }
-      await active.q.setModel(p.model || s.model);
-      await active.q.setPermissionMode(permissionMode(s, p));
-      await active.q.applyFlagSettings(await flags(s, p, true));
+      try {
+        await active.q.setModel(p.model || s.model);
+        await active.q.setPermissionMode(permissionMode(s, p));
+        await active.q.applyFlagSettings(await flags(s, p, true));
+      } catch (error) {
+        if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
+        discardQuery(s, active);
+        active = null;
+      }
+    }
+    if (active) {
       if (queries.get(s.id) !== active || active.input.closed)
         throw new Error("Claude closed before this turn could start");
       if (active.turn)
