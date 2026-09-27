@@ -104,9 +104,9 @@ def request(rt, actor, args, key):
         if previous is not None:
             return previous
         assert_delegation(rt.agent(actor['rootId'], db))
-    require_repository(directory)
     if actor.get('daybreakEnabled'):
         raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
+    require_repository(directory)
     from codex_worker_accounts import resolve
     review_account, catalog = resolve(rt, actor, {'model': model})
     with rt.lock, rt.db() as db:

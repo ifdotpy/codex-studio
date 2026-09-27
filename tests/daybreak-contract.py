@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -93,6 +94,8 @@ class DaybreakRuntime(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='daybreak-contract-')
         self.root = Path(self.tmp.name)
+        # Native review requires a git repository.
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
         self.runtime = ControlledRuntime(self.root, DaybreakServer)
         self.server = self.runtime.connect()
         self.a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': ''}, draft=True)

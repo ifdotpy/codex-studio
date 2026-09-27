@@ -216,7 +216,9 @@ class AccountTransfers:
         rt = self.rt
         with rt.lock, rt.db() as db:
             referenced = set()
-            for agent in rt.records(db, 'agents'):
+            pending = [o for o in rt.records(db, 'account_transfers') if o.get('status') == 'pending']
+            # Decode every agent only when a pending transfer needs its owner check.
+            for agent in (rt.records(db, 'agents') if pending else []):
                 if agent.get('accountTransferId'):
                     referenced.add(agent['accountTransferId'])
                 summary_id = (agent.get('accountTransfer') or {}).get('id')
@@ -224,7 +226,7 @@ class AccountTransfers:
                     referenced.add(summary_id)
             # A transfer with no surviving owner reference and no submitted native
             # mutation cannot advance. Settle it through the same durable receipt path.
-            for orphan in rt.records(db, 'account_transfers'):
+            for orphan in pending:
                 if (orphan.get('status') != 'pending' or orphan['id'] in referenced
                         or any(member['phase'] not in {'waiting', 'completed'}
                                for member in orphan['members'].values())):
