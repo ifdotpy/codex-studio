@@ -10,6 +10,8 @@ DELAYS = (10, 30, 120, 300)
 # A network outage (DNS, Wi-Fi, sleep) can last longer than a busy server.
 CONNECTION_DELAYS = (10, 30, 120, 300, 600, 1200, 1800)
 SERVER_KINDS = {'serverOverloaded', 'internalServerError'}
+# Recheck a retry that waits for local work (a command or monitor) at most this often.
+WAIT_MAX_SECONDS = 300
 CONNECTION_KINDS = {'httpConnectionFailed', 'responseStreamConnectionFailed',
                     'responseStreamDisconnected', 'responseTooManyFailedAttempts'}
 
@@ -107,7 +109,19 @@ class CapacityRetryMixin:
         retry = a.get('capacityRetry') or {}
         if retry.get('id') != attempt.get('capacityRetryId') or not retry:
             return
+        if not unknown and isinstance(getattr(error, 'contextRepairWait', None), dict):
+            # A running command, monitor or receipt delays context repair. This
+            # is a wait, not a rejection: nothing was submitted. Check again later.
+            self.capacity_wait(db, a, retry, str(error))
+            return
         retry.update(status='unknown' if unknown else 'failed', dueAt=None, reason=str(error))
+        self.capacity_save(db, a, retry)
+
+    def capacity_wait(self, db, a, retry, reason):
+        waits = retry.get('waits', 0) + 1
+        retry.pop('claimedAt', None)
+        retry.update(status='scheduled', dueAt=time.time() + min(WAIT_MAX_SECONDS, 15 * waits),
+                     waits=waits, reason=reason)
         self.capacity_save(db, a, retry)
 
     def capacity_check(self, db, a, retry, *, claimed=False):
@@ -188,6 +202,16 @@ class CapacityRetryMixin:
 
     def capacity_tick(self):
         with self.lock, self.db() as db:
+            # Older code failed a retry that only waited for context repair. Nothing was
+            # submitted, so the wait rule applies to those records too.
+            for a in self.records(db, 'agents'):
+                retry = a.get('capacityRetry') or {}
+                if (retry.get('status') == 'failed' and not retry.get('acceptedTurnId')
+                        and str(retry.get('reason', '')).startswith('Context repair waits for ')
+                        and not ((a.get('startAttempt') or {}).get('capacityRetryId') == retry.get('id')
+                                 and (a.get('startAttempt') or {}).get('submitted'))):
+                    self.capacity_wait(db, a, retry, retry['reason'])
+                    self.put(db, 'agents', a)
             due = [(a['id'], a['capacityRetry']['id']) for a in self.records(db, 'agents')
                    if (a.get('capacityRetry') or {}).get('status') == 'scheduled'
                    and a['capacityRetry']['dueAt'] <= time.time()]

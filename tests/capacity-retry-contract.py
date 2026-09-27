@@ -188,6 +188,42 @@ class CapacityContract(unittest.TestCase):
         self.retry(retry)
         self.assertEqual(len(self.starts()), 1)
 
+    def test_context_repair_wait_reschedules_without_using_an_attempt(self):
+        import codex_context_repair
+        retry = self.fail()
+        original = codex_context_repair.repair_before_start
+        def busy(rt, a):
+            raise codex_context_repair._waiting('Context repair waits for tasks: busy-command')
+        codex_context_repair.repair_before_start = busy
+        try:
+            self.retry(retry)
+            fixture.eventually(lambda: self.agent()['capacityRetry'].get('waits') == 1)
+        finally:
+            codex_context_repair.repair_before_start = original
+        waiting = self.agent()['capacityRetry']
+        self.assertEqual(waiting['status'], 'scheduled')
+        self.assertNotIn('claimedAt', waiting)
+        self.assertAlmostEqual(waiting['dueAt'] - time.time(), 15, delta=2)
+        self.assertEqual(self.agent().get('capacityRetryCount', 0), 0)
+        self.assertEqual(len(self.starts()), 1)
+        self.expire()
+        fixture.eventually(lambda: len(self.starts()) == 2)
+        self.assertEqual(self.starts()[-1]['input'], [])
+
+    def test_old_failed_context_wait_is_scheduled_again(self):
+        retry = self.fail()
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.agent()
+            a['capacityRetry'].update(status='failed', dueAt=None, claimedAt=time.time(),
+                                      reason='Context repair waits for tasks: old-command')
+            a['startAttempt'] = {'id': 'capacity:' + retry['id'], 'epoch': a['epoch'], 'events': [],
+                                 'action': 'capacity', 'submitted': False, 'capacityRetryId': retry['id']}
+            self.runtime.capacity_save(db, a, a['capacityRetry'])
+            self.runtime.put(db, 'agents', a)
+        self.runtime.capacity_tick()
+        again = self.agent()['capacityRetry']
+        self.assertEqual((again['id'], again['status'], again['waits']), (retry['id'], 'scheduled', 1))
+
     def test_error_notification_and_stale_terminal_do_not_schedule(self):
         a = self.agent()
         self.server.notify({'method': 'error', 'params': {'threadId': a['threadId'],
