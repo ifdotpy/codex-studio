@@ -320,6 +320,19 @@ class UsageResumeContract(unittest.TestCase):
         self.assertEqual(self.server.calls, calls)
         self.assertEqual(self.runtime.agent(self.key)['usageResume']['status'], 'scheduled')
 
+    def test_relief_still_applies_to_resume_saved_before_typed_causes(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            resume = agent['usageResume']
+            resume.pop('cause', None)
+            resume['failedAt'] = time.time() - 120
+            resume['dueAt'] = time.time() + 10000
+            self.runtime.usage_resume_save(db, agent, resume)
+            self.runtime.put(db, 'agents', agent)
+        self.runtime.usage_resume_limits_changed('default', {'data': {'rateLimits': {'primary': {
+            'usedPercent': 15, 'resetsAt': time.time() + 10000}}}})
+        self.assertLessEqual(self.runtime.agent(self.key)['usageResume']['dueAt'], time.time() + 1)
+
     def test_failed_turn_schedules_once_and_restart_keeps_identity(self):
         fixture.eventually(lambda: self.runtime.rate_limits_for('default').get('at'))
         reset = self.runtime.rate_limits_for('default')['data']['rateLimits']['primary']['resetsAt']

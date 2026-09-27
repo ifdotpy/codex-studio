@@ -89,6 +89,21 @@ class CriticalDelivery(unittest.TestCase):
         self.runtime.dispatch()
         self.assertNotIn('queueNotice', self.runtime.agent(self.agent))
 
+    def test_repaired_completed_turn_queues_waiting_input(self):
+        a = self.runtime.agent(self.agent)
+        turn = a['turnId']
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute('INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)', (a['id'] + ':' + turn,))
+            a = self.runtime.agent(self.agent, db)
+            self.runtime.enqueue(db, a, 'monitor_exit', 'Late monitor result', 'late-monitor')
+            a = self.runtime.agent(self.agent, db)
+            a.update(inFlight=True, turnId=turn, status='running')
+            self.runtime.put(db, 'agents', a)
+        self.server.notify({'method': 'turn/completed', 'params': {'threadId': a['threadId'],
+            'turn': {'id': turn, 'status': 'completed'}}})
+        fixture.eventually(lambda: self.event('late-monitor')['status'] == 'delivered')
+        self.assertNotEqual(self.runtime.agent(self.agent)['turnId'], turn)
+
     def test_busy_agent_message_and_child_result_share_one_batch(self):
         with self.runtime.lock, self.runtime.db() as db:
             a = self.runtime.agent(self.agent, db)

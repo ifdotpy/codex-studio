@@ -734,6 +734,11 @@ class RuntimeContract(unittest.TestCase):
         else:
             self.fail('Team did not finish')
         self.assertGreaterEqual(peak, 2)
+        # snapshot() can reuse a copy up to 2 s old; wait until the last child results are delivered.
+        def delivered():
+            with self.runtime.db() as db:
+                return not db.execute("SELECT 1 FROM runtime_events WHERE kind='child_result' AND status!='delivered'").fetchone()
+        eventually(delivered)
         starts = [p for m,p in self.runtime.server.calls if m == 'turn/start' and p['threadId'] == lead['threadId']]
         self.assertGreater(len(starts), 1)
         steers = [p for m,p in self.runtime.server.calls if m == 'turn/steer' and p['threadId'] == lead['threadId']]

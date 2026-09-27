@@ -3121,6 +3121,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                        "interrupted" if turn.get("status") == "interrupted" else "failed")
                         if not a.get("autoWake"):
                             a["status"] = "paused"
+                        elif (a["status"] == "completed" and not a.get("nativeFailureHold")
+                              and not a.get("accountTransferId") and db.execute(
+                                  "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?",
+                                  (a["id"], a["epoch"])).fetchone()):
+                            # Waiting input starts the next turn, as after a normal completion.
+                            a["status"] = "queued"
                         self.put(db, "agents", a)
                     return
                 known_capacity_source = bool(a.get("turnId") and a["turnId"] == turn.get("id"))
