@@ -2092,12 +2092,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock:
             a = self.agent(a["id"])
             assert_context_available(a)
+            if (a.get("nativeRelease") or {}).get("resetPending"):
+                raise ValueError("Tool reset waits for native thread closure; input remains queued")
             from codex_native_tools import account_reserved
             if account_reserved(self, a.get("accountKey", "default")):
                 raise ValueError("The account tool catalog is updating. Input remains queued.")
         if a.get("accountTransferId") and not a.get("inFlight"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
         server = self.connect(a.get("accountKey", "default"))
+        from codex_native_release import reconcile_unknown
+        reconcile_unknown(self, a)
         previous = self.preparations.get(a["id"])
         if previous and previous.get("connectionId") != self.connection_ids.get(a.get("accountKey", "default")):
             # Disconnect persistence can fail when storage is unavailable. An old
@@ -2239,6 +2243,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          profile=result.get("activePermissionProfile"))
                 a["preparedContext"] = {"epoch": [thread_id, a.get("compactions", 0)],
                                         "versions": operation.get("contextVersions", {})}
+                if a.get("nativeRelease"):
+                    a["nativeRelease"].update(phase="resumed", resumedAt=time.time(), resetPending=False)
                 if operation["method"] == "thread/start" and operation.get("toolCatalog") is not None:
                     from codex_native_tools import mark_current
                     mark_current(a, operation["toolCatalog"])
@@ -2279,6 +2285,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def dispatch(self):
         from codex_native_runtime import tick as native_runtime_tick
         native_runtime_tick(self)
+        from codex_native_release import tick as native_release_tick
+        native_release_tick(self)
         self.analytics_history_ensure_running()
         self.retry_monitor_results()
         from codex_session_names import session_names
@@ -2343,6 +2351,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          (a.get("startAttempt") or {}).get("action") not in {"review", "compact"})
                     and a.get("browserRecovery", {}).get("stage") not in {"pending", "reconnecting"}
                     and not a.get("accountTransferId")
+                    and not (a.get("nativeRelease") or {}).get("resetPending")
                     and not native_thread_block(a)
                     and not ((a.get("startAttempt") or {}).get("events") and
                              db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status IN "
@@ -3038,6 +3047,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     and p.get("status", {}).get("type") == "notLoaded"):
                 # Unloading is not a turn outcome or a delivery acknowledgement.
                 self.loaded.discard(a["id"])
+                release = a.get("nativeRelease")
+                if release and release.get("threadId") == tid:
+                    release.update(closedAt=time.time(), resetPending=False)
+                    self.put(db, "agents", a)
+                    self.changed.set()
                 preparation = self.preparations.get(a["id"])
                 if (preparation and preparation.get("connectionId") == connection_id
                         and preparation.get("threadId") == tid):

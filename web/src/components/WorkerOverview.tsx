@@ -4,7 +4,7 @@ import { useState } from "react";
 import { save, saved } from "../api";
 import { nativeErrorView } from "../nativeErrors";
 import { shortModel } from "./ExecutionSettings";
-import { agentErrorLabel, statusLabel, type Agent, type Json } from "../types";
+import { agentErrorLabel, nativeReleaseLabel, statusLabel, type Agent, type Json } from "../types";
 import ChatStatus from "./ChatStatus";
 import type { ChatIndicator } from "./chatStatusModel";
 
@@ -190,7 +190,8 @@ export default function WorkerCard({
                           (agent.startAttempt?.prepareError ||
                             agent.startAttempt?.responseError)
                         ? "Waiting for Codex"
-                        : statusLabel(agent.status)}
+                        : [statusLabel(agent.status), nativeReleaseLabel(agent)]
+                            .filter(Boolean).join(" · ")}
               </small>
               <span
                 className="worker-model-summary"

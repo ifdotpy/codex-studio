@@ -57,7 +57,7 @@ import {
   type OutgoingMessage,
 } from "./sync/send";
 import { useSyncedDrafts } from "./sync/drafts";
-import { busy, statusLabel, type Agent, type Json } from "./types";
+import { busy, nativeReleaseLabel, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
 import ChatStatus from "./components/ChatStatus";
 import AgentModeSwitch from "./components/AgentModeSwitch";
@@ -1279,7 +1279,8 @@ export default function App() {
                     ? indicators.get(agent.id)?.label
                     : livePhase?.id === agent.id
                       ? livePhase.label
-                      : statusLabel(agent.status, agent.activity?.phase)
+                      : [statusLabel(agent.status, agent.activity?.phase), nativeReleaseLabel(agent)]
+                          .filter(Boolean).join(" · ")
                   : room?.radio
                     ? "Shared chat · One agent speaks at a time"
                     : room?.kind === "private"

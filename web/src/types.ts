@@ -155,6 +155,13 @@ export interface Message extends Json {
   created?: number;
 }
 export const busy = new Set(["running", "starting", "approval"]);
+export const nativeReleaseLabel = (agent: Agent) => {
+  const release = agent.nativeRelease;
+  if (agent.inFlight || !release || release.phase !== "released") return null;
+  return release.resetPending
+    ? "Tool reset waits for Codex to close the native session"
+    : "Native thread released";
+};
 export const statusLabel = (status: string, phase?: string) =>
   (status === "running" &&
     phase &&

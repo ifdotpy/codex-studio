@@ -768,9 +768,25 @@ account admission, or permission settings change as part of these budgets.
 ## Worker archive and recovery
 
 `orchestration_agent_manage` belongs to the lead. It manages only descendants in
-that lead's team. Actions are `inspect`, `recover`, `archive`, `archive_finished`,
+that lead's team. Actions are `inspect`, `recover`, `reset_tools`, `archive`, `archive_finished`,
 `restore`, `list_archived`, and `maintenance_report`. Inspection returns bounded blocker IDs. Recovery reads the exact
 native turn through the existing reconciler; a failed read leaves its outcome unknown.
+
+Studio releases an idle Codex thread subscription after 15 minutes. It first
+checks Studio input and request receipts, tasks, monitors, the native thread,
+the native input queue, and native background terminals. Release removes the
+thread from Studio's loaded cache. The next turn resumes and subscribes to it.
+Codex waits for its configured idle window, 60 seconds by default. On successful
+native shutdown, its MCP servers and code-mode cells end. A lost unsubscribe response
+remains unknown until Studio retries that idempotent request. It never replays input.
+
+`reset_tools` requires a lead reason and an idle worker. It releases the worker's
+subscription now. Studio waits for native closure before it starts later queued
+work, so the next turn gets fresh tool processes. Open code-mode cells and their
+JavaScript state end when Codex closes the session. MCP process memory ends too.
+Codex terminates any unified-exec process missed by the native terminal check;
+its result stays unknown. Native background commands and unknown receipts block
+reset. The worker transcript and Studio receipts remain.
 
 Archive requires a reason. It hides a worker through the existing tombstone filter
 and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.

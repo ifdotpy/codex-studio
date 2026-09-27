@@ -10,9 +10,11 @@ def management_tools(tool, text):
         'Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. '
         'archive hides an inactive worker and removes its clean Studio worktree after saving an archive ref; it reports why a worktree stays. '
         'archive_finished archives finished descendants with safe worktrees and reports freed bytes and kept workers. '
+        'reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. '
+        'Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. '
         'restore recreates a removed worktree and returns an archived worker paused; use orchestration_send to resume. '
         'list_archived is paged. maintenance_report lists old archived or deleted worktrees without removal. Only the lead may use this tool.',
-        {'action': {'type': 'string', 'enum': ['inspect', 'recover', 'archive', 'archive_finished', 'restore', 'list_archived', 'maintenance_report']},
+        {'action': {'type': 'string', 'enum': ['inspect', 'recover', 'reset_tools', 'archive', 'archive_finished', 'restore', 'list_archived', 'maintenance_report']},
          'agent_id': text, 'reason': {'type': 'string', 'maxLength': 1000},
          'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50}, 'cursor': text}, ['action'])]
 
@@ -37,7 +39,7 @@ def _authorize(rt, db, actor_id, epoch, target=None):
 
 def _brief(a):
     return {k: a.get(k) for k in ('id', 'name', 'parentId', 'status', 'inFlight', 'threadId',
-                                 'turnId', 'error', 'lastEvent', 'agentArchive')}
+                                 'turnId', 'error', 'lastEvent', 'agentArchive', 'nativeRelease')}
 
 
 def _completed_native_turn(a):
@@ -330,12 +332,31 @@ def _restore_worktree(info):
 
 def manage_agent(rt, actor_id, args, epoch=None):
     action = args.get('action')
-    if action not in {'inspect','recover','archive','archive_finished','restore','list_archived','maintenance_report'}:
+    if action not in {'inspect','recover','reset_tools','archive','archive_finished','restore','list_archived','maintenance_report'}:
         raise ValueError('Unknown agent management action')
     if action == 'archive_finished':
         return _archive_finished(rt, actor_id, epoch)
     if action == 'maintenance_report':
         return {'worktrees': worktree_maintenance_report(rt, actor_id, epoch)}
+    if action == 'reset_tools':
+        reason = args.get('reason')
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:
+            raise ValueError('Give a tool reset reason with 1 to 1000 characters')
+        with rt.lock, rt.db() as db:
+            target = rt.agent(args.get('agent_id'), db)
+            _authorize(rt, db, actor_id, epoch, target)
+            if target.get('deletedAt') or target.get('agentArchive'):
+                raise ValueError('Restore this worker before tool reset')
+        from codex_native_release import release_agent
+        result = release_agent(rt, target['id'], reason=reason.strip(), actor_id=actor_id,
+                               actor_epoch=epoch)
+        return {**result, 'agent': _brief(rt.agent(target['id'])),
+                'loss': ('After native closure, open code-mode cells and their JavaScript state end. '
+                         'MCP server processes and their memory end. Codex terminates any unified-exec '
+                         'process missed by the native background-terminal check; its result is unknown. '
+                         'The transcript and Studio receipts remain. No input is replayed.'),
+                'next': ('Wait for native thread closure before sending work. The configured native '
+                         'idle window defaults to 60 seconds after unsubscribe and inactivity.')}
     observed = None
     if action == 'archive':
         with rt.lock, rt.db() as db:
