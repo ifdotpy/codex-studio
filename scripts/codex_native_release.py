@@ -22,7 +22,7 @@ def _idle_since(agent):
     return agent.get("created", time.time())
 
 
-def _local_blocker(rt, db, agent):
+def _local_blocker(rt, db, agent, busy_owners=None):
     from codex_workspace import active_task_records
 
     key = agent["id"]
@@ -48,9 +48,11 @@ def _local_blocker(rt, db, agent):
                   "AND json_extract(record,'$.status') IN ('pending','answering') LIMIT 1",
                   (key,)).fetchone():
         return "pending request"
-    if db.execute("SELECT 1 FROM runtime_work WHERE json_extract(record,'$.owner')=? "
-                  "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') LIMIT 1",
-                  (key,)).fetchone():
+    # runtime_work has no owner index; a scan pass supplies all busy owners at once.
+    if (key in busy_owners if busy_owners is not None else db.execute(
+            "SELECT 1 FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+            "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') LIMIT 1",
+            (key,)).fetchone()):
         return "active assigned work"
     if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
                   "AND (json_extract(record,'$.stage') IN ('queued','running') "
@@ -252,13 +254,19 @@ def tick(rt, now=None):
         keys = [loaded[(position + offset) % len(loaded)]
                 for offset in range(min(MAX_SCAN_PER_TICK, len(loaded)))]
         rt._native_release_cursor = position + len(keys)
+        busy_owners = None
         for key in keys:
             if key in pending:
                 continue
             agent = rt.agent(key, db)
             if (agent.get("provider", "codex") == "codex" and not agent.get("deletedAt")
-                    and agent.get("threadId") and now - _idle_since(agent) >= IDLE_SECONDS
-                    and not _local_blocker(rt, db, agent)):
+                    and agent.get("threadId") and now - _idle_since(agent) >= IDLE_SECONDS):
+                if busy_owners is None:
+                    busy_owners = {row[0] for row in db.execute(
+                        "SELECT json_extract(record,'$.owner') FROM runtime_work "
+                        "WHERE json_extract(record,'$.status') NOT IN ('accepted','cancelled')")}
+                if _local_blocker(rt, db, agent, busy_owners):
+                    continue
                 candidates.append((_idle_since(agent), key))
         selected = resets[:MAX_PER_TICK]
         selected += [key for _, key in sorted(candidates)[:MAX_PER_TICK - len(selected)]]
