@@ -213,6 +213,15 @@ class RuntimeContract(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE kind='agent_message'").fetchone()[0], 2)
         eventually(lambda: self.runtime.agent(peer['id'])['status'] == 'running')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+        eventually(lambda: self.runtime.chat_read(private['room'], first['id'])['messages'][0]
+                   ['deliveries'].get(peer['id']) == 'delivered')
+        self.assertEqual(self.runtime.chat_read(parent['room'], first['id'])['messages'][0]
+                         ['deliveries'][lead['id']], 'delivered')
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute('UPDATE runtime_chat_messages SET deliveries=? WHERE id=?',
+                       (json.dumps({peer['id']: 'queued'}), 'msg-private'))
+        self.assertEqual(self.runtime.chat_read(private['room'], first['id'])['messages'][0]
+                         ['deliveries'][peer['id']], 'delivered')
         inputs = [p['input'][0]['text'] for method, p in self.runtime.server.calls if method == 'turn/start']
         self.assertTrue(any('Found the cause' in t and 'agent_message' in t for t in inputs))
         self.assertTrue(any('Check this symbol' in t for t in inputs))
@@ -706,9 +715,10 @@ class RuntimeContract(unittest.TestCase):
 
     def test_pending_user_message_is_visible_before_next_turn(self):
         a = self.lead()
-        self.runtime.send(a['id'], 'Queued followup')
-        messages = self.runtime.transcript(a['id'])['items']
-        self.assertTrue(any(i.get('pending') and i['text'] == 'Queued followup' for i in messages))
+        with self.runtime.lock:
+            self.runtime.send(a['id'], 'Queued followup')
+            messages = self.runtime.transcript(a['id'])['items']
+            self.assertTrue(any(i.get('pending') and i['text'] == 'Queued followup' for i in messages))
 
     def test_forty_children_respect_limit_and_wake_finished_parent(self):
         lead = self.lead(concurrency=5)

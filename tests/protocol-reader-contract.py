@@ -130,6 +130,18 @@ class ReaderContract(unittest.TestCase):
         self.assertTrue(done.wait(1))
         self.assertEqual(self.records, ["blocked", "tool/request", "completed"])
 
+    def test_tool_call_bypasses_blocked_notification_queue(self):
+        server, proc = self.start()
+        self.block(proc)
+        handled = threading.Event()
+        server.request = lambda message: handled.set()
+        proc.emit({"method": "item/tool/call", "id": "tool-urgent",
+                   "params": {"threadId": "worker", "tool": "orchestration_task"}})
+        self.assertTrue(handled.wait(0.5))
+        self.assertFalse(self.release.is_set())
+        self.assertEqual(self.records, [])
+        self.release.set()
+
     def test_timeout_retains_exact_future_and_late_callback_is_ordered(self):
         server, proc = self.start()
         self.block(proc)
@@ -242,7 +254,8 @@ class ReaderContract(unittest.TestCase):
             batches.append(message)
             order.append(message['params']['itemId'])
         server.notification = notification
-        server.request = lambda message: order.append('request')
+        handled = threading.Event()
+        server.request = lambda message: (order.append('request'), handled.set())
         samples = []
         for i in range(5000):
             params = {'threadId': 't', 'turnId': 'turn', 'itemId': 'command', 'delta': f'{i} Привет\n'}
@@ -257,6 +270,7 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(server.wait(marker, 2), {'ready': True})
         self.assertIsNone(proc.poll())
         self.assertLess(server.callbacks.qsize(), 64)
+        self.assertTrue(handled.wait(1))
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
@@ -264,7 +278,8 @@ class ReaderContract(unittest.TestCase):
         before = batches[:-2]
         self.assertEqual(''.join(m['params']['delta'] for m in before), ''.join(p['delta'] for p in samples))
         self.assertEqual([p for m in before for p in m.get('_studioNotificationSamples', [m['params']])], samples)
-        self.assertEqual(order[-3:], ['request', 'command', 'other'])
+        self.assertEqual(order[0], 'request')
+        self.assertEqual(order[-2:], ['command', 'other'])
         self.assertTrue(all(len(m['params']['delta']) <= 65536 for m in before))
         self.assertTrue(all(len(m.get('_studioNotificationSamples', [])) <= 128 for m in before))
         self.assertIsNone(server.transport_error)
@@ -385,7 +400,8 @@ class ReaderContract(unittest.TestCase):
             batches.append(message)
             order.append(message['params']['itemId'])
         server.notification = notification
-        server.request = lambda message: order.append('request')
+        handled = threading.Event()
+        server.request = lambda message: (order.append('request'), handled.set())
         samples = []
         for i in range(300):
             params = {'threadId': 't', 'turnId': 'turn', 'itemId': 'a', 'delta': f'{i} Привет\n'}
@@ -398,11 +414,12 @@ class ReaderContract(unittest.TestCase):
         marker = server.submit('marker', {})
         proc.emit({'id': marker[0], 'result': {}})
         server.wait(marker, 1)  # All preceding wire messages are now enqueued.
+        self.assertTrue(handled.wait(1))
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
         self.assertTrue(done.wait(2))
-        self.assertEqual(order, ['a', 'a', 'a', 'request', 'a', 'b'])
+        self.assertEqual(order, ['request', 'a', 'a', 'a', 'a', 'b'])
         self.assertEqual(''.join(m['params']['delta'] for m in batches[:3]),
                          ''.join(p['delta'] for p in samples))
         self.assertEqual([p for m in batches[:3] for p in m['_studioNotificationSamples']], samples)

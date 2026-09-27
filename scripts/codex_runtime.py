@@ -289,6 +289,7 @@ class AppServer:
     DELTA_SHED_DEPTH = 2048
     SHED_METHODS = frozenset({"item/agentMessage/delta", "item/commandExecution/outputDelta"})
     CLOCK_QUEUE_LIMIT = 128
+    TOOL_REQUEST_QUEUE_LIMIT = 1024
 
     def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None):
         import queue
@@ -301,6 +302,7 @@ class AppServer:
         self.transport_error = None
         self.callbacks = queue.Queue(maxsize=self.CALLBACK_QUEUE_LIMIT)
         self.clock_replies = queue.Queue(maxsize=self.CLOCK_QUEUE_LIMIT)
+        self.tool_requests = queue.Queue(maxsize=self.TOOL_REQUEST_QUEUE_LIMIT)
         self.callback_lock = threading.RLock()
         self.dispatch_stopped = False
         self.reader_done = threading.Event()
@@ -325,6 +327,8 @@ class AppServer:
         self.dispatcher.start()
         self.clock_writer = threading.Thread(target=self.write_clocks, daemon=True)
         self.clock_writer.start()
+        self.tool_dispatcher = threading.Thread(target=self.dispatch_tools, daemon=True)
+        self.tool_dispatcher.start()
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
         try:
@@ -421,7 +425,7 @@ class AppServer:
     def join_callbacks(self, timeout=10):
         """Join only after the caller releases Runtime and database locks."""
         deadline = time.monotonic() + timeout
-        workers = [self.dispatcher, self.clock_writer]
+        workers = [self.dispatcher, self.clock_writer, self.tool_dispatcher]
         for worker in workers:
             if threading.current_thread() is worker:
                 return False
@@ -450,6 +454,46 @@ class AppServer:
             error = RuntimeError(f"Codex clock reply queue saturated; rejected id {json.dumps(message['id'])}; connection closed; outcome unknown")
             self.fail_transport(error)
             raise error
+
+    def enqueue_tool_request(self, message):
+        import queue
+        try:
+            self.tool_requests.put_nowait(message)
+        except queue.Full:
+            error = RuntimeError(f"Codex tool request queue saturated; rejected id {json.dumps(message['id'])}; connection closed; outcome unknown")
+            self.fail_transport(error)
+            raise error
+
+    def dispatch_tools(self):
+        import queue
+        while True:
+            try:
+                message = self.tool_requests.get(timeout=0.05)
+            except queue.Empty:
+                if self.reader_done.is_set():
+                    return
+                continue
+            started = time.time()
+            message["_studioDispatchedAt"] = started
+            try:
+                self.request(message)
+            except Exception as error:
+                self.protocol_error(error)
+            finally:
+                received = message.get("_studioReceivedAt", started)
+                diagnostic = {"kind": "callbackLatency", "at": time.time(), "method": message["method"],
+                              "rpcId": message["id"], "threadId": (message.get("params") or {}).get("threadId"),
+                              "turnId": (message.get("params") or {}).get("turnId"), "itemId": None,
+                              "queueDelayMs": round(max(0, started - received) * 1000, 3),
+                              "durationMs": round((time.time() - started) * 1000, 3),
+                              "notificationCount": 1, "queuedCallbacks": self.tool_requests.qsize()}
+                if diagnostic["durationMs"] >= 100 or diagnostic["queueDelayMs"] >= 1000:
+                    try:
+                        self.log.write((json.dumps(diagnostic) + "\n").encode())
+                        self.log.flush()
+                    except (OSError, ValueError):
+                        pass
+                self.tool_requests.task_done()
 
     def write_clocks(self):
         import queue
@@ -683,6 +727,10 @@ class AppServer:
                         if "id" in message:
                             if message["method"] == "currentTime/read":
                                 self.enqueue_clock(message)
+                            elif message["method"] == "item/tool/call":
+                                with self.callback_lock:
+                                    self.close_slots(None)
+                                self.enqueue_tool_request(message)
                             else:
                                 self.enqueue(self.request, message)
                         else:
@@ -2616,6 +2664,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.execute("UPDATE runtime_events SET status='delivered', turn_id=?, error=NULL "
                        "WHERE id=? AND agent=? AND epoch=? AND status IN ('dispatching','uncertain')",
                        (turn, event_id, a["id"], attempt["epoch"]))
+            self.sync_chat_delivery(db, event_id, a["id"])
         if not attempt["events"]:
             return True
         item_id = a["id"] + ":" + attempt["events"][0]
@@ -2625,6 +2674,28 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             item["turnId"] = turn
             db.execute("UPDATE runtime_items SET record=? WHERE id=?", (json.dumps(item), item_id))
         return True
+
+    @staticmethod
+    def sync_chat_delivery(db, event_id, recipient_id):
+        """Project confirmed native input delivery into chat history."""
+        if not event_id.startswith("chat:"):
+            return
+        event = db.execute("SELECT kind,text,status FROM runtime_events WHERE id=? AND agent=?",
+                           (event_id, recipient_id)).fetchone()
+        if not event or event["kind"] != "agent_message" or event["status"] != "delivered":
+            return
+        try:
+            message_id = json.loads(event["text"])["message_id"]
+        except (TypeError, ValueError, KeyError):
+            return
+        row = db.execute("SELECT deliveries FROM runtime_chat_messages WHERE id=?", (message_id,)).fetchone()
+        if not row:
+            return
+        deliveries = json.loads(row["deliveries"])
+        if deliveries.get(recipient_id) == "queued":
+            deliveries[recipient_id] = "delivered"
+            db.execute("UPDATE runtime_chat_messages SET deliveries=? WHERE id=?",
+                       (json.dumps(deliveries), message_id))
 
     def start_accepted(self, agent_id, attempt, result):
         with self.lock, self.db() as db:
@@ -2947,6 +3018,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     db.execute("UPDATE runtime_events SET status='delivered',error=NULL WHERE id=? AND agent=? "
                                "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
                                (item["clientId"], a["id"], operation["epoch"], operation["turnId"]))
+                    self.sync_chat_delivery(db, item["clientId"], a["id"])
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
             samples = message.get("_studioNotificationSamples") if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"} else None
             for sample in samples or [p]:
@@ -3945,6 +4017,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             names = {a["id"]: a["name"] for a in self.records(db, "agents")}
             for m in messages:
                 m["senderName"] = names.get(m["sender"], m["sender"])
+                for recipient, status in list(m["deliveries"].items()):
+                    if status == "queued":
+                        event = db.execute("SELECT status FROM runtime_events WHERE id=?",
+                                           ("chat:" + m["id"] + ":" + recipient,)).fetchone()
+                        if event and event["status"] in {"delivered", "failed", "cancelled", "stored_only"}:
+                            m["deliveries"][recipient] = event["status"]
             if model:
                 return self.model_chat_page(room, messages, len(rows) > limit)
             return {"room": room, "messages": messages,
