@@ -276,7 +276,7 @@ class SubmissionRejected(RuntimeError):
 
 
 def write_generation(db):
-    """The sync trigger counter; it changes with every committed table write."""
+    """The agent-record cache counter, bumped by runtime_agents watches."""
     try:
         row = db.execute("SELECT value FROM sync_generation WHERE id=1").fetchone()
     except sqlite3.OperationalError:
@@ -2548,8 +2548,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         def current_agents(db):
             # Decoding every agent record costs tens of milliseconds under the
-            # shared lock. Reuse this pass's list until any table write
-            # changes the database generation; each writer saves what it edits.
+            # shared lock. Reuse this pass's list until an agent write changes
+            # the generation; each writer saves what it edits.
             generation = write_generation(db)
             if generation is None or not decoded or decoded[0] != generation:
                 decoded[:] = [generation, self.records(db, "agents")]

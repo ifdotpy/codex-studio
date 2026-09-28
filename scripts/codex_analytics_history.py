@@ -572,13 +572,13 @@ class AnalyticsHistoryMixin:
                         elif action == "coverage":
                             state[method] = state.get(method, 0) + 1
                     state.update(offset=next_offset, importedRecords=state["importedRecords"] + len(records),
-                                 updated=time.time(), status="oversizedLine" if oversized else "partialLine" if partial else "catchingUp" if next_offset < info.st_size else "current")
+                                 status="oversizedLine" if oversized else "partialLine" if partial else "catchingUp" if next_offset < info.st_size else "current")
                     state["error"] = "Native rollout line exceeds 64 MiB; checkpoint retained" if oversized else None
                     if state["malformedLines"] or state.get("wrongThreadRecord"):
                         state["coverage"] = "partial"
                     else:
                         state["coverage"] = "availableRecords"
-                    db.execute("INSERT OR REPLACE INTO analytics_history VALUES (?,?,?)", (key, a["id"], json.dumps(state)))
+                    self._analytics_history_record(db, key, a["id"], state)
                 return bool(consumed) or budget_advanced
             except OSError:
                 state.update(status="unreadable", error="Cannot read the managed account's native rollout")
@@ -587,7 +587,19 @@ class AnalyticsHistoryMixin:
             self._analytics_history_guard.release()
 
     def _analytics_history_save(self, key, a, state):
-        state["updated"] = time.time()
         with self.lock, self.db() as db:
-            db.execute("INSERT OR REPLACE INTO analytics_history VALUES (?,?,?)", (key, a["id"], json.dumps(state)))
+            self._analytics_history_record(db, key, a["id"], state)
         return False
+
+    def _analytics_history_record(self, db, key, agent, state):
+        # A missing/idle rollout is polled repeatedly. Its checkpoint is a
+        # fixed-size derived row; do not replace it merely to refresh a clock.
+        row = db.execute('SELECT record FROM analytics_history WHERE id=?', (key,)).fetchone()
+        previous = json.loads(row[0]) if row else None
+        if previous is not None and {k: v for k, v in previous.items() if k != 'updated'} == {
+                k: v for k, v in state.items() if k != 'updated'}:
+            return False
+        state['updated'] = time.time()
+        db.execute('INSERT INTO analytics_history VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET '
+                   'agent=excluded.agent,record=excluded.record', (key, agent, json.dumps(state)))
+        return True

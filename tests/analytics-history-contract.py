@@ -222,6 +222,24 @@ class ImportTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_idle_checkpoint_does_not_rewrite(self):
+        self.f.path.write_bytes(self.header)
+        self.assertTrue(self.f.analytics_history_step())
+        with self.f.db() as db:
+            before = db.execute('SELECT record FROM analytics_history').fetchone()[0]
+        changes = []
+        original = self.f._analytics_history_record
+        def observe(db, *args):
+            start = db.total_changes
+            result = original(db, *args)
+            changes.append(db.total_changes - start)
+            return result
+        self.f._analytics_history_record = observe
+        self.assertFalse(self.f.analytics_history_step())
+        self.assertEqual(changes, [0])
+        with self.f.db() as db:
+            self.assertEqual(db.execute('SELECT record FROM analytics_history').fetchone()[0], before)
+
     def test_bounded_import_resume_and_no_historical_model_guess(self):
         self.f.path.write_bytes(self.header + line("turn_context", {"turn_id": "past", "model": "past-model"}) +
                                line("response_item", {"type": "function_call", "call_id": "c", "arguments": "secret"}))

@@ -1,6 +1,7 @@
 """SQLite-backed RxDB pull checkpoints. Action receipts remain in the runtime."""
 import json
-import re
+import hashlib
+import sqlite3
 import threading
 import time
 import uuid
@@ -34,15 +35,16 @@ class SyncStore:
             ''')
             if not db.execute('SELECT id FROM sync_identity').fetchone():
                 db.execute('INSERT INTO sync_identity VALUES (?)', (uuid.uuid4().hex,))
-            tables = [r[1] for r in db.execute("PRAGMA table_list")
-                      if r[0] == "main" and r[2] == "table"]
-            for table in tables:
-                if table.startswith(('sync_', 'sqlite_')) or not re.fullmatch(r'[a-zA-Z0-9_]+', table):
-                    continue
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
                 for op in ('INSERT', 'UPDATE', 'DELETE'):
-                    db.execute(f'''CREATE TRIGGER IF NOT EXISTS sync_watch_{table}_{op}
-                        AFTER {op} ON {table} BEGIN
+                    db.execute(f'''CREATE TRIGGER IF NOT EXISTS sync_watch_runtime_agents_{op}
+                        AFTER {op} ON runtime_agents BEGIN
                         UPDATE sync_generation SET value=value+1 WHERE id=1; END''')
+
+    def __del__(self):
+        reader = getattr(self, '_version_reader', None)
+        if reader is not None:
+            reader.close()
 
     def identity(self):
         with self.connect() as db:
@@ -50,8 +52,41 @@ class SyncStore:
                     **({'chatState': True} if self.chat_snapshot else {})}
 
     def generation(self):
-        with self.connect() as db:
-            return db.execute('SELECT value FROM sync_generation WHERE id=1').fetchone()[0]
+        # A persistent reader sees one data_version change per committed writer
+        # transaction. The old row triggers wrote the same page for every row.
+        self._ensure_versions()
+        with self._version_lock:
+            return self._version_reader.execute('PRAGMA data_version').fetchone()[0]
+
+    def _ensure_versions(self):
+        # Existing make_server closures retain their SyncStore across a live
+        # patch, so all new state must be initialized on first use.
+        if getattr(self, '_versions_ready', False):
+            return
+        lock = self.__dict__.setdefault('_version_lock', threading.RLock())
+        with lock:
+            if getattr(self, '_versions_ready', False):
+                return
+            with self.connect() as db:
+                db.execute('''CREATE TABLE IF NOT EXISTS sync_versions (
+                    seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
+                    hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL)''')
+                # Runtime agent snapshots also cache against sync_generation.
+                # Keep its three watches; data_version replaces every other
+                # table's row-level notification.
+                for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sync_watch_%'"):
+                    if (name.startswith('sync_watch_') and not name.startswith('sync_watch_runtime_agents_')
+                            and name.rsplit('_', 1)[-1] in ('INSERT', 'UPDATE', 'DELETE')):
+                        db.execute('DROP TRIGGER "' + name + '"')
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
+                    for op in ('INSERT', 'UPDATE', 'DELETE'):
+                        db.execute(f'''CREATE TRIGGER IF NOT EXISTS sync_watch_runtime_agents_{op}
+                            AFTER {op} ON runtime_agents BEGIN
+                            UPDATE sync_generation SET value=value+1 WHERE id=1; END''')
+                path = db.execute('PRAGMA database_list').fetchone()[2]
+            self._version_reader = sqlite3.connect('file:' + path + '?mode=ro', uri=True,
+                                                    check_same_thread=False, timeout=10)
+            self._versions_ready = True
 
     def scope_lock(self, scope):
         return self.locks[zlib.crc32(str(scope).encode()) % SCOPE_STRIPES]
@@ -72,6 +107,7 @@ class SyncStore:
     def pull(self, scope, after=0, limit=100):
         after, limit = max(0, int(after)), min(100, max(1, int(limit)))
         with self.scope_lock(scope):
+            self._ensure_versions()
             if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
                 payload = self.shared_snapshot(scope)
                 deleted = False
@@ -83,13 +119,43 @@ class SyncStore:
             elif scope != 'drafts':
                 raise ValueError('Invalid sync scope')
             with self.connect() as db:
-                if scope != 'drafts':
-                    self._put(db, scope, scope, payload, deleted)
-                rows = db.execute('SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
-                                  (scope, after, limit)).fetchall()
+                if scope == 'drafts':
+                    rows = db.execute('SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
+                                      (scope, after, limit)).fetchall()
+                    documents = [self.document(row) for row in rows]
+                else:
+                    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+                    digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+                    current = db.execute('SELECT seq,hash,deleted FROM sync_versions WHERE scope=?', (scope,)).fetchone()
+                    if current is None or current[1] != digest or bool(current[2]) != deleted:
+                        # Different scope stripes can update simultaneously.
+                        # Claim the next global sequence under SQLite's writer
+                        # lock, then recheck a version written while waiting.
+                        db.execute('BEGIN IMMEDIATE')
+                        current = db.execute('SELECT seq,hash,deleted FROM sync_versions WHERE scope=?', (scope,)).fetchone()
+                        if current is None or current[1] != digest or bool(current[2]) != deleted:
+                            legacy = (db.execute('SELECT seq,payload,deleted FROM sync_documents WHERE scope=? AND id=?',
+                                                 (scope, scope)).fetchone() if current is None else None)
+                            if legacy and legacy[1] == encoded and bool(legacy[2]) == deleted:
+                                seq = legacy[0]
+                            else:
+                                seq = max(db.execute('SELECT max(seq) FROM sync_documents').fetchone()[0] or 0,
+                                          db.execute('SELECT max(seq) FROM sync_versions').fetchone()[0] or 0) + 1
+                            if current is None:
+                                db.execute('INSERT INTO sync_versions VALUES (?,?,?,?,?)',
+                                           (seq, scope, digest, int(deleted), time.time()))
+                            else:
+                                db.execute('UPDATE sync_versions SET seq=?,hash=?,deleted=?,updated=? WHERE scope=?',
+                                           (seq, digest, int(deleted), time.time(), scope))
+                        else:
+                            seq = current[0]
+                    else:
+                        seq = current[0]
+                    documents = ([{'id': scope, 'payload': encoded, 'seq': seq, '_deleted': deleted}]
+                                 if seq > after else [])
                 return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
-                        'documents': [self.document(row) for row in rows],
-                        'checkpoint': {'seq': rows[-1][0] if rows else after}}
+                        'documents': documents,
+                        'checkpoint': {'seq': documents[-1]['seq'] if documents else after}}
 
     def shared_snapshot(self, scope):
         # The caller holds this scope's lock.
@@ -148,5 +214,4 @@ class SyncStore:
                         conflicts.append(self.document(old))
                         continue
                 self._put(db, 'drafts', key, value, bool(new.get('_deleted')))
-            db.execute('UPDATE sync_generation SET value=value+1 WHERE id=1')
         return conflicts
