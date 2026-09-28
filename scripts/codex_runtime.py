@@ -1050,11 +1050,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if db is None:
             db = sqlite3.connect(self.db_path, timeout=15)
             db.row_factory = sqlite3.Row
-            from codex_sync_entities import register_functions
-            register_functions(db)
-            db.create_function("sync_invalidate_agent", 1, self.mark_agent_records_changed)
             if reusable:
                 local.connection = db
+        # Re-register on every context entry. A live code patch can add the
+        # entity triggers while this thread retains a connection opened by the
+        # old implementation; registering only when opening a connection
+        # leaves that connection without the functions used by budget writes
+        # and runtime_events triggers.
+        from codex_sync_entities import register_functions
+        register_functions(db)
+        db.create_function("sync_invalidate_agent", 1, self.mark_agent_records_changed)
         if reusable:
             local.depth = 1
         pending = local.__dict__.setdefault("after_commit_dispatch", {})
