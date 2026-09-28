@@ -3662,23 +3662,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["lastAnswer"] = text[-16000:]
                 elif kind not in {"reasoning", "userMessage", "agentMessage"}:
                     if kind == "commandExecution" and not started and item.get("aggregatedOutput") is None:
-                        streamed = db.execute('SELECT record FROM runtime_items WHERE id=?',
-                                              (a['id'] + ':' + item['id'],)).fetchone()
-                        streamed_output = None
-                        if streamed:
-                            streamed_record = json.loads(streamed[0])
-                            full = (db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid '
-                                               'FROM runtime_search_rows WHERE id=?)',
-                                               (a['id'] + ':' + item['id'],)).fetchone()
-                                    if streamed_record.get('truncated') else None)
-                            try:
-                                streamed_output = json.loads(full[0] if full else streamed_record['text']).get('aggregatedOutput')
-                            except (ValueError, TypeError):
-                                pass
                         saved = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (a["id"] + ":" + item["id"],)).fetchone()
                         if saved:
                             saved_task = json.loads(saved[0])
-                            item = {**item, "aggregatedOutput": streamed_output if streamed_output is not None else saved_task.get("tail", ""),
+                            item = {**item, "aggregatedOutput": saved_task.get("tail", "")[-12000:],
                                     "outputTruncated": saved_task.get("outputTruncated", False)}
                     self.item(db, a["id"], item.get("id", uid()), "output", json.dumps(item, ensure_ascii=False), kind,
                               toolStatus="running" if started else "failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed",

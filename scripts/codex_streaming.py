@@ -30,11 +30,24 @@ class StreamBuffer:
         # Match analytics_event's original encoded payload accounting. This
         # work is outside Runtime.lock and one buffered batch keeps one string.
         size = sum(len(encoded(sample).encode('utf-8')) for sample in samples)
+        delta = params['delta']
+        metrics = (len(delta.encode('utf-8')), len(delta), delta.count('\n'))
+        command = method == 'item/commandExecution/outputDelta'
+        retained = delta[-12000:] if command else delta
+        stored_params = {**params, 'delta': retained} if command else dict(params)
         with self.lock:
             if key in self.closed or self.runtime.closed:
                 return True
             entry = self.entries.setdefault(key, {'base': None, 'batches': []})
-            entry['batches'].append((params['delta'], len(samples), size, now, dict(params)))
+            batches = entry['batches']
+            if command and batches and int(batches[-1][3] // 3600) == int(now // 3600):
+                previous = batches[-1]
+                batches[-1] = ((previous[0] + retained)[-12000:], previous[1] + len(samples),
+                               previous[2] + size, previous[3], previous[4],
+                               previous[5] + metrics[0], previous[6] + metrics[1],
+                               previous[7] + metrics[2])
+            else:
+                batches.append((retained, len(samples), size, now, stored_params, *metrics))
             self._schedule_locked()
         return True
 
@@ -114,15 +127,17 @@ class StreamBuffer:
                         applied.append((key, entry, len(batches), None))
                         continue
                     try:
-                        full = (db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid '
-                                           'FROM runtime_search_rows WHERE id=?)', (key_id,)).fetchone()
-                                if previous.get('truncated') else None)
-                        base = json.loads(full[0] if full is not None else previous['text']).get('aggregatedOutput') or ''
+                        base = (json.loads(previous['text']).get('aggregatedOutput') or '')[-12000:]
                     except (ValueError, KeyError, TypeError):
-                        base = ''
+                        base = (task.get('tail') or '')[-12000:] if task else ''
             delta = ''.join(batch[0] for batch in batches)
-            target = base + delta
+            if method == 'item/commandExecution/outputDelta':
+                delta = delta[-12000:]
+            target = (base + delta)[-12000:] if method == 'item/commandExecution/outputDelta' else base + delta
             count = sum(batch[1] for batch in batches)
+            stream_bytes = sum(batch[5] for batch in batches)
+            stream_chars = sum(batch[6] for batch in batches)
+            stream_lines = sum(batch[7] for batch in batches)
             first_at = batches[0][3]
             params = {**batches[0][4], 'delta': delta}
             hour = int(first_at // 3600) * 3600
@@ -130,7 +145,8 @@ class StreamBuffer:
             def capture(db):
                 self.runtime.analytics_event(db, agent, method, params, at=first_at)
                 by_hour = {}
-                for _, batch_count, batch_bytes, batch_at, _ in batches:
+                for batch in batches:
+                    batch_count, batch_bytes, batch_at = batch[1:4]
                     bucket = int(batch_at // 3600) * 3600
                     old_count, old_bytes = by_hour.get(bucket, (0, 0))
                     by_hour[bucket] = (old_count + batch_count, old_bytes + batch_bytes)
@@ -143,11 +159,17 @@ class StreamBuffer:
                                'ON CONFLICT(id) DO UPDATE SET count=count+excluded.count,bytes=bytes+excluded.bytes',
                                (encoded([agent['id'], method, bucket]), agent['id'],
                                 agent.get('rootId') or agent['id'], method, bucket, bucket_count, bucket_bytes))
-                if count > 1:
+                if count > 1 or method == 'item/commandExecution/outputDelta':
                     analytics_key = ':'.join((agent['id'], str(thread), str(item_id_value)))
-                    db.execute("UPDATE analytics_items SET record=json_set(record,'$.stream.deltas',"
-                               "coalesce(json_extract(record,'$.stream.deltas'),0)+?) WHERE id=?",
-                               (count - 1, analytics_key))
+                    db.execute("UPDATE analytics_items SET record=json_set(record,"
+                               "'$.stream.deltas',coalesce(json_extract(record,'$.stream.deltas'),0)+?,"
+                               "'$.stream.bytes',coalesce(json_extract(record,'$.stream.bytes'),0)+?,"
+                               "'$.stream.chars',coalesce(json_extract(record,'$.stream.chars'),0)+?,"
+                               "'$.stream.lines',coalesce(json_extract(record,'$.stream.lines'),0)+?) "
+                               "WHERE id=? AND json_extract(record,'$.stream') IS NOT NULL "
+                               "AND json_extract(record,'$.finishedAt') IS NULL",
+                               (count - 1, stream_bytes - len(delta.encode('utf-8')),
+                                stream_chars - len(delta), stream_lines - delta.count('\n'), analytics_key))
             self.runtime.analytics_safe(db, capture)
             if stale and (method == 'item/agentMessage/delta' or not task
                           or task.get('kind') != 'command' or task.get('turnId') != turn):
@@ -165,15 +187,15 @@ class StreamBuffer:
                     item = json.loads(previous['text'])
                 except (ValueError, KeyError, TypeError):
                     item = {'type': 'commandExecution', 'id': item_id_value}
-                item.update(aggregatedOutput=target,
-                            outputTruncated=bool(item.get('outputTruncated')) or previous.get('truncated', False) or len(target) > 12000)
+                truncated = (bool(item.get('outputTruncated')) or bool(task and task.get('outputTruncated'))
+                             or len(base) + stream_chars > 12000)
+                item.update(aggregatedOutput=target, outputTruncated=truncated)
                 serialized = json.dumps(item, ensure_ascii=False)
                 self.runtime.item(db, agent['id'], item_id_value, 'output', serialized,
                                   'commandExecution', toolStatus='running', turnId=turn or agent.get('turnId'),
-                                  index_search=len(serialized) > 20000)
+                                  index_search=False)
                 if task:
-                    task.update(tail=target[-12000:],
-                                outputTruncated=bool(task.get('outputTruncated')) or len(target) > 12000)
+                    task.update(tail=target, outputTruncated=truncated)
                     self.runtime.put(db, 'tasks', task)
             if not stale:
                 agent['events'] += count
