@@ -99,6 +99,13 @@ class AccountTransfers:
             canRetry=any(m['phase'] == 'blocked' and not m.get('archiveInvalidated') for m in members))
         self.rt.put(db, 'agents', lead)
 
+    @staticmethod
+    def already_committed(op, m, a):
+        thread = ((m.get('result') or {}).get('thread') or {}).get('id')
+        return bool(thread and a.get('threadId') == thread and not a.get('deletedAt')
+                    and a.get('accountKey', 'default') == op['targetAccountKey']
+                    and a.get('accountTransferId') in {None, op['id']})
+
     def newer(self, db, op, other_id):
         row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (other_id,)).fetchone()
         return row is None or op.get('created', 0) > json.loads(row[0]).get('created', 0)
@@ -381,6 +388,11 @@ class AccountTransfers:
                 for aid, member in list(op['members'].items()):
                     a = rt.agent(aid, db)
                     if member['phase'] in MEMBER_TERMINAL:
+                        continue
+                    if (member['phase'] == 'unknown' and aid not in self.running
+                            and (key, aid) not in self.futures and self.already_committed(op, member, a)):
+                        member.update(phase='completed', error=None, waiting=None)
+                        dirty = True
                         continue
                     if (a.get('deletedAt') and member['phase'] not in {'submitted', 'unknown', 'ready'}
                             and aid not in self.running and (key, aid) not in self.futures):
@@ -836,6 +848,14 @@ class AccountTransfers:
     def commit(self, db, op, a):
         rt = self.rt
         m = op['members'][a['id']]
+        if self.already_committed(op, m, a):
+            # A second commit of the same receipt: the first one moved the agent.
+            m.update(phase='completed', error=None, waiting=None)
+            if op['status'] == 'pending' and all(member['phase'] in MEMBER_TERMINAL
+                                                 for member in op['members'].values()):
+                op['status'] = 'completed'
+            self.save(db, op)
+            return
         self.assert_source(m, a)
         if rt.closed or self.closing or a.get('accountTransferId') != op['id'] or self.local_blocker(db, a):
             return

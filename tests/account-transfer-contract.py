@@ -619,6 +619,29 @@ class TransferContract(f.AccountContracts):
         self.until(lambda: self.receipt(op['id'])['status'] == 'completed')
         self.assertEqual(self.runtime.agent(worker['id'])['accountKey'], self.other_key)
 
+    def test_duplicate_commit_of_a_moved_agent_is_completed_not_unknown(self):
+        op = self.start_transfer()
+        self.tick()
+        self.until(lambda: len(self.pending) == 1)
+        self.complete_fork()
+        self.until(lambda: self.receipt(op['id'])['status'] == 'completed')
+        lead = self.lead_agent['id']
+        with self.runtime.lock, self.runtime.db() as db:
+            saved = self.store.get(db, op['id'])
+            # A second commit of the same receipt finds the agent already moved.
+            saved['members'][lead]['phase'] = 'ready'
+            saved['status'] = 'pending'
+            self.store.commit(db, saved, self.runtime.agent(lead, db))
+            self.assertEqual(saved['members'][lead]['phase'], 'completed')
+            # A record saved as unknown by the old code settles on the next tick.
+            saved['members'][lead].update(phase='unknown', error='Agent state changed during transfer.')
+            saved['status'] = 'pending'
+            self.store.save(db, saved)
+        self.tick()
+        self.until(lambda: self.receipt(op['id'])['status'] == 'completed')
+        self.assertEqual(self.receipt(op['id'])['members'][lead]['phase'], 'completed')
+        self.assertEqual(len(self.pending), 1, 'no second fork')
+
     def test_restart_during_interrupt_does_not_repeat_or_lose_queued_event(self):
         aid = self.lead_agent['id']
         self.set_agent(aid, status='running', autoWake=True, inFlight=True, threadId='native-source', turnId='turn-running')
