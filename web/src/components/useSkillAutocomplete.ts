@@ -69,13 +69,13 @@ interface TokenRange {
 
 function tokenAtCaret(value: string, caret: number): TokenRange | null {
   const before = value.slice(0, caret);
-  const match = /(^|[^\p{L}\p{N}_])\$([\p{L}\p{N}_-]*)$/u.exec(before);
+  const match = /(^|[^\p{L}\p{N}_])\$([\p{L}\p{N}_:-]*)$/u.exec(before);
   if (!match) return null;
   const start = before.length - match[2].length - 1;
   const query = match[2];
   if (/^\d/.test(query)) return null;
   let end = caret;
-  while (end < value.length && /[\p{L}\p{N}_-]/u.test(value[end])) end++;
+  while (end < value.length && /[\p{L}\p{N}_:-]/u.test(value[end])) end++;
   if (/^\d/.test(value.slice(start + 1, end))) return null;
   return {
     start,
@@ -157,11 +157,11 @@ export function useSkillAutocomplete({
   }, [conversationKey, draft, updateRange]);
 
   useEffect(() => {
-    setSelected(-1);
+    setSelected(0);
   }, [range?.signature]);
 
   useEffect(() => {
-    if (!enabled || !range || catalog || !scopeIsCurrent) return;
+    if (!enabled || !range || !scopeIsCurrent) return;
     let current = true;
     setLoading(true);
     setLoadError(false);
@@ -183,8 +183,7 @@ export function useSkillAutocomplete({
     };
   }, [
     enabled,
-    range,
-    catalog,
+    range?.start,
     scopeKey,
     agentId,
     conversationKey,
@@ -247,13 +246,9 @@ export function useSkillAutocomplete({
         );
         return true;
       }
-      if (
-        (event.key === "Enter" || event.key === "Tab") &&
-        selected >= 0 &&
-        matches[selected]
-      ) {
+      if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
-        choose(matches[selected]);
+        if (matches[selected]) choose(matches[selected]);
         return true;
       }
       return false;

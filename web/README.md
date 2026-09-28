@@ -156,9 +156,12 @@ Attachment drafts survive reloads. Rejected sends retain the draft and attachmen
 Offline messages remain in the device outbox.
 
 In managed chats, type `$` at a token boundary to browse installed skills. Filter
-by name and use Up/Down, then Enter or Tab to insert a selection. Escape closes
-the list. The focused browser check uses a delayed `/api/skills` fixture to cover
+by name; the first match is selected automatically, and Up/Down changes the
+selection. Enter or Tab inserts it, and Escape closes the list. The focused
+browser check uses a delayed `/api/skills` fixture to cover
 typing responsiveness, keyboard behavior, caret placement, and chat-scope changes.
+The current Claude bridge does not expose skill listing; when listing is unavailable,
+the composer reports it while manually typed `$text` remains ordinary prompt text.
 
 Use **Queue after turn** for the next turn or **Send** after active tools. Queue entries
 can be edited, moved first, or cancelled. Uncertain delivery never silently retries

@@ -48,6 +48,10 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1280, height: 900 },
   });
+  await page.addInitScript(() => {
+    window.__skillTestNow = Date.now();
+    Date.now = () => window.__skillTestNow;
+  });
   page.setDefaultTimeout(10000);
   const pageErrors = [];
   const skillRequests = [];
@@ -60,8 +64,9 @@ try {
   await page.route("**/api/skills?*", async (route) => {
     const agent = new URL(route.request().url()).searchParams.get("agent");
     skillRequests.push(agent);
-    let gate = gates.get(agent);
+    let gate = gates.get(agent) || gates.get(lead.id);
     if (!gate) gates.set(agent, (gate = deferred()));
+    else if (!gates.has(agent)) gates.set(agent, gate);
     const catalog = await gate.promise;
     await route.fulfill({ json: catalog });
   });
@@ -118,6 +123,20 @@ try {
   await composer.type("e");
   assert.equal(await composer.inputValue(), "$re");
   assert.deepEqual(skillRequests, [lead.id]);
+  await composer.press("Enter");
+  await composer.press("Tab");
+  assert.equal(
+    await composer.inputValue(),
+    "$re",
+    "loading keys do not edit the prompt",
+  );
+  assert.equal(sends.length, 0, "loading Enter does not send");
+  assert.equal(queues.length, 0, "loading Tab does not queue");
+  assert.equal(
+    await composer.evaluate((element) => document.activeElement === element),
+    true,
+    "loading Tab keeps focus in the composer",
+  );
 
   // A late result stays hidden after changing chats until a new token is typed.
   await composer.fill("");
@@ -145,6 +164,16 @@ try {
         description: "Research a topic",
         path: "/skills/research",
       },
+      {
+        name: "plugin:release",
+        description: "Namespaced skill",
+        path: "/skills/plugin-release",
+      },
+      ...Array.from({ length: 500 }, (_, index) => ({
+        name: `review-extra-${index}`,
+        description: "Large-catalog fixture",
+        path: `/skills/review-extra-${index}`,
+      })),
     ],
     errors: [],
   });
@@ -155,14 +184,43 @@ try {
   await review.waitFor();
   assert.equal(
     await page.getByRole("option").count(),
-    3,
-    "local name filtering",
+    8,
+    "local filtering caps the visible list with a large catalog",
   );
-  await composer.press("ArrowDown");
   await composer.press("Tab");
   assert.equal(await composer.inputValue(), "$review ");
   assert.equal(sends.length, 0, "Tab selection does not send");
   assert.equal(queues.length, 0, "Tab selection does not queue");
+
+  await composer.fill("$plugin:rel");
+  await page.getByRole("option", { name: /plugin:release/ }).waitFor();
+  await composer.press("Enter");
+  assert.equal(
+    await composer.inputValue(),
+    "$plugin:release ",
+    "namespaced native skill names stay intact",
+  );
+
+  await composer.fill("$rel");
+  const releaseMatches = page.getByRole("option");
+  await releaseMatches.first().waitFor();
+  assert.equal(
+    await releaseMatches.first().getAttribute("aria-selected"),
+    "true",
+    "the first suggestion is selected by default",
+  );
+  await composer.press("ArrowDown");
+  assert.equal(
+    await releaseMatches.nth(1).getAttribute("aria-selected"),
+    "true",
+  );
+  await composer.press("ArrowUp");
+  assert.equal(
+    await releaseMatches.first().getAttribute("aria-selected"),
+    "true",
+  );
+  await composer.press("Enter");
+  assert.equal(await composer.inputValue(), "$release ");
 
   // Click selection keeps the textarea focused and replaces only the token.
   await composer.fill("before $rel after");
@@ -192,7 +250,6 @@ try {
   await page
     .getByRole("option", { name: /release Prepare a release/ })
     .waitFor();
-  await composer.press("ArrowDown");
   await composer.press("Enter");
   assert.equal(await composer.inputValue(), "$release ");
   assert.equal(sends.length, 0, "Enter selection does not send");
@@ -246,11 +303,23 @@ try {
 
   // The selected chat reuses a valid catalog from its shared scope cache.
   await composer.fill("$r");
-  await page.getByRole("option", { name: /review/ }).waitFor();
+  await page.getByRole("option", { name: /review Review a change/ }).waitFor();
   assert.deepEqual(
     skillRequests,
     [lead.id],
     "same-scope cache avoids another request",
+  );
+  await page.evaluate(() => {
+    window.__skillTestNow += 3 * 60 * 1000;
+  });
+  await composer.press("Escape");
+  await composer.fill("");
+  await composer.fill("$r");
+  await page.getByRole("option", { name: /review Review a change/ }).waitFor();
+  assert.deepEqual(
+    skillRequests,
+    [lead.id, other.id],
+    "reopening after expiry refreshes the scoped catalog",
   );
 
   // Preserve modified Enter and Shift+Enter as ordinary textarea behavior.
@@ -337,8 +406,9 @@ try {
       evidence,
       checks: [
         "slow lazy fetch keeps typing responsive and deduplicates",
-        "local filtering, arrows, Tab insertion, caret and click focus",
+        "local filtering, default Enter/Tab insertion, caret and click focus",
         "Escape, send, queue, IME, amount suppression and stale chat results",
+        "fresh catalogs are reused and refreshed after bounded expiry",
         "prompt recall and modified Enter behavior",
         "responsive error, empty, and partial-catalog feedback",
       ],
