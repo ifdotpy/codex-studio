@@ -202,6 +202,32 @@ class PricingSessionCostContract(unittest.TestCase):
         self.assertEqual(value["unknownModels"], [])
         self.assertAlmostEqual(value["breakdown"]["providers"]["anthropic"], 4 * .00028)
 
+    def test_session_cost_reads_runtime_agent_before_analytics_registration(self):
+        canvas = Canvas(self.root)
+        canvas.runtime = types.SimpleNamespace(lock=threading.RLock())
+        db = sqlite3.connect(canvas.db)
+        db.execute("CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+        db.execute("INSERT INTO runtime_agents VALUES ('new-chat',?)",
+                   (json.dumps({"id": "new-chat", "rootId": "new-chat"}),))
+        db.commit()
+        db.close()
+        with patch("codex_pricing.PricingCatalog", return_value=FixedPricing()):
+            server = make_server(canvas)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                endpoint = f"http://127.0.0.1:{server.server_port}/api/session-cost?agent=new-chat"
+                response = json.load(urlopen(endpoint, timeout=4))
+                self.assertEqual(response["rootId"], "new-chat")
+                self.assertEqual(response["pricingState"], "ready")
+                self.assertEqual(response["pricedSamples"], 0)
+                self.assertIsNone(response["totalUSD"])
+            finally:
+                server.shutdown()
+                thread.join()
+                server.server_close()
+
     def test_session_cost_reports_loading_without_fake_unknown_models(self):
         db_path = self.root / "canvas.sqlite3"
         db = sqlite3.connect(db_path)
