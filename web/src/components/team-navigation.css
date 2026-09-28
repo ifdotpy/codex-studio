@@ -108,39 +108,41 @@
 
 .team-overview dl {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
+  gap: 3px;
   margin: 0;
 }
 
 .team-overview dl > div {
   display: flex;
-  flex-direction: column-reverse;
-  gap: 3px;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.team-overview dt,
-.team-overview p {
+.team-overview dt {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .team-overview dd {
   margin: 0;
-  font-size: 19px;
+  font-size: 12px;
   font-weight: 550;
-  line-height: 1.2;
   font-variant-numeric: tabular-nums;
 }
 
-.team-overview [data-team-count="answer"][data-active="true"] dd {
+.team-overview [data-team-count="answer"] dd,
+.team-overview [data-team-count="answer"] dt {
   color: var(--mantine-color-yellow-4);
 }
 
-.team-overview p {
-  margin: 8px 0 0;
-  min-height: 15px;
-  line-height: 1.5;
+.team-overview [data-team-count="attention"] dd {
+  color: var(--mantine-color-red-4);
+}
+
+.team-overview .team-headline {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 #team .worker-entry {

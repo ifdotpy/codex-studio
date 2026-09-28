@@ -161,8 +161,12 @@ try {
   await page.locator("#team-toggle").click();
   const team = page.getByRole("complementary", { name: "Team", exact: true });
   const summary = team.getByLabel("Team status summary");
-  const count = async (name) =>
-    Number(await summary.locator(`[data-team-count="${name}"] dd`).innerText());
+  // The summary lists only states with members; an absent state counts zero.
+  const count = async (name) => {
+    await summary.locator(".team-headline").waitFor();
+    const value = summary.locator(`[data-team-count="${name}"] dd`);
+    return (await value.count()) ? Number(await value.innerText()) : 0;
+  };
   const card = (n) =>
     team
       .locator(".worker-entry")
@@ -211,14 +215,25 @@ try {
   assert.equal(await count("working"), 6);
   assert.equal(await count("answer"), 1);
   assert.equal(await count("completed"), 15);
-  assert.match(await summary.innerText(), /16 waiting · 1 stopped · 1 failed/);
   assert.equal(
-    await team
-      .getByRole("region", { name: "Attention", exact: true })
-      .locator("[data-worker]")
-      .count(),
-    2,
+    await summary.locator(".team-headline").innerText(),
+    "6 subagents are working. 1 needs your answer.",
   );
+  assert.equal(await count("waiting"), 16);
+  assert.equal(await count("stopped"), 1);
+  assert.equal(await count("attention"), 1);
+  assert.deepEqual(
+    await summary.locator("dt").allInnerTexts(),
+    ["Need you", "Failed", "Working", "Waiting", "Stopped", "Finished"],
+  );
+  for (const name of ["Need you", "Failed"])
+    assert.equal(
+      await team
+        .getByRole("region", { name, exact: true })
+        .locator("[data-worker]")
+        .count(),
+      1,
+    );
   assert.match(await card(0).innerText(), /Needs your answer/);
   const excerpt = card(1).locator(".worker-excerpt");
   assert.equal(

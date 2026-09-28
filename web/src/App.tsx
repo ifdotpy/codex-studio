@@ -90,6 +90,7 @@ import WorkerCard, {
   awaitingAnswerIds,
   TeamSummary,
   workerState,
+  TEAM_STATES,
 } from "./components/WorkerOverview";
 import Workspace from "./components/Workspace";
 import BackgroundTasks, {
@@ -1054,8 +1055,9 @@ export default function App() {
       />
     </UIErrorBoundary>
   );
-  const needsAttention = (a: Agent) =>
-    ["attention", "answer"].includes(workerState(a, answerIds, deferredIds));
+  // Failed workers are the lead's work; the filter only finds them.
+  const failed = (a: Agent) =>
+    workerState(a, answerIds, deferredIds) === "attention";
   const query = workerQuery.trim().toLowerCase();
   const shown = workers.filter((a) =>
     query
@@ -1063,32 +1065,20 @@ export default function App() {
           .toLowerCase()
           .includes(query)
       : workerFilter === "attention"
-        ? needsAttention(a)
+        ? failed(a)
         : workerFilter === "active"
           ? busy.has(a.status)
           : true,
   );
-  const groups = [
-    { name: "Attention", workers: shown.filter(needsAttention) },
-    {
-      name: "Working",
+  // The same states and names as the team summary; Finished stays collapsed below.
+  const groups = TEAM_STATES.filter(([state]) => state !== "completed").map(
+    ([state, name]) => ({
+      name,
       workers: shown.filter(
-        (a) => workerState(a, answerIds, deferredIds) === "working",
+        (a) => workerState(a, answerIds, deferredIds) === state,
       ),
-    },
-    {
-      name: "Waiting",
-      workers: shown.filter(
-        (a) => workerState(a, answerIds, deferredIds) === "waiting",
-      ),
-    },
-    {
-      name: "Stopped",
-      workers: shown.filter(
-        (a) => workerState(a, answerIds, deferredIds) === "stopped",
-      ),
-    },
-  ];
+    }),
+  );
   const completed = shown.filter(
     (a) => workerState(a, answerIds, deferredIds) === "completed",
   );
@@ -1155,24 +1145,16 @@ export default function App() {
               aria-label="Filter subagents"
             >
               {[
-                ["all", "All", workers.length],
-                [
-                  "active",
-                  "Active",
-                  workers.filter((a) => busy.has(a.status)).length,
-                ],
-                [
-                  "attention",
-                  "Attention",
-                  workers.filter(needsAttention).length,
-                ],
-              ].map(([value, label, count]) => (
+                ["all", "All"],
+                ["active", "Active"],
+                ["attention", "Failed"],
+              ].map(([value, label]) => (
                 <UnstyledButton
                   key={value}
                   aria-pressed={workerFilter === value}
                   onClick={() => setWorkerFilter(String(value))}
                 >
-                  {label} <span>{count}</span>
+                  {label}
                 </UnstyledButton>
               ))}
             </div>
@@ -1190,7 +1172,6 @@ export default function App() {
               {!smallTeam && (
                 <h3>
                   {group.name}
-                  <span>{group.workers.length}</span>
                 </h3>
               )}
               {group.workers.map(worker)}
@@ -1205,7 +1186,7 @@ export default function App() {
               if (!query) setCompletedOpen(event.currentTarget.open);
             }}
           >
-            <summary>Completed · {completed.length}</summary>
+            <summary>Finished</summary>
             {completed.map(worker)}
           </details>
         )}

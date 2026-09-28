@@ -36,6 +36,15 @@ export function workerState(
   return "waiting";
 }
 
+export const TEAM_STATES = [
+  ["answer", "Need you"],
+  ["attention", "Failed"],
+  ["working", "Working"],
+  ["waiting", "Waiting"],
+  ["stopped", "Stopped"],
+  ["completed", "Finished"],
+] as const;
+
 export function TeamSummary({
   workers,
   answers,
@@ -48,39 +57,30 @@ export function TeamSummary({
   const count = (state: string) =>
     workers.filter((agent) => workerState(agent, answers, deferred) === state)
       .length;
+  const working = count("working");
+  const answer = count("answer");
+  // One sentence for the current activity; each state then appears once.
+  const headline = [
+    working
+      ? `${working} ${working === 1 ? "subagent is" : "subagents are"} working.`
+      : "No subagent is working.",
+    answer > 0 && `${answer} ${answer === 1 ? "needs" : "need"} your answer.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <div className="team-overview" aria-label="Team status summary">
+      <p className="team-headline">{headline}</p>
       <dl>
-        {[
-          ["working", "Working"],
-          ["answer", "Need you"],
-          ["completed", "Finished"],
-        ].map(([state, label]) => (
-          <div
-            key={state}
-            data-team-count={state}
-            data-active={count(state) > 0}
-          >
-            <dt>{label}</dt>
-            <dd>{count(state)}</dd>
-          </div>
-        ))}
+        {TEAM_STATES.filter(([state]) => count(state) > 0).map(
+          ([state, label]) => (
+            <div key={state} data-team-count={state}>
+              <dt>{label}</dt>
+              <dd>{count(state)}</dd>
+            </div>
+          ),
+        )}
       </dl>
-      <p
-        aria-hidden={
-          count("waiting") === 0 &&
-          count("stopped") === 0 &&
-          count("attention") === 0
-        }
-      >
-        {[
-          count("waiting") > 0 && `${count("waiting")} waiting`,
-          count("stopped") > 0 && `${count("stopped")} stopped`,
-          count("attention") > 0 && `${count("attention")} failed`,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-      </p>
     </div>
   );
 }
