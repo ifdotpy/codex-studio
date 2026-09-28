@@ -76,7 +76,7 @@ class EfficiencyMixin:
                         if (not args.get('owner') or w.get('owner') == args['owner'])
                         and (not args.get('state') or w.get('status') == args['state'])]
                 rows.sort(key=lambda w: w['id'])
-                return self.model_page(rows, args, [actor['rootId'], args.get('owner'), args.get('state')], byte_limit=9000)
+                return self.model_page(rows, args, [actor['rootId'], args.get('owner'), args.get('state')], byte_limit=13000)
             task = next((w for w in works if w['id'] == args.get('task_id')), None)
             if task is None:
                 raise ValueError('Unknown task in this team')
@@ -115,7 +115,7 @@ class EfficiencyMixin:
                 # after the agents, without repeating rooms on each agent page.
                 entries = [{'entry': 'agent', 'value': r} for r in rows]
                 entries += [{'entry': 'room', 'value': r} for r in rooms]
-                result = self.model_page(entries, args, [actor_id, scope], byte_limit=9000)
+                result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000)
                 page = result.pop('items')
                 result.update(self=actor_id, lead=actor['rootId'],
                               items=[r['value'] for r in page if r['entry'] == 'agent'],
@@ -241,13 +241,13 @@ class EfficiencyMixin:
         result = tool_mode_context(self, actor, result, key)
         content = result.get('contentItems', [])
         texts = [c for c in content if c.get('type') == 'inputText' and not c.get('text', '').startswith(('[Time awareness]', '[Studio agent mode,'))]
-        if len(packed(texts).encode()) <= 8000:
+        if len(packed(texts).encode()) <= 16000:
             return result
         # The full result was committed before this projection. Images and
         # immutable clock metadata stay intact.
         raw = '\n'.join(c.get('text', '') for c in texts)
         preview = {'requestId': key, 'outputRef': key, 'success': result.get('success'),
-                   'truncated': True, 'textBytes': len(raw.encode()), 'excerpt': clip(raw, 1800),
+                   'truncated': True, 'textBytes': len(raw.encode()), 'excerpt': clip(raw, 4000),
                    'read': {'tool': 'orchestration_read', 'output_ref': key}}
         with self.db() as db:
             receipt = self.tool_request(key, db)
@@ -385,7 +385,7 @@ class EfficiencyMixin:
                              textChars=len(message['text']),
                              read={'tool': 'orchestration_read', 'output_ref': 'chat-message:' + message['id']})
             candidate = [brief, *page]
-            if page and model_text_bytes({'room': room, 'messages': candidate}) > 9000:
+            if page and model_text_bytes({'room': room, 'messages': candidate}) > 13000:
                 break
             page = candidate
         return {'room': room, 'messages': page,
@@ -652,7 +652,7 @@ class EfficiencyMixin:
             counts[key] = counts.get(key, 0) + 1
         parts = []
         synthetic_count = sum(row['kind'] not in {'user', 'followup'} for row in rows)
-        event_limit = min(1000, 8000 // max(1, synthetic_count))
+        event_limit = min(3000, 24000 // max(1, synthetic_count))
         for row in rows:
             if row['kind'] == 'complaint' and not row.get('preserveComplaint'):
                 try:
@@ -678,7 +678,7 @@ class EfficiencyMixin:
                                            'history': 'Read earlier progress with orchestration_chat_read in this room.'})
                 except (ValueError, KeyError, TypeError):
                     pass
-            if row['kind'] not in {'user', 'followup', 'radio_turn'}:
+            if row['kind'] not in {'user', 'followup', 'work_decision', 'radio_turn'}:
                 text = EfficiencyMixin.bounded_event(row, text, event_limit)
             parts.append(text if row['kind'] == 'user' else '[Orchestration event: ' + row['kind'] + ']\n' + text)
         return '\n\n'.join(parts)

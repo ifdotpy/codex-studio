@@ -123,7 +123,7 @@ class PayloadContract(unittest.TestCase):
             rows = [dict(r) for r in db.execute('SELECT * FROM runtime_events WHERE agent=?', (lead['id'],))]
             before = [r['text'] for r in rows]
         text = self.runtime.model_event_text(rows)
-        self.assertLess(len(text.encode()), 10000)
+        self.assertLess(len(text.encode()), 27000)
         self.assertIn('event:monitor-0', text)
         pieces, offset = [], 0
         while True:
@@ -154,14 +154,14 @@ class PayloadContract(unittest.TestCase):
                  'text': packed({'task': f'task-{i}', 'result': {'id': f'result-{i}',
                                 'text': 'evidence ' * 5000}})} for i in range(32)]
         events = self.runtime.model_event_text(rows)
-        self.assertLess(len(events.encode()), 10000)
+        self.assertLess(len(events.encode()), 27000)
         for i in (0, 15, 31):
             self.assertIn(f'event:budget-event-{i}', events)
 
         for i in range(60):
             self.work(lead, title=f'Task {i}')
         tasks = self.runtime.model_work(lead['id'], {'action': 'list'})
-        self.assertLess(len(packed(tasks).encode()), 10000)
+        self.assertLess(len(packed(tasks).encode()), 16000)
         self.assertTrue(tasks['nextCursor'])
 
     def test_child_event_compacts_model_view_but_keeps_full_saved_result(self):
@@ -177,7 +177,7 @@ class PayloadContract(unittest.TestCase):
         self.assertGreater(len(row['text'].encode()), 16000)
         self.assertEqual(json.loads(row['text'])['result'], full)
         preview = self.runtime.model_event_text([row])
-        self.assertLess(len(preview.encode()), 1500)
+        self.assertLess(len(preview.encode()), 3500)
         self.assertIn('event:' + row['id'], preview)
         pieces, offset = [], 0
         while True:
@@ -215,7 +215,7 @@ class PayloadContract(unittest.TestCase):
         ids, before = [], None
         while True:
             page = self.runtime.chat_read(room, lead['id'], before, model=True)
-            self.assertLess(len(packed(page).encode()), 10000)
+            self.assertLess(len(packed(page).encode()), 16000)
             ids.extend(m['id'] for m in page['messages'])
             before = page['nextBefore']
             if before is None:
@@ -244,7 +244,7 @@ class PayloadContract(unittest.TestCase):
         agent_ids, room_ids, args = [], [], {}
         while True:
             page = self.runtime.model_directory(lead['id'], 'orchestration_peers', args)
-            self.assertLess(len(packed(page).encode()), 10000)
+            self.assertLess(len(packed(page).encode()), 16000)
             agent_ids.extend(a['id'] for a in page['items'])
             room_ids.extend(r['id'] for r in page['rooms'])
             if not page['nextCursor']:
@@ -269,6 +269,15 @@ class PayloadContract(unittest.TestCase):
         for i in range(5):
             self.assertIn('marker-' + str(i), text)
         self.assertIn('Unknown complaint', text)
+
+    def test_instruction_event_kinds_are_never_truncated(self):
+        for kind in ('user', 'followup', 'work_decision'):
+            full = f'{kind} instruction 🚀 ' * 3000
+            row = {'id': 'instruction-' + kind, 'kind': kind, 'text': full}
+            text = self.runtime.model_event_text([row])
+            self.assertIn(full, text)
+            self.assertNotIn('"truncated":true', text)
+            self.assertNotIn('event:instruction-' + kind, text)
 
 
 if __name__ == '__main__':
