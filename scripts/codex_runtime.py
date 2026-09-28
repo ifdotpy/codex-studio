@@ -6,6 +6,7 @@ owns scheduling, explicit parent edges, event delivery and process watches.
 from __future__ import annotations
 
 import base64
+import copy
 import concurrent.futures
 from contextlib import contextmanager
 import fcntl
@@ -1033,13 +1034,55 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 db.close()
 
-    @staticmethod
-    def records(db, table):
-        rows = [json.loads(r[0]) for r in db.execute(f"SELECT record FROM runtime_{table}")]
-        if table == "agents":
-            from codex_agent_modes import mode_fields
-            rows = [mode_fields(row) for row in rows]
-        return rows
+    @contextmanager
+    def read_db(self):
+        """Read a single committed WAL snapshot without the runtime lock."""
+        db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=15)
+        db.row_factory = sqlite3.Row
+        try:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            yield db
+        finally:
+            db.rollback()
+            db.close()
+
+    def records(self, db, table=None, *, shared=False):
+        # Calls already in progress may still use the former static form.
+        if table is None:
+            db, table, runtime = self, db, None
+        else:
+            runtime = self
+        if table != "agents":
+            return [json.loads(r[0]) for r in db.execute(f"SELECT record FROM runtime_{table}")]
+        from codex_agent_modes import mode_fields
+        if runtime is None:
+            rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
+                "SELECT record FROM runtime_agents"))
+            return rows if shared else list(rows)
+        generation = write_generation(db)
+        # A writer can roll back and another writer can reuse its generation.
+        # Publish only committed reads. A write transaction always decodes anew.
+        cacheable = (generation is not None and
+                     (not db.in_transaction or db.execute("PRAGMA query_only").fetchone()[0] == 1))
+        if not cacheable:
+            rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
+                "SELECT record FROM runtime_agents"))
+        else:
+            cache = runtime.__dict__.setdefault("_agent_records_cache", {})
+            rows = cache.get(generation)
+            if rows is None:
+                guard = runtime.__dict__.setdefault("_agent_records_cache_lock", threading.Lock())
+                with guard:
+                    rows = cache.get(generation)
+                    if rows is None:
+                        rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
+                            "SELECT record FROM runtime_agents"))
+                        if write_generation(db) == generation:
+                            cache[generation] = rows
+                            while len(cache) > 4:
+                                cache.pop(next(iter(cache)))
+        return rows if shared else [copy.deepcopy(row) for row in rows]
 
     def put(self, db, table, record):
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
@@ -1356,9 +1399,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.mark_event_timings(db, event_ids, {name: stamp})
 
     def mark_event_timings(self, db, event_ids, marks):
-        fields = [("$.timing." + name, stamp) for name, stamp in marks.items()]
-        slots = ", ".join("?, ?" for _ in fields)
-        values = [value for field in fields for value in field]
+        fields = [("$.timing." + name,
+                   json.dumps(value) if isinstance(value, (dict, list)) else value,
+                   isinstance(value, (dict, list))) for name, value in marks.items()]
+        slots = ", ".join("?, json(?)" if structured else "?, ?" for _, _, structured in fields)
+        values = [value for path, stamp, _ in fields for value in (path, stamp)]
         statement = (f"INSERT INTO runtime_event_meta VALUES (?, json_set('{{}}', {slots})) "
                      f"ON CONFLICT(id) DO UPDATE SET record=json_set(record, {slots})")
         for event_id in event_ids:
@@ -2569,7 +2614,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "fastScheduledAt": fast_scheduled_at or fast_entered_at,
                     "fastEnteredAt": fast_entered_at,
                     "fastLockedAt": locked_at,
-                    "fastLockOwners": ",".join(lock_owners),
+                    "fastLockOwners": lock_owners,
                 })
             fast_marks = {}
             if self.closed:
@@ -4398,7 +4443,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Choose submit, read, or respond")
 
     def chat_rooms(self, db, viewer=None):
-        agents = {a["id"]: a for a in self.records(db, "agents") if not a.get("deletedAt")}
+        agents = {a["id"]: a for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")}
         viewer_root = agents.get(viewer, {}).get("rootId") if viewer else None
         from codex_peer_teams import snapshot as peer_snapshot
         peer_teams = peer_snapshot(self, db)
@@ -4434,7 +4479,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return sorted(rooms, key=lambda r: r["updated"], reverse=True)
 
     def peers(self, viewer):
-        with self.lock, self.db() as db:
+        with self.read_db() as db:
             a = self.agent(viewer, db)
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")
@@ -4442,13 +4487,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             peer_ids = {p["id"] for p in peers_for(self, db, a)}
             return {"self": viewer, "lead": a["rootId"], "parent": a["parentId"],
                     "peers": [{k: p.get(k) for k in ("id", "name", "role", "rootId", "parentId", "status")}
-                              for p in self.records(db, "agents") if not p.get("deletedAt") and (p["rootId"] == a["rootId"] or p["id"] in peer_ids)],
+                              for p in self.records(db, "agents", shared=True) if not p.get("deletedAt") and (p["rootId"] == a["rootId"] or p["id"] in peer_ids)],
                     "rooms": self.chat_rooms(db, viewer)}
 
     def chat_read(self, room_id, viewer=None, before=None, limit=100, *, model=False):
         if before is not None and (not isinstance(before, int) or before < 1):
             raise ValueError("Invalid message cursor")
-        with self.lock, self.db() as db:
+        with self.read_db() as db:
             rooms = self.chat_rooms(db, viewer)
             if isinstance(room_id, str) and room_id.startswith("feed:"):
                 if viewer is not None or model:
@@ -4457,7 +4502,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 root = self.agent(root_id, db)
                 if not root.get("isLead") or root.get("deletedAt"):
                     raise ValueError("Team is unavailable")
-                members = {a["id"] for a in self.records(db, "agents")
+                members = {a["id"] for a in self.records(db, "agents", shared=True)
                            if (a["id"] == root_id or a.get("rootId") == root_id) and not a.get("deletedAt")}
                 ids = [r["id"] for r in rooms if
                        (r.get("kind") == "broadcast" and r.get("rootId") == root_id) or
@@ -4476,7 +4521,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 rows = db.execute("SELECT * FROM runtime_chat_messages WHERE room=? AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT ?",
                                   (room_id, before, before, limit + 1)).fetchall()
             messages = [{**dict(r), "deliveries": json.loads(r["deliveries"])} for r in reversed(rows[:limit])]
-            names = {a["id"]: a["name"] for a in self.records(db, "agents")}
+            names = {a["id"]: a["name"] for a in self.records(db, "agents", shared=True)}
             for m in messages:
                 m["senderName"] = names.get(m["sender"], m["sender"])
                 for recipient, status in list(m["deliveries"].items()):
@@ -5203,79 +5248,84 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("This conversation was deleted")
             return task
 
-    def snapshot(self, *, include_work=True):
+    def snapshot(self, *, include_work=True, db=None):
+        if db is None:
+            with self.read_db() as own:
+                return self._snapshot_from_db(own, include_work)
+        return self._snapshot_from_db(db, include_work)
+
+    def _snapshot_from_db(self, db, include_work):
         from codex_peer_teams import snapshot as peer_snapshot
-        with self.lock, self.db() as db:
-            agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
-            team_names = {a["id"]: a["name"] for a in agents}
-            for a in agents:
-                a["nextTurnSettingsSupported"] = True
-                a["readStateSupported"] = True
-                a["empty"] = self.empty_lead(db, a)
-                if not a.get("isLead"):
-                    task = str(a.get("prompt") or "")
-                    # A completed message can be commentary. Publish the last report
-                    # only once the current turn has completed successfully.
-                    result = str(a.get("lastAnswer") or "") if (
-                        a.get("lastCompletedTurn") and not a.get("turnId")
-                        and not a.get("inFlight") and a.get("status") == "completed"
-                    ) else ""
-                    a["overview"] = {
-                        "task": task[:4000], "taskTruncated": len(task) > 4000,
-                        "result": result[:4000], "resultTruncated": len(result) > 4000,
-                        "resultTurnId": a.get("lastCompletedTurn") if result else None,
-                    }
-                for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
-                    ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",
-                     "lastContextRepairWait", "nativeNameSynced") if not include_work else ()
-                ):
-                    a.pop(private, None)
-                block = native_thread_block(a)
-                if block:
-                    a["nativeThreadBlock"] = block
-                a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
-                         wave="Team: " + team_names.get(a["rootId"], "Team"))
-            events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
-            return {
-                "agents": agents,
-                "projects": self.projects(db=db)["items"],
-                "projectOrganizationVersion": 1,
-                "peerTeamsVersion": 1,
-                "peerTeams": peer_snapshot(self, db),
-                "tasks": self.recent_tasks(db),
-                "tasksHistoryLimit": 100,
-                "monitors": [
-                    m
-                    for m in self.recent_monitors(db)
-                    if m["agent"] in {a["id"] for a in agents}
-                ],
-                "requests": [
-                    r
-                    for r in self.records(db, "requests")
-                    if r["status"] == "pending"
-                    and r.get("agent") in {a["id"] for a in agents}
-                ],
-                "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
-                "complaints": self.complaint_summaries(db),
-                # The chat view reads work through /api/work when opened.
-                # Omit it before the database read so old result histories do
-                # not delay every chat update under the shared runtime lock.
-                **({"work": [
-                    w
-                    for w in self.records(db, "work")
-                    if w["rootId"] in {a["id"] for a in agents}
-                ]} if include_work else {}),
-                "rules": [
-                    r
-                    for r in self.records(db, "rules")
-                    if r["agent"] in {a["id"] for a in agents}
-                ],
-                "rateLimits": self.rate_limits.copy(),
-                "nativeNotices": account_notices(self, db),
-                "rateLimitsByAccount": {k: self.rate_limits_for(k).copy() for k in self.rate_limits_by_account},
-                "events": events,
-                "connected": bool(set(self.servers) - self.offline_accounts) and not self.closed,
-            }
+        agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
+        team_names = {a["id"]: a["name"] for a in agents}
+        for a in agents:
+            a["nextTurnSettingsSupported"] = True
+            a["readStateSupported"] = True
+            a["empty"] = self.empty_lead(db, a)
+            if not a.get("isLead"):
+                task = str(a.get("prompt") or "")
+                # A completed message can be commentary. Publish the last report
+                # only once the current turn has completed successfully.
+                result = str(a.get("lastAnswer") or "") if (
+                    a.get("lastCompletedTurn") and not a.get("turnId")
+                    and not a.get("inFlight") and a.get("status") == "completed"
+                ) else ""
+                a["overview"] = {
+                    "task": task[:4000], "taskTruncated": len(task) > 4000,
+                    "result": result[:4000], "resultTruncated": len(result) > 4000,
+                    "resultTurnId": a.get("lastCompletedTurn") if result else None,
+                }
+            for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
+                ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",
+                 "lastContextRepairWait", "nativeNameSynced") if not include_work else ()
+            ):
+                a.pop(private, None)
+            block = native_thread_block(a)
+            if block:
+                a["nativeThreadBlock"] = block
+            a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
+                     wave="Team: " + team_names.get(a["rootId"], "Team"))
+        events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
+        return {
+            "agents": agents,
+            "projects": self.projects(db=db)["items"],
+            "projectOrganizationVersion": 1,
+            "peerTeamsVersion": 1,
+            "peerTeams": peer_snapshot(self, db),
+            "tasks": self.recent_tasks(db),
+            "tasksHistoryLimit": 100,
+            "monitors": [
+                m
+                for m in self.recent_monitors(db)
+                if m["agent"] in {a["id"] for a in agents}
+            ],
+            "requests": [
+                r
+                for r in self.records(db, "requests")
+                if r["status"] == "pending"
+                and r.get("agent") in {a["id"] for a in agents}
+            ],
+            "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
+            "complaints": self.complaint_summaries(db),
+            # The chat view reads work through /api/work when opened.
+            # Omit it before the database read so old result histories do
+            # not delay every chat update.
+            **({"work": [
+                w
+                for w in self.records(db, "work")
+                if w["rootId"] in {a["id"] for a in agents}
+            ]} if include_work else {}),
+            "rules": [
+                r
+                for r in self.records(db, "rules")
+                if r["agent"] in {a["id"] for a in agents}
+            ],
+            "rateLimits": self.rate_limits.copy(),
+            "nativeNotices": account_notices(self, db),
+            "rateLimitsByAccount": {k: value.copy() for k, value in self.rate_limits_by_account.copy().items()},
+            "events": events,
+            "connected": bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed,
+        }
 
     def team(self, root):
         state = self.snapshot(include_work=False)

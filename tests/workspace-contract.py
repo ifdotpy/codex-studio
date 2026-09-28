@@ -382,10 +382,10 @@ class WorkspaceContract(unittest.TestCase):
         self.agent_update(lead, status="failed", error="Fixture failure")
         expected = self.runtime.workspace_snapshot(lead["id"])["inbox"]
         records = self.runtime.records
-        def guarded(db, table):
+        def guarded(db, table, **kwargs):
             if table in {"checkpoints", "annotations", "plans"}:
                 raise AssertionError("Inbox reads unrelated history: " + table)
-            return records(db, table)
+            return records(db, table, **kwargs)
         with patch.object(self.runtime, "records", side_effect=guarded), patch.object(
                 self.runtime, "recent_tasks", side_effect=AssertionError("Inbox reads task history")):
             self.assertEqual(self.runtime.workspace_snapshot(lead["id"], view="inbox"), {"inbox": expected})
@@ -404,12 +404,12 @@ class WorkspaceContract(unittest.TestCase):
         lead = self.lead()
         entered, release = threading.Event(), threading.Event()
         records = self.runtime.records
-        def delayed(db, table):
+        def delayed(db, table, **kwargs):
             if table == "checkpoints":
                 entered.set()
                 if not release.wait(3):
                     raise AssertionError("Checkpoint reader was not released")
-            return records(db, table)
+            return records(db, table, **kwargs)
         with patch.object(self.runtime, "records", side_effect=delayed), ThreadPoolExecutor(max_workers=2) as pool:
             snapshot = pool.submit(self.runtime.workspace_snapshot, lead["id"])
             try:
@@ -425,9 +425,9 @@ class WorkspaceContract(unittest.TestCase):
         self.agent_update(lead, status="failed", error="Before concurrent write")
         records = self.runtime.records
         changed = False
-        def change_after_read(db, table):
+        def change_after_read(db, table, **kwargs):
             nonlocal changed
-            rows = records(db, table)
+            rows = records(db, table, **kwargs)
             if table == "agents" and not changed:
                 changed = True
                 self.agent_update(lead, status="completed", error=None)

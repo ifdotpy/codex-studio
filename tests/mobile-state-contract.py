@@ -59,10 +59,10 @@ class MobileStateContract(unittest.TestCase):
         full = self.runtime.snapshot()
         original_records = self.runtime.records
 
-        def records_without_work(db, table):
+        def records_without_work(db, table, **kwargs):
             if table == "work":
                 self.fail("A chat snapshot loaded work history under the runtime lock")
-            return original_records(db, table)
+            return original_records(db, table, **kwargs)
 
         with patch.object(self.runtime, "records", side_effect=records_without_work):
             chat = self.runtime.snapshot(include_work=False)
@@ -153,9 +153,9 @@ class MobileStateHttpContract(unittest.TestCase):
         original = self.runtime.records
         reads = []
 
-        def record_reads(db, table):
+        def record_reads(db, table, **kwargs):
             reads.append(table)
-            return original(db, table)
+            return original(db, table, **kwargs)
 
         with patch.object(self.runtime, "records", side_effect=record_reads):
             with patch.object(self.runtime, "snapshot", wraps=self.runtime.snapshot) as snapshot:

@@ -38,18 +38,28 @@ def _account_busy(rt, db, account):
     if (account in getattr(rt, "_native_tools_refreshing", set())
             or account in getattr(rt, "_native_runtime_reservations", {})):
         return True
-    for agent in rt.records(db, "agents"):
-        if agent.get("provider", "codex") != "codex":
-            continue
-        if agent.get("accountKey", "default") != account:
-            continue
-        repair = agent.get("contextRepair") or {}
-        if repair.get("phase") in {"preparing", "submitted", "unknown", "ready"}:
-            return True
-        if agent.get("nativeToolRefreshId"):
-            return True
-        preparation = rt.preparations.get(agent["id"])
-        if preparation and not preparation["future"].done():
+    db.execute("CREATE INDEX IF NOT EXISTS runtime_agent_sweep_busy ON runtime_agents("
+               "COALESCE(json_extract(record,'$.accountKey'),'default')) WHERE "
+               "COALESCE(json_extract(record,'$.provider'),'codex')='codex' AND ("
+               "json_extract(record,'$.contextRepair.phase') IN "
+               "('preparing','submitted','unknown','ready') OR "
+               "COALESCE(json_extract(record,'$.nativeToolRefreshId'),'')!='')")
+    db.execute("CREATE INDEX IF NOT EXISTS runtime_agent_sweep_cleanup ON runtime_agents("
+               "json_extract(record,'$.contextRepair.sourceCleanup.accountKey'),"
+               "json_extract(record,'$.contextRepair.sourceCleanup.threadId')) WHERE "
+               "json_extract(record,'$.contextRepair.sourceCleanup.phase') IN ('planned','submitted')")
+    scope = ("COALESCE(json_extract(record,'$.provider'),'codex')='codex' AND "
+             "COALESCE(json_extract(record,'$.accountKey'),'default')=?")
+    if db.execute("SELECT 1 FROM runtime_agents WHERE " + scope + " AND ("
+                  "json_extract(record,'$.contextRepair.phase') IN "
+                  "('preparing','submitted','unknown','ready') OR "
+                  "COALESCE(json_extract(record,'$.nativeToolRefreshId'),'')!='') LIMIT 1",
+                  (account,)).fetchone():
+        return True
+    for agent_id, preparation in rt.preparations.items():
+        if (not preparation["future"].done() and db.execute(
+                "SELECT 1 FROM runtime_agents WHERE id=? AND " + scope + " LIMIT 1",
+                (agent_id, account)).fetchone()):
             return True
     has_transfers = db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_account_transfers'").fetchone()
     for transfer in (rt.records(db, "account_transfers") if has_transfers else []):
@@ -70,9 +80,9 @@ def _protected(rt, db, account, thread, now):
                   (account, thread)).fetchone():
         return True
     rows = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
-                      "AND (json_extract(record,'$.accountKey')=? OR "
-                      "(?='default' AND json_type(record,'$.accountKey') IS NULL))",
-                      (thread, account, account)).fetchall()
+                      "AND CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
+                      "ELSE json_extract(record,'$.accountKey') END=?",
+                      (thread, account)).fetchall()
     for row in rows:
         agent = json.loads(row[0])
         recent_at = max(_idle_since(agent), agent.get("deletedAt") or 0)

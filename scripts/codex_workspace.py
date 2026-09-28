@@ -1420,12 +1420,10 @@ class WorkspaceMixin:
     def workspace_snapshot(self, key=None, *, view="full"):
         if view not in {"full", "inbox"}:
             raise ValueError("Unknown workspace view")
-        with self.db() as db:
-            db.execute("PRAGMA query_only=ON")
-            db.execute("BEGIN")
+        with self.read_db() as db:
             root = self.checked_actor(db, key)["rootId"] if key else None
             agents = [
-                a for a in self.records(db, "agents")
+                a for a in self.records(db, "agents", shared=True)
                 if not a.get("deletedAt") and (root is None or a["rootId"] == root)
             ]
             ids = {a["id"] for a in agents}
@@ -1653,7 +1651,7 @@ class WorkspaceMixin:
             SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?
             AND json_extract(record,'$.deletedAt') IS NULL)"""
         params = () if root is None else (root, root)
-        # snapshot calls this under Runtime.lock. "NOT IN" cannot use the
+        # "NOT IN" cannot use the
         # (status, created) index and scanned every monitor (26k rows, 2-4 s).
         # Read the newest 100 of each terminal status through the index instead.
         terminal = " UNION ALL ".join(

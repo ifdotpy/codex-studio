@@ -22,20 +22,25 @@ class SchedulerDecode(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.runtime = Runtime(Path(self.tmp.name), fixture.FakeServer)
         self.runtime.create({"name": "Lead", "cwd": self.tmp.name, "prompt": "Work"}, defer=True)
+        self.runtime.closed = True
+        self.runtime.changed.set()
+        self.runtime.scheduler.join(timeout=5)
+        self.assertFalse(self.runtime.scheduler.is_alive())
+        self.runtime.closed = False
 
     def tearDown(self):
         self.runtime.close()
         self.tmp.cleanup()
 
     def decodes(self, write=None):
-        calls, records = [], Runtime.records
+        calls, records = [], self.runtime.records
 
-        def counted(db, table):
+        def counted(db, table, **kwargs):
             if table == "agents":
                 calls.append(table)
                 if write and len(calls) == 1:
                     write(db)
-            return records(db, table)
+            return records(db, table, **kwargs)
         from codex_session_names import session_names
         # Count only this pass; the session name scan runs once per second.
         with patch.object(self.runtime, "records", side_effect=counted), \

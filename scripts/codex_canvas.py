@@ -137,7 +137,12 @@ class Canvas:
         finally:
             db.close()
 
-    def threads(self, runtime_agents=None):
+    def threads(self, runtime_agents=None, db=None):
+        if db is None:
+            with self.connect() as own:
+                own.execute("PRAGMA query_only=ON")
+                own.execute("BEGIN")
+                return self.threads(runtime_agents, db=own)
         rows = read_threads(self.root)
         for row in rows:
             row["id"] = identity(row["wave"], row.get("runId"), row["threadId"], row["name"])
@@ -152,17 +157,15 @@ class Canvas:
             rows.extend(dict(agent) for agent in (runtime_agents if runtime_agents is not None
                                                 else self.runtime.snapshot(include_work=False)["agents"]))
         else:
-            with self.connect() as db:
-                if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
-                    for item in db.execute("SELECT record FROM runtime_agents"):
-                        a = json.loads(item[0])
-                        if a.get("deletedAt"):
-                            continue
-                        rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
-                                     "launcherAlive": False, "wave": "Managed team"})
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
+                for item in db.execute("SELECT record FROM runtime_agents"):
+                    a = json.loads(item[0])
+                    if a.get("deletedAt"):
+                        continue
+                    rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
+                                 "launcherAlive": False, "wave": "Managed team"})
         by_thread = {t['threadId']: t for t in rows if t.get('threadId')}
-        with self.connect() as db:
-            registered = [json.loads(r['record']) for r in db.execute("SELECT record FROM graph_agents")]
+        registered = [json.loads(r['record']) for r in db.execute("SELECT record FROM graph_agents")]
         for record in registered:
             existing = by_thread.get(record.get('threadId'))
             if existing:
@@ -188,21 +191,29 @@ class Canvas:
                 by_id[resolved] = node
         return rows
 
-    def chats(self):
-        with self.connect() as db:
-            chats = []
-            for row in db.execute("SELECT * FROM groups"):
-                members = [e['source'] for e in db.execute("SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (row['id'],))]
-                last = db.execute("SELECT text, at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (row['id'],)).fetchone()
-                count = db.execute("SELECT count(*) FROM messages WHERE room=?", (row['id'],)).fetchone()[0]
-                chats.append({'id': row['id'], 'name': row['name'], 'members': members, 'kind': 'chat',
-                              'messageCount': count, 'tail': last['text'] if last else '', 'lastMessageAt': last['at'] if last else None})
+    def chats(self, db=None):
+        if db is None:
+            with self.connect() as own:
+                own.execute("PRAGMA query_only=ON")
+                own.execute("BEGIN")
+                return self.chats(db=own)
+        chats = []
+        for row in db.execute("SELECT * FROM groups"):
+            members = [e['source'] for e in db.execute("SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (row['id'],))]
+            last = db.execute("SELECT text, at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (row['id'],)).fetchone()
+            count = db.execute("SELECT count(*) FROM messages WHERE room=?", (row['id'],)).fetchone()[0]
+            chats.append({'id': row['id'], 'name': row['name'], 'members': members, 'kind': 'chat',
+                          'messageCount': count, 'tail': last['text'] if last else '', 'lastMessageAt': last['at'] if last else None})
         return chats
 
-    def edges(self, threads=None):
-        threads = threads if threads is not None else self.threads()
-        with self.connect() as db:
-            edges = [dict(e) for e in db.execute('SELECT * FROM graph_edges')]
+    def edges(self, threads=None, db=None):
+        if db is None:
+            with self.connect() as own:
+                own.execute("PRAGMA query_only=ON")
+                own.execute("BEGIN")
+                return self.edges(threads, db=own)
+        threads = threads if threads is not None else self.threads(db=db)
+        edges = [dict(e) for e in db.execute('SELECT * FROM graph_edges')]
         for row in threads:
             if row.get('parentId'):
                 edges.append({'id': identity('spawn', row['parentId'], row['id']), 'source': row['parentId'],
@@ -323,10 +334,16 @@ class Canvas:
                 db.execute('DELETE FROM graph_edges WHERE id=?', (key,))
         return {'id': key, 'connected': connected}
 
-    def snapshot(self, runtime_snapshot=None):
-        threads = self.threads(runtime_snapshot["agents"] if runtime_snapshot is not None else None)
-        chats = self.chats()
-        return {"threads": threads, "chats": chats, 'nodes': threads + chats, 'edges': self.edges(threads), "at": time.time(), "stateDir": str(self.root)}
+    def snapshot(self, runtime_snapshot=None, db=None):
+        if db is None:
+            with self.connect() as own:
+                own.execute("PRAGMA query_only=ON")
+                own.execute("BEGIN")
+                return self.snapshot(runtime_snapshot, db=own)
+        threads = self.threads(runtime_snapshot["agents"] if runtime_snapshot is not None else None, db=db)
+        chats = self.chats(db=db)
+        return {"threads": threads, "chats": chats, 'nodes': threads + chats,
+                'edges': self.edges(threads, db=db), "at": time.time(), "stateDir": str(self.root)}
 
     def thread(self, key):
         matches = [t for t in self.threads() if t["id"] == key]
@@ -557,9 +574,11 @@ def make_server(canvas, port=0, public_origin=None):
             return terminal_manager[0]
 
     def snapshot(include_work=True):
-        with canvas.lock:
-            runtime = canvas.runtime.snapshot(include_work=include_work) if canvas.runtime else None
-            return {**canvas.snapshot(runtime_snapshot=runtime), "runtime": runtime}
+        if canvas.runtime:
+            with canvas.runtime.read_db() as db:
+                runtime = canvas.runtime.snapshot(include_work=include_work, db=db)
+                return {**canvas.snapshot(runtime_snapshot=runtime, db=db), "runtime": runtime}
+        return {**canvas.snapshot(), "runtime": None}
 
     def sync():
         with terminal_lock:

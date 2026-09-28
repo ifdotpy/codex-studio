@@ -192,7 +192,8 @@ def measure(legacy, *, delayed_commit=False, heavy=False, indexed=True):
             lock_holders = {}
             if not legacy:
                 for _, marks in rows:
-                    for holder in marks.get("fastLockOwners", "").split(","):
+                    assert isinstance(marks.get("fastLockOwners"), list)
+                    for holder in marks["fastLockOwners"]:
                         if holder:
                             name = holder.split("ms:", 1)[-1]
                             lock_holders[name] = lock_holders.get(name, 0) + 1
