@@ -20,6 +20,7 @@ class PayloadContract(unittest.TestCase):
     worker = f.EfficiencyContract.worker
     agent_update = f.EfficiencyContract.agent_update
     start = f.EfficiencyContract.start
+    work = f.EfficiencyContract.work
     tool = f.EfficiencyContract.tool
     value = f.EfficiencyContract.value
 
@@ -122,7 +123,7 @@ class PayloadContract(unittest.TestCase):
             rows = [dict(r) for r in db.execute('SELECT * FROM runtime_events WHERE agent=?', (lead['id'],))]
             before = [r['text'] for r in rows]
         text = self.runtime.model_event_text(rows)
-        self.assertLess(len(text.encode()), 27000)
+        self.assertLess(len(text.encode()), 10000)
         self.assertIn('event:monitor-0', text)
         pieces, offset = [], 0
         while True:
@@ -137,6 +138,55 @@ class PayloadContract(unittest.TestCase):
         other = self.lead('Other')
         with self.assertRaisesRegex(ValueError, 'not owned'):
             self.runtime.model_read(other['id'], {'output_ref': 'event:monitor-0'})
+
+    def test_default_tool_and_event_size_budgets(self):
+        lead = self.runtime.prepare(self.lead())
+        huge = {'items': [{'id': 'stable-result-id', 'status': 'ready', 'detail': 'x' * 40000}]}
+        result = self.runtime.model_tool_result(lead['id'], 'budget-tool', {
+            'success': True, 'contentItems': [{'type': 'inputText', 'text': packed(huge)}]})
+        self.assertLess(len(packed(result).encode()), 10000)
+        summary = self.value(result)
+        self.assertTrue(summary['truncated'])
+        self.assertEqual(summary['outputRef'], 'budget-tool')
+        self.assertEqual(summary['read']['tool'], 'orchestration_read')
+
+        rows = [{'id': f'budget-event-{i}', 'kind': 'work_review',
+                 'text': packed({'task': f'task-{i}', 'result': {'id': f'result-{i}',
+                                'text': 'evidence ' * 5000}})} for i in range(32)]
+        events = self.runtime.model_event_text(rows)
+        self.assertLess(len(events.encode()), 10000)
+        for i in (0, 15, 31):
+            self.assertIn(f'event:budget-event-{i}', events)
+
+        for i in range(60):
+            self.work(lead, title=f'Task {i}')
+        tasks = self.runtime.model_work(lead['id'], {'action': 'list'})
+        self.assertLess(len(packed(tasks).encode()), 10000)
+        self.assertTrue(tasks['nextCursor'])
+
+    def test_child_event_compacts_model_view_but_keeps_full_saved_result(self):
+        lead = self.lead()
+        child = self.worker(lead)
+        full = 'Child evidence 🚀 ' * 3000
+        with self.runtime.lock, self.runtime.db() as db:
+            record = self.runtime.agent(child['id'], db)
+            record.update(status='completed')
+            self.runtime.parent_event(db, record, 'completed-once', full)
+            row = dict(db.execute("SELECT * FROM runtime_events WHERE kind='child_result' AND agent=?",
+                                  (lead['id'],)).fetchone())
+        self.assertGreater(len(row['text'].encode()), 16000)
+        self.assertEqual(json.loads(row['text'])['result'], full)
+        preview = self.runtime.model_event_text([row])
+        self.assertLess(len(preview.encode()), 1500)
+        self.assertIn('event:' + row['id'], preview)
+        pieces, offset = [], 0
+        while True:
+            page = self.runtime.model_read(lead['id'], {'output_ref': 'event:' + row['id'], 'offset': offset})
+            pieces.append(page['text'])
+            if page['nextOffset'] is None:
+                break
+            offset = page['nextOffset']
+        self.assertEqual(''.join(pieces), row['text'])
         user = {'id': 'user', 'kind': 'user', 'text': 'Actual instruction ' * 5000}
         self.assertEqual(self.runtime.model_event_text([user]), user['text'])
 
@@ -165,7 +215,7 @@ class PayloadContract(unittest.TestCase):
         ids, before = [], None
         while True:
             page = self.runtime.chat_read(room, lead['id'], before, model=True)
-            self.assertLess(len(packed(page).encode()), 16000)
+            self.assertLess(len(packed(page).encode()), 10000)
             ids.extend(m['id'] for m in page['messages'])
             before = page['nextBefore']
             if before is None:
@@ -194,7 +244,7 @@ class PayloadContract(unittest.TestCase):
         agent_ids, room_ids, args = [], [], {}
         while True:
             page = self.runtime.model_directory(lead['id'], 'orchestration_peers', args)
-            self.assertLess(len(packed(page).encode()), 16000)
+            self.assertLess(len(packed(page).encode()), 10000)
             agent_ids.extend(a['id'] for a in page['items'])
             room_ids.extend(r['id'] for r in page['rooms'])
             if not page['nextCursor']:

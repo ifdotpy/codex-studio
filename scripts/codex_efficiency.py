@@ -76,7 +76,7 @@ class EfficiencyMixin:
                         if (not args.get('owner') or w.get('owner') == args['owner'])
                         and (not args.get('state') or w.get('status') == args['state'])]
                 rows.sort(key=lambda w: w['id'])
-                return self.model_page(rows, args, [actor['rootId'], args.get('owner'), args.get('state')])
+                return self.model_page(rows, args, [actor['rootId'], args.get('owner'), args.get('state')], byte_limit=9000)
             task = next((w for w in works if w['id'] == args.get('task_id')), None)
             if task is None:
                 raise ValueError('Unknown task in this team')
@@ -115,14 +115,14 @@ class EfficiencyMixin:
                 # after the agents, without repeating rooms on each agent page.
                 entries = [{'entry': 'agent', 'value': r} for r in rows]
                 entries += [{'entry': 'room', 'value': r} for r in rooms]
-                result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000)
+                result = self.model_page(entries, args, [actor_id, scope], byte_limit=9000)
                 page = result.pop('items')
-                result.update(self=actor_id, lead=actor['rootId'], parent=actor.get('parentId'),
+                result.update(self=actor_id, lead=actor['rootId'],
                               items=[r['value'] for r in page if r['entry'] == 'agent'],
                               rooms=[r['value'] for r in page if r['entry'] == 'room'],
-                              total=len(rows), roomTotal=len(rooms), totalRecords=len(entries),
-                              peerChatIds=sorted(peer_ids),
-                              peerChatPolicy='Peer chats are equal and independent. Send explicit private messages only. Do not assign work or forward results automatically.')
+                              total=len(rows), roomTotal=len(rooms), totalRecords=len(entries))
+                if actor.get('parentId'):
+                    result['parent'] = actor['parentId']
                 return result
             team = [a for a in agents if a['rootId'] == actor['rootId']]
             ids = {a['id'] for a in team}
@@ -182,8 +182,7 @@ class EfficiencyMixin:
                         'teamActive': team_active, 'globalActive': len(active),
                         'maxAgents': root['maxAgents'], 'queued': queued,
                         'configure': {'command': 'codex-control configure ' + actor['rootId'] + ' --concurrency N',
-                                      'minimum': 1, 'maximum': 64,
-                                      'note': 'Change team capacity only within user authorization. The global server limit still applies.'}}
+                                      'minimum': 1, 'maximum': 64}}
             counts = {state: sum(a['status'] == state for a in team) for state in sorted({a['status'] for a in team})}
             revision = digest([records, finished_counts, counts, defaults, capacity])
             db.execute('CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))')
@@ -200,7 +199,7 @@ class EfficiencyMixin:
                     'finishedCounts': finished_counts,
                     'workerDefaults': defaults,
                     'capacity': capacity,
-                    'help': 'Use orchestration_context for tools, profiles or monitor details. Use orchestration_peers for rooms.'}
+                    }
             if args.get('include_finished') is True:
                 finished_agents = [agent_record(a) for a in team if a['status'] in terminal_agents]
                 finished_agents.sort(key=lambda record: record['id'])
@@ -242,13 +241,13 @@ class EfficiencyMixin:
         result = tool_mode_context(self, actor, result, key)
         content = result.get('contentItems', [])
         texts = [c for c in content if c.get('type') == 'inputText' and not c.get('text', '').startswith(('[Time awareness]', '[Studio agent mode,'))]
-        if len(packed(texts).encode()) <= 16000:
+        if len(packed(texts).encode()) <= 8000:
             return result
         # The full result was committed before this projection. Images and
         # immutable clock metadata stay intact.
         raw = '\n'.join(c.get('text', '') for c in texts)
         preview = {'requestId': key, 'outputRef': key, 'success': result.get('success'),
-                   'truncated': True, 'textBytes': len(raw.encode()), 'excerpt': clip(raw, 4000),
+                   'truncated': True, 'textBytes': len(raw.encode()), 'excerpt': clip(raw, 1800),
                    'read': {'tool': 'orchestration_read', 'output_ref': key}}
         with self.db() as db:
             receipt = self.tool_request(key, db)
@@ -258,7 +257,7 @@ class EfficiencyMixin:
             value = json.loads(raw)
             if isinstance(value, dict):
                 preview['summary'] = {k: value[k] for k in
-                    ('id', 'requestId', 'stage', 'outcome', 'status', 'exitCode', 'version', 'nextCursor', 'nextBefore', 'revision', 'total', 'nextOffset', 'agentIds', 'agent_ids') if k in value}
+                    ('id', 'requestId', 'title', 'owner', 'stage', 'outcome', 'status', 'exitCode', 'version', 'blockedBy', 'nextCursor', 'nextBefore', 'revision', 'total', 'nextOffset', 'agentIds', 'agent_ids') if k in value}
                 if isinstance(value.get('agents'), list):
                     preview['summary']['agents'] = [{k: a[k] for k in ('id', 'status') if k in a}
                                                     for a in value['agents'] if isinstance(a, dict)]
@@ -386,7 +385,7 @@ class EfficiencyMixin:
                              textChars=len(message['text']),
                              read={'tool': 'orchestration_read', 'output_ref': 'chat-message:' + message['id']})
             candidate = [brief, *page]
-            if page and model_text_bytes({'room': room, 'messages': candidate}) > 13000:
+            if page and model_text_bytes({'room': room, 'messages': candidate}) > 9000:
                 break
             page = candidate
         return {'room': room, 'messages': page,
@@ -653,7 +652,7 @@ class EfficiencyMixin:
             counts[key] = counts.get(key, 0) + 1
         parts = []
         synthetic_count = sum(row['kind'] not in {'user', 'followup'} for row in rows)
-        event_limit = min(3000, 24000 // max(1, synthetic_count))
+        event_limit = min(1000, 8000 // max(1, synthetic_count))
         for row in rows:
             if row['kind'] == 'complaint' and not row.get('preserveComplaint'):
                 try:
