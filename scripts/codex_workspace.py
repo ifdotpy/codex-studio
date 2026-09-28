@@ -35,6 +35,7 @@ def active_task_records(db, statuses=("running",), *, agent=None):
 # Every status a monitor can end in. recent_monitors reads each one through its index.
 MONITOR_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "lost")
 ACTIVE_MONITOR_STATUSES = ("running", "starting", "approval")
+SKILL_CATALOG_TIMEOUT_SECONDS = 5
 
 
 def active_monitors(db):
@@ -1351,6 +1352,46 @@ class WorkspaceMixin:
                 raise ValueError("Unknown reasoning effort")
             self.put(db, "profiles", profile)
             return profile
+
+    def skill_catalog(self, key):
+        """Read only the selected account/project's native skill inventory."""
+        a = self.checked_actor_in_own_db(key)
+        result = {"skills": [], "errors": []}
+        try:
+            response = self.connect(a.get("accountKey", "default")).call(
+                "skills/list", {"cwds": [a["cwd"]], "forceReload": False},
+                timeout=SKILL_CATALOG_TIMEOUT_SECONDS,
+            )
+            groups = response.get("data")
+            if not isinstance(groups, list):
+                raise ValueError("The provider did not return a skill catalog")
+            seen = set()
+            for group in groups:
+                if not isinstance(group, dict) or group.get("cwd") != a["cwd"]:
+                    continue
+                for error in group.get("errors", []):
+                    message = error.get("message") if isinstance(error, dict) else error
+                    if isinstance(message, str) and message:
+                        result["errors"].append(message)
+                for skill in group.get("skills", []):
+                    if not isinstance(skill, dict) or skill.get("enabled") is False:
+                        continue
+                    name, path = skill.get("name"), skill.get("path")
+                    if not isinstance(name, str) or not name or not isinstance(path, str) or not path:
+                        continue
+                    # Preserve native precedence when multiple roots contain a name.
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    description = skill.get("description")
+                    result["skills"].append({
+                        "name": name, "path": path,
+                        "description": description if isinstance(description, str) else "",
+                    })
+            result["skills"].sort(key=lambda skill: skill["name"].casefold())
+        except Exception as error:
+            result["errors"].append(str(error))
+        return result
 
     def capabilities(self, key):
         a = self.checked_actor_in_own_db(key)
