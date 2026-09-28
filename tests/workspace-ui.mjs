@@ -85,9 +85,17 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
   const errors = [];
   const resourceRequests = [];
+  const planNotModified = [];
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/resources")
       resourceRequests.push(request.url());
+  });
+  page.on("response", (response) => {
+    if (
+      new URL(response.url()).pathname === "/api/plan" &&
+      response.status() === 304
+    )
+      planNotModified.push(response);
   });
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(origin);
@@ -114,6 +122,12 @@ try {
   };
   let modal;
   await section("Plan");
+  await drawer.getByText("This agent has not reported a plan.").waitFor();
+  await poll(
+    async () => planNotModified.length > 0,
+    "unchanged workspace plan uses a conditional 304 refresh",
+  );
+  assert.ok(planNotModified.length > 0);
   await drawer.getByText("This agent has not reported a plan.").waitFor();
   assert.equal(await drawer.getByRole("textbox").count(), 0);
   assert.equal(

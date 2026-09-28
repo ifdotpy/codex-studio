@@ -593,7 +593,7 @@ def make_server(canvas, port=0, public_origin=None):
         def log_message(self, *_args):
             pass
 
-        def send(self, value, status=200, content_type="application/json", cache_control="no-store", compressed=None):
+        def send(self, value, status=200, content_type="application/json", cache_control="no-store", compressed=None, etag=False, weak_etag_fields=()):
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
             compressible = content_type.startswith(("application/json", "application/manifest+json", "text/", "image/svg+xml"))
             encoded = False
@@ -601,20 +601,52 @@ def make_server(canvas, port=0, public_origin=None):
                 candidate = compressed if compressed is not None else gzip.compress(data, compresslevel=3, mtime=0)
                 if len(candidate) < len(data):
                     data, encoded = candidate, True
+            validator_data = data
+            if weak_etag_fields and isinstance(value, dict):
+                validator_data = json.dumps(
+                    {key: entry for key, entry in value.items() if key not in weak_etag_fields},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode()
+            validator = (
+                ("W/" if weak_etag_fields else "")
+                + '"'
+                + hashlib.sha256(validator_data).hexdigest()
+                + '"'
+                if etag
+                else None
+            )
+            not_modified = bool(
+                validator
+                and any(
+                    tag.strip() == "*"
+                    or tag.strip().removeprefix("W/")
+                    == validator.removeprefix("W/")
+                    for tag in self.headers.get("If-None-Match", "").split(",")
+                )
+            )
+            if not_modified:
+                status = 304
+                data = b""
+                encoded = False
             self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
+            if not not_modified:
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", cache_control)
             if compressible:
                 self.send_header("Vary", "Accept-Encoding")
+            if validator:
+                self.send_header("ETag", validator)
             if encoded:
                 self.send_header("Content-Encoding", "gzip")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header(
-                "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
-            )
+            if not not_modified:
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
+                )
             self.end_headers()
             self.wfile.write(data)
 
@@ -799,15 +831,15 @@ def make_server(canvas, port=0, public_origin=None):
                     if path.path == "/api/questions":
                         return self.send(runtime.question_history(agent))
                     if path.path == "/api/workspace":
-                        return self.send(runtime.workspace_snapshot(agent, view=q.get("view", "full")))
+                        return self.send(runtime.workspace_snapshot(agent, view=q.get("view", "full")), etag=True)
                     if path.path == "/api/work":
                         return self.send(runtime.work_action(agent, {"action": "list"}))
                     if path.path == "/api/queue":
                         return self.send(runtime.queue_action(agent))
                     if path.path == "/api/changes":
-                        return self.send(runtime.changes(agent, scope=q.get("scope")))
+                        return self.send(runtime.changes(agent, scope=q.get("scope")), etag=True)
                     if path.path == "/api/plan":
-                        return self.send(runtime.plan_action(agent))
+                        return self.send(runtime.plan_action(agent), etag=True)
                     if path.path == "/api/transcript/page":
                         return self.send(runtime.transcript(q.get("id"), before=q.get("before"), around=q.get("around"), after=q.get("after"), limit=q.get("limit", 120)))
                     if path.path == "/api/transcript/item":
@@ -828,16 +860,16 @@ def make_server(canvas, port=0, public_origin=None):
                                 "checkpoints": runtime.workspace_snapshot(agent)[
                                     "checkpoints"
                                 ]
-                            }
+                            }, etag=True
                         )
                     if path.path == "/api/capabilities":
-                        return self.send(runtime.capabilities(agent))
+                        return self.send(runtime.capabilities(agent), etag=True, weak_etag_fields=("at",))
                     if path.path == "/api/panel":
                         return self.send(runtime.get_panel(agent))
                     if path.path == "/api/profiles":
                         return self.send(runtime.profiles())
                     if path.path == "/api/rules":
-                        return self.send(runtime.rules())
+                        return self.send(runtime.rules(), etag=True)
                     if path.path == "/api/monitor/log":
                         return self.send(runtime.monitor_log(q.get("id")))
                     if path.path == "/api/file-info":

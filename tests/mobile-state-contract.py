@@ -226,6 +226,48 @@ class MobileStateHttpContract(unittest.TestCase):
         self.assertEqual(payload["runtime"]["agents"][0]["name"], "Updated after reload")
         self.assertNotIn("work", payload["runtime"])
 
+    def test_workspace_resources_support_conditional_gets(self):
+        lead = self.lead()
+        agent = lead["id"]
+        paths = [
+            f"/api/workspace?agent={agent}",
+            f"/api/changes?agent={agent}&scope=chat",
+            f"/api/plan?agent={agent}",
+            f"/api/checkpoints?agent={agent}",
+            f"/api/capabilities?agent={agent}",
+            "/api/rules?agent=" + agent,
+        ]
+        validators = {}
+        for path in paths:
+            status, headers, body = self.request(path)
+            self.assertEqual(status, 200, path)
+            self.assertTrue(body, path)
+            validator_pattern = r'^(?:W/)?"[0-9a-f]{64}"$'
+            self.assertRegex(headers.get("ETag", ""), validator_pattern, path)
+            validators[path] = headers["ETag"]
+            refreshed_at = None
+            if path.startswith("/api/capabilities?"):
+                self.assertTrue(headers["ETag"].startswith("W/"))
+                refreshed_at = self.runtime.capability_cache[agent]["at"]
+                self.runtime.capability_cache[agent]["at"] -= 31
+            unchanged, unchanged_headers, unchanged_body = self.request(
+                path, {"If-None-Match": headers["ETag"]}
+            )
+            self.assertEqual(unchanged, 304, path)
+            self.assertEqual(unchanged_headers["ETag"], headers["ETag"], path)
+            self.assertEqual(unchanged_body, b"", path)
+            if refreshed_at is not None:
+                self.assertGreater(self.runtime.capability_cache[agent]["at"], refreshed_at)
+
+        self.runtime.plan_action(agent, {"version": 0, "text": "Changed plan"})
+        path = f"/api/plan?agent={agent}"
+        changed, headers, body = self.request(
+            path, {"If-None-Match": validators[path]}
+        )
+        self.assertEqual(changed, 200)
+        self.assertNotEqual(headers["ETag"], validators[path])
+        self.assertEqual(json.loads(body)["text"], "Changed plan")
+
     def test_graph_alias_does_not_change_canonical_runtime_parent(self):
         lead = self.agent_update(self.lead(), threadId="exact-native-thread")
         with self.canvas.connect() as db:

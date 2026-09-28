@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, errorText } from "../api";
+import { api, errorText, type ApiReadMetadata } from "../api";
 import type { Json } from "../types";
 
 export function useWorkspaceResource(
@@ -23,6 +23,7 @@ export function useWorkspaceResource(
   const reload = useRef(() => {});
   useEffect(() => {
     let alive = true;
+    let etag: string | undefined;
     let busy = false;
     let again = false;
     let controller: AbortController | undefined;
@@ -34,6 +35,7 @@ export function useWorkspaceResource(
       }
       busy = true;
       controller = new AbortController();
+      const readMetadata: ApiReadMetadata = {};
       setState((old) =>
         old.key === key
           ? { ...old, loading: old.data === null }
@@ -45,7 +47,19 @@ export function useWorkspaceResource(
             },
       );
       try {
-        const data = await api(path, undefined, { signal: controller.signal });
+        const data = await api(path, undefined, {
+          signal: controller.signal,
+          etag,
+          readMetadata,
+        });
+        etag = readMetadata.etag;
+        if (readMetadata.notModified) {
+          if (alive)
+            setState((old) =>
+              old.key === key ? { ...old, error: "", loading: false } : old,
+            );
+          return;
+        }
         if (alive) {
           if (values && key) {
             values.delete(key);

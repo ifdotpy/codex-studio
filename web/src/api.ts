@@ -15,6 +15,7 @@ if (typeof window !== "undefined")
 
 let token = "";
 let workspace = "";
+export type ApiReadMetadata = { etag?: string; notModified?: boolean };
 export function setWorkspace(value: string) {
   workspace = value;
 }
@@ -43,6 +44,8 @@ export async function api<T = any>(
     timeoutMs?: number;
     workspaceId?: string;
     signal?: AbortSignal;
+    etag?: string;
+    readMetadata?: ApiReadMetadata;
   } = {},
 ): Promise<T> {
   const timeoutMs =
@@ -66,7 +69,9 @@ export async function api<T = any>(
     const response = await fetch(path, {
       signal: controller?.signal,
       ...(body === undefined
-        ? {}
+        ? options.etag
+          ? { headers: { "If-None-Match": options.etag } }
+          : {}
         : {
             method: "POST",
             headers: {
@@ -79,6 +84,13 @@ export async function api<T = any>(
             body: JSON.stringify(body),
           }),
     });
+    if (response.status === 304 && options.readMetadata) {
+      options.readMetadata.etag = response.headers.get("ETag") || options.etag;
+      options.readMetadata.notModified = true;
+      return undefined as T;
+    }
+    if (options.readMetadata)
+      options.readMetadata.etag = response.headers.get("ETag") || undefined;
     let data;
     try {
       data = await response.json();
