@@ -235,6 +235,8 @@ def tick(rt, now=None):
     if now - getattr(rt, "_native_release_last_scan", 0) < SCAN_SECONDS:
         return
     rt._native_release_last_scan = now
+    from codex_native_sweep import tick as native_sweep_tick
+    native_sweep_tick(rt, now)
     with rt.lock, rt.db() as db:
         pending = getattr(rt, "_native_release_pending", set())
         rt._native_release_pending = pending

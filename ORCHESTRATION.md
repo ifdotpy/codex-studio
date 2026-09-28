@@ -780,6 +780,14 @@ Codex waits for its configured idle window, 60 seconds by default. On successful
 native shutdown, its MCP servers and code-mode cells end. A lost unsubscribe response
 remains unknown until Studio retries that idempotent request. It never replays input.
 
+Studio also reads each connected Codex account's loaded thread list every 30 seconds.
+It checks idle threads that no active Studio agent needs, including old archived
+chats and repair forks. It releases at most two such threads per scan. Active turns,
+background terminals, queued input, recent agent activity, and pending Studio
+work block release. Studio records unsubscribe receipts and checks later loaded
+lists for native closure. A thread with another subscriber can remain loaded.
+Codex can also leave a thread loaded when native shutdown fails or times out.
+
 `reset_tools` requires a lead reason and an idle worker. It releases the worker's
 subscription now. Studio waits for native closure before it starts later queued
 work, so the next turn gets fresh tool processes. Open code-mode cells and their
