@@ -368,12 +368,10 @@ class ReaderContract(unittest.TestCase):
         server.request = lambda message: seen.append((message['method'], message.get('params', {})))
         for value in range(50):
             proc.emit({'method': 'account/rateLimits/updated', 'params': {'rateLimits': {'usedPercent': value}}})
-            proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': value}})
-            proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'b', 'value': value}})
         proc.emit({'method': 'item/started', 'params': {'threadId': 'a', 'item': {'id': 'item'}}})
-        proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': 50}})
+        proc.emit({'method': 'account/rateLimits/updated', 'params': {'rateLimits': {'usedPercent': 50}}})
         proc.emit({'method': 'item/tool/requestUserInput', 'id': 'tool', 'params': {'threadId': 'a'}})
-        proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': 51}})
+        proc.emit({'method': 'account/rateLimits/updated', 'params': {'rateLimits': {'usedPercent': 51}}})
         proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'one', 'value': 1}})
         proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'two', 'value': 2}})
         proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'one', 'value': 3}})
@@ -389,16 +387,31 @@ class ReaderContract(unittest.TestCase):
                   for method, p in seen]
         self.assertEqual(values, [
             ('account/rateLimits/updated', None, None, 49),
-            ('thread/tokenUsage/updated', 'a', None, 49),
-            ('thread/tokenUsage/updated', 'b', None, 49),
             ('item/started', 'a', None, None),
-            ('thread/tokenUsage/updated', 'a', None, 50),
+            ('account/rateLimits/updated', None, None, 50),
             ('item/tool/requestUserInput', 'a', None, None),
-            ('thread/tokenUsage/updated', 'a', None, 51),
+            ('account/rateLimits/updated', None, None, 51),
             ('turn/diff/updated', 'a', 'one', 1),
             ('turn/diff/updated', 'a', 'two', 2),
             ('turn/diff/updated', 'a', 'one', 3),
         ])
+
+    def test_every_token_usage_notice_is_delivered(self):
+        # Each notice is one request's usage; the budget and analytics count all of them.
+        server, proc = self.start()
+        self.block(proc)
+        seen = []
+        server.notification = lambda message: seen.append(message['params']['value'])
+        for value in range(30):
+            proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': value}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        self.assertEqual(seen, list(range(30)))
 
     def test_tool_bypass_closes_latest_slot_without_delaying_tool(self):
         server, proc = self.start()

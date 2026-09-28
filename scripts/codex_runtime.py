@@ -569,7 +569,9 @@ class AppServer:
     def coalesce_latest(self, callback, message):
         """Keep the newest queued value of one account, thread, or turn."""
         method = message.get("method")
-        if method not in {"account/rateLimits/updated", "thread/tokenUsage/updated", "turn/diff/updated"}:
+        # Token usage is not a latest value: each notice is one request's usage,
+        # and the budget and analytics count every notice.
+        if method not in {"account/rateLimits/updated", "turn/diff/updated"}:
             return False
         params = message.get("params")
         if not isinstance(params, dict):
@@ -579,8 +581,6 @@ class AppServer:
             key = (method,)
         elif not isinstance(thread, str) or not thread:
             return False
-        elif method == "thread/tokenUsage/updated":
-            key = (method, thread)
         elif not isinstance(params.get("turnId"), str) or not params["turnId"]:
             return False
         else:
