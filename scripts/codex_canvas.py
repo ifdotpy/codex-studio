@@ -679,7 +679,7 @@ def make_server(canvas, port=0, public_origin=None):
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
-            revision, previous = -1, {}
+            revision, previous, version, previous_order = -1, {}, 0, None
             try:
                 while not runtime.closed:
                     if not self.trusted():
@@ -693,10 +693,27 @@ def make_server(canvas, port=0, public_origin=None):
                         self.wfile.write(b": heartbeat\n\n")
                     else:
                         records = {item["id"]: item for item in data.pop("items")}
-                        payload = {**data, "replace": revision == -1, "order": list(records),
-                                   "items": [item for key, item in records.items() if previous.get(key) != item]}
+                        order = list(records)
+                        changed = []
+                        for key, item in records.items():
+                            old = previous.get(key)
+                            if old == item:
+                                continue
+                            if (old and isinstance(old.get("text"), str) and
+                                    isinstance(item.get("text"), str) and
+                                    item["text"].startswith(old["text"]) and
+                                    {k: v for k, v in old.items() if k != "text"} ==
+                                    {k: v for k, v in item.items() if k != "text"}):
+                                changed.append({"id": key, "append": item["text"][len(old["text"]):]})
+                            else:
+                                changed.append({"id": key, "replace": item})
+                        version += 1
+                        payload = {**data, "version": version, "replace": revision == -1,
+                                   "items": changed}
+                        if revision == -1 or order != previous_order:
+                            payload["order"] = order
                         self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
-                        revision, previous = current, records
+                        revision, previous, previous_order = current, records, order
                     self.wfile.flush()
                     time.sleep(.08)  # Coalesce fast deltas without polling an idle model.
             except OSError:

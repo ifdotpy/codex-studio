@@ -123,6 +123,41 @@ class SyncStore:
                     rows = db.execute('SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
                                       (scope, after, limit)).fetchall()
                     documents = [self.document(row) for row in rows]
+                elif scope.startswith('transcript:'):
+                    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+                    old = db.execute('SELECT seq,payload,deleted FROM sync_documents WHERE scope=? AND id=?',
+                                     (scope, scope)).fetchone()
+                    old_payload = json.loads(old[1]) if old and not old[2] else None
+                    changed = old is None or old_payload != payload or bool(old[2]) != deleted
+                    if changed:
+                        db.execute('BEGIN IMMEDIATE')
+                        self._put(db, scope, scope, payload, deleted)
+                        row = db.execute('SELECT seq,payload,deleted FROM sync_documents WHERE scope=? AND id=?',
+                                         (scope, scope)).fetchone()
+                    else:
+                        row = old
+                    seq, stored, stored_deleted = row[0], json.loads(row[1]), bool(row[2])
+                    if after >= seq:
+                        documents = []
+                    elif stored_deleted or old_payload is None or after != old[0]:
+                        documents = [{'id': scope, 'payload': json.dumps(stored, ensure_ascii=False),
+                                      'seq': seq, '_deleted': stored_deleted}]
+                    else:
+                        previous_items = {item.get('id'): item for item in old_payload.get('items', [])}
+                        current_items = {item.get('id'): item for item in stored.get('items', [])}
+                        revisions = {key: hashlib.sha256(json.dumps(item, sort_keys=True, separators=(',', ':'),
+                                                                      ensure_ascii=False).encode()).hexdigest()
+                                     for key, item in current_items.items()
+                                     if previous_items.get(key) != item}
+                        delta = {key: value for key, value in stored.items() if key != 'items'}
+                        delta.update({'delta': True, 'itemRevisions': revisions,
+                                      'items': [item for key, item in current_items.items()
+                                                if previous_items.get(key) != item],
+                                      'removed': [key for key in previous_items if key not in current_items]})
+                        if list(previous_items) != list(current_items):
+                            delta['order'] = list(current_items)
+                        documents = [{'id': scope, 'payload': json.dumps(delta, ensure_ascii=False),
+                                      'seq': seq, '_deleted': False}]
                 else:
                     encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
                     digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()

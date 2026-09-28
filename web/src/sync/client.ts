@@ -303,6 +303,36 @@ async function acquireProjection(
               throw new Error(
                 "The server returned a different projection scope.",
               );
+            if (scope.startsWith("transcript:") && !document._deleted) {
+              const incoming = JSON.parse(document.payload);
+              if (incoming.delta) {
+                if (!previous)
+                  throw new Error("Transcript projection delta has no valid base.");
+                if (previous.seq >= document.seq) continue;
+                const base = JSON.parse(previous.payload);
+                const items = new Map((base.items || []).map((item: any) => [item.id, item]));
+                for (const id of incoming.removed || []) items.delete(id);
+                for (const item of incoming.items || []) items.set(item.id, item);
+                const revisions = { ...(base.itemRevisions || {}), ...(incoming.itemRevisions || {}) };
+                for (const id of incoming.removed || []) delete revisions[id];
+                const order = incoming.order || base.items.map((item: any) => item.id);
+                const merged = {
+                  ...base,
+                  ...incoming,
+                  delta: undefined,
+                  removed: undefined,
+                  order: undefined,
+                  items: order.map((id: string) => items.get(id)).filter(Boolean),
+                  itemRevisions: revisions,
+                };
+                await persistProjection(db.projections, {
+                  ...document,
+                  id: scope,
+                  payload: JSON.stringify(merged),
+                });
+                continue;
+              }
+            }
             await persistProjection(db.projections, { ...document, id: scope });
           }
           if (mappedCheckpoint !== undefined)

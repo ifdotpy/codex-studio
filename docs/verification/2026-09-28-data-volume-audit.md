@@ -38,4 +38,15 @@ For a single cold client, full state projection is **27.2 MB JSON / 7.29 MB comp
 
 ## Measurement limits
 
+## Transcript delta fixture (2026-09-28)
+
+Isolated byte-count fixture; no live database, backend, or installed application was used. Counts are UTF-8 response/SSE payload bytes, excluding HTTP headers, TCP framing, and gzip. The fixture emits a 40,000-byte answer in 54 updates at 0.75-second intervals (40.5 seconds). Before-change frames carry the full accumulated text and order each time; after-change frames carry one initial replacement followed by appended text, with order only in the initial frame.
+
+| Case | Before | After | Reduction |
+|---|---:|---:|---:|
+| 40 KB streamed answer, 54 SSE updates | 1,104,986 B | 44,137 B | 1,060,849 B (96.0%) |
+| Five pulls; 400 items, one item grows on each pull | 2,313,000 B (462,600 B × 5) | 468,656 B (462,600 B + 1,514 B × 4) | 1,844,344 B (79.7%) |
+
+The pull fixture uses 400 JSON items with approximately 1.1 KB of text each. The first pull is the full projection; the next four send one changed item with its item revision and cursor. A stale cursor is separately checked to return a full replacement. The pull counts include the serialized JSON response envelope. The SSE counts include the `data:` frame envelope. These are repeatable synthetic fixtures, not a live traffic sample.
+
 One `/api/workspace` GET exceeded 20 seconds; one analytics GET exceeded the 8-second client deadline. Their response byte counts and exact server CPU cost are unknown. No browser devtools trace was collected, so the exact simultaneous live request rate is derived from source timers rather than observed requests/minute. Native JSON-RPC notification sizes and Claude bridge IPC bytes were not available from read-only telemetry. Those gaps are retained as explicit follow-up measurement work; estimates above do not present them as measured facts.

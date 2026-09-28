@@ -593,6 +593,8 @@ export function useMessages(
       };
     }
     let records = new Map<string, Message>();
+    let streamVersion = 0;
+    let recordOrder: string[] = [];
     let source: EventSource;
     const fallback = () => {
       clearTimeout(timer);
@@ -611,11 +613,42 @@ export function useMessages(
           return;
         try {
           const d = JSON.parse(event.data);
-          if (d.replace) records = new Map();
-          for (const item of d.items) records.set(item.id, item);
-          records = new Map(
-            d.order.map((key: string) => [key, records.get(key)]),
-          );
+          if (d.version !== undefined) {
+            if (!Number.isSafeInteger(d.version) ||
+                (!d.replace && d.version !== streamVersion + 1)) {
+              source.close();
+              streamLive = false;
+              setConnection("reconnecting");
+              connect();
+              return;
+            }
+            if (d.replace) {
+              records = new Map();
+              streamVersion = 0;
+            }
+            for (const change of d.items || []) {
+              if (change.replace) records.set(change.id, change.replace);
+              else if (typeof change.append === "string") {
+                const prior = records.get(change.id);
+                if (!prior || typeof prior.text !== "string") throw Error("Transcript delta has no base");
+                records.set(change.id, { ...prior, text: prior.text + change.append });
+              }
+            }
+            if (d.order) recordOrder = d.order;
+            streamVersion = d.version;
+          } else {
+            if (d.replace) records = new Map();
+            for (const item of d.items || []) records.set(item.id, item);
+            if (d.order) recordOrder = d.order;
+          }
+          if (recordOrder.length) {
+            const ordered: Message[] = [];
+            for (const key of recordOrder) {
+              const item = records.get(key);
+              if (item) ordered.push(item);
+            }
+            records = new Map(ordered.map((item) => [item.id, item] as const));
+          }
           clearTimeout(timer);
           streamLive = true;
           setConnection("live");
