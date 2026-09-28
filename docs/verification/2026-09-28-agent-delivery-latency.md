@@ -1,7 +1,36 @@
 # Agent delivery latency
 
-Source base: `e1f92cf`. This change has no live installation or paid model test.
+Initial source base: `e1f92cf`. The correction below uses merged base `28d90c3`.
+This worktree has no live installation or paid model test.
 Run `python3 -B tests/delivery-latency-fixture.py` for the isolated fake-native fixture.
+
+## Post-commit correction
+
+The lead installed the initial change at 07:06:49 UTC. Six live events then had agent message enqueue to native submission p50 1,886 ms and p90 2,408 ms. Enqueue to dispatch reservation took p50 1,310 ms and p90 2,138 ms. These are small samples, but they disprove the earlier fixture's claim about live speed. A fast worker could run before its caller committed an event and find no pending row. The first fixture held `Runtime.lock` through every enqueue, which hid that race. The live agent message caller also holds that lock, so the race alone does not prove the cause of its live delay. The new marks distinguish scheduling, worker entry, lock wait, and selection on the next live installation.
+
+`Runtime.db` now schedules fast dispatch only after the connection context commits. A fast pass that reserves no batch sets `changed` for the scheduler. A duplicate event or skipped fast route also sets `changed`. The shared candidate reservation code still applies all holds and receipts. The fixture holds the first busy event's transaction open for 80 ms without `Runtime.lock`. It asserts that the fast worker enters after the transaction reaches commit. This assertion would fail against the initial source because its fast worker enters during the open transaction and its timing fields are absent.
+
+The paired heavy fixture uses 600 agents with 8 KiB JSON records, 240 prior 4 KiB event payloads, 20 busy recipients, and 10 released idle recipients. The periodic scheduler is stopped in this isolated fixture; it calls a full pass directly for the comparison. Across three paired runs, median full pass time was 95 ms. The two lock sections took 19 ms and 39 ms. The full pass does not explain a 1.3 s lock wait in this fixture. The correction keeps the existing active-agent scan and capacity rules.
+
+Three paired runs gave these median p50 / p90 values in milliseconds. Each pair used the same synthetic input.
+
+| Segment | Busy full pass | Busy fast | Released idle full pass | Released idle fast |
+| --- | ---: | ---: | ---: | ---: |
+| Enqueue to reservation | 254 / 374 | 55 / 67 | 469 / 519 | 32 / 52 |
+| Reservation to start | <1 / <1 | <1 / <1 | <1 / <1 | <1 / <1 |
+| Start to validation | 379 / 494 | 84 / 102 | 171 / 223 | 39 / 62 |
+| Validation to program ready | 1 / 1 | 1 / 1 | 1 / 1 | <1 / <1 |
+| Program to repair ready | 0 / 0 | 0 / 0 | 663 / 756 | 282 / 306 |
+| Repair to prepared | 0 / 0 | 0 / 0 | 52 / 89 | 26 / 46 |
+| Prepared to connected | <1 / <1 | <1 / <1 | 2 / 2 | 2 / 4 |
+| Connected to submitted | 297 / 445 | 53 / 63 | 58 / 86 | 33 / 55 |
+| Total | 934 / 1,088 | 200 / 226 | 1,428 / 1,557 | 438 / 449 |
+
+Across all 30 recipients, the median full pass p50 / p90 was 1,023 / 1,479 ms; corrected fast dispatch was 219 / 445 ms. Within the fast path, queued to scheduled was 0.3 / 0.5 ms for busy and 0.3 / 0.4 ms for idle. Scheduled to worker entry was below 0.1 ms at both percentiles. Worker entry to `Runtime.lock` acquisition was 26 / 35 ms for busy and 4 / 26 ms for idle. Lock acquisition to reservation was 27 / 31 ms for busy and 28 / 32 ms for idle. `fastQueuedAt`, `fastScheduledAt`, `fastEnteredAt`, and `fastLockedAt` are monotonic marks in event metadata. `fastSkipReason` records `autoWake`, `scheduleOverride`, `closed`, or `disabled` when the route is skipped.
+
+The correction changes `scripts/codex_runtime.py|Runtime|db` (its wrapped generator code), `enqueue`, `dispatch_after_user_batch`, and `dispatch_candidates`. It adds `schedule_fast_dispatch`, `dispatch_fast`, and `dispatch_lock`. The fixture changes `tests/delivery-latency-fixture.py|module|measure`, adds `MeasuredLock.__init__`, `MeasuredLock.__enter__`, and `MeasuredLock.__exit__`, and adds module imports `contextlib.nullcontext` and `threading` plus the module name `MeasuredLock`. Existing Runtime instances create no new direct field. Each thread's existing `_callback_db` local object lazily gains `after_commit_dispatch`; the existing `_dispatch_executor` remains lazy. To hot patch `Runtime.db`, swap `Runtime.db.__wrapped__.__code__`: the `@contextmanager` wrapper closure points to that generator object. The other changed methods accept ordinary code swaps. Running scheduler frames need no change.
+
+After the correction, all 12 requested contracts passed: critical steer, runtime, team delivery, queue order, send default, radio runtime, prepare steer, tool request, protocol reader, native release, context repair, and capacity retry. The new fixture passed its delayed-commit assertion. The corrected source has no live latency sample; its live result remains unverified.
 
 The fixture creates 600 agents in one team. It sends one agent message to each of 20 busy recipients and 10 idle recipients with released native threads. The other 570 agents supply the scan load. The comparison uses the same changed source with the per-agent route disabled for the full scheduler mode. It measures event enqueue to the return of the native submission call. The native model step after submission is outside this measure.
 

@@ -1010,9 +1010,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 local.connection = db
         if reusable:
             local.depth = 1
+        pending = local.__dict__.setdefault("after_commit_dispatch", {})
+        pending[db] = []
         try:
             with db:
                 yield db
+            jobs = pending.pop(db)
+            for agent_id, kind, event_ids in jobs:
+                try:
+                    self.schedule_fast_dispatch(agent_id, kind, event_ids)
+                except Exception:
+                    self.changed.set()
+        except BaseException:
+            pending.pop(db, None)
+            # An explicit commit inside the context can already have made work visible.
+            self.changed.set()
+            raise
         finally:
             if reusable:
                 local.depth = 0
@@ -1266,27 +1279,57 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a["autoWake"] and not a.get("nativeFailureHold") and a["status"] not in {"running", "starting", "approval"}:
             a["status"] = "queued"
             self.put(db, "agents", a)
-        fast_scheduled = False
         if inserted.rowcount:
             self.mark_event_timing(db, [key], "enqueuedAt")
             if kind != "rule":
                 self.rule_event(db, a, kind, text, key)
             if (a["autoWake"] and type(self).schedule is Runtime.schedule and not self.closed
                     and self.__dict__.get("_fast_delivery_enabled", True)):
-                if kind == "user":
-                    self.dispatch_executor().submit(self.dispatch_after_user_batch, a["id"])
+                self.mark_event_timing(db, [key], "fastQueuedAt")
+                pending = getattr(self.__dict__.setdefault("_callback_db", threading.local()),
+                                  "after_commit_dispatch", {}).get(db)
+                if pending is not None:
+                    pending.append((a["id"], kind, [key]))
                 else:
-                    self.dispatch_executor().submit(self.dispatch, a["id"])
-                fast_scheduled = True
-        if not fast_scheduled:
+                    # A caller-owned connection has no commit callback. Keep the
+                    # scheduler wake as the durable fallback for that caller.
+                    self.schedule_fast_dispatch(a["id"], kind, [key])
+                    self.changed.set()
+            else:
+                reason = ("autoWake" if not a["autoWake"] else
+                          "scheduleOverride" if type(self).schedule is not Runtime.schedule else
+                          "closed" if self.closed else "disabled")
+                self.mark_event_timings(db, [key], {"fastSkipReason": reason})
+                self.changed.set()
+        else:
             self.changed.set()
         return key
 
-    def dispatch_after_user_batch(self, agent_id):
+    def schedule_fast_dispatch(self, agent_id, kind, event_ids):
+        scheduled_at = time.monotonic_ns()
+        if kind == "user":
+            self.dispatch_executor().submit(self.dispatch_after_user_batch,
+                                            agent_id, event_ids, scheduled_at)
+        else:
+            self.dispatch_executor().submit(self.dispatch_fast,
+                                            agent_id, event_ids, scheduled_at)
+
+    def dispatch_after_user_batch(self, agent_id, event_ids=None, scheduled_at=None):
         # A second input often follows a user send in the same UI action.
         time.sleep(.04)
         if not self.closed:
-            self.dispatch(agent_id)
+            self.dispatch_fast(agent_id, event_ids, scheduled_at)
+
+    def dispatch_fast(self, agent_id, event_ids=None, scheduled_at=None):
+        entered_at = time.monotonic_ns()
+        try:
+            reserved = self.dispatch_candidates(agent_id, fast_event_ids=event_ids,
+                fast_scheduled_at=scheduled_at, fast_entered_at=entered_at)
+        except Exception:
+            self.changed.set()
+            raise
+        if not reserved:
+            self.changed.set()
 
     def dispatch_executor(self):
         with self.lock:
@@ -2434,10 +2477,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             recover_context_failures(self, db, current_agents(db))
         return self.dispatch_candidates(None, current_agents)
 
-    def dispatch_candidates(self, agent_id=None, current_agents=None):
-        with self.lock, self.db() as db:
+    @contextmanager
+    def dispatch_lock(self):
+        with self.lock:
+            yield time.monotonic_ns()
+
+    def dispatch_candidates(self, agent_id=None, current_agents=None,
+                            fast_event_ids=None, fast_scheduled_at=None, fast_entered_at=None):
+        with self.dispatch_lock() as locked_at, self.db() as db:
+            if fast_event_ids:
+                self.mark_event_timings(db, fast_event_ids, {
+                    "fastScheduledAt": fast_scheduled_at or fast_entered_at,
+                    "fastEnteredAt": fast_entered_at,
+                    "fastLockedAt": locked_at,
+                })
             if self.closed:
-                return
+                return 0
+            reserved_count = 0
             if current_agents is None:
                 from codex_team_isolation import cancel_pending
                 cancel_pending(self, db, agent_id)
@@ -2600,6 +2656,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
                         (event["id"],),
                     )
+                reserved_count += len(rows)
                 self.mark_event_timing(db, [r["id"] for r in rows], "dispatchPickedAt")
                 self.capacity_reset(db, a)
                 a.pop("steerRejectedTurnId", None)
@@ -2612,6 +2669,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not busy:
                     active.append(a)
                 self.delivery_executor().submit(self.start, a, [dict(r) for r in rows])
+            return reserved_count
     def start(self, a, rows):
         began_at = time.monotonic_ns()
         timing = {"startBeganAt": began_at}
