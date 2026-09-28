@@ -41,6 +41,15 @@ class RecoveryServer(fixture.FakeServer):
             if self.read_error:
                 raise self.read_error
             result = dict(self.native)
+            # Model the native server's state transition too: authoritative
+            # history says the active turn has already reached a terminal state.
+            active = self.active_turns.get(params['threadId'])
+            terminal = next((turn for turn in result.get('turns', [])
+                             if active and turn.get('id') == active.get('id')),
+                            None)
+            if (result.get('status', {}).get('type') != 'active'
+                    and terminal and terminal.get('status') in {'completed', 'failed', 'interrupted'}):
+                self.active_turns.pop(params['threadId'], None)
             if not params['includeTurns']:
                 result.pop('turns', None)
             return {'thread': result}
@@ -92,7 +101,13 @@ class TurnRecoveryContract(unittest.TestCase):
         self.server.native['turns'] = [
             {'id': 'newer-' + str(i), 'status': 'completed', 'items': []} for i in range(31)
         ] + self.server.native['turns']
-        self.assertEqual(self.runtime.reconcile_turn(self.key)['outcome'], 'completed')
+        result = self.runtime.reconcile_turn(self.key)
+        if result.get('status') == 'skipped':
+            # The background scheduler may have applied this exact recovery first.
+            fixture.eventually(lambda: (self.runtime.agent(self.key).get('turnRecovery') or {}).get('turnId') == self.turn)
+        else:
+            self.assertEqual((result.get('status'), result.get('outcome')), ('reconciled', 'completed'))
+        self.assertEqual((self.runtime.agent(self.key).get('turnRecovery') or {}).get('outcome'), 'completed')
         self.assertEqual(self.runtime.agent(self.key)['lastAnswer'], 'Full final answer')
         pages = [p for m, p in self.server.calls if m == 'thread/turns/list']
         self.assertEqual([p.get('cursor') for p in pages], [None, '10', '20', '30'])
@@ -181,6 +196,7 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.reconcile_turn(self.key)  # Native evidence only names the old turn.
         starts = [p for n, p in self.server.calls if n == 'turn/start']
         self.assertEqual(len(starts), 2)
+        self.assertEqual([p.get('clientUserMessageId') for p in starts].count('next-task'), 1)
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE id='next-task'").fetchone()[0], 1)
 
@@ -213,6 +229,7 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.changed.set()
         fixture.eventually(lambda: not self.runtime.agent(self.key)['inFlight'])
         self.assertEqual(self.runtime.agent(self.key)['status'], 'completed')
+        self.assertEqual(len([1 for method, _ in self.server.calls if method == 'turn/start']), 1)
 
 
 
