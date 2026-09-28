@@ -62,6 +62,7 @@ import {
   type Snapshot,
 } from "../types";
 import Usage from "./Usage";
+import type { UsageAccount } from "./Usage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
 import Requests from "./Requests";
@@ -124,6 +125,7 @@ export default function Conversation(p: {
   refresh: () => Promise<void>;
   notify: (s: string) => void;
   limits: Json | null;
+  limitsAccounts?: UsageAccount[];
   limitsLoading?: boolean;
   jumpTarget?: { messageId: string; requestId: string };
   onJumpHandled?: (requestId: string) => void;
@@ -1595,6 +1597,7 @@ export default function Conversation(p: {
               agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
               stateDir={p.data.stateDir}
               limits={p.limits}
+              accounts={p.limitsAccounts}
               limitsLoading={p.limitsLoading}
               accountLabel={p.limitsAccountLabel}
               reload={p.reloadLimits}

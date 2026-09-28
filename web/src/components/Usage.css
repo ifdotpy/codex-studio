@@ -50,6 +50,27 @@
   padding: 0;
   overflow: hidden;
 }
+.account-limits-tabs {
+  margin: -2px 0 12px;
+}
+.account-limits-tabs [role="tablist"] {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+.account-limits-tabs [role="tab"] {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.account-limits-tabs [role="tab"] small {
+  color: var(--muted);
+  font-size: 10px;
+}
 .account-limits-panel {
   font-size: 12px;
   padding: 18px;
