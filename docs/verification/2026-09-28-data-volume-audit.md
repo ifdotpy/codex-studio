@@ -49,4 +49,8 @@ Isolated byte-count fixture; no live database, backend, or installed application
 
 The pull fixture uses 400 JSON items with approximately 1.1 KB of text each. The first pull is the full projection; the next four send one changed item with its item revision and cursor. A stale cursor is separately checked to return a full replacement. The pull counts include the serialized JSON response envelope. The SSE counts include the `data:` frame envelope. These are repeatable synthetic fixtures, not a live traffic sample.
 
+## Review follow-up
+
+The transcript-render browser check also timed out waiting for `Account limit reached` when run from the unchanged main checkout at `ed3c868`; this failure is independent of the transcript stream changes. The chat-switch UI check passes after its expected `after_tool` delivery was updated.
+
 One `/api/workspace` GET exceeded 20 seconds; one analytics GET exceeded the 8-second client deadline. Their response byte counts and exact server CPU cost are unknown. No browser devtools trace was collected, so the exact simultaneous live request rate is derived from source timers rather than observed requests/minute. Native JSON-RPC notification sizes and Claude bridge IPC bytes were not available from read-only telemetry. Those gaps are retained as explicit follow-up measurement work; estimates above do not present them as measured facts.
