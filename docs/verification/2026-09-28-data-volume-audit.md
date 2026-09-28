@@ -45,12 +45,14 @@ Isolated byte-count fixture; no live database, backend, or installed application
 | Case | Before | After | Reduction |
 |---|---:|---:|---:|
 | 40 KB streamed answer, 54 SSE updates | 1,104,986 B | 44,137 B | 1,060,849 B (96.0%) |
-| Five pulls; 400 items, one item grows on each pull | 2,313,000 B (462,600 B × 5) | 468,656 B (462,600 B + 1,514 B × 4) | 1,844,344 B (79.7%) |
+| Five pulls; 400 items, one item grows on each pull | 2,313,020 B (462,604 B × 5) | 468,676 B (462,604 B + 1,518 B × 4) | 1,844,344 B (79.7%) |
 
-The pull fixture uses 400 JSON items with approximately 1.1 KB of text each. The first pull is the full projection; the next four send one changed item with its item revision and cursor. A stale cursor is separately checked to return a full replacement. The pull counts include the serialized JSON response envelope. The SSE counts include the `data:` frame envelope. These are repeatable synthetic fixtures, not a live traffic sample.
+The pull fixture uses 400 JSON items with approximately 1.1 KB of text each. The first pull is the full projection; the next four send one changed item with its item revision and cursor. A lagging cursor that spans several item revisions receives a sparse delta; a cursor older than the retained tombstone floor receives a full replacement. The pull counts include the serialized JSON response envelope. The SSE counts include the `data:` frame envelope. These are repeatable synthetic fixtures, not a live traffic sample.
+
+The same 40 KB answer fixture updated the transcript 54 times in 40.5 seconds. `sync_entities` WAL growth was **444,992 B** in that interval, or **659,247 B/min** normalized to the current 0.75-second flush cadence. The fixture used 4 KiB SQLite pages and disabled WAL auto-checkpointing. Transcript entity rows held only item/order/metadata hashes and revisions; payloads were NULL. WAL growth is a table-fixture measurement, not a device-write estimate.
 
 ## Review follow-up
 
-The transcript-render browser check also timed out waiting for `Account limit reached` when run from the unchanged main checkout at `ed3c868`; this failure is independent of the transcript stream changes. The chat-switch UI check passes after its expected `after_tool` delivery was updated.
+The transcript-render browser check also timed out waiting for `Account limit reached` when run from the unchanged main checkout at `a1ede55` (30-second timeout). The test file and related render components are unchanged from that revision, so this is an existing baseline failure, independent of the transcript stream changes. The chat-switch UI check passes after its expected `after_tool` delivery was updated.
 
 One `/api/workspace` GET exceeded 20 seconds; one analytics GET exceeded the 8-second client deadline. Their response byte counts and exact server CPU cost are unknown. No browser devtools trace was collected, so the exact simultaneous live request rate is derived from source timers rather than observed requests/minute. Native JSON-RPC notification sizes and Claude bridge IPC bytes were not available from read-only telemetry. Those gaps are retained as explicit follow-up measurement work; estimates above do not present them as measured facts.

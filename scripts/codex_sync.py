@@ -11,6 +11,10 @@ SCOPE_STRIPES = 64
 # Windows pull state together after each RESYNC. Without a write in between,
 # they share one snapshot. The age bound limits in-memory state staleness.
 SNAPSHOT_REUSE_SECONDS = 2
+TRANSCRIPT_MAX_TOMBSTONES = 512
+TRANSCRIPT_ORDER_ID = '@order'
+TRANSCRIPT_META_ID = '@meta'
+TRANSCRIPT_FLOOR_ID = '@floor'
 
 
 class SyncStore:
@@ -89,6 +93,125 @@ class SyncStore:
     def document(row):
         return {'id': row[1], 'payload': row[2], 'seq': row[0], '_deleted': bool(row[3])}
 
+    def transcript_pull(self, scope, after, payload, deleted):
+        """Project transcript deltas from bounded hash-only entity revisions."""
+        from codex_sync_entities import next_sequence
+
+        collection = scope
+        items = payload.get('items', []) if isinstance(payload, dict) else []
+        items_by_id = {str(item['id']): item for item in items
+                       if isinstance(item, dict) and isinstance(item.get('id'), str)}
+        order = [str(item['id']) for item in items
+                 if isinstance(item, dict) and isinstance(item.get('id'), str)]
+        metadata = {key: value for key, value in payload.items() if key != 'items'} if isinstance(payload, dict) else {}
+
+        def digest(value):
+            encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+            return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute('SELECT id,seq,hash,deleted FROM sync_entities WHERE collection=?',
+                              (collection,)).fetchall()
+            current = {row[0]: row for row in rows}
+            prior_meta = current.get(TRANSCRIPT_META_ID)
+            base_missing = prior_meta is None
+            was_deleted = bool(prior_meta[3]) if prior_meta else False
+            sequence = next_sequence(db)
+
+            def put(key, value_hash, is_deleted=False):
+                nonlocal sequence
+                old = current.get(key)
+                if old and old[2] == value_hash and bool(old[3]) == is_deleted:
+                    return False
+                db.execute('''INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES (?,?,?,?,NULL,?) ON CONFLICT(collection,id) DO UPDATE SET
+                              seq=excluded.seq,hash=excluded.hash,payload=NULL,deleted=excluded.deleted''',
+                           (collection, key, sequence, value_hash, int(is_deleted)))
+                current[key] = (key, sequence, value_hash, int(is_deleted))
+                sequence += 1
+                return True
+
+            if deleted:
+                for key, row in tuple(current.items()):
+                    if key.startswith('item:') or key == TRANSCRIPT_ORDER_ID:
+                        put(key, row[2], True)
+                put(TRANSCRIPT_META_ID, digest({}), True)
+            else:
+                live_keys = {'item:' + key for key in items_by_id}
+                for entity_id, item in items_by_id.items():
+                    put('item:' + entity_id, digest(item), False)
+                for key, row in tuple(current.items()):
+                    if key.startswith('item:') and key not in live_keys and not row[3]:
+                        put(key, row[2], True)
+                put(TRANSCRIPT_ORDER_ID, digest(order), False)
+                put(TRANSCRIPT_META_ID, digest(metadata), False)
+
+            # Tombstones are retained for a bounded replay window. The floor
+            # marks cursors that must receive a complete replacement.
+            pruned = db.execute('''SELECT id,seq FROM sync_entities
+                                   WHERE collection=? AND deleted=1 AND id LIKE 'item:%'
+                                   ORDER BY seq DESC LIMIT -1 OFFSET ?''',
+                                (collection, TRANSCRIPT_MAX_TOMBSTONES)).fetchall()
+            floor = current.get(TRANSCRIPT_FLOOR_ID)
+            floor_seq = floor[1] if floor else 0
+            if pruned:
+                db.executemany('DELETE FROM sync_entities WHERE collection=? AND id=?',
+                               [(collection, row[0]) for row in pruned])
+                floor_seq = max(floor_seq, max(row[1] for row in pruned))
+                floor_hash = digest(floor_seq)
+                db.execute('''INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES (?,?,?,?,NULL,0) ON CONFLICT(collection,id) DO UPDATE SET
+                              seq=excluded.seq,hash=excluded.hash,payload=NULL,deleted=0''',
+                           (collection, TRANSCRIPT_FLOOR_ID, floor_seq, floor_hash))
+                current[TRANSCRIPT_FLOOR_ID] = (TRANSCRIPT_FLOOR_ID, floor_seq, floor_hash, 0)
+            high = db.execute('SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection=?',
+                              (collection,)).fetchone()[0]
+
+            if base_missing and not deleted:
+                floor_seq = high
+                floor_hash = digest(floor_seq)
+                db.execute('''INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES (?,?,?,?,NULL,0) ON CONFLICT(collection,id) DO UPDATE SET
+                              seq=excluded.seq,hash=excluded.hash,payload=NULL,deleted=0''',
+                           (collection, TRANSCRIPT_FLOOR_ID, floor_seq, floor_hash))
+                high = max(high, floor_seq)
+
+            full = after == 0 or base_missing or was_deleted or after < floor_seq
+            if full:
+                documents = [{'id': scope, 'payload': json.dumps(payload, ensure_ascii=False),
+                              'seq': high, '_deleted': bool(deleted)}]
+                checkpoint = high
+            elif after < high and deleted:
+                documents = [{'id': scope, 'payload': '{}', 'seq': high, '_deleted': True}]
+                checkpoint = high
+            elif after < high:
+                changed = db.execute('''SELECT id,seq,hash,deleted FROM sync_entities
+                                        WHERE collection=? AND seq>? AND id!=?
+                                        ORDER BY seq''',
+                                     (collection, after, TRANSCRIPT_FLOOR_ID)).fetchall()
+                changed_ids = {row[0]: row for row in changed}
+                item_ids = [key[5:] for key, row in changed_ids.items()
+                            if key.startswith('item:') and not row[3] and key[5:] in items_by_id]
+                removed = [key[5:] for key, row in changed_ids.items()
+                           if key.startswith('item:') and row[3]]
+                revisions = {key[5:]: row[2] for key, row in changed_ids.items()
+                             if key.startswith('item:') and not row[3]}
+                delta = {**metadata, 'delta': True,
+                         'items': [items_by_id[key] for key in order if key in item_ids],
+                         'itemRevisions': revisions, 'removed': removed}
+                if TRANSCRIPT_ORDER_ID in changed_ids:
+                    delta['order'] = order
+                documents = [{'id': scope, 'payload': json.dumps(delta, ensure_ascii=False),
+                              'seq': high, '_deleted': False}]
+                checkpoint = high
+            else:
+                documents = []
+                checkpoint = after
+
+            return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
+                    'documents': documents, 'checkpoint': {'seq': checkpoint}}
+
     def _put(self, db, scope, key, payload, deleted=False):
         encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
         old = db.execute('SELECT payload, deleted FROM sync_documents WHERE scope=? AND id=?', (scope, key)).fetchone()
@@ -127,46 +250,13 @@ class SyncStore:
                     payload, deleted = {}, True
             elif scope != 'drafts':
                 raise ValueError('Invalid sync scope')
+            if scope.startswith('transcript:'):
+                return self.transcript_pull(scope, after, payload, deleted)
             with self.connect() as db:
                 if scope == 'drafts':
                     rows = db.execute('SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
                                       (scope, after, limit)).fetchall()
                     documents = [self.document(row) for row in rows]
-                elif scope.startswith('transcript:'):
-                    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
-                    old = db.execute('SELECT seq,payload,deleted FROM sync_documents WHERE scope=? AND id=?',
-                                     (scope, scope)).fetchone()
-                    old_payload = json.loads(old[1]) if old and not old[2] else None
-                    changed = old is None or old_payload != payload or bool(old[2]) != deleted
-                    if changed:
-                        db.execute('BEGIN IMMEDIATE')
-                        self._put(db, scope, scope, payload, deleted)
-                        row = db.execute('SELECT seq,payload,deleted FROM sync_documents WHERE scope=? AND id=?',
-                                         (scope, scope)).fetchone()
-                    else:
-                        row = old
-                    seq, stored, stored_deleted = row[0], json.loads(row[1]), bool(row[2])
-                    if after >= seq:
-                        documents = []
-                    elif stored_deleted or old_payload is None or after != old[0]:
-                        documents = [{'id': scope, 'payload': json.dumps(stored, ensure_ascii=False),
-                                      'seq': seq, '_deleted': stored_deleted}]
-                    else:
-                        previous_items = {item.get('id'): item for item in old_payload.get('items', [])}
-                        current_items = {item.get('id'): item for item in stored.get('items', [])}
-                        revisions = {key: hashlib.sha256(json.dumps(item, sort_keys=True, separators=(',', ':'),
-                                                                      ensure_ascii=False).encode()).hexdigest()
-                                     for key, item in current_items.items()
-                                     if previous_items.get(key) != item}
-                        delta = {key: value for key, value in stored.items() if key != 'items'}
-                        delta.update({'delta': True, 'itemRevisions': revisions,
-                                      'items': [item for key, item in current_items.items()
-                                                if previous_items.get(key) != item],
-                                      'removed': [key for key in previous_items if key not in current_items]})
-                        if list(previous_items) != list(current_items):
-                            delta['order'] = list(current_items)
-                        documents = [{'id': scope, 'payload': json.dumps(delta, ensure_ascii=False),
-                                      'seq': seq, '_deleted': False}]
                 else:
                     encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
                     digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()

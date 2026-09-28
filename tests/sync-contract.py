@@ -61,8 +61,11 @@ with tempfile.TemporaryDirectory() as directory:
         db.execute('CREATE TRIGGER sync_watch_runtime_items_UPDATE AFTER UPDATE ON runtime_items '
                    'BEGIN UPDATE sync_generation SET value=value+1 WHERE id=1; END')
     upgraded = SyncStore(connect, lambda: state, transcript)
-    assert not upgraded.pull('transcript:one', old_seq)['documents']
-    assert upgraded.pull('transcript:one')['documents'][0]['seq'] == old_seq
+    replacement = upgraded.pull('transcript:one', old_seq)
+    assert replacement['documents']
+    assert replacement['documents'][0]['seq'] > old_seq
+    assert 'delta' not in json.loads(replacement['documents'][0]['payload'])
+    assert upgraded.pull('transcript:one')['documents'][0]['seq'] == replacement['documents'][0]['seq']
     with connect() as db:
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='sync_watch_runtime_items_UPDATE'").fetchone()
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name LIKE 'sync_watch_runtime_agents_%'").fetchone()
