@@ -404,14 +404,14 @@ class WorkspaceContract(unittest.TestCase):
     def test_slow_checkpoint_read_does_not_block_limits(self):
         lead = self.lead()
         entered, release = threading.Event(), threading.Event()
-        records = self.runtime.records
-        def delayed(db, table, **kwargs):
+        records = self.runtime._workspace_records
+        def delayed(db, table, ids, field):
             if table == "checkpoints":
                 entered.set()
                 if not release.wait(3):
                     raise AssertionError("Checkpoint reader was not released")
-            return records(db, table, **kwargs)
-        with patch.object(self.runtime, "records", side_effect=delayed), ThreadPoolExecutor(max_workers=2) as pool:
+            return records(db, table, ids, field)
+        with patch.object(self.runtime, "_workspace_records", side_effect=delayed), ThreadPoolExecutor(max_workers=2) as pool:
             snapshot = pool.submit(self.runtime.workspace_snapshot, lead["id"])
             try:
                 self.assertTrue(entered.wait(1))
@@ -424,19 +424,19 @@ class WorkspaceContract(unittest.TestCase):
     def test_workspace_read_uses_one_committed_snapshot(self):
         lead = self.lead()
         self.agent_update(lead, status="failed", error="Before concurrent write")
-        records = self.runtime.records
+        requests = self.runtime._workspace_requests
         changed = False
-        def change_after_read(db, table, **kwargs):
+        def change_after_agent_read(db, ids):
             nonlocal changed
-            rows = records(db, table, **kwargs)
-            if table == "agents" and not changed:
+            rows = requests(db, ids)
+            if not changed:
                 changed = True
                 self.agent_update(lead, status="completed", error=None)
                 with self.runtime.lock, self.runtime.db() as writer:
                     self.runtime.put(writer, "checkpoints", {"id": "later", "agent": lead["id"],
                         "rootId": lead["rootId"], "items": ["later-item"]})
             return rows
-        with patch.object(self.runtime, "records", side_effect=change_after_read):
+        with patch.object(self.runtime, "_workspace_requests", side_effect=change_after_agent_read):
             before = self.runtime.workspace_snapshot(lead["id"])
         self.assertTrue(any(row["text"] == "Before concurrent write" for row in before["inbox"]))
         self.assertEqual(before["checkpoints"], [])

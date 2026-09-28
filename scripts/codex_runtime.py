@@ -315,7 +315,10 @@ class AppServer:
         self.callback_lock = threading.RLock()
         self.dispatch_stopped = False
         self.reader_done = threading.Event()
-        self.log = (root / "app-server.log").open("ab")
+        self.dispatcher_done = threading.Event()
+        self.stderr_done = threading.Event()
+        from codex_log_rotation import RotatingLog
+        self.log = RotatingLog(root / "app-server.log", max_bytes=50 * 1024 * 1024, backups=4)
         command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
         env = os.environ.copy()
         if home is not None:
@@ -330,8 +333,14 @@ class AppServer:
             command, env = transport(root, provider_options) if provider_options else transport(root)
         self.proc = subprocess.Popen(
             command, env=env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", bufsize=1, start_new_session=True)
+        self.stderr_writer = None
+        if getattr(self.proc, "stderr", None) is not None:
+            self.stderr_writer = threading.Thread(target=self.drain_stderr, daemon=True)
+            self.stderr_writer.start()
+        else:
+            self.stderr_done.set()
         self.dispatcher = threading.Thread(target=self.dispatch, daemon=True)
         self.dispatcher.start()
         self.clock_writer = threading.Thread(target=self.write_clocks, daemon=True)
@@ -447,6 +456,25 @@ class AppServer:
             self.log.flush()
         except (OSError, ValueError):
             pass
+
+    def drain_stderr(self):
+        """Copy subprocess stderr through the size-bounded writer without blocking it."""
+        try:
+            while True:
+                chunk = os.read(self.proc.stderr.fileno(), 65536)
+                if not chunk:
+                    return
+                self.log.write(chunk)
+        except (OSError, ValueError):
+            return
+        finally:
+            self.stderr_done.set()
+            self.close_log_if_idle()
+
+    def close_log_if_idle(self):
+        if (self.reader_done.is_set() and self.dispatcher_done.is_set()
+                and self.stderr_done.is_set()):
+            self.log.close()
 
     def fail_transport(self, error):
         with self.lock:
@@ -785,7 +813,8 @@ class AppServer:
             if not self.closed:
                 self.died()
         finally:
-            self.log.close()
+            self.dispatcher_done.set()
+            self.close_log_if_idle()
 
     def read(self):
         try:
@@ -821,6 +850,7 @@ class AppServer:
                 if not future.done():
                     future.set_exception(RuntimeError(self.transport_error or "Codex app-server disconnected; outcome unknown"))
             self.reader_done.set()
+            self.close_log_if_idle()
 
     def close(self):
         self.closed = True

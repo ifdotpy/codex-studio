@@ -312,6 +312,30 @@ class AnalyticsContract(unittest.TestCase):
         self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
         self.assertEqual(self.data()['pagination']['total'], 3)
 
+    def test_sql_call_page_matches_legacy_filter_and_totals(self):
+        with self.runtime.db() as db:
+            for index, name in enumerate(("one", "two", "one", "three")):
+                record = {"id": f"page-{index}", "agentId": self.agent["id"],
+                          "threadId": self.agent["threadId"], "turnId": "page-turn",
+                          "type": "modelToolCall", "isTool": True, "name": name,
+                          "payloadBoundary": "model", "status": "completed",
+                          "at": 100 + index, "output": {"bytes": index + 1}}
+                db.execute("INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (record["id"], self.agent["id"], self.agent["rootId"],
+                            self.agent["threadId"], "page-turn", record["at"],
+                            record["type"], name, 1, json.dumps(record)))
+        with self.runtime.db() as db:
+            legacy = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM analytics_items WHERE agent=? ORDER BY at DESC,id",
+                (self.agent["id"],))]
+        legacy = [row for row in legacy if row["isTool"] and row["name"] == "one"]
+        result = self.data(tool="one", limit=1, offset=1)
+        self.assertEqual(result["calls"], legacy[1:2])
+        self.assertEqual(result["pagination"]["total"], len(legacy))
+        self.assertEqual(result["summary"]["observedToolRows"], len(legacy))
+        self.assertEqual(result["summary"]["outputBytes"], sum(r["output"]["bytes"] for r in legacy))
+        self.assertEqual(self.data(tool="one", export=1)["calls"], legacy)
+
     def test_turn_wall_time_and_unknown_measurements(self):
         self.event('turn/started', {'turnId': 'measured', 'turn': {'id': 'measured'}}, at=100)
         self.event('item/agentMessage/delta', {'turnId': 'measured', 'itemId': 'msg', 'delta': 'Hi'}, at=102)

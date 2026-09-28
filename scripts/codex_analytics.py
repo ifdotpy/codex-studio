@@ -449,8 +449,30 @@ class AnalyticsMixin:
             if end is not None:
                 where.append('at<=?'); args.append(end)
             clause = ' WHERE ' + ' AND '.join(where) if where else ''
+            call_where = [*where, 'is_tool=1']
+            call_args = list(args)
+            if tool is not None:
+                call_where.append('name=?'); call_args.append(tool)
+            call_clause = ' WHERE ' + ' AND '.join(call_where)
+            calls_total = db.execute('SELECT COUNT(*) FROM analytics_items' + call_clause,
+                                     call_args).fetchone()[0]
+            calls_page = [json.loads(row[0]) for row in db.execute(
+                'SELECT record FROM analytics_items' + call_clause + ' ORDER BY at DESC,id'
+                + (' LIMIT ? OFFSET ?' if not export else ''),
+                call_args + ([] if export else [limit, offset]))]
             usage = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_usage' + clause + ' ORDER BY at,seq', args)]
-            authoritative_turns = {(row['agent'], row['thread'], row['turn']) for row in db.execute("SELECT DISTINCT agent,thread,turn FROM analytics_usage WHERE json_extract(record,'$.responseId') IS NOT NULL")}
+            # Provisional-vs-authoritative deduplication is local to the selected
+            # agent/team. The former global JSON scan touched every usage row on
+            # each agent analytics request, despite the scope indexes above.
+            authoritative_where, authoritative_args = [], []
+            if scope == 'agent':
+                authoritative_where.append('agent=?'); authoritative_args.append(agent)
+            elif scope == 'team':
+                authoritative_where.append('root=?'); authoritative_args.append(selected.get('rootId') or agent)
+            authoritative_where.append("json_extract(record,'$.responseId') IS NOT NULL")
+            authoritative_turns = {(row['agent'], row['thread'], row['turn']) for row in db.execute(
+                'SELECT DISTINCT agent,thread,turn FROM analytics_usage WHERE '
+                + ' AND '.join(authoritative_where), authoritative_args)}
             provisional = [r for r in usage if not r.get('responseId') and (r['agentId'], r.get('threadId'), r.get('turnId')) in authoritative_turns]
             usage = [r for r in usage if r.get('responseId') or (r['agentId'], r.get('threadId'), r.get('turnId')) not in authoritative_turns]
             turns = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_turns' + clause + ' ORDER BY at', args)]
@@ -573,9 +595,9 @@ class AnalyticsMixin:
                 'notifications': notifications, 'history': [r for r in history if not r.get('agent') and not r.get('agentId') or r.get('agent') in relevant_ids or r.get('agentId') in relevant_ids],
                 'rateLimits': [{'accountKey': r['account'], 'at': r['at'], 'data': json.loads(r['record'])} for r in limit_rows if r['account'] in account_keys and within(r['at'])],
                 'turns': turns, 'timeline': usage if export else usage[-500:], 'timelineTotal': len(usage), 'provisionalUsage': provisional if export else provisional[-100:],
-                'calls': calls if export else calls[offset:offset + limit],
+                'calls': calls_page,
                 'items': [{'type': kind, 'count': len(rows), 'bytes': nullable_sum([size(rows, 'input', 'bytes'), size(rows, 'output', 'bytes')]),
                            'chars': nullable_sum([size(rows, 'input', 'chars'), size(rows, 'output', 'chars')])} for kind, rows in item_groups.items()],
                 'itemRecords': non_tool_items if export else non_tool_items[:100], 'itemRecordsTotal': len(non_tool_items),
                 'itemBreakdown': [{'type': kind, 'payloadBoundary': boundary, 'category': category, 'role': role, 'count': len(rows), 'inputBytes': size(rows, 'input', 'bytes'), 'outputBytes': size(rows, 'output', 'bytes'), 'inputMeasurements': sum(r.get('input') is not None for r in rows), 'outputMeasurements': sum(r.get('output') is not None for r in rows)} for (kind, boundary, category, role), rows in detailed_item_groups.items()],
-                'compactions': compactions, 'compactionSnapshots': snapshots, 'pagination': {'limit': limit, 'offset': offset, 'total': len(calls), 'hasMore': not export and offset + limit < len(calls)}}
+                'compactions': compactions, 'compactionSnapshots': snapshots, 'pagination': {'limit': limit, 'offset': offset, 'total': calls_total, 'hasMore': not export and offset + limit < calls_total}}

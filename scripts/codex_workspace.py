@@ -1422,15 +1422,18 @@ class WorkspaceMixin:
             raise ValueError("Unknown workspace view")
         with self.read_db() as db:
             root = self.checked_actor(db, key)["rootId"] if key else None
-            agents = [
-                a for a in self.records(db, "agents", shared=True)
-                if not a.get("deletedAt") and (root is None or a["rootId"] == root)
-            ]
+            if root is None:
+                agents = [a for a in self.records(db, "agents", shared=True)
+                          if not a.get("deletedAt")]
+            else:
+                agents = [json.loads(row[0]) for row in db.execute(
+                    "SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
+                    "AND json_extract(record,'$.deletedAt') IS NULL", (root,))]
             ids = {a["id"] for a in agents}
             monitors = self.recent_monitors(db, root)
             inbox = []
-            for r in self.records(db, "requests"):
-                if r["status"] == "pending" and not r.get("deferred") and r["agent"] in ids:
+            for r in self._workspace_requests(db, ids):
+                if r["status"] == "pending" and not r.get("deferred"):
                     inbox.append(
                         {
                             "id": r["id"],
@@ -1441,8 +1444,8 @@ class WorkspaceMixin:
                             "request": r,
                         }
                     )
-            for c in self.complaint_summaries(db):
-                if c.get("needsResponse") and (root is None or c["leadId"] in ids):
+            for c in self._workspace_complaints(db, ids if root is not None else None):
+                if c.get("needsResponse"):
                     inbox.append(
                         {
                             "id": c["id"],
@@ -1453,9 +1456,9 @@ class WorkspaceMixin:
                             "complaint": c,
                         }
                     )
-            works = self.records(db, "work")
+            works = self._workspace_work(db, root)
             for w in works:
-                if w["rootId"] in ids and w["status"] == "review":
+                if w["status"] == "review":
                     inbox.append(
                         {
                             "id": w["id"],
@@ -1493,8 +1496,8 @@ class WorkspaceMixin:
                             "monitor": m,
                         }
                     )
-            for r in self.records(db, "rules"):
-                if r["agent"] in ids and r.get("error"):
+            for r in self._workspace_rules(db, ids):
+                if r.get("error"):
                     inbox.append(
                         {
                             "id": r["id"],
@@ -1512,31 +1515,81 @@ class WorkspaceMixin:
                     for w in works
                     if w["rootId"] in ids and (not root or w["rootId"] == root)
                 ],
-                "annotations": [
-                    v
-                    for v in self.records(db, "annotations")
-                    if v["agent"] in ids and (not root or v["rootId"] == root)
-                ],
-                "checkpoints": [
-                    v
-                    for v in self.records(db, "checkpoints")
-                    if v["agent"] in ids and (not key or v["agent"] == key)
-                ],
-                "plans": [
-                    v
-                    for v in self.records(db, "plans")
-                    if v["id"] in ids and (not root or v["rootId"] == root)
-                ],
-                "rules": [
-                    v
-                    for v in self.records(db, "rules")
-                    if v["agent"] in ids and (not root or v["rootId"] == root)
-                ],
+                "annotations": self._workspace_records(db, "annotations", ids, "agent"),
+                "checkpoints": self._workspace_records(db, "checkpoints", {key} if key else ids, "agent"),
+                "plans": [v for v in self._workspace_records(db, "plans", ids, "id")
+                          if not root or v["rootId"] == root],
+                "rules": self._workspace_rules(db, ids),
                 "inbox": inbox,
                 "tasks": self.recent_tasks(db, root),
                 "tasksHistoryLimit": 100,
                 "monitors": [m for m in monitors if m["agent"] in ids],
             }
+
+    @staticmethod
+    def _workspace_records(db, table, ids, field):
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        if field == "id":
+            clause = "id IN (" + placeholders + ")"
+        else:
+            clause = f"json_extract(record,'$.{field}') IN ({placeholders})"
+        return [json.loads(row[0]) for row in db.execute(
+            f"SELECT record FROM runtime_{table} WHERE {clause}", tuple(ids))]
+
+    @staticmethod
+    def _workspace_requests(db, ids):
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_requests WHERE json_extract(record,'$.agent') IN (" + placeholders + ") "
+            "AND json_extract(record,'$.status')='pending' "
+            "AND (json_extract(record,'$.deferred') IS NULL OR json_extract(record,'$.deferred')=0 "
+            "OR json_extract(record,'$.deferred')='')", tuple(ids))]
+
+    @staticmethod
+    def _workspace_work(db, root):
+        if root is None:
+            return [json.loads(row[0]) for row in db.execute("SELECT record FROM runtime_work")]
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=?", (root,))]
+
+    @staticmethod
+    def _workspace_rules(db, ids):
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_rules WHERE json_extract(record,'$.agent') IN (" + placeholders + ")",
+            tuple(ids))]
+
+    def _workspace_complaints(self, db, lead_ids):
+        if lead_ids is None:
+            complaints = self.records(db, "complaints")
+        elif not lead_ids:
+            complaints = []
+        else:
+            placeholders = ",".join("?" for _ in lead_ids)
+            complaints = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_complaints WHERE json_extract(record,'$.leadId') IN (" + placeholders + ")",
+                tuple(lead_ids))]
+        ids = sorted({key for c in complaints for key in (c["author"], c["leadId"])})
+        agents = ({a["id"]: a for a in (json.loads(r[0]) for r in db.execute(
+            "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))}
+            if ids else {})
+        result = []
+        for c in complaints:
+            result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
+                           "title": c["text"][:140], "text": c["text"], "responses": c["responses"],
+                           "recipient": self.complaint_recipient(c), "version": c["version"],
+                           "needsResponse": self.complaint_needs_response(c),
+                           "authorName": agents.get(c["author"], {}).get("name", "You" if c["author"] == "user" else c["author"]),
+                           "leadName": agents.get(c["leadId"], {}).get("name", c["leadId"]),
+                           "leadStopped": not agents.get(c["leadId"], {}).get("autoWake", False),
+                           "leadDeleted": bool(agents.get(c["leadId"], {}).get("deletedAt"))})
+        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
 
     def monitor_log(self, key):
         with self.lock, self.db() as db:
