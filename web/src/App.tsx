@@ -815,6 +815,8 @@ export default function App() {
             room: id,
             text,
             assets: options?.assets || [],
+            // Deliver after the current tool call, not after the turn.
+            delivery: "after_tool",
           };
         // Retain the exact request until the durable outbox owns its retry.
         persistSends();

@@ -2090,6 +2090,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "INSERT INTO runtime_event_meta VALUES (?,?)",
                 (message_id, json.dumps({"assets": assets,
                     "acceptedAt": time.time(),
+                    # Delivery ignores the mode; the queue view shows only after-turn input.
+                    "delivery": delivery,
                     **({"radioAnswerTurnId": radio_question["turnId"]}
                        if isinstance(radio_question, dict) and radio_question.get("turnId") else {}),
                     **({"senderId": sender} if sender else {})})),

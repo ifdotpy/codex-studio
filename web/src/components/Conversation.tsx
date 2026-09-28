@@ -50,13 +50,11 @@ import {
 } from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
 
-const QUEUE_GRACE_MS = 3000;
 import { useConversationScroll } from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
 import { queueUploads } from "../sync/uploads";
 import {
-  busy,
   statusLabel,
   type Agent,
   type Json,
@@ -474,31 +472,18 @@ export default function Conversation(p: {
       ),
     [messageQueue.items, items, p.id],
   );
-  // An idle agent takes a new message within about a second. Show that
-  // message in the chat as sending; it joins the queue only if it waits.
-  const idleAgent = !!agent && !busy.has(agent.status) && !agent.inFlight;
-  const firstSeen = useRef(new Map<string, number>());
-  const [queueClock, setQueueClock] = useState(() => Date.now());
+  // The queue holds only messages for after the turn. A message for after
+  // the current tool call is delivered at once; it stays in the chat.
   const { queue, sending } = useMemo(() => {
-    const now = Date.now();
     const shown: typeof queued = [];
     const held: typeof queued = [];
     for (const entry of queued) {
-      if (!firstSeen.current.has(entry.id)) firstSeen.current.set(entry.id, now);
-      const created =
-        typeof entry.created === "number" ? entry.created * 1000 : now;
-      const waited =
-        now - (firstSeen.current.get(entry.id) || now) >= QUEUE_GRACE_MS ||
-        now - created >= QUEUE_GRACE_MS;
-      (idleAgent && !waited ? held : shown).push(entry);
+      const { requestedDelivery, delivery } = entry as Json;
+      const mode = requestedDelivery || delivery;
+      (mode === "after_tool" || mode === "steer" ? held : shown).push(entry);
     }
     return { queue: shown, sending: held };
-  }, [queued, idleAgent, queueClock]);
-  useEffect(() => {
-    if (!sending.length) return;
-    const timer = setTimeout(() => setQueueClock(Date.now()), QUEUE_GRACE_MS);
-    return () => clearTimeout(timer);
-  }, [sending]);
+  }, [queued]);
   const addFiles = async (files: globalThis.File[]) => {
     if (!p.id || !managed)
       throw new Error("Select a managed chat before attaching files.");

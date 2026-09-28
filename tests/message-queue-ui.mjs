@@ -150,6 +150,14 @@ try {
     },
     { id: lead.id, stateDir: initial.stateDir },
   );
+  // The composer sends after-tool input, which never enters the queue. This
+  // test covers the after-turn queue, so the fixture marks its input as queue.
+  await page.route("**/api/messages", async (route) => {
+    const body = route.request().method() === "POST" ? route.request().postDataJSON() : null;
+    if (body?.delivery === "after_tool")
+      return route.continue({ postData: JSON.stringify({ ...body, delivery: "queue" }) });
+    return route.continue();
+  });
   await page.goto(origin);
   await page.locator(`[data-chat="${lead.id}"]`).click();
   const composer = page.locator("#message"),
@@ -176,7 +184,7 @@ try {
   await composer.press("Enter");
   await wait(async () => (await queue()).items.length === 1, "First input reaches queue");
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].delivery, undefined, "The UI sends no delivery mode");
+  assert.equal(sent[0].delivery, "after_tool", "The composer sends after-tool input");
   await panel.waitFor();
   await list.getByText("First input", { exact: true }).waitFor();
   const asset = (await queue()).items[0].assets[0].id;
@@ -189,7 +197,7 @@ try {
   }
   await wait(async () => (await queue()).items.length === 3, "All inputs are durable");
   assert.equal(sent.length, 3);
-  assert(sent.every((entry) => entry.delivery === undefined));
+  assert(sent.every((entry) => entry.delivery === "after_tool"));
   await button("Edit queued message 1").click();
   await editor().fill("Revised first input");
   await button("Save queued message").click();

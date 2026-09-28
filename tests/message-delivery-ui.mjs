@@ -227,7 +227,7 @@ try {
         true,
         `${mode}: submit retains composer focus`,
       );
-      assert.equal(sent.body.delivery, undefined);
+      assert.equal(sent.body.delivery, "after_tool");
       return sent;
     };
     const accept = async (sent, status = "accepted", expectedDraft = "") => {
@@ -382,8 +382,9 @@ try {
     const queueRow = () =>
       page.getByTestId("message-queue").getByText(queuedText, { exact: true });
     const assertQueueGeometry = async () => {
-      await queueRow().waitFor();
-      assert.equal(await row(queuedText).count(), 0);
+      // After-tool input waits in the chat, never in the after-turn queue.
+      await row(queuedText).waitFor();
+      assert.equal(await queueRow().count(), 0);
       assert.ok(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -403,16 +404,16 @@ try {
     await publish(a.id, [...queueBase, queuedEcho]);
     await until(
       async () =>
-        (await queueRow().count()) === 1 &&
-        (await row(queuedText).count()) === 0,
-      `${mode}: one queued row`,
+        (await queueRow().count()) === 0 &&
+        (await row(queuedText).count()) === 1,
+      `${mode}: one waiting row in the chat`,
     );
     await assertQueueGeometry("queued transcript");
     await page.screenshot({
       path: join(evidence, `${mode}-queued-desktop.png`),
     });
     await page.setViewportSize({ width: 390, height: 844 });
-    await queueRow().scrollIntoViewIfNeeded();
+    await row(queuedText).scrollIntoViewIfNeeded();
     await page.waitForTimeout(100);
 
     assert.ok(
@@ -427,10 +428,11 @@ try {
     await publish(a.id, [...queueBase]);
     await page.waitForTimeout(200);
     assert.equal(
-      await queueRow().count(),
+      await row(queuedText).count(),
       1,
-      `${mode}: dispatch gap retains local queued receipt`,
+      `${mode}: dispatch gap retains the local waiting message`,
     );
+    assert.equal(await queueRow().count(), 0);
     await publish(a.id, [...queueBase, { ...queuedEcho, pending: false }]);
     await until(
       async () =>
@@ -572,20 +574,22 @@ try {
       expectedPosts,
       `${mode}: no automatic duplicate delivery`,
     );
-    // A queued receipt remains in the editable queue until native dispatch.
+    // A waiting after-tool receipt stays in the chat until native dispatch,
+    // also after a reload. It never enters the after-turn queue.
     const staleText = `${mode} stale queue receipt`;
     const stale = await start(staleText);
     await accept(stale, "queued");
-    await page.getByTestId("message-queue").getByText(staleText).waitFor();
+    await row(staleText).waitFor();
     await page.reload();
     await page.locator(`[data-chat="${a.id}"]`).click();
     await page.locator(`[data-message="${a.id}-history-35"]`).waitFor();
-    await page.getByTestId("message-queue").getByText(staleText).waitFor();
+    await row(staleText).waitFor();
     assert.equal(
-      await row(staleText).count(),
+      await page.getByTestId("message-queue").getByText(staleText).count(),
       0,
-      `${mode}: queued receipt has one visible location`,
+      `${mode}: waiting receipt has one visible location`,
     );
+    assert.equal(await row(staleText).count(), 1);
     await publish(a.id, [
       ...history.get(a.id).items,
       {

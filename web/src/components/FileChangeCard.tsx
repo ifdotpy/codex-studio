@@ -28,7 +28,7 @@ export default memo(function FileChangeCard({
       prefix && path.startsWith(prefix) ? path.slice(prefix.length) : path;
     return (
       payload.type === "fileChange"
-        ? fileChanges(payload.changes)
+        ? fileChanges(payload.changes, payload.arguments)
         : unifiedDiff(payload.diff || "")
     ).map((file) => ({
       ...file,

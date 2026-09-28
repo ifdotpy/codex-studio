@@ -213,9 +213,32 @@ export function unifiedDiff(source: string, path = ""): FileDiff[] {
 }
 
 /** Native add/delete diffs contain raw file contents, including literal +/- prefixes. */
-export function fileChanges(value: unknown): FileDiff[] {
+// The Claude bridge saves an Edit as "-old\n+new" and prefixes only the
+// first line of each side. Rebuild a unified hunk from the Edit input.
+export function claudeEditPatch(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  const { old_string: before, new_string: after } = args as Record<
+    string,
+    unknown
+  >;
+  if (typeof before !== "string" || typeof after !== "string") return null;
+  const split = (text: string) =>
+    text ? text.replace(/\n$/, "").split("\n") : [];
+  const removed = split(before),
+    added = split(after);
+  if (!removed.length && !added.length) return null;
+  return [
+    `@@ -${removed.length ? 1 : 0},${removed.length} +${added.length ? 1 : 0},${added.length} @@`,
+    ...removed.map((line) => "-" + line),
+    ...added.map((line) => "+" + line),
+  ].join("\n");
+}
+
+export function fileChanges(value: unknown, args?: unknown): FileDiff[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((item): FileDiff[] => {
+  const edit = value.length === 1 ? claudeEditPatch(args) : null;
+  if (edit) value = [{ ...value[0], diff: edit }];
+  return (value as unknown[]).flatMap((item: any): FileDiff[] => {
     if (!item || typeof item !== "object" || typeof item.path !== "string")
       return [];
     const source = typeof item.diff === "string" ? item.diff : "";

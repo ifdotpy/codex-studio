@@ -183,17 +183,10 @@ try {
   await composer.press("Enter");
   await wait(async () => sent.length === 1, "Idle Send reaches scheduler");
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].delivery, undefined);
-  // An idle chat shows the new message in the chat, not in the queue, while
-  // the scheduler normally takes it. It joins the queue only after it waits.
+  assert.equal(sent[0].delivery, "after_tool");
+  // A message for after the current tool call is never queued. It stays in
+  // the chat while it waits, also after a reload.
   await bubble("Normal idle send").waitFor();
-  assert.equal(
-    await panel.getByText("Normal idle send", { exact: true }).count(),
-    0,
-    "A message sent to an idle chat does not flash in the queue",
-  );
-  await panel.getByText("Normal idle send", { exact: true }).waitFor();
-  assert.equal(await bubble("Normal idle send").count(), 0);
   await composer.fill("Tab keeps this draft");
   await composer.press("Tab");
   assert.equal(sent.length, 1, "Tab does not add another message");
@@ -201,12 +194,24 @@ try {
   await composer.press("Enter");
   await wait(async () => sent.length === 2, "Second input reaches scheduler");
   assert.equal(sent.length, 2);
-  await panel.getByText("Tab keeps this draft", { exact: true }).waitFor();
+  await bubble("Tab keeps this draft").waitFor();
+  await page.waitForTimeout(3500);
+  for (const text of ["Normal idle send", "Tab keeps this draft"])
+    assert.equal(
+      await panel.getByText(text, { exact: true }).count(),
+      0,
+      `${text}: an after-tool message is not in the queue`,
+    );
   await page.reload();
-  await panel.getByText("Normal idle send", { exact: true }).waitFor();
+  await bubble("Normal idle send").waitFor();
+  assert.equal(
+    await panel.getByText("Normal idle send", { exact: true }).count(),
+    0,
+    "Reload keeps the after-tool message out of the queue",
+  );
   assert.equal(sent.length, 2, "Reload does not send input again");
   assert.deepEqual(errors, []);
-  console.log("PASS idle send, Tab navigation, pending queue and reload identity");
+  console.log("PASS idle send, Tab navigation, after-tool messages stay out of the queue, reload identity");
 } catch (error) {
   console.error(error);
   console.error(JSON.stringify({ evidence: root, diagnostics }, null, 2));
