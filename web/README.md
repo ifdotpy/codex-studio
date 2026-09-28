@@ -1,5 +1,14 @@
 # Codex Studio web client
 
+## Change Contract
+
+The web client owns Studio's renderer, presentation, and user interaction. It
+reads application and agent state through the server HTTP API; the server owns
+persistent state, execution, and native provider access. Keep permission and
+request identity rules intact for actions that write state. Match checks to the
+changed interface, and use the focused composer check with
+`node ../tests/skill-autocomplete-ui.mjs` for skill completion changes.
+
 React and TypeScript components, built with Vite. Mantine provides controls,
 menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,
 SQLite, message delivery, and command monitors.
@@ -146,6 +155,16 @@ files, up to 20 MiB per file. Images enter Codex as local images. Other files en
 as explicit file references. HTML previews cannot run scripts or load remote files.
 Attachment drafts survive reloads. Rejected sends retain the draft and attachments.
 Offline messages remain in the device outbox.
+
+In managed chats, type `$` at a token boundary to browse installed skills. Filter
+by name; the first match is selected automatically, and Up/Down changes the
+selection and scrolls the selected option into view without moving input focus.
+The reusable `ComposerAutocomplete` adapter uses Mantine Combobox for the popup
+and option selection. Enter or Tab inserts the option, and Escape closes the list. The focused
+browser check uses a delayed `/api/skills` fixture to cover
+typing responsiveness, keyboard behavior, caret placement, and chat-scope changes.
+The current Claude bridge does not expose skill listing; when listing is unavailable,
+the composer reports it while manually typed `$text` remains ordinary prompt text.
 
 Use **Queue after turn** for the next turn or **Send** after active tools. Queue entries
 can be edited, moved first, or cancelled. Uncertain delivery never silently retries
