@@ -182,7 +182,12 @@ def fixture_events():
         elif 'id' in message:
             c.runtime.request(message)
         else:
-            c.runtime.notification(message, 'default', c.runtime.connection_ids.get('default'))
+            account_key = message.get('accountKey', 'default')
+            server = c.runtime.servers.get(account_key)
+            if server is not None:
+                server.notify(message)
+            else:
+                c.runtime.notification(message, account_key, c.runtime.connection_ids.get(account_key))
 threading.Thread(target=fixture_events, daemon=True).start()
 print(server.server_port, flush=True)
 try:
