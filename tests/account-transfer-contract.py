@@ -583,14 +583,16 @@ class TransferContract(f.AccountContracts):
         self.until(lambda: len(self.pending) == 1)
         self.complete_fork()
         self.until(lambda: self.receipt(op['id'])['members'][self.lead_agent['id']]['phase'] == 'completed')
-        self.tick(); self.until(lambda: len(self.pending) == 2)
-        self.complete_fork(1)
+        # The interrupted active member may fork alongside the first lazy
+        # wakeup. Settle each exact receipt and let queued members wake next.
+        for index in range(1, 4):
+            self.tick()
+            self.wake_one_lazy_for_test()
+            self.until(lambda index=index: len(self.pending) > index)
+            self.complete_fork(index)
         self.until(lambda: self.receipt(op['id'])['members'][idle['id']]['phase'] == 'completed')
-        self.tick(); self.until(lambda: len(self.pending) == 3)
-        self.complete_fork(2)
-        self.tick(); self.until(lambda: len(self.pending) == 4)
-        self.complete_fork(3)
         self.tick()
+        self.until(lambda: self.receipt(op['id'])['status'] == 'completed')
         self.assertEqual(self.receipt(op['id'])['status'], 'completed')
         self.assertEqual(self.runtime.agent(idle['id'])['accountKey'], self.other_key)
         self.assertEqual(self.runtime.agent(running['id'])['accountKey'], self.other_key)
