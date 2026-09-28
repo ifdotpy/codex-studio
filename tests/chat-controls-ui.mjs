@@ -106,7 +106,19 @@ try {
     await page.getByRole("menu").waitFor({ state: "visible" });
   };
   await openActions();
+  // The pin shows at once, before a slow snapshot arrives.
+  const slowState = async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await route.continue().catch(() => {});
+  };
+  await page.route("**/api/state*", slowState);
+  const pinnedAt = Date.now();
   await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
+  await page
+    .locator(`[data-chat="${lead.id}"] .chat-pin`)
+    .waitFor({ state: "visible", timeout: 1000 });
+  assert.ok(Date.now() - pinnedAt < 1000, "pin shows before the snapshot");
+  await page.unroute("**/api/state*", slowState);
   await poll(
     async () =>
       (await state()).threads.find((agent) => agent.id === lead.id).pinned,
@@ -417,8 +429,8 @@ try {
   await page.locator("#message").press("Enter");
   assert.equal(
     (await entered).postDataJSON().delivery,
-    undefined,
-    "Enter uses native delivery",
+    "after_tool",
+    "Enter sends after-tool input",
   );
   await page
     .locator("#messages .message.user")

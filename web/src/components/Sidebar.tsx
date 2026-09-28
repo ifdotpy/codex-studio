@@ -144,15 +144,35 @@ export default function Sidebar(p: Props) {
     setCollapsed(next);
     save(projectKey, next);
   };
+  // Pin and archive show at once; the next snapshot confirms them.
+  const [overrides, setOverrides] = useState<
+    Record<string, { pinned?: boolean; archived?: boolean }>
+  >({});
   const organize = async (id: string, data: Record<string, unknown>) => {
     if (organizationLock.current) return false;
     organizationLock.current = true;
     setOrganizing(id);
+    const optimistic = Object.fromEntries(
+      Object.entries(data).filter(
+        ([key, value]) =>
+          (key === "pinned" || key === "archived") && typeof value === "boolean",
+      ),
+    );
+    const hasOptimistic = Object.keys(optimistic).length > 0;
+    if (hasOptimistic)
+      setOverrides((old) => ({ ...old, [id]: { ...old[id], ...optimistic } }));
     try {
       await api("/api/organization", { id, ...data });
-      await p.refresh?.();
+      if (hasOptimistic) void p.refresh?.();
+      else await p.refresh?.();
       return true;
     } catch (error) {
+      if (hasOptimistic)
+        setOverrides((old) => {
+          const next = { ...old };
+          delete next[id];
+          return next;
+        });
       p.notify?.(errorText(error));
       return false;
     } finally {
@@ -160,10 +180,32 @@ export default function Sidebar(p: Props) {
       setOrganizing(null);
     }
   };
-  const agents = p.data.threads.filter(
-    (a) =>
-      a.source === "managed" && a.isLead && !a.deletedAt && !a.sharedRoomId,
-  );
+  useEffect(() => {
+    // Drop an override once the snapshot shows the same value.
+    setOverrides((old) => {
+      const next = { ...old };
+      let changed = false;
+      for (const [id, values] of Object.entries(old)) {
+        const thread = p.data.threads.find((a) => a.id === id);
+        if (
+          !thread ||
+          Object.entries(values).every(
+            ([key, value]) => !!(thread as Record<string, unknown>)[key] === value,
+          )
+        ) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : old;
+    });
+  }, [p.data.threads]);
+  const agents = p.data.threads
+    .filter(
+      (a) =>
+        a.source === "managed" && a.isLead && !a.deletedAt && !a.sharedRoomId,
+    )
+    .map((a) => (overrides[a.id] ? { ...a, ...overrides[a.id] } : a));
   const sharedRooms = p.data.runtime.rooms.filter(
     (r) => r.radio?.direct && !r.userHidden,
   );
