@@ -60,7 +60,7 @@ class PortableTransfers(unittest.TestCase):
     def submit(self):
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.until(lambda: len(self.t.pending) == 1)
         self.assertEqual(len(self.t.pending), 1, self.member(op))
         self.assertEqual(self.t.pending[0][0], 'thread/start')
         self.assertNotIn('input', self.t.pending[0][1])
@@ -104,7 +104,7 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(op['members'][child['id']]['phase'], 'left')
         with self.rt.db() as db:
             self.assertEqual(list(db.execute('SELECT * FROM runtime_items WHERE agent=?', (self.aid,))), before)
-        self.assertEqual(self.member(op)['pendingSettings'], source['pendingSettings'])
+        self.assertEqual(self.member(op)['sourcePendingSettings'], source['pendingSettings'])
         self.export.assert_called_once()
 
     def test_claude_to_codex_needs_no_codex_rollout_path(self):
@@ -176,7 +176,8 @@ class PortableTransfers(unittest.TestCase):
         self.t.source_server.submit = submit
         second = self.store.request(self.aid, 'default', str(f.uuid.uuid4()))
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: len(self.t.pending) == 2)
         self.assertEqual(len(self.t.pending), 2, self.member(second))
         params = self.t.pending[1][1]
         self.assertEqual(params['approvalPolicy'], 'on-request')
@@ -231,7 +232,7 @@ class PortableTransfers(unittest.TestCase):
             self.t.tick()
         self.assertEqual(self.member(op)['phase'], 'unknown')
         self.assertEqual(len(self.t.pending), 1)
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.assertEqual(self.member(op)['portableHistory'], self.descriptor)
 
     def test_restart_marks_submitted_start_unknown_without_repeating_it(self):
@@ -253,10 +254,11 @@ class PortableTransfers(unittest.TestCase):
         self.t.set_agent(self.aid, effort='high', workerDefaults={'model': 'gpt-5.6-sol', 'effort': 'high', 'fastMode': False})
         self.t.complete_fork()
         self.assertEqual(self.member(op)['phase'], 'blocked')
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.store.action(op['id'], 'retry')
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertEqual(self.member(op)['phase'], 'completed')
         self.assertEqual(len(self.t.pending), 1)
         self.assertEqual(self.member(op)['nativeParams'], submitted)
@@ -268,7 +270,8 @@ class PortableTransfers(unittest.TestCase):
         self.export.side_effect = lambda *args: (self.t.set_agent(self.aid, effort='high') and self.descriptor)
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertEqual(self.member(op)['phase'], 'blocked')
         self.assertEqual(self.t.pending, [])
         self.assertEqual(self.agent()['effort'], 'high')
@@ -288,7 +291,8 @@ class PortableTransfers(unittest.TestCase):
         self.t.source_server.call = call
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertEqual(self.member(op)['phase'], 'blocked')
         self.assertTrue(self.member(op)['archiveInvalidated'])
         with self.assertRaisesRegex(ValueError, 'Cancel this transfer'):
@@ -311,7 +315,8 @@ class PortableTransfers(unittest.TestCase):
         self.export.side_effect = export
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertTrue(self.member(op)['archiveInvalidated'])
         self.assertEqual(self.t.pending, [])
         with self.assertRaisesRegex(ValueError, 'Cancel this transfer'):
@@ -328,7 +333,7 @@ class PortableTransfers(unittest.TestCase):
         self.t.complete_fork()
         self.assertTrue(self.member(op)['archiveInvalidated'])
         self.assertEqual(self.member(op)['result']['thread']['id'], 'target-thread-0')
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.assertEqual(len(self.t.pending), 1)
 
     def test_source_check_timeout_retries_known_receipt_without_new_session(self):
@@ -341,11 +346,12 @@ class PortableTransfers(unittest.TestCase):
         self.t.source_server.call = call
         self.t.complete_fork()
         self.assertEqual(self.member(op)['phase'], 'blocked')
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.t.source_server.call = original
         self.store.action(op['id'], 'retry')
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertEqual(self.member(op)['phase'], 'completed')
         self.assertEqual(len(self.t.pending), 1)
         self.export.assert_called_once()
@@ -366,7 +372,8 @@ class PortableTransfers(unittest.TestCase):
         self.export.side_effect = export
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertTrue(self.member(op)['archiveInvalidated'])
         self.assertEqual(self.t.pending, [])
 

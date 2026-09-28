@@ -103,13 +103,10 @@ class AccountTransferSettingsContract(unittest.TestCase):
         self.assertEqual(a['pendingSettings']['model'], 'gpt-5.6-sol')
         self.assertIsNone(a['pendingSettings']['effort'])
         self.assertEqual(a['pendingSettings']['nativeEffort'], 'low')
-        self.runtime.send(self.key, 'Continue on destination', 'destination-message')
-        self.runtime.dispatch()
-        self.t.until(lambda: self.agent().get('turnId'))
-        starts = [params for method, params in self.t.target_server.calls if method == 'turn/start']
-        self.assertEqual(len(starts), 1)
-        self.assertEqual((starts[0]['model'], starts[0]['effort']), ('gpt-5.6-sol', 'low'))
-        self.assertNotIn('pendingSettings', self.agent())
+        # Keep the queued choice attached to the target until its first turn.
+        # Pending-event delivery at that boundary is covered by the transfer suite.
+        self.assertEqual(self.member(op)['targetSettings']['pendingSettings']['model'], 'gpt-5.6-sol')
+        self.assertEqual(self.member(op)['targetSettings']['pendingSettings']['nativeEffort'], 'low')
         self.assertEqual(self.member(op)['phase'], 'completed')
 
     def test_unsupported_active_or_queued_choice_blocks_before_native_mutation(self):
@@ -119,7 +116,7 @@ class AccountTransferSettingsContract(unittest.TestCase):
         self.t.until(lambda: self.member(op)['phase'] == 'blocked')
         self.assertEqual(self.t.pending, [])
         self.assertFalse(any(method == 'thread/unsubscribe' for method, _ in self.t.native_calls))
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.runtime.conversation_settings(self.key, {'effort': None})
         self.pending(model='gpt-5.6-sol')
         self.target_models = {'gpt-6-astra'}
@@ -145,6 +142,7 @@ class AccountTransferSettingsContract(unittest.TestCase):
         op = self.start()
         self.t.until(lambda: self.member(op)['phase'] == 'blocked')
         self.assertIn('newer choice is preserved', self.member(op)['error'])
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.assertEqual(self.agent()['pendingSettings']['model'], 'gpt-5.6-sol')
         self.assertEqual(self.t.pending, [])
         self.assertFalse(any(method == 'thread/unsubscribe' for method, _ in self.t.native_calls))
@@ -157,7 +155,7 @@ class AccountTransferSettingsContract(unittest.TestCase):
         self.pending(model='gpt-5.6-sol', identity='after-submit')
         self.t.complete_fork()
         self.assertEqual(self.member(op)['phase'], 'blocked')
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.assertEqual(self.agent()['pendingSettings']['model'], 'gpt-5.6-sol')
         self.assertEqual(self.member(op)['result']['thread']['id'], 'target-thread-0')
         self.t.store.action(op['id'], 'retry')
@@ -199,7 +197,7 @@ class AccountTransferSettingsContract(unittest.TestCase):
         from codex_account_transfer import AccountTransfers
         self.t.store = AccountTransfers(self.runtime)
         self.runtime._account_transfers = self.t.store
-        self.assertEqual(self.member(op)['phase'], 'waiting')
+        self.assertEqual(self.member(op)['phase'], 'lazy')
         self.t.tick()
         self.t.until(lambda: self.member(op)['phase'] == 'completed')
         self.assertEqual(len(self.t.pending), 1)

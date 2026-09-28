@@ -18,6 +18,7 @@ class LazyTransferContract(unittest.TestCase):
     def setUp(self):
         self.t = fixture.TransferContract('test_transfer_keeps_identity_history_queue_and_settings')
         self.t.setUp()
+        self.t.drive_lazy_for_tests = False
         self.rt = self.t.runtime
         self.store = self.t.store
         self.aid = self.t.lead_agent['id']
@@ -69,9 +70,97 @@ class LazyTransferContract(unittest.TestCase):
         self.assertNotIn('lazyAccountTransfer', agent)
         self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
 
+    def test_two_moved_members_waking_together_fork_once_each(self):
+        child = self.rt.create({'name': 'Worker', 'prompt': 'Task'}, parent=self.aid, defer=True)
+        self.t.set_agent(child['id'], status='complete', threadId='worker-native', autoWake=False)
+        op = self.t.start_transfer()
+        members = [self.aid, child['id']]
+        errors = []
+        workers = [threading.Thread(target=self._move_member, args=(op['id'], aid, errors), daemon=True)
+                   for aid in members]
+        for worker in workers:
+            worker.start()
+        self.t.until(lambda: len(self.t.pending) == 2)
+        self.assertEqual([method for method, _, _ in self.t.pending], ['thread/fork', 'thread/fork'])
+        self.t.complete_fork(0)
+        self.t.complete_fork(1)
+        for worker in workers:
+            worker.join(3)
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertEqual(errors, [])
+        self.assertEqual(len([p for p in self.t.pending if p[0] == 'thread/fork']), 2)
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+
+    def test_lazy_failure_blocks_with_reason_and_explicit_retry_reuses_no_input(self):
+        op = self.t.start_transfer()
+        self.rt.send(self.aid, 'Keep this queued', 'lazy-input', delivery='after_tool')
+        original = self.t.source_server.call
+        failed = False
+        def fail_first_read(method, params, timeout=60):
+            nonlocal failed
+            if method == 'thread/read' and not failed:
+                failed = True
+                raise RuntimeError('Source history temporarily unavailable')
+            return original(method, params, timeout)
+        self.t.source_server.call = fail_first_read
+        with self.assertRaisesRegex(RuntimeError, 'Native history move blocked'):
+            self.store.before_start(self.rt.agent(self.aid))
+        member = self.t.receipt(op['id'])['members'][self.aid]
+        self.assertEqual(member['phase'], 'blocked')
+        self.assertIn('temporarily unavailable', member['error'])
+        self.assertEqual(self.t.pending, [])
+        with self.rt.db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='lazy-input'").fetchone()[0], 'pending')
+        self.store.action(op['id'], 'retry')
+        worker = threading.Thread(target=self._move_member, args=(op['id'], self.aid, []), daemon=True)
+        worker.start()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.t.complete_fork()
+        worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len([p for p in self.t.pending if p[0] == 'thread/fork']), 1)
+        with self.rt.db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='lazy-input'").fetchone()[0], 'pending')
+
+    def test_cancel_while_native_history_is_lazy_returns_to_source_without_rpc(self):
+        op = self.t.start_transfer()
+        self.assertEqual(self.rt.agent(self.aid)['accountKey'], self.t.other_key)
+        self.assertTrue(self.rt.agent(self.aid).get('lazyAccountTransfer'))
+        self.store.action(op['id'], 'cancel')
+        agent = self.rt.agent(self.aid)
+        self.assertEqual(agent['accountKey'], 'default')
+        self.assertNotIn('lazyAccountTransfer', agent)
+        self.assertNotIn('accountTransferId', agent)
+        self.assertEqual(self.t.native_calls, [])
+        self.assertEqual(self.t.pending, [])
+
+    def test_active_member_still_interrupts_then_moves(self):
+        self.t.set_agent(self.aid, status='running', inFlight=True, turnId='active-turn')
+        op = self.t.start_transfer()
+        self.t.tick()
+        self.t.until(lambda: any(method == 'turn/interrupt' for method, _ in self.t.native_calls))
+        self.t.until(lambda: not self.store.running)
+        self.assertNotIn('lazyAccountTransfer', self.rt.agent(self.aid))
+        self.assertEqual(self.rt.agent(self.aid)['accountKey'], 'default')
+        self.t.set_agent(self.aid, status='complete', inFlight=False, turnId=None)
+        self.t.tick()
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.assertEqual(self.t.pending[0][0], 'thread/fork')
+        self.t.complete_fork()
+        self.t.until(lambda: self.t.receipt(op['id'])['status'] == 'completed')
+        self.assertEqual(self.rt.agent(self.aid)['accountKey'], self.t.other_key)
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+
     def _before_start(self, store, errors):
         try:
             store.before_start(self.rt.agent(self.aid))
+        except Exception as error:
+            errors.append(str(error))
+
+    def _move_member(self, key, aid, errors):
+        try:
+            self.store.before_start(self.rt.agent(aid))
         except Exception as error:
             errors.append(str(error))
 
