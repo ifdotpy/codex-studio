@@ -83,7 +83,8 @@ class NativeReleaseContract(unittest.TestCase):
     def lead(self):
         lead = self.rt.create({"name": "Lead", "cwd": self.tmp.name, "prompt": "Coordinate"})
         fixture.eventually(lambda: self.rt.agent(lead["id"])["status"] == "running")
-        fixture.eventually(lambda: bool(self.rt.agent(lead["id"]).get("turnId")))
+        # turn/started can set turnId before the turn/start reply binds the batch.
+        fixture.eventually(lambda: bool((self.rt.agent(lead["id"]).get("startAttempt") or {}).get("turnId")))
         fixture.eventually(lambda: not self.rt.preparations.get(lead["id"])
                            or self.rt.preparations[lead["id"]]["future"].done())
         self.idle(lead)
@@ -92,7 +93,7 @@ class NativeReleaseContract(unittest.TestCase):
     def worker(self, lead):
         worker = self.rt.create({"name": "Worker", "prompt": "Work", "role": "reviewer"}, lead["id"])
         fixture.eventually(lambda: self.rt.agent(worker["id"])["status"] == "running")
-        fixture.eventually(lambda: bool(self.rt.agent(worker["id"]).get("turnId")))
+        fixture.eventually(lambda: bool((self.rt.agent(worker["id"]).get("startAttempt") or {}).get("turnId")))
         fixture.eventually(lambda: not self.rt.preparations.get(worker["id"])
                            or self.rt.preparations[worker["id"]]["future"].done())
         self.idle(worker)
