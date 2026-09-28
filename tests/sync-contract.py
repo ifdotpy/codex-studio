@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert upgraded.pull('transcript:one')['documents'][0]['seq'] == old_seq
     with connect() as db:
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='sync_watch_runtime_items_UPDATE'").fetchone()
-        assert db.execute("SELECT 1 FROM sqlite_master WHERE name='sync_watch_runtime_agents_UPDATE'").fetchone()
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name LIKE 'sync_watch_runtime_agents_%'").fetchone()
         assert db.execute("SELECT payload FROM sync_documents WHERE scope='transcript:one'").fetchone()[0] == old_payload
     generation = store.generation()
     with connect() as db:

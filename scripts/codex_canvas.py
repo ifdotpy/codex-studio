@@ -124,6 +124,8 @@ class Canvas:
                   id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
                   kind TEXT NOT NULL, UNIQUE(source, target, kind));
             """)
+            from codex_sync_entities import ensure_tables as ensure_sync_entity_tables
+            ensure_sync_entity_tables(db)
         os.chmod(self.db, 0o600)
 
     @contextmanager
@@ -131,6 +133,8 @@ class Canvas:
         db = (sqlite3.connect(self.db.absolute().as_uri() + '?mode=ro', uri=True, timeout=10)
               if self.read_only else sqlite3.connect(self.db, timeout=10))
         db.row_factory = sqlite3.Row
+        from codex_sync_entities import register_functions
+        register_functions(db)
         try:
             with db:
                 yield db
@@ -253,6 +257,10 @@ class Canvas:
                       'status': status, 'reportedAt': time.time(), 'role': 'agent' if parent else 'orchestrator'}
             db.execute('INSERT INTO graph_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
                        (key, json.dumps(record)))
+            from codex_sync_entities import put as sync_entity_put
+            sync_entity_put(db, "agent", key, {**record, "kind": "agent", "source": "registered",
+                                                "canSend": False, "launcherAlive": False,
+                                                "events": 0, "tokensUsed": 0})
         return record
 
     def _team_id(self, key, agents=None):
@@ -332,6 +340,10 @@ class Canvas:
                 db.execute('INSERT OR IGNORE INTO graph_edges VALUES (?,?,?,?)', (key, source, target, 'chat'))
             else:
                 db.execute('DELETE FROM graph_edges WHERE id=?', (key,))
+            from codex_sync_entities import put as sync_entity_put
+            sync_entity_put(db, "edge", key,
+                            {"id": key, "source": source, "target": target, "kind": "chat"},
+                            deleted=not connected)
         return {'id': key, 'connected': connected}
 
     def snapshot(self, runtime_snapshot=None, db=None):
@@ -426,8 +438,28 @@ class Canvas:
             else:
                 db.execute("INSERT INTO groups VALUES (?,?,?)", (key, name.strip(), json.dumps(members)))
                 for member in members:
-                    db.execute('INSERT INTO graph_edges VALUES (?,?,?,?)', (identity('chat', member, key), member, key, 'chat'))
+                    edge_id = identity('chat', member, key)
+                    db.execute('INSERT INTO graph_edges VALUES (?,?,?,?)', (edge_id, member, key, 'chat'))
+                    from codex_sync_entities import put as sync_entity_put
+                    sync_entity_put(db, "edge", edge_id,
+                                    {"id": edge_id, "source": member, "target": key, "kind": "chat"})
+                self._sync_chat_entity(db, key)
         return {"id": key}
+
+    def _sync_chat_entity(self, db, key):
+        row = db.execute("SELECT id,name FROM groups WHERE id=?", (key,)).fetchone()
+        from codex_sync_entities import put as sync_entity_put
+        if not row:
+            sync_entity_put(db, "chat", key, {}, deleted=True)
+            return
+        members = [item[0] for item in db.execute(
+            "SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (key,))]
+        last = db.execute("SELECT text,at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (key,)).fetchone()
+        count = db.execute("SELECT count(*) FROM messages WHERE room=?", (key,)).fetchone()[0]
+        sync_entity_put(db, "chat", key, {"id": key, "name": row["name"], "members": members,
+                                           "kind": "chat", "messageCount": count,
+                                           "tail": last["text"] if last else "",
+                                           "lastMessageAt": last["at"] if last else None})
 
     def messages(self, room):
         with self.connect() as db:
@@ -507,6 +539,8 @@ class Canvas:
                 deliveries = {m: "pending" for m in members if notify and m != author}
                 row = {"id": key, "room": room, "author": author, "text": text.strip(), "at": time.time(), "deliveries": deliveries}
                 db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (key, room, author, row["text"], row["at"], json.dumps(deliveries)))
+                if group:
+                    self._sync_chat_entity(db, room)
                 db.commit()
                 # Persist before mailbox writes. A repeated HTTP request cannot resend work.
                 # A process death during dispatch leaves a visible 'pending' result for recovery.
@@ -595,6 +629,18 @@ def make_server(canvas, port=0, public_origin=None):
 
         def send(self, value, status=200, content_type="application/json", cache_control="no-store", compressed=None, etag=False, weak_etag_fields=(), server_timing=None):
             serialize_started = time.perf_counter() if server_timing else None
+            baseline = getattr(self, "sync_entities_after", None)
+            if (baseline is not None and 200 <= status < 300 and isinstance(value, dict)
+                    and "_syncEntities" not in value):
+                with sync().connect() as db:
+                    changed = db.execute("""SELECT collection,id,seq,payload,deleted FROM sync_entities
+                                            WHERE seq>? AND collection NOT LIKE 'transcript:%'
+                                            ORDER BY seq""", (baseline,)).fetchall()
+                if changed:
+                    value = {**value, "_syncEntities": [
+                        {"id": "entity:" + row[0] + ":" + row[1], "seq": row[2],
+                         "payload": row[3], "_deleted": bool(row[4])} for row in changed]}
+            
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
             serialize_ms = (time.perf_counter() - serialize_started) * 1000 if server_timing else None
             compressible = content_type.startswith(("application/json", "application/manifest+json", "text/", "image/svg+xml"))
@@ -728,6 +774,8 @@ def make_server(canvas, port=0, public_origin=None):
 
         def stream_sync(self):
             store = sync()
+            query = parse_qs(urlparse(self.path).query)
+            entity_stream = query.get("scope") == ["state:entities:v1"]
             self.connection.settimeout(20)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -739,8 +787,12 @@ def make_server(canvas, port=0, public_origin=None):
                 while not (canvas.runtime and canvas.runtime.closed):
                     if not self.trusted():
                         break
-                    current = store.generation()
-                    self.wfile.write(b'data: "RESYNC"\n\n' if current != previous else b": heartbeat\n\n")
+                    current = store.entity_sequence() if entity_stream else store.generation()
+                    if current != previous:
+                        data = json.dumps(current) if entity_stream else '"RESYNC"'
+                        self.wfile.write(("data: " + data + "\n\n").encode())
+                    else:
+                        self.wfile.write(b": heartbeat\n\n")
                     self.wfile.flush()
                     previous = current
                     time.sleep(1)
@@ -986,6 +1038,7 @@ def make_server(canvas, port=0, public_origin=None):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
+                self.sync_entities_after = sync().entity_sequence()
                 workspace = self.headers.get("X-Canvas-Workspace")
                 if (workspace is not None or self.path == "/api/sync/drafts") and workspace != sync().identity()["workspaceId"]:
                     return self.send({"error": "The server workspace changed. Reload before sending."}, 409)
@@ -1252,6 +1305,12 @@ def make_server(canvas, port=0, public_origin=None):
 
     server = LocalServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
+    # Explicit patch points for an already-running server instance. A live
+    # patch can replace RequestHandlerClass.send/do_GET/do_POST/stream_sync and
+    # resolve these services without constructing a second backend.
+    server.canvas = canvas
+    server.sync_store = sync
+    server.snapshot_state = snapshot
     return server
 
 

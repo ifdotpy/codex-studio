@@ -23,6 +23,8 @@ class SyncStore:
         self.locks = tuple(threading.RLock() for _ in range(SCOPE_STRIPES))
         self.snapshots = {}
         with self.connect() as db:
+            from codex_sync_entities import ensure_tables
+            ensure_tables(db)
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS sync_identity (id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS sync_generation (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);
@@ -35,11 +37,6 @@ class SyncStore:
             ''')
             if not db.execute('SELECT id FROM sync_identity').fetchone():
                 db.execute('INSERT INTO sync_identity VALUES (?)', (uuid.uuid4().hex,))
-            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
-                for op in ('INSERT', 'UPDATE', 'DELETE'):
-                    db.execute(f'''CREATE TRIGGER IF NOT EXISTS sync_watch_runtime_agents_{op}
-                        AFTER {op} ON runtime_agents BEGIN
-                        UPDATE sync_generation SET value=value+1 WHERE id=1; END''')
 
     def __del__(self):
         reader = getattr(self, '_version_reader', None)
@@ -58,6 +55,11 @@ class SyncStore:
         with self._version_lock:
             return self._version_reader.execute('PRAGMA data_version').fetchone()[0]
 
+    def entity_sequence(self):
+        from codex_sync_entities import max_seq
+        with self.connect() as db:
+            return max_seq(db)
+
     def _ensure_versions(self):
         # Existing make_server closures retain their SyncStore across a live
         # patch, so all new state must be initialized on first use.
@@ -71,18 +73,10 @@ class SyncStore:
                 db.execute('''CREATE TABLE IF NOT EXISTS sync_versions (
                     seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
                     hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL)''')
-                # Runtime agent snapshots also cache against sync_generation.
-                # Keep its three watches; data_version replaces every other
-                # table's row-level notification.
+                # Remove the old row-trigger watches. Coarse old-client SSE
+                # uses data_version; entity sync is driven by sync_entities.
                 for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sync_watch_%'"):
-                    if (name.startswith('sync_watch_') and not name.startswith('sync_watch_runtime_agents_')
-                            and name.rsplit('_', 1)[-1] in ('INSERT', 'UPDATE', 'DELETE')):
-                        db.execute('DROP TRIGGER "' + name + '"')
-                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
-                    for op in ('INSERT', 'UPDATE', 'DELETE'):
-                        db.execute(f'''CREATE TRIGGER IF NOT EXISTS sync_watch_runtime_agents_{op}
-                            AFTER {op} ON runtime_agents BEGIN
-                            UPDATE sync_generation SET value=value+1 WHERE id=1; END''')
+                    db.execute('DROP TRIGGER "' + name + '"')
                 path = db.execute('PRAGMA database_list').fetchone()[2]
             self._version_reader = sqlite3.connect('file:' + path + '?mode=ro', uri=True,
                                                     check_same_thread=False, timeout=10)
@@ -100,14 +94,29 @@ class SyncStore:
         old = db.execute('SELECT payload, deleted FROM sync_documents WHERE scope=? AND id=?', (scope, key)).fetchone()
         if old and old[0] == encoded and bool(old[1]) == deleted:
             return
-        # Replacing assigns a monotonically increasing checkpoint to the current version.
-        db.execute('INSERT OR REPLACE INTO sync_documents(scope,id,payload,deleted) VALUES (?,?,?,?)',
-                   (scope, key, encoded, int(deleted)))
+        # All persisted sync collections share one sequence space.
+        from codex_sync_entities import next_sequence
+        db.execute('INSERT OR REPLACE INTO sync_documents(seq,scope,id,payload,deleted) VALUES (?,?,?,?,?)',
+                   (next_sequence(db), scope, key, encoded, int(deleted)))
 
     def pull(self, scope, after=0, limit=100):
         after, limit = max(0, int(after)), min(100, max(1, int(limit)))
         with self.scope_lock(scope):
             self._ensure_versions()
+            if scope == 'state:entities:v1':
+                from codex_sync_entities import max_seq, seed
+                with self.connect() as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    seed(db, self.chat_snapshot() if self.chat_snapshot else self.snapshot())
+                    rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities
+                                         WHERE collection NOT LIKE 'transcript:%' AND seq>?
+                                         ORDER BY seq LIMIT ?''', (after, limit)).fetchall()
+                    documents = [{'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
+                                  'seq': row[2], '_deleted': bool(row[4])} for row in rows]
+                    checkpoint = documents[-1]['seq'] if documents else after
+                    return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
+                            'documents': documents, 'checkpoint': {'seq': checkpoint},
+                            'maxSeq': max_seq(db)}
             if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
                 payload = self.shared_snapshot(scope)
                 deleted = False
@@ -174,8 +183,8 @@ class SyncStore:
                             if legacy and legacy[1] == encoded and bool(legacy[2]) == deleted:
                                 seq = legacy[0]
                             else:
-                                seq = max(db.execute('SELECT max(seq) FROM sync_documents').fetchone()[0] or 0,
-                                          db.execute('SELECT max(seq) FROM sync_versions').fetchone()[0] or 0) + 1
+                                from codex_sync_entities import next_sequence
+                                seq = next_sequence(db)
                             if current is None:
                                 db.execute('INSERT INTO sync_versions VALUES (?,?,?,?,?)',
                                            (seq, scope, digest, int(deleted), time.time()))

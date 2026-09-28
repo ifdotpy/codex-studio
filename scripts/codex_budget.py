@@ -33,10 +33,13 @@ def _save(db, a, state):
     db.execute('INSERT INTO runtime_budget VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
                (a['id'], json.dumps(state)))
     # History captures use a historical agent copy. Update only budget fields.
-    db.execute("UPDATE runtime_agents SET record=json_set(record,'$.tokensUsed',?,'$.tokenUsageAccounting',?) WHERE id=?",
-               (state['spent'], _accounting(state), a['id']))
     a['tokensUsed'] = state['spent']
     a['tokenUsageAccounting'] = _accounting(state)
+    db.execute("UPDATE runtime_agents SET record=json_set(record,'$.tokensUsed',?,'$.tokenUsageAccounting',?) WHERE id=?",
+               (state['spent'], _accounting(state), a['id']))
+    db.execute("SELECT sync_invalidate_agent(?)", (a["id"],))
+    from codex_sync_entities import put as sync_entity_put
+    sync_entity_put(db, "agent", a["id"], a)
     return state
 
 

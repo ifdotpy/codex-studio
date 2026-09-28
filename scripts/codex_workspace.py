@@ -319,6 +319,9 @@ class WorkspaceMixin:
             connection.execute("BEGIN IMMEDIATE")
             if action == "remove":
                 removed = connection.execute("DELETE FROM runtime_projects WHERE id=?", (path,)).rowcount
+                if removed:
+                    from codex_sync_entities import put as sync_entity_put
+                    sync_entity_put(connection, "project", path, {}, deleted=True)
                 return {"id": path, "removed": bool(removed)}
             existing = connection.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
             project = json.loads(existing[0]) if existing else None

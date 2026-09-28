@@ -129,6 +129,8 @@ class RulesMixin:
                 old.pop("restartCheck", None)
                 if action == "delete":
                     db.execute("DELETE FROM runtime_rules WHERE id=?", (key,))
+                    from codex_sync_entities import put as sync_entity_put
+                    sync_entity_put(db, "rule", key, {}, deleted=True)
                     return {"deleted": key}
                 if old.get("kind") == "low_workers":
                     if old["status"] == ("active" if action == "resume" else "paused") and old["epoch"] == a["epoch"]:

@@ -881,6 +881,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.lock = threading.RLock()
         self.ui_condition = threading.Condition(self.lock)
         self.ui_revisions = {}
+        self._agent_records_cache_lock = threading.RLock()
+        self._agent_record_revision = 0
         self.start_lock = threading.Lock()
         self.prepare_locks = {}
         self.preparations = {}
@@ -962,6 +964,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                   created REAL NOT NULL, deliveries TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
+            from codex_sync_entities import (ensure_tables as ensure_sync_entity_tables,
+                                             install_bypass_triggers, register_functions)
+            register_functions(db)
+            ensure_sync_entity_tables(db)
+            install_bypass_triggers(db)
             db.execute(
                 "UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status IN ('dispatching','reserved')"
             )
@@ -1043,6 +1050,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if db is None:
             db = sqlite3.connect(self.db_path, timeout=15)
             db.row_factory = sqlite3.Row
+            from codex_sync_entities import register_functions
+            register_functions(db)
+            db.create_function("sync_invalidate_agent", 1, self.mark_agent_records_changed)
             if reusable:
                 local.connection = db
         if reusable:
@@ -1052,6 +1062,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         try:
             with db:
                 yield db
+            if getattr(local, "agent_cache_dirty", False):
+                local.agent_cache_dirty = False
+                self.invalidate_agent_records()
             jobs = pending.pop(db)
             for agent_id, kind, event_ids in jobs:
                 try:
@@ -1095,11 +1108,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
             return rows if shared else list(rows)
-        generation = write_generation(db)
-        # A writer can roll back and another writer can reuse its generation.
-        # Publish only committed reads. A write transaction always decodes anew.
-        cacheable = (generation is not None and
-                     (not db.in_transaction or db.execute("PRAGMA query_only").fetchone()[0] == 1))
+        with runtime._agent_records_cache_lock:
+            generation = runtime._agent_record_revision
+        cacheable = not db.in_transaction or db.execute("PRAGMA query_only").fetchone()[0] == 1
         if not cacheable:
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
@@ -1107,23 +1118,56 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             cache = runtime.__dict__.setdefault("_agent_records_cache", {})
             rows = cache.get(generation)
             if rows is None:
-                guard = runtime.__dict__.setdefault("_agent_records_cache_lock", threading.Lock())
+                guard = runtime._agent_records_cache_lock
                 with guard:
                     rows = cache.get(generation)
                     if rows is None:
                         rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                             "SELECT record FROM runtime_agents"))
-                        if write_generation(db) == generation:
+                        if runtime._agent_record_revision == generation:
                             cache[generation] = rows
                             while len(cache) > 4:
                                 cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
     def put(self, db, table, record):
+        previous = None
+        if table == "agents":
+            previous_row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record["id"],)).fetchone()
+            previous = json.loads(previous_row[0]) if previous_row else None
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (record["id"], json.dumps(record)))
+        from codex_sync_entities import put as sync_entity_put
+        collection = {
+            "agents": "agent", "tasks": "task", "monitors": "monitor",
+            "complaints": "complaint", "rooms": "room", "requests": "request",
+            "rules": "rule", "projects": "project", "work": "work",
+        }.get(table)
+        if collection:
+            if table == "rooms":
+                room = next((item for item in self.chat_rooms(db) if item["id"] == record["id"]), None)
+                sync_entity_put(db, collection, str(record["id"]), room or record, room is None)
+            else:
+                sync_entity_put(db, collection, str(record["id"]), record,
+                                bool(record.get("deletedAt")) if table == "agents" else False)
+        if (table == "agents" and previous and
+                any(previous.get(key) != record.get(key)
+                    for key in ("name", "rootId", "deletedAt", "sharedRoomId", "cwd"))):
+            for room in self.chat_rooms(db):
+                sync_entity_put(db, "room", room["id"], room)
         if table == "agents":
+            self.mark_agent_records_changed(record["id"])
             self.touch_ui(record["id"])
+
+    def invalidate_agent_records(self, _key=None):
+        with self._agent_records_cache_lock:
+            self._agent_record_revision += 1
+            self.__dict__.setdefault("_agent_records_cache", {}).clear()
+
+    def mark_agent_records_changed(self, key=None):
+        local = self.__dict__.setdefault("_callback_db", threading.local())
+        local.agent_cache_dirty = True
+        self.invalidate_agent_records(key)
 
     def touch_ui(self, key):
         with self.ui_condition:
@@ -4730,6 +4774,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 deliveries[recipient["id"]] = "queued"
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
+            derived_room = next((item for item in self.chat_rooms(db) if item["id"] == room["id"]), None)
+            if derived_room:
+                from codex_sync_entities import put as sync_entity_put
+                sync_entity_put(db, "room", room["id"], derived_room)
             return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})
 
     def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None):

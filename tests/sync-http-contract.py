@@ -24,6 +24,25 @@ with tempfile.TemporaryDirectory() as directory:
         payload = json.loads(projection['documents'][0]['payload'])
         assert 'runtime' in payload and 'threads' in payload and 'token' not in payload
         assert projection['workspaceId'] == identity['workspaceId']
+        entities = get('/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=100')
+        assert entities['workspaceId'] == identity['workspaceId']
+        assert entities['documents'] and all(row['id'].startswith('entity:') for row in entities['documents'])
+        rows = list(entities['documents'])
+        checkpoint = entities['checkpoint']['seq']
+        while not any(row['id'].startswith('entity:agent:') for row in rows) and checkpoint < entities['maxSeq']:
+            entities = get(f'/api/sync/pull?scope=state%3Aentities%3Av1&after={checkpoint}&limit=100')
+            rows.extend(entities['documents'])
+            checkpoint = entities['checkpoint']['seq']
+        agent = next(json.loads(row['payload'])['value'] for row in rows
+                     if row['id'].startswith('entity:agent:'))
+        assert {'id', 'name', 'status'} <= agent.keys()
+        assert 'nativeToolCatalog' not in agent and 'accountHistory' not in agent
+        with urllib.request.urlopen(origin + '/api/sync/stream?scope=state%3Aentities%3Av1', timeout=5) as stream:
+            entity_event = stream.readline().decode().strip()
+            assert entity_event.startswith('data: ')
+            assert int(json.loads(entity_event[6:])) == get('/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=1')['maxSeq']
+        with urllib.request.urlopen(origin + '/api/sync/stream', timeout=5) as stream:
+            assert stream.readline().decode().strip() == 'data: "RESYNC"'
         row = {'newDocumentState': {'id': 'phone:lead', 'seq': 0, '_deleted': False,
                'payload': json.dumps({'text': 'draft', 'session': 'lead', 'device': 'phone', 'updated': 1})}}
         def push(rows, workspace):
