@@ -122,6 +122,8 @@ class AccountContracts(unittest.TestCase):
                     },
                 }
             )
+        f.eventually(lambda: self.runtime.agent(a["id"])["tail"] == "default"
+                     and self.runtime.agent(b["id"])["tail"] == self.other_key)
         self.assertEqual(self.runtime.agent(a["id"])["tail"], "default")
         self.assertEqual(self.runtime.agent(b["id"])["tail"], self.other_key)
 

@@ -657,11 +657,14 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(a['id'])['activity']['phase'], 'thinking')
         event('item/started', item={'id': 'text', 'type': 'agentMessage', 'text': ''})
         event('item/agentMessage/delta', itemId='text', delta='First paragraph.\n\nUnfinished')
+        eventually(lambda: any(i['id'].endswith(':text') and i['text'].endswith('Unfinished')
+                               for i in self.runtime.transcript(a['id'])['items']))
         transcript = self.runtime.transcript(a['id'])
         self.assertEqual(transcript['agent']['activity']['phase'], 'writing')
         self.assertTrue(transcript['items'][-1]['streaming'])
         event('item/started', item={'id': 'cmd', 'type': 'commandExecution', 'command': 'test', 'status': 'inProgress'})
         event('item/commandExecution/outputDelta', itemId='cmd', delta='Live output\n')
+        eventually(lambda: 'Live output' in self.runtime.transcript(a['id'])['items'][-1]['text'])
         transcript = self.runtime.transcript(a['id'])
         self.assertEqual(transcript['agent']['activity']['phase'], 'tool')
         self.assertIn('Live output', transcript['items'][-1]['text'])
@@ -705,6 +708,7 @@ class RuntimeContract(unittest.TestCase):
         count = self.runtime.agent(a['id'])['events']
         self.runtime.notification({'method': method, 'params': {**samples[0], 'delta': ''.join(p['delta'] for p in samples)},
                                    '_studioNotificationSamples': samples})
+        eventually(lambda: counters()[0] - before[0] == len(samples))
         after = counters()
         self.assertEqual(after[0] - before[0], len(samples))
         self.assertEqual(after[1] - before[1], sum(len(encoded(p).encode('utf-8')) for p in samples))
@@ -729,6 +733,7 @@ class RuntimeContract(unittest.TestCase):
         count = self.runtime.agent(a['id'])['events']
         self.runtime.notification({'method': method, 'params': {**samples[0], 'delta': ''.join(p['delta'] for p in samples)},
                                    '_studioNotificationSamples': samples})
+        eventually(lambda: counters()[0] - before[0] == len(samples))
         after = counters()
         self.assertEqual(after[0] - before[0], len(samples))
         self.assertEqual(after[1] - before[1], sum(len(encoded(p).encode('utf-8')) for p in samples))
@@ -1146,6 +1151,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)['toolStatus'], 'running')
         self.runtime.notification({'method': 'turn/started', 'params': {'threadId': a['threadId'], 'turn': {'id': 'new-turn'}}})
         event('item/commandExecution/outputDelta', itemId=command['id'], delta='x' * 14000)
+        eventually(lambda: len(self.runtime.task_detail(key).get('tail', '')) == 12000)
         self.assertEqual(len(self.runtime.task_detail(key)['tail']), 12000)
         self.assertTrue(self.runtime.task_detail(key)['outputTruncated'])
         event('item/completed', item={**command, 'exitCode': 7, 'durationMs': 2500, 'aggregatedOutput': 'failed check'})

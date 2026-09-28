@@ -69,6 +69,7 @@ class NativeErrorContract(unittest.TestCase):
         self.send('thread/tokenUsage/updated', tokenUsage={})
         self.assertIn('nativeStatus', self.runtime.agent(self.key))
         self.send('item/agentMessage/delta', itemId='answer', delta='Recovered')
+        fixture.eventually(lambda: 'nativeStatus' not in self.runtime.agent(self.key))
         self.assertNotIn('nativeStatus', self.runtime.agent(self.key))
         self.assertEqual(self.runtime.agent(self.key)['activity']['phase'], 'writing')
 

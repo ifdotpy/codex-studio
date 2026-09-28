@@ -1223,6 +1223,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if account_key == "default":
                 self.offline = True
             agents = [a for a in self.records(db, "agents") if a.get("accountKey", "default") == account_key]
+            stream = getattr(self, '_stream_buffer', None)
+            if stream:
+                for thread_id in {a.get('threadId') for a in agents if a.get('threadId')}:
+                    stream.flush_locked(db, account=account_key, thread_id=thread_id,
+                                        force=True, close=True)
+                agents = [a for a in self.records(db, "agents") if a.get("accountKey", "default") == account_key]
             ids = {a["id"] for a in agents}
             self.loaded.difference_update(ids)
             for a in agents:
@@ -1264,7 +1270,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if voice:
             voice.disconnected_native(account_key, connection_id)
 
-    def item(self, db, agent, key, role, text, title=None, inputs=None, **metadata):
+    def item(self, db, agent, key, role, text, title=None, inputs=None, *, index_search=True, **metadata):
         key = agent + ":" + key
         record = {"id": key, "role": role, "title": title or role.title(),
                   "text": text[:20000], "truncated": len(text) > 20000, "at": time.time()}
@@ -1298,7 +1304,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "WHERE id=? AND EXISTS (SELECT 1 FROM runtime_events WHERE id=? AND agent=?)",
                     (key, receipt_id, receipt_id, agent),
                 )
-        self.index_item(db, key, agent, title or role, text)
+        if index_search:
+            self.index_item(db, key, agent, title or role, text)
+        else:
+            # A short unfinished item is complete in runtime_items. Remove
+            # its initial empty FTS entry and rebuild it on completion.
+            address = db.execute('SELECT search_rowid FROM runtime_search_rows WHERE id=?', (key,)).fetchone()
+            if address:
+                db.execute('DELETE FROM runtime_search WHERE rowid=?', (address[0],))
+                db.execute('DELETE FROM runtime_search_rows WHERE id=?', (key,))
+                db.execute('DELETE FROM runtime_search_indexed WHERE id=?', (key,))
         if role == "assistant":
             from codex_radio import observe_item
             observe_item(self, db, agent, key, role, text, metadata)
@@ -3202,6 +3217,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.start_error(agent_id, attempt["id"], error, unknown=True)
 
     def start_error(self, agent_id, attempt_id, error, *, unknown=False, preparation=False):
+        stream = getattr(self, '_stream_buffer', None)
+        if stream:
+            with self.lock, self.db() as db:
+                current = self.agent(agent_id, db)
+                thread_id = current.get('threadId')
+                if thread_id:
+                    stream.flush_locked(db, account=current.get('accountKey', 'default'),
+                                        thread_id=thread_id, force=True)
         from codex_context_repair import defer_context_start
         if defer_context_start(self, agent_id, attempt_id, error, unknown=unknown):
             return
@@ -3361,8 +3384,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         voice = getattr(self, "_voice_store", None)
         if voice and voice.native_notification(message, account_key, connection_id):
             return
+        if method == 'error' and isinstance(p, dict) and p.get('threadId'):
+            stream = getattr(self, '_stream_buffer', None)
+            if stream:
+                with self.lock, self.db() as db:
+                    stream.flush_locked(db, account=account_key, thread_id=p['threadId'],
+                                        turn_id=p.get('turnId'), force=True)
         if consume_native_notification(self, message, account_key, connection_id):
             return
+        if method in {'item/agentMessage/delta', 'item/commandExecution/outputDelta'}:
+            from codex_streaming import StreamBuffer
+            stream = getattr(self, '_stream_buffer', None)
+            if stream is None:
+                stream = self.__dict__.setdefault('_stream_buffer', StreamBuffer(self))
+            if stream.enqueue(message, account_key, connection_id):
+                return
         if method == "account/login/completed":
             self.accounts.login_completed(account_key, p)
             return
@@ -3448,6 +3484,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             a = json.loads(row[0])
             if a.get("deletedAt"):
                 return
+            stream = getattr(self, '_stream_buffer', None)
+            if stream:
+                if method == 'item/completed' and isinstance((p.get('item') or {}).get('id'), str):
+                    stream.flush_locked(db, thread_id=tid, item_id=p['item']['id'],
+                                        account=account_key, turn_id=p.get('turnId'), close=True, force=True)
+                elif method == 'turn/completed':
+                    stream.flush_locked(db, thread_id=tid, turn_id=(p.get('turn') or {}).get('id'),
+                                        account=account_key, close=True, close_commands=False, force=True)
+                elif method == 'thread/closed' or (method == 'thread/status/changed'
+                        and (p.get('status') or {}).get('type') == 'notLoaded'):
+                    stream.flush_locked(db, account=account_key, thread_id=tid, close=True, force=True)
+                a = self.agent(a['id'], db)
             attempt = a.get("startAttempt") or {}
             if (a.get("nativeReview") and attempt.get("action") == "review"
                     and attempt.get("submitted") and method in {"item/started", "item/completed"}
@@ -3584,6 +3632,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["tail"] = item["review"][-300:]
                 if kind == "agentMessage" and method == "item/completed":
                     text = item.get("text", "")
+                    if not text:
+                        buffered = db.execute('SELECT record FROM runtime_items WHERE id=?',
+                                              (a['id'] + ':' + item['id'],)).fetchone()
+                        if buffered:
+                            saved = json.loads(buffered[0])
+                            full = (db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid '
+                                               'FROM runtime_search_rows WHERE id=?)',
+                                               (a['id'] + ':' + item['id'],)).fetchone()
+                                    if saved.get('truncated') else None)
+                            text = full[0] if full else saved.get('text', '')
                     self.item(db, a["id"], item["id"], "assistant", text, streaming=False,
                               turnId=p.get("turnId") or a.get("turnId"), phase=item.get("phase"))
                     if item.get("questions"):
@@ -3604,10 +3662,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["lastAnswer"] = text[-16000:]
                 elif kind not in {"reasoning", "userMessage", "agentMessage"}:
                     if kind == "commandExecution" and not started and item.get("aggregatedOutput") is None:
+                        streamed = db.execute('SELECT record FROM runtime_items WHERE id=?',
+                                              (a['id'] + ':' + item['id'],)).fetchone()
+                        streamed_output = None
+                        if streamed:
+                            streamed_record = json.loads(streamed[0])
+                            full = (db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid '
+                                               'FROM runtime_search_rows WHERE id=?)',
+                                               (a['id'] + ':' + item['id'],)).fetchone()
+                                    if streamed_record.get('truncated') else None)
+                            try:
+                                streamed_output = json.loads(full[0] if full else streamed_record['text']).get('aggregatedOutput')
+                            except (ValueError, TypeError):
+                                pass
                         saved = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (a["id"] + ":" + item["id"],)).fetchone()
                         if saved:
                             saved_task = json.loads(saved[0])
-                            item = {**item, "aggregatedOutput": saved_task.get("tail", ""),
+                            item = {**item, "aggregatedOutput": streamed_output if streamed_output is not None else saved_task.get("tail", ""),
                                     "outputTruncated": saved_task.get("outputTruncated", False)}
                     self.item(db, a["id"], item.get("id", uid()), "output", json.dumps(item, ensure_ascii=False), kind,
                               toolStatus="running" if started else "failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed",
@@ -5035,6 +5106,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return {"id": key, "status": current["status"], "cancelRequested": running}
 
     def interrupt(self, a):
+        stream = getattr(self, '_stream_buffer', None)
+        if stream and a.get('threadId'):
+            with self.lock, self.db() as db:
+                stream.flush_locked(db, account=a.get('accountKey', 'default'),
+                                    thread_id=a['threadId'], force=True)
         server = self.servers.get(a.get("accountKey", "default"))
         if server and a.get("nativeReview") and not a.get("turnId"):
             attempt = None
@@ -5102,6 +5178,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         break
                     ids = expanded
             stopped = [a for a in agents if a["id"] in ids]
+            stream = getattr(self, '_stream_buffer', None)
+            if stream:
+                for account, thread_id in {(a.get('accountKey', 'default'), a.get('threadId'))
+                                           for a in stopped if a.get('threadId')}:
+                    stream.flush_locked(db, account=account, thread_id=thread_id,
+                                        force=True, close=True)
+                stopped = [self.agent(a['id'], db) for a in stopped]
             for a in stopped:
                 self.capacity_reset(db, a, "The agent was stopped.")
                 self.usage_resume_cancel(db, a, "The agent was stopped.")
@@ -5688,6 +5771,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return
             from codex_restart_recovery import capture as capture_restart
             with self.db() as db:
+                stream = getattr(self, '_stream_buffer', None)
+                if stream:
+                    stream.shutdown_locked(db)
                 for agent in self.records(db, "agents"):
                     capture_restart(agent)
                     self.put(db, "agents", agent)

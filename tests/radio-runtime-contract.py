@@ -117,6 +117,7 @@ class RadioRuntime(unittest.TestCase):
         for chunk in chunks:
             self.runtime.server.notify({'method':'item/agentMessage/delta','params':{
                 'threadId':first['threadId'],'turnId':first['turnId'],'itemId':'long-stream','delta':chunk}})
+        f.eventually(lambda: self.runtime.chat_read(self.room['id'])['messages'][-1]['text'] == ''.join(chunks))
         page=self.runtime.chat_read(self.room['id'])
         self.assertEqual(page['messages'][-1]['text'], ''.join(chunks))
         self.finish(first,'Done.')

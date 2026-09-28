@@ -94,6 +94,7 @@ class HarnessResponseContract(unittest.TestCase):
         event('item/commandExecution/outputDelta', itemId=command['id'], delta='first\n')
         event('item/commandExecution/outputDelta', itemId=command['id'], delta='second\n')
         key = self.agent['id'] + ':' + command['id']
+        eventually(lambda: self.runtime.task_detail(key).get('tail') == 'first\nsecond\n')
         self.assertEqual(self.runtime.task_detail(key)['tail'], 'first\nsecond\n')
         event('item/completed', item={**command, 'exitCode': 0})
         self.assertEqual(self.runtime.task_detail(key)['tail'], 'first\nsecond\n')
