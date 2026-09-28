@@ -74,6 +74,8 @@ class SyncStore:
             if getattr(self, '_versions_ready', False):
                 return
             with self.connect() as db:
+                from codex_sync_entities import ensure_tables
+                ensure_tables(db)
                 db.execute('''CREATE TABLE IF NOT EXISTS sync_versions (
                     seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
                     hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL)''')
@@ -213,6 +215,7 @@ class SyncStore:
                     'documents': documents, 'checkpoint': {'seq': checkpoint}}
 
     def _put(self, db, scope, key, payload, deleted=False):
+        self._ensure_versions()
         encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
         old = db.execute('SELECT payload, deleted FROM sync_documents WHERE scope=? AND id=?', (scope, key)).fetchone()
         if old and old[0] == encoded and bool(old[1]) == deleted:

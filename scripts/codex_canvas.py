@@ -133,8 +133,11 @@ class Canvas:
         db = (sqlite3.connect(self.db.absolute().as_uri() + '?mode=ro', uri=True, timeout=10)
               if self.read_only else sqlite3.connect(self.db, timeout=10))
         db.row_factory = sqlite3.Row
-        from codex_sync_entities import register_functions
+        from codex_sync_entities import register_functions, ensure_tables
         register_functions(db)
+        if not self.read_only and not db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
+            ensure_tables(db)
         try:
             with db:
                 yield db

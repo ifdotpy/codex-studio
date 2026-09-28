@@ -1057,8 +1057,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # old implementation; registering only when opening a connection
         # leaves that connection without the functions used by budget writes
         # and runtime_events triggers.
-        from codex_sync_entities import register_functions
+        from codex_sync_entities import register_functions, ensure_tables, install_bypass_triggers
         register_functions(db)
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
+            ensure_tables(db)
+            install_bypass_triggers(db)
         db.create_function("sync_invalidate_agent", 1, self.mark_agent_records_changed)
         if reusable:
             local.depth = 1
@@ -1113,7 +1116,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
             return rows if shared else list(rows)
-        with runtime._agent_records_cache_lock:
+        cache_lock = runtime.__dict__.setdefault("_agent_records_cache_lock", threading.RLock())
+        runtime.__dict__.setdefault("_agent_record_revision", 0)
+        with cache_lock:
             generation = runtime._agent_record_revision
         cacheable = not db.in_transaction or db.execute("PRAGMA query_only").fetchone()[0] == 1
         if not cacheable:
@@ -1123,7 +1128,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             cache = runtime.__dict__.setdefault("_agent_records_cache", {})
             rows = cache.get(generation)
             if rows is None:
-                guard = runtime._agent_records_cache_lock
+                guard = runtime.__dict__["_agent_records_cache_lock"]
                 with guard:
                     rows = cache.get(generation)
                     if rows is None:
@@ -1193,7 +1198,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.touch_ui(record["id"])
 
     def invalidate_agent_records(self, _key=None):
-        with self._agent_records_cache_lock:
+        with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):
+            self.__dict__.setdefault("_agent_record_revision", 0)
             self._agent_record_revision += 1
             self.__dict__.setdefault("_agent_records_cache", {}).clear()
 
