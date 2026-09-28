@@ -1364,7 +1364,7 @@ try {
     .waitFor();
   assert.match(
     await transferDialog.innerText(),
-    /Subagents keep their accounts/,
+    /Same provider subagents move too; other providers stay on their accounts/,
   );
   await transferDialog
     .getByRole("button", { name: "Transfer chat", exact: true })

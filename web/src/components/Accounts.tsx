@@ -174,11 +174,13 @@ export function AccountTransferStatus({
   transfer,
   targetLabel,
   pending,
+  showCompleted = false,
   onAction,
 }: {
   transfer?: Json;
   targetLabel?: string;
   pending?: boolean;
+  showCompleted?: boolean;
   onAction: (action: "retry" | "cancel") => void;
 }) {
   if (!transfer) return null;
@@ -186,7 +188,7 @@ export function AccountTransferStatus({
   const left = Array.isArray(transfer.leftOnSource) ? transfer.leftOnSource : [];
   const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
   const interrupted = Array.isArray(transfer.interrupted) ? transfer.interrupted : [];
-  if (transfer.status !== "pending" && !left.length && !blocked.length) return null;
+  if (transfer.status !== "pending" && !left.length && !blocked.length && !showCompleted) return null;
   return (
     <div className="account-menu-note" role="status">
       <ArrowRightLeft size={14} />
@@ -357,9 +359,10 @@ export default function Accounts({
     (!agent.isLead || !agent.empty || !!agent.threadId || !!agent.inFlight);
   const owner = agent?.isLead ? agent : undefined;
   const transfer = owner?.accountTransfer;
-  const transferring = transfer?.status === "pending";
+  const teamTransfer = transfer?.scope === "subagents" ? undefined : transfer;
+  const transferring = teamTransfer?.status === "pending";
   const transferTarget = accounts.find(
-    (a) => a.id === transfer?.targetAccountKey,
+    (a) => a.id === teamTransfer?.targetAccountKey,
   );
   const title = selected?.email || selected?.label || "Codex account";
   const replacement = accounts.find(
@@ -447,7 +450,7 @@ export default function Accounts({
                   account.status !== "ready" ||
                   account.disconnected ||
                   (pinned && !owner) ||
-                  (transferring && account.id !== transfer?.targetAccountKey)
+                  (transferring && account.id !== teamTransfer?.targetAccountKey)
                 }
                 leftSection={
                   account.id === accountKey ? (
@@ -458,7 +461,7 @@ export default function Accounts({
                 }
                 onClick={() => {
                   const extendTransfer =
-                    transferring && account.id === transfer?.targetAccountKey;
+                    transferring && account.id === teamTransfer?.targetAccountKey;
                   if (account.id === accountKey && !extendTransfer) return;
                   if (pinned && owner)
                     setTransferChoice({
@@ -499,14 +502,14 @@ export default function Accounts({
               </Menu.Item>
             ))}
           <AccountTransferStatus
-            transfer={transfer}
+            transfer={teamTransfer}
             targetLabel={transferTarget?.email || transferTarget?.label}
             pending={!!pending}
             onAction={(kind) =>
               void action(`${kind}-transfer`, () =>
                 api("/api/agents/account-transfer", {
                   action: kind,
-                  request_id: transfer.id,
+                  request_id: teamTransfer?.id,
                 }),
               )
             }

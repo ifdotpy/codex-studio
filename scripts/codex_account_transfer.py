@@ -79,7 +79,7 @@ class AccountTransfers:
         if current.get('id') not in {None, op['id']} and lead.get('accountTransferId') != op['id']:
             return
         members = list(op['members'].values())
-        lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated')}
+        lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated', 'scope')}
         lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] in MEMBER_TERMINAL for m in members),
             moved=sum(m['phase'] == 'completed' for m in members),
             interrupted=[{'id': aid, 'name': m.get('name'), 'reason': m.get('interruptReason')}
@@ -155,10 +155,12 @@ class AccountTransfers:
                                 pendingSettingsAccountKey=target)
         return resolved
 
-    def request(self, key, target, request_id):
+    def request(self, key, target, request_id, scope='team'):
         if not isinstance(request_id, str):
             raise ValueError('Supply a transfer request id')
         uuid.UUID(request_id)
+        if scope not in {'team', 'subagents'}:
+            raise ValueError('Choose a team or subagents account transfer')
         rt = self.rt
         rt.accounts.get(target)
         with rt.lock, rt.db() as db:
@@ -170,18 +172,20 @@ class AccountTransfers:
                           if request_id in op.get('requests', {})), None)
             if alias:
                 op, receipt = alias
-                if receipt['leadId'] != key or receipt['targetAccountKey'] != target:
+                if (receipt['leadId'] != key or receipt['targetAccountKey'] != target
+                        or receipt.get('scope', 'team') != scope):
                     raise ValueError('This transfer id has different content')
                 return op
             row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (request_id,)).fetchone()
             if row:
                 op = json.loads(row[0])
-                if op['leadId'] != key or op['targetAccountKey'] != target:
+                if (op['leadId'] != key or op['targetAccountKey'] != target
+                        or op.get('scope', 'team') != scope):
                     raise ValueError('This transfer id has different content')
                 return op
             old = lead.get('accountTransfer') or {}
             if old and old['status'] not in TERMINAL:
-                if old['targetAccountKey'] == target:
+                if old['targetAccountKey'] == target and old.get('scope', 'team') == scope:
                     op = self.get(db, old['id'])
                     members = [a for a in rt.records(db, 'agents')
                                if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]
@@ -192,7 +196,8 @@ class AccountTransfers:
                         defaults['accountKey'] = target
                         lead['workerDefaults'] = defaults
                         rt.put(db, 'agents', lead)
-                    op.setdefault('requests', {})[request_id] = {'leadId': key, 'targetAccountKey': target}
+                    op.setdefault('requests', {})[request_id] = {
+                        'leadId': key, 'targetAccountKey': target, 'scope': scope}
                     if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
                         op['status'] = 'completed'
                     self.save(db, op)
@@ -205,13 +210,13 @@ class AccountTransfers:
                        if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]
             target_provider = rt.accounts.get(target).get('provider', 'codex')
             op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
-                  'status': 'pending', 'created': time.time(), 'members': {},
-                  'requests': {request_id: {'leadId': key, 'targetAccountKey': target}}}
-            # New workers inherit the team's destination once this operation commits.
+                  'status': 'pending', 'scope': scope, 'created': time.time(), 'members': {},
+                  'requests': {request_id: {'leadId': key, 'targetAccountKey': target, 'scope': scope}}}
+            # Subagent-only changes take effect now; team transfers set this as the lead moves.
             root = rt.agent(key, db)
             op['targetProvider'] = target_provider
             self.adopt(db, op, members)
-            if root.get('accountKey', 'default') == target:
+            if scope == 'subagents' or root.get('accountKey', 'default') == target:
                 defaults = copy.deepcopy(root.get('workerDefaults') or rt.worker_defaults(root))
                 defaults['accountKey'] = target
                 root['workerDefaults'] = defaults
@@ -230,6 +235,8 @@ class AccountTransfers:
                 continue
             if not include_later and op.get('created') and a.get('created', 0) > op['created']:
                 continue
+            if op.get('scope', 'team') == 'subagents' and a['id'] == op['leadId']:
+                continue
             provider = self.rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')
             if (a['id'] != op['leadId']
                     and provider != op.get('targetProvider', self.rt.accounts.get(op['targetAccountKey']).get('provider', 'codex'))):
@@ -239,8 +246,7 @@ class AccountTransfers:
                 continue
             self.check_destination(a, op['targetAccountKey'], db)
             done = a.get('accountKey', 'default') == op['targetAccountKey']
-            active = bool(a.get('inFlight') or a.get('status') in ACTIVE
-                          or a.get('status') in {'queued', 'waiting'})
+            active = bool(a.get('inFlight') or a.get('status') in ACTIVE)
             op['members'][a['id']] = {'phase': 'completed' if done else 'waiting',
                 'sourceAccountKey': a.get('accountKey', 'default'), 'sourceThreadId': a.get('threadId'),
                 'name': a.get('name'), 'provider': provider,

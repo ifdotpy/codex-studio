@@ -1004,7 +1004,8 @@ def make_server(canvas, port=0, public_origin=None):
                         transfers = transfer_store(runtime)
                         if body.get("action"):
                             return self.send(transfers.action(body.get("request_id"), body["action"]))
-                        return self.send(transfers.request(body.get("id"), body.get("account_key"), body.get("request_id")))
+                        return self.send(transfers.request(body.get("id"), body.get("account_key"),
+                                                           body.get("request_id"), body.get("scope", "team")))
                     if self.path == "/api/agents/account":
                         selected = runtime.set_account(body.get("id"), body.get("account_key"), body.get("cwd"))
                         with runtime.lock, runtime.db() as db:

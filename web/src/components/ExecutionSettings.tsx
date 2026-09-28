@@ -8,7 +8,7 @@ import {
   supportsDaybreakMode,
   useWorkerModels,
 } from "./WorkerModelPicker";
-import type { Account } from "./Accounts";
+import { AccountTransferStatus, type Account } from "./Accounts";
 import "./execution-settings.css";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
@@ -339,6 +339,60 @@ function ScopedExecutionSettings({
       if (mounted.current) setSaving(false);
     }
   };
+  const saveTeamSettings = async () => {
+    if (!accountDraft || saveLock.current) return;
+    const target = current.account_key;
+    if (target && target !== stored.account_key) {
+      const subagentTransferReceiptKey = `subagent-account-transfer:${JSON.stringify([agent.id, target])}`;
+      const previous = saved<{ target?: string; request_id?: string } | null>(
+        subagentTransferReceiptKey,
+        null,
+      );
+      const requestId =
+        previous && previous.target === target && previous.request_id
+          ? previous.request_id
+          : crypto.randomUUID();
+      save(subagentTransferReceiptKey, { target, request_id: requestId });
+      saveLock.current = true;
+      setSaving(true);
+      setError("");
+      try {
+        await api("/api/agents/account-transfer", {
+          id: agent.id,
+          account_key: target,
+          request_id: requestId,
+          scope: "subagents",
+        });
+        save(subagentTransferReceiptKey, null);
+        await refresh();
+      } catch (failure) {
+        setError(errorText(failure));
+        return;
+      } finally {
+        saveLock.current = false;
+        setSaving(false);
+      }
+    }
+    await submit({ id: agent.id, worker_defaults: current }, current);
+  };
+  const runTeamTransferAction = async (action: "retry" | "cancel") => {
+    if (saveLock.current || !agent.accountTransfer?.id) return;
+    saveLock.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      await api("/api/agents/account-transfer", {
+        action,
+        request_id: agent.accountTransfer.id,
+      });
+      await refresh();
+    } catch (failure) {
+      setError(errorText(failure));
+    } finally {
+      saveLock.current = false;
+      setSaving(false);
+    }
+  };
   const change = async (patch: Json) => {
     if (disabled) return;
     const next = { ...current, ...patch };
@@ -516,6 +570,24 @@ function ScopedExecutionSettings({
             description="Applies to new subagents. The orchestrator chooses their model and reasoning."
           />
         )}
+        {teamDefaults && agent.accountTransfer?.scope === "subagents" && (
+          <AccountTransferStatus
+            transfer={agent.accountTransfer}
+            showCompleted
+            targetLabel={
+              accounts.find(
+                (account) =>
+                  account.id === agent.accountTransfer?.targetAccountKey,
+              )?.email ||
+                accounts.find(
+                  (account) =>
+                    account.id === agent.accountTransfer?.targetAccountKey,
+                )?.label
+            }
+            pending={saving}
+            onAction={(action) => void runTeamTransferAction(action)}
+          />
+        )}
         <NativeSelect
           id={teamDefaults ? undefined : "model"}
           label={prefix + " model"}
@@ -626,9 +698,7 @@ function ScopedExecutionSettings({
             <Button
               disabled={disabled || !modeSupported || !accountAvailable}
               loading={saving}
-              onClick={() =>
-                void submit({ id: agent.id, worker_defaults: current }, current)
-              }
+              onClick={() => void saveTeamSettings()}
             >
               Save subagent settings
             </Button>

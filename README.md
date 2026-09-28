@@ -128,6 +128,8 @@ saved history. It preserves the original native session and does not replay old
 commands. A provider change selects the destination model
 and clears queued settings for the previous provider. Codex account transfers
 continue to use native history copies.
+Changing the Subagents account starts a subagent-only transfer and updates the
+account used by future workers while the lead stays on its current account.
 See [the parity checks](docs/verification/2026-09-22-claude-parity.md) for evidence
 and the tested reference revision.
 
