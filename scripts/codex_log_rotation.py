@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import threading
-import uuid
 
 
 class RotatingLog:
@@ -22,30 +21,15 @@ class RotatingLog:
         return self.path.with_name(self.path.name + "." + str(index))
 
     def _trim_existing(self):
-        """Keep the newest capped bytes when adopting an oversized old log."""
+        """Move an oversized old log to the first backup. A rename copies and deletes nothing."""
         if not self.path.exists() or self.path.stat().st_size <= self.max_bytes:
             return
         if not self.backups:
             with self.path.open("wb"):
                 pass
             return
-        temporary = self.path.with_name(self.path.name + ".trim-" + uuid.uuid4().hex)
-        try:
-            with self.path.open("rb") as source, temporary.open("wb") as target:
-                source.seek(-self.max_bytes, os.SEEK_END)
-                while chunk := source.read(1024 * 1024):
-                    target.write(chunk)
-                target.flush()
-                os.fsync(target.fileno())
-            self._roll_backups()
-            os.replace(temporary, self._backup(1))
-            with self.path.open("wb"):
-                pass
-        finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+        self._roll_backups()
+        os.replace(self.path, self._backup(1))
 
     def _roll_backups(self):
         try:

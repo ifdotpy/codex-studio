@@ -461,12 +461,17 @@ class AppServer:
         """Copy subprocess stderr through the size-bounded writer without blocking it."""
         try:
             while True:
-                chunk = os.read(self.proc.stderr.fileno(), 65536)
+                try:
+                    chunk = os.read(self.proc.stderr.fileno(), 65536)
+                except (OSError, ValueError):
+                    return
                 if not chunk:
                     return
-                self.log.write(chunk)
-        except (OSError, ValueError):
-            return
+                try:
+                    self.log.write(chunk)
+                except Exception:
+                    # Keep draining: a full pipe would block the app-server's stderr writes.
+                    pass
         finally:
             self.stderr_done.set()
             self.close_log_if_idle()

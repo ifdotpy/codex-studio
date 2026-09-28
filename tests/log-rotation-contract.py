@@ -24,17 +24,18 @@ class LogRotationContract(unittest.TestCase):
             retained = b"".join(file.read_bytes() for file in reversed(files) if file.exists())
             self.assertEqual(retained, b"abcdefghijklmnopqrstuv")
 
-    def test_adopts_oversized_existing_log_by_retaining_its_tail(self):
+    def test_adopts_oversized_existing_log_by_moving_it_whole(self):
+        # A rename keeps the old history; the backup window bounds it later.
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "app-server.log"
             path.write_bytes(b"0123456789")
             writer = RotatingLog(path, max_bytes=4, backups=1)
             self.assertEqual(path.read_bytes(), b"")
-            self.assertEqual(path.with_name(path.name + ".1").read_bytes(), b"6789")
+            self.assertEqual(path.with_name(path.name + ".1").read_bytes(), b"0123456789")
             writer.write(b"abcd")
             writer.close()
             self.assertEqual(path.read_bytes(), b"abcd")
-            self.assertEqual(path.with_name(path.name + ".1").read_bytes(), b"6789")
+            self.assertEqual(path.with_name(path.name + ".1").read_bytes(), b"0123456789")
 
     def test_app_server_stderr_is_drained_to_rotating_log(self):
         with tempfile.TemporaryDirectory() as directory:
