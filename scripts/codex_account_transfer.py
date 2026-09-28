@@ -76,8 +76,11 @@ class AccountTransfers:
         current = lead.get('accountTransfer') or {}
         if lead.get('accountTransferId') not in {None, op['id']}:
             return
+        # A finished earlier transfer does not own the summary. A lead that is
+        # already on the target has no exact pointer to the new operation.
         if current.get('id') not in {None, op['id']} and lead.get('accountTransferId') != op['id']:
-            return
+            if current.get('status') not in TERMINAL or not self.newer(db, op, current['id']):
+                return
         members = list(op['members'].values())
         lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated', 'scope')}
         lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] in MEMBER_TERMINAL for m in members),
@@ -95,6 +98,10 @@ class AccountTransfers:
             needsAttention=any(m['phase'] in {'blocked', 'unknown'} for m in members),
             canRetry=any(m['phase'] == 'blocked' and not m.get('archiveInvalidated') for m in members))
         self.rt.put(db, 'agents', lead)
+
+    def newer(self, db, op, other_id):
+        row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (other_id,)).fetchone()
+        return row is None or op.get('created', 0) > json.loads(row[0]).get('created', 0)
 
     def check_destination(self, actor, target, db=None):
         self.rt.accounts.home(target)  # Validate the registered account identity.
@@ -326,6 +333,16 @@ class AccountTransfers:
                 orphan['status'] = 'cancelled'
                 orphan['cancelledAt'] = time.time()
                 self.save(db, orphan)
+            # Repair a pending operation whose lead summary still names a
+            # finished earlier transfer; the scan below finds it by summary.
+            for op in pending:
+                if op.get('status') != 'pending':
+                    continue
+                lead = rt.agent(op['leadId'], db)
+                current = lead.get('accountTransfer') or {}
+                if (not lead.get('accountTransferId') and current.get('id') not in {None, op['id']}
+                        and current.get('status') in TERMINAL and self.newer(db, op, current['id'])):
+                    self.save(db, op)
             operations = set()
             for a in agents:
                 if not a.get('isLead'):

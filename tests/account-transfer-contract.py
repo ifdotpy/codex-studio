@@ -597,6 +597,28 @@ class TransferContract(f.AccountContracts):
                                           parent=self.lead_agent['id'], defer=True)
         self.assertEqual(next_worker['accountKey'], self.other_key)
 
+    def test_team_transfer_after_a_finished_lead_transfer_moves_descendants(self):
+        # The lead already moved in an earlier transfer; its descendants did not.
+        first = self.start_transfer()
+        self.tick()
+        self.until(lambda: len(self.pending) == 1)
+        self.complete_fork()
+        self.until(lambda: self.receipt(first['id'])['status'] == 'completed')
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountKey'], self.other_key)
+        worker = self.runtime.create({'name': 'Old worker', 'prompt': 'Task'},
+                                     parent=self.lead_agent['id'], defer=True)
+        self.set_agent(worker['id'], accountKey='default', status='complete', inFlight=False,
+                       threadId='native-worker', turnId=None)
+        op = self.store.request(self.lead_agent['id'], self.other_key, str(uuid.uuid4()))
+        self.assertEqual(op['members'][self.lead_agent['id']]['phase'], 'completed')
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['id'], op['id'])
+        self.tick()
+        self.until(lambda: len(self.pending) == 2)
+        self.assertEqual(self.pending[1][1].get('threadId'), 'native-worker')
+        self.complete_fork(1)
+        self.until(lambda: self.receipt(op['id'])['status'] == 'completed')
+        self.assertEqual(self.runtime.agent(worker['id'])['accountKey'], self.other_key)
+
     def test_restart_during_interrupt_does_not_repeat_or_lose_queued_event(self):
         aid = self.lead_agent['id']
         self.set_agent(aid, status='running', autoWake=True, inFlight=True, threadId='native-source', turnId='turn-running')
