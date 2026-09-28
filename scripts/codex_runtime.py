@@ -2334,7 +2334,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("The account tool catalog is updating. Input remains queued.")
         if timing is not None:
             timing["prepareChecksDoneAt"] = time.monotonic_ns()
-        if a.get("accountTransferId") and not a.get("inFlight"):
+        if a.get("accountTransferId") and not a.get("inFlight") and not a.get("lazyAccountTransfer"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
         server = self.connect(a.get("accountKey", "default"))
         from codex_native_release import reconcile_unknown
@@ -2704,7 +2704,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     and (not a.get("inFlight") or
                          (a.get("startAttempt") or {}).get("action") not in {"review", "compact"})
                     and a.get("browserRecovery", {}).get("stage") not in {"pending", "reconnecting"}
-                    and not a.get("accountTransferId")
+                    and (not a.get("accountTransferId") or bool(a.get("lazyAccountTransfer")))
                     and not (a.get("nativeRelease") or {}).get("resetPending")
                     and not native_thread_block(a)
                     and not ((a.get("startAttempt") or {}).get("events") and
@@ -2859,6 +2859,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         epoch = a["epoch"]
         attempt_id = a["startAttempt"]["id"]
         try:
+            if a.get("lazyAccountTransfer"):
+                from codex_account_transfer import transfer_store
+                a = transfer_store(self).before_start(a)
             revalidated_execution = None
             account_key = a.get("accountKey", "default")
             settings_account = a.get("executionSettingsAccountKey", account_key)

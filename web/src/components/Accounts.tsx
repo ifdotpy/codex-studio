@@ -197,6 +197,12 @@ export function AccountTransferStatus({
           {transfer.moved ?? transfer.completed ?? 0} moved to {targetLabel}
           {transfer.status === "pending" && ` · ${waiting} waiting`}
         </div>
+        {!!transfer.nativeHistoryPending && (
+          <small>{transfer.nativeHistoryPending} native histories pending (lazy)</small>
+        )}
+        {!!transfer.movingNow && (
+          <small>{transfer.movingNow} moving now</small>
+        )}
         {transfer.waiting && <small>{transfer.waiting}</small>}
         {interrupted.map((member: Json) => (
           <small key={String(member.id)}>
@@ -422,7 +428,7 @@ export default function Accounts({
             <span className="account-picker-label">{title}</span>
             {transferring && (
               <span aria-label="Account transfer in progress">
-                {transfer.completed}/{transfer.total}
+                {transfer.moved ?? transfer.completed}/{transfer.total}
               </span>
             )}
           </Button>
