@@ -184,7 +184,16 @@ try {
   await wait(async () => sent.length === 1, "Idle Send reaches scheduler");
   assert.equal(sent.length, 1);
   assert.equal(sent[0].delivery, undefined);
+  // An idle chat shows the new message in the chat, not in the queue, while
+  // the scheduler normally takes it. It joins the queue only after it waits.
+  await bubble("Normal idle send").waitFor();
+  assert.equal(
+    await panel.getByText("Normal idle send", { exact: true }).count(),
+    0,
+    "A message sent to an idle chat does not flash in the queue",
+  );
   await panel.getByText("Normal idle send", { exact: true }).waitFor();
+  assert.equal(await bubble("Normal idle send").count(), 0);
   await composer.fill("Tab keeps this draft");
   await composer.press("Tab");
   assert.equal(sent.length, 1, "Tab does not add another message");

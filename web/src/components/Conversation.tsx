@@ -49,11 +49,14 @@ import {
   mergeQueueOrder,
 } from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
+
+const QUEUE_GRACE_MS = 3000;
 import { useConversationScroll } from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
 import { queueUploads } from "../sync/uploads";
 import {
+  busy,
   statusLabel,
   type Agent,
   type Json,
@@ -432,7 +435,7 @@ export default function Conversation(p: {
     edited: p.onOutgoingEdit,
     refresh: p.refresh,
   });
-  const queue = useMemo(
+  const queued = useMemo(
     () =>
       [
         ...messageQueue.items,
@@ -471,6 +474,31 @@ export default function Conversation(p: {
       ),
     [messageQueue.items, items, p.id],
   );
+  // An idle agent takes a new message within about a second. Show that
+  // message in the chat as sending; it joins the queue only if it waits.
+  const idleAgent = !!agent && !busy.has(agent.status) && !agent.inFlight;
+  const firstSeen = useRef(new Map<string, number>());
+  const [queueClock, setQueueClock] = useState(() => Date.now());
+  const { queue, sending } = useMemo(() => {
+    const now = Date.now();
+    const shown: typeof queued = [];
+    const held: typeof queued = [];
+    for (const entry of queued) {
+      if (!firstSeen.current.has(entry.id)) firstSeen.current.set(entry.id, now);
+      const created =
+        typeof entry.created === "number" ? entry.created * 1000 : now;
+      const waited =
+        now - (firstSeen.current.get(entry.id) || now) >= QUEUE_GRACE_MS ||
+        now - created >= QUEUE_GRACE_MS;
+      (idleAgent && !waited ? held : shown).push(entry);
+    }
+    return { queue: shown, sending: held };
+  }, [queued, idleAgent, queueClock]);
+  useEffect(() => {
+    if (!sending.length) return;
+    const timer = setTimeout(() => setQueueClock(Date.now()), QUEUE_GRACE_MS);
+    return () => clearTimeout(timer);
+  }, [sending]);
   const addFiles = async (files: globalThis.File[]) => {
     if (!p.id || !managed)
       throw new Error("Select a managed chat before attaching files.");
@@ -734,9 +762,39 @@ export default function Conversation(p: {
             `${p.id}:${event.id}` === m.id,
         )
       : undefined;
+  const sendingEntry = (m: Message) =>
+    m.role === "user"
+      ? sending.find(
+          (event) =>
+            event.id === m.clientMessageId ||
+            event.id === m.id ||
+            `${p.id}:${event.id}` === m.id,
+        )
+      : undefined;
   const transcriptItems = useMemo(
-    () => items.filter((item) => !queueEntry(item)),
-    [items, queue, p.id],
+    () => [
+      ...items
+        .filter((item) => !queueEntry(item))
+        .map((item) =>
+          sendingEntry(item) ? { ...item, deliveryStatus: "sending" } : item,
+        ),
+      ...sending
+        .filter((entry) => !items.some((item) => sendingEntry(item) === entry))
+        .map(
+          (entry) =>
+            ({
+              id: entry.id,
+              clientMessageId: entry.id,
+              role: "user",
+              text: entry.text,
+              ...("assets" in entry ? { assets: entry.assets } : {}),
+              pending: true,
+              localDelivery: true,
+              deliveryStatus: "sending",
+            }) as Message,
+        ),
+    ],
+    [items, queue, sending, p.id],
   );
   const userText = (m: Message) => <div className="prose plain">{m.text}</div>;
   const editOutgoing = useMessageAction(async (entry: OutgoingMessage) => {
