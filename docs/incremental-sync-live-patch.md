@@ -1,6 +1,12 @@
 # Incremental sync live patch inventory
 
-This patch has server and renderer changes. Install the server support first and keep it running while renderer assets are updated. Do not start another backend or point this patch at a live database during fixture verification.
+The guarded server patch artifact is [`scripts/codex_sync_live_patch.py`](../scripts/codex_sync_live_patch.py). It is built for the live server method layout at `a1ede55` and the rebased renderer/server source. Do not start another backend or point this patch at a live database during fixture verification.
+
+## Install order
+
+1. Apply the guarded server patch and install `codex_sync_entities.py` in the running server's `scripts` directory. This updates the server while preserving its existing `Runtime`, `Canvas`, `SyncStore`, and HTTP handler instances.
+2. After the server patch is active, install the web assets.
+3. New clients use `state:entities:v1` on reload. Old clients continue to use `state` and `state:chat` until they reload.
 
 ## Lazy initialization and schema inventory
 
@@ -62,5 +68,7 @@ Every method on the closure-created `Handler` class is listed here:
 Transcript and drafts retain their independent scopes. Transcript item revisions use `sync_entities` hashes and tombstones only; pull responses derive current payloads from the transcript and do not persist transcript text in `sync_documents` or `sync_entities`.
 
 ## Evidence boundary
+
+The guarded patch dry run used a clean archive of `a1ede55` as the old server and the rebased source tree as the new source. In one process it created the old `SyncStore` through `GET /api/sync/pull?scope=state`, applied the patch twice (`applied`, then `already_applied`), paged the entity scope through `maxSeq`, fetched legacy `state` and `state:chat`, observed a numeric entity SSE hint after a `Runtime.put`, pulled a transcript from a lagging cursor while verifying transcript table payloads remain NULL, and saved a budget through the prepatch reused SQLite connection. The same patched process then passed `sync-entities-contract`, `critical-sync-contract` (7), `mobile-state-contract` (9), and `runtime-contract` (59).
 
 Measurements are in [incremental-sync-measurements.md](incremental-sync-measurements.md). Contract and volume checks use isolated SQLite fixtures. This worktree did not connect to or modify a live database, backend, or `/Applications` bundle.
