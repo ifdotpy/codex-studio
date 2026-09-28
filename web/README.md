@@ -1,5 +1,13 @@
 # Codex Studio web client
 
+## Change Contract
+
+The web client offers `$skill` completion in managed chat composers. It reads
+the installed skill catalog through the server API; the server owns discovery
+and filtering of disabled skills. Completion only edits the current draft and
+must preserve normal send, queue, prompt recall, and IME behavior. The focused
+browser check is `node ../tests/skill-autocomplete-ui.mjs`.
+
 React and TypeScript components, built with Vite. Mantine provides controls,
 menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,
 SQLite, message delivery, and command monitors.
@@ -146,6 +154,11 @@ files, up to 20 MiB per file. Images enter Codex as local images. Other files en
 as explicit file references. HTML previews cannot run scripts or load remote files.
 Attachment drafts survive reloads. Rejected sends retain the draft and attachments.
 Offline messages remain in the device outbox.
+
+In managed chats, type `$` at a token boundary to browse installed skills. Filter
+by name and use Up/Down, then Enter or Tab to insert a selection. Escape closes
+the list. The focused browser check uses a delayed `/api/skills` fixture to cover
+typing responsiveness, keyboard behavior, caret placement, and chat-scope changes.
 
 Use **Queue after turn** for the next turn or **Send** after active tools. Queue entries
 can be edited, moved first, or cancelled. Uncertain delivery never silently retries

@@ -84,6 +84,7 @@ import ComposerAttachments, {
 } from "./ComposerAttachments";
 import "./chat-controls.css";
 import { copyText } from "../clipboard";
+import { useSkillAutocomplete } from "./useSkillAutocomplete";
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
 function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
@@ -422,6 +423,32 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
+  const insertSkill = useCallback(
+    (text: string, start: number, end: number) => {
+      const current = input.current?.value ?? p.draft;
+      const next = current.slice(0, start) + text + current.slice(end);
+      p.setDraft(next);
+      requestAnimationFrame(() => {
+        const element = input.current;
+        if (!element) return;
+        const caret = start + text.length;
+        element.focus();
+        element.setSelectionRange(caret, caret);
+      });
+    },
+    [p.draft, p.setDraft],
+  );
+  const skillAutocomplete = useSkillAutocomplete({
+    enabled: !!managed && !p.room && !!p.id && p.id === agent?.id,
+    agentId: p.id || "",
+    workspace: p.syncWorkspaceId || p.data.stateDir,
+    account: p.agent?.accountKey || "default",
+    cwd: p.agent?.cwd || "",
+    provider: String(p.agent?.provider || "codex"),
+    draft: p.draft,
+    input,
+    insert: insertSkill,
+  });
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
   const messageQueue = useMessageQueue({
     id: p.id,
@@ -1371,8 +1398,21 @@ export default function Conversation(p: {
               }}
               error={draftTooLong}
               aria-describedby={draftTooLong ? "draft-length-error" : undefined}
+              aria-controls={
+                skillAutocomplete.range ? "skill-suggestions" : undefined
+              }
+              aria-expanded={!!skillAutocomplete.range}
+              aria-activedescendant={
+                skillAutocomplete.selected >= 0
+                  ? `skill-suggestion-${skillAutocomplete.selected}`
+                  : undefined
+              }
               rows={1}
+              onClick={skillAutocomplete.updateRange}
+              onKeyUp={skillAutocomplete.updateRange}
+              onSelect={skillAutocomplete.updateRange}
               onKeyDown={(e) => {
+                if (skillAutocomplete.onKeyDown(e)) return;
                 if (
                   e.key === "Tab" &&
                   managed &&
@@ -1405,6 +1445,50 @@ export default function Conversation(p: {
                 }
               }}
             />
+            {skillAutocomplete.range && (
+              <div
+                id="skill-suggestions"
+                className="skill-suggestions"
+                role="listbox"
+                aria-label="Skills"
+              >
+                {skillAutocomplete.loading ? (
+                  <div className="skill-suggestion-status" role="status">
+                    Loading skills…
+                  </div>
+                ) : skillAutocomplete.loadError ? (
+                  <div className="skill-suggestion-status" role="status">
+                    Could not load skills
+                  </div>
+                ) : skillAutocomplete.matches.length ? (
+                  skillAutocomplete.matches.map((skill, index) => (
+                    <button
+                      type="button"
+                      id={`skill-suggestion-${index}`}
+                      role="option"
+                      aria-selected={skillAutocomplete.selected === index}
+                      className="skill-suggestion"
+                      key={`${skill.name}:${skill.path}`}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => skillAutocomplete.choose(skill)}
+                    >
+                      <span>{skill.name}</span>
+                      {skill.description && <small>{skill.description}</small>}
+                    </button>
+                  ))
+                ) : (
+                  <div className="skill-suggestion-status" role="status">
+                    No matching skills
+                  </div>
+                )}
+                {skillAutocomplete.hasErrors &&
+                  !skillAutocomplete.loadError && (
+                    <div className="skill-suggestion-status" role="status">
+                      Some skills could not be loaded
+                    </div>
+                  )}
+              </div>
+            )}
             {exactModelCommand && (
               <Button
                 type="button"
