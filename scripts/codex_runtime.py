@@ -2252,7 +2252,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             params["developerInstructions"] += ("\nThis session uses Claude Code and its native tools. "
                 "The native Agent tool is off. Studio managed agents replace it, and native agent type lists do not apply. "
                 "Use Studio command monitors for long-running commands that need output, input, or cancellation. "
-                "Use Bash for other commands. Studio voice is unavailable.\n")
+                "Use Bash for other commands. Studio voice is unavailable. "
+                "Do not tell the user that an MCP server or connector needs authentication "
+                "unless the user asks for work that needs it.\n")
             params["claude"] = a.get("claudeOptions", {})
         params["dynamicTools"] = self.tool_definitions(a)
         if a.get("portableHistory"):
