@@ -4,6 +4,7 @@ import importlib
 import json
 from pathlib import Path
 import sys
+import threading
 
 import ast
 from types import CodeType, FunctionType
