@@ -142,6 +142,18 @@ def operation_receipt_evidence(db, key):
 
 
 class RequestMixin:
+    def tool_request_actor(self, db, thread_id, account_key):
+        if not thread_id:
+            return None
+        row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
+                         "AND CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
+                         "ELSE json_extract(record,'$.accountKey') END=? LIMIT 1",
+                         (thread_id, account_key)).fetchone()
+        if row is None:
+            return None
+        from codex_agent_modes import mode_fields
+        return mode_fields(json.loads(row[0]))
+
     def setup_tool_requests(self, db):
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -238,6 +250,7 @@ class RequestMixin:
         item["text"] = json.dumps(payload, ensure_ascii=False)
 
     def reserve_tool_request(self, message, account_key="default", connection_id=None):
+        reservation_started = time.monotonic_ns()
         params, args = _arguments(message)
         key = self.tool_request_key(message, account_key)
         identity_tool, identity_args = params.get("tool"), args
@@ -246,11 +259,10 @@ class RequestMixin:
             separators=(",", ":"), ensure_ascii=False, allow_nan=False,
         ).encode()).hexdigest()
         with self.lock, self.db() as db:
+            reservation_locked = time.monotonic_ns()
             if self.closed or not self.connection_current(account_key, connection_id):
                 raise ValueError("The caller connection changed before request reservation")
-            actor = next((a for a in self.records(db, "agents")
-                          if params.get("threadId") and a.get("threadId") == params["threadId"]
-                          and a.get("accountKey", "default") == account_key), None)
+            actor = self.tool_request_actor(db, params.get("threadId"), account_key)
             if actor is None or actor.get("deletedAt"):
                 raise ValueError("Unknown managed agent")
             record = self.tool_request(key, db)
@@ -264,7 +276,9 @@ class RequestMixin:
                           "rpcId": message.get("id"), "turnId": params.get("turnId"), "epoch": actor.get("epoch"),
                           "accountKey": account_key, "connectionId": connection_id,
                           "created": now, "updated": now, "stage": "queued", "outcome": "pending",
-                          "cancelRequested": False, "readOnly": request_read_only(params.get("tool"), args)}
+                          "cancelRequested": False, "readOnly": request_read_only(params.get("tool"), args),
+                          "timing": {"reservationBeganAt": reservation_started,
+                                     "reservationLockedAt": reservation_locked}}
                 received = message.get("_studioReceivedAt")
                 if type(received) in (int, float) and math.isfinite(received):
                     record["wireReceivedAt"] = received
@@ -289,6 +303,9 @@ class RequestMixin:
                 # requires the canonical key instead of selecting another operation.
                 db.execute("INSERT OR IGNORE INTO runtime_tool_request_aliases VALUES (?,?,?)",
                            (actor["id"], alias, key))
+            if record.setdefault("timing", {}).get("reservationEndedAt") is None:
+                record["timing"]["reservationEndedAt"] = time.monotonic_ns()
+                self.put(db, "tool_requests", record)
             return record
 
     def begin_tool_request(self, key):
@@ -298,6 +315,7 @@ class RequestMixin:
                 return False
             now = time.time()
             record.update(stage="running", updated=now, started=now)
+            record.setdefault("timing", {})["handlerStartedAt"] = time.monotonic_ns()
             record["executionQueueDelayMs"] = max(0, now - record["created"]) * 1000
             if "wireReceivedAt" in record:
                 record["queueDelayMs"] = max(0, now - record["wireReceivedAt"]) * 1000
@@ -327,6 +345,7 @@ class RequestMixin:
         now = time.time()
         record.update(stage="completed" if outcome == "applied" else "failed",
                       outcome=outcome, result=result, updated=now, finished=record.get("finished", now))
+        record.setdefault("timing", {})["handlerEndedAt"] = time.monotonic_ns()
         record.pop("error", None)
         if record.get("tool") in {"orchestration_spawn", "orchestration_review"}:
             ids = _spawned_ids(result)

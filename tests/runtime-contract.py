@@ -893,8 +893,12 @@ class RuntimeContract(unittest.TestCase):
 
     def test_restart_keeps_pending_events_without_replaying_unknown_work(self):
         lead = self.lead()
-        self.runtime.send(lead['id'], 'Pending result', 'stable-event')
-        self.runtime.close()
+        # Reserve the input, but stop before native submission.
+        from unittest.mock import patch
+        with patch.object(self.runtime.delivery_executor(), 'submit', return_value=None):
+            self.runtime.send(lead['id'], 'Pending result', 'stable-event')
+            self.runtime.dispatch()
+            self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.agent(lead['id'])['status'], 'queued')
         self.assertIsNone(self.runtime.server)

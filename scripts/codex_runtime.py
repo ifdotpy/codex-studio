@@ -1266,10 +1266,59 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a["autoWake"] and not a.get("nativeFailureHold") and a["status"] not in {"running", "starting", "approval"}:
             a["status"] = "queued"
             self.put(db, "agents", a)
-        if inserted.rowcount and kind != "rule":
-            self.rule_event(db, a, kind, text, key)
-        self.changed.set()
+        fast_scheduled = False
+        if inserted.rowcount:
+            self.mark_event_timing(db, [key], "enqueuedAt")
+            if kind != "rule":
+                self.rule_event(db, a, kind, text, key)
+            if (a["autoWake"] and type(self).schedule is Runtime.schedule and not self.closed
+                    and self.__dict__.get("_fast_delivery_enabled", True)):
+                if kind == "user":
+                    self.dispatch_executor().submit(self.dispatch_after_user_batch, a["id"])
+                else:
+                    self.dispatch_executor().submit(self.dispatch, a["id"])
+                fast_scheduled = True
+        if not fast_scheduled:
+            self.changed.set()
         return key
+
+    def dispatch_after_user_batch(self, agent_id):
+        # A second input often follows a user send in the same UI action.
+        time.sleep(.04)
+        if not self.closed:
+            self.dispatch(agent_id)
+
+    def dispatch_executor(self):
+        with self.lock:
+            executor = self.__dict__.get("_dispatch_executor")
+            if executor is None:
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=8, thread_name_prefix="studio-dispatch")
+                self._dispatch_executor = executor
+            return executor
+
+    def delivery_executor(self):
+        # Existing Runtime objects receive both pools on first use.
+        with self.lock:
+            executor = self.__dict__.get("_delivery_executor")
+            if executor is None:
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=64, thread_name_prefix="studio-delivery")
+                self._delivery_executor = executor
+            return executor
+
+    def mark_event_timing(self, db, event_ids, name, stamp=None):
+        stamp = time.monotonic_ns() if stamp is None else stamp
+        self.mark_event_timings(db, event_ids, {name: stamp})
+
+    def mark_event_timings(self, db, event_ids, marks):
+        fields = [("$.timing." + name, stamp) for name, stamp in marks.items()]
+        slots = ", ".join("?, ?" for _ in fields)
+        values = [value for field in fields for value in field]
+        statement = (f"INSERT INTO runtime_event_meta VALUES (?, json_set('{{}}', {slots})) "
+                     f"ON CONFLICT(id) DO UPDATE SET record=json_set(record, {slots})")
+        for event_id in event_ids:
+            db.execute(statement, (event_id, *values, *values))
 
     def store_completed_broadcasts(self, db, agent):
         """Keep information broadcasts in history when no assignment remains."""
@@ -2348,7 +2397,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 self.scheduler_error = None
 
-    def dispatch(self):
+    def dispatch(self, agent_id=None):
+        if self.closed:
+            return
+        if agent_id is None:
+            return self.dispatch_all()
+        return self.dispatch_candidates(agent_id)
+
+    def dispatch_all(self):
         from codex_native_runtime import tick as native_runtime_tick
         native_runtime_tick(self)
         from codex_native_release import tick as native_release_tick
@@ -2376,24 +2432,43 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             cancel_pending(self, db)
             from codex_context_repair import recover_context_failures
             recover_context_failures(self, db, current_agents(db))
+        return self.dispatch_candidates(None, current_agents)
+
+    def dispatch_candidates(self, agent_id=None, current_agents=None):
         with self.lock, self.db() as db:
-            transfer_store(self).tick(current_agents(db))
-            agents = current_agents(db)
+            if self.closed:
+                return
+            if current_agents is None:
+                from codex_team_isolation import cancel_pending
+                cancel_pending(self, db, agent_id)
+                agents = [self.agent(agent_id, db)]
+                agents = [a for a in agents if a is not None]
+                active = [json.loads(row[0]) for row in db.execute(
+                    "SELECT record FROM runtime_agents WHERE json_extract(record,'$.inFlight')=1 "
+                    "OR json_extract(record,'$.status') IN ('running','starting','approval')")]
+                reserved_cwds = {str(Path(row[0]).resolve()) for row in db.execute(
+                    "SELECT json_extract(record,'$.cwd') FROM runtime_agents "
+                    "WHERE json_type(record,'$.workspaceOperation')='text' "
+                    "AND json_extract(record,'$.workspaceOperation')!=''") if row[0]}
+            else:
+                agents = current_agents(db)
+            if agent_id is None:
+                transfer_store(self).tick(agents)
+                agents = current_agents(db)
             for a in agents:
                 if a.get("liveSteerAttempt") or a.get("liveSteerRejectedTurnId") or a.get("queueNotice"):
                     self.retire_legacy_steer(db, a)
-            self.release_failed_work(db, agents)
-            self.queue_turn_recovery(agents)
-            from codex_connection_recovery import tick as connection_recovery_tick
-            connection_recovery_tick(self, agents)
-            from codex_browser_recovery import tick as browser_recovery_tick
-            browser_recovery_tick(self, db, agents)
-            reserved_cwds = {
-                str(Path(a["cwd"]).resolve())
-                for a in agents
-                if a.get("workspaceOperation")
-            }
-            active = [a for a in agents if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}]
+            if agent_id is None:
+                self.release_failed_work(db, agents)
+                self.queue_turn_recovery(agents)
+                from codex_connection_recovery import tick as connection_recovery_tick
+                connection_recovery_tick(self, agents)
+                from codex_browser_recovery import tick as browser_recovery_tick
+                browser_recovery_tick(self, db, agents)
+                reserved_cwds = {
+                    str(Path(a["cwd"]).resolve()) for a in agents if a.get("workspaceOperation")
+                }
+                active = [a for a in agents if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}]
             from codex_context_repair import blocked as context_repair_blocked
             candidates = sorted(
                 (
@@ -2525,6 +2600,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
                         (event["id"],),
                     )
+                self.mark_event_timing(db, [r["id"] for r in rows], "dispatchPickedAt")
                 self.capacity_reset(db, a)
                 a.pop("steerRejectedTurnId", None)
                 a.update(status="running" if busy else "starting", inFlight=True, turnEpoch=a["epoch"],
@@ -2535,8 +2611,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", a)
                 if not busy:
                     active.append(a)
-                self.pool.submit(self.start, a, [dict(r) for r in rows])
+                self.delivery_executor().submit(self.start, a, [dict(r) for r in rows])
     def start(self, a, rows):
+        began_at = time.monotonic_ns()
+        timing = {"startBeganAt": began_at}
         epoch = a["epoch"]
         attempt_id = a["startAttempt"]["id"]
         try:
@@ -2595,11 +2673,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     attempt["settingsFixed"] = True
                     self.put(db, "agents", current)
                 a = current
+                timing["validatedAt"] = time.monotonic_ns()
             program = turn_program(self, a)
-            if a["startAttempt"].get("activeAtReservation"):
-                # The native thread is already executing. Repair and resume require idle.
-                a = self.agent(a["id"])
-            else:
+            timing["programReadyAt"] = time.monotonic_ns()
+            busy_at_reservation = a["startAttempt"].get("activeAtReservation")
+            if not busy_at_reservation:
                 from codex_context_repair import repair_before_start
                 try:
                     a = repair_before_start(self, a)
@@ -2608,31 +2686,37 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     # A preparation failure says nothing about the input batch.
                     error.studioPreparation = True
                     raise
-            with self.lock, self.db() as db:
-                current = self.agent(a["id"], db)
-                if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
-                    return
-                if not current["autoWake"] or current["epoch"] != epoch:
-                    current["inFlight"] = False
-                    self.put(db, "agents", current)
-                    self.changed.set()
-                    return
-                waited = current["startAttempt"].pop("prepareError", None)
-                if waited is not None:
-                    # The acknowledgement arrived. Clear the waiting state it showed.
-                    if current.get("error") == waited:
-                        current["error"] = None
-                    self.put(db, "agents", current)
-                for r in rows:
-                    db.execute(
-                        "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
-                        (r["id"],),
-                    )
+            timing["repairReadyAt"] = time.monotonic_ns()
+            if not busy_at_reservation:
+                with self.lock, self.db() as db:
+                    timing["preparedAt"] = time.monotonic_ns()
+                    current = self.agent(a["id"], db)
+                    if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
+                        return
+                    if not current["autoWake"] or current["epoch"] != epoch:
+                        current["inFlight"] = False
+                        self.put(db, "agents", current)
+                        self.changed.set()
+                        return
+                    waited = current["startAttempt"].pop("prepareError", None)
+                    if waited is not None:
+                        # The acknowledgement arrived. Clear the waiting state it showed.
+                        if current.get("error") == waited:
+                            current["error"] = None
+                        self.put(db, "agents", current)
+                    for r in rows:
+                        db.execute(
+                            "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
+                            (r["id"],),
+                        )
+            else:
+                timing["preparedAt"] = time.monotonic_ns()
             try:
                 server = self.connect(a.get("accountKey", "default"))
             except Exception as error:
                 error.studioPreparation = True
                 raise
+            timing["connectedAt"] = time.monotonic_ns()
             with self.lock, self.db() as db:
                 current = self.agent(a["id"], db)
                 if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
@@ -2642,6 +2726,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.put(db, "agents", current)
                     self.changed.set()
                     return
+                if busy_at_reservation:
+                    for r in rows:
+                        db.execute("UPDATE runtime_events SET status='dispatching' "
+                                   "WHERE id=? AND status='reserved'", (r["id"],))
                 self.assert_workspace_available(db, current)
                 assert_native_thread_open(current)
                 from codex_team_isolation import assert_events
@@ -2727,6 +2815,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # A submitted reservation is durable before native I/O. If the answer
             # is lost, recovery inspects native history; it never sends this batch again.
             submitted = self.submit_reserved(server, "turn/start", params)
+            timing["submittedAt"] = time.monotonic_ns()
+            try:
+                with self.db() as db:
+                    self.mark_event_timings(db, [r["id"] for r in rows], timing)
+            except (sqlite3.Error, OSError):
+                # Telemetry cannot turn a submitted batch into a failed batch.
+                pass
             try:
                 result = server.wait(submitted)
             except ResponseTimeout as error:
@@ -2819,6 +2914,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("Native response has no turn identity; outcome unknown")
             if not self.bind_start(db, a, attempt["id"], turn, historical=attempt):
                 return
+            self.mark_event_timing(db, attempt.get("events", []), "acceptedAt")
+            if attempt.get("events") and db.execute(
+                    "SELECT 1 FROM runtime_events WHERE id=? AND kind='radio_turn'",
+                    (attempt["events"][0],)).fetchone():
+                self.changed.set()
             if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
                 return
             self.capacity_started(db, a, attempt, turn)
@@ -3476,7 +3576,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return
             p = message.get("params", {})
             request_thread = p.get("threadId")
-            a = next((a for a in self.records(db, "agents") if request_thread and a.get("threadId") == request_thread and a.get("accountKey", "default") == account_key), None)
+            a = self.tool_request_actor(db, request_thread, account_key)
             if a and not a.get("isLead") and message["method"] == "item/tool/requestUserInput":
                 self.reply({"id": message["id"], "error": {"code": -32600,
                     "message": "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."}},
@@ -3634,7 +3734,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 previous = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
                 if previous:
                     result = json.loads(previous[0])
-                a = next((a for a in self.records(db, "agents") if p.get("threadId") and a.get("threadId") == p.get("threadId") and a.get("accountKey", "default") == account_key), None)
+                a = self.tool_request_actor(db, p.get("threadId"), account_key)
             if result is None and a and p.get("turnId") and p["turnId"] != a.get("turnId"):
                 raise ValueError("This tool call belongs to an earlier turn")
             if result is None and (not a or not a["autoWake"]):
@@ -5369,6 +5469,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         for worker in monitor_threads:
             worker.join()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        for name in ("_dispatch_executor", "_delivery_executor"):
+            executor = getattr(self, name, None)
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
         for executor in (self.tool_pool, self.coordination_pool, self.recovery_pool):
             executor.shutdown(wait=True, cancel_futures=True)
         for server in servers:

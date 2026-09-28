@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -125,6 +126,19 @@ class CriticalDelivery(unittest.TestCase):
         self.runtime.dispatch()
         self.assertEqual(len(self.starts()), before)
         self.assertEqual(self.event('unknown-exact')['status'], 'uncertain')
+
+    def test_timing_write_failure_after_submission_does_not_replay(self):
+        original = self.runtime.mark_event_timings
+        def fail_after_submission(db, event_ids, marks):
+            if 'submittedAt' in marks:
+                raise sqlite3.OperationalError('timing store unavailable')
+            return original(db, event_ids, marks)
+        with patch.object(self.runtime, 'mark_event_timings', side_effect=fail_after_submission):
+            self.runtime.send(self.agent, 'Once', 'timing-failure')
+            fixture.eventually(lambda: self.event('timing-failure')['status'] == 'delivered')
+        self.runtime.dispatch()
+        self.assertEqual(sum(p.get('clientUserMessageId') == 'timing-failure'
+                             for p in self.starts()), 1)
 
     def test_known_busy_rejection_waits_for_turn_end_then_delivers_once(self):
         original_turn = self.runtime.agent(self.agent)['turnId']

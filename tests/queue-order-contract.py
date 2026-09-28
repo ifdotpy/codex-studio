@@ -150,7 +150,8 @@ class QueueOrderContract(unittest.TestCase):
                 self.runtime.queue_action(key, request)
             except ValueError as error:
                 errors.append(str(error))
-        with self.runtime.lock, patch.object(self.runtime.pool, "submit", side_effect=lambda *args: submitted.append(args)):
+        with self.runtime.lock, patch.object(self.runtime.delivery_executor(), "submit",
+                                             side_effect=lambda *args: submitted.append(args)):
             worker = threading.Thread(target=edit)
             worker.start()
             self.assertTrue(entered.wait(1))

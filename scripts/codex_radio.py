@@ -209,9 +209,18 @@ def tick(runtime, db):
                 completed = turn and db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
                                                 (a['id'] + ':' + turn,)).fetchone()
                 if completed:
+                    attempt = a.get('startAttempt') or {}
+                    awaiting_receipt = (event['status'] in {'reserved', 'dispatching'}
+                        and attempt.get('events') == [active['eventId']]
+                        and attempt.get('submitted')
+                        and turn in {attempt.get('turnId'), attempt.get('observedTurnId')})
                     # Exact delivery and exact outcome are both required. A later native
                     # turn must not be mistaken for this shared reply.
-                    if (event['status'] != 'delivered' or event.get('turn_id') != turn
+                    if awaiting_receipt:
+                        # Native completion can arrive before turn/start acknowledges
+                        # its input. Keep the floor until that exact receipt settles.
+                        pass
+                    elif (event['status'] != 'delivered' or event.get('turn_id') != turn
                             or a.get('lastCompletedTurn') != turn):
                         _blocked(radio, 'The shared reply outcome is unconfirmed.')
                     else:
