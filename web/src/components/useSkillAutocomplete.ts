@@ -247,14 +247,24 @@ export function useSkillAutocomplete({
         return true;
       }
       if (event.key === "Enter" || event.key === "Tab") {
+        if (loading) {
+          event.preventDefault();
+          return true;
+        }
+        if (loadError || !matches[selected]) return false;
         event.preventDefault();
-        if (matches[selected]) choose(matches[selected]);
+        choose(matches[selected]);
         return true;
       }
       return false;
     },
-    [choose, enabled, matches, range, selected],
+    [choose, enabled, loadError, loading, matches, range, selected],
   );
+
+  const dismiss = useCallback(() => {
+    dismissed.current = "";
+    setRange(null);
+  }, []);
 
   return {
     range: scopeIsCurrent ? range : null,
@@ -265,6 +275,7 @@ export function useSkillAutocomplete({
     hasErrors: scopeIsCurrent && !!catalog?.errors.length,
     onKeyDown,
     updateRange,
+    dismiss,
     choose,
   };
 }

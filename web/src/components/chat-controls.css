@@ -42,7 +42,9 @@
   background: light-dark(#18244712, #ffffff12);
 }
 .skill-suggestion > span {
-  flex: none;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow-wrap: anywhere;
   font-weight: 600;
 }
 .skill-suggestion > small {

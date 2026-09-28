@@ -1409,6 +1409,7 @@ export default function Conversation(p: {
               }
               rows={1}
               onClick={skillAutocomplete.updateRange}
+              onBlur={skillAutocomplete.dismiss}
               onKeyUp={skillAutocomplete.updateRange}
               onSelect={skillAutocomplete.updateRange}
               onKeyDown={(e) => {

@@ -2,11 +2,12 @@
 
 ## Change Contract
 
-The web client offers `$skill` completion in managed chat composers. It reads
-the installed skill catalog through the server API; the server owns discovery
-and filtering of disabled skills. Completion only edits the current draft and
-must preserve normal send, queue, prompt recall, and IME behavior. The focused
-browser check is `node ../tests/skill-autocomplete-ui.mjs`.
+The web client owns Studio's renderer, presentation, and user interaction. It
+reads application and agent state through the server HTTP API; the server owns
+persistent state, execution, and native provider access. Keep permission and
+request identity rules intact for actions that write state. Match checks to the
+changed interface, and use the focused composer check with
+`node ../tests/skill-autocomplete-ui.mjs` for skill completion changes.
 
 React and TypeScript components, built with Vite. Mantine provides controls,
 menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,
