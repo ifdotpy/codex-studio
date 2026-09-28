@@ -108,6 +108,7 @@ try {
   ]);
   const reads = [],
     streams = [],
+    entityStreams = [],
     held = [];
   let holdNetwork = false,
     holdWorkspaceB = false,
@@ -158,6 +159,13 @@ try {
     if (url.pathname === "/api/transcript/stream") {
       streams.push(url.searchParams.get("id"));
       return route.fulfill({ status: 204, body: "" });
+    }
+    if (
+      url.pathname === "/api/sync/stream" &&
+      url.searchParams.get("scope") === "state:entities:v1"
+    ) {
+      entityStreams.push(route);
+      return;
     }
     if (url.pathname === "/api/search")
       return route.fulfill({
@@ -295,6 +303,12 @@ try {
       after = result.checkpoint?.seq || after;
     } while (after < maxSeq);
     entityMaxSeq = maxSeq;
+    for (const stream of entityStreams.splice(0))
+      await stream.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: `data: ${entityMaxSeq}\n\n`,
+      }).catch(() => {});
   };
   const selected = () => page.locator("#conversation-title").innerText();
   const marker = (tag) => page.locator(`[data-message="${tag}-39"]:visible`);
@@ -517,7 +531,7 @@ try {
       "The historical page has a measurable scroll position",
     );
     holdNetwork = true;
-    await switchCached(b.id, await selected(), "B-newest", "A-");
+    await switchCached(b.id, currentBName, "B-newest", "A-");
     const elapsed = await switchCached(a.id, a.name, tag, "B-", saved);
     holdNetwork = false;
     for (const route of held.splice(0)) await handle(route).catch(() => {});
