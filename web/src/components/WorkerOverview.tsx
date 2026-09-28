@@ -31,6 +31,8 @@ export function workerState(
   if (["failed", "interrupted"].includes(agent.status)) return "attention";
   if (["running", "starting"].includes(agent.status)) return "working";
   if (agent.status === "completed") return "completed";
+  // A paused worker was stopped. It does not wait for input or delivery.
+  if (agent.status === "paused") return "stopped";
   return "waiting";
 }
 
@@ -64,10 +66,17 @@ export function TeamSummary({
           </div>
         ))}
       </dl>
-      <p aria-hidden={count("waiting") === 0 && count("attention") === 0}>
+      <p
+        aria-hidden={
+          count("waiting") === 0 &&
+          count("stopped") === 0 &&
+          count("attention") === 0
+        }
+      >
         {[
           count("waiting") > 0 && `${count("waiting")} waiting`,
-          count("attention") > 0 && `${count("attention")} need attention`,
+          count("stopped") > 0 && `${count("stopped")} stopped`,
+          count("attention") > 0 && `${count("attention")} failed`,
         ]
           .filter(Boolean)
           .join(" · ")}

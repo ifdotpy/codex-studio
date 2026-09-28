@@ -787,6 +787,19 @@ class RuntimeContract(unittest.TestCase):
             messages = self.runtime.transcript(a['id'])['items']
             self.assertTrue(any(i.get('pending') and i['text'] == 'Queued followup' for i in messages))
 
+    def test_agent_interrupt_names_the_agent_not_the_user(self):
+        lead = self.lead()
+        self.runtime.server.request({'id': 101, 'method': 'item/tool/call', 'params': {
+            'threadId': lead['threadId'], 'callId': 'spawn-one', 'tool': 'orchestration_spawn',
+            'arguments': {'agents': [{'name': 'Stop target', 'prompt': 'Wait', 'role': 'reviewer'}]}}})
+        eventually(lambda: len(self.runtime.snapshot()['agents']) == 2)
+        child = next(a for a in self.runtime.snapshot()['agents'] if a['id'] != lead['id'])
+        self.runtime.server.request({'id': 102, 'method': 'item/tool/call', 'params': {
+            'threadId': lead['threadId'], 'callId': 'stop-one', 'tool': 'orchestration_interrupt',
+            'arguments': {'agent_id': child['id']}}})
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'paused')
+        self.assertEqual(self.runtime.agent(child['id'])['error'], 'Stopped by agent ' + lead['name'])
+
     def test_forty_children_respect_limit_and_wake_finished_parent(self):
         lead = self.lead(concurrency=5)
         self.runtime.server.request({'id': 100, 'method': 'item/tool/call', 'params': {

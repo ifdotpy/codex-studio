@@ -106,9 +106,11 @@ try {
             ? "failed"
             : index < 8
               ? "running"
-              : index < 25
-                ? "queued"
-                : "completed";
+              : index === 24
+                ? "paused"
+                : index < 25
+                  ? "queued"
+                  : "completed";
       }
       if (agent.id === worker(7).id) agent.error = workerFailure;
       if (agent.id === worker(0).id && deferred) agent.status = "approval";
@@ -209,7 +211,7 @@ try {
   assert.equal(await count("working"), 6);
   assert.equal(await count("answer"), 1);
   assert.equal(await count("completed"), 15);
-  assert.match(await summary.innerText(), /17 waiting · 1 need attention/);
+  assert.match(await summary.innerText(), /16 waiting · 1 stopped · 1 failed/);
   assert.equal(
     await team
       .getByRole("region", { name: "Attention", exact: true })

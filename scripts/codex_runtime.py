@@ -4100,8 +4100,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         cursor = self.agent(cursor["parentId"])
                     if cursor.get("parentId") != a["id"]:
                         raise ValueError("You can interrupt only your descendants")
+                    # Name the agent: the default reason says the user stopped it.
                     value = self.stop(
-                        target["id"], True, sender=a["id"], sender_epoch=a["epoch"]
+                        target["id"], True,
+                        reason=("Stopped by agent " + (a.get("name") or a["id"]))[:160],
+                        sender=a["id"], sender_epoch=a["epoch"]
                     )
                 elif name == "orchestration_review":
                     from codex_agent_review import request as request_review

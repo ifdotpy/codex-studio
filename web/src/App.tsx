@@ -1082,6 +1082,12 @@ export default function App() {
         (a) => workerState(a, answerIds, deferredIds) === "waiting",
       ),
     },
+    {
+      name: "Stopped",
+      workers: shown.filter(
+        (a) => workerState(a, answerIds, deferredIds) === "stopped",
+      ),
+    },
   ];
   const completed = shown.filter(
     (a) => workerState(a, answerIds, deferredIds) === "completed",
