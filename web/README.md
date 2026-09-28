@@ -158,7 +158,9 @@ Offline messages remain in the device outbox.
 
 In managed chats, type `$` at a token boundary to browse installed skills. Filter
 by name; the first match is selected automatically, and Up/Down changes the
-selection. Enter or Tab inserts it, and Escape closes the list. The focused
+selection and scrolls the selected option into view without moving input focus.
+The reusable `ComposerAutocomplete` adapter uses Mantine Combobox for the popup
+and option selection. Enter or Tab inserts the option, and Escape closes the list. The focused
 browser check uses a delayed `/api/skills` fixture to cover
 typing responsiveness, keyboard behavior, caret placement, and chat-scope changes.
 The current Claude bridge does not expose skill listing; when listing is unavailable,

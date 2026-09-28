@@ -85,6 +85,7 @@ import ComposerAttachments, {
 import "./chat-controls.css";
 import { copyText } from "../clipboard";
 import { useSkillAutocomplete } from "./useSkillAutocomplete";
+import ComposerAutocomplete from "./ComposerAutocomplete";
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
 function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
@@ -1359,137 +1360,117 @@ export default function Conversation(p: {
               void submit();
             }}
           >
-            <Textarea
-              onPaste={(event) => {
-                const files = Array.from(event.clipboardData.files);
-                if (managed && files.length) {
-                  event.preventDefault();
-                  void addFiles(files).catch((error) =>
-                    p.notify(errorText(error)),
-                  );
-                }
-              }}
-              variant="unstyled"
-              autosize
-              minRows={1}
-              maxRows={shortViewport ? 3 : 8}
-              id="message"
-              ref={input}
-              aria-label="Message"
-              aria-description={
-                mobileClient
-                  ? "Use the send button to send."
-                  : managed
-                    ? "Enter sends after tool calls. Tab adds a message to the queue. Shift + Enter adds a new line."
-                    : "Enter to send. Shift + Enter for a new line."
-              }
-              placeholder={
-                threadBlock
-                  ? "Start a new chat or open another chat."
-                  : canSend
-                    ? "What should we work on?"
-                    : "This session has no live mailbox"
-              }
-              disabled={!canSend}
-              value={p.draft}
-              onChange={(e) => {
-                promptRecall.reset();
-                p.setDraft(e.target.value);
-              }}
-              error={draftTooLong}
-              aria-describedby={draftTooLong ? "draft-length-error" : undefined}
-              aria-controls={
-                skillAutocomplete.range ? "skill-suggestions" : undefined
-              }
-              aria-expanded={!!skillAutocomplete.range}
-              aria-activedescendant={
-                skillAutocomplete.selected >= 0
-                  ? `skill-suggestion-${skillAutocomplete.selected}`
+            <ComposerAutocomplete
+              id="skill-suggestions"
+              loadingMessage="Loading skills…"
+              emptyMessage="No matching skills"
+              label="Skills"
+              opened={!!skillAutocomplete.range}
+              resetKey={skillAutocomplete.range?.signature}
+              options={skillAutocomplete.matches.map((skill) => ({
+                value: skill.name,
+                label: skill.name,
+                description: skill.description,
+              }))}
+              loading={skillAutocomplete.loading}
+              error={
+                skillAutocomplete.loadError
+                  ? "Could not load skills"
                   : undefined
               }
-              rows={1}
-              onClick={skillAutocomplete.updateRange}
-              onBlur={skillAutocomplete.dismiss}
-              onKeyUp={skillAutocomplete.updateRange}
-              onSelect={skillAutocomplete.updateRange}
-              onKeyDown={(e) => {
-                if (skillAutocomplete.onKeyDown(e)) return;
-                if (
-                  e.key === "Tab" &&
-                  managed &&
-                  canSend &&
-                  !modelCommand &&
-                  !e.shiftKey &&
-                  !e.altKey &&
-                  !e.ctrlKey &&
-                  !e.metaKey &&
-                  !e.repeat &&
-                  !e.nativeEvent.isComposing &&
-                  !p.sending &&
-                  !uploading &&
-                  !draftTooLong &&
-                  (p.draft.trim() || assets.length)
-                ) {
-                  e.preventDefault();
-                  void submit("queue");
-                  return;
-                }
-                if (promptRecall.onKeyDown(e)) return;
-                if (
-                  !mobileClient &&
-                  e.key === "Enter" &&
-                  !e.shiftKey &&
-                  !e.nativeEvent.isComposing
-                ) {
-                  e.preventDefault();
-                  void submit();
-                }
+              warning={
+                skillAutocomplete.hasErrors
+                  ? "Some skills could not be loaded"
+                  : undefined
+              }
+              onDismiss={skillAutocomplete.dismiss}
+              onSelect={(name) => {
+                const skill = skillAutocomplete.matches.find(
+                  (skill) => skill.name === name,
+                );
+                if (skill) skillAutocomplete.choose(skill);
               }}
-            />
-            {skillAutocomplete.range && (
-              <div
-                id="skill-suggestions"
-                className="skill-suggestions"
-                role="listbox"
-                aria-label="Skills"
-              >
-                {skillAutocomplete.loading ? (
-                  <div className="skill-suggestion-status" role="status">
-                    Loading skills…
-                  </div>
-                ) : skillAutocomplete.loadError ? (
-                  <div className="skill-suggestion-status" role="status">
-                    Could not load skills
-                  </div>
-                ) : skillAutocomplete.matches.length ? (
-                  skillAutocomplete.matches.map((skill, index) => (
-                    <button
-                      type="button"
-                      id={`skill-suggestion-${index}`}
-                      role="option"
-                      aria-selected={skillAutocomplete.selected === index}
-                      className="skill-suggestion"
-                      key={`${skill.name}:${skill.path}`}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => skillAutocomplete.choose(skill)}
-                    >
-                      <span>{skill.name}</span>
-                      {skill.description && <small>{skill.description}</small>}
-                    </button>
-                  ))
-                ) : (
-                  <div className="skill-suggestion-status" role="status">
-                    No matching skills
-                  </div>
-                )}
-                {skillAutocomplete.hasErrors &&
-                  !skillAutocomplete.loadError && (
-                    <div className="skill-suggestion-status" role="status">
-                      Some skills could not be loaded
-                    </div>
-                  )}
-              </div>
-            )}
+            >
+              <Textarea
+                onPaste={(event) => {
+                  const files = Array.from(event.clipboardData.files);
+                  if (managed && files.length) {
+                    event.preventDefault();
+                    void addFiles(files).catch((error) =>
+                      p.notify(errorText(error)),
+                    );
+                  }
+                }}
+                variant="unstyled"
+                autosize
+                minRows={1}
+                maxRows={shortViewport ? 3 : 8}
+                id="message"
+                ref={input}
+                aria-label="Message"
+                aria-description={
+                  mobileClient
+                    ? "Use the send button to send."
+                    : managed
+                      ? "Enter sends after tool calls. Tab adds a message to the queue. Shift + Enter adds a new line."
+                      : "Enter to send. Shift + Enter for a new line."
+                }
+                placeholder={
+                  threadBlock
+                    ? "Start a new chat or open another chat."
+                    : canSend
+                      ? "What should we work on?"
+                      : "This session has no live mailbox"
+                }
+                disabled={!canSend}
+                value={p.draft}
+                onChange={(e) => {
+                  promptRecall.reset();
+                  p.setDraft(e.target.value);
+                }}
+                error={draftTooLong}
+                aria-describedby={
+                  draftTooLong ? "draft-length-error" : undefined
+                }
+                rows={1}
+                onClick={skillAutocomplete.updateRange}
+                onBlur={skillAutocomplete.blur}
+                onKeyUp={skillAutocomplete.updateRange}
+                onSelect={skillAutocomplete.updateRange}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Tab" &&
+                    managed &&
+                    canSend &&
+                    !modelCommand &&
+                    !e.shiftKey &&
+                    !e.altKey &&
+                    !e.ctrlKey &&
+                    !e.metaKey &&
+                    !e.repeat &&
+                    !e.nativeEvent.isComposing &&
+                    !p.sending &&
+                    !uploading &&
+                    !draftTooLong &&
+                    (p.draft.trim() || assets.length)
+                  ) {
+                    e.preventDefault();
+                    void submit("queue");
+                    return;
+                  }
+                  if (promptRecall.onKeyDown(e)) return;
+                  if (
+                    !mobileClient &&
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !e.nativeEvent.isComposing
+                  ) {
+                    e.preventDefault();
+                    void submit();
+                  }
+                }}
+              />
+            </ComposerAutocomplete>
             {exactModelCommand && (
               <Button
                 type="button"

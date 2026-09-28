@@ -270,6 +270,14 @@ try {
 
   await composer.fill("");
   await composer.fill("$rev");
+  await page
+    .getByRole("combobox", { name: "Message", expanded: true })
+    .waitFor();
+  assert.equal(await composer.getAttribute("aria-autocomplete"), "list");
+  assert.equal(
+    await composer.getAttribute("aria-controls"),
+    "skill-suggestions",
+  );
   const reviewMatches = page.getByRole("option");
   await reviewMatches.first().waitFor();
   assert.equal(
@@ -287,6 +295,64 @@ try {
     await reviewMatches.first().getAttribute("aria-selected"),
     "true",
   );
+  // A constrained popup must scroll selection without moving textarea focus.
+  await page.locator("#skill-suggestions").evaluate((list) => {
+    list.style.maxHeight = "100px";
+  });
+  const optionCount = await reviewMatches.count();
+  for (let index = 1; index < optionCount; index++) {
+    await composer.press("ArrowDown");
+  }
+  const assertVisibleSelection = async () => {
+    const state = await page.locator("#skill-suggestions").evaluate((list) => {
+      const selected = list.querySelector('[aria-selected="true"]');
+      const row = selected.getBoundingClientRect();
+      const box = list.getBoundingClientRect();
+      return {
+        visible: row.top >= box.top - 1 && row.bottom <= box.bottom + 1,
+        scrollTop: list.scrollTop,
+        focused: document.activeElement?.id === "message",
+        activeDescendant:
+          document.activeElement?.getAttribute("aria-activedescendant") ===
+          selected.id,
+      };
+    });
+    assert.equal(
+      state.visible,
+      true,
+      "keyboard selection stays inside the scroll viewport",
+    );
+    assert.equal(
+      state.focused,
+      true,
+      "arrow navigation retains textarea focus",
+    );
+    assert.equal(
+      state.activeDescendant,
+      true,
+      "ARIA tracks the visible selection",
+    );
+    return state;
+  };
+  assert.equal(
+    await reviewMatches.last().getAttribute("aria-selected"),
+    "true",
+  );
+  assert.ok((await assertVisibleSelection()).scrollTop > 0);
+  await composer.press("ArrowDown");
+  assert.equal(
+    await reviewMatches.first().getAttribute("aria-selected"),
+    "true",
+  );
+  assert.equal((await assertVisibleSelection()).scrollTop, 0);
+  await composer.press("ArrowUp");
+  assert.equal(
+    await reviewMatches.last().getAttribute("aria-selected"),
+    "true",
+  );
+  await assertVisibleSelection();
+  await composer.press("ArrowDown");
+  assert.equal(await composer.inputValue(), "$rev");
   await composer.press("Enter");
   assert.equal(await composer.inputValue(), "$review ");
 

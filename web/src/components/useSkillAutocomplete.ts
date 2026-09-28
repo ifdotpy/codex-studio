@@ -113,7 +113,6 @@ export function useSkillAutocomplete({
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  const [selected, setSelected] = useState(-1);
   const dismissed = useRef("");
   const visibleConversation = useRef(conversationKey);
   const scopeIsCurrent = visibleConversation.current === conversationKey;
@@ -151,14 +150,9 @@ export function useSkillAutocomplete({
       setCatalog(null);
       setLoading(false);
       setLoadError(false);
-      setSelected(-1);
     }
     updateRange();
   }, [conversationKey, draft, updateRange]);
-
-  useEffect(() => {
-    setSelected(0);
-  }, [range?.signature]);
 
   useEffect(() => {
     if (!enabled || !range || !scopeIsCurrent) return;
@@ -213,55 +207,12 @@ export function useSkillAutocomplete({
     [input, insert, range],
   );
 
-  const onKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (
-        !enabled ||
-        !range ||
-        event.nativeEvent.isComposing ||
-        event.keyCode === 229 ||
-        event.shiftKey ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.metaKey
-      )
-        return false;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        dismissed.current = range.signature;
-        setRange(null);
-        return true;
-      }
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        if (!matches.length) return false;
-        event.preventDefault();
-        setSelected((current) =>
-          event.key === "ArrowDown"
-            ? current < matches.length - 1
-              ? current + 1
-              : 0
-            : current > 0
-              ? current - 1
-              : matches.length - 1,
-        );
-        return true;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        if (loading) {
-          event.preventDefault();
-          return true;
-        }
-        if (loadError || !matches[selected]) return false;
-        event.preventDefault();
-        choose(matches[selected]);
-        return true;
-      }
-      return false;
-    },
-    [choose, enabled, loadError, loading, matches, range, selected],
-  );
-
   const dismiss = useCallback(() => {
+    dismissed.current = range?.signature || "";
+    setRange(null);
+  }, [range?.signature]);
+
+  const blur = useCallback(() => {
     dismissed.current = "";
     setRange(null);
   }, []);
@@ -269,13 +220,12 @@ export function useSkillAutocomplete({
   return {
     range: scopeIsCurrent ? range : null,
     matches: scopeIsCurrent ? matches : [],
-    selected: scopeIsCurrent ? selected : -1,
     loading: scopeIsCurrent && loading,
     loadError: scopeIsCurrent && loadError,
     hasErrors: scopeIsCurrent && !!catalog?.errors.length,
-    onKeyDown,
     updateRange,
     dismiss,
+    blur,
     choose,
   };
 }
