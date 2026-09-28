@@ -181,15 +181,36 @@ export function AccountTransferStatus({
   pending?: boolean;
   onAction: (action: "retry" | "cancel") => void;
 }) {
-  if (transfer?.status !== "pending") return null;
+  if (!transfer) return null;
+  const waiting = Number(transfer.waitingCount || 0);
+  const left = Array.isArray(transfer.leftOnSource) ? transfer.leftOnSource : [];
+  const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
+  const interrupted = Array.isArray(transfer.interrupted) ? transfer.interrupted : [];
+  if (transfer.status !== "pending" && !left.length && !blocked.length) return null;
   return (
     <div className="account-menu-note" role="status">
       <ArrowRightLeft size={14} />
       <div>
         <div>
-          {transfer.completed}/{transfer.total} transferred to {targetLabel}
+          {transfer.moved ?? transfer.completed ?? 0} moved to {targetLabel}
+          {transfer.status === "pending" && ` · ${waiting} waiting`}
         </div>
         {transfer.waiting && <small>{transfer.waiting}</small>}
+        {interrupted.map((member: Json) => (
+          <small key={String(member.id)}>
+            {member.name || "Agent"}: {member.reason}
+          </small>
+        ))}
+        {blocked.map((member: Json) => (
+          <small key={String(member.id)} role="alert">
+            {member.name || "Agent"} blocked: {member.reason}
+          </small>
+        ))}
+        {left.map((member: Json) => (
+          <small key={String(member.id)}>
+            {member.name || "Agent"} left on source ({member.provider}): {member.reason}
+          </small>
+        ))}
         <div className="account-transfer-actions">
           {transfer.canRetry && (
             <Button
@@ -201,14 +222,14 @@ export function AccountTransferStatus({
               Retry
             </Button>
           )}
-          <Button
+          {transfer.status === "pending" && <Button
             size="compact-xs"
             variant="subtle"
             disabled={pending}
             onClick={() => onAction("cancel")}
           >
             Cancel remaining
-          </Button>
+          </Button>}
         </div>
       </div>
     </div>
@@ -220,12 +241,14 @@ export function AccountTransferConfirmation({
   onClose,
   target,
   sourceProvider,
+  extend = false,
   onConfirm,
 }: {
   opened: boolean;
   onClose: () => void;
   target: Account | null;
   sourceProvider: string;
+  extend?: boolean;
   onConfirm: () => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
@@ -240,17 +263,18 @@ export function AccountTransferConfirmation({
       onClose={() => {
         if (!pending) onClose();
       }}
-      title="Transfer this chat"
+      title={extend ? "Add agents to this transfer" : "Transfer this chat"}
       closeOnClickOutside={!pending}
       closeOnEscape={!pending}
       withCloseButton={!pending}
     >
       <p>
-        Transfer this chat to <strong>{target?.email || target?.label}</strong>?
+        {extend ? "Add descendants to the pending team transfer to" : "Transfer this chat to"}{" "}
+        <strong>{target?.email || target?.label}</strong>?
       </p>
       <p>
-        The switch happens after the current turn. Subagents keep their
-        accounts.
+        Active turns move immediately and continue on the destination. Same
+        provider subagents move too; other providers stay on their accounts.
       </p>
       {target && sourceProvider !== (target.provider || "codex") && (
         <p>The destination model uses the saved chat context.</p>
@@ -279,7 +303,7 @@ export function AccountTransferConfirmation({
           }
         }}
       >
-        Transfer chat
+        {extend ? "Add agents" : "Transfer chat"}
       </Button>
     </Modal>
   );
@@ -314,6 +338,7 @@ export default function Accounts({
     sourceProvider: string;
     agentId: string;
     requestId: string;
+    extend: boolean;
   } | null>(null);
   const [disconnectChoice, setDisconnectChoice] = useState<Account | null>(
     null,
@@ -422,7 +447,7 @@ export default function Accounts({
                   account.status !== "ready" ||
                   account.disconnected ||
                   (pinned && !owner) ||
-                  transferring
+                  (transferring && account.id !== transfer?.targetAccountKey)
                 }
                 leftSection={
                   account.id === accountKey ? (
@@ -432,7 +457,9 @@ export default function Accounts({
                   )
                 }
                 onClick={() => {
-                  if (account.id === accountKey) return;
+                  const extendTransfer =
+                    transferring && account.id === transfer?.targetAccountKey;
+                  if (account.id === accountKey && !extendTransfer) return;
                   if (pinned && owner)
                     setTransferChoice({
                       target: account,
@@ -440,6 +467,7 @@ export default function Accounts({
                         selected?.provider || owner.provider || "codex",
                       agentId: owner.id,
                       requestId: crypto.randomUUID(),
+                      extend: !!extendTransfer,
                     });
                   else if (!pinned)
                     void action(account.id, () => changeAccount(account.id));
@@ -713,6 +741,7 @@ export default function Accounts({
         opened={!!transferChoice}
         target={transferChoice?.target || null}
         sourceProvider={transferChoice?.sourceProvider || "codex"}
+        extend={transferChoice?.extend}
         onClose={() => setTransferChoice(null)}
         onConfirm={async () => {
           if (!transferChoice) return;

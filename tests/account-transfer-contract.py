@@ -483,15 +483,104 @@ class TransferContract(f.AccountContracts):
         self.start_transfer(); self.tick()
         self.assertEqual(self.pending, [])
 
-    def test_subagents_are_not_transferred(self):
-        worker = self.runtime.create({'name': 'Second', 'prompt': 'Task'}, parent=self.lead_agent['id'], defer=True)
+    def test_codex_subagents_move_and_claude_subagent_stays_with_reason(self):
+        idle = self.runtime.create({'name': 'Idle Codex', 'prompt': 'Task'}, parent=self.lead_agent['id'], defer=True)
+        self.set_agent(idle['id'], status='waiting', autoWake=True, inFlight=False, threadId='native-idle', turnId=None)
+        running = self.runtime.create({'name': 'Running Codex', 'prompt': 'Task'}, parent=self.lead_agent['id'], defer=True)
+        self.set_agent(running['id'], status='running', autoWake=True, inFlight=True, threadId='native-running', turnId='turn-running')
+        self.runtime.send(running['id'], 'Deliver this queued input once', 'queued-running-input')
+        with self.runtime.accounts.lock:
+            self.runtime.accounts.data['accounts']['claude-fixture'] = {
+                'id': 'claude-fixture', 'provider': 'claude', 'home': str(self.root / 'claude-home'),
+                'label': 'Claude fixture', 'status': 'ready'}
+        claude = self.runtime.create({'name': 'Claude worker', 'prompt': 'Task'}, parent=self.lead_agent['id'], defer=True)
+        self.set_agent(claude['id'], provider='claude', accountKey='claude-fixture', status='complete', inFlight=False)
         op = self.start_transfer()
-        self.assertEqual(set(self.receipt(op['id'])['members']), {self.lead_agent['id']})
-        self.assertNotIn('accountTransferId', self.runtime.agent(worker['id']))
-        self.tick(); self.until(lambda: len(self.pending) == 1)
-        self.complete_fork(); self.tick()
+        self.assertEqual(set(self.receipt(op['id'])['members']),
+                         {self.lead_agent['id'], idle['id'], running['id'], claude['id']})
+        self.assertEqual(self.receipt(op['id'])['members'][claude['id']]['phase'], 'left')
+        self.assertIn('destination account uses codex', self.receipt(op['id'])['members'][claude['id']]['reason'])
+        self.tick()
+        self.until(lambda: any(method == 'turn/interrupt' for method, _ in self.native_calls))
+        self.set_agent(running['id'], status='interrupted', inFlight=False, turnId=None)
+        self.until(lambda: len(self.pending) == 1)
+        self.complete_fork()
+        self.until(lambda: self.receipt(op['id'])['members'][self.lead_agent['id']]['phase'] == 'completed')
+        self.tick(); self.until(lambda: len(self.pending) == 2)
+        self.complete_fork(1)
+        self.until(lambda: self.receipt(op['id'])['members'][idle['id']]['phase'] == 'completed')
+        self.tick(); self.until(lambda: len(self.pending) == 3)
+        self.complete_fork(2)
+        self.tick()
         self.assertEqual(self.receipt(op['id'])['status'], 'completed')
-        self.assertEqual(self.runtime.agent(worker['id'])['accountKey'], 'default')
+        self.assertEqual(self.runtime.agent(idle['id'])['accountKey'], self.other_key)
+        self.assertEqual(self.runtime.agent(running['id'])['accountKey'], self.other_key)
+        self.assertEqual(self.runtime.agent(claude['id'])['accountKey'], 'claude-fixture')
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['workerDefaults']['accountKey'], self.other_key)
+        self.assertTrue(self.receipt(op['id'])['members'][running['id']]['interruptReason'].startswith('Moved to account '))
+        self.assertEqual(len([m for m in self.pending if m[0] in {'thread/fork', 'thread/start'}]), 3)
+        with self.runtime.db() as db:
+            for aid in (idle['id'], running['id']):
+                rows = db.execute("SELECT id,text FROM runtime_events WHERE id=?",
+                    ('account-transfer:' + op['id'] + ':' + aid,)).fetchall()
+                self.assertEqual(len(rows), 1)
+                self.assertIn('Continue the existing task', rows[0]['text'])
+            queued = db.execute("SELECT id,status FROM runtime_events WHERE id='queued-running-input'").fetchall()
+            self.assertEqual([(row['id'], row['status']) for row in queued], [('queued-running-input', 'pending')])
+        moved_thread = self.runtime.agent(running['id'])['threadId']
+        f.f.Runtime.dispatch(self.runtime)
+        self.until(lambda: self.runtime.delivery_receipt('queued-running-input')['status'] == 'delivered')
+        starts = [params for method, params in self.target_server.calls
+                  if method == 'turn/start' and params.get('threadId') == moved_thread]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'queued-running-input')
+        next_worker = self.runtime.create({'name': 'Next worker', 'prompt': 'Next task'},
+                                          parent=self.lead_agent['id'], defer=True)
+        self.assertEqual(next_worker['accountKey'], self.other_key)
+
+    def test_restart_during_interrupt_does_not_repeat_or_lose_queued_event(self):
+        aid = self.lead_agent['id']
+        self.set_agent(aid, status='running', autoWake=True, inFlight=True, threadId='native-source', turnId='turn-running')
+        op = self.start_transfer()
+        self.tick()
+        self.until(lambda: any(method == 'turn/interrupt' for method, _ in self.native_calls))
+        self.until(lambda: not self.store.running)
+        before = len([method for method, _ in self.native_calls if method == 'turn/interrupt'])
+        from codex_account_transfer import AccountTransfers
+        restarted = AccountTransfers(self.runtime)
+        with self.runtime.db() as db:
+            restarted.tick(self.runtime.records(db, 'agents'))
+        self.assertEqual(len([method for method, _ in self.native_calls if method == 'turn/interrupt']), before)
+        self.assertEqual(self.receipt(op['id'])['members'][aid]['phase'], 'blocked')
+        self.assertIn('No request was repeated', self.receipt(op['id'])['members'][aid]['error'])
+        self.set_agent(aid, status='interrupted', inFlight=False, turnId=None)
+        restarted.action(op['id'], 'retry')
+        self.runtime._account_transfers = restarted
+        self.store = restarted
+        with patch.object(restarted, 'copy_history', return_value=Path('/fixture/import.jsonl')):
+            self.tick()
+            self.until(lambda: bool(self.pending))
+        self.complete_fork()
+
+    def test_cancel_after_confirmed_interrupt_resumes_source_once(self):
+        aid = self.lead_agent['id']
+        self.set_agent(aid, status='running', autoWake=True, inFlight=True,
+                       threadId='native-source', turnId='turn-cancel')
+        op = self.start_transfer()
+        self.tick()
+        self.until(lambda: any(method == 'turn/interrupt' for method, _ in self.native_calls))
+        self.until(lambda: not self.store.running)
+        member = self.receipt(op['id'])['members'][aid]
+        self.assertEqual(member['interruptOutcome'], 'acknowledged')
+        cancelled = self.store.action(op['id'], 'cancel')
+        self.assertEqual(cancelled['status'], 'cancelled')
+        self.assertEqual(self.runtime.agent(aid)['accountKey'], 'default')
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT id,text FROM runtime_events WHERE id=?",
+                ('account-transfer-cancel:' + op['id'] + ':' + aid,)).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertIn('Continue the existing task on this account', rows[0]['text'])
+        self.assertEqual(self.pending, [])
 
     def test_preparation_lock_retries_without_a_model_turn(self):
         from codex_native_errors import NativeRpcError
@@ -539,6 +628,27 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.runtime.agent(worker['id'])['parentId'],aid)
         self.assertEqual(self.runtime.agent(worker['id'])['accountKey'],'default')
         self.assertEqual(self.receipt(op['id'])['status'],'completed')
+
+    def test_new_request_extends_an_existing_team_transfer_exactly_once(self):
+        op = self.start_transfer()
+        worker = self.runtime.create({'name': 'Late worker', 'prompt': 'Task'},
+                                     parent=self.lead_agent['id'], defer=True)
+        self.set_agent(worker['id'], status='waiting', inFlight=False, threadId=None)
+        request_id = str(uuid.uuid4())
+        extended = self.store.request(self.lead_agent['id'], self.other_key, request_id)
+        self.assertEqual(extended['id'], op['id'])
+        self.assertIn(worker['id'], self.receipt(op['id'])['members'])
+        self.assertEqual(self.store.request(self.lead_agent['id'], self.other_key, request_id), extended)
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.store.request(self.lead_agent['id'], 'default', request_id)
+        self.tick(); self.until(lambda: len(self.pending) == 1)
+        self.complete_fork()
+        self.until(lambda: self.runtime.agent(self.lead_agent['id'])['accountKey'] == self.other_key)
+        self.tick(); self.until(lambda: len(self.pending) == 2)
+        self.complete_fork(1)
+        self.tick()
+        self.assertEqual(self.runtime.agent(worker['id'])['accountKey'], self.other_key)
+        self.assertEqual(self.receipt(op['id'])['status'], 'completed')
 
     def test_deployment_removes_only_unsent_subagent_member(self):
         op = self.start_transfer()

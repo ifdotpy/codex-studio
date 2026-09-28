@@ -94,12 +94,14 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(agent['nativeEffort'], 'medium')
         self.assertFalse(agent['fastMode'])
         self.assertEqual(agent['provider'], 'claude')
-        self.assertEqual(agent['workerDefaults']['model'], 'gpt-6-luna')
+        self.assertIsNone(agent['workerDefaults']['model'])
+        self.assertEqual(agent['workerDefaults']['accountKey'], self.t.other_key)
         self.assertNotIn('pendingSettings', agent)
         self.assertEqual(agent['accountHistory'][-1]['threadId'], 'native-source')
         self.assertEqual(agent['accountHistory'][-1]['settingsDiscarded']['reason'], 'provider_changed')
         self.assertEqual(self.rt.agent(child['id']), child_before)
-        self.assertEqual(set(op['members']), {self.aid})
+        self.assertEqual(set(op['members']), {self.aid, child['id']})
+        self.assertEqual(op['members'][child['id']]['phase'], 'left')
         with self.rt.db() as db:
             self.assertEqual(list(db.execute('SELECT * FROM runtime_items WHERE agent=?', (self.aid,))), before)
         self.assertEqual(self.member(op)['pendingSettings'], source['pendingSettings'])
@@ -133,7 +135,7 @@ class PortableTransfers(unittest.TestCase):
                          claudeOptions={'permissionMode': 'plan'})
         op = self.submit()
         self.finish(op)
-        self.assertEqual(self.agent()['workerDefaults'], {'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True, 'daybreakEnabled': False})
+        self.assertEqual(self.agent()['workerDefaults'], {'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True, 'daybreakEnabled': False, 'accountKey': self.t.other_key})
         self.assertEqual(self.agent()['claudeOptions'], {'permissionMode': 'plan'})
 
     def test_same_provider_profile_preserves_inherited_worker_model(self):
@@ -142,7 +144,7 @@ class PortableTransfers(unittest.TestCase):
                          workerDefaults={'model': None, 'effort': 'high', 'fastMode': False})
         op = self.submit()
         self.finish(op)
-        self.assertEqual(self.agent()['workerDefaults'], {'model': None, 'effort': 'high', 'fastMode': False, 'daybreakEnabled': False})
+        self.assertEqual(self.agent()['workerDefaults'], {'model': None, 'effort': 'high', 'fastMode': False, 'daybreakEnabled': False, 'accountKey': self.t.other_key})
 
     def test_provider_roundtrip_clears_old_permission_bypass(self):
         self.providers.update(default='claude', **{self.t.other_key: 'codex'})

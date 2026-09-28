@@ -38,8 +38,10 @@ Managed workers can use a different provider from their parent. The default is
 and reasoning level through `orchestration_spawn`. Studio selects an available
 account for that model, preferring the parent's account, then the application
 default. `account_key` selects a specific account. Model and account validation
-finish before any worker in the batch is created. Existing worker settings stay
-unchanged when the parent chat moves to another account or provider.
+finish before any worker in the batch is created. A team transfer moves existing
+workers whose provider matches the destination. Workers on another provider stay
+on their current account. New workers use the team's destination account and
+provider-compatible defaults.
 
 ## Setup
 
@@ -114,11 +116,16 @@ This executor does not start model sessions or use account credentials. Monitors
 support output, terminal input, resize, cancellation, and timeouts. Voice remains
 unavailable for Claude. Files remain native attachments or file references.
 
-Existing chats can move between Codex and Claude accounts. The chat keeps its
-identity and displayed history. Subagents stay on their current accounts. A
-transfer involving Claude creates a destination session with recent text and a
-path to the complete saved history. It preserves the original native session and
-does not replay old commands. A provider change selects the destination model
+Existing chats can move between Codex and Claude accounts. Selecting an account
+for a lead starts a team transfer. The chat keeps its identity and displayed
+history. Same-provider descendants move with it; workers on another provider
+stay on their current accounts with the reason shown in transfer progress.
+An active turn is interrupted with the destination account named, its native
+history moves, and one continuation resumes it on the destination. Queued events
+keep their receipts and deliver once after the transfer. A transfer involving
+Claude creates a destination session with recent text and a path to the complete
+saved history. It preserves the original native session and does not replay old
+commands. A provider change selects the destination model
 and clears queued settings for the previous provider. Codex account transfers
 continue to use native history copies.
 See [the parity checks](docs/verification/2026-09-22-claude-parity.md) for evidence

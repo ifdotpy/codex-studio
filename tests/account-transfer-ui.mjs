@@ -176,8 +176,15 @@ const server = createServer(async (req, res) => {
     const a = agents.find(a => a.id === (body.id || "started"));
     if (body.action === "cancel") a.accountTransfer.status = "cancelled";
     else if (body.action === "retry") a.accountTransfer.needsAttention = false;
+    else if (a.accountTransfer?.status === "pending" && a.accountTransfer.targetAccountKey === body.account_key)
+      a.accountTransfer.requestIds.push(body.request_id);
     else a.accountTransfer = {id: body.request_id, status: "pending", targetAccountKey: body.account_key,
-      completed: 1, total: 8, waiting: "Waiting for the current turn"};
+      completed: 1, moved: 1, waitingCount: 5, total: 8,
+      requestIds: [body.request_id],
+      waiting: "Waiting for the current turn",
+      interrupted: [{id:"worker-running",name:"Running worker",reason:"Moved to account Work"}],
+      blocked: [{id:"worker-blocked",name:"Blocked worker",reason:"Native receipt unavailable"}],
+      leftOnSource: [{id:"worker-claude",name:"Claude worker",provider:"claude",reason:"Uses claude; the destination account uses codex"}]};
     return json(a.accountTransfer);
   }
   if (url.pathname === "/api/agents/account") {
@@ -296,6 +303,21 @@ try {
   assert.match(await picker.innerText(),/personal@example.com/);
   await picker.click();
   await page.getByText("Waiting for the current turn",{exact:true}).waitFor();
+  await page.getByText("1 moved to work@example.com · 5 waiting",{exact:true}).waitFor();
+  await page.getByText("Running worker: Moved to account Work",{exact:true}).waitFor();
+  await page.getByText("Blocked worker blocked: Native receipt unavailable",{exact:true}).waitFor();
+  await page.getByText(/Claude worker left on source \(claude\)/).waitFor();
+  const firstRequestId=bodies.find(b=>b.path==="/api/agents/account-transfer").body.request_id;
+  await page.getByRole("menuitem").filter({hasText:"work@example.com"}).click();
+  const extension=page.getByRole("dialog",{name:"Add agents to this transfer",exact:true});
+  await extension.waitFor();
+  await extension.getByRole("button",{name:"Add agents",exact:true}).click();
+  await extension.waitFor({state:"hidden"});
+  const requestIds=bodies.filter(b=>b.path==="/api/agents/account-transfer").map(b=>b.body.request_id);
+  assert.equal(requestIds.length,2);
+  assert.equal(requestIds[0],firstRequestId);
+  assert.notEqual(requestIds[0],requestIds[1],"a transfer extension gets its own stable request id");
+  await picker.click();
   assert.equal(await page.getByRole("menuitem").filter({hasText:"another.long.account@example.com"}).isDisabled(),true);
   await page.waitForTimeout(180);
   await page.screenshot({path:join(evidence,"transfer-pending.png"),animations:"disabled"});
@@ -309,9 +331,19 @@ try {
   await picker.click();
   await page.getByRole("menu").getByRole("button",{name:"Retry",exact:true}).click();
   assert.ok(bodies.some(b=>b.body.action==="retry" && b.body.request_id==="saved-request"));
-  agents[0].accountKey="work";agents[0].accountTransfer={...agents[0].accountTransfer,status:"completed",completed:8};
+  agents[0].accountKey="work";agents[0].accountTransfer={...agents[0].accountTransfer,status:"completed",completed:8,moved:7,waitingCount:0,
+    leftOnSource:[{id:"worker-claude",name:"Claude worker",provider:"claude",reason:"Uses claude; the destination account uses codex"}]};
   await page.waitForFunction(()=>document.querySelector(".account-picker")?.textContent.includes("work@example.com"));
+  await picker.click();
+  await page.getByText(/Claude worker left on source \(claude\)/).waitFor();
   await page.keyboard.press("Escape");
+  await page.locator('[data-chat="empty"]').click();
+  await page.getByRole("button", {name:"Chat settings", exact:true}).click();
+  await page.locator(".account-picker").click();
+  await page.getByRole("menuitem").filter({hasText:"work@example.com"}).click();
+  await page.waitForFunction(()=>document.querySelector(".account-picker")?.textContent.includes("work@example.com"));
+  assert.ok(bodies.some(b=>b.path==="/api/agents/account" && b.body.id==="empty"));
+  assert.equal(defaultAccountKey,"default","changing an empty lead does not change the application default");
   await page.setViewportSize({width:390,height:844});
   await page.reload();
   assert.deepEqual(errors,[]);

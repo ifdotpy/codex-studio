@@ -10,6 +10,7 @@ import time
 import uuid
 
 TERMINAL = {'completed', 'cancelled'}
+MEMBER_TERMINAL = {'completed', 'left'}
 ACTIVE = {'running', 'starting', 'approval'}
 
 
@@ -45,6 +46,10 @@ class AccountTransfers:
                     elif member['phase'] == 'submitted':
                         member.update(phase='unknown', error='The server restarted before the transfer receipt arrived. No request was repeated.')
                         dirty = True
+                    elif member['phase'] == 'interrupting':
+                        member.update(phase='blocked', interruptOutcome='unknown',
+                                      error='The server restarted before the turn interrupt receipt arrived. No request was repeated.')
+                        dirty = True
                 if dirty:
                     self.save(db, op)
 
@@ -75,7 +80,17 @@ class AccountTransfers:
             return
         members = list(op['members'].values())
         lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated')}
-        lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] == 'completed' for m in members),
+        lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] in MEMBER_TERMINAL for m in members),
+            moved=sum(m['phase'] == 'completed' for m in members),
+            interrupted=[{'id': aid, 'name': m.get('name'), 'reason': m.get('interruptReason')}
+                         for aid, m in op['members'].items() if m.get('interruptReason')],
+            leftOnSource=[{'id': aid, 'name': m.get('name'), 'provider': m.get('provider'),
+                           'reason': m.get('reason')} for aid, m in op['members'].items()
+                          if m['phase'] == 'left'],
+            blocked=[{'id': aid, 'name': m.get('name'), 'reason': m.get('error')}
+                     for aid, m in op['members'].items() if m['phase'] in {'blocked', 'unknown'}],
+            waitingCount=sum(m['phase'] not in MEMBER_TERMINAL and m['phase'] not in {'blocked', 'unknown'}
+                             for m in members),
             waiting=next((m.get('error') or m.get('waiting') for m in members if m.get('error') or m.get('waiting')), None),
             needsAttention=any(m['phase'] in {'blocked', 'unknown'} for m in members),
             canRetry=any(m['phase'] == 'blocked' and not m.get('archiveInvalidated') for m in members))
@@ -115,8 +130,14 @@ class AccountTransfers:
         program = resolve_program(catalog, model, daybreak, provider)
         resolved = dict(provider=provider, model=model, effort=effort, nativeEffort=native, fastMode=fast,
                         daybreakEnabled=daybreak, cyberAccessProgram=program)
-        # Worker execution belongs to its own account, not the destination lead.
-        resolved['workerDefaults'] = rt.worker_defaults(agent)
+        # New team workers use the destination. A provider switch needs native
+        # defaults for that provider; same-provider transfers preserve choices.
+        worker_defaults = rt.worker_defaults(agent)
+        if changed:
+            worker_defaults.update(model=None, effort='medium', fastMode=False,
+                                   daybreakEnabled=False, cyberAccessProgram='standard')
+        worker_defaults['accountKey'] = target
+        resolved['workerDefaults'] = worker_defaults
         if changed:
             resolved['claudeOptions'] = {}
         if agent.get('pendingSettings'):
@@ -144,6 +165,14 @@ class AccountTransfers:
             lead = rt.checked_actor(db, key)
             if not lead.get('isLead'):
                 raise ValueError('Choose the orchestrator to transfer its team')
+            alias = next(((op, op.get('requests', {}).get(request_id))
+                          for op in rt.records(db, 'account_transfers')
+                          if request_id in op.get('requests', {})), None)
+            if alias:
+                op, receipt = alias
+                if receipt['leadId'] != key or receipt['targetAccountKey'] != target:
+                    raise ValueError('This transfer id has different content')
+                return op
             row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (request_id,)).fetchone()
             if row:
                 op = json.loads(row[0])
@@ -153,33 +182,69 @@ class AccountTransfers:
             old = lead.get('accountTransfer') or {}
             if old and old['status'] not in TERMINAL:
                 if old['targetAccountKey'] == target:
-                    return self.get(db, old['id'])
+                    op = self.get(db, old['id'])
+                    members = [a for a in rt.records(db, 'agents')
+                               if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]
+                    op.setdefault('targetProvider', rt.accounts.get(target).get('provider', 'codex'))
+                    self.adopt(db, op, members, include_later=True)
+                    if lead.get('accountKey', 'default') == target:
+                        defaults = copy.deepcopy(lead.get('workerDefaults') or rt.worker_defaults(lead))
+                        defaults['accountKey'] = target
+                        lead['workerDefaults'] = defaults
+                        rt.put(db, 'agents', lead)
+                    op.setdefault('requests', {})[request_id] = {'leadId': key, 'targetAccountKey': target}
+                    if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
+                        op['status'] = 'completed'
+                    self.save(db, op)
+                    rt.changed.set()
+                    return op
                 raise ValueError('Finish or cancel the current transfer first')
             if rt.accounts.get(target).get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
-            # Account migration moves the orchestrator only. Subagents keep
-            # their source account and continue under their existing context.
             members = [a for a in rt.records(db, 'agents')
-                       if a['id'] == key and not a.get('deletedAt')]
-            for a in members:
-                self.check_destination(a, target, db)
+                       if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]
+            target_provider = rt.accounts.get(target).get('provider', 'codex')
             op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
-                  'status': 'pending', 'created': time.time(), 'members': {}}
+                  'status': 'pending', 'created': time.time(), 'members': {},
+                  'requests': {request_id: {'leadId': key, 'targetAccountKey': target}}}
+            # New workers inherit the team's destination once this operation commits.
+            root = rt.agent(key, db)
+            op['targetProvider'] = target_provider
             self.adopt(db, op, members)
-            if all(m["phase"] == "completed" for m in op["members"].values()):
+            if root.get('accountKey', 'default') == target:
+                defaults = copy.deepcopy(root.get('workerDefaults') or rt.worker_defaults(root))
+                defaults['accountKey'] = target
+                root['workerDefaults'] = defaults
+                rt.put(db, 'agents', root)
+            if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
                 op["status"] = "completed"
             self.save(db, op)
         rt.changed.set()
         return op
 
-    def adopt(self, db, op, agents):
+    def adopt(self, db, op, agents, include_later=False):
         for a in agents:
-            # Do not add subagents created after the migration starts.
-            if a['id'] != op['leadId'] or a.get('deletedAt') or a['id'] in op['members']:
+            # This is a snapshot. A later request can adopt descendants created afterwards.
+            if (a.get('deletedAt') or (a['id'] != op['leadId'] and a.get('rootId') != op['leadId'])
+                    or a['id'] in op['members']):
                 continue
+            if not include_later and op.get('created') and a.get('created', 0) > op['created']:
+                continue
+            provider = self.rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')
+            if (a['id'] != op['leadId']
+                    and provider != op.get('targetProvider', self.rt.accounts.get(op['targetAccountKey']).get('provider', 'codex'))):
+                op['members'][a['id']] = {'phase': 'left', 'sourceAccountKey': a.get('accountKey', 'default'),
+                    'sourceThreadId': a.get('threadId'), 'provider': provider, 'name': a.get('name'),
+                    'reason': f'Uses {provider}; the destination account uses {op["targetProvider"]}'}
+                continue
+            self.check_destination(a, op['targetAccountKey'], db)
             done = a.get('accountKey', 'default') == op['targetAccountKey']
+            active = bool(a.get('inFlight') or a.get('status') in ACTIVE
+                          or a.get('status') in {'queued', 'waiting'})
             op['members'][a['id']] = {'phase': 'completed' if done else 'waiting',
-                'sourceAccountKey': a.get('accountKey', 'default'), 'sourceThreadId': a.get('threadId')}
+                'sourceAccountKey': a.get('accountKey', 'default'), 'sourceThreadId': a.get('threadId'),
+                'name': a.get('name'), 'provider': provider,
+                **({'continueAfterTransfer': bool(a.get('autoWake'))} if active else {})}
             if not done:
                 a['accountTransferId'] = op['id']
                 self.rt.put(db, 'agents', a)
@@ -193,10 +258,28 @@ class AccountTransfers:
             if op['status'] in TERMINAL:
                 return op
             if action == 'cancel':
+                unresolved = [aid for aid, member in op['members'].items()
+                              if member.get('interruptSubmittedAt')
+                              and member.get('interruptOutcome') != 'acknowledged']
+                if unresolved:
+                    raise ValueError('Retry the unresolved turn interruption before cancelling this transfer')
+                active_interrupts = [aid for aid, member in op['members'].items()
+                                     if member.get('interruptOutcome') == 'acknowledged'
+                                     and rt.agent(aid, db).get('inFlight')]
+                if active_interrupts:
+                    raise ValueError('Wait for the active turn interruption to finish before cancelling this transfer')
                 op['status'] = 'cancelled'
                 for aid in op['members']:
                     a = rt.agent(aid, db)
                     if a.get('accountTransferId') == key and op['members'][aid]['phase'] != 'reading':
+                        member = op['members'][aid]
+                        if member.get('interruptReason') and member.get('continueAfterTransfer') and a.get('autoWake'):
+                            rt.enqueue(db, a, 'followup',
+                                'The account transfer was cancelled after this turn was interrupted. '
+                                'Continue the existing task on this account from saved context. '
+                                'Preserve completed work and check existing receipts before any command with an unknown outcome.',
+                                'account-transfer-cancel:' + op['id'] + ':' + aid)
+                            a['status'] = 'queued'
                         a.pop('accountTransferId', None)
                         rt.put(db, 'agents', a)
             else:
@@ -205,6 +288,9 @@ class AccountTransfers:
                 for m in op['members'].values():
                     if m['phase'] == 'blocked':
                         m.update(phase='ready' if m.get('result') else 'waiting', error=None, nextCheck=0)
+                        if m.get('interruptSubmittedAt'):
+                            for field in ('interruptTurnId', 'interruptSubmittedAt', 'interruptOutcome'):
+                                m.pop(field, None)
                     # Unknown native mutations keep their original callback and receipt.
             self.save(db, op)
         rt.changed.set()
@@ -228,7 +314,7 @@ class AccountTransfers:
             # mutation cannot advance. Settle it through the same durable receipt path.
             for orphan in pending:
                 if (orphan.get('status') != 'pending' or orphan['id'] in referenced
-                        or any(member['phase'] not in {'waiting', 'completed'}
+                        or any(member['phase'] not in {'waiting', *MEMBER_TERMINAL}
                                for member in orphan['members'].values())):
                     continue
                 orphan['status'] = 'cancelled'
@@ -271,6 +357,8 @@ class AccountTransfers:
                 dirty = before != len(op['members'])
                 for aid, member in list(op['members'].items()):
                     a = rt.agent(aid, db)
+                    if member['phase'] in MEMBER_TERMINAL:
+                        continue
                     if (a.get('deletedAt') and member['phase'] not in {'submitted', 'unknown', 'ready'}
                             and aid not in self.running and (key, aid) not in self.futures):
                         member.update(phase='completed', waiting=None)
@@ -279,7 +367,39 @@ class AccountTransfers:
                             a.pop('accountTransferId')
                             rt.put(db, 'agents', a)
                         dirty = True
+                    if member['phase'] == 'interrupting':
+                        if not a.get('inFlight') and a['status'] not in ACTIVE:
+                            member.update(phase='waiting', waiting=None, interruptConfirmedAt=time.time())
+                            dirty = True
+                        else:
+                            member['waiting'] = 'Waiting for the active turn to stop'
+                            continue
                     if member['phase'] not in {'waiting', 'ready'} or aid in self.running:
+                        continue
+                    if member['phase'] == 'waiting' and (a.get('inFlight') or a['status'] in ACTIVE):
+                        if not a.get('turnId'):
+                            member['waiting'] = 'Waiting for the active turn id before interrupting'
+                            dirty = True
+                            continue
+                        if member.get('interruptTurnId') == a.get('turnId'):
+                            member.update(phase='interrupting', waiting='Waiting for the active turn to stop')
+                            dirty = True
+                            continue
+                        member.update(phase='interrupting', interruptTurnId=a['turnId'],
+                                      interruptSubmittedAt=time.time(), waiting='Interrupting active turn')
+                        member['continueAfterTransfer'] = bool(a.get('autoWake'))
+                        reason = f'Moved to account {self.rt.accounts.get(op["targetAccountKey"]).get("label") or op["targetAccountKey"]}'
+                        member['interruptReason'] = reason
+                        a['error'] = reason
+                        rt.put(db, 'agents', a)
+                        self.save(db, op)
+                        db.commit()
+                        self.running.add(aid)
+                        worker = threading.Thread(target=self.interrupt_for_transfer,
+                            args=(key, aid, a.copy(), member['interruptTurnId']), daemon=True,
+                            name='studio-account-transfer-interrupt')
+                        self.workers.add(worker)
+                        worker.start()
                         continue
                     # Keep the slot until the native receipt, not only submission.
                     # Paginated forks import into one SQLite history database.
@@ -302,7 +422,7 @@ class AccountTransfers:
                     worker = threading.Thread(target=self.run, args=(key, aid), daemon=True, name='studio-account-transfer')
                     self.workers.add(worker)
                     worker.start()
-                if all(m['phase'] == 'completed' for m in op['members'].values()):
+                if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
                     op['status'] = 'completed'
                     dirty = True
                 if dirty:
@@ -584,6 +704,44 @@ class AccountTransfers:
                     rt.put(db, 'agents', a)
             rt.changed.set()
 
+    def interrupt_for_transfer(self, key, aid, agent, turn_id):
+        """Interrupt one active native turn without touching queued event receipts."""
+        rt = self.rt
+        try:
+            server = rt.servers.get(agent.get('accountKey', 'default'))
+            if not server or not agent.get('threadId'):
+                raise RuntimeError('The active native turn cannot be reached to interrupt it')
+            stream = getattr(rt, '_stream_buffer', None)
+            if stream:
+                with rt.lock, rt.db() as db:
+                    stream.flush_locked(db, account=agent.get('accountKey', 'default'),
+                                        thread_id=agent['threadId'], force=True)
+            try:
+                server.call('turn/interrupt', {'threadId': agent['threadId'], 'turnId': turn_id}, timeout=10)
+            except Exception as error:
+                current = rt.agent(aid)
+                if current.get('inFlight') and current.get('turnId') == turn_id:
+                    raise RuntimeError(f'Interrupt acknowledgement is unknown: {error}')
+            with rt.lock, rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                if member.get('phase') == 'interrupting' and member.get('interruptTurnId') == turn_id:
+                    member['interruptOutcome'] = 'acknowledged'
+                    member['waiting'] = 'Waiting for the active turn to stop'
+                    self.save(db, op)
+        except Exception as error:
+            with rt.lock, rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                if member.get('phase') == 'interrupting' and member.get('interruptTurnId') == turn_id:
+                    member.update(phase='blocked', error=str(error), waiting=None)
+                    self.save(db, op)
+        finally:
+            with rt.lock:
+                self.running.discard(aid)
+                self.workers.discard(threading.current_thread())
+            rt.changed.set()
+
     @staticmethod
     def assert_source(m, a):
         if a.get('deletedAt') or any(a.get(k) != v for k, v in m['source'].items()):
@@ -665,7 +823,8 @@ class AccountTransfers:
         self.check_destination(a, target, db)
         rt.usage_resume_cancel(db, a, 'The chat moved to another account.')
         result = m['result']
-        resume_failed = a.get('autoWake') and a.get('status') in {'failed', 'interrupted'}
+        resume_failed = a.get('autoWake') and (a.get('status') in {'failed', 'interrupted'}
+                                                or m.get('continueAfterTransfer'))
         source_provider = rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')
         target_provider = rt.accounts.get(target).get('provider', 'codex')
         from codex_native_tools import digest, needs_refresh, mark_current
@@ -687,6 +846,10 @@ class AccountTransfers:
         a.update(accountKey=target, threadId=result['thread']['id'], turnId=None,
                  sandbox=result.get('sandbox', a.get('sandbox')), approvalPolicy=result.get('approvalPolicy', a.get('approvalPolicy')))
         a.update(m['targetSettings'])
+        if a.get('isLead'):
+            defaults = copy.deepcopy(a.get('workerDefaults') or rt.worker_defaults(a))
+            defaults['accountKey'] = target
+            a['workerDefaults'] = defaults
         if inherited_catalog and inherited_catalog['digest'] == digest(rt.tool_definitions(a)):
             mark_current(a, rt.tool_definitions(a))
         if source_provider != target_provider:
@@ -701,16 +864,17 @@ class AccountTransfers:
             a['error'] = None
             pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND status='pending' LIMIT 1",
                                  (a['id'], a['epoch'])).fetchone()
-            if not pending:
+            if not pending or m.get('continueAfterTransfer'):
                 rt.enqueue(db, a, 'followup',
                     'The owner transferred this team to another account. Continue the existing task from its saved context. '
                     'Preserve completed work. Check existing receipts before any command with an unknown outcome.',
                     'account-transfer:' + op['id'] + ':' + a['id'])
-            else:
+            if pending or m.get('continueAfterTransfer'):
                 a['status'] = 'queued'
         rt.put(db, 'agents', a)
         m.update(phase='completed', error=None, waiting=None)
-        if op['status'] == 'pending' and all(member['phase'] == 'completed' for member in op['members'].values()):
+        if op['status'] == 'pending' and all(member['phase'] in MEMBER_TERMINAL
+                                             for member in op['members'].values()):
             op['status'] = 'completed'
         self.save(db, op)
         db.commit()
