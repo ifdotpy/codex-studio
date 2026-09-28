@@ -465,9 +465,11 @@ class CapacityContract(unittest.TestCase):
         self.runtime.dispatch()
         fixture.eventually(lambda: len(self.starts()) == 3)
         self.assertTrue(self.agent()['inFlight'])
-        with self.runtime.db() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND status='uncertain'",
-                                        (self.key,)).fetchone()[0], 1)
+        def one_uncertain():
+            with self.runtime.db() as db:
+                return db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND status='uncertain'",
+                                  (self.key,)).fetchone()[0] == 1
+        fixture.eventually(one_uncertain)
         self.assertEqual(sum('Follow-up task' in str(p['input']) for p in self.starts()), 1)
 
     def test_stop_and_new_user_instruction_replace_timer(self):

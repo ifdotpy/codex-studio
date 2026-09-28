@@ -32,17 +32,29 @@ class MeasuredLock:
         self.guard = threading.Lock()
         self.holds = {}
 
-    def __enter__(self):
-        caller = sys._getframe(1).f_code.co_name
-        self.lock.acquire()
+    def __repr__(self):
+        return repr(self.lock)
+
+    def acquire(self, *args, **kwargs):
+        frame = sys._getframe(1)
+        if frame.f_code.co_name == "__enter__":
+            frame = frame.f_back
+        caller = frame.f_code.co_name
+        acquired = self.lock.acquire(*args, **kwargs)
+        if not acquired:
+            return False
         depth = getattr(self.local, "depth", 0)
         self.local.depth = depth + 1
         if not depth:
             self.local.caller = caller
             self.local.entered = time.monotonic_ns()
+        return True
+
+    def __enter__(self):
+        self.acquire()
         return self
 
-    def __exit__(self, *_):
+    def release(self):
         depth = self.local.depth - 1
         self.local.depth = depth
         if not depth:
@@ -51,10 +63,15 @@ class MeasuredLock:
                 self.holds.setdefault(self.local.caller, []).append(elapsed)
         self.lock.release()
 
+    def __exit__(self, *_):
+        self.release()
 
-def measure(legacy, *, delayed_commit=False, heavy=False):
+
+def measure(legacy, *, delayed_commit=False, heavy=False, indexed=True):
     with tempfile.TemporaryDirectory(prefix="studio-delivery-latency-") as root:
         runtime = Runtime(Path(root) / "state", fixture.FakeServer)
+        if not indexed:
+            runtime._dispatch_indexes_ready = True
         # Keep the periodic scheduler out of this deterministic path measure.
         # The full pass below is called directly with the same runtime object.
         runtime.closed = True
@@ -128,6 +145,9 @@ def measure(legacy, *, delayed_commit=False, heavy=False):
                 raise AssertionError(f"Only {done} of {len(recipients)} submissions completed")
             rows = []
             with runtime.db() as db:
+                names = {row[1] for row in db.execute("PRAGMA index_list('runtime_agents')")}
+                expected = {"runtime_agent_dispatch_active", "runtime_agent_dispatch_workspace"}
+                assert expected.issubset(names) == (indexed and not legacy)
                 for row in db.execute("SELECT e.created,m.record FROM runtime_events e "
                                       "JOIN runtime_event_meta m ON m.id=e.id WHERE e.id LIKE 'latency-%' "
                                       "ORDER BY CAST(substr(e.id,9) AS INTEGER)"):
@@ -169,20 +189,52 @@ def measure(legacy, *, delayed_commit=False, heavy=False):
                 groups[label] = {"p50": percentile(values, .5), "p90": percentile(values, .9),
                                  "segments": group_segments}
             fast_segments = {}
+            lock_holders = {}
             if not legacy:
+                for _, marks in rows:
+                    for holder in marks.get("fastLockOwners", "").split(","):
+                        if holder:
+                            name = holder.split("ms:", 1)[-1]
+                            lock_holders[name] = lock_holders.get(name, 0) + 1
                 for label, selected in (("busy", rows[:20]), ("idleReleased", rows[20:])):
                     fast_segments[label] = {}
                     for previous, current in (("enqueuedAt", "fastQueuedAt"),
                                               ("fastQueuedAt", "fastScheduledAt"),
                                               ("fastScheduledAt", "fastEnteredAt"),
                                               ("fastEnteredAt", "fastLockedAt"),
-                                              ("fastLockedAt", "dispatchPickedAt")):
+                                              ("fastLockedAt", "fastIndexesReadyAt"),
+                                              ("fastIndexesReadyAt", "fastTeamCheckedAt"),
+                                              ("fastTeamCheckedAt", "fastAgentLoadedAt"),
+                                              ("fastAgentLoadedAt", "fastActiveScanAt"),
+                                              ("fastActiveScanAt", "fastWorkspaceScanAt"),
+                                              ("fastWorkspaceScanAt", "fastCandidatesAt"),
+                                              ("fastCandidatesAt", "fastRadioCheckedAt"),
+                                              ("fastRadioCheckedAt", "fastCapacityCheckedAt"),
+                                              ("fastCapacityCheckedAt", "fastAccountCheckedAt"),
+                                              ("fastAccountCheckedAt", "fastBudgetCheckedAt"),
+                                              ("fastBudgetCheckedAt", "fastActorReloadedAt"),
+                                              ("fastActorReloadedAt", "fastToolGateAt"),
+                                              ("fastToolGateAt", "fastBatchLoadedAt"),
+                                              ("fastBatchLoadedAt", "dispatchPickedAt")):
                         spans = [(marks[current] - marks[previous]) / 1e6
                                  for _, marks in selected]
                         fast_segments[label][previous + "To" + current] = {
                             "p50": percentile(spans, .5), "p90": percentile(spans, .9)}
+            submission_segments = {}
+            for label, selected in (("busy", rows[:20]), ("idleReleased", rows[20:])):
+                submission_segments[label] = {}
+                for previous, current in (("preparedAt", "transcriptReadyAt"),
+                                          ("transcriptReadyAt", "turnParamsReadyAt"),
+                                          ("turnParamsReadyAt", "reservationCommittedAt"),
+                                          ("reservationCommittedAt", "nativeSubmitBeganAt"),
+                                          ("nativeSubmitBeganAt", "submittedAt")):
+                    spans = [(marks[current] - marks[previous]) / 1e6
+                             for _, marks in selected]
+                    submission_segments[label][previous + "To" + current] = {
+                        "p50": percentile(spans, .5), "p90": percentile(spans, .9)}
             return {"mode": "full scheduler" if legacy else "per agent", "agents": 600,
                     "delayedCommit": delayed_commit, "largeRecordsAndEvents": heavy,
+                    "indexed": indexed,
                     "fullPassMs": round(full_pass_ms, 3),
                     "fullPassLockHoldMs": round(full_pass_lock_ms, 3),
                     "fullPassCandidateLockHoldMs": round(full_pass_candidates_ms, 3),
@@ -192,6 +244,8 @@ def measure(legacy, *, delayed_commit=False, heavy=False):
                                               "p90": percentile(totals, .9), "max": percentile(totals, 1)},
                     "recipientGroupsMs": groups,
                     "fastSegmentsMs": fast_segments,
+                    "submissionSegmentsMs": submission_segments,
+                    "fastLockHolderSamples": lock_holders,
                     "senderReservationMs": {"p50": percentile(reservations, .5),
                                             "p90": percentile(reservations, .9),
                                             "lockWaitP90": percentile(reservation_locks, .9)},

@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -2200,15 +2201,27 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             configure_browser(self, a, params)
         return params
 
-    def prepare(self, a):
+    def prepare(self, a, timing=None):
+        if timing is None:
+            timing = getattr(self.__dict__.setdefault("_delivery_timing", threading.local()),
+                             "current", None)
+        if timing is not None:
+            timing["prepareBeganAt"] = time.monotonic_ns()
         with self.lock:
             guard = self.prepare_locks.setdefault(a["id"], threading.Lock())
+        if timing is not None:
+            timing["prepareGuardReadyAt"] = time.monotonic_ns()
         with guard:
-            value = self.prepare_locked(self.agent(a["id"]))
+            if timing is not None:
+                timing["prepareGuardAcquiredAt"] = time.monotonic_ns()
+            value = self.prepare_locked(self.agent(a["id"]), timing)
         if not isinstance(value, concurrent.futures.Future):
             return value
         try:
-            return value.result(getattr(self, "preparation_wait_seconds", 60))
+            result = value.result(getattr(self, "preparation_wait_seconds", 60))
+            if timing is not None:
+                timing["threadReadyAt"] = time.monotonic_ns()
+            return result
         except concurrent.futures.TimeoutError:
             raise PreparationPending(value) from None
 
@@ -2245,7 +2258,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "profileInstructions", "role")},
                 **{key: a[key] for key in ("daybreakEnabled", "cyberAccessProgram") if key in a}}
 
-    def prepare_locked(self, a):
+    def prepare_locked(self, a, timing=None):
         from codex_context_repair import assert_context_available
         with self.lock:
             a = self.agent(a["id"])
@@ -2255,11 +2268,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             from codex_native_tools import account_reserved
             if account_reserved(self, a.get("accountKey", "default")):
                 raise ValueError("The account tool catalog is updating. Input remains queued.")
+        if timing is not None:
+            timing["prepareChecksDoneAt"] = time.monotonic_ns()
         if a.get("accountTransferId") and not a.get("inFlight"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
         server = self.connect(a.get("accountKey", "default"))
         from codex_native_release import reconcile_unknown
         reconcile_unknown(self, a)
+        if timing is not None:
+            timing["prepareConnectedAt"] = time.monotonic_ns()
         previous = self.preparations.get(a["id"])
         if previous and previous.get("connectionId") != self.connection_ids.get(a.get("accountKey", "default")):
             # Disconnect persistence can fail when storage is unavailable. An old
@@ -2286,6 +2303,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # Adopt only the exact registered path and branch; preserve its files.
             listing = subprocess.check_output(["git", "-C", repo, "worktree", "list", "--porcelain", "-z"],
                                               timeout=30).decode("utf-8", errors="surrogateescape")
+            if timing is not None:
+                timing["worktreeListedAt"] = time.monotonic_ns()
             registered = None
             for block in listing.split("\0\0"):
                 fields = dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
@@ -2297,15 +2316,31 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         or not Path(project_directory).is_dir()):
                     raise ValueError("Worker worktree identity differs from its reservation; inspect the existing directory")
             else:
-                subprocess.run(["git", "-C", repo, "worktree", "add", "-b", branch, directory, "HEAD"],
+                subprocess.run(["git", "-C", repo, "-c", "checkout.workers=16",
+                                "worktree", "add", "-b", branch, directory, "HEAD"],
                                check=True, capture_output=True, text=True, timeout=60)
+            if timing is not None:
+                timing["worktreeAddedAt"] = time.monotonic_ns()
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
                 latest.update(cwd=project_directory, branch=branch, worktreeReady=True)
                 self.put(db, "agents", latest)
                 a = latest
             try:
-                self.checkpoint_capture(a["id"], "Before first turn", internal=True)
+                if registered is None:
+                    hook_name = self.git(a, ["rev-parse", "--git-path", "hooks/post-checkout"]).decode().strip()
+                    hook = Path(hook_name)
+                    if not hook.is_absolute():
+                        hook = Path(a["cwd"]) / hook
+                    # A checkout hook can change tracked files. Capture those
+                    # changes instead of assuming that the worktree equals HEAD.
+                    if hook.is_file() and os.access(hook, os.X_OK):
+                        self.checkpoint_capture(a["id"], "Before first turn", internal=True)
+                    else:
+                        tree = self.git(a, ["rev-parse", "HEAD^{tree}"]).decode().strip()
+                        self.capture_checkpoint(a["id"], "Before first turn", tree=tree)
+                else:
+                    self.checkpoint_capture(a["id"], "Before first turn", internal=True)
             except Exception as error:
                 # The new worktree equals HEAD; a missing first checkpoint must not stop the worker.
                 with self.lock, self.db() as db:
@@ -2313,6 +2348,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     latest["checkpointError"] = "Checkpoint skipped: " + str(error)[:500]
                     self.put(db, "agents", latest)
                     a = latest
+            if timing is not None:
+                timing["firstCheckpointAt"] = time.monotonic_ns()
         if a["id"] not in self.loaded:
             if "nativeEffort" not in a:
                 catalog = self.catalog(a.get("accountKey", "default"))
@@ -2331,6 +2368,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 method = "thread/start"
                 params["dynamicTools"] = self.tool_definitions(a)
+            if timing is not None:
+                timing["threadParamsReadyAt"] = time.monotonic_ns()
             with self.lock, self.db() as db:
                 latest = self.agent(a["id"], db)
                 assert_context_available(latest)
@@ -2357,6 +2396,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         raise PreparationPending(operation["future"]) from error
                     operation["future"].set_exception(error)
                     raise
+            if timing is not None:
+                timing["threadSubmittedAt"] = time.monotonic_ns()
             # Thread receipts gate every start. Keep them out of the notification
             # queue, which can lag minutes behind streamed command output.
             receipt = lambda future: self.preparation_executor().submit(self.prepared_result, operation, future)
@@ -2477,35 +2518,87 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             recover_context_failures(self, db, current_agents(db))
         return self.dispatch_candidates(None, current_agents)
 
+    def sample_dispatch_lock_holder(self, observations, waited_ms):
+        owner = re.search(r"owner=(\d+)", repr(self.lock))
+        frame = sys._current_frames().get(int(owner.group(1))) if owner else None
+        while frame is not None:
+            module = Path(frame.f_code.co_filename).name
+            if module.startswith("codex_"):
+                observations.append(f"{waited_ms}ms:{module}|{frame.f_code.co_name}")
+                return
+            frame = frame.f_back
+        observations.append(f"{waited_ms}ms:unknown")
+
+    def ensure_dispatch_indexes(self, db):
+        if self.__dict__.get("_dispatch_indexes_ready"):
+            return False
+        db.execute("CREATE INDEX IF NOT EXISTS runtime_agent_dispatch_active ON runtime_agents("
+                   "json_extract(record,'$.rootId')) WHERE "
+                   "json_extract(record,'$.inFlight')=1 OR "
+                   "json_extract(record,'$.status') IN ('running','starting','approval')")
+        db.execute("CREATE INDEX IF NOT EXISTS runtime_agent_dispatch_workspace ON runtime_agents("
+                   "json_extract(record,'$.cwd')) WHERE "
+                   "json_type(record,'$.workspaceOperation')='text' AND "
+                   "json_extract(record,'$.workspaceOperation')!=''")
+        return True
+
     @contextmanager
-    def dispatch_lock(self):
-        with self.lock:
+    def dispatch_lock(self, observations=None):
+        if observations is None:
+            with self.lock:
+                yield time.monotonic_ns()
+            return
+        began = time.monotonic_ns()
+        acquired = self.lock.acquire(timeout=.05)
+        while not acquired:
+            waited_ms = round((time.monotonic_ns() - began) / 1e6)
+            self.sample_dispatch_lock_holder(observations, waited_ms)
+            acquired = self.lock.acquire(timeout=.25)
+        try:
             yield time.monotonic_ns()
+        finally:
+            self.lock.release()
 
     def dispatch_candidates(self, agent_id=None, current_agents=None,
                             fast_event_ids=None, fast_scheduled_at=None, fast_entered_at=None):
-        with self.dispatch_lock() as locked_at, self.db() as db:
+        lock_owners = [] if fast_event_ids else None
+        indexes_created = False
+        with self.dispatch_lock(lock_owners) as locked_at, self.db() as db:
             if fast_event_ids:
                 self.mark_event_timings(db, fast_event_ids, {
                     "fastScheduledAt": fast_scheduled_at or fast_entered_at,
                     "fastEnteredAt": fast_entered_at,
                     "fastLockedAt": locked_at,
+                    "fastLockOwners": ",".join(lock_owners),
                 })
+            fast_marks = {}
             if self.closed:
                 return 0
             reserved_count = 0
             if current_agents is None:
+                indexes_created = self.ensure_dispatch_indexes(db)
+                if fast_event_ids:
+                    fast_marks["fastIndexesReadyAt"] = time.monotonic_ns()
                 from codex_team_isolation import cancel_pending
                 cancel_pending(self, db, agent_id)
+                if fast_event_ids:
+                    fast_marks["fastTeamCheckedAt"] = time.monotonic_ns()
                 agents = [self.agent(agent_id, db)]
                 agents = [a for a in agents if a is not None]
-                active = [json.loads(row[0]) for row in db.execute(
-                    "SELECT record FROM runtime_agents WHERE json_extract(record,'$.inFlight')=1 "
+                if fast_event_ids:
+                    fast_marks["fastAgentLoadedAt"] = time.monotonic_ns()
+                active = [{"rootId": row[0]} for row in db.execute(
+                    "SELECT json_extract(record,'$.rootId') FROM runtime_agents "
+                    "WHERE json_extract(record,'$.inFlight')=1 "
                     "OR json_extract(record,'$.status') IN ('running','starting','approval')")]
+                if fast_event_ids:
+                    fast_marks["fastActiveScanAt"] = time.monotonic_ns()
                 reserved_cwds = {str(Path(row[0]).resolve()) for row in db.execute(
                     "SELECT json_extract(record,'$.cwd') FROM runtime_agents "
                     "WHERE json_type(record,'$.workspaceOperation')='text' "
                     "AND json_extract(record,'$.workspaceOperation')!=''") if row[0]}
+                if fast_event_ids:
+                    fast_marks["fastWorkspaceScanAt"] = time.monotonic_ns()
             else:
                 agents = current_agents(db)
             if agent_id is None:
@@ -2557,19 +2650,27 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 ),
                 key=lambda a: (not a.get("inFlight"), a["parentId"] is not None, a["created"]),
             )
+            if fast_event_ids:
+                fast_marks["fastCandidatesAt"] = time.monotonic_ns()
             global_limit = max(1, min(64, int(os.environ.get("CODEX_CANVAS_CONCURRENCY", "32"))))
             for a in candidates:
                 busy = bool(a.get("inFlight"))
                 from codex_radio import holds_floor
                 if holds_floor(self, db, a):
                     continue
+                if fast_event_ids:
+                    fast_marks["fastRadioCheckedAt"] = time.monotonic_ns()
                 if not busy and len(active) >= global_limit:
                     continue
                 if not busy and sum(t["rootId"] == a["rootId"] for t in active) >= a["concurrency"]:
                     continue
+                if fast_event_ids:
+                    fast_marks["fastCapacityCheckedAt"] = time.monotonic_ns()
                 from codex_native_tools import account_reserved
                 if account_reserved(self, a.get("accountKey", "default")):
                     continue
+                if fast_event_ids:
+                    fast_marks["fastAccountCheckedAt"] = time.monotonic_ns()
                 from codex_budget import budget_admission
                 try:
                     budget_admission(self, db, a)
@@ -2578,6 +2679,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         a.update(budgetBlocked=str(error), error=str(error))
                         self.put(db, "agents", a)
                     continue
+                if fast_event_ids:
+                    fast_marks["fastBudgetCheckedAt"] = time.monotonic_ns()
                 if a.get("budgetBlocked"):
                     if a.get("error") == a["budgetBlocked"]:
                         a["error"] = None
@@ -2605,9 +2708,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if a.get("nativeFailureHold"):
                     continue
                 a = self.agent(a["id"], db)
-                from codex_native_tools import gate as native_tools_gate
-                if not native_tools_gate(self, db, a, self.tool_definitions(a)):
-                    continue
+                if fast_event_ids:
+                    fast_marks["fastActorReloadedAt"] = time.monotonic_ns()
+                # A busy turn keeps its current tool schema. Claude has no Codex
+                # header to refresh. Preserve existing update notices and tickets.
+                needs_tool_gate = (a.get("nativeToolUpdate") or a.get("nativeToolRefreshId")
+                    or (a.get("provider", "codex") == "codex" and a.get("threadId") and not busy))
+                if needs_tool_gate:
+                    from codex_native_tools import gate as native_tools_gate
+                    if not native_tools_gate(self, db, a, self.tool_definitions(a)):
+                        continue
+                if fast_event_ids:
+                    fast_marks["fastToolGateAt"] = time.monotonic_ns()
                 from codex_agent_review import claim as claim_review
                 review_attempt = claim_review(self, db, a) if not busy else None
                 if review_attempt:
@@ -2619,6 +2731,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 from codex_radio import select_pending
                 pending = select_pending(self, db, a, pending)
                 rows = pending[:32]
+                if fast_event_ids:
+                    fast_marks["fastBatchLoadedAt"] = time.monotonic_ns()
                 if not rows:
                     if not busy:
                         a["status"] = "waiting"
@@ -2669,7 +2783,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not busy:
                     active.append(a)
                 self.delivery_executor().submit(self.start, a, [dict(r) for r in rows])
-            return reserved_count
+            if fast_event_ids:
+                fast_marks["fastDispatchDoneAt"] = time.monotonic_ns()
+                self.mark_event_timings(db, fast_event_ids, fast_marks)
+        if indexes_created:
+            self._dispatch_indexes_ready = True
+        return reserved_count
     def start(self, a, rows):
         began_at = time.monotonic_ns()
         timing = {"startBeganAt": began_at}
@@ -2738,15 +2857,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if not busy_at_reservation:
                 from codex_context_repair import repair_before_start
                 try:
+                    timing["repairBeganAt"] = time.monotonic_ns()
                     a = repair_before_start(self, a)
-                    a = self.prepare(a)
+                    timing["repairCheckedAt"] = time.monotonic_ns()
+                    timing_local = self.__dict__.setdefault("_delivery_timing", threading.local())
+                    timing_local.current = timing
+                    try:
+                        a = self.prepare(a)
+                    finally:
+                        timing_local.current = None
                 except Exception as error:
                     # A preparation failure says nothing about the input batch.
                     error.studioPreparation = True
                     raise
             timing["repairReadyAt"] = time.monotonic_ns()
             if not busy_at_reservation:
+                timing["postPrepareWaitBeganAt"] = time.monotonic_ns()
                 with self.lock, self.db() as db:
+                    timing["postPrepareLockedAt"] = time.monotonic_ns()
                     timing["preparedAt"] = time.monotonic_ns()
                     current = self.agent(a["id"], db)
                     if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
@@ -2775,7 +2903,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 error.studioPreparation = True
                 raise
             timing["connectedAt"] = time.monotonic_ns()
+            timing["transcriptLockWaitBeganAt"] = time.monotonic_ns()
             with self.lock, self.db() as db:
+                timing["transcriptLockedAt"] = time.monotonic_ns()
                 current = self.agent(a["id"], db)
                 if self.closed or (current.get("startAttempt") or {}).get("id") != attempt_id:
                     return
@@ -2796,7 +2926,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 budget_admission(self, db, current)
                 if reconcile_start(self, db, current, rows):
                     return
+                timing["transcriptChecksDoneAt"] = time.monotonic_ns()
                 text = self.model_event_text(rows)
+                timing["modelTextReadyAt"] = time.monotonic_ns()
                 asset_ids = []
                 clocks = []
                 for event in rows:
@@ -2823,11 +2955,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         clocks.append(
                             message_clock(event["id"], metadata["acceptedAt"])
                         )
+                timing["eventMetaReadyAt"] = time.monotonic_ns()
                 latest = current
                 required = self.unanswered_complaints(db, a["id"])
                 latest["complaintsPresented"] = [c["id"] for c in required]
                 self.put(db, "agents", latest)
                 text += self.model_turn_context(db, a, rows[0]["id"])
+                timing["contextReadyAt"] = time.monotonic_ns()
                 if not text:
                     text = "[Complaint update] No complaints require a response."
                 self.item(
@@ -2839,6 +2973,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     inputs=rows,
                     assets=[self.asset_view(self.asset_record(v)) for v in asset_ids],
                 )
+                timing["itemReadyAt"] = time.monotonic_ns()
+                timing["transcriptReadyAt"] = time.monotonic_ns()
                 params = {
                     "threadId": a["threadId"],
                     "model": a["model"],
@@ -2861,6 +2997,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     params["dynamicTools"] = self.tool_definitions(a)
                 params["serviceTier"] = "priority" if a.get("fastMode", False) else "default"
                 params.update(turn_params(a, program))
+                timing["turnParamsReadyAt"] = time.monotonic_ns()
                 current["cyberAccessProgram"] = program
                 if a.get("nativeEffort", a.get("effort")) is not None:
                     params["effort"] = a.get("nativeEffort", a.get("effort"))
@@ -2870,8 +3007,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", current)
                 dispatch_attempt = dict(current["startAttempt"])
                 db.commit()
+            timing["reservationCommittedAt"] = time.monotonic_ns()
             # A submitted reservation is durable before native I/O. If the answer
             # is lost, recovery inspects native history; it never sends this batch again.
+            timing["nativeSubmitBeganAt"] = time.monotonic_ns()
             submitted = self.submit_reserved(server, "turn/start", params)
             timing["submittedAt"] = time.monotonic_ns()
             try:

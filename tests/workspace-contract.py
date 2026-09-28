@@ -905,13 +905,25 @@ class WorkspaceContract(unittest.TestCase):
         self.assertEqual(tree, full)
         self.assertEqual(self.git(self.project, "write-tree"), index)
 
-    def test_failed_first_checkpoint_does_not_stop_the_worker(self):
+    def test_first_checkpoint_uses_head_tree_without_snapshot(self):
         worker, path = self.isolated_worker()
         self.agent_update(worker, worktreeReady=False, threadId=None)
         with patch.object(type(self.runtime), "snapshot_tree", side_effect=NameError("git add timed out")):
             prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
         self.assertTrue(prepared.get("threadId"))
-        self.assertIn("git add timed out", self.runtime.agent(worker["id"])["checkpointError"])
+        with self.runtime.db() as db:
+            checkpoints = [record for record in self.runtime.records(db, "checkpoints")
+                           if record["agent"] == worker["id"]]
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(checkpoints[0]["tree"], self.git(prepared["cwd"], "rev-parse", "HEAD^{tree}"))
+
+    def test_failed_first_checkpoint_does_not_stop_the_worker(self):
+        worker, path = self.isolated_worker()
+        self.agent_update(worker, worktreeReady=False, threadId=None)
+        with patch.object(type(self.runtime), "capture_checkpoint", side_effect=NameError("capture timed out")):
+            prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
+        self.assertTrue(prepared.get("threadId"))
+        self.assertIn("capture timed out", self.runtime.agent(worker["id"])["checkpointError"])
 
     def test_checkpoint_restore_rejects_stale_preview_and_provider_failure_before_files(
         self,

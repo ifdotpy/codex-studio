@@ -173,19 +173,20 @@ class ClaudeProvider(unittest.TestCase):
 
     def test_native_command_has_its_own_queued_batch(self):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})
-        with self.runtime.lock, self.runtime.db() as db:
-            a=self.runtime.agent(a['id'],db)
-            a.update(autoWake=True,status='queued',inFlight=False)
-            self.runtime.put(db,'agents',a)
-            self.runtime.enqueue(db,a,'user','/compact','command-message')
-            self.runtime.enqueue(db,a,'user','Continue after compact','next-message')
-        with self.runtime.lock, patch.object(self.runtime.pool,'submit') as submit:
-            self.runtime.dispatch()
-            starts=[call for call in submit.call_args_list if call.args[0]==self.runtime.start]
-            self.assertEqual(len(starts),1)
-            self.assertEqual([row['id'] for row in starts[0].args[2]],['command-message'])
+        with self.runtime.lock:
             with self.runtime.db() as db:
-                self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='next-message'").fetchone()[0],'pending')
+                a=self.runtime.agent(a['id'],db)
+                a.update(autoWake=True,status='queued',inFlight=False)
+                self.runtime.put(db,'agents',a)
+                self.runtime.enqueue(db,a,'user','/compact','command-message')
+                self.runtime.enqueue(db,a,'user','Continue after compact','next-message')
+            with patch.object(self.runtime.delivery_executor(),'submit') as submit:
+                self.runtime.dispatch()
+                starts=[call for call in submit.call_args_list if call.args[0]==self.runtime.start]
+                self.assertEqual(len(starts),1)
+                self.assertEqual([row['id'] for row in starts[0].args[2]],['command-message'])
+                with self.runtime.db() as db:
+                    self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='next-message'").fetchone()[0],'pending')
 
     def test_explicit_claude_worker_keeps_selected_provider(self):
         a=self.runtime.new_lead({'cwd':str(self.root),'account_key':'claude-local'})

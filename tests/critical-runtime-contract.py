@@ -208,6 +208,35 @@ class CriticalRuntimeContract(unittest.TestCase):
         self.assertEqual((directory / 'preserve.txt').read_text(), 'unsaved worker change')
         self.assertEqual(git('worktree', 'list', '--porcelain').count('worktree '), 2)
 
+    def test_worker_checkout_runs_post_checkout_hook(self):
+        repo = Path(self.temp.name) / 'hook-project'
+        repo.mkdir()
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.DEVNULL).decode().strip()
+        git('init')
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '--allow-empty', '-m', 'Base')
+        (repo / 'checkout-data.txt').write_text('before hook\n')
+        git('add', 'checkout-data.txt')
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'Tracked hook data')
+        log = Path(self.temp.name) / 'checkout-hook.log'
+        hook = repo / '.git' / 'hooks' / 'post-checkout'
+        hook.write_text(f'#!/bin/sh\nprintf "%s %s %s\\n" "$1" "$2" "$3" >> "{log}"\n'
+                        'printf "after hook\\n" > "$(git rev-parse --show-toplevel)/checkout-data.txt"\n')
+        hook.chmod(0o755)
+        lead = self.runtime.create({'name': 'Lead', 'cwd': str(repo), 'prompt': 'Task'}, draft=True)
+        worker = self.runtime.create({'name': 'Worker', 'prompt': 'Task', 'role': 'implementer'},
+                                     lead['id'], defer=True)
+        prepared = self.runtime.prepare(worker)
+        self.assertTrue(log.is_file())
+        self.assertTrue(log.read_text().strip().endswith(' 1'))
+        with self.runtime.db() as db:
+            checkpoint = next(record for record in self.runtime.records(db, 'checkpoints')
+                              if record['agent'] == worker['id'])
+        self.assertEqual(Path(prepared['cwd'], 'checkout-data.txt').read_text(), 'after hook\n')
+        self.assertNotEqual(checkpoint['tree'], git('rev-parse', 'HEAD^{tree}'))
+
     def test_worker_does_not_adopt_a_different_worktree_branch(self):
         repo = Path(self.temp.name) / 'project'
         repo.mkdir()

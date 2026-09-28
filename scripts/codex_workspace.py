@@ -707,9 +707,9 @@ class WorkspaceMixin:
             operation_id = self._reserve_checkpoint(db, a, "capture", turn_id)
         return self._capture_reserved_checkpoint(agent_id, label, turn_id, operation_id)
 
-    def capture_checkpoint(self, agent_id, label="Checkpoint", turn_id=None):
+    def capture_checkpoint(self, agent_id, label="Checkpoint", turn_id=None, tree=None):
         a = self.checked_actor_in_own_db(agent_id)
-        tree = self.snapshot_tree(a)
+        tree = tree if tree is not None else self.snapshot_tree(a)
         key = str(uuid.uuid4())
         env = {
             **os.environ,
