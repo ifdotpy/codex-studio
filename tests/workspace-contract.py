@@ -370,6 +370,63 @@ class WorkspaceContract(unittest.TestCase):
             self.assertEqual(len(global_state[field]), 102)
             self.assertEqual({item["agent"] for item in global_state[field] if item["status"] != "running"}, {other["id"]})
 
+    def test_workspace_task_feed_is_incremental_bounded_and_paged(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        other = self.lead("Other chat")
+        with self.runtime.lock, self.runtime.db() as db:
+            for number in range(105):
+                self.runtime.put(db, "tasks", {
+                    "id": f"history-{number:03}", "agent": worker["id"],
+                    "status": "completed", "created": 1000 + number,
+                    "tail": "private output", "arguments": "private arguments",
+                })
+            self.runtime.put(db, "tasks", {
+                "id": "other-chat-task", "agent": other["id"],
+                "status": "completed", "created": 9999,
+            })
+        initial = self.runtime.workspace_task_feed(lead["id"])
+        self.assertEqual(len(initial["tasks"]), 100)
+        self.assertTrue(initial["hasMore"])
+        self.assertEqual(initial["tasks"][0]["id"], "history-104")
+        self.assertNotIn("tail", initial["tasks"][0])
+        self.assertNotIn("arguments", initial["tasks"][0])
+        older = self.runtime.workspace_task_feed(lead["id"], before=initial["nextBefore"])
+        self.assertEqual([item["id"] for item in older["tasks"]], [
+            "history-004", "history-003", "history-002", "history-001", "history-000",
+        ])
+        self.assertNotIn("other-chat-task", {item["id"] for item in initial["tasks"] + older["tasks"]})
+
+        changed_at = time.time() + 2
+        new = {"id": "new-command", "agent": worker["id"], "status": "running",
+               "created": changed_at, "processId": "123"}
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "tasks", new)
+        changes = self.runtime.workspace_task_feed(lead["id"], cursor=initial["cursor"])
+        self.assertEqual([item["id"] for item in changes["tasks"]], ["new-command"])
+        self.assertEqual(changes["cursor"], {"updated": changed_at, "id": "new-command"})
+
+        new.update(status="completed", finished=changed_at + 1)
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "tasks", new)
+        completed = self.runtime.workspace_task_feed(lead["id"], cursor=changes["cursor"])
+        self.assertEqual([item["status"] for item in completed["tasks"]], ["completed"])
+        self.assertEqual(completed["cursor"]["updated"], changed_at + 1)
+
+        with self.runtime.lock, self.runtime.db() as db:
+            for number in range(101):
+                self.runtime.put(db, "tasks", {
+                    "id": f"bulk-{number:03}", "agent": worker["id"],
+                    "status": "running", "created": changed_at + 2 + number / 1000,
+                })
+        first_batch = self.runtime.workspace_task_feed(lead["id"], cursor=completed["cursor"])
+        self.assertEqual(len(first_batch["tasks"]), 100)
+        self.assertTrue(first_batch["hasMoreChanges"])
+        self.assertFalse(first_batch["hasMore"])
+        second_batch = self.runtime.workspace_task_feed(lead["id"], cursor=first_batch["cursor"])
+        self.assertEqual([item["id"] for item in second_batch["tasks"]], ["bulk-100"])
+        self.assertFalse(second_batch["hasMoreChanges"])
+
     def test_workspace_rejects_unknown_or_deleted_chat_scope(self):
         with self.assertRaises(ValueError):
             self.runtime.workspace_snapshot("unknown-chat")

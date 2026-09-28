@@ -376,7 +376,10 @@ function Changes(c: Context) {
       `${endpoint("changes", c.selected)}&scope=chat`,
       c.revision,
     ),
-    comments = useResource(endpoint("workspace", c.selected), c.revision);
+    comments = useResource(
+      `${endpoint("workspace", c.selected)}${c.selected ? "&" : "?"}view=annotations`,
+      c.revision,
+    );
   const [path, setPath] = useState(""),
     [comment, setComment] = useState<Json | null>(null),
     [saving, setSaving] = useState(false);

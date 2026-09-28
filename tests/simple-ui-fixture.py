@@ -172,6 +172,9 @@ def fixture_events():
                 agent.update(status=params['status'], inFlight=active,
                              turnId='fixture-turn' if active else None)
                 c.runtime.put(db, 'agents', agent)
+        elif message.get('method') == 'fixture/task':
+            with c.runtime.lock, c.runtime.db() as db:
+                c.runtime.put(db, 'tasks', message['params'])
         elif message.get('method') == 'fixture/panel-action':
             try:
                 result = c.runtime.panel_action(message['agent'], message['params'], key=message['id'])

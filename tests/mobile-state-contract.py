@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import threading
+import time
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -258,7 +259,6 @@ class MobileStateHttpContract(unittest.TestCase):
             self.assertEqual(unchanged_body, b"", path)
             if refreshed_at is not None:
                 self.assertGreater(self.runtime.capability_cache[agent]["at"], refreshed_at)
-
         self.runtime.plan_action(agent, {"version": 0, "text": "Changed plan"})
         path = f"/api/plan?agent={agent}"
         changed, headers, body = self.request(
@@ -267,6 +267,66 @@ class MobileStateHttpContract(unittest.TestCase):
         self.assertEqual(changed, 200)
         self.assertNotEqual(headers["ETag"], validators[path])
         self.assertEqual(json.loads(body)["text"], "Changed plan")
+
+    def test_workspace_parts_and_incremental_tasks_have_independent_validators(self):
+        lead = self.lead()
+        worker = fixture.WorkspaceContract.worker(self, lead, "Workspace worker")
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "tasks", {
+                "id": "first-command", "agent": worker["id"], "status": "running",
+                "created": 100, "command": "first", "processId": "1",
+            })
+        work_path = f"/api/workspace?agent={lead['id']}&view=work"
+        work_status, work_headers, work_body = self.request(work_path)
+        self.assertEqual(work_status, 200)
+        self.assertEqual(json.loads(work_body), {"work": []})
+        inbox_path = f"/api/workspace?agent={lead['id']}&view=inbox"
+        annotation_path = f"/api/workspace?agent={lead['id']}&view=annotations"
+        inbox_status, inbox_headers, inbox_body = self.request(inbox_path)
+        annotation_status, annotation_headers, annotation_body = self.request(annotation_path)
+        self.assertEqual((inbox_status, annotation_status), (200, 200))
+        self.assertNotEqual(inbox_headers["ETag"], annotation_headers["ETag"])
+        self.assertNotEqual(json.loads(inbox_body), json.loads(annotation_body))
+
+        initial_path = f"/api/workspace/tasks?agent={lead['id']}"
+        initial_status, initial_headers, initial_body = self.request(initial_path)
+        self.assertEqual(initial_status, 200)
+        initial = json.loads(initial_body)
+        self.assertEqual([task["id"] for task in initial["tasks"]], ["first-command"])
+        self.assertNotIn("tail", initial["tasks"][0])
+
+        now = time.time() + 1
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "tasks", {
+                "id": "second-command", "agent": worker["id"], "status": "running",
+                "created": now, "command": "second", "processId": "2",
+            })
+        unchanged_status, unchanged_headers, unchanged_body = self.request(
+            work_path, {"If-None-Match": work_headers["ETag"]}
+        )
+        self.assertEqual(unchanged_status, 304)
+        self.assertEqual(unchanged_body, b"")
+        unchanged_inbox, _, unchanged_inbox_body = self.request(
+            inbox_path, {"If-None-Match": inbox_headers["ETag"]}
+        )
+        self.assertEqual(unchanged_inbox, 304)
+        self.assertEqual(unchanged_inbox_body, b"")
+
+        from urllib.parse import quote
+        cursor_path = initial_path + "&cursor=" + quote(json.dumps(initial["cursor"]))
+        changed_status, changed_headers, changed_body = self.request(cursor_path)
+        self.assertEqual(changed_status, 200)
+        changed = json.loads(changed_body)
+        self.assertEqual([task["id"] for task in changed["tasks"]], ["second-command"])
+        latest_path = initial_path + "&cursor=" + quote(json.dumps(changed["cursor"]))
+        latest_status, latest_headers, latest_body = self.request(latest_path)
+        self.assertEqual(latest_status, 200)
+        self.assertEqual(json.loads(latest_body)["tasks"], [])
+        no_change_status, _, no_change_body = self.request(
+            latest_path, {"If-None-Match": latest_headers["ETag"]}
+        )
+        self.assertEqual(no_change_status, 304)
+        self.assertEqual(no_change_body, b"")
 
     def test_graph_alias_does_not_change_canonical_runtime_parent(self):
         lead = self.agent_update(self.lead(), threadId="exact-native-thread")

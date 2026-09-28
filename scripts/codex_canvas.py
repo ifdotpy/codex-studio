@@ -831,7 +831,16 @@ def make_server(canvas, port=0, public_origin=None):
                     if path.path == "/api/questions":
                         return self.send(runtime.question_history(agent))
                     if path.path == "/api/workspace":
-                        return self.send(runtime.workspace_snapshot(agent, view=q.get("view", "full")), etag=True)
+                        view = q.get("view", "full")
+                        value = (runtime.workspace_part(agent, view) if view in {"work", "inbox", "annotations"}
+                                 else runtime.workspace_snapshot(agent, view=view))
+                        return self.send(value, etag=True)
+                    if path.path == "/api/workspace/tasks":
+                        cursor = json.loads(q["cursor"]) if q.get("cursor") else None
+                        before = json.loads(q["before"]) if q.get("before") else None
+                        return self.send(runtime.workspace_task_feed(
+                            agent, cursor=cursor, before=before, limit=q.get("limit", 100)
+                        ), etag=True)
                     if path.path == "/api/work":
                         return self.send(runtime.work_action(agent, {"action": "list"}))
                     if path.path == "/api/queue":

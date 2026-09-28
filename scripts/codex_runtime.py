@@ -5375,6 +5375,100 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("This conversation was deleted")
             return task
 
+    @staticmethod
+    def _workspace_task_summary(record):
+        task = json.loads(record) if isinstance(record, str) else dict(record)
+        return {key: value for key, value in task.items()
+                if key not in {"tail", "arguments", "error"}}
+
+    def workspace_task_feed(self, key=None, *, cursor=None, before=None, limit=100):
+        limit = max(1, min(100, int(limit)))
+        if cursor is not None:
+            if not isinstance(cursor, dict) or not isinstance(cursor.get("id"), str):
+                raise ValueError("Invalid task cursor")
+            cursor_time = float(cursor["updated"])
+            cursor_id = cursor["id"]
+        if before is not None:
+            if not isinstance(before, dict) or not isinstance(before.get("id"), str):
+                raise ValueError("Invalid task history cursor")
+            before_created = float(before["created"])
+            before_id = before["id"]
+        with self.read_db() as db:
+            root = self.checked_actor(db, key)["rootId"] if key else None
+            scope = ""
+            params = ()
+            if root is not None:
+                scope = " AND json_extract({alias}.record,'$.agent') IN (SELECT id FROM runtime_agents " \
+                        "WHERE json_extract(record,'$.rootId')=? AND json_extract(record,'$.deletedAt') IS NULL)"
+                params = (root,)
+            scoped = scope.format(alias="t")
+            if before is not None:
+                rows = db.execute(
+                    "SELECT t.record FROM runtime_tasks t WHERE 1=1" + scoped +
+                    " AND (json_extract(t.record,'$.created') < ? OR "
+                    "(json_extract(t.record,'$.created') = ? AND t.id < ?)) "
+                    "ORDER BY json_extract(t.record,'$.created') DESC,t.id DESC LIMIT ?",
+                    (*params, before_created, before_created, before_id, limit + 1),
+                ).fetchall()
+                tasks = [self._workspace_task_summary(row[0]) for row in rows[:limit]]
+                has_more = len(rows) > limit
+                next_before = ({"created": tasks[-1].get("created", 0), "id": tasks[-1]["id"]}
+                               if has_more and tasks else None)
+                return {"tasks": tasks, "hasMore": has_more, "nextBefore": next_before}
+
+            if cursor is None:
+                rows = db.execute(
+                    "SELECT t.record FROM runtime_tasks t WHERE 1=1" + scoped +
+                    " ORDER BY json_extract(t.record,'$.created') DESC,t.id DESC LIMIT ?",
+                    (*params, limit + 1),
+                ).fetchall()
+                tasks = [self._workspace_task_summary(row[0]) for row in rows[:limit]]
+                has_more = len(rows) > limit
+                next_before = ({"created": tasks[-1].get("created", 0), "id": tasks[-1]["id"]}
+                               if has_more and tasks else None)
+                latest = max(
+                    ((max(float(task.get("created", 0) or 0), float(task.get("finished", 0) or 0)), task["id"])
+                     for task in tasks), default=(0, ""))
+                return {"tasks": tasks, "cursor": {"updated": latest[0], "id": latest[1]}, "hasMore": has_more,
+                        "nextBefore": next_before, "reset": False}
+
+            effective = "CASE WHEN COALESCE(json_extract(t.record,'$.finished'),0) > " \
+                        "COALESCE(json_extract(t.record,'$.created'),0) " \
+                        "THEN json_extract(t.record,'$.finished') ELSE json_extract(t.record,'$.created') END"
+            rows = db.execute(
+                "SELECT t.record," + effective + " AS updated,t.id FROM runtime_tasks t WHERE 1=1" + scoped +
+                " AND (" + effective + " > ? OR (" + effective + " = ? AND t.id > ?)) "
+                "ORDER BY updated,t.id LIMIT ?",
+                (*params, cursor_time, cursor_time, cursor_id, limit + 1),
+            ).fetchall()
+            tasks = [self._workspace_task_summary(row[0]) for row in rows[:limit]]
+            has_more = len(rows) > limit
+            if tasks:
+                last = rows[limit - 1] if has_more else rows[-1]
+                next_cursor = {"updated": float(last[1]), "id": last[2]}
+            else:
+                next_cursor = cursor
+            return {"tasks": tasks, "cursor": next_cursor, "hasMore": False,
+                    "hasMoreChanges": has_more,
+                    "nextBefore": None, "reset": False}
+
+    def workspace_part(self, key, view):
+        if view == "inbox":
+            return self.workspace_snapshot(key, view="inbox")
+        with self.read_db() as db:
+            root = self.checked_actor(db, key)["rootId"] if key else None
+            agents = [a for a in self.records(db, "agents", shared=True)
+                      if not a.get("deletedAt") and (root is None or a["rootId"] == root)]
+            ids = {a["id"] for a in agents}
+            if view == "annotations":
+                return {"annotations": [a for a in self.records(db, "annotations")
+                                        if a["agent"] in ids and (not root or a["rootId"] == root)]}
+            if view == "work":
+                works = self.records(db, "work")
+                return {"work": [self.work_view(w, works) for w in works
+                                 if w["rootId"] in ids and (not root or w["rootId"] == root)]}
+            raise ValueError("Unknown workspace view")
+
     def snapshot(self, *, include_work=True, db=None):
         if db is None:
             with self.read_db() as own:

@@ -32,6 +32,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../types";
+import { useWorkspaceTaskFeed } from "./useWorkspaceTaskFeed";
 import { copyText } from "../clipboard";
 
 export const activeTask = (task: BackgroundTask) =>
@@ -153,6 +154,7 @@ export default function BackgroundTasks({
     } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
+  const taskFeed = useWorkspaceTaskFeed(opened, leadId);
   const appliedFocus = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!opened) return;
@@ -160,7 +162,12 @@ export default function BackgroundTasks({
     return () => clearInterval(timer);
   }, [opened]);
   const agents = data.threads,
-    tasks = backgroundTasks(data).filter(activeTask),
+    tasks = [
+      ...(data.runtime.monitors || []).map(
+        (m) => ({ ...m, kind: "monitor" as const }) as BackgroundTask,
+      ),
+      ...(taskFeed ?? data.runtime.tasks ?? []),
+    ].filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
     (t) =>
