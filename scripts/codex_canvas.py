@@ -643,7 +643,7 @@ def make_server(canvas, port=0, public_origin=None):
                     value = {**value, "_syncEntities": [
                         {"id": "entity:" + row[0] + ":" + row[1], "seq": row[2],
                          "payload": row[3], "_deleted": bool(row[4])} for row in changed]}
-            
+
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
             serialize_ms = (time.perf_counter() - serialize_started) * 1000 if server_timing else None
             compressible = content_type.startswith(("application/json", "application/manifest+json", "text/", "image/svg+xml"))
