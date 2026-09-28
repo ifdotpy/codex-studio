@@ -54,8 +54,13 @@ for (const readState of [
   assert(unreadResult({ ...lead, readState }));
 assert.equal(state({ ...lead, lastCompletedTurnStatus: "failed" }), "none");
 assert.equal(state({ ...lead, lastCompletedTurn: null }), "none");
-for (const status of ["running", "starting", "queued", "waiting"])
+for (const status of ["running", "starting", "queued"])
   assert.equal(state({ ...lead, status }), "working", status);
+assert.equal(
+  state({ ...lead, status: "waiting" }),
+  "none",
+  "A stale waiting state without an active child does not show busy",
+);
 assert.equal(
   state(lead, { monitors: [{ agent: "lead", status: "running" }] }),
   "working",
@@ -150,6 +155,12 @@ assert.equal(
   chatIndicators(snapshot([lead, { ...child, status: "running" }])).get("lead")
     .kind,
   "working",
+);
+assert.equal(
+  chatIndicators(snapshot([{ ...lead, status: "waiting" }, { ...child, status: "running" }])).get("lead")
+    .kind,
+  "working",
+  "A lead waiting for an active child remains busy",
 );
 assert.equal(
   chatIndicators(

@@ -22,8 +22,8 @@ def review_tools(tool, text):
         'Request native Codex review in a separate read-only Studio child. Defaults to all uncommitted changes. '
         'Choose a base branch, commit, or custom instructions through target. The reviewer uses your model and effort '
         'unless you pass model and effort (for example model=gpt-6-astra), subject to the account review_model setting. '
-        'It works in cwd, which must be inside a git repository. '
-        'cwd defaults to your folder; a relative path starts there, and a shell cd does not change it. '
+        'cwd is the repository folder for the review; defaults to the agent cwd. It must be inside a git repository. '
+        'A relative path starts at the agent cwd, and a shell cd does not change it. '
         'The reviewer does not receive your chat history. '
         'The result wakes you automatically. Finish your turn while waiting. Use a stable request_id for retries; '
         'read orchestration_request after a lost response. Available in Multi agent mode.',
@@ -134,19 +134,24 @@ def request(rt, actor, args, key):
         spec['prompt'] = spec['prompt'][:32000]
         child = rt.create(spec, current['id'], parent_epoch=current['epoch'],
                           _catalog=(review_account, catalog), _validate_only=True)
-        child.update(yoloMode=False, worktree=False)
-        value = {'requestId': key, 'agentId': child['id'], 'status': 'queued',
-                 'agents': [{name: child[name] for name in ('id', 'name', 'status', 'model', 'effort', 'fastMode')}],
-                 'delivery': 'The review result wakes you automatically. Finish your turn while waiting.'}
-        child['nativeReview'] = {'target': target, 'requestId': key, 'actorId': current['id'],
-                                 'status': 'pending', 'response': copy.deepcopy(value)}
-        rt.put(db, 'agents', child)
-        result = stamp_tool_result({'success': True, 'contentItems': [
-            {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())
-        db.execute('INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)', (key, json.dumps(result)))
-        if receipt:
-            rt.finish_tool_request(key, result, outcome='applied', db=db)
-        return value
+        try:
+            child.update(yoloMode=False, worktree=False)
+            value = {'requestId': key, 'agentId': child['id'], 'status': 'queued',
+                     'agents': [{name: child[name] for name in ('id', 'name', 'status', 'model', 'effort', 'fastMode')}],
+                     'delivery': 'The review result wakes you automatically. Finish your turn while waiting.'}
+            child['nativeReview'] = {'target': target, 'requestId': key, 'actorId': current['id'],
+                                     'status': 'pending', 'response': copy.deepcopy(value)}
+            rt.put(db, 'agents', child)
+            result = stamp_tool_result({'success': True, 'contentItems': [
+                {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())
+            db.execute('INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)', (key, json.dumps(result)))
+            if receipt:
+                rt.finish_tool_request(key, result, outcome='applied', db=db)
+            return value
+        except Exception as error:
+            # rt.create is the uncertainty boundary even if a later write fails.
+            error.review_child_created = True
+            raise
 
 
 def claim(rt, db, agent):

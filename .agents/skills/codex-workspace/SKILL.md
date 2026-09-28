@@ -132,6 +132,7 @@ content; the harness records the change and delivers its event.
 | Goal | Caller and operation | Input | Harness result |
 |---|---|---|---|
 | Define work | Orchestrator: `orchestration_task action=create` | `title`; scope and completion criteria in `description`; optional `owner` and `dependencies` | Saves the work item. |
+| Cancel work | Lead or task creator: `orchestration_task action=cancel` | `task_id` and required `reason` | Closes the task, records the actor and reason, releases its assignment, and notifies a live owner. |
 | Delegate defined work | Orchestrator: `orchestration_spawn` | `task_id` on the agent entry | Sets the new worker as owner and names the task in its first message. |
 | Start ready work | Worker: `orchestration_task action=claim` | `task_id` | Reserves the task atomically and sets `running`. |
 | Request review | Owner: `orchestration_task action=submit` | `task_id`, `result`, `checks`, `revision`, `files` | Sets `review` and delivers evidence to the lead. |
@@ -144,6 +145,7 @@ or Compact actions, new turn slot waits, and active shared radio turns.
 | Exchange information during work | Agent: `orchestration_message` | `target` and new finding, question, or answer in `text` | Delivers through the selected chat. |
 
 The owner continues from a rejection's `work_decision`, then submits revised evidence.
+Cancellation does not require a submit; it uses `work_decision` to notify a live owner.
 Task events queue the owner when automatic continuation is enabled. Explicit stops
 and native failure holds remain in effect. Inspect the agent's state and receipt
 before an authorized recovery action.

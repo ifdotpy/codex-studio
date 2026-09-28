@@ -28,6 +28,8 @@ def work_tools(tool, text):
             "claim reserves ready work atomically. submit saves evidence, sets review, and notifies the lead. "
             "Only the lead reviews results. accept records approval and releases dependent work. "
             "reject takes the reason and required corrections in result, sets ready, and delivers those instructions to the owner as work_decision. "
+            "cancel closes a task without requiring a submit; give a reason. Only the lead or task creator can cancel. "
+            "Cancellation releases the assignment and sends work_decision to a live owner. "
             "The owner continues from that event when automatic continuation is enabled. Explicit stops and native failure holds remain in effect. "
             "Mutations return brief receipts; the server owns state changes and event delivery.",
             {
@@ -43,6 +45,7 @@ def work_tools(tool, text):
                         "submit",
                         "accept",
                         "reject",
+                        "cancel",
                     ],
                 },
                 "task_id": text,
@@ -55,6 +58,7 @@ def work_tools(tool, text):
                 "dependencies": {"type": "array", "items": text},
                 "status": {"type": "string", "enum": ["ready", "blocked"]},
                 "result": text,
+                "reason": {"type": "string", "minLength": 1, "maxLength": 32000},
                 "checks": text,
                 "revision": text,
                 "files": {"type": "array", "items": text},
@@ -190,6 +194,7 @@ class WorkMixin:
                     "version": 0,
                     "results": [],
                     "decisions": [],
+                    "createdBy": actor or a["id"],
                 }
             else:
                 w = next((w for w in works if w["id"] == data.get("task_id")), None)
@@ -304,6 +309,29 @@ class WorkMixin:
                         ),
                         "work-result:" + result["id"],
                     )
+            elif action == "cancel":
+                if not leader and actor != w.get("createdBy"):
+                    raise ValueError("Only the lead or task creator can cancel this task")
+                reason = text_field(data.get("reason"), "a cancellation reason")
+                if w["status"] == "cancelled":
+                    return self.save_receipt(db, key, signature, self.work_view(w, works))
+                if w["status"] == "accepted":
+                    raise ValueError("Cannot cancel accepted work")
+                owner_id = w.get("owner")
+                w["decisions"].append({
+                    "decision": "cancel", "reason": reason,
+                    "by": actor or a["id"], "owner": owner_id,
+                    "created": time.time(),
+                })
+                w.update(status="cancelled", owner=None)
+                owner_row = (db.execute("SELECT record FROM runtime_agents WHERE id=?", (owner_id,)).fetchone()
+                             if owner_id else None)
+                owner = json.loads(owner_row[0]) if owner_row else None
+                if (owner and not owner.get("deletedAt")
+                        and owner.get("status") not in {"completed", "failed"}):
+                    self.enqueue(db, owner, "work_decision", json.dumps(
+                        {"task": w["id"], "decision": "cancel", "reason": reason}),
+                        "work-decision:" + w["id"] + ":cancel")
             elif action in {"accept", "reject"}:
                 if not leader:
                     raise ValueError("Only the lead can accept or reject a result")

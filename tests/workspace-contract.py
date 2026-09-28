@@ -26,6 +26,7 @@ spec.loader.exec_module(fixture)
 Runtime, eventually = fixture.Runtime, fixture.eventually
 from codex_native_errors import NativeRpcError
 from codex_shell import monitor_command
+from codex_agent_management import manage_agent
 
 
 class WorkspaceServer(fixture.FakeServer):
@@ -563,6 +564,57 @@ class WorkspaceContract(unittest.TestCase):
         self.assertEqual(len(self.events(worker, "work_ready")), 1)
         with self.assertRaisesRegex(ValueError, "accepted work"):
             self.action(lead, first, "update", title="Rewrite history")
+
+    def test_cancel_unsubmitted_work_is_audited_idempotent_and_releases_owner(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        task = self.work(lead, "Superseded", owner=worker["id"])
+        with self.assertRaisesRegex(ValueError, "cancellation reason"):
+            self.action(lead, task, "cancel")
+        cancelled = self.action(lead, task, "cancel", reason="Superseded by a new assignment")
+        self.assertEqual((cancelled["status"], cancelled["owner"]), ("cancelled", None))
+        decision = cancelled["decisions"][-1]
+        self.assertEqual((decision["decision"], decision["by"], decision["reason"]),
+                         ("cancel", lead["id"], "Superseded by a new assignment"))
+        notices = self.events(worker, "work_decision")
+        self.assertEqual(len(notices), 1)
+        self.assertIn('"decision": "cancel"', notices[0]["text"])
+        replay = self.action(lead, cancelled, "cancel", reason="Already cancelled")
+        self.assertEqual(replay["version"], cancelled["version"])
+        self.assertEqual(len(self.events(worker, "work_decision")), 1)
+        inspection = manage_agent(self.runtime, lead["id"],
+                                  {"action": "inspect", "agent_id": worker["id"]}, lead["epoch"])
+        self.assertNotIn("assigned_work", {blocker["kind"] for blocker in inspection["blockers"]})
+        self.assertIn("input_delivery", {blocker["kind"] for blocker in inspection["blockers"]})
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?",
+                       ("work-decision:" + task["id"] + ":cancel",))
+            saved_worker = self.runtime.agent(worker["id"], db)
+            saved_worker.update(status="completed", inFlight=False, turnId=None)
+            self.runtime.put(db, "agents", saved_worker)
+        inspection = manage_agent(self.runtime, lead["id"],
+                                  {"action": "inspect", "agent_id": worker["id"]}, lead["epoch"])
+        self.assertTrue(inspection["canArchive"], inspection["blockers"])
+        with self.assertRaisesRegex(ValueError, "lead or task creator"):
+            self.action(worker, task, "cancel", reason="Not authorized")
+        self.assertEqual(self.runtime.work_action(lead["id"], {})["items"][0]["status"], "cancelled")
+
+        created_by_worker = self.work(lead, "Worker-created record")
+        with self.runtime.lock, self.runtime.db() as db:
+            saved = next(w for w in self.runtime.records(db, "work") if w["id"] == created_by_worker["id"])
+            saved["createdBy"] = worker["id"]
+            self.runtime.put(db, "work", saved)
+        creator_cancel = self.action(worker, created_by_worker, "cancel", reason="Creator closed it")
+        self.assertEqual(creator_cancel["status"], "cancelled")
+
+    def test_task_tool_schema_exposes_cancel_reason(self):
+        lead = self.runtime.prepare(self.lead())
+        definition = next(tool for tool in self.runtime.tool_definitions(lead)
+                          if tool["name"] == "orchestration_task")
+        schema = definition["inputSchema"]
+        self.assertIn("cancel", schema["properties"]["action"]["enum"])
+        self.assertIn("reason", schema["properties"])
+        self.assertIn("task creator can cancel", definition["description"])
 
     def test_work_mutation_receipts_and_versions_prevent_duplicate_or_stale_writes(
         self,

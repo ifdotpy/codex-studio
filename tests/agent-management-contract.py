@@ -260,14 +260,27 @@ class RealWorktreeContract(Contract):
         self.assertTrue((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
 
     def test_bulk_archives_clean_worktree_with_unknown_receipt(self):
-        self.update('tool_requests', {'id':'unknown-review','agent':'worker',
+        self.update('tool_requests', {'id':'unknown-monitor','agent':'worker',
+                                      'tool':'orchestration_monitor',
                                       'stage':'failed','outcome':'unknown'})
         result = self.call('archive_finished')
         self.assertEqual(result['archived'], 1)
         self.assertFalse((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
         with self.rt.db() as db:
             receipt = self.rt.agent('worker', db)['agentArchive']
-        self.assertEqual(receipt['unknownToolRequests'], ['unknown-review'])
+        self.assertEqual(receipt['unknownToolRequests'], ['unknown-monitor'])
+
+    def test_inspect_reconciles_failed_review_without_child(self):
+        self.update('tool_requests', {'id':'worker:review:preflight','agent':'worker',
+            'tool':'orchestration_review','stage':'failed','outcome':'unknown',
+            'result':{'success':False,'contentItems':[{'type':'inputText','text':'not a repository'}]}})
+        inspected = self.call('inspect')
+        self.assertTrue(inspected['canArchive'])
+        self.assertEqual(inspected['blockers'], [])
+        with self.rt.db() as db:
+            receipt = self.rt.records(db,'tool_requests')[0]
+        self.assertEqual(receipt['outcome'], 'not_applied')
+        self.assertEqual(receipt['result']['contentItems'][0]['text'], 'not a repository')
 
     def test_non_lead_cannot_bulk_archive(self):
         with self.assertRaisesRegex(ValueError, 'Only the active orchestrator'):

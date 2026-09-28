@@ -4174,6 +4174,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         ).fetchone()[0]
                     )
         except Exception as error:
+            if claimed and name == "orchestration_review" and not getattr(error, "review_child_created", False):
+                # A native reviewer has a deterministic ID. Failures before its
+                # durable row exists are proven not to have created a child;
+                # after that boundary, preserve uncertainty.
+                try:
+                    reviewer_id = str(uuid.uuid5(uuid.NAMESPACE_URL, key))
+                    with self.lock, self.db() as db:
+                        created = db.execute("SELECT 1 FROM runtime_agents WHERE id=?", (reviewer_id,)).fetchone()
+                    if not created:
+                        request_outcome = "not_applied"
+                except Exception:
+                    pass
             result = stamp_tool_result(
                 {
                     "success": False,

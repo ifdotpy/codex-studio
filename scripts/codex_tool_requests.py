@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import time
+import uuid
 
 
 def request_tools(tool, text):
@@ -369,6 +370,16 @@ class RequestMixin:
         for row in rows:
             before = json.loads(row[0])
             after = self._refresh_tool_request(db, before)
+            if (after.get("tool") == "orchestration_review"
+                    and after.get("stage") == "failed"
+                    and after.get("outcome") == "unknown"):
+                child_id = str(uuid.uuid5(uuid.NAMESPACE_URL, after["id"]))
+                child = db.execute("SELECT 1 FROM runtime_agents WHERE id=?", (child_id,)).fetchone()
+                if child is None:
+                    # Keep the original failure payload; only settle the
+                    # execution outcome now that absence of the child is proven.
+                    after = self.finish_tool_request(after["id"], after.get("result"),
+                                                     outcome="not_applied", db=db)
             if after["outcome"] in {"applied", "not_applied"}:
                 reconciled.append(after["id"])
             elif after["outcome"] == "unknown":

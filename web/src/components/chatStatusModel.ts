@@ -79,10 +79,21 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
   }
   for (const agent of agents) {
     if (concrete.has(agent.id)) continue;
+    const waitingForChild =
+      agent.status === "waiting" &&
+      agents.some(
+        (child) =>
+          child.parentId === agent.id &&
+          (child.inFlight ||
+            ["queued", "starting", "running", "approval"].includes(
+              child.status,
+            )),
+      );
     if (
       agent.inFlight ||
       (agent.autoWake !== false &&
-        ["queued", "starting", "running", "waiting"].includes(agent.status))
+        ["queued", "starting", "running"].includes(agent.status)) ||
+      waitingForChild
     )
       add(agent, {
         id: agent.id,
