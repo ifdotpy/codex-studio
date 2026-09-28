@@ -70,13 +70,25 @@ let delayCostWork = false;
 let delayedCosts;
 let snapshotLimits = {};
 let claudeQueue = [];
+let stateReads = 0;
+let failClaudeSettings = false;
 const claudeSession = {
   version: "2.1.fixture",
   settings: { permissionMode: "default", thinking: true },
-  turns: [
-    { id: "claude-turn-one", text: "Original request", status: "completed" },
-    { id: "claude-turn-two", text: "Later request", status: "completed" },
-  ],
+  turns: process.env.SETTINGS_BENCHMARK
+    ? Array.from({ length: 301 }, (_, i) => ({
+        id: `claude-turn-${i}`,
+        text: `Earlier request ${i}: ${"Review the change and report useful findings. ".repeat(18)}`,
+        status: "completed",
+      }))
+    : [
+        {
+          id: "claude-turn-one",
+          text: "Original request",
+          status: "completed",
+        },
+        { id: "claude-turn-two", text: "Later request", status: "completed" },
+      ],
 };
 let failClaudeRollback = true;
 let failClaudeCommand = true;
@@ -171,7 +183,8 @@ const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(data));
   };
-  if (url.pathname === "/api/state")
+  if (url.pathname === "/api/state") {
+    stateReads++;
     return json({
       token: "fixture",
       stateDir: evidence,
@@ -189,6 +202,7 @@ const server = createServer(async (req, res) => {
         rateLimitsByAccount: snapshotLimits,
       },
     });
+  }
   if (
     url.pathname === "/api/accounts" ||
     url.pathname === "/api/accounts/discover" ||
@@ -308,6 +322,11 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/api/claude/session") {
     if (body.action === "state") return json(claudeSession);
     if (body.action === "settings") {
+      if (failClaudeSettings) {
+        failClaudeSettings = false;
+        res.statusCode = 400;
+        return json({ error: "The settings were rejected." });
+      }
       claudeSession.settings = body.settings;
       return json({ ok: true });
     }
@@ -401,7 +420,199 @@ try {
     errors.push(error.message);
     console.error(error.stack);
   });
+  if (process.env.SETTINGS_BENCHMARK) {
+    accounts.push({
+      id: "claude",
+      email: "claude@example.com",
+      label: "Claude Code",
+      provider: "claude",
+      status: "ready",
+      accountId: "native-claude",
+    });
+    const benchAgent = {
+      ...makeLead("claude-chat", "Claude conversation", "claude", false),
+      provider: "claude",
+      model: "default",
+    };
+    for (let i = 0; i < 260; i++)
+      agents.push(
+        makeLead(`perf-${i}`, `Performance chat ${i}`, "default", false),
+      );
+    agents.push(benchAgent);
+  }
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  if (process.env.SETTINGS_BENCHMARK) {
+    const benchAgent = agents.find((agent) => agent.id === "claude-chat");
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .waitFor();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const openedAt = performance.now();
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    const settings = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    const claude = settings.getByRole("region", {
+      name: "Claude settings",
+      exact: true,
+    });
+    await claude.getByLabel("Permission mode", { exact: true }).waitFor();
+    await settings.getByLabel("Appearance", { exact: true }).waitFor();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('[aria-label="Claude settings"]')
+          ?.getAttribute("aria-busy") === "false",
+    );
+    const openMs = Number((performance.now() - openedAt).toFixed(1));
+    console.log(`PERF settings-open-ms=${openMs}`);
+    await page.screenshot({
+      path: join(evidence, "chat-settings-1440.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({
+      path: join(evidence, "chat-settings-390.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 320, height: 760 });
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+      "Chat settings must fit a 320px viewport",
+    );
+    assert.ok(
+      await settings.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth + 1,
+      ),
+      "The settings dialog must not scroll horizontally at 320px",
+    );
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const snapshotsBefore = stateReads;
+    const savedAt = performance.now();
+    await claude
+      .getByLabel("Permission mode", { exact: true })
+      .selectOption("plan");
+    await claude.getByText("Saved", { exact: true }).waitFor();
+    const saveMs = Number((performance.now() - savedAt).toFixed(1));
+    assert.equal(
+      stateReads,
+      snapshotsBefore,
+      "Setting changes must not refresh the full state snapshot",
+    );
+    const saveRequest = bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1);
+    assert.equal(saveRequest.body.id, benchAgent.id);
+    assert.match(saveRequest.body.request_id, /^[0-9a-f-]{36}$/);
+    await page.screenshot({
+      path: join(evidence, "chat-settings-saved-1440.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({
+      path: join(evidence, "chat-settings-saved-390.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const settingsSavedResponse = () =>
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/claude/session") &&
+          response.request().postDataJSON()?.action === "settings",
+      );
+    let saveResponse = settingsSavedResponse();
+    await claude.getByRole("switch", { name: /^Extended thinking/ }).uncheck();
+    assert.ok((await saveResponse).ok());
+    await claude.getByText("Saved", { exact: true }).waitFor();
+    await claude.getByText("Advanced", { exact: true }).click();
+    saveResponse = settingsSavedResponse();
+    await claude
+      .getByLabel("Auto-compact token limit", { exact: true })
+      .fill("250000");
+    await settings.getByLabel("Appearance", { exact: true }).focus();
+    assert.ok((await saveResponse).ok());
+    await claude.getByText("Saved", { exact: true }).waitFor();
+    const finalSettings = bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1);
+    assert.deepEqual(finalSettings.body.settings, {
+      permissionMode: "plan",
+      thinking: false,
+      autoCompactWindow: 250000,
+    });
+    assert.equal(stateReads, snapshotsBefore);
+    failClaudeSettings = true;
+    await claude
+      .getByLabel("Permission mode", { exact: true })
+      .selectOption("default");
+    await claude.getByRole("alert").waitFor();
+    assert.equal(
+      await claude.getByLabel("Permission mode", { exact: true }).inputValue(),
+      "plan",
+    );
+    const failedSettingsRequest = bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1).body;
+    const failedRequestId = failedSettingsRequest.request_id;
+    const failedStorageKey = `claude-control:claude:${benchAgent.id}:settings:${JSON.stringify({ settings: failedSettingsRequest.settings })}`;
+    assert.equal(
+      await page.evaluate(
+        (key) => JSON.parse(localStorage.getItem(key) || "null"),
+        failedStorageKey,
+      ),
+      failedRequestId,
+      "An unconfirmed setting keeps its exact request identity in localStorage",
+    );
+    await claude
+      .getByLabel("Permission mode", { exact: true })
+      .selectOption("default");
+    await claude.getByText("Saved", { exact: true }).waitFor();
+    const retriedRequestId = bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1).body.request_id;
+    assert.equal(
+      retriedRequestId,
+      failedRequestId,
+      "A rejected setting must retry with its saved request identity",
+    );
+    assert.ok(
+      openMs < 150,
+      `Panel open was ${openMs} ms, expected under 150 ms`,
+    );
+    assert.ok(
+      saveMs < 300,
+      `Setting save was ${saveMs} ms, expected under 300 ms`,
+    );
+    console.log(`PERF settings-change-to-saved-ms=${saveMs}`);
+    console.log(
+      `PERF state-refreshes-after-save=${stateReads - snapshotsBefore}`,
+    );
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    console.log(`PERF evidence=${evidence}`);
+    process.exit(0);
+  }
   const picker = page.locator(".account-picker");
   const quota = page.getByRole("button", {
     name: "Account limits",
@@ -970,25 +1181,20 @@ try {
     exact: true,
   });
   await claudeSettings
-    .getByRole("heading", { name: "Claude Code 2.1.fixture", exact: true })
-    .waitFor();
-  await claudeSettings
     .getByLabel("Permission mode", { exact: true })
     .selectOption("plan");
+  await claudeSettings.getByText("Saved", { exact: true }).waitFor();
   await claudeSettings
     .getByRole("switch", { name: /^Extended thinking/ })
     .uncheck();
+  await claudeSettings.getByText("Saved", { exact: true }).waitFor();
+  await claudeSettings.getByText("Advanced", { exact: true }).click();
   await claudeSettings
     .getByLabel("Auto-compact token limit", { exact: true })
     .fill("250000");
-  await claudeSettings
-    .getByRole("button", { name: "Save Claude settings", exact: true })
-    .click();
-  await page.waitForFunction(
-    () =>
-      !document.querySelector('[aria-label="Claude settings"] button')
-        ?.disabled,
-  );
+  await claudeSettings.locator(".claude-advanced > summary").click();
+  await claudeSettings.getByText("Saved", { exact: true }).waitFor();
+  await claudeSettings.getByText("Advanced", { exact: true }).click();
   const sessionSettings = bodies
     .filter(
       (request) =>
@@ -1002,6 +1208,16 @@ try {
     thinking: false,
     autoCompactWindow: 250000,
   });
+  assert.ok(
+    bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .every((request) => /^[0-9a-f-]{36}$/.test(request.body.request_id)),
+    "Each autosave retains an exact request identity",
+  );
   await claudeSettings
     .getByText("Commands and skills", { exact: true })
     .click();
@@ -1034,8 +1250,9 @@ try {
   await page.reload();
   await page.locator(`[data-chat="${claude.id}"]`).click();
   await openSettings();
+  await claudeSettings.getByText("Advanced", { exact: true }).click();
   await claudeSettings
-    .getByRole("heading", { name: "Claude Code 2.1.fixture", exact: true })
+    .getByText("Claude Code 2.1.fixture", { exact: true })
     .waitFor();
   assert.equal(
     await claudeSettings

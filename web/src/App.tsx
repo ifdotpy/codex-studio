@@ -1823,9 +1823,7 @@ export default function App() {
               />
             )}
           </section>
-          {agent?.provider === "claude" && (
-            <ClaudeSettings agent={agent} refresh={refresh} />
-          )}
+          {agent?.provider === "claude" && <ClaudeSettings agent={agent} />}
           <section className="settings-group settings-appearance">
             <h2>Appearance</h2>
             <NativeSelect
