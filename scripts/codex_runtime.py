@@ -1061,6 +1061,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         register_functions(db)
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
             ensure_tables(db)
+        if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone()
+                and not db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='sync_entity_event_INSERT'").fetchone()):
             install_bypass_triggers(db)
         db.create_function("sync_invalidate_agent", 1, self.mark_agent_records_changed)
         if reusable:

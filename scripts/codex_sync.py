@@ -74,8 +74,6 @@ class SyncStore:
             if getattr(self, '_versions_ready', False):
                 return
             with self.connect() as db:
-                from codex_sync_entities import ensure_tables
-                ensure_tables(db)
                 db.execute('''CREATE TABLE IF NOT EXISTS sync_versions (
                     seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
                     hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL)''')
