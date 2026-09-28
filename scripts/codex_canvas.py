@@ -632,7 +632,7 @@ def make_server(canvas, port=0, public_origin=None):
             baseline = getattr(self, "sync_entities_after", None)
             if (baseline is not None and 200 <= status < 300 and isinstance(value, dict)
                     and "_syncEntities" not in value):
-                with sync().connect() as db:
+                with self.server.sync_store().connect() as db:
                     changed = db.execute("""SELECT collection,id,seq,payload,deleted FROM sync_entities
                                             WHERE seq>? AND collection NOT LIKE 'transcript:%'
                                             ORDER BY seq""", (baseline,)).fetchall()
