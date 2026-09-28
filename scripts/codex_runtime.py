@@ -5398,10 +5398,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             scope = ""
             params = ()
             if root is not None:
-                scope = " AND json_extract({alias}.record,'$.agent') IN (SELECT id FROM runtime_agents " \
-                        "WHERE json_extract(record,'$.rootId')=? AND json_extract(record,'$.deletedAt') IS NULL)"
-                params = (root,)
-            scoped = scope.format(alias="t")
+                agent_ids = [row[0] for row in db.execute(
+                    "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
+                    "AND json_extract(record,'$.deletedAt') IS NULL", (root,))]
+                if not agent_ids:
+                    return {"tasks": [], "cursor": cursor, "hasMore": False,
+                            "hasMoreChanges": False, "nextBefore": None, "reset": False}
+                scope = " AND json_extract(t.record,'$.agent') IN (" \
+                        + ','.join('?' for _ in agent_ids) + ")"
+                params = tuple(agent_ids)
+            scoped = scope
             if before is not None:
                 rows = db.execute(
                     "SELECT t.record FROM runtime_tasks t WHERE 1=1" + scoped +

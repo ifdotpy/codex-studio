@@ -389,6 +389,8 @@ export default function Analytics({
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<string | null>("overview");
   const [knownTools, setKnownTools] = useState<string[]>([]);
+  const [olderDetails, setOlderDetails] = useState<Record<string, Json[]>>({});
+  const [loadingDetails, setLoadingDetails] = useState<Record<string, boolean>>({});
   const snapshotAt = useMemo(
     () => Math.floor(Date.now() / 1000),
     [agent.id, scope, period, refresh],
@@ -407,6 +409,33 @@ export default function Analytics({
   }, [agent.id, scope, period, tool, offset, snapshotAt]);
   const viewKey = JSON.stringify([agent.id, scope, period, tool, offset]);
   const data = loadedQuery === viewKey ? dataRecord : null;
+  useEffect(() => {
+    setOlderDetails({});
+  }, [viewKey]);
+  const loadOlderDetails = async (detail: "rateLimits" | "turns") => {
+    if (!data) return;
+    setLoadingDetails((previous) => ({ ...previous, [detail]: true }));
+    setError("");
+    try {
+      const q = new URLSearchParams(query);
+      q.set("view", "detail");
+      q.set("detail", detail);
+      q.set("limit", "100");
+      q.set(
+        "offset",
+        String((data[detail]?.length || 0) + (olderDetails[detail]?.length || 0)),
+      );
+      const page = await api<Json>(`/api/analytics?${q}`);
+      setOlderDetails((previous) => ({
+        ...previous,
+        [detail]: [...(previous[detail] || []), ...(page[detail] || [])],
+      }));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setLoadingDetails((previous) => ({ ...previous, [detail]: false }));
+    }
+  };
   useEffect(() => {
     let active = true;
     setBusy(true);
@@ -907,13 +936,12 @@ export default function Analytics({
                   <header>
                     <h3>Turns</h3>
                     <span>
-                      Latest 100 turns; elapsed time includes tools and waits
+                      Showing {count((data.turns || []).length + (olderDetails.turns || []).length)} of {count(data.detailPagination?.turns?.total || 0)} turns; elapsed time includes tools and waits
                     </span>
                   </header>
                   <div className="analytics-observations">
-                    {[...(data.turns || [])]
+                    {[...(data.turns || []), ...(olderDetails.turns || [])]
                       .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
-                      .slice(0, 100)
                       .map((turn: Json) => (
                         <details key={`${turn.agentId}:${turn.turnId}`}>
                           <summary>
@@ -938,6 +966,16 @@ export default function Analytics({
                     <p className="analytics-note">
                       No turn measurements recorded.
                     </p>
+                  )}
+                  {(data.turns || []).length + (olderDetails.turns || []).length < (data.detailPagination?.turns?.total || 0) && (
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      loading={loadingDetails.turns}
+                      onClick={() => loadOlderDetails("turns")}
+                    >
+                      Load 100 older turns
+                    </Button>
                   )}
                 </section>
                 <section className="analytics-section">
@@ -1029,12 +1067,13 @@ export default function Analytics({
                 <section className="analytics-section">
                   <header>
                     <h3>Account limit history</h3>
-                    <span>Latest 100 allowance snapshots</span>
+                    <span>
+                      Showing {count((data.rateLimits || []).length + (olderDetails.rateLimits || []).length)} of {count(data.detailPagination?.rateLimits?.total || 0)} allowance snapshots
+                    </span>
                   </header>
                   <div className="analytics-observations">
-                    {[...(data.rateLimits || [])]
+                    {[...(data.rateLimits || []), ...(olderDetails.rateLimits || [])]
                       .sort((a, b) => (b.at || 0) - (a.at || 0))
-                      .slice(0, 100)
                       .map((r: Json, i: number) => (
                         <details key={`${r.accountKey}:${r.at}:${i}`}>
                           <summary>
@@ -1049,6 +1088,16 @@ export default function Analytics({
                     <p className="analytics-note">
                       No allowance snapshots recorded.
                     </p>
+                  )}
+                  {(data.rateLimits || []).length + (olderDetails.rateLimits || []).length < (data.detailPagination?.rateLimits?.total || 0) && (
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      loading={loadingDetails.rateLimits}
+                      onClick={() => loadOlderDetails("rateLimits")}
+                    >
+                      Load 100 older snapshots
+                    </Button>
                   )}
                 </section>
 

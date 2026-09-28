@@ -336,6 +336,43 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(result["summary"]["outputBytes"], sum(r["output"]["bytes"] for r in legacy))
         self.assertEqual(self.data(tool="one", export=1)["calls"], legacy)
 
+    def test_rate_limit_and_turn_pages_keep_sql_totals_and_export_all_rows(self):
+        account = self.agent.get('accountKey', 'default')
+        root = self.agent['rootId']
+        with self.runtime.db() as db:
+            previous_turns = db.execute('SELECT COUNT(*) FROM analytics_turns WHERE agent=?',
+                                        (self.agent['id'],)).fetchone()[0]
+            for i in range(125):
+                at = 10_000 + i
+                db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)',
+                           (account, at, json.dumps({'primary': {'usedPercent': i}})))
+                turn_id = f'page-turn-{i:03d}'
+                record = {'agentId': self.agent['id'], 'agentName': self.agent['name'],
+                          'threadId': self.agent['threadId'], 'turnId': turn_id,
+                          'startedAt': at, 'status': 'completed'}
+                db.execute('INSERT INTO analytics_turns(id,agent,root,at,record) VALUES (?,?,?,?,?)',
+                           (turn_id, self.agent['id'], root, at, json.dumps(record)))
+
+        result = self.data()
+        self.assertEqual(len(result['rateLimits']), 100)
+        self.assertEqual(result['rateLimits'][0]['at'], 10_124)
+        self.assertEqual(result['detailPagination']['rateLimits'],
+                         {'limit': 100, 'offset': 0, 'total': 125, 'hasMore': True})
+        self.assertEqual(len(result['turns']), 100)
+        expected_turns = previous_turns + 125
+        self.assertEqual(result['detailPagination']['turns']['total'], expected_turns)
+
+        limits = self.data(view='detail', detail='rateLimits', offset=100)
+        turns = self.data(view='detail', detail='turns', offset=100)
+        self.assertEqual(len(limits['rateLimits']), 25)
+        self.assertEqual(limits['pagination']['total'], 125)
+        self.assertFalse(limits['pagination']['hasMore'])
+        self.assertEqual(len(turns['turns']), expected_turns - 100)
+        self.assertEqual(turns['pagination']['total'], expected_turns)
+        self.assertFalse(turns['pagination']['hasMore'])
+        self.assertEqual(len(self.data(export=1)['rateLimits']), 125)
+        self.assertEqual(len(self.data(export=1)['turns']), expected_turns)
+
     def test_turn_wall_time_and_unknown_measurements(self):
         self.event('turn/started', {'turnId': 'measured', 'turn': {'id': 'measured'}}, at=100)
         self.event('item/agentMessage/delta', {'turnId': 'measured', 'itemId': 'msg', 'delta': 'Hi'}, at=102)

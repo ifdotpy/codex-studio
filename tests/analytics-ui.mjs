@@ -226,6 +226,14 @@ try {
       firstOutputDelayMs: 2000,
       status: "completed",
     },
+    ...Array.from({ length: 100 }, (_, i) => ({
+      agentId: "a",
+      agentName: "Lead",
+      turnId: `older-turn-${i}`,
+      startedAt: now - 1000 - i,
+      durationMs: 500,
+      status: "completed",
+    })),
   ];
   report.operations = {
     monitors: [
@@ -251,6 +259,11 @@ try {
       at: now,
       data: { primary: { usedPercent: 30 } },
     },
+    ...Array.from({ length: 100 }, (_, i) => ({
+      accountKey: "account-personal",
+      at: now - 1000 - i,
+      data: { primary: { usedPercent: 10 } },
+    })),
   ];
   report.history = [{ agentId: "a", status: "complete", offset: 2000 }];
   let mode = "normal",
@@ -282,6 +295,22 @@ try {
     }
     const out = structuredClone(report),
       offset = Number(q.get("offset") || 0);
+    if (q.get("view") === "detail") {
+      const detail = q.get("detail");
+      const total = out[detail]?.length || 0;
+      await route.fulfill({
+        json: {
+          [detail]: (out[detail] || []).slice(offset, offset + 100),
+          pagination: {
+            limit: 100,
+            offset,
+            total,
+            hasMore: offset + 100 < total,
+          },
+        },
+      });
+      return;
+    }
     if (mode === "empty") {
       out.summary = { tokens: {}, toolCalls: 0 };
       out.timeline = [];
@@ -301,6 +330,18 @@ try {
       (c) => !q.get("tool") || c.name === q.get("tool"),
     );
     out.calls = q.get("export") === "1" ? all : all.slice(offset, offset + 30);
+    if (q.get("export") !== "1") {
+      out.turns = [...out.turns]
+        .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
+        .slice(0, 100);
+      out.rateLimits = [...out.rateLimits]
+        .sort((a, b) => (b.at || 0) - (a.at || 0))
+        .slice(0, 100);
+    }
+    out.detailPagination = {
+      turns: { total: report.turns.length, hasMore: report.turns.length > 100 },
+      rateLimits: { total: report.rateLimits.length, hasMore: report.rateLimits.length > 100 },
+    };
     out.pagination = {
       limit: 30,
       offset,
@@ -455,6 +496,14 @@ try {
       .innerText(),
     /First output 2.0 s/,
   );
+  await dialog.getByRole("button", { name: "Load 100 older turns" }).click();
+  await poll(
+    () => observed.at(-1)?.view === "detail" && observed.at(-1)?.detail === "turns",
+    "Older turns page request",
+  );
+  assert.equal(observed.at(-1).offset, "100");
+  await dialog.getByText("Showing 101 of 101 turns", { exact: false }).waitFor();
+  await dialog.getByRole("button", { name: "Load 100 older turns" }).waitFor({ state: "detached" });
   const background = dialog.locator(".analytics-section").filter({
     has: page.getByRole("heading", {
       name: "Background activity",
@@ -473,6 +522,15 @@ try {
   await dialog
     .getByRole("heading", { name: "Account limit history", exact: true })
     .scrollIntoViewIfNeeded();
+  await dialog
+    .getByRole("button", { name: "Load 100 older snapshots" })
+    .click();
+  await poll(
+    () => observed.at(-1)?.view === "detail" && observed.at(-1)?.detail === "rateLimits",
+    "Older rate-limit page request",
+  );
+  assert.equal(observed.at(-1).offset, "100");
+  await dialog.getByRole("button", { name: "Load 100 older snapshots" }).waitFor({ state: "detached" });
   await page.screenshot({ path: join(root, "activity-390.png") });
   mode = "error";
   await dialog.getByRole("button", { name: "Refresh analytics" }).click();

@@ -593,14 +593,18 @@ def make_server(canvas, port=0, public_origin=None):
         def log_message(self, *_args):
             pass
 
-        def send(self, value, status=200, content_type="application/json", cache_control="no-store", compressed=None, etag=False, weak_etag_fields=()):
+        def send(self, value, status=200, content_type="application/json", cache_control="no-store", compressed=None, etag=False, weak_etag_fields=(), server_timing=None):
+            serialize_started = time.perf_counter() if server_timing else None
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
+            serialize_ms = (time.perf_counter() - serialize_started) * 1000 if server_timing else None
             compressible = content_type.startswith(("application/json", "application/manifest+json", "text/", "image/svg+xml"))
             encoded = False
+            compress_started = time.perf_counter() if server_timing else None
             if accepts_gzip(self.headers.get("Accept-Encoding")) and compressible and len(data) >= 1024:
                 candidate = compressed if compressed is not None else gzip.compress(data, compresslevel=3, mtime=0)
                 if len(candidate) < len(data):
                     data, encoded = candidate, True
+            compress_ms = (time.perf_counter() - compress_started) * 1000 if server_timing else None
             validator_data = data
             if weak_etag_fields and isinstance(value, dict):
                 validator_data = json.dumps(
@@ -640,6 +644,11 @@ def make_server(canvas, port=0, public_origin=None):
                 self.send_header("ETag", validator)
             if encoded:
                 self.send_header("Content-Encoding", "gzip")
+            if server_timing:
+                metrics = [f"{name};dur={duration:.2f}" for name, duration in server_timing.items()]
+                metrics.extend((f"response-json;dur={serialize_ms:.2f}",
+                                f"response-gzip;dur={compress_ms:.2f}"))
+                self.send_header("Server-Timing", ", ".join(metrics))
             if not not_modified:
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Referrer-Policy", "no-referrer")
@@ -820,7 +829,9 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.request_action(agent,
                             {"action": "get", "request_id": request_id} if request_id else {"action": "list"}))
                     if path.path == "/api/analytics":
-                        return self.send(runtime.analytics(**q))
+                        result = runtime.analytics(**q)
+                        timing = result.pop("__serverTiming", None)
+                        return self.send(result, server_timing=timing)
                     if path.path == "/api/accounts/claude/login":
                         from codex_claude_login import manager
                         return self.send(manager(runtime).status(q.get("request_id")))
@@ -838,9 +849,13 @@ def make_server(canvas, port=0, public_origin=None):
                     if path.path == "/api/workspace/tasks":
                         cursor = json.loads(q["cursor"]) if q.get("cursor") else None
                         before = json.loads(q["before"]) if q.get("before") else None
-                        return self.send(runtime.workspace_task_feed(
+                        started = time.perf_counter() if q.get("timing") == "1" else None
+                        result = runtime.workspace_task_feed(
                             agent, cursor=cursor, before=before, limit=q.get("limit", 100)
-                        ), etag=True)
+                        )
+                        timing = ({"task-feed": (time.perf_counter() - started) * 1000}
+                                  if started is not None else None)
+                        return self.send(result, etag=True, server_timing=timing)
                     if path.path == "/api/work":
                         return self.send(runtime.work_action(agent, {"action": "list"}))
                     if path.path == "/api/queue":

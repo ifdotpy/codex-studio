@@ -408,7 +408,78 @@ class AnalyticsMixin:
         return [{key: record.get(key) for key in ('agentId', 'threadId', 'turnId', 'status', 'error')}
                 for record in (json.loads(row[0]) for row in rows)]
 
+    def analytics_detail_page(self, agent, scope, options):
+        detail = options.get('detail')
+        if detail not in {'rateLimits', 'turns'}:
+            raise ValueError('Unknown analytics detail page')
+        limit = max(1, min(100, int(options.get('limit', 100))))
+        offset = max(0, int(options.get('offset', 0)))
+        def timestamp(key):
+            if options.get(key) in (None, ''):
+                return None
+            value = number(float(options[key]))
+            if value is None:
+                raise ValueError('Invalid analytics time')
+            return value
+        start, end = timestamp('from'), timestamp('to')
+        with self.db() as db:
+            agents = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_agents')]
+            selected = next((a for a in agents if a['id'] == agent), None)
+            if scope != 'all' and not selected:
+                raise ValueError('Select an agent for analytics')
+            if detail == 'turns':
+                where, args = [], []
+                if scope == 'agent':
+                    where.append('agent=?'); args.append(agent)
+                elif scope == 'team':
+                    where.append('root=?'); args.append(selected.get('rootId') or agent)
+                if start is not None:
+                    where.append('at>=?'); args.append(start)
+                if end is not None:
+                    where.append('at<=?'); args.append(end)
+                clause = ' WHERE ' + ' AND '.join(where) if where else ''
+                total = db.execute('SELECT COUNT(*) FROM analytics_turns' + clause, args).fetchone()[0]
+                page = [json.loads(row[0]) for row in db.execute(
+                    'SELECT record FROM analytics_turns' + clause + ' ORDER BY at DESC,id DESC LIMIT ? OFFSET ?',
+                    args + [limit, offset])]
+            else:
+                runtime_agents = {a['id']: a for a in self.records(db, 'agents')}
+                for entry in agents:
+                    if entry['id'] in runtime_agents:
+                        current = runtime_agents[entry['id']]
+                        for field in ('name', 'deletedAt', 'model', 'effort', 'fastMode', 'threadId',
+                                      'accountKey', 'rootId', 'parentId', 'cwd'):
+                            entry[field] = current.get(field)
+                relevant = [a for a in agents if scope == 'all'
+                            or scope == 'agent' and a['id'] == agent
+                            or scope == 'team' and (a.get('rootId') or a['id']) == (selected.get('rootId') or agent)]
+                accounts = sorted({a.get('accountKey', 'default') for a in relevant})
+                where, args = [], []
+                if accounts:
+                    where.append('account IN (' + ','.join('?' for _ in accounts) + ')')
+                    args.extend(accounts)
+                else:
+                    where.append('0')
+                if start is not None:
+                    where.append('at>=?'); args.append(start)
+                if end is not None:
+                    where.append('at<=?'); args.append(end)
+                clause = ' WHERE ' + ' AND '.join(where)
+                total = db.execute('SELECT COUNT(*) FROM analytics_limits' + clause, args).fetchone()[0]
+                rows = db.execute('SELECT id,account,at FROM analytics_limits' + clause
+                                  + ' ORDER BY at DESC,id DESC LIMIT ? OFFSET ?', args + [limit, offset]).fetchall()
+                ids = [row['id'] for row in rows]
+                records = {row['id']: row['record'] for row in db.execute(
+                    'SELECT id,record FROM analytics_limits WHERE id IN ('
+                    + ','.join('?' for _ in ids) + ')', ids)} if ids else {}
+                page = [{'accountKey': row['account'], 'at': row['at'], 'data': json.loads(records[row['id']])}
+                        for row in rows]
+        return {detail: page, 'pagination': {'limit': limit, 'offset': offset, 'total': total,
+                                             'hasMore': offset + len(page) < total}}
+
     def analytics(self, agent=None, scope='agent', **options):
+        timing = options.get('timing') == '1'
+        request_started = time.perf_counter() if timing else None
         if scope not in {'agent', 'team', 'all'}:
             raise ValueError('Unknown analytics scope')
         if options.get('view') == 'turn-errors':
@@ -419,6 +490,8 @@ class AnalyticsMixin:
                 raise ValueError('Select one thread and up to 120 turns')
             with self.db() as db:
                 return {'turns': self.analytics_turn_errors(db, agent, thread, turns)}
+        if options.get('view') == 'detail':
+            return self.analytics_detail_page(agent, scope, options)
         def timestamp(key):
             if options.get(key) in (None, ''):
                 return None
@@ -433,6 +506,7 @@ class AnalyticsMixin:
         offset = max(0, int(options.get('offset', 0)))
         export = str(options.get('export', '0')) == '1'
         tool = options.get('tool') or None
+        read_started = time.perf_counter() if timing else None
         with self.db() as db:
             db.execute('BEGIN')
             agents = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_agents')]
@@ -475,23 +549,69 @@ class AnalyticsMixin:
                 + ' AND '.join(authoritative_where), authoritative_args)}
             provisional = [r for r in usage if not r.get('responseId') and (r['agentId'], r.get('threadId'), r.get('turnId')) in authoritative_turns]
             usage = [r for r in usage if r.get('responseId') or (r['agentId'], r.get('threadId'), r.get('turnId')) not in authoritative_turns]
-            turns = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_turns' + clause + ' ORDER BY at', args)]
+            turns_total = db.execute('SELECT COUNT(*) FROM analytics_turns' + clause, args).fetchone()[0]
+            turns = [json.loads(row[0]) for row in db.execute(
+                'SELECT record FROM analytics_turns' + clause + ' ORDER BY at DESC,id DESC'
+                + (' LIMIT ? OFFSET ?' if not export else ''),
+                args + ([] if export else [100, 0]))]
             records = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_items' + clause + ' ORDER BY at DESC,id', args)]
-            runtime_agents = {a['id']: a for a in self.records(db, 'agents')}
+            relevant_agents = [a for a in agents if scope == 'all' or a['id'] == agent and scope == 'agent' or scope == 'team' and (a.get('rootId') or a['id']) == (selected.get('rootId') or agent)]
+            relevant_ids = {a['id'] for a in relevant_agents}
+            agent_ids = sorted(relevant_ids)
+            agent_filter = (' IN (' + ','.join('?' for _ in agent_ids) + ')') if agent_ids else ' IN (NULL)'
+            runtime_agents = {row['id']: json.loads(row['record']) for row in db.execute(
+                'SELECT id,record FROM runtime_agents WHERE id' + agent_filter, agent_ids)}
             for entry in agents:
                 if entry['id'] in runtime_agents:
                     current_agent = runtime_agents[entry['id']]
                     for field in ('name', 'deletedAt', 'model', 'effort', 'fastMode', 'threadId', 'accountKey', 'rootId', 'parentId', 'cwd'):
                         entry[field] = current_agent.get(field)
-            operational = {table: self.records(db, table) for table in ('monitors', 'requests')}
-            queued_events = [dict(row) for row in db.execute('SELECT agent,kind,status,created FROM runtime_events')]
-            notification_rows = [dict(row) for row in db.execute('SELECT * FROM analytics_notifications')]
-            limit_rows = [dict(row) for row in db.execute('SELECT account,at,record FROM analytics_limits')]
+            account_keys = {a.get('accountKey', 'default') for a in relevant_agents}
+            operational = {
+                table: [json.loads(row[0]) for row in db.execute(
+                    'SELECT record FROM runtime_' + table + ' WHERE json_extract(record,\'$.agent\')' + agent_filter,
+                    agent_ids)]
+                for table in ('monitors', 'requests')
+            }
+            queued_events = [dict(row) for row in db.execute(
+                'SELECT agent,kind,status,created FROM runtime_events WHERE agent' + agent_filter,
+                agent_ids)]
+            notification_rows = [dict(row) for row in db.execute(
+                'SELECT * FROM analytics_notifications WHERE agent' + agent_filter, agent_ids)]
+            limit_where, limit_args = [], []
+            if account_keys:
+                limit_where.append('account IN (' + ','.join('?' for _ in account_keys) + ')')
+                limit_args.extend(sorted(account_keys))
+            else:
+                limit_where.append('0')
+            if start is not None:
+                limit_where.append('at>=?'); limit_args.append(start)
+            if end is not None:
+                limit_where.append('at<=?'); limit_args.append(end)
+            limit_clause = ' WHERE ' + ' AND '.join(limit_where)
+            rate_limit_total = db.execute('SELECT COUNT(*) FROM analytics_limits' + limit_clause,
+                                          limit_args).fetchone()[0]
+            if export:
+                limit_rows = [dict(row) for row in db.execute(
+                    'SELECT account,at,record FROM analytics_limits' + limit_clause
+                    + ' ORDER BY at DESC,id DESC', limit_args)]
+            else:
+                limit_rows = [dict(row) for row in db.execute(
+                    'SELECT id,account,at FROM analytics_limits' + limit_clause
+                    + ' ORDER BY at DESC,id DESC LIMIT 100', limit_args)]
+                limit_ids = [row['id'] for row in limit_rows]
+                limit_records = {row['id']: row['record'] for row in db.execute(
+                    'SELECT id,record FROM analytics_limits WHERE id IN ('
+                    + ','.join('?' for _ in limit_ids) + ')', limit_ids)} if limit_ids else {}
+                for row in limit_rows:
+                    row['record'] = limit_records[row['id']]
             history = ([json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_history')]
                        if db.execute("SELECT 1 FROM sqlite_master WHERE name='analytics_history'").fetchone() else [])
             capture_error = db.execute("SELECT value FROM analytics_meta WHERE key='captureErrors'").fetchone()
             capture_error = json.loads(capture_error[0]) if capture_error else {'count': 0, 'last': None}
             tracking = float(db.execute("SELECT value FROM analytics_meta WHERE key='trackingSince'").fetchone()[0])
+        read_ms = (time.perf_counter() - read_started) * 1000 if timing else None
+        build_started = time.perf_counter() if timing else None
         all_calls = [r for r in records if r['isTool']]
         model_calls = [r for r in all_calls if r.get('payloadBoundary') == 'model' and (tool is None or r['name'] == tool)]
         protocol_calls = [r for r in all_calls if r.get('payloadBoundary') != 'model' and (tool is None or r['name'] == tool)]
@@ -532,7 +652,6 @@ class AnalyticsMixin:
             detailed_item_groups[(r['type'], r.get('payloadBoundary'), r.get('category'), r.get('role'))].append(r)
         non_tool_items = [r for r in records if not r['isTool']]
         selected_ids = {r['agentId'] for r in records + usage}
-        relevant_agents = [a for a in agents if scope == 'all' or a['id'] == agent and scope == 'agent' or scope == 'team' and (a.get('rootId') or a['id']) == (selected.get('rootId') or agent)]
         summary = {'agents': len(selected_ids), 'turns': len({(r['agentId'], r.get('turnId')) for r in records + usage if r.get('turnId')}),
                    'usageSamples': len(usage), 'provisionalUsageSamples': len(provisional), 'exactResponseSamples': sum(bool(r.get('responseId')) for r in usage), 'legacyUsageSamples': sum(not r.get('responseId') for r in usage), 'modelToolCalls': len(model_calls), 'protocolToolCalls': len(protocol_calls), 'observedToolRows': len(calls), 'toolCalls': len(model_calls), 'failedToolCalls': sum(r['status'] == 'failed' for r in model_calls), 'modelFailedToolCalls': sum(r['status'] == 'failed' for r in model_calls), 'protocolFailedToolCalls': sum(r['status'] == 'failed' for r in protocol_calls),
                    'compactions': len(compactions), 'inputBytes': size(model_calls, 'input', 'bytes'), 'outputBytes': size(model_calls, 'output', 'bytes'),
@@ -546,7 +665,6 @@ class AnalyticsMixin:
                    'cacheHitRateSamples': len(cache_pairs), 'cacheHitRateTotalSamples': len(usage),
                    'peakContextTokens': max((v for v in contexts if v is not None), default=None),
                    'peakContextPercent': max(percents, default=None), 'baselineMissingSamples': sum(r['baselineMissing'] for r in usage)}
-        relevant_ids = {a['id'] for a in relevant_agents}
         def within(value):
             return value is not None and (start is None or value >= start) and (end is None or value <= end)
         def group_usage(field):
@@ -571,9 +689,8 @@ class AnalyticsMixin:
             if event['agent'] in relevant_ids and within(event['created']):
                 counts[event['status'] + ':' + event['kind']] += 1
         approvals = [r for r in operational['requests'] if r.get('agent') in relevant_ids]
-        account_keys = {a.get('accountKey', 'default') for a in relevant_agents}
         notifications = [r for r in notification_rows if r['agent'] in relevant_ids and (start is None or r['hour'] + 3600 > start) and (end is None or r['hour'] <= end)]
-        return {'version': 1, 'generatedAt': time.time(), 'filters': {'agent': agent, 'scope': scope, 'from': start, 'to': end, 'tool': tool},
+        result = {'version': 1, 'generatedAt': time.time(), 'filters': {'agent': agent, 'scope': scope, 'from': start, 'to': end, 'tool': tool},
                 'coverage': {'trackingSince': tracking, 'captureErrors': capture_error, 'historyErrors': [r for r in history if r.get('status') == 'error'], 'provisionalUsageSamples': len(provisional), 'tokenAttribution': 'provider_usage_only', 'payloadMeasurement': 'observed_protocol_payload',
                              'history': 'live_and_stored_history', 'notes': [
                                  'Tool filters affect tool calls only. Provider usage is scoped to the selected agents and time.',
@@ -600,4 +717,14 @@ class AnalyticsMixin:
                            'chars': nullable_sum([size(rows, 'input', 'chars'), size(rows, 'output', 'chars')])} for kind, rows in item_groups.items()],
                 'itemRecords': non_tool_items if export else non_tool_items[:100], 'itemRecordsTotal': len(non_tool_items),
                 'itemBreakdown': [{'type': kind, 'payloadBoundary': boundary, 'category': category, 'role': role, 'count': len(rows), 'inputBytes': size(rows, 'input', 'bytes'), 'outputBytes': size(rows, 'output', 'bytes'), 'inputMeasurements': sum(r.get('input') is not None for r in rows), 'outputMeasurements': sum(r.get('output') is not None for r in rows)} for (kind, boundary, category, role), rows in detailed_item_groups.items()],
-                'compactions': compactions, 'compactionSnapshots': snapshots, 'pagination': {'limit': limit, 'offset': offset, 'total': calls_total, 'hasMore': not export and offset + limit < calls_total}}
+                'compactions': compactions, 'compactionSnapshots': snapshots,
+                'pagination': {'limit': limit, 'offset': offset, 'total': calls_total, 'hasMore': not export and offset + limit < calls_total},
+                'detailPagination': {'rateLimits': {'limit': rate_limit_total if export else 100, 'offset': 0, 'total': rate_limit_total, 'hasMore': not export and 100 < rate_limit_total},
+                                     'turns': {'limit': turns_total if export else 100, 'offset': 0, 'total': turns_total, 'hasMore': not export and 100 < turns_total}}}
+        if timing:
+            result['__serverTiming'] = {
+                'analytics-read': read_ms,
+                'analytics-build': (time.perf_counter() - build_started) * 1000,
+                'analytics-total': (time.perf_counter() - request_started) * 1000,
+            }
+        return result
