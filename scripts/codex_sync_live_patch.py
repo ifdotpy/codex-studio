@@ -54,7 +54,7 @@ def source_function(source, path, namespace, filename='<source>', closure=None,
     return function, static
 
 HANDLER = json.loads(r"""{"sha": "90c97f7b31d5497b17c0bcfb1b782c8ecc77bd30c354a1d0855bde07d7bfdbce", "methods": {"send": ["bf24b2c10e4625a8476dcfd5820dcbf3f38bcc507626a6ad239b4704c38cb182", "7337fcb04da5eb2a4ed18bb35852480b99c268bec925ccb7fdf9e7e46406f4ca"], "stream_transcript": ["6000e5b3108c9f72667ee5346a2d22ac1f6a20935ff47e520876edceb285f384", "93edd59ff223f5e668a48274abebede62273779559fe27312a6cd4470facd62e"], "stream_sync": ["55c84e92db5473a3906a48f3639147315bf0fe51ca5a9d35cc04ec29cf1cb95c", "4284990a6e3a9de16d5b17b442cbe994d42e28a03bfa16883f45aa37cca259dd"], "do_POST": ["d3e41b54bdeb5ddcd8da7fc68c99e40cac4eb10701cea0ffef288b8ad521cde2", "9ddef90880e36899b1b36e26e9f8600e7f0cdd5358b4f8cca39b150b2f930ff5"]}}""")
-MANIFEST = json.loads(r"""{"changed": {"codex_budget|_save": ["502ba624732067a04d79eaeecdcccbd9b1c6b6a5e5c837de3945b7e62fc5fc8f", "e204584bccfd5991ca26ea2a41801f0dd45a4ce284b73515b95fe4ef8bdfaa6f"], "codex_canvas|Canvas|connect": ["7b6116a481e1f42267168c27e92047d4685c8e097c23f2b2a86c8176cd2d8b1a", "60ee8eae8c933e0b1ab874fe8b941886dfe7dd18a251ca8ec093c223239a89fd"], "codex_canvas|Canvas|register_agent": ["3a703028557d61ff47b86a3d3e5834c83a4e4970754ef7a1f84f63d7b5043b22", "7173f25913fd7c4cc1169f7b89f093e6a0e06a8f8c1236d8b30822e10b192cd7"], "codex_canvas|Canvas|connect_chat": ["e875aff15e452eef0a52a4fcb6146cdbd4ae34e0754f280da031fea366004589", "ab33d933a3ce21d3306ce94bff5ff8090d2aa81891aa0b914435ae5b8d45cbaa"], "codex_canvas|Canvas|create_chat": ["4d5c64638d9bdaeb718f29cbaae4f11d53b8cdd48eda0fcd0850a629e4130df4", "b5f7e84aed5d8af51261bec42974192126db5ab6fdc92ef8308ee7eec6359a96"], "codex_canvas|Canvas|post": ["d43d09f06637dd975d78b09e4eca10f55535cb9dd46106b22215192405f40fd8", "42882afcfc71b884f7c880037f2ffaf6cc343cf18698ee3c38257f0eb7299517"], "codex_runtime|Runtime|chat_message": ["37b5d5d30e7b79e13932fbcb59ea541b96cdc2898f5c9d2e1cb3aab758a29a67", "3ae037a75c561207bf5d5405494a9b12ed8bfab4e2be7766e15649112b7e9009"], "codex_runtime|Runtime|db": ["bb18f49d4f5030c94c467bf0ed9900b73c346f7ef956e5d5343aa5f3205a4e30", "ae44741f1d6c25ffe29cdaa40701e782413aa64339b6ff99f44b031b9128ee76"], "codex_runtime|Runtime|records": ["ebe6e9406871c84d207882351694da88a93351c5e1319f28edff78348aa3d348", "d81db98a7ae69fd62e353e40c8051d36f1d837ee47d27bc0a9bf2fc0e8c55711"], "codex_runtime|Runtime|put": ["25edc1858bc381c043824b8fba42d4a0fd76526dae86b126ae671b8d39ad8c9e", "f88df6ff486b92fe1285cb73e1f9205534798c9d7e9c986208a8b2df720b64bd"], "codex_rules|RulesMixin|rules_action": ["6ae6a9fc1d855cc6335a568b5a45910d3f4b34a6485ad2c501d4293809a656f1", "1691b58ac6cfd66ec65c526b7a40550b81f0fda78227ddae8d3737120fb5fee2"], "codex_sync|SyncStore|_ensure_versions": ["87aef031c8ea3f415ba64163abfc7a7712e6cafcfa143e7fda08e7009d968b63", "4b8749d3e4f1e2d070a96730bd7922c24251fda1d9f69ebf7d91aebdb89a402b"], "codex_sync|SyncStore|_put": ["9df7f5656b6b44edbd0ed28fa6b6c4970e4959ec9c2f456c66122d680ccadade", "da54a97a97b638306cd4e9b1d618d838949333952c6d7fbbadbf505ec7abee93"], "codex_sync|SyncStore|pull": ["0394f11177d568f0249ff01354d1da3cedba8bd1dc021f134c31f2c4c6360d6c", "c5ef3bd6266e1af4286b318f0ecbdcf315ea12cd33b94d9a1ff6a1a0050f63f5"], "codex_workspace|WorkspaceMixin|projects": ["ebaf928c645533fe883626a583f3c237206d7255f15830bc2a53bac72cae59e6", "04f2ee36f6acf76be0861283294ce014ae939b2986ffa60ca144e0196a853f2d"]}, "added": {"codex_canvas|Canvas|_sync_chat_entity": "f5c4377fae96b6eaa62dfe81a3804ca7da7aaabce1e6f067cea9764d06f535a2", "codex_runtime|Runtime|invalidate_agent_records": "2e33c1137b9962c5ab65acab25315de8f9ba9fb30e819ffdef3b2a07d3611a77", "codex_runtime|Runtime|mark_agent_records_changed": "50d327482152541b509898f6b755cf1db05e5bf4d2d287831a62a6634f2bb3fb", "codex_sync|SyncStore|entity_sequence": "88a1bf7cf0e43928e001d3a0ee0c686574f477170005837919696a23bdc67a69", "codex_sync|SyncStore|transcript_pull": "015aca68f07094b099677ca2fa46ec1eea30c87de66a9c07cd50649047e7e135"}, "shas": {"codex_budget": "ca68a2ec862bbbbdd50c5ec91f87cdfb9ce3fe343c8d8af67e88dcf1c70f4e35", "codex_canvas": "90c97f7b31d5497b17c0bcfb1b782c8ecc77bd30c354a1d0855bde07d7bfdbce", "codex_runtime": "564139e68b28105d0338279b9680ba5e29d89b2054e0b2d1e94670bfc7b92654", "codex_rules": "8bd6a47d50c1ad3b149f724b0267034ff82fd9fba77a4779a62aa3cad8034698", "codex_sync": "cafdf7693224f2cf022d07cfcf8e7766133edeaf505aa9311abed244a6cdb1a8", "codex_workspace": "b42926b4ffbc7f58b8a48ad82fd2fef189617a570faea9753e27b4e580665d6c"}, "globals": []}""")
+MANIFEST = json.loads(r"""{"changed": {"codex_budget|_save": ["502ba624732067a04d79eaeecdcccbd9b1c6b6a5e5c837de3945b7e62fc5fc8f", "e204584bccfd5991ca26ea2a41801f0dd45a4ce284b73515b95fe4ef8bdfaa6f"], "codex_canvas|Canvas|connect": ["7b6116a481e1f42267168c27e92047d4685c8e097c23f2b2a86c8176cd2d8b1a", "60ee8eae8c933e0b1ab874fe8b941886dfe7dd18a251ca8ec093c223239a89fd"], "codex_canvas|Canvas|register_agent": ["3a703028557d61ff47b86a3d3e5834c83a4e4970754ef7a1f84f63d7b5043b22", "7173f25913fd7c4cc1169f7b89f093e6a0e06a8f8c1236d8b30822e10b192cd7"], "codex_canvas|Canvas|connect_chat": ["e875aff15e452eef0a52a4fcb6146cdbd4ae34e0754f280da031fea366004589", "ab33d933a3ce21d3306ce94bff5ff8090d2aa81891aa0b914435ae5b8d45cbaa"], "codex_canvas|Canvas|create_chat": ["4d5c64638d9bdaeb718f29cbaae4f11d53b8cdd48eda0fcd0850a629e4130df4", "b5f7e84aed5d8af51261bec42974192126db5ab6fdc92ef8308ee7eec6359a96"], "codex_canvas|Canvas|post": ["d43d09f06637dd975d78b09e4eca10f55535cb9dd46106b22215192405f40fd8", "42882afcfc71b884f7c880037f2ffaf6cc343cf18698ee3c38257f0eb7299517"], "codex_runtime|Runtime|chat_message": ["37b5d5d30e7b79e13932fbcb59ea541b96cdc2898f5c9d2e1cb3aab758a29a67", "3ae037a75c561207bf5d5405494a9b12ed8bfab4e2be7766e15649112b7e9009"], "codex_runtime|Runtime|db": ["bb18f49d4f5030c94c467bf0ed9900b73c346f7ef956e5d5343aa5f3205a4e30", "8315c3a097c41f777838c1cb86fa5e31e0a5d8813e925810b9917847515aff82"], "codex_runtime|Runtime|records": ["ebe6e9406871c84d207882351694da88a93351c5e1319f28edff78348aa3d348", "d81db98a7ae69fd62e353e40c8051d36f1d837ee47d27bc0a9bf2fc0e8c55711"], "codex_runtime|Runtime|put": ["25edc1858bc381c043824b8fba42d4a0fd76526dae86b126ae671b8d39ad8c9e", "f88df6ff486b92fe1285cb73e1f9205534798c9d7e9c986208a8b2df720b64bd"], "codex_rules|RulesMixin|rules_action": ["6ae6a9fc1d855cc6335a568b5a45910d3f4b34a6485ad2c501d4293809a656f1", "1691b58ac6cfd66ec65c526b7a40550b81f0fda78227ddae8d3737120fb5fee2"], "codex_sync|SyncStore|__init__": ["d6262fcc957bb0a0794137f4c36bb92e084ee908dedc739268dd84b4b1346df1", "b20a36717eb2ce22b919499c3bc25aa8c5d09c67f52bd76603d5eb66f4b8ad26"], "codex_sync|SyncStore|_ensure_versions": ["87aef031c8ea3f415ba64163abfc7a7712e6cafcfa143e7fda08e7009d968b63", "27a58772cfffcba394bd70662a26a983a408253b07ba72c6b05aa6b50d43b7ad"], "codex_sync|SyncStore|_put": ["9df7f5656b6b44edbd0ed28fa6b6c4970e4959ec9c2f456c66122d680ccadade", "da54a97a97b638306cd4e9b1d618d838949333952c6d7fbbadbf505ec7abee93"], "codex_sync|SyncStore|pull": ["0394f11177d568f0249ff01354d1da3cedba8bd1dc021f134c31f2c4c6360d6c", "c5ef3bd6266e1af4286b318f0ecbdcf315ea12cd33b94d9a1ff6a1a0050f63f5"], "codex_workspace|WorkspaceMixin|projects": ["ebaf928c645533fe883626a583f3c237206d7255f15830bc2a53bac72cae59e6", "04f2ee36f6acf76be0861283294ce014ae939b2986ffa60ca144e0196a853f2d"]}, "added": {"codex_canvas|Canvas|_sync_chat_entity": "f5c4377fae96b6eaa62dfe81a3804ca7da7aaabce1e6f067cea9764d06f535a2", "codex_runtime|Runtime|invalidate_agent_records": "2e33c1137b9962c5ab65acab25315de8f9ba9fb30e819ffdef3b2a07d3611a77", "codex_runtime|Runtime|mark_agent_records_changed": "50d327482152541b509898f6b755cf1db05e5bf4d2d287831a62a6634f2bb3fb", "codex_sync|SyncStore|entity_sequence": "88a1bf7cf0e43928e001d3a0ee0c686574f477170005837919696a23bdc67a69", "codex_sync|SyncStore|transcript_pull": "015aca68f07094b099677ca2fa46ec1eea30c87de66a9c07cd50649047e7e135"}, "shas": {"codex_budget": "ca68a2ec862bbbbdd50c5ec91f87cdfb9ce3fe343c8d8af67e88dcf1c70f4e35", "codex_canvas": "90c97f7b31d5497b17c0bcfb1b782c8ecc77bd30c354a1d0855bde07d7bfdbce", "codex_runtime": "1b53f8ed22f7b08642a38d2c3972f0afc843511ada42ccfc512770d278400d57", "codex_rules": "8bd6a47d50c1ad3b149f724b0267034ff82fd9fba77a4779a62aa3cad8034698", "codex_sync": "52e088bd0b3b5b77b1526e493251bc46815d1f354b161194d8c1bbe51d3c66a0", "codex_workspace": "b42926b4ffbc7f58b8a48ad82fd2fef189617a570faea9753e27b4e580665d6c"}, "globals": []}""")
 
 
 def _module(name, scripts):
@@ -170,6 +170,64 @@ def apply(runtime):
                 vars(owner)[name] = fn
         for live, desired in work:
             live.__code__, live.__defaults__, live.__kwdefaults__ = desired.__code__, desired.__defaults__, desired.__kwdefaults__
+        # Instances created before this patch do not run the new constructors.
+        runtime.__dict__.setdefault("_agent_records_cache_lock", threading.RLock())
+        runtime.__dict__.setdefault("_agent_record_revision", 0)
+        runtime.__dict__.setdefault("_agent_records_cache", {})
+        sync_module = modules["codex_sync"][0]
+        for name, value in {
+            "TRANSCRIPT_MAX_TOMBSTONES": 512,
+            "TRANSCRIPT_ORDER_ID": "@order",
+            "TRANSCRIPT_META_ID": "@meta",
+            "TRANSCRIPT_FLOOR_ID": "@floor",
+        }.items():
+            vars(sync_module).setdefault(name, value)
+
+        # A SyncStore can already exist. Initialize the new bounded schema and
+        # bypass-write triggers on its databases without rebuilding the service.
+        sync_entities = importlib.import_module("codex_sync_entities")
+        canvases = [obj for obj in gc.get_objects()
+                    if isinstance(obj, canvas_module.Canvas) and obj.runtime is runtime]
+        if not canvases:
+            raise RuntimeError("The live Canvas was not found for sync schema initialization")
+        with runtime.db() as db:
+            sync_entities.ensure_tables(db)
+            sync_entities.install_bypass_triggers(db)
+            for (name,) in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sync_watch_%'",
+            ).fetchall():
+                db.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+        for canvas in canvases:
+            with canvas.connect() as db:
+                sync_entities.ensure_tables(db)
+                for (name,) in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sync_watch_%'",
+                ).fetchall():
+                    db.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+
+        # The live server predates make_server's service attributes. The new
+        # action handler reads sync_store through the server object so its code
+        # remains compatible with the closure's existing free-variable layout.
+        live_server_found = False
+        for server in gc.get_objects():
+            if not hasattr(server, "RequestHandlerClass") or server.RequestHandlerClass not in handlers:
+                continue
+            handler = server.RequestHandlerClass
+            cells = dict(zip(handler.stream_sync.__code__.co_freevars,
+                             handler.stream_sync.__closure__ or ()))
+            sync_cell = cells.get("sync")
+            if sync_cell is None:
+                raise RuntimeError("The live sync closure was not found")
+            server.canvas = canvases[0]
+            server.sync_store = sync_cell.cell_contents
+            get_cells = dict(zip(handler.do_GET.__code__.co_freevars,
+                                 handler.do_GET.__closure__ or ()))
+            if "snapshot" in get_cells:
+                server.snapshot_state = get_cells["snapshot"].cell_contents
+            live_server_found = True
+            break
+        if not live_server_found:
+            raise RuntimeError("The live LocalServer was not found")
     finally:
         if lock is not None:
             lock.release()
