@@ -17,10 +17,22 @@ try {
  await page.route('**/api/state', route=>route.fulfill({json:{token:'fixture'}}));
  await page.route('**/api/session', route=>route.fulfill({json:{token:'fixture'}}));
  await page.route('**/api/sync/identity', route => route.fulfill({json:{workspaceId:'a'.repeat(32)}}));
- await page.route('**/api/sync/stream', route => route.fulfill({contentType:'text/event-stream',body:'data: RESYNC\n\n'}));
+ await page.addInitScript(() => {
+  window.entityStreams=[];
+  const Native=window.EventSource;
+  window.EventSource=class extends Native {
+   constructor(url,options){super(url,options);if(new URL(url,location.href).searchParams.get('scope')==='state:entities:v1')window.entityStreams.push(this);}
+  };
+ });
+ await page.route('**/api/sync/stream**', route => {
+  const scope=new URL(route.request().url()).searchParams.get('scope');
+  route.fulfill({contentType:'text/event-stream',body:scope==='state:entities:v1'?'data: 1\n\n':'data: RESYNC\n\n'});
+ });
  await page.route('**/api/sync/pull?**', route => {
   const url = new URL(route.request().url()), after = Number(url.searchParams.get('after'));
   if(url.searchParams.get('scope')==='drafts')return route.fulfill({json:{workspaceId:'a'.repeat(32),documents:[],checkpoint:{seq:0}}});
+  if(url.searchParams.get('scope')==='state:entities:v1')
+   return route.fulfill({json:{workspaceId:"a".repeat(32),documents:after<revision?[{id:'entity:agent:lead',payload:JSON.stringify({collection:'agent',id:'lead',value:{id:'lead',name:content,status:'running',source:'managed'}}),seq:revision,_deleted:false}]:[],checkpoint:{seq:Math.max(after,revision)},maxSeq:revision}});
   route.fulfill({json:{workspaceId:"a".repeat(32),documents: after < revision ? [{id:'state:chat',payload:JSON.stringify({text:content}),seq:revision,_deleted:false}] : [],checkpoint:{seq:Math.max(after,revision)}}});
  });
  await page.route('**/api/sync/drafts', route=>{
@@ -36,11 +48,13 @@ try {
  await page.evaluate(async () => {
   const client = await import('/src/sync/client.ts');
   window.values = [];
-  window.stopSync = await client.watchProjection('state', value => {if(value)window.values.push(value.text);}, error=>{if(error)window.failure=String(error);else delete window.failure;});
+  window.stopSync = await client.watchProjection('state', value => {if(value)window.values.push(value.threads[0]?.name);}, error=>{if(error)window.failure=String(error);else delete window.failure;});
  });
  await page.waitForFunction(()=>window.values.includes('first') || window.failure);
  assert.equal(await page.evaluate(()=>window.failure),undefined);
  content='second';revision++;
+ await page.waitForFunction(()=>window.entityStreams.length>0);
+ await page.evaluate((seq)=>window.entityStreams[0].onmessage({data:String(seq)}),revision);
  await page.waitForFunction(()=>window.values.includes('second'),null,{timeout:10000});
  await page.evaluate(async()=>{
   const client=await import('/src/sync/client.ts');

@@ -152,8 +152,8 @@ try {
     "Startup does not download full state",
   );
   assert.ok(
-    requests.some((request) => request.path.includes("scope=state%3Achat")),
-    "Startup pulls the compact state projection",
+    requests.some((request) => request.path.includes("scope=state%3Aentities%3Av1")),
+    "Startup pulls the incremental entity projection",
   );
   assert.equal(
     requests.filter(
@@ -185,18 +185,19 @@ try {
     .slice(idleAt)
     .filter((request) => request.path.startsWith("/api/"));
   measurements.idleRequests = idleRequests.map((request) => request.path);
-  measurements.openSyncStreams = await page.evaluate(
+  measurements.openEntitySyncStreams = await page.evaluate(
     () =>
       window.performanceStreams.filter(
         (stream) =>
           stream.testOpen &&
-          new URL(stream.url).pathname === "/api/sync/stream",
+          new URL(stream.url).pathname === "/api/sync/stream" &&
+          new URL(stream.url).searchParams.get("scope") === "state:entities:v1",
       ).length,
   );
   assert.equal(
-    measurements.openSyncStreams,
+    measurements.openEntitySyncStreams,
     1,
-    "The full app retains one shared sync stream",
+    "The full app retains one shared entity sequence stream",
   );
   assert.ok(
     idleRequests.filter((request) => request.path === "/api/session").length <=

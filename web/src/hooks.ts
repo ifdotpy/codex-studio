@@ -1,7 +1,11 @@
 import { retainTranscriptItems } from "./transcriptIdentity";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { syncApi as api, errorText, setToken, saved, save } from "./api";
-import { subscribeProjection, syncDatabase } from "./sync/client";
+import {
+  refreshProjection,
+  subscribeProjection,
+  syncDatabase,
+} from "./sync/client";
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import type { Snapshot, Message, Agent, Json } from "./types";
@@ -92,35 +96,29 @@ export function useSnapshot() {
   const generation = useRef(0);
   const replicated = useRef(false);
   const sessionToken = useRef("");
+  const legacyFallback = useRef(false);
   const refresh = useCallback(async (credentialsOnly = replicated.current) => {
     const request = ++generation.current;
     try {
-      if (credentialsOnly) {
-        const session = await api<{ token: string }>("/api/session");
-        if (request !== generation.current) return;
-        sessionToken.current = session.token;
-        setToken(session.token);
-        setData((old) =>
-          old && old.token !== session.token
-            ? { ...old, token: session.token }
-            : old,
-        );
-        setError("");
-        return;
-      }
-      const next = await api<Snapshot>("/api/state?view=chat");
+      const session = await api<{ token: string }>("/api/session");
       if (request !== generation.current) return;
-      sessionToken.current = next.token;
-      setToken(next.token);
-      // Cached projections can arrive before HTTP after a reload. Credentials
-      // stay in memory and must reach callers that use explicit request headers.
-      setData((old) =>
-        replicated.current && old
-          ? old.token === next.token
-            ? old
-            : { ...old, token: next.token }
-          : next,
-      );
+      sessionToken.current = session.token;
+      setToken(session.token);
+      setData((old) => old && old.token !== session.token
+        ? { ...old, token: session.token }
+        : old);
+      if (!credentialsOnly) {
+        try {
+          await refreshProjection("state");
+        } catch (projectionError) {
+          // A renderer can update before the server patch. Keep the previous
+          // snapshot route as a first-load fallback until entity sync exists.
+          if (replicated.current) throw projectionError;
+          const legacy = await api<Snapshot>("/api/state?view=chat");
+          if (request !== generation.current) return;
+          setData({ ...legacy, token: session.token });
+        }
+      }
       setError("");
     } catch (e) {
       if (request !== generation.current) return;
@@ -176,7 +174,16 @@ export function useSnapshot() {
             setData({ ...next, token: sessionToken.current });
           }
         },
-        (error) => setSyncError(error === null ? "" : errorText(error)),
+        (error) => {
+          setSyncError(error === null ? "" : errorText(error));
+          if (error !== null && !replicated.current && !legacyFallback.current) {
+            legacyFallback.current = true;
+            void api<Snapshot>("/api/state?view=chat").then((legacy) => {
+              sessionToken.current = legacy.token || sessionToken.current;
+              setData({ ...legacy, token: sessionToken.current });
+            }).catch((fallbackError) => setError(errorText(fallbackError)));
+          }
+        },
       ),
     [],
   );

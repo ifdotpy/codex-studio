@@ -5,11 +5,11 @@ import json
 
 AGENT_FIELDS = frozenset("""
     id name status source kind parentId rootId threadId orchestratorId orchestratorName
-    isLead sharedRoomId model effort fastMode accountKey cwd worktree created updated
+    isLead role sharedRoomId model provider effort fastMode accountKey cwd worktree created updated
     turnId turnStatus inFlight compactions tokensUsed contextUsage error tail canSend
     launcherAlive empty yoloMode agentMode agentModeRevision agentModeSupported
     workerDefaults pendingSettings queuedSettings quickCreate nativeThreadBlock
-    overview nativeRelease panelVersion panelDataVersion unreadCount lastReadAt deletedAt
+    overview nativeRelease activity nativeStatus startAttempt provider panelVersion panelDataVersion unreadCount lastReadAt deletedAt
     autoWake voiceState nativeError retryAt hasUnread hasQuestion hasApproval
     statusDetail lastAnswer lastCompletedTurn nextTurnSettingsSupported readStateSupported
 """.split())
@@ -19,7 +19,7 @@ COLLECTION_FIELDS = {
     "task": frozenset("id turnId agent kind status created finished name command query cwd processId durationMs timeout_ms stdinClosed stdinCloseRequested stdinError cancelRequested exitCode arguments tail error bytes log outputTruncated".split()),
     "monitor": frozenset("id agent status created finished name command cwd processId durationMs timeout_ms stdinClosed stdinCloseRequested stdinError cancelRequested exitCode tail error bytes log outputTruncated".split()),
     "complaint": frozenset("id leadId author authorName leadName title status needsResponse created readAt leadStopped leadDeleted recipient version".split()),
-    "request": frozenset("id method agent status created updated deferred error result".split()),
+    "request": frozenset("id method agent status created createdAt at updated updatedAt deferred error result params title".split()),
     "rule": frozenset("id agent name enabled description".split()),
     "project": frozenset("id path name created accountKey accountRevision accountKeys organizationRevision peerTeamsRevision folders".split()),
     "peerTeam": frozenset("id name projectPath members".split()),
@@ -53,6 +53,14 @@ def project(collection, record):
         return None
     result = {key: _bounded(value, key) for key, value in record.items() if key in fields}
     if collection == "agent":
+        for field, allowed in {
+            "activity": ("phase",),
+            "nativeStatus": ("error",),
+            "startAttempt": ("prepareError", "responseError"),
+        }.items():
+            value = record.get(field)
+            if isinstance(value, dict):
+                result[field] = {key: _bounded(value[key], "error") for key in allowed if key in value}
         release = record.get("nativeRelease")
         if isinstance(release, dict):
             # Only the values rendered by nativeReleaseLabel cross the wire.

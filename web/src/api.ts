@@ -111,6 +111,20 @@ export async function api<T = any>(
         response.status,
         data,
       );
+    if (
+      body !== undefined &&
+      Array.isArray(data?._syncEntities) &&
+      data._syncEntities.length &&
+      typeof window !== "undefined"
+    )
+      window.dispatchEvent(
+        new CustomEvent("codex-sync-entities", {
+          detail: {
+            workspaceId: options.workspaceId ?? workspace,
+            documents: data._syncEntities,
+          },
+        }),
+      );
     return data;
   } catch (error) {
     if (timedOut) throw new NetworkTimeoutError();

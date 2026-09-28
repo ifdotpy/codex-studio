@@ -142,6 +142,19 @@ export function syncDatabase() {
   }));
 }
 
+if (typeof window !== "undefined")
+  window.addEventListener("codex-sync-entities", (event: Event) => {
+    const detail = (event as CustomEvent).detail;
+    if (!detail || !Array.isArray(detail.documents)) return;
+    void syncDatabase().then(async ({ db, workspaceId }) => {
+      if (detail.workspaceId && detail.workspaceId !== workspaceId) return;
+      for (const document of detail.documents as SyncDocument[]) {
+        if (!document.id.startsWith("entity:")) continue;
+        await persistProjection(db.projections, document);
+      }
+    }).catch(() => {});
+  });
+
 async function pull(
   scope: string,
   after: number,
@@ -161,9 +174,60 @@ async function pull(
 // A background PWA must not retain one HTTP connection per conversation.
 const invalidations = new Set<() => void>();
 let stopInvalidations: (() => void) | undefined;
-export function watchSyncInvalidations(resync: () => void) {
-  invalidations.add(resync);
-  if (!stopInvalidations) {
+const entityInvalidations = new Set<() => void>();
+let stopEntityInvalidations: (() => void) | undefined;
+export function watchSyncInvalidations(
+  resync: () => void,
+  scope: "legacy" | "entities" = "legacy",
+) {
+  const subscribers = scope === "entities" ? entityInvalidations : invalidations;
+  subscribers.add(resync);
+  if (scope === "entities" && !stopEntityInvalidations) {
+    let source: EventSource | undefined;
+    let previous: number | undefined;
+    let stopped = false;
+    const close = () => {
+      source?.close();
+      source = undefined;
+    };
+    const available = () => !document.hidden && navigator.onLine !== false;
+    const connect = () => {
+      if (!available() || source || stopped) return;
+      source = new EventSource(
+        "/api/sync/stream?scope=state%3Aentities%3Av1",
+      );
+      source.onmessage = (event) => {
+        const current = Number(event.data);
+        if (!Number.isSafeInteger(current) || current < 0) return;
+        if (previous === undefined || current > previous) {
+          previous = current;
+          for (const callback of entityInvalidations) callback();
+        }
+      };
+    };
+    const suspend = () => {
+      if (!available()) close();
+    };
+    const resume = () => {
+      close();
+      connect();
+    };
+    window.addEventListener("offline", suspend);
+    document.addEventListener("visibilitychange", suspend);
+    window.addEventListener("online", resume);
+    const stopResume = onResume(resume);
+    connect();
+    stopEntityInvalidations = () => {
+      stopped = true;
+      close();
+      stopResume();
+      window.removeEventListener("offline", suspend);
+      document.removeEventListener("visibilitychange", suspend);
+      window.removeEventListener("online", resume);
+    };
+  }
+  if (scope === "legacy") {
+    if (!stopInvalidations) {
     let source: EventSource | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const available = () => !document.hidden && navigator.onLine !== false;
@@ -207,12 +271,20 @@ export function watchSyncInvalidations(resync: () => void) {
       window.removeEventListener("offline", suspend);
       document.removeEventListener("visibilitychange", suspend);
     };
+    }
   }
   return () => {
+    subscribers.delete(resync);
+    if (scope === "entities" && !entityInvalidations.size) {
+      stopEntityInvalidations?.();
+      stopEntityInvalidations = undefined;
+    }
+    if (scope === "legacy") {
     invalidations.delete(resync);
     if (!invalidations.size) {
       stopInvalidations?.();
       stopInvalidations = undefined;
+    }
     }
   };
 }
@@ -263,7 +335,7 @@ async function acquireProjection(
   if (expectedWorkspace && expectedWorkspace !== workspaceId)
     throw new Error("The server workspace changed. Reload to synchronize.");
   while (closingScopes.has(scope)) await closingScopes.get(scope);
-  const remoteScope = scope === "state" ? "state:chat" : scope;
+  const remoteScope = scope === "state" ? "state:entities:v1" : scope;
   let state = scopes.get(scope);
   if (!state) {
     const listeners = new Set<(error: unknown | null) => void>();
@@ -272,73 +344,111 @@ async function acquireProjection(
     let stopped = false;
     let pending: Promise<void> | undefined;
     let invalidated = false;
-    let mappedCheckpoint: number | undefined =
-      remoteScope !== scope ? 0 : undefined;
+    const checkpointId =
+      remoteScope === "state:entities:v1" ? "state:entities:checkpoint" : scope;
     const refresh = (): Promise<void> => {
       if (stopped) return Promise.resolve();
       if (pending) return pending;
       pending = (async () => {
-        do {
+      do {
           invalidated = false;
           if (
             scopes.get(scope)?.foreground === 0 &&
             (document.hidden || navigator.onLine === false)
           )
             throw new TypeError("The device is offline or the page is hidden.");
-          const [previous] =
-            await db.projections.storageInstance.findDocumentsById(
-              [scope],
-              true,
-            );
-          const result = await pull(
-            remoteScope,
-            mappedCheckpoint ?? previous?.seq ?? 0,
-            100,
-            workspaceId,
-            verifyWorkspace,
-          );
-          if (stopped) return;
-          for (const document of result.documents as SyncDocument[]) {
-            if (document.id !== remoteScope)
-              throw new Error(
-                "The server returned a different projection scope.",
+          let more = true;
+          while (more && !stopped) {
+            const [previous] =
+              await db.projections.storageInstance.findDocumentsById(
+                [checkpointId],
+                true,
               );
-            if (scope.startsWith("transcript:") && !document._deleted) {
-              const incoming = JSON.parse(document.payload);
-              if (incoming.delta) {
-                if (!previous)
-                  throw new Error("Transcript projection delta has no valid base.");
-                if (previous.seq >= document.seq) continue;
-                const base = JSON.parse(previous.payload);
-                const items = new Map((base.items || []).map((item: any) => [item.id, item]));
-                for (const id of incoming.removed || []) items.delete(id);
-                for (const item of incoming.items || []) items.set(item.id, item);
-                const revisions = { ...(base.itemRevisions || {}), ...(incoming.itemRevisions || {}) };
-                for (const id of incoming.removed || []) delete revisions[id];
-                const order = incoming.order || base.items.map((item: any) => item.id);
-                const merged = {
-                  ...base,
-                  ...incoming,
-                  delta: undefined,
-                  removed: undefined,
-                  order: undefined,
-                  items: order.map((id: string) => items.get(id)).filter(Boolean),
-                  itemRevisions: revisions,
-                };
-                await persistProjection(db.projections, {
-                  ...document,
-                  id: scope,
-                  payload: JSON.stringify(merged),
-                });
-                continue;
+            const after = previous?.seq ?? 0;
+            const result = await pull(
+              remoteScope,
+              after,
+              100,
+              workspaceId,
+              verifyWorkspace,
+            );
+            if (stopped) return;
+            for (const document of result.documents as SyncDocument[]) {
+              if (
+                remoteScope === "state:entities:v1"
+                  ? !document.id.startsWith("entity:")
+                  : document.id !== remoteScope
+              )
+                throw new Error(
+                  "The server returned an invalid projection document.",
+                );
+              if (scope.startsWith("transcript:") && !document._deleted) {
+                const incoming = JSON.parse(document.payload);
+                if (incoming.delta) {
+                  if (!previous)
+                    throw new Error(
+                      "Transcript projection delta has no valid base.",
+                    );
+                  if (previous.seq >= document.seq) continue;
+                  const base = JSON.parse(previous.payload);
+                  const items = new Map(
+                    (base.items || []).map((item: any) => [item.id, item]),
+                  );
+                  for (const id of incoming.removed || []) items.delete(id);
+                  for (const item of incoming.items || [])
+                    items.set(item.id, item);
+                  const revisions = {
+                    ...(base.itemRevisions || {}),
+                    ...(incoming.itemRevisions || {}),
+                  };
+                  for (const id of incoming.removed || []) delete revisions[id];
+                  const order = incoming.order || base.items.map(
+                    (item: any) => item.id,
+                  );
+                  const merged = {
+                    ...base,
+                    ...incoming,
+                    delta: undefined,
+                    removed: undefined,
+                    order: undefined,
+                    items: order.map((id: string) => items.get(id)).filter(Boolean),
+                    itemRevisions: revisions,
+                  };
+                  await persistProjection(db.projections, {
+                    ...document,
+                    id: scope,
+                    payload: JSON.stringify(merged),
+                  });
+                  continue;
+                }
               }
+              await persistProjection(
+                db.projections,
+                remoteScope === "state:entities:v1"
+                  ? document
+                  : { ...document, id: scope },
+              );
             }
-            await persistProjection(db.projections, { ...document, id: scope });
+            if (remoteScope === "state:entities:v1") {
+              await persistProjection(db.projections, {
+                id: checkpointId,
+                payload: "{}",
+                seq: result.checkpoint.seq,
+              });
+              more = result.documents.length === 100 &&
+                result.checkpoint.seq < result.maxSeq;
+            } else {
+              more = false;
+            }
           }
-          if (mappedCheckpoint !== undefined)
-            mappedCheckpoint = result.checkpoint.seq;
           report(null);
         } while (invalidated && !stopped);
+        if (!stopped && remoteScope === "state:entities:v1")
+          await persistProjection(db.projections, {
+            id: "state:entities:ready",
+            payload: "ready",
+            seq: 1,
+          });
       })()
         .catch((error) => {
           report(error);
@@ -352,7 +462,7 @@ async function acquireProjection(
     const stopInvalidation = watchSyncInvalidations(() => {
       invalidated = true;
       void refresh().catch(() => {});
-    });
+    }, remoteScope === "state:entities:v1" ? "entities" : "legacy");
     state = {
       users: 0,
       foreground: 0,
@@ -408,7 +518,56 @@ export async function watchProjection(
   const stopCache = id
     ? subscribeTranscript(workspaceId, id, (entry) => accept(entry.payload))
     : () => {};
-  const subscription = db.projections.findOne(scope).$.subscribe((doc: any) => {
+  const subscription = scope === "state"
+    ? db.projections.find().$.subscribe((documents: any[]) => {
+        const ready = documents.some((document) => {
+          const row = document.toJSON ? document.toJSON() : document;
+          return row.id === "state:entities:ready" && row.payload === "ready" && !row._deleted;
+        });
+        if (!ready) return;
+        const entities = new Map<string, Map<string, any>>();
+        for (const document of documents) {
+          const row = document.toJSON ? document.toJSON() : document;
+          if (!row.id.startsWith("entity:") || row._deleted) continue;
+          try {
+            const value = JSON.parse(row.payload);
+            if (typeof value.collection !== "string" || typeof value.id !== "string")
+              continue;
+            const collection = entities.get(value.collection) || new Map();
+            collection.set(value.id, value.value);
+            entities.set(value.collection, collection);
+          } catch {
+            continue;
+          }
+        }
+        const list = (name: string) => [...(entities.get(name)?.values() || [])];
+        const agents = list("agent");
+        const chats = list("chat");
+        const runtime: Record<string, any> = {
+          agents,
+          rooms: list("room"),
+          tasks: list("task"),
+          monitors: list("monitor"),
+          complaints: list("complaint"),
+          requests: list("request"),
+          rules: list("rule"),
+          projects: list("project"),
+          peerTeams: list("peerTeam"),
+          events: list("event"),
+          work: list("work"),
+        };
+        Object.assign(runtime, entities.get("workspace")?.get("current") || {});
+        accept({
+          token: "",
+          stateDir: entities.get("workspace")?.get("current")?.stateDir || "",
+          threads: agents,
+          chats,
+          nodes: [...agents, ...chats],
+          edges: list("edge"),
+          runtime,
+        });
+      })
+    : db.projections.findOne(scope).$.subscribe((doc: any) => {
     if (!id) {
       accept(doc ? JSON.parse(doc.payload) : null);
       return;
@@ -422,6 +581,16 @@ export async function watchProjection(
     state.listeners.delete(fail);
     void release();
   };
+}
+
+/** Reconcile the entity projection after an action without fetching /api/state. */
+export async function refreshProjection(scope: string) {
+  const handle = await acquireProjection(scope);
+  try {
+    await handle.state.refresh();
+  } finally {
+    await handle.release();
+  }
 }
 
 let prefetches = 0;
