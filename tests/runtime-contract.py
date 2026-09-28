@@ -459,6 +459,50 @@ class RuntimeContract(unittest.TestCase):
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.agent(a['id'])['compactions'], 1)
 
+    def test_rate_limit_notification_does_not_wait_for_unrelated_runtime_lock(self):
+        entered, release = threading.Event(), threading.Event()
+        def hold_runtime():
+            with self.runtime.lock:
+                entered.set()
+                release.wait(3)
+        holder = threading.Thread(target=hold_runtime)
+        holder.start()
+        self.assertTrue(entered.wait(1))
+        try:
+            started = time.monotonic()
+            self.runtime.notification({'method': 'account/rateLimits/updated', 'params': {
+                'rateLimits': {'limitId': 'codex', 'primary': {'usedPercent': 42}}}})
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertEqual(self.runtime.rate_limits['data']['rateLimits']['primary']['usedPercent'], 42)
+        finally:
+            release.set()
+            holder.join(3)
+
+    def test_dispatcher_database_reuses_connection_and_commits_each_callback(self):
+        import sqlite3
+        self.runtime.notification({'method': 'account/rateLimits/updated', '_studioDispatchedAt': time.time(),
+            'params': {'rateLimits': {'limitId': 'codex', 'primary': {'usedPercent': 2}}}})
+        cached = self.runtime._callback_db.connection
+        try:
+            with self.runtime.db() as db:
+                self.assertIs(db, cached)
+                db.execute('INSERT INTO runtime_completed_turns VALUES (?)', ('fixture-commit',))
+            with sqlite3.connect(self.runtime.db_path) as other:
+                self.assertEqual(other.execute('SELECT COUNT(*) FROM runtime_completed_turns WHERE id=?',
+                                               ('fixture-commit',)).fetchone()[0], 1)
+            with self.assertRaises(sqlite3.IntegrityError):
+                with self.runtime.db() as db:
+                    db.execute('INSERT INTO runtime_completed_turns VALUES (?)', ('fixture-rollback',))
+                    db.execute('INSERT INTO runtime_completed_turns VALUES (?)', ('fixture-rollback',))
+            with self.runtime.db() as db:
+                self.assertIs(db, cached)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_completed_turns WHERE id=?',
+                                            ('fixture-rollback',)).fetchone()[0], 0)
+        finally:
+            self.runtime._callback_db.reuse = False
+            del self.runtime._callback_db.connection
+            cached.close()
+
     def test_sidebar_rename_and_room_hide_preserve_agent_history(self):
         a = self.lead()
         b = self.runtime.create({'name': 'Reviewer', 'prompt': 'Review', 'role': 'reviewer'}, a['id'], defer=True)

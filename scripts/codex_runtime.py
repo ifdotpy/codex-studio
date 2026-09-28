@@ -559,6 +559,47 @@ class AppServer:
         for key in [k for k, slot in slots.items() if thread is None or slot["thread"] == thread]:
             slots.pop(key)["open"] = False
 
+    def close_latest_slots(self, thread=None, *, except_key=None):
+        """Close queued latest-value slots at an ordering boundary."""
+        slots = self.__dict__.setdefault("_latest_slots", {})
+        for key in [key for key, slot in slots.items()
+                    if (thread is None or slot["thread"] == thread) and key != except_key]:
+            slots.pop(key)["open"] = False
+
+    def coalesce_latest(self, callback, message):
+        """Keep the newest queued value of one account, thread, or turn."""
+        method = message.get("method")
+        if method not in {"account/rateLimits/updated", "thread/tokenUsage/updated", "turn/diff/updated"}:
+            return False
+        params = message.get("params")
+        if not isinstance(params, dict):
+            return False
+        thread = params.get("threadId")
+        if method == "account/rateLimits/updated":
+            key = (method,)
+        elif not isinstance(thread, str) or not thread:
+            return False
+        elif method == "thread/tokenUsage/updated":
+            key = (method, thread)
+        elif not isinstance(params.get("turnId"), str) or not params["turnId"]:
+            return False
+        else:
+            key = (method, thread, params["turnId"])
+        self.close_slots(thread)
+        if thread is not None:
+            self.close_latest_slots(thread, except_key=key)
+        slots = self.__dict__.setdefault("_latest_slots", {})
+        slot = slots.get(key)
+        if slot is not None and slot["open"]:
+            # The dispatcher closes a slot under callback_lock before reading it.
+            slot["message"].update(message)
+            return True
+        slot = {"key": key, "thread": thread, "open": True}
+        slot["message"] = {**message, "_studioLatestSlot": slot}
+        self.callbacks.put_nowait((callback, slot["message"]))
+        slots[key] = slot
+        return True
+
     def coalesce_fragment(self, callback, message):
         """Admit a notification; merge a streamed fragment into its queued entry.
 
@@ -609,6 +650,14 @@ class AppServer:
                 if slots.get(slot["key"]) is slot:
                     slots.pop(slot["key"])
             return True
+        if isinstance(message, dict) and "_studioLatestSlot" in message:
+            with self.callback_lock:
+                slot = message.pop("_studioLatestSlot")
+                slot["open"] = False
+                slots = self.__dict__.get("_latest_slots", {})
+                if slots.get(slot["key"]) is slot:
+                    slots.pop(slot["key"])
+            return True
         return False
 
     def enqueue(self, callback, message):
@@ -618,17 +667,22 @@ class AppServer:
             # Tool calls must not wait behind a long notification backlog.
             with self.callback_lock:
                 self.close_slots(None)
+                self.close_latest_slots()
             self.enqueue_tool_request(message)
             return
         try:
             with self.callback_lock:
                 if not self.dispatch_stopped:
                     if callback == self.notification and isinstance(message, dict) and "id" not in message:
+                        if self.coalesce_latest(callback, message):
+                            return
+                        self.close_latest_slots()
                         if self.coalesce_fragment(callback, message):
                             return
                     else:
                         # Requests and receipts keep their order after every fragment.
                         self.close_slots(None)
+                        self.close_latest_slots()
                     self.callbacks.put_nowait((callback, message))
                     return
         except queue.Full:
@@ -946,13 +1000,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @contextmanager
     def db(self):
-        db = sqlite3.connect(self.db_path, timeout=15)
-        db.row_factory = sqlite3.Row
+        local = self.__dict__.setdefault("_callback_db", threading.local())
+        reusable = getattr(local, "reuse", False) and not getattr(local, "depth", 0)
+        db = getattr(local, "connection", None) if reusable else None
+        if db is None:
+            db = sqlite3.connect(self.db_path, timeout=15)
+            db.row_factory = sqlite3.Row
+            if reusable:
+                local.connection = db
+        if reusable:
+            local.depth = 1
         try:
             with db:
                 yield db
         finally:
-            db.close()
+            if reusable:
+                local.depth = 0
+            else:
+                db.close()
 
     @staticmethod
     def records(db, table):
@@ -2884,6 +2949,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def record_task(self, db, a, method, p, stale):
         """Keep process lifetimes separate from model turns, including late exits."""
         item = p.get("item") or {}
+        if method in {"item/started", "item/completed"}:
+            if item.get("type") not in {"commandExecution", "dynamicToolCall", "mcpToolCall", "webSearch", "fileChange", "contextCompaction"}:
+                return
+        elif method != "item/commandExecution/outputDelta":
+            return
         item_id = item.get("id") or p.get("itemId")
         if not item_id:
             return
@@ -2941,6 +3011,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.touch_ui(a["id"])
 
     def notification(self, message, account_key="default", connection_id=None):
+        if "_studioDispatchedAt" in message:
+            self.__dict__.setdefault("_callback_db", threading.local()).reuse = True
         if not self.connection_current(account_key, connection_id):
             return
         method, p = message.get("method"), message.get("params", {})
@@ -2956,7 +3028,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.accounts.refresh(account_key)
             return
         if method == "account/rateLimits/updated":
-            with self.lock:
+            # Account cache updates have their own owner. Live instances create
+            # this lock on first use, so a function-only patch needs no restart.
+            with self.__dict__.setdefault("_rate_cache_lock", threading.RLock()):
                 if not self.connection_current(account_key, connection_id):
                     return
                 bucket = p.get("rateLimits", {})
@@ -3001,7 +3075,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 buckets.update(valid_buckets)
                 if bucket:
                     buckets[bucket.get("limitId") or "codex"] = bucket
-                self.set_rate_limits(account_key, {
+                value = {
                     "data": {
                         **data,
                         "rateLimits": bucket,
@@ -3010,7 +3084,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "at": received_at,
                     "processedAt": processed_at,
                     "error": None,
-                })
+                }
+                self.store_rate_limits(account_key, value)
+            self.usage_resume_limits_changed(account_key, value)
             return
         if method == "command/exec/outputDelta":
             self.output(p, account_key, connection_id)
@@ -3073,8 +3149,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.sync_chat_delivery(db, item["clientId"], a["id"])
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
             samples = message.get("_studioNotificationSamples") if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"} else None
+            captured_tokens = None
             for sample in samples or [p]:
-                self.analytics_safe(db, self.analytics_event, a, method, sample)
+                captured_tokens = self.analytics_safe(db, self.analytics_event, a, method, sample)
             self.record_task(db, a, method, p, stale)
             if method.startswith("item/") and stale:
                 return
@@ -3228,8 +3305,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                           "Plan" if method == "turn/plan/updated" else "Changes", turnId=p.get("turnId") or a.get("turnId"))
             elif method == "thread/tokenUsage/updated":
                 usage = p.get("tokenUsage", {})
-                from codex_budget import budget_capture
-                a["tokensUsed"] = budget_capture(db, a, p)
+                # analytics_event already captures this notice for the budget.
+                # Retry only if analytics_safe rolled its savepoint back.
+                if captured_tokens is None:
+                    from codex_budget import budget_capture
+                    a["tokensUsed"] = budget_capture(db, a, p)
+                else:
+                    a["tokensUsed"] = captured_tokens
                 used, window = usage.get("last", {}).get("totalTokens"), usage.get("modelContextWindow")
                 a["contextUsage"] = {"tokens": used, "window": window, "at": time.time()}
             elif method == "turn/completed":
@@ -3348,8 +3430,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if a.get("activeTools") and (a.get("activity") or {}).get("phase") == "thinking":
                 a["activity"] = {"phase": "tool", "tools": a["activeTools"], "at": time.time()}
             self.put(db, "agents", a)
-            root = self.agent(a["rootId"], db)
-            if root.get("tokenBudget") and root["autoWake"]:
+            # Most teams have no budget. Avoid decoding the root's large record
+            # on every notification when the budget check cannot run.
+            if a["rootId"] == a["id"]:
+                budget_enabled = bool(a.get("tokenBudget") and a.get("autoWake"))
+            else:
+                budget_enabled = db.execute(
+                    "SELECT 1 FROM runtime_agents WHERE id=? "
+                    "AND json_extract(record,'$.tokenBudget')>0 "
+                    "AND json_extract(record,'$.autoWake')=1", (a["rootId"],)
+                ).fetchone() is not None
+            if budget_enabled:
+                root = a if a["rootId"] == a["id"] else self.agent(a["rootId"], db)
                 from codex_budget import budget_status
                 if budget_status(self, db, a, check_coverage=False)["reached"]:
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
@@ -3793,13 +3885,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return self.rate_limits_by_account.get(account_key, {"accountKey": account_key, "data": None, "at": None, "error": None})
 
     def set_rate_limits(self, account_key, value):
+        with self.__dict__.setdefault("_rate_cache_lock", threading.RLock()):
+            self.store_rate_limits(account_key, value)
+        self.usage_resume_limits_changed(account_key, {**value, "accountKey": account_key})
+
+    def store_rate_limits(self, account_key, value):
+        """Write account telemetry and cache while the account cache lock is held."""
         value = {**value, "accountKey": account_key}
         with self.db() as db:
             self.analytics_safe(db, self.analytics_limit, account_key, value)
         self.rate_limits_by_account[account_key] = value
         if account_key == "default":
             self.rate_limits = value
-        self.usage_resume_limits_changed(account_key, value)
 
     def limit_refresh_lock(self, account_key):
         with self.lock:

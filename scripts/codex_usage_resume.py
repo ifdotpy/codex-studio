@@ -149,6 +149,16 @@ class UsageResumeMixin:
         data = value.get('data') or {}
         if value.get('error') or not data:
             return
+        # The usual account has no scheduled resume. A read-only precheck keeps
+        # routine limit telemetry from waiting for the shared runtime lock.
+        # A newly scheduled resume reads the current cache in usage_resume_record;
+        # the tick also refreshes its decision from the current limits.
+        with self.db() as probe:
+            if not probe.execute("SELECT 1 FROM runtime_usage_resumes "
+                                 "WHERE json_extract(record,'$.status')='scheduled' "
+                                 "AND json_extract(record,'$.accountKey')=? LIMIT 1",
+                                 (account_key,)).fetchone():
+                return
         now = time.time()
         reset = _reset_at(data)
         allowed = _allowed(data, now)

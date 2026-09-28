@@ -360,6 +360,66 @@ class ReaderContract(unittest.TestCase):
         before = [m for m in seen if m['params'].get('threadId') == 't3'][:position]
         self.assertEqual(''.join(m['params']['delta'] for m in before), ''.join(p['delta'] for p in sent['t3'][:50]))
 
+    def test_latest_values_keep_keys_and_item_request_boundaries(self):
+        server, proc = self.start()
+        self.block(proc)
+        seen = []
+        server.notification = lambda message: seen.append((message['method'], message.get('params', {})))
+        server.request = lambda message: seen.append((message['method'], message.get('params', {})))
+        for value in range(50):
+            proc.emit({'method': 'account/rateLimits/updated', 'params': {'rateLimits': {'usedPercent': value}}})
+            proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': value}})
+            proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'b', 'value': value}})
+        proc.emit({'method': 'item/started', 'params': {'threadId': 'a', 'item': {'id': 'item'}}})
+        proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': 50}})
+        proc.emit({'method': 'item/tool/requestUserInput', 'id': 'tool', 'params': {'threadId': 'a'}})
+        proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': 51}})
+        proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'one', 'value': 1}})
+        proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'two', 'value': 2}})
+        proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'one', 'value': 3}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)
+        self.assertLessEqual(server.callbacks.qsize(), 10)
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        values = [(method, p.get('threadId'), p.get('turnId'), p.get('value', (p.get('rateLimits') or {}).get('usedPercent')))
+                  for method, p in seen]
+        self.assertEqual(values, [
+            ('account/rateLimits/updated', None, None, 49),
+            ('thread/tokenUsage/updated', 'a', None, 49),
+            ('thread/tokenUsage/updated', 'b', None, 49),
+            ('item/started', 'a', None, None),
+            ('thread/tokenUsage/updated', 'a', None, 50),
+            ('item/tool/requestUserInput', 'a', None, None),
+            ('thread/tokenUsage/updated', 'a', None, 51),
+            ('turn/diff/updated', 'a', 'one', 1),
+            ('turn/diff/updated', 'a', 'two', 2),
+            ('turn/diff/updated', 'a', 'one', 3),
+        ])
+
+    def test_tool_bypass_closes_latest_slot_without_delaying_tool(self):
+        server, proc = self.start()
+        self.block(proc)
+        values, tool_done = [], threading.Event()
+        server.notification = lambda message: values.append(message['params']['value'])
+        server.request = lambda message: tool_done.set()
+        proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': 1}})
+        proc.emit({'method': 'item/tool/call', 'id': 'tool', 'params': {'threadId': 'a'}})
+        proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': 2}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)
+        self.assertTrue(tool_done.wait(1))
+        self.assertEqual(server.callbacks.qsize(), 2)
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        self.assertEqual(values, [1, 2])
+
     def test_queue_saturation_is_explicit_and_preserves_accepted_order(self):
         server, proc = self.start(limit=2)
         self.block(proc)

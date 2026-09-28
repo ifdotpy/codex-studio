@@ -169,7 +169,7 @@ class AnalyticsMixin:
                 if known.get('accountKey') == meta['accountKey'] and known.get('cyberAccessProgram') is not None:
                     meta.update(daybreakEnabled=known.get('daybreakEnabled'),
                                 cyberAccessProgram=known['cyberAccessProgram'])
-            budget_capture(db, a, p, at=at, source=source)
+            captured_tokens = budget_capture(db, a, p, at=at, source=source)
             usage = p.get('tokenUsage') or {}
             current, last = usage.get('total') or {}, usage.get('last') or {}
             # Totals identify a request across native notices and rollout records.
@@ -192,7 +192,7 @@ class AnalyticsMixin:
                         if record.get('modelContextWindow') is None:
                             record['modelContextWindow'] = number(usage.get('modelContextWindow'))
                         db.execute('UPDATE analytics_usage SET record=? WHERE id=?', (json.dumps(record), exact['id']))
-                        return
+                        return captured_tokens
                     existing, key = record, exact['id']
             response_model = p.get('model')
             if existing and response_id and existing.get('responseId') and response_id != existing['responseId']:
@@ -208,7 +208,7 @@ class AnalyticsMixin:
                                     counterDomain='response' if p.get('rawTokenUsageRecord') else 'nativeNotice',
                                     cumulativeDelta={k: None for k in TOKEN_FIELDS}, reset=None, baselineMissing=True)
                     db.execute('UPDATE analytics_usage SET at=?,record=? WHERE id=?', (at, json.dumps(existing), key))
-                return
+                return captured_tokens
             counter_domain = 'response' if p.get('rawTokenUsageRecord') else 'nativeNotice'
             prior = db.execute("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND at<=? AND json_extract(record,'$.counterDomain')=? ORDER BY at DESC,seq DESC LIMIT 1", (a['id'], meta['threadId'], at, counter_domain)).fetchone()
             prior = json.loads(prior[0]) if prior else None
@@ -225,7 +225,7 @@ class AnalyticsMixin:
                       'requestUsage': p.get('requestUsage')}
             db.execute('INSERT OR IGNORE INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
                        (key, a['id'], meta['rootId'], meta['threadId'], turn, at, json.dumps(record)))
-            return
+            return captured_tokens
         if turn and method in {'turn/started', 'turn/completed', 'item/agentMessage/delta', 'item/started', 'item/completed'}:
             key = ':'.join((a['id'], str(meta['threadId']), str(turn)))
             row = db.execute('SELECT record FROM analytics_turns WHERE id=?', (key,)).fetchone()
