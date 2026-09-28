@@ -132,7 +132,27 @@ class AnalyticsMixin:
             return None
 
     def analytics_limit(self, db, account_key, value):
-        db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)', (account_key, time.time(), json.dumps(value)))
+        if self.analytics_limit_changed(db, account_key, value):
+            db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)', (account_key, time.time(), json.dumps(value)))
+
+    def analytics_limit_changed(self, db, account_key, value):
+        """Skip a snapshot equal to the account's previous one; the time series keeps each change."""
+        def content(record):
+            if not isinstance(record, dict):
+                return json.dumps(record, sort_keys=True)
+            return json.dumps({k: v for k, v in record.items()
+                               if k not in ('at', 'processedAt', 'checkedAt') and not k.startswith('_')},
+                              sort_keys=True)
+        cache = self.__dict__.setdefault('_analytics_last_limit', {})
+        if account_key not in cache:
+            row = db.execute('SELECT record FROM analytics_limits WHERE account=? ORDER BY at DESC LIMIT 1',
+                             (account_key,)).fetchone()
+            cache[account_key] = content(json.loads(row[0])) if row else None
+        current = content(value)
+        if cache[account_key] == current:
+            return False
+        cache[account_key] = current
+        return True
 
     def analytics_agent(self, db, a):
         record = {key: a.get(key) for key in ('id', 'name', 'rootId', 'parentId', 'accountKey', 'threadId', 'model', 'effort', 'fastMode', 'daybreakEnabled', 'cyberAccessProgram', 'cwd', 'deletedAt')}
@@ -264,7 +284,8 @@ class AnalyticsMixin:
             db.execute('INSERT INTO analytics_turns VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
                        (key, a['id'], meta['rootId'], record['at'], json.dumps(record)))
         if method == 'analytics/rateLimits':
-            db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)', (meta['accountKey'], at, json.dumps(p)))
+            if self.analytics_limit_changed(db, meta['accountKey'], p):
+                db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)', (meta['accountKey'], at, json.dumps(p)))
             return
         if method == 'analytics/compaction':
             self.analytics_event(db, a, 'item/completed', {**p, 'item': {'id': p.get('id') or p.get('_analyticsId') or str(at), 'type': 'compactionSnapshot', 'compactionMetadata': p}}, at=at, source=source)

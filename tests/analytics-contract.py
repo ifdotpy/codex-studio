@@ -44,6 +44,17 @@ class AnalyticsContract(unittest.TestCase):
     def data(self, **options):
         return self.runtime.analytics(self.agent['id'], **options)
 
+    def test_unchanged_rate_limit_snapshot_is_not_stored_again(self):
+        snapshot = {'rateLimits': {'primary': {'usedPercent': 10, 'resetsAt': 5}}, 'at': 1.0}
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.analytics_limit(db, 'fixture-account', snapshot)
+            self.runtime.analytics_limit(db, 'fixture-account', {**snapshot, 'at': 2.0})
+            self.runtime.analytics_limit(db, 'fixture-account', {**snapshot, 'rateLimits': {'primary': {'usedPercent': 11, 'resetsAt': 5}}})
+            self.runtime.analytics_limit(db, 'other-account', snapshot)
+            rows = db.execute("SELECT account, json_extract(record,'$.rateLimits.primary.usedPercent') FROM analytics_limits "
+                              "WHERE account IN ('fixture-account','other-account') ORDER BY id").fetchall()
+        self.assertEqual([tuple(row) for row in rows], [("fixture-account", 10), ("fixture-account", 11), ("other-account", 10)])
+
     def test_compact_turn_errors_keep_exact_agent_thread_and_turn(self):
         turn = self.agent['turnId']
         thread = self.agent['threadId']
