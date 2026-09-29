@@ -161,5 +161,3 @@ def rollout_actions(record, context, identity, fallback_at):
     for _, _, body, event_at in actions:
         body.setdefault("_analyticsTimestampSource", "metadata" if event_at != at else time_source)
     return actions
-
-
