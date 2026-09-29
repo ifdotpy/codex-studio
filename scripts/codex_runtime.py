@@ -1609,7 +1609,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if type(fast_mode) is not bool:
             raise ValueError("fast_mode must be a boolean")
         info = next((row for row in catalog.get("data", [])
-                     if row.get("model") == model and not row.get("hidden")), None)
+                     if model in (row.get("model"), row.get("resolvedModel")) and not row.get("hidden")), None)
         if info is None:
             raise ValueError("This model is not available for this account")
         supported = {row.get("reasoningEffort") for row in info.get("supportedReasoningEfforts", [])}

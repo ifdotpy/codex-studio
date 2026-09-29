@@ -202,6 +202,11 @@ class Bridge(unittest.TestCase):
             row = self.read(); self.notifications.append(row)
             if row.get('method') == 'turn/completed': return row['params']['turn']
 
+    def test_model_list_carries_the_resolved_model_of_each_alias(self):
+        rows = {row['model']: row for row in self.call('model/list', {})['data']}
+        self.assertEqual(rows['sonnet']['resolvedModel'], 'claude-sonnet-5')
+        self.assertEqual(rows['default']['resolvedModel'], 'claude-opus-5-5')
+
     def test_stream_history_immediate_next_turn_and_duplicate_identity(self):
         first = self.turn('hello','one'); self.assertEqual(self.completed()['status'],'completed')
         self.turn('tool','two'); self.assertEqual(self.completed()['status'],'completed')

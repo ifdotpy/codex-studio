@@ -52,7 +52,8 @@ def resolve(runtime, parent, data, *, catalogs=None):
         if key not in catalogs:
             catalogs[key] = runtime.catalog(key)
         catalog = catalogs[key]
-        if any(row.get('model') == model and not row.get('hidden') for row in catalog.get('data', [])):
+        if any(model in (row.get('model'), row.get('resolvedModel')) and not row.get('hidden')
+               for row in catalog.get('data', [])):
             return key, catalog
     raise ValueError('This model is not available for the selected worker accounts')
 

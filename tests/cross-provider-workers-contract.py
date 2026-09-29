@@ -39,10 +39,14 @@ class CrossProviderWorkers(unittest.TestCase):
         def catalog(account="default"):
             self.catalog_calls.append(account)
             self.rt.accounts.get(account)
-            return {"data": [f.model(name, ("medium", "high", "xhigh"), "medium")
-                for name in (["claude-sonnet-4-6", "claude-opus-4-6"]
+            rows = [f.model(name, ("medium", "high", "xhigh"), "medium")
+                for name in (["claude-sonnet-4-6", "claude-opus-4-6", "sonnet"]
                              if account == "claude-fixture"
-                             else ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"])]}
+                             else ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"])]
+            for row in rows:
+                if row["model"] == "sonnet":
+                    row["resolvedModel"] = "claude-sonnet-5-5"
+            return {"data": rows}
         self.rt.catalog = catalog
         self.lead = self.rt.create({"name": "Claude lead", "prompt": "",
             "cwd": str(self.root), "account_key": "claude-fixture",
@@ -145,6 +149,16 @@ class CrossProviderWorkers(unittest.TestCase):
         child = self.child(model="claude-opus-4-6", effort="medium")
         self.assertEqual((child["accountKey"], child["provider"], child["model"]),
                          ("claude-fixture", "claude", "claude-opus-4-6"))
+
+    def test_codex_lead_can_select_claude_alias_or_its_resolved_model(self):
+        self.lead = self.rt.create({"name": "Codex lead", "prompt": "",
+            "cwd": str(self.root), "account_key": "default", "model": "gpt-6-astra"}, draft=True)
+        for model in ("sonnet", "claude-sonnet-5-5"):
+            child = self.child(model=model, effort="high")
+            self.assertEqual((child["accountKey"], child["provider"], child["model"]),
+                             ("claude-fixture", "claude", model))
+        with self.assertRaisesRegex(ValueError, "not available"):
+            self.child(model="claude-sonnet-9-9", effort="high")
 
     def test_unknown_disconnected_and_wrong_catalog_targets_reject(self):
         for values in ({"account_key": "missing"},

@@ -17,7 +17,9 @@ const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 const plural = (count: number, noun: string) =>
   `${count} ${noun}${count === 1 ? "" : "s"}`;
 const infoFor = (catalog: Catalog, model: string) =>
-  catalog.models.find((row) => row.model === model);
+  catalog.models.find(
+    (row) => row.model === model || row.resolvedModel === model,
+  );
 const fastTier = (info?: Json) =>
   info?.serviceTiers?.find((tier: Json) => tier.id === "priority");
 const effortOptions = (info?: Json) => [

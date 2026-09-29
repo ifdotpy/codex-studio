@@ -966,6 +966,8 @@ async function handle(method, p) {
       data: models.map((model) => ({
         id: model.value,
         model: model.value,
+        // Aliases such as "sonnet" name a dated model; spawn accepts either id.
+        resolvedModel: model.resolvedModel || null,
         displayName: "Claude · " + model.displayName,
         description: model.description,
         isDefault: model.value === "default",

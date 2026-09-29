@@ -128,7 +128,7 @@ class AccountTransfers:
         provider = rt.accounts.get(target).get('provider', 'codex')
         changed = source_provider != provider
         rows = [row for row in catalog.get('data', []) if not row.get('hidden')]
-        current = next((row for row in rows if row.get('model') == agent['model']), None)
+        current = next((row for row in rows if agent['model'] in (row.get('model'), row.get('resolvedModel'))), None)
         if changed or current is None:
             from codex_runtime import DEFAULT_LEAD_MODEL
             default = 'default' if provider == 'claude' else DEFAULT_LEAD_MODEL
@@ -136,7 +136,8 @@ class AccountTransfers:
                 (row for row in rows if row.get('model') == default), None)
             if current is None:
                 raise ValueError('The destination account has no available default model')
-        model = current['model']
+        model = (agent['model'] if not changed and current.get('resolvedModel') == agent['model']
+                 else current['model'])
         fast = bool(agent.get('fastMode', False)) and any(
             tier.get('id') == 'priority' for tier in current.get('serviceTiers', []))
         source_effort = None if changed else agent.get('effort')
