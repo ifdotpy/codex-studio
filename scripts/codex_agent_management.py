@@ -70,6 +70,7 @@ def _missing_transferred_history(db, agent):
         member = (transfer.get('members') or {}).get(agent['id']) or {}
         result = member.get('result') or {}
         if (transfer.get('status') == 'completed' and member.get('phase') == 'completed'
+                and member.get('nativeMethod') == 'thread/start'
                 and member.get('sourceThreadId') is None
                 and result.get('thread', {}).get('id') == thread):
             counts = {}
@@ -522,7 +523,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
             _authorize(rt, db, actor_id, epoch, current)
             missing = _missing_transferred_history(db, current)
         if missing:
-            return missing
+            from codex_account_transfer import transfer_store
+            return transfer_store(rt).recover_empty_transferred_thread(target['id'])
         from codex_context_repair import recover_unconfirmed_inputs
         input_recovery = recover_unconfirmed_inputs(rt, target['id'])
         if input_recovery.get('status') == 'waiting':
