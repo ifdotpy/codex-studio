@@ -272,6 +272,9 @@ class AccountTransfers:
             source_thread = a.get('threadId')
             resolved = None
             validation_error = None
+            source_settings = self.settings_snapshot(a) if lazy else None
+            source_pending = copy.deepcopy(a.get('pendingSettings'))
+            source_pending_account = a.get('pendingSettingsAccountKey')
             if lazy:
                 try:
                     if destination_catalog is None:
@@ -284,6 +287,12 @@ class AccountTransfers:
                         if destination_catalog_error:
                             raise ValueError(destination_catalog_error)
                     resolved = self.destination_settings(a, op['targetAccountKey'], destination_catalog)
+                    current = self.rt.agent(a['id'], db)
+                    if (self.settings_snapshot(current) != source_settings
+                            or current.get('pendingSettings') != source_pending
+                            or current.get('pendingSettingsAccountKey') != source_pending_account):
+                        raise TransferSettingsConflict(
+                            'Agent settings changed during transfer. The newer choice is preserved')
                 except Exception as error:
                     validation_error = str(error)
             op['members'][a['id']] = {'phase': 'completed' if done else
@@ -387,8 +396,12 @@ class AccountTransfers:
                         if m.get('lazy'):
                             a = rt.agent(aid, db)
                             if not a.get('lazyAccountTransfer'):
-                                resolved = self.destination_settings(a, op['targetAccountKey'],
-                                                                     rt.catalog(op['targetAccountKey']))
+                                try:
+                                    resolved = self.destination_settings(a, op['targetAccountKey'],
+                                                                         rt.catalog(op['targetAccountKey']))
+                                except Exception as error:
+                                    m.update(error=str(error))
+                                    continue
                                 source_account = a.get('accountKey', 'default')
                                 source_thread = a.get('threadId')
                                 a['accountTransferId'] = key

@@ -116,7 +116,7 @@ class AccountTransferSettingsContract(unittest.TestCase):
         self.t.until(lambda: self.member(op)['phase'] == 'blocked')
         self.assertEqual(self.t.pending, [])
         self.assertFalse(any(method == 'thread/unsubscribe' for method, _ in self.t.native_calls))
-        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
+        self.assertEqual(self.agent()['accountKey'], 'default')
         self.runtime.conversation_settings(self.key, {'effort': None})
         self.pending(model='gpt-5.6-sol')
         self.target_models = {'gpt-6-astra'}
@@ -142,7 +142,7 @@ class AccountTransferSettingsContract(unittest.TestCase):
         op = self.start()
         self.t.until(lambda: self.member(op)['phase'] == 'blocked')
         self.assertIn('newer choice is preserved', self.member(op)['error'])
-        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
+        self.assertEqual(self.agent()['accountKey'], 'default')
         self.assertEqual(self.agent()['pendingSettings']['model'], 'gpt-5.6-sol')
         self.assertEqual(self.t.pending, [])
         self.assertFalse(any(method == 'thread/unsubscribe' for method, _ in self.t.native_calls))
