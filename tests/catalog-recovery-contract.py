@@ -83,6 +83,7 @@ class CatalogCacheContract(unittest.TestCase):
             self.read()
         self.server.requests[1].set_result(CATALOG)
         self.assertEqual(self.read(), CATALOG)
+        self.assertEqual(len(self.server.requests), 2, "the refresh completed and filled the cache")
 
     def test_complete_catalog_waits_for_all_pages_and_reuses_late_page(self):
         with self.assertRaises(CatalogPending):

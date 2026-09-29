@@ -114,11 +114,13 @@ class ModelCatalogCache:
                     native_future.add_done_callback(complete)
 
             submit_page()
+        # The refresh callbacks above read `future`; wait through a separate name.
+        waiting = None if stale is not None else future
         if stale is not None:
-            result, future = stale, None
-        if future is not None:
+            result = stale
+        if waiting is not None:
             try:
-                result = copy.deepcopy(future.result(self.wait_seconds))
+                result = copy.deepcopy(waiting.result(self.wait_seconds))
             except concurrent.futures.TimeoutError as error:
                 raise CatalogPending(
                     "Model catalog is pending; no workers were created. "
