@@ -233,6 +233,44 @@ class TurnRecoveryContract(unittest.TestCase):
 
 
 
+    def orphan(self):
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['outcome'], 'completed')
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            a.update(status='running', inFlight=True, turnId=None, steerRejectedTurnId='',
+                     activity={'phase': 'thinking', 'at': time.time() - 130},
+                     lastEvent='2020-01-01T00:00:00Z')
+            a.pop('startAttempt', None)
+            self.runtime.put(db, 'agents', a)
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                       ('orphan-input', self.key, 'user', 'Continue.', 'pending', time.time(), a['epoch'], None, None))
+
+    def test_orphan_busy_flag_clears_when_native_idle_and_input_starts_once(self):
+        self.orphan()
+        starts = len([1 for method, _ in self.server.calls if method == 'turn/start'])
+        self.runtime.changed.set()
+        fixture.eventually(lambda: self.runtime.agent(self.key).get('turnRecovery', {}).get('outcome') == 'idle')
+        fixture.eventually(lambda: len([1 for method, _ in self.server.calls if method == 'turn/start']) == starts + 1)
+        a = self.runtime.agent(self.key)
+        self.assertNotIn('steerRejectedTurnId', a)
+        for _ in range(3):
+            self.runtime.dispatch()
+        self.assertEqual(len([1 for method, _ in self.server.calls if method == 'turn/start']), starts + 1)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='orphan-input'").fetchone()[0],
+                             'delivered')
+
+    def test_orphan_busy_flag_waits_for_active_or_unprocessed_native_turn(self):
+        self.orphan()
+        self.server.native['status']['type'] = 'active'
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'active_or_unknown')
+        self.server.native['status']['type'] = 'idle'
+        self.server.native['turns'].insert(0, {'id': 'unprocessed-turn', 'status': 'completed', 'items': []})
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        a = self.runtime.agent(self.key)
+        self.assertTrue(a['inFlight'])
+        self.assertEqual(a['steerRejectedTurnId'], '')
+
     def test_scheduler_probes_one_at_a_time_without_holding_runtime_lock(self):
         self.server.native['status']['type'] = 'active'
         self.server.read_gate = threading.Event()

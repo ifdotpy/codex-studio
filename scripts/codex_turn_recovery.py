@@ -32,6 +32,12 @@ def read_native_turn(server, thread_id, turn_id):
         seen.add(cursor)
 
 
+def orphan_busy(agent):
+    """A busy flag with no native turn and no Studio start cannot be cleared by any notification."""
+    return bool(agent.get('inFlight') and not agent.get('turnId') and not agent.get('startAttempt')
+                and agent.get('threadId') and not agent.get('deletedAt'))
+
+
 class TurnRecoveryMixin:
     def queue_turn_recovery(self, agents, *, force_id=None):
         """At most one native probe occupies the existing recovery executor."""
@@ -43,7 +49,8 @@ class TurnRecoveryMixin:
             self._turn_recovery_checked = checked
             candidates = []
             for a in agents:
-                if not a.get('inFlight') or not a.get('turnId') or not a.get('threadId') or a.get('deletedAt'):
+                if (not a.get('inFlight') or not (a.get('turnId') or orphan_busy(a))
+                        or not a.get('threadId') or a.get('deletedAt')):
                     continue
                 account = a.get('accountKey', 'default')
                 if account not in self.servers or account in self.offline_accounts:
@@ -85,13 +92,15 @@ class TurnRecoveryMixin:
             a = self.agent(key, db)
             account = a.get('accountKey', 'default')
             connection = self.connection_ids.get(account)
-            if (not a.get('inFlight') or not a.get('turnId') or a.get('deletedAt')
+            if (not a.get('inFlight') or not (a.get('turnId') or orphan_busy(a)) or a.get('deletedAt')
                     or not self.connection_current(account, connection)):
                 return {'status': 'skipped'}
             server = self.servers.get(account)
             if server is None:
                 return {'status': 'skipped'}
             expected = {k: a.get(k) for k in ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'startAttempt')}
+        if not a.get('turnId'):
+            return self.reconcile_orphan_busy(server, a, expected, connection)
         try:
             # Most long-running turns only need this small status response.
             thread = server.call('thread/read', {'threadId': a['threadId'], 'includeTurns': False}, timeout=5)['thread']
@@ -119,6 +128,58 @@ class TurnRecoveryMixin:
         except Exception as error:
             # A failed read is not a failed turn. Retain the recorded state and receipt.
             return {'status': 'unconfirmed', 'error': str(error)}
+
+    def reconcile_orphan_busy(self, server, a, expected, connection):
+        """Clear a busy flag only when native is idle and its last turn already completed here."""
+        def idle():
+            thread = server.call('thread/read', {'threadId': a['threadId'], 'includeTurns': False}, timeout=5)['thread']
+            if thread.get('id') != a['threadId']:
+                raise ValueError('Native thread identity changed')
+            return thread.get('status', {}).get('type') in {'idle', 'notLoaded'}
+        try:
+            if not idle():
+                return {'status': 'active_or_unknown'}
+            page = server.call('thread/turns/list', {'threadId': a['threadId'], 'limit': 1,
+                                                     'sortDirection': 'desc'}, timeout=5)
+            latest = (page.get('data') or [None])[0]
+            if not idle():
+                return {'status': 'active_or_unknown'}
+            if latest is not None and latest.get('status') not in {'completed', 'failed', 'interrupted'}:
+                return {'status': 'unconfirmed'}
+            result = Future()
+            def apply():
+                try:
+                    result.set_result(self.apply_orphan_recovery(expected, connection, latest))
+                except Exception as error:
+                    result.set_exception(error)
+            server.after_events(apply)
+            return result.result(timeout=10)
+        except Exception as error:
+            return {'status': 'unconfirmed', 'error': str(error)}
+
+    def apply_orphan_recovery(self, expected, connection, latest):
+        account = expected.get('accountKey') or 'default'
+        with self.lock, self.db() as db:
+            a = self.agent(expected['id'], db)
+            if (not self.connection_current(account, connection) or self.closed or not orphan_busy(a)
+                    or any(a.get(k) != value for k, value in expected.items())):
+                return {'status': 'superseded'}
+            # An unprocessed terminal turn still owns its completion effects.
+            if latest is not None and not db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                                                     (a['id'] + ':' + str(latest.get('id')),)).fetchone():
+                return {'status': 'unconfirmed'}
+            if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                          "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                          (a['id'], a['epoch'])).fetchone():
+                return {'status': 'unconfirmed'}
+            a.update(inFlight=False, activity=None, activeTools=[],
+                     status='queued' if a.get('autoWake') else 'paused')
+            a.pop('steerRejectedTurnId', None)
+            a['turnRecovery'] = {'at': time.time(), 'turnId': None, 'latestTurnId': (latest or {}).get('id'),
+                                 'outcome': 'idle', 'source': 'native_thread_read'}
+            self.put(db, 'agents', a)
+            self.changed.set()
+            return {'status': 'reconciled', 'turnId': None, 'outcome': 'idle'}
 
     def apply_turn_recovery(self, expected, connection, native_state, turn):
         account = expected.get('accountKey') or 'default'
