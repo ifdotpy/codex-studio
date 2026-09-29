@@ -11,7 +11,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_budget import budget_admission, budget_capture, budget_status
 from codex_analytics import AnalyticsMixin
-from codex_analytics_history import rollout_actions, inherited_usage_threads, repair_terminal_errors
+from analytics.rollout_parser import rollout_actions
+from codex_analytics_history import inherited_usage_threads, repair_terminal_errors
 
 
 class Runtime(AnalyticsMixin):

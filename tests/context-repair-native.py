@@ -149,7 +149,8 @@ class NativeContextRepair(unittest.TestCase):
                     self.assertEqual(len(provider.requests),count)
                     self.assertEqual(repaired['contextRepair']['snapshot']['terminalTurnId'],latest)
                     self.assertEqual(len(repaired['contextRepair']['snapshot']['ancestry']),3 if nested else 2)
-                    from codex_analytics_history import inherited_usage_threads, rollout_actions
+                    from codex_analytics_history import inherited_usage_threads
+                    from analytics.rollout_parser import rollout_actions
                     allowed = inherited_usage_threads(repaired)
                     context = {'threadId':repaired['threadId'],'allowedSourceThreadIds':allowed}
                     projected = [json.loads(line) for line in Path(repaired['contextRepair']['snapshot']['copyPath']).read_text().splitlines()]
