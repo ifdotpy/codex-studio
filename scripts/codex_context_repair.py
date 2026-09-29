@@ -151,6 +151,10 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 ids = [row['id'] for row in rows]
         else:
             ids = [error[len(prefix):]]
+        if restart_wait and not ids:
+            # No input left the queue after the restart, so no native receipt can exist.
+            _finish_restart_wait(rt, db, a, error, queue=not a.get('inFlight'))
+            return {'status': 'resolved', 'reason': None, 'inputs': []}
         if (not isinstance(ids, list) or not ids or
                 (not restart_wait and any(key not in attempt.get('events', []) for key in ids))):
             return {'status': 'waiting', 'reason': 'The unconfirmed input is outside the current start attempt', 'inputs': []}
@@ -158,6 +162,9 @@ def recover_unconfirmed_inputs(rt, agent_id):
         events = db.execute("SELECT id,status FROM runtime_events WHERE id IN (" + marks + ") AND agent=? AND epoch=? "
             "AND status IN ('reserved','dispatching','uncertain') ORDER BY id", (*ids, agent_id, a['epoch'])).fetchall()
         if not events:
+            if restart_wait:
+                _finish_restart_wait(rt, db, a, error, queue=not a.get('inFlight'))
+                return {'status': 'resolved', 'reason': None, 'inputs': []}
             return {'status': 'not_needed', 'inputs': []}
         identity = (a['epoch'], a.get('threadId'), a.get('accountKey', 'default'))
         server = rt.servers.get(identity[2])
@@ -258,21 +265,32 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 if not completed:
                     current.update(status='running', inFlight=True, turnId=delivered['turnId'])
         if all(item['decision'] != 'waiting' for item in decisions):
-            current.pop('contextRepairWait', None)
             if restart_wait:
-                current.update(autoWake=True, nativeFailureHold=None)
-                current['restartRecovery'].update(stage='finished', reconciledAt=time.time())
-                if current.get('error') == error:
+                _finish_restart_wait(rt, db, current, error, queue=not delivered)
+            else:
+                current.pop('contextRepairWait', None)
+                if (current.get('error') or '').startswith('Context repair waits for a confirmed input receipt:'):
                     current['error'] = None
-            if (current.get('error') or '').startswith('Context repair waits for a confirmed input receipt:'):
-                current['error'] = None
-            if not delivered:
-                current.update(status='queued', inFlight=False)
-            rt.put(db, 'agents', current)
-            rt.changed.set()
+                if not delivered:
+                    current.update(status='queued', inFlight=False)
+                rt.put(db, 'agents', current)
+                rt.changed.set()
     return {'status': 'resolved' if all(item['decision'] != 'waiting' for item in decisions) else 'waiting',
             'reason': None if all(item['decision'] != 'waiting' for item in decisions) else 'Native thread is active; absent inputs remain uncertain',
             'inputs': decisions}
+
+
+def _finish_restart_wait(rt, db, agent, error, *, queue=True):
+    agent.pop('contextRepairWait', None)
+    agent.update(autoWake=True, nativeFailureHold=None)
+    agent['restartRecovery'].update(stage='finished', reconciledAt=time.time())
+    if agent.get('error') == error or (agent.get('error') or '').startswith(
+            'Context repair waits for a confirmed input receipt:'):
+        agent['error'] = None
+    if queue:
+        agent.update(status='queued', inFlight=False)
+    rt.put(db, 'agents', agent)
+    rt.changed.set()
 
 
 def tick_restart_input_waits(rt, agents):

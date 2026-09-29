@@ -282,6 +282,32 @@ class ContextWait(f.NativeActionRepair):
         self.assertEqual(tuple(old_receipt), ('delivered', 'original-native-turn'))
         self.assertEqual(tuple(newer_receipt), ('delivered', 'resumed-turn'))
 
+    def test_held_restart_marker_without_unconfirmed_input_dispatches_pending_once(self):
+        with self.runtime.db() as db:
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                ('held-pending', self.a['id'], 'user', 'Continue after restart.',
+                 'pending', time.time(), self.a['epoch'], None, None))
+        attempt = {'id':'held-attempt', 'epoch':self.a['epoch'], 'accountKey':'default',
+                   'events':['held-pending'], 'submitted':False}
+        error = 'Context repair waits for the existing native recovery receipt'
+        self.agent_update(self.a, status='queued', autoWake=True, inFlight=False, startAttempt=attempt,
+            contextRepairWait={'source':{**repair._identity(self.a), 'attemptId':'held-attempt'},
+                'events':['held-pending'], 'error':error, 'checks':9,
+                'lastHistoryCheck':'The unconfirmed input is outside the current start attempt'},
+            restartRecovery={'epoch':self.a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                'turnId':None, 'stage':'held', 'reason':'Native input submission has no confirmed turn identity.',
+                'autoWake':True, 'startAttempt':None})
+        self.runtime.dispatch_all()
+        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.assertEqual(self.runtime.agent(self.a['id'])['restartRecovery']['stage'], 'finished')
+        with patch.object(repair, 'repair_before_start', side_effect=lambda _rt, agent: agent):
+            self.runtime.dispatch()
+            eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        for _ in range(2):
+            self.runtime.dispatch()
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual([p['clientUserMessageId'] for p in starts], ['held-pending'])
+
     def test_recover_requeues_absent_idle_input_once(self):
         self.uncertain_input('recover-absent', [{'id':'other-turn',
             'items':[{'type':'userMessage','clientId':'other-input'}]}])
