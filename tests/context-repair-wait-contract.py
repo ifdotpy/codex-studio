@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import time
 import unittest
 from unittest.mock import patch
 
@@ -196,6 +197,62 @@ class ContextWait(f.NativeActionRepair):
         starts = [p for method, p in self.server.calls if method == 'turn/start']
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['clientUserMessageId'], 'restart-absent')
+
+    def test_held_restart_marker_resolves_old_input_and_dispatches_new_wait_once(self):
+        self.uncertain_input('restart-original', [
+            {'id':'original-native-turn','clientUserMessageId':'restart-original'}])
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET error='Codex disconnected' WHERE id='restart-original'")
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                ('newer-input', self.a['id'], 'user', 'Resume with this newer message.',
+                 'pending', time.time(), self.a['epoch'], None, None))
+        newer_attempt = {'id':'newer-attempt', 'epoch':self.a['epoch'], 'threadId':self.tid,
+                         'accountKey':'default', 'events':['newer-input'], 'submitted':False}
+        self.agent_update(self.a, status='queued', autoWake=True, inFlight=False,
+            startAttempt=newer_attempt, error='Context repair waits for the existing native recovery receipt',
+            contextRepairWait={'source':repair._identity({**self.a, 'startAttempt':newer_attempt}),
+                'events':['newer-input'], 'error':'Context repair waits for the existing native recovery receipt',
+                'checks':1},
+            restartRecovery={'epoch':self.a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                'turnId':None, 'stage':'held', 'reason':'Native input submission has no confirmed turn identity.',
+                'autoWake':True, 'startAttempt':None})
+
+        self.runtime.dispatch()
+        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        settled = self.runtime.agent(self.a['id'])
+        self.assertEqual(settled['restartRecovery']['stage'], 'finished')
+        self.assertEqual(settled['startAttempt']['id'], 'newer-attempt')
+        with self.runtime.db() as db:
+            old_receipt = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                     ('restart-original',)).fetchone()
+            newer_status = db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                      ('newer-input',)).fetchone()[0]
+        self.assertEqual(tuple(old_receipt), ('delivered', 'original-native-turn'))
+        self.assertEqual(newer_status, 'pending')
+
+        with patch.object(repair, 'repair_before_start', side_effect=lambda _rt, agent: agent):
+            self.runtime.dispatch()
+            try:
+                eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+            except AssertionError:
+                with self.runtime.db() as db:
+                    statuses = [tuple(row) for row in db.execute(
+                        'SELECT id,status,error FROM runtime_events WHERE agent=? ORDER BY created,id',
+                        (self.a['id'],)).fetchall()]
+                self.fail(f"newer input did not dispatch: agent={self.runtime.agent(self.a['id'])!r} "
+                          f"events={statuses!r} calls={self.server.calls!r}")
+        for _ in range(2):
+            self.runtime.dispatch()
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'newer-input')
+        with self.runtime.db() as db:
+            old_receipt = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                     ('restart-original',)).fetchone()
+            newer_receipt = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                       ('newer-input',)).fetchone()
+        self.assertEqual(tuple(old_receipt), ('delivered', 'original-native-turn'))
+        self.assertEqual(tuple(newer_receipt), ('delivered', 'resumed-turn'))
 
     def test_recover_requeues_absent_idle_input_once(self):
         self.uncertain_input('recover-absent', [{'id':'other-turn',

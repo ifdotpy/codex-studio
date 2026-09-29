@@ -21,11 +21,14 @@ IDENTITY = ('id', 'accountKey', 'epoch', 'threadId')
 WAIT_SECONDS = 10
 
 
-def _restart_wait_identity(agent):
+def _held_restart_marker(agent):
     marker = agent.get('restartRecovery') or {}
-    attempt = marker.get('startAttempt') or {}
-    return {**{key: agent.get(key) for key in IDENTITY},
-            'attemptId': attempt.get('id') if not attempt.get('submitted') else None}
+    return (marker.get('stage') == 'held' and marker.get('autoWake')
+            and not agent.get('deletedAt') and agent.get('status') != 'paused'
+            and marker.get('epoch') == agent.get('epoch')
+            and marker.get('accountKey', 'default') == agent.get('accountKey', 'default')
+            and marker.get('threadId') == agent.get('threadId')
+            and bool(agent.get('threadId')))
 
 
 def blocked(agent):
@@ -128,17 +131,28 @@ def recover_unconfirmed_inputs(rt, agent_id):
         error = wait.get('error') or ''
         prefix = 'Context repair waits for a confirmed input receipt: '
         restart = a.get('restartRecovery') or {}
-        restart_wait = (error == 'Native input submission has no confirmed turn identity.'
-                        and restart.get('stage') == 'held' and restart.get('autoWake')
-                        and all(restart.get(key) == a.get(key) for key in ('epoch', 'accountKey', 'threadId')))
-        if wait.get('source') != (_restart_wait_identity(a) if restart_wait else _identity(a)):
+        restart_wait = _held_restart_marker(a)
+        if not restart_wait and wait.get('source') != _identity(a):
             return {'status': 'waiting', 'reason': 'The worker changed since the input became uncertain', 'inputs': []}
         if not error.startswith(prefix) and not restart_wait:
             return {'status': 'not_needed', 'inputs': []}
-        attempt = a.get('startAttempt') or restart.get('startAttempt') or {}
-        ids = wait.get('events') if restart_wait else [error[len(prefix):]]
+        marker_attempt = restart.get('startAttempt') or {}
+        attempt = a.get('startAttempt') or marker_attempt
+        wait_source = copy.deepcopy(wait.get('source'))
+        wait_events = copy.deepcopy(wait.get('events'))
+        current_attempt = copy.deepcopy(a.get('startAttempt'))
+        marker_attempt_snapshot = copy.deepcopy(restart.get('startAttempt'))
+        if restart_wait:
+            ids = marker_attempt.get('events')
+            if not isinstance(ids, list) or not ids:
+                rows = db.execute("SELECT id FROM runtime_events WHERE agent=? AND epoch=? AND kind='user' "
+                    "AND status IN ('reserved','dispatching','uncertain') ORDER BY created,id",
+                    (agent_id, a['epoch'])).fetchall()
+                ids = [row['id'] for row in rows]
+        else:
+            ids = [error[len(prefix):]]
         if (not isinstance(ids, list) or not ids or
-                any(key not in attempt.get('events', []) for key in ids)):
+                (not restart_wait and any(key not in attempt.get('events', []) for key in ids))):
             return {'status': 'waiting', 'reason': 'The unconfirmed input is outside the current start attempt', 'inputs': []}
         marks = ','.join('?' for _ in ids)
         events = db.execute("SELECT id,status FROM runtime_events WHERE id IN (" + marks + ") AND agent=? AND epoch=? "
@@ -203,14 +217,17 @@ def recover_unconfirmed_inputs(rt, agent_id):
             decisions.append({'id': row['id'], 'decision': 'waiting'})
     with rt.lock, rt.db() as db:
         current = rt.agent(agent_id, db)
+        current_wait = current.get('contextRepairWait') or {}
         if ((current['epoch'], current.get('threadId'), current.get('accountKey', 'default')) != identity
                 or rt.connection_ids.get(identity[2]) != connection_id
-                or (current.get('contextRepairWait') or {}).get('error') != error
-                or (current.get('contextRepairWait') or {}).get('source') !=
-                    (_restart_wait_identity(current) if restart_wait else _identity(current))
-                or not (current.get('autoWake') or (restart_wait and
-                    (current.get('restartRecovery') or {}).get('stage') == 'held'
-                    and (current.get('restartRecovery') or {}).get('autoWake')))):
+                or current_wait.get('error') != error
+                or current_wait.get('source') != wait_source
+                or current_wait.get('events') != wait_events
+                or (restart_wait and (not _held_restart_marker(current)
+                    or (current.get('restartRecovery') or {}).get('startAttempt') != marker_attempt_snapshot
+                    or current.get('startAttempt') != current_attempt))
+                or (not restart_wait and current_wait.get('source') != _identity(current))
+                or not (current.get('autoWake') or restart_wait)):
             return {'status': 'waiting', 'reason': 'The worker changed during native history recovery',
                     'inputs': [{'id': item['id'], 'decision': 'waiting'} for item in decisions]}
         for item in decisions:
@@ -266,10 +283,7 @@ def tick_restart_input_waits(rt, agents):
         for snapshot in agents:
             a = rt.agent(snapshot['id'], db)
             wait = a.get('contextRepairWait') or {}
-            restart = a.get('restartRecovery') or {}
-            if (wait.get('error') != 'Native input submission has no confirmed turn identity.'
-                    or restart.get('stage') != 'held' or not restart.get('autoWake')
-                    or not a.get('threadId') or wait.get('source') != _restart_wait_identity(a)
+            if (not wait or not _held_restart_marker(a)
                     or wait.get('nextCheckAt', 0) > now
                     or (wait.get('historyCheckId') and wait.get('historyCheckAt', 0) > now)):
                 continue
