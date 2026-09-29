@@ -51,7 +51,12 @@ server and local HTTP delivery only. It does not measure the browser, RxDB,
 rendering, a physical network, a native callback queue, or model response time.
 The synthetic dispatch queue belongs to this fixture and is reported as such;
 its peak depth is not a measurement of the native app-server callback queue.
-Each case has a shared 60-second deadline and bounded cleanup time.
+Each case runs in a child process with a parent-enforced 60-second deadline.
+The worker also uses bounded thread cleanup. Parent supervision can terminate a
+case if a production lock or runtime close leaves a non-daemon thread stuck.
+HTTP sockets use a 20-second read timeout, above the server's 15-second
+heartbeat interval plus its 80 ms stream coalescing period. The 60-second case
+deadline remains the overall bound.
 
 ## Report fields
 
@@ -83,11 +88,16 @@ agent-count, importer, transport, and repetition combination.
   input queue. There are no automatic retries.
 - With analytics enabled, the benchmark starts the actual
   `Runtime.analytics_history_step` importer on a generated 1,024-record
-  synthetic journal. It requires the complete import and confirms that importer
-  timestamps overlap the notification dispatch window. Import progress is in
-  `analyticsProgress`. The generated records are synthetic token usage
-  responses that exercise the production analytics collector; the run fails
-  unless it writes one analytics usage row for every response.
+  synthetic journal. The first dispatch releases the import start gate; importer
+  readiness is recorded after its first history step runs and its written-row
+  count is observed. The benchmark
+  timestamps observed analytics row writes and requires at least one to fall
+  inside either a notification execution interval (`notification_execution`)
+  or the complete fixed offer-to-final-client-receipt window
+  (`fixed_offer_to_final_client_receipt`). `analyticsProgress` reports which
+  window matched and the timestamps used. The generated records are synthetic
+  token usage responses that exercise the production analytics collector; the
+  run fails unless it writes one analytics usage row for every response.
 
 There is no pass/fail performance target because no baseline has been approved.
 Use the report to compare runs made on the same host and configuration. Keep
