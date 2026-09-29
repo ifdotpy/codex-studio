@@ -150,14 +150,6 @@ try {
     },
     { id: lead.id, stateDir: initial.stateDir },
   );
-  // The composer sends after-tool input, which never enters the queue. This
-  // test covers the after-turn queue, so the fixture marks its input as queue.
-  await page.route("**/api/messages", async (route) => {
-    const body = route.request().method() === "POST" ? route.request().postDataJSON() : null;
-    if (body?.delivery === "after_tool")
-      return route.continue({ postData: JSON.stringify({ ...body, delivery: "queue" }) });
-    return route.continue();
-  });
   await page.goto(origin);
   await page.locator(`[data-chat="${lead.id}"]`).click();
   const composer = page.locator("#message"),
@@ -176,28 +168,25 @@ try {
       .getByRole("button", { name: `Remove ${name}`, exact: true })
       .waitFor();
   };
-  await composer.fill("Tab is navigation");
-  await composer.press("Tab");
-  assert.equal(sent.length, 0, "Tab does not submit input");
   await composer.fill("First input");
   await attach("queued-evidence.txt");
-  await composer.press("Enter");
+  await composer.press("Tab");
   await wait(async () => (await queue()).items.length === 1, "First input reaches queue");
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].delivery, "after_tool", "The composer sends after-tool input");
+  assert.equal(sent[0].delivery, "after_turn", "Tab sends after-turn input");
   await panel.waitFor();
   await list.getByText("First input", { exact: true }).waitFor();
   const asset = (await queue()).items[0].assets[0].id;
 
   for (const text of ["Second input", "Third input"]) {
     await composer.fill(text);
-    await composer.press("Enter");
+    await composer.press("Tab");
     await wait(async () => (await queue()).items.some((item) => item.text === text),
       `${text} reaches queue`);
   }
   await wait(async () => (await queue()).items.length === 3, "All inputs are durable");
   assert.equal(sent.length, 3);
-  assert(sent.every((entry) => entry.delivery === "after_tool"));
+  assert(sent.every((entry) => entry.delivery === "after_turn"));
   await button("Edit queued message 1").click();
   await editor().fill("Revised first input");
   await button("Save queued message").click();
@@ -211,7 +200,7 @@ try {
   assert.deepEqual((await queue()).items.map((item) => item.id), order);
   await list.getByText("Revised first input", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
-  console.log("PASS Tab navigation, native send intent, pending edit, asset, reorder and reload");
+  console.log("PASS Tab after-turn queue, pending edit, asset, reorder and reload");
 } catch (error) {
   console.error(error);
   console.error(JSON.stringify({ evidence: root, diagnostics }, null, 2));

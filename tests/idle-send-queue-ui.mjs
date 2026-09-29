@@ -187,21 +187,20 @@ try {
   // A message for after the current tool call is never queued. It stays in
   // the chat while it waits, also after a reload.
   await bubble("Normal idle send").waitFor();
-  await composer.fill("Tab keeps this draft");
+  // Tab sends the draft for after the turn; it waits in the queue panel.
+  await composer.fill("Tab queues this draft");
   await composer.press("Tab");
-  assert.equal(sent.length, 1, "Tab does not add another message");
-  assert.equal(await composer.inputValue(), "Tab keeps this draft");
-  await composer.press("Enter");
-  await wait(async () => sent.length === 2, "Second input reaches scheduler");
-  assert.equal(sent.length, 2);
-  await bubble("Tab keeps this draft").waitFor();
+  await wait(async () => sent.length === 2, "Tab input reaches scheduler");
+  assert.equal(sent[1].delivery, "after_turn");
+  assert.equal(await composer.inputValue(), "");
+  await panel.getByText("Tab queues this draft", { exact: true }).waitFor();
+  assert.equal(await bubble("Tab queues this draft").count(), 0);
   await page.waitForTimeout(3500);
-  for (const text of ["Normal idle send", "Tab keeps this draft"])
-    assert.equal(
-      await panel.getByText(text, { exact: true }).count(),
-      0,
-      `${text}: an after-tool message is not in the queue`,
-    );
+  assert.equal(
+    await panel.getByText("Normal idle send", { exact: true }).count(),
+    0,
+    "an after-tool message is not in the queue",
+  );
   await page.reload();
   await bubble("Normal idle send").waitFor();
   assert.equal(
@@ -211,7 +210,7 @@ try {
   );
   assert.equal(sent.length, 2, "Reload does not send input again");
   assert.deepEqual(errors, []);
-  console.log("PASS idle send, Tab navigation, after-tool messages stay out of the queue, reload identity");
+  console.log("PASS idle send, Tab queues after the turn, after-tool messages stay out of the queue, reload identity");
 } catch (error) {
   console.error(error);
   console.error(JSON.stringify({ evidence: root, diagnostics }, null, 2));

@@ -766,6 +766,7 @@ export default function App() {
     assets?: string[];
     attachments?: Json[];
     onPersist?: () => void | Promise<void>;
+    delivery?: "after_tool" | "after_turn";
   }) => {
     const draftKey = opened || "new",
       text = (drafts[draftKey] || "").trim();
@@ -808,15 +809,16 @@ export default function App() {
         if (
           sends.current[id]?.text !== text ||
           JSON.stringify(sends.current[id]?.assets || []) !==
-            JSON.stringify(options?.assets || [])
+            JSON.stringify(options?.assets || []) ||
+          sends.current[id]?.delivery !== (options?.delivery || "after_tool")
         )
           sends.current[id] = {
             id: crypto.randomUUID(),
             room: id,
             text,
             assets: options?.assets || [],
-            // Deliver after the current tool call, not after the turn.
-            delivery: "after_tool",
+            // Enter delivers after the current tool call; Tab after the turn.
+            delivery: options?.delivery || "after_tool",
           };
         // Retain the exact request until the durable outbox owns its retry.
         persistSends();

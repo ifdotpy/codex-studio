@@ -168,6 +168,20 @@ class RuntimeContract(unittest.TestCase):
     def complete(self, a):
         self.runtime.server.complete(a['threadId'], a['turnId'])
 
+    def test_after_turn_input_waits_for_the_active_turn(self):
+        lead = self.lead()
+        self.runtime.send(lead['id'], 'Queued for later', 'after-turn-1', delivery='after_turn')
+        self.runtime.dispatch()
+        time.sleep(.3)
+        def carried():
+            return [m for m, p in self.runtime.server.calls if m in ('turn/start', 'turn/steer')
+                    and 'Queued for later' in json.dumps(p)]
+        self.assertEqual(carried(), [], 'after_turn input is not steered into the active turn')
+        self.complete(lead)
+        eventually(lambda: carried() == ['turn/start'])
+        time.sleep(.3)
+        self.assertEqual(carried(), ['turn/start'], 'delivered once, as a new turn')
+
     def test_budget_save_keeps_the_chat_visible_in_entity_sync(self):
         lead = self.lead()
         import codex_budget

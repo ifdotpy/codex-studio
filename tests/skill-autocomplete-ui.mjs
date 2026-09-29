@@ -421,7 +421,7 @@ try {
   assert.equal(sends.length, 2);
   assert.equal(
     sends[1].delivery,
-    "queue",
+    "after_turn",
     `unselected Tab keeps queue behavior: ${JSON.stringify(sends)}`,
   );
 
@@ -555,7 +555,7 @@ try {
     "$keep-typing",
     "failed-list Tab preserves normal queue behavior",
   );
-  assert.equal(failureSends[1]?.delivery, "queue");
+  assert.equal(failureSends[1]?.delivery, "after_turn");
   assert.equal(failureReads, 1, "failed catalogs are not refetched per key");
   assert.equal(
     await failurePage.evaluate(
@@ -678,7 +678,7 @@ try {
     "$queue-missing",
     "no-match Tab still queues normally",
   );
-  assert.equal(emptySends[1]?.delivery, "queue");
+  assert.equal(emptySends[1]?.delivery, "after_turn");
   await failurePage.close();
   await emptyPage.close();
   await mobilePage.close();

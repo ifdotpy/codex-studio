@@ -115,6 +115,7 @@ export default function Conversation(p: {
     assets?: string[];
     attachments?: Attachment[];
     onPersist?: () => void | Promise<void>;
+    delivery?: "after_tool" | "after_turn";
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
   onObserved?: (ids: string[]) => void;
@@ -500,15 +501,15 @@ export default function Conversation(p: {
       ),
     [messageQueue.items, items, p.id],
   );
-  // The queue holds only messages for after the turn. A message for after
-  // the current tool call is delivered at once; it stays in the chat.
+  // The queue holds only after_turn messages (Tab). Other input is
+  // delivered at once and stays in the chat while it is sent.
   const { queue, sending } = useMemo(() => {
     const shown: typeof queued = [];
     const held: typeof queued = [];
     for (const entry of queued) {
       const { requestedDelivery, delivery } = entry as Json;
       const mode = requestedDelivery || delivery;
-      (mode === "after_tool" || mode === "steer" ? held : shown).push(entry);
+      (mode === "after_turn" ? shown : held).push(entry);
     }
     return { queue: shown, sending: held };
   }, [queued]);
@@ -533,7 +534,7 @@ export default function Conversation(p: {
       setUploading(false);
     }
   };
-  const submit = async () => {
+  const submit = async (delivery: "after_tool" | "after_turn" = "after_tool") => {
     if (modelCommand) {
       if (!exactModelCommand) {
         p.notify("Use /model without arguments to choose a model.");
@@ -571,6 +572,7 @@ export default function Conversation(p: {
     const sent = new Set(assets.map((asset) => asset.id));
     try {
       await p.send({
+        delivery,
         assets: assets.map((asset) => asset.id),
         attachments: assets.map(({ preview: _preview, ...asset }) => asset),
         onPersist: async () => {
@@ -1449,7 +1451,7 @@ export default function Conversation(p: {
                   mobileClient
                     ? "Use the send button to send."
                     : managed
-                      ? "Enter sends the message. Shift + Enter adds a new line."
+                      ? "Enter sends after the current tool call. Tab queues the message for after the turn. Shift + Enter adds a new line."
                       : "Enter to send. Shift + Enter for a new line."
                 }
                 placeholder={
@@ -1475,6 +1477,27 @@ export default function Conversation(p: {
                 onKeyUp={skillAutocomplete.updateRange}
                 onSelect={skillAutocomplete.updateRange}
                 onKeyDown={(e) => {
+                  // Tab queues the draft for after the current turn.
+                  if (
+                    e.key === "Tab" &&
+                    managed &&
+                    canSend &&
+                    !modelCommand &&
+                    !e.shiftKey &&
+                    !e.altKey &&
+                    !e.ctrlKey &&
+                    !e.metaKey &&
+                    !e.repeat &&
+                    !e.nativeEvent.isComposing &&
+                    !p.sending &&
+                    !uploading &&
+                    !draftTooLong &&
+                    (p.draft.trim() || assets.length)
+                  ) {
+                    e.preventDefault();
+                    void submit("after_turn");
+                    return;
+                  }
                   if (promptRecall.onKeyDown(e)) return;
                   if (
                     !mobileClient &&

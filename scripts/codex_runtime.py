@@ -477,8 +477,9 @@ class AppServer:
             self.close_log_if_idle()
 
     def close_log_if_idle(self):
-        if (self.reader_done.is_set() and self.dispatcher_done.is_set()
-                and self.stderr_done.is_set()):
+        # A server built before these events existed has no stderr drain.
+        done = [getattr(self, name, None) for name in ("reader_done", "dispatcher_done", "stderr_done")]
+        if all(event is None or event.is_set() for event in done):
             self.log.close()
 
     def fail_transport(self, error):
@@ -2165,8 +2166,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError(
                 "Message must have text or attachments, at most 32000 characters"
             )
-        if delivery not in {"queue", "steer", "after_tool"}:
-            raise ValueError("Choose queue, steer or after_tool")
+        if delivery not in {"queue", "steer", "after_tool", "after_turn"}:
+            raise ValueError("Choose queue, steer, after_tool or after_turn")
         message_id = message_id or uid()
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
@@ -2214,7 +2215,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "INSERT INTO runtime_event_meta VALUES (?,?)",
                 (message_id, json.dumps({"assets": assets,
                     "acceptedAt": time.time(),
-                    # Delivery ignores the mode; the queue view shows only after-turn input.
+                    # after_turn waits for the turn to end; other modes deliver at once.
                     "delivery": delivery,
                     **({"radioAnswerTurnId": radio_question["turnId"]}
                        if isinstance(radio_question, dict) and radio_question.get("turnId") else {}),
@@ -2918,6 +2919,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 pending = pending_batch(self, db, a)
                 from codex_radio import select_pending
                 pending = select_pending(self, db, a, pending)
+                if busy and pending:
+                    # after_turn input waits in the queue until the active turn ends.
+                    held = {row[0] for row in db.execute(
+                        "SELECT id FROM runtime_event_meta WHERE id IN (" + ",".join("?" for _ in pending) + ") "
+                        "AND json_extract(record,'$.delivery')='after_turn'", [e["id"] for e in pending])}
+                    pending = [e for e in pending if e["id"] not in held]
                 rows = pending[:32]
                 if fast_event_ids:
                     fast_marks["fastBatchLoadedAt"] = time.monotonic_ns()
