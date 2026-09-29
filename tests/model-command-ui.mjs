@@ -7,6 +7,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import { modelValue, selectModel } from "./model-picker.mjs";
 const repo = join(import.meta.dirname, "..");
 const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
   "playwright-core",
@@ -192,9 +193,10 @@ try {
   );
   await open("/model", true);
   lagMainSettings = true;
-  await dialog()
-    .getByLabel("Main agent model", { exact: true })
-    .selectOption("gpt-5.6-sol");
+  await selectModel(
+    dialog().getByLabel("Main agent model", { exact: true }),
+    "gpt-5.6-sol",
+  );
   await wait(
     async () => (await agent(main.id)).model === "gpt-5.6-sol",
     "Main model persists",
@@ -241,9 +243,9 @@ try {
     () => dialog().getByLabel("Main agent model", { exact: true }).isEnabled(),
     "Reopened catalog ready",
   );
-  const reopened = await dialog()
-    .getByLabel("Main agent model", { exact: true })
-    .inputValue();
+  const reopened = await modelValue(
+    dialog().getByLabel("Main agent model", { exact: true }),
+  );
   if (reopened !== "gpt-5.6-sol")
     console.error("Reopened model:", {
       shown: reopened,
@@ -279,9 +281,10 @@ try {
     await page.locator("#team-toggle").click();
   await workerRow.click();
   await open("/model", false, true);
-  await dialog(true)
-    .getByLabel("Subagent model", { exact: true })
-    .selectOption("gpt-5.6-sol");
+  await selectModel(
+    dialog(true).getByLabel("Subagent model", { exact: true }),
+    "gpt-5.6-sol",
+  );
   await wait(
     async () =>
       (await agent(worker.id)).pendingSettings?.model === "gpt-5.6-sol",
@@ -323,7 +326,7 @@ try {
     "Mobile catalog ready",
   );
   assert.equal(
-    await dialog().getByLabel("Main agent model", { exact: true }).inputValue(),
+    await modelValue(dialog().getByLabel("Main agent model", { exact: true })),
     "gpt-5.6-sol",
     "Mobile picker retains the saved main model",
   );

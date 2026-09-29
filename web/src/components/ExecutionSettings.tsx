@@ -9,6 +9,7 @@ import {
   useWorkerModels,
 } from "./WorkerModelPicker";
 import { AccountTransferStatus, type Account } from "./Accounts";
+import { ModelPicker, type ModelOption } from "./ModelPicker";
 import "./execution-settings.css";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
@@ -140,7 +141,13 @@ function ScopedExecutionSettings({
   useEffect(() => {
     if (!opened) return;
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      // An open model list handles its own Escape first.
+      if (
+        event.key === "Escape" &&
+        (event.target as HTMLElement | null)?.getAttribute(
+          "data-mantine-stop-propagation",
+        ) !== "true"
+      ) {
         event.preventDefault();
         event.stopPropagation();
         setOpened(false);
@@ -276,23 +283,30 @@ function ScopedExecutionSettings({
     !!(active || queued || unconfirmed) &&
     daybreakEnabled !== !!agent.daybreakEnabled;
   const modeLabel = daybreakEnabled ? "Daybreak" : "Standard";
-  const modelOptions = models.map((row) => ({
+  const modelOptions: ModelOption[] = models.map((row) => ({
     value: row.model as string,
     label: row.displayName || shortModel(row.model),
+    description: row.description || undefined,
+    isDefault: !!row.isDefault,
     disabled: !supportsMode(row),
   }));
-  if (teamDefaults)
+  if (teamDefaults) {
+    const leadInfo = infoFor(catalog, agent.model);
     modelOptions.unshift({
       value: DEFAULT,
-      label: `Same as main agent (${agent.provider === "claude" ? infoFor(catalog, agent.model)?.displayName || shortModel(agent.model) : shortModel(agent.model)})`,
-      disabled: !supportsMode(infoFor(catalog, agent.model)),
+      label: `Same as main agent (${agent.provider === "claude" ? leadInfo?.displayName || shortModel(agent.model) : shortModel(agent.model)})`,
+      description: leadInfo?.description || undefined,
+      disabled: !supportsMode(leadInfo),
     });
+  }
   if (!modelOptions.some((row) => row.value === (current.model || DEFAULT)))
     modelOptions.unshift({
       value: current.model || DEFAULT,
       label: shortModel(selectedModel),
       disabled: true,
     });
+  // The current tag marks the model in use now, not a queued choice.
+  const currentModel = teamDefaults ? stored.model || DEFAULT : agent.model;
   const options = effortOptions(info);
   if (current.effort && !options.some((row) => row.value === current.effort))
     options.push({ value: current.effort, label: title(current.effort) });
@@ -404,7 +418,9 @@ function ScopedExecutionSettings({
       );
       save(subagentTransferReceiptKey, null);
       if (!mounted.current) return;
-      setTransfer(op && typeof op === "object" ? { scope: "subagents", ...op } : null);
+      setTransfer(
+        op && typeof op === "object" ? { scope: "subagents", ...op } : null,
+      );
       setStatus({ kind: "saved", text: "" });
     } catch (failure) {
       if (!mounted.current) return;
@@ -622,6 +638,7 @@ function ScopedExecutionSettings({
       width={300}
       shadow="md"
       middlewares={{ flip: true, shift: true, size: true }}
+      closeOnEscape={false}
       trapFocus
       returnFocus
     >
@@ -692,19 +709,15 @@ function ScopedExecutionSettings({
             onAction={(action) => void runTeamTransferAction(action)}
           />
         )}
-        <NativeSelect
+        <ModelPicker
           id={teamDefaults ? undefined : "model"}
           label={prefix + " model"}
-          data={modelOptions}
+          options={modelOptions}
           value={current.model || DEFAULT}
+          currentValue={currentModel}
           disabled={disabled}
-          onChange={(event) =>
-            void change({
-              model:
-                event.currentTarget.value === DEFAULT
-                  ? null
-                  : event.currentTarget.value,
-            })
+          onChange={(value) =>
+            void change({ model: value === DEFAULT ? null : value })
           }
         />
         {selectedProvider !== "claude" && (

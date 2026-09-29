@@ -4,6 +4,12 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  modelOptionDisabled,
+  modelOptions,
+  modelValue,
+  selectModel,
+} from "./model-picker.mjs";
 
 const root = join(import.meta.dirname, "../web");
 const require = createRequire(join(root, "package.json"));
@@ -120,15 +126,15 @@ try {
 
   await reset();
   assert.equal(
-    await model().locator('option[value="gpt-daybreak-blue-latest"]').count(),
+    (await modelOptions(model())).includes("gpt-daybreak-blue-latest") ? 1 : 0,
     0,
   );
   assert.equal(
-    await model().locator('option[value="gpt-daybreak-red-latest"]').count(),
+    (await modelOptions(model())).includes("gpt-daybreak-red-latest") ? 1 : 0,
     0,
   );
   assert.equal(
-    await model().locator('option[value="daybreak-only"]').isDisabled(),
+    await modelOptionDisabled(model(), "daybreak-only"),
     true,
   );
   await mode().check();
@@ -141,18 +147,18 @@ try {
     fast_mode: true,
     daybreak_enabled: true,
   });
-  assert.equal(await model().inputValue(), "gpt-5.6-sol");
+  assert.equal(await modelValue(model()), "gpt-5.6-sol");
   assert.equal(await mode().isChecked(), true);
   assert.equal(
-    await model().locator('option[value="gpt-6-astra"]').isDisabled(),
+    await modelOptionDisabled(model(), "gpt-6-astra"),
     true,
   );
   assert.equal(
-    await model().locator('option[value="gpt-5.6-luna"]').isDisabled(),
+    await modelOptionDisabled(model(), "gpt-5.6-luna"),
     true,
   );
   assert.equal(
-    await model().locator('option[value="gpt-5.6-terra"]').isDisabled(),
+    await modelOptionDisabled(model(), "gpt-5.6-terra"),
     false,
   );
   assert.match(
@@ -195,7 +201,7 @@ try {
   });
   await mode().uncheck();
   await settled();
-  assert.equal(await model().inputValue(), "gpt-5.6-sol");
+  assert.equal(await modelValue(model()), "gpt-5.6-sol");
   assert.equal(
     await page.evaluate(() => window.calls[0].daybreak_enabled),
     false,
@@ -204,11 +210,11 @@ try {
   await mode().check();
   await settled();
   assert.equal(
-    await model().inputValue(),
+    await modelValue(model()),
     "gpt-5.6-terra",
     "Red-only support keeps the selected model",
   );
-  await model().selectOption("daybreak-only");
+  await selectModel(model(), "daybreak-only");
   await settled();
   assert.equal(
     await page.getByLabel("Main agent reasoning", { exact: true }).inputValue(),
@@ -234,7 +240,7 @@ try {
   });
   assert.equal(await mode().isDisabled(), true);
   assert.equal(
-    await model().locator('option[value="gpt-6-astra"]').isDisabled(),
+    await modelOptionDisabled(model(), "gpt-6-astra"),
     false,
   );
   await page
@@ -244,9 +250,7 @@ try {
   assert.deepEqual(await page.evaluate(() => window.calls), []);
   await reset({ agent: { model: "gpt-daybreak-blue-latest" } });
   assert.equal(
-    await model()
-      .locator('option[value="gpt-daybreak-blue-latest"]')
-      .isDisabled(),
+    await modelOptionDisabled(model(), "gpt-daybreak-blue-latest"),
     true,
   );
   assert.equal(
@@ -255,7 +259,7 @@ try {
   );
   await mode().check();
   await settled();
-  assert.equal(await model().inputValue(), "gpt-5.6-sol");
+  assert.equal(await modelValue(model()), "gpt-5.6-sol");
   console.log(
     "PASS missing metadata fails closed, refresh, legacy alias remains read-only without invented mapping",
   );
@@ -333,7 +337,7 @@ try {
     .filter({ hasText: "Mode not supported" })
     .waitFor();
   assert.equal(await mode().isChecked(), false);
-  assert.equal(await model().inputValue(), "gpt-6-astra");
+  assert.equal(await modelValue(model()), "gpt-6-astra");
   console.log(
     "PASS account-scoped mode receipts, stale account settings ignored, rejected mode rollback",
   );
@@ -363,7 +367,7 @@ try {
     },
   });
   assert.equal(
-    await model(true).locator('option[value="__model_default__"]').isDisabled(),
+    await modelOptionDisabled(model(true), "__model_default__"),
     true,
   );
   assert.equal(

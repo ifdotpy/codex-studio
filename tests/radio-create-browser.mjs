@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { modelValue } from "./model-picker.mjs";
 const root = resolve(import.meta.dirname, "../web");
 const require = createRequire(join(root, "package.json"));
 const { chromium } = require("playwright-core");
@@ -144,11 +145,11 @@ try {
       document.querySelector("form button[type=submit]")?.disabled === false,
   );
   assert.equal(
-    await form.getByLabel("Model for agent 1", { exact: true }).inputValue(),
+    await modelValue(form.getByLabel("Model for agent 1", { exact: true })),
     "gpt-6-astra",
   );
   assert.equal(
-    await form.getByLabel("Model for agent 2", { exact: true }).inputValue(),
+    await modelValue(form.getByLabel("Model for agent 2", { exact: true })),
     "opus",
   );
   assert.match(

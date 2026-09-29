@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { modelValue } from "./model-picker.mjs";
 const root = join(import.meta.dirname, "../web");
 const require = createRequire(join(root, "package.json"));
 const { chromium, webkit } = require("playwright-core");
@@ -304,7 +305,7 @@ try {
       }),
     );
     await dialog.getByText("Claude worker left on source (claude): Uses claude").waitFor();
-    assert.equal(await model.inputValue(), "gpt-5.6-luna", "current value shows while the catalog loads");
+    assert.equal(await modelValue(model), "gpt-5.6-luna", "current value shows while the catalog loads");
     assert.equal(await model.isDisabled(), false, "the catalog never blocks the control");
     await page.waitForFunction(() => !!window.catalogRelease);
     await page.evaluate(() => window.catalogRelease());
@@ -328,7 +329,7 @@ try {
         workerDefaults: { accountKey: "claude", model: "claude-opus-4-6", effort: null, fastMode: false },
       }),
     );
-    assert.equal(await model.inputValue(), "claude-opus-4-6");
+    assert.equal(await modelValue(model), "claude-opus-4-6");
     // A lost transfer response reverts the account; Retry reuses the request id.
     await page.evaluate(() => (window.transferFail = true));
     await account.selectOption("second");

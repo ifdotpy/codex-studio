@@ -73,7 +73,10 @@ the remaining weekly allowance.
 
 Chat settings includes Claude permission modes, extended thinking, automatic
 compaction, native commands and skills, and context rollback. Model, effort, and
-fast-mode controls use the native model catalog. A proposed plan waits for a
+fast-mode controls use the native model catalog. The model picker lists one row
+per model with its display name, a **(default)** tag for the catalog default, a
+**(current)** tag for the model the chat uses now, and the catalog description
+in a second column. Hidden catalog models stay hidden. A proposed plan waits for a
 separate implementation request. Rollback preserves the original saved history.
 Commands and rollback retain their request identities after a lost response.
 

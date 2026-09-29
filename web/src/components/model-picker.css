@@ -1,0 +1,59 @@
+.model-picker-value {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.model-picker-tag {
+  color: var(--muted);
+  font-weight: 400;
+}
+.model-picker-dropdown {
+  max-width: calc(100vw - 24px);
+  padding: 4px;
+}
+.model-picker-options {
+  max-height: min(360px, calc(100dvh - 48px));
+  overflow: auto;
+}
+/* One row: the name column keeps one width so the descriptions align.
+   It never takes more than half of a narrow list. */
+.model-picker-row {
+  display: grid;
+  grid-template-columns:
+    minmax(0, min(var(--model-picker-name, 16ch), 48%))
+    minmax(0, 1fr);
+  gap: 4px 12px;
+  align-items: baseline;
+  padding: 7px 8px;
+  font-size: var(--mantine-font-size-sm);
+  line-height: 1.35;
+}
+.model-picker-row[data-combobox-active] .model-picker-name {
+  font-weight: 600;
+}
+.model-picker-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.model-picker-description {
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--mantine-font-size-xs);
+  overflow-wrap: anywhere;
+}
+.model-picker-row[data-combobox-disabled] .model-picker-name,
+.model-picker-row[data-combobox-disabled] .model-picker-description,
+.model-picker-row[data-combobox-disabled] .model-picker-tag {
+  color: var(--mantine-color-dimmed);
+  opacity: 0.6;
+}
+/* The narrowest phones stack the description under the name. */
+@media (max-width: 360px) {
+  .model-picker-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
