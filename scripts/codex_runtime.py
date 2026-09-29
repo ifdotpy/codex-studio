@@ -3539,7 +3539,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         voice = getattr(self, "_voice_store", None)
         if voice and voice.native_notification(message, account_key, connection_id):
             return
-        if method == 'error' and isinstance(p, dict) and p.get('threadId'):
+        # Apply buffered text first: these notices depend on whether a response started.
+        if method in {'error', 'model/safetyBuffering/updated'} and isinstance(p, dict) and p.get('threadId'):
             stream = getattr(self, '_stream_buffer', None)
             if stream:
                 with self.lock, self.db() as db:
