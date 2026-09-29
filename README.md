@@ -242,7 +242,7 @@ start voice again after their current work finishes.
 |---|---|
 | `web/` | React, TypeScript, Mantine, Vite |
 | `desktop/` | Electron host, native bridge, package tools |
-| `scripts/` | Python server and command tools |
+| [`scripts/`](scripts/README.md) | Python server, command tools, and component-local checks |
 | `prompts/` | Runtime worker instructions |
 | `tests/` | Backend, protocol, browser, and process contracts |
 
@@ -357,6 +357,7 @@ python3 -B tests/tool-request-http-contract.py
 python3 -B tests/control-requests-contract.py
 python3 -B tests/task-completion-recovery-contract.py
 python3 -B tests/analytics-contract.py
+python3 -B -m unittest discover -s scripts/analytics/tests -v
 python3 -B tests/analytics-history-contract.py
 python3 -B tests/accounts-contract.py
 python3 -B tests/runtime-accounts-contract.py

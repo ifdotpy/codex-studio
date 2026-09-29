@@ -960,6 +960,8 @@ def make_server(canvas, port=0, public_origin=None):
                         )
                     if path.path == "/api/capabilities":
                         return self.send(runtime.capabilities(agent), etag=True, weak_etag_fields=("at",))
+                    if path.path == "/api/skills":
+                        return self.send(runtime.skill_catalog(agent))
                     if path.path == "/api/panel":
                         return self.send(runtime.get_panel(agent))
                     if path.path == "/api/profiles":

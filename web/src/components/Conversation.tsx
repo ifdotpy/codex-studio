@@ -85,6 +85,8 @@ import ComposerAttachments, {
 } from "./ComposerAttachments";
 import "./chat-controls.css";
 import { copyText } from "../clipboard";
+import { useSkillAutocomplete } from "./useSkillAutocomplete";
+import ComposerAutocomplete from "./ComposerAutocomplete";
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
 function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
@@ -423,6 +425,32 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
+  const insertSkill = useCallback(
+    (text: string, start: number, end: number) => {
+      const current = input.current?.value ?? p.draft;
+      const next = current.slice(0, start) + text + current.slice(end);
+      p.setDraft(next);
+      requestAnimationFrame(() => {
+        const element = input.current;
+        if (!element) return;
+        const caret = start + text.length;
+        element.focus();
+        element.setSelectionRange(caret, caret);
+      });
+    },
+    [p.draft, p.setDraft],
+  );
+  const skillAutocomplete = useSkillAutocomplete({
+    enabled: !!managed && !p.room && !!p.id && p.id === agent?.id,
+    agentId: p.id || "",
+    workspace: p.syncWorkspaceId || p.data.stateDir,
+    account: p.agent?.accountKey || "default",
+    cwd: p.agent?.cwd || "",
+    provider: String(p.agent?.provider || "codex"),
+    draft: p.draft,
+    input,
+    insert: insertSkill,
+  });
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
   const messageQueue = useMessageQueue({
     id: p.id,
@@ -1369,59 +1397,97 @@ export default function Conversation(p: {
               void submit();
             }}
           >
-            <Textarea
-              onPaste={(event) => {
-                const files = Array.from(event.clipboardData.files);
-                if (managed && files.length) {
-                  event.preventDefault();
-                  void addFiles(files).catch((error) =>
-                    p.notify(errorText(error)),
-                  );
-                }
-              }}
-              variant="unstyled"
-              autosize
-              minRows={1}
-              maxRows={shortViewport ? 3 : 8}
-              id="message"
-              ref={input}
-              aria-label="Message"
-              aria-description={
-                mobileClient
-                  ? "Use the send button to send."
-                  : managed
-                    ? "Enter sends the message. Shift + Enter adds a new line."
-                    : "Enter to send. Shift + Enter for a new line."
+            <ComposerAutocomplete
+              id="skill-suggestions"
+              loadingMessage="Loading skills…"
+              emptyMessage="No matching skills"
+              label="Skills"
+              opened={!!skillAutocomplete.range}
+              resetKey={skillAutocomplete.range?.signature}
+              options={skillAutocomplete.matches.map((skill) => ({
+                value: skill.name,
+                label: skill.name,
+                description: skill.description,
+              }))}
+              loading={skillAutocomplete.loading}
+              error={
+                skillAutocomplete.loadError
+                  ? "Could not load skills"
+                  : undefined
               }
-              placeholder={
-                threadBlock
-                  ? "Start a new chat or open another chat."
-                  : canSend
-                    ? "What should we work on?"
-                    : "This session has no live mailbox"
+              warning={
+                skillAutocomplete.hasErrors
+                  ? "Some skills could not be loaded"
+                  : undefined
               }
-              disabled={!canSend}
-              value={p.draft}
-              onChange={(e) => {
-                promptRecall.reset();
-                p.setDraft(e.target.value);
+              onDismiss={skillAutocomplete.dismiss}
+              onSelect={(name) => {
+                const skill = skillAutocomplete.matches.find(
+                  (skill) => skill.name === name,
+                );
+                if (skill) skillAutocomplete.choose(skill);
               }}
-              error={draftTooLong}
-              aria-describedby={draftTooLong ? "draft-length-error" : undefined}
-              rows={1}
-              onKeyDown={(e) => {
-                if (promptRecall.onKeyDown(e)) return;
-                if (
-                  !mobileClient &&
-                  e.key === "Enter" &&
-                  !e.shiftKey &&
-                  !e.nativeEvent.isComposing
-                ) {
-                  e.preventDefault();
-                  void submit();
+            >
+              <Textarea
+                onPaste={(event) => {
+                  const files = Array.from(event.clipboardData.files);
+                  if (managed && files.length) {
+                    event.preventDefault();
+                    void addFiles(files).catch((error) =>
+                      p.notify(errorText(error)),
+                    );
+                  }
+                }}
+                variant="unstyled"
+                autosize
+                minRows={1}
+                maxRows={shortViewport ? 3 : 8}
+                id="message"
+                ref={input}
+                aria-label="Message"
+                aria-description={
+                  mobileClient
+                    ? "Use the send button to send."
+                    : managed
+                      ? "Enter sends the message. Shift + Enter adds a new line."
+                      : "Enter to send. Shift + Enter for a new line."
                 }
-              }}
-            />
+                placeholder={
+                  threadBlock
+                    ? "Start a new chat or open another chat."
+                    : canSend
+                      ? "What should we work on?"
+                      : "This session has no live mailbox"
+                }
+                disabled={!canSend}
+                value={p.draft}
+                onChange={(e) => {
+                  promptRecall.reset();
+                  p.setDraft(e.target.value);
+                }}
+                error={draftTooLong}
+                aria-describedby={
+                  draftTooLong ? "draft-length-error" : undefined
+                }
+                rows={1}
+                onClick={skillAutocomplete.updateRange}
+                onBlur={skillAutocomplete.blur}
+                onKeyUp={skillAutocomplete.updateRange}
+                onSelect={skillAutocomplete.updateRange}
+                onKeyDown={(e) => {
+                  if (promptRecall.onKeyDown(e)) return;
+                  if (
+                    !mobileClient &&
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !e.nativeEvent.isComposing
+                  ) {
+                    e.preventDefault();
+                    void submit();
+                  }
+                }}
+              />
+            </ComposerAutocomplete>
             {exactModelCommand && (
               <Button
                 type="button"

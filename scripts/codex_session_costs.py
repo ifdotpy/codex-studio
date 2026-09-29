@@ -273,8 +273,9 @@ class SessionCostReader:
             if not any(key == agent_id for key, _ in agents):
                 # A new chat can reach the runtime before analytics records it.
                 row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
-                if row:
-                    agents.append((agent_id, json.loads(row["record"])))
+                if not row:
+                    raise ValueError("Unknown chat")
+                agents.append((agent_id, json.loads(row["record"])))
             claude_agents = {}
             for member_id, member in agents:
                 current_key = member.get("accountKey", "default")

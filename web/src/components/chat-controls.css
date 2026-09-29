@@ -2,6 +2,46 @@
 .composer-bar .composer-attachments {
   display: contents;
 }
+.composer-autocomplete-options {
+  max-height: min(280px, 45vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.composer-autocomplete-option {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 4px 12px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+.composer-autocomplete-option {
+  cursor: pointer;
+}
+.composer-autocomplete-option[aria-selected="true"],
+.composer-autocomplete-option:hover {
+  background: light-dark(#18244712, #ffffff12);
+}
+.composer-autocomplete-option > span {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+.composer-autocomplete-option > small {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .composer-bar {
   flex-wrap: wrap;
 }
