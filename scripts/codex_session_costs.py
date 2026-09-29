@@ -318,10 +318,12 @@ class SessionCostReader:
                 usage = record.get("delta") or {}
                 if not all(isinstance(usage.get(field), (int, float)) for field in ("inputTokens", "outputTokens")):
                     usage = record.get("last") or {}
-                cost, _, tier = price_usage(catalog, provider, model, usage,
-                                            context_tokens=usage.get("inputTokens"))
+                cost, status, tier = price_usage(catalog, provider, model, usage,
+                                                 context_tokens=usage.get("inputTokens"))
                 if cost is None:
                     unpriced.add(str(model))
+                    if status == "unpriced":
+                        self.pricing.refresh_missing()
                     continue
                 priced_count += 1
                 cost_total += cost

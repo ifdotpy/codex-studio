@@ -34,8 +34,11 @@ def catalog():
 
 
 class FixedPricing:
+    missing_refreshes = 0
     def snapshot(self):
         return catalog()
+    def refresh_missing(self):
+        FixedPricing.missing_refreshes += 1
     def wait_ready(self, timeout=8):
         return catalog()
 
@@ -127,7 +130,9 @@ class PricingSessionCostContract(unittest.TestCase):
                        (index, agent, "lead", "thread-" + agent, turn, index, json.dumps(record)))
         db.commit()
         db.close()
+        FixedPricing.missing_refreshes = 0
         value = SessionCostReader(db_path, FixedPricing()).snapshot("worker-unknown")
+        self.assertEqual(FixedPricing.missing_refreshes, 1)
         self.assertEqual(value["pricedSamples"], 1)
         self.assertIn("openai", value["breakdown"]["providers"])
         self.assertEqual(value["unknownModels"], ["gpt-5.6-luna"])
@@ -336,6 +341,27 @@ class PricingSessionCostContract(unittest.TestCase):
         pricing.last_attempt = pricing.clock()
         pricing._refresh()
         pricing.snapshot()
+        self.assertEqual(len(calls), 1)
+
+    def test_unknown_model_refreshes_early_at_most_hourly(self):
+        calls, now = [], [1_000_000.0]
+        done = threading.Event()
+        def fetch():
+            calls.append(now[0])
+            done.set()
+            return catalog()
+        pricing = PricingCatalog(self.root, fetch=fetch, clock=lambda: now[0])
+        pricing.last_attempt = now[0] - 30 * 60
+        pricing.refresh_missing()
+        self.assertEqual(calls, [])
+        now[0] += 31 * 60
+        pricing.refresh_missing()
+        self.assertTrue(done.wait(3))
+        for _ in range(100):
+            if not pricing.refreshing:
+                break
+            time.sleep(0.02)
+        pricing.refresh_missing()
         self.assertEqual(len(calls), 1)
 
     def test_scanner_copy_keeps_native_parser_threshold_semantics(self):
