@@ -1,5 +1,13 @@
 # Message delivery benchmark
 
+## Change Contract
+
+Keep the measured notification, database, and HTTP code in production modules.
+This scenario owns only synthetic inputs, local clients, and measurement. Never
+use an existing state directory or connect to a native provider. Check every
+final message and fail visibly on missing or corrupt data. Workload defaults and
+limits live in [benchmark.py](benchmark.py); run the local tests below after changes.
+
 This benchmark answers a narrow question: after Studio receives a synthetic
 message notification, how long until a local HTTP client can read that final
 message from the transcript?
@@ -44,7 +52,6 @@ rendering, a physical network, a native callback queue, or model response time.
 The synthetic dispatch queue belongs to this fixture and is reported as such;
 its peak depth is not a measurement of the native app-server callback queue.
 Each case has a shared 60-second deadline and bounded cleanup time.
-Each case has a shared 60-second deadline and bounded cleanup time.
 
 ## Report fields
 
@@ -63,8 +70,7 @@ agent-count, importer, transport, and repetition combination.
 - `latencyMs.scheduledToClientReceipt` starts at the fixed-rate due time;
   `enqueueToClientReceipt` covers acceptance through final receipt. The report
   also gives exact offered total and per-agent rates. Only 1, 8, or 32 subscribed
-  agents are supported, with at most 100 messages per agent and 100 cases per
-  command.
+  agents are supported; `benchmark.py` owns the workload and matrix limits.
 - Percentiles use
   nearest rank over delivered messages; `samples`, `expected`, and `received`
   show the population. A missing, timed-out, or corrupt message fails the run.
