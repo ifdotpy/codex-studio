@@ -77,10 +77,10 @@ class PricingCatalog:
             pass
         return None
 
-    def snapshot(self, *, ttl=TTL):
+    def snapshot(self, *, ttl=None):
         with self.lock:
             artifact = self.artifact
-            stale = self.clock() - self.last_attempt >= ttl
+            stale = self.clock() - self.last_attempt >= (TTL if ttl is None else ttl)
             if stale and not self.refreshing:
                 self.refreshing = True
                 self.last_attempt = self.clock()
