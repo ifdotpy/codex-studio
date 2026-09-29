@@ -355,6 +355,7 @@ try {
     id: "first",
     expected_account_key: "default",
     worker_defaults: {
+      account_key: null,
       model: "gpt-5.6-sol",
       effort: "high",
       fast_mode: false,

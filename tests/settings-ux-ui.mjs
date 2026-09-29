@@ -199,19 +199,35 @@ try {
   assert.equal(transferCalls, 1);
   await page.getByRole("button", { name: "Subagent defaults", exact: true }).click();
   const subagentAccount = page.getByLabel("Subagent account", { exact: true });
+  const defaults = page.getByRole("dialog", {
+    name: "Subagent defaults",
+    exact: true,
+  });
+  assert.equal(
+    await defaults.getByRole("button", { name: /Save/ }).count(),
+    0,
+    "The account choice applies at once",
+  );
   await subagentAccount.selectOption("work");
-  await page.getByRole("button", { name: "Save subagent settings", exact: true }).click();
   await page.locator(".execution-error[role=alert]").waitFor();
+  assert.equal(transferCalls, 2, "the account choice transfers without a save");
+  assert.equal(
+    await subagentAccount.inputValue(),
+    "",
+    "a failed transfer reverts the account",
+  );
   const subagentTransferResponse = page.waitForResponse((response) =>
     response.url().endsWith("/api/agents/account-transfer"),
   );
-  await page.getByRole("button", { name: "Save subagent settings", exact: true }).click();
+  await defaults.getByRole("button", { name: "Retry", exact: true }).click();
   await subagentTransferResponse;
+  await defaults.getByRole("status").filter({ hasText: /^Saved/ }).waitFor();
   assert.equal(transferCalls, 3);
   assert.ok(transferRequests[1].request_id);
   assert.equal(transferRequests[1].request_id, transferRequests[2].request_id);
   assert.equal(transferRequests[2].account_key, "work");
   assert.equal(transferRequests[2].scope, "subagents");
+  assert.equal(await subagentAccount.inputValue(), "work");
   await page.keyboard.press("Escape");
   await picker.click();
   await page.getByRole("menuitem", { name: /Manage accounts/ }).click();

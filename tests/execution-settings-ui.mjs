@@ -112,7 +112,8 @@ try {
       if (result) return result;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw Error("Timed out: " + log);
+    await page.screenshot({ path: join(root, "timeout.png") }).catch(() => {});
+    throw Error("Timed out: " + predicate.toString() + " " + log);
   };
   const openSettings = async (name) => {
     if (!(await page.getByRole("button", { name, exact: true }).isVisible()))

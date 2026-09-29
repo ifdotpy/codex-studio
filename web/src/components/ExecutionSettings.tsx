@@ -14,6 +14,8 @@ import "./execution-settings.css";
 type Catalog = ReturnType<typeof useWorkerModels>;
 const DEFAULT = "__model_default__";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+const plural = (count: number, noun: string) =>
+  `${count} ${noun}${count === 1 ? "" : "s"}`;
 const infoFor = (catalog: Catalog, model: string) =>
   catalog.models.find((row) => row.model === model);
 const fastTier = (info?: Json) =>
@@ -48,6 +50,7 @@ type SettingsProps = {
   agent: Agent;
   catalog: Catalog;
   accounts?: Account[];
+  team?: Agent[];
   refresh: () => Promise<void>;
   teamDefaults?: boolean;
   nextTurnSupported?: boolean;
@@ -104,6 +107,7 @@ function ScopedExecutionSettings({
   agent,
   catalog: parentCatalog,
   accounts = [],
+  team = [],
   refresh,
   teamDefaults = false,
   nextTurnSupported,
@@ -166,9 +170,17 @@ function ScopedExecutionSettings({
     values: Json;
     baseline: Json;
   } | null>(null);
-  const [accountDraft, setAccountDraft] = useState<Json | null>(null);
+  const [accountPending, setAccountPending] = useState<{
+    target: string;
+    baseline: string | null;
+  } | null>(null);
+  const [transfer, setTransfer] = useState<Json | null>(null);
+  const [retryTarget, setRetryTarget] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const [adjustment, setAdjustment] = useState("");
+  const [status, setStatus] = useState<{
+    kind: "saving" | "saved";
+    text: string;
+  } | null>(null);
   const label = teamDefaults
     ? "Subagent defaults"
     : agent.isLead
@@ -181,7 +193,10 @@ function ScopedExecutionSettings({
       : "Subagent";
   const queued = queuedFor(agent);
   const stored = settingsFor(agent, teamDefaults);
-  const current = accountDraft || unconfirmed || pending?.values || stored;
+  const settled = unconfirmed || pending?.values || stored;
+  const current = accountPending
+    ? { ...settled, account_key: accountPending.target }
+    : settled;
   const accountCatalog = useWorkerModels(
     current.account_key || accountOf(agent),
     teamDefaults && opened && !!current.account_key,
@@ -202,14 +217,20 @@ function ScopedExecutionSettings({
       value: current.account_key,
       label: `${current.account_key} (unavailable)`,
     });
-  const accountAvailable =
-    !current.account_key ||
-    accounts.some(
-      (account) =>
-        account.id === current.account_key &&
-        !account.disconnected &&
-        account.status === "ready",
-    );
+  const accountLabel = (key: string | null | undefined) => {
+    const account = accounts.find((row) => row.id === key);
+    return account?.email || account?.label || key || "Automatic";
+  };
+  useEffect(() => {
+    // The optimistic account stays until the snapshot carries the change.
+    if (
+      !saving &&
+      accountPending &&
+      (stored.account_key === accountPending.target ||
+        stored.account_key !== accountPending.baseline)
+    )
+      setAccountPending(null);
+  }, [saving, accountPending, stored.account_key]);
   useEffect(() => {
     // Keep the acknowledged response while replication still has the old values.
     // A settings change in the snapshot hands ownership back to replication.
@@ -233,12 +254,12 @@ function ScopedExecutionSettings({
   const info = infoFor(catalog, selectedModel);
   const selectedProvider = teamDefaults ? info?.provider : agent.provider;
   const active = !teamDefaults && (!!agent.inFlight || busy.has(agent.status));
+  const catalogKnown = !catalog.loading && !catalog.error;
   const disabled =
     saving ||
     !!unconfirmed ||
     (active && !canQueueSettings) ||
-    catalog.loading ||
-    !!catalog.error;
+    (!teamDefaults && !catalogKnown);
   const models = catalog.models.filter((row) => !isDaybreakAlias(row.model));
   const daybreakEnabled = !!current.daybreak_enabled;
   const supportsMode = (row: Json | undefined, enabled = daybreakEnabled) =>
@@ -279,6 +300,7 @@ function ScopedExecutionSettings({
     setPending({ values: next, baseline: stored });
     setSaving(true);
     setError("");
+    setStatus({ kind: "saving", text: "" });
     if (request.next_turn) {
       save(receiptKey, request);
       setUnconfirmed(request);
@@ -291,10 +313,11 @@ function ScopedExecutionSettings({
     };
     let confirmed = false;
     try {
+      // A lost response must not leave the control saving forever.
       const canonical = await api<Agent>(
         "/api/conversation",
         request,
-        request.next_turn ? { timeoutMs: 15000 } : {},
+        request.next_turn || teamDefaults ? { timeoutMs: 15000 } : {},
       );
       if (
         !canonical ||
@@ -305,7 +328,6 @@ function ScopedExecutionSettings({
           "The settings account changed. Check the current settings.",
         );
       confirmed = true;
-      if (mounted.current && teamDefaults) setAccountDraft(null);
       if (request.next_turn) {
         clearReceipt();
         if (mounted.current) setUnconfirmed(null);
@@ -315,7 +337,7 @@ function ScopedExecutionSettings({
         values: settingsFor(canonical, teamDefaults),
         baseline: stored,
       });
-      setAdjustment(notice);
+      setStatus({ kind: "saved", text: notice });
       await refresh();
     } catch (failure) {
       const rejected =
@@ -329,6 +351,7 @@ function ScopedExecutionSettings({
         }
       }
       if (!mounted.current) return;
+      setStatus(null);
       setError(
         confirmed
           ? `Settings saved. ${errorText(failure)}`
@@ -339,52 +362,134 @@ function ScopedExecutionSettings({
       if (mounted.current) setSaving(false);
     }
   };
-  const saveTeamSettings = async () => {
-    if (!accountDraft || saveLock.current) return;
-    const target = current.account_key;
-    if (target && target !== stored.account_key) {
-      const subagentTransferReceiptKey = `subagent-account-transfer:${JSON.stringify([agent.id, target])}`;
-      const previous = saved<{ target?: string; request_id?: string } | null>(
-        subagentTransferReceiptKey,
-        null,
+  const changeAccount = async (target: string | null) => {
+    if (saveLock.current || target === current.account_key) return;
+    if (!target) {
+      await submit(
+        { id: agent.id, worker_defaults: { ...current, account_key: null } },
+        { ...current, account_key: null },
       );
-      const requestId =
-        previous && previous.target === target && previous.request_id
-          ? previous.request_id
-          : crypto.randomUUID();
-      save(subagentTransferReceiptKey, { target, request_id: requestId });
-      saveLock.current = true;
-      setSaving(true);
-      setError("");
-      try {
-        await api("/api/agents/account-transfer", {
+      return;
+    }
+    // A lost response is retried with the same request id.
+    const subagentTransferReceiptKey = `subagent-account-transfer:${JSON.stringify([agent.id, target])}`;
+    const previous = saved<{ target?: string; request_id?: string } | null>(
+      subagentTransferReceiptKey,
+      null,
+    );
+    const requestId =
+      previous && previous.target === target && previous.request_id
+        ? previous.request_id
+        : crypto.randomUUID();
+    save(subagentTransferReceiptKey, { target, request_id: requestId });
+    saveLock.current = true;
+    setAccountPending({ target, baseline: stored.account_key ?? null });
+    setSaving(true);
+    setError("");
+    setStatus({ kind: "saving", text: "" });
+    try {
+      const op = await api<Json>(
+        "/api/agents/account-transfer",
+        {
           id: agent.id,
           account_key: target,
           request_id: requestId,
           scope: "subagents",
-        });
-        save(subagentTransferReceiptKey, null);
-        await refresh();
-      } catch (failure) {
-        setError(errorText(failure));
-        return;
-      } finally {
-        saveLock.current = false;
-        setSaving(false);
-      }
+        },
+        { timeoutMs: 30000 },
+      );
+      save(subagentTransferReceiptKey, null);
+      if (!mounted.current) return;
+      setTransfer(op && typeof op === "object" ? { scope: "subagents", ...op } : null);
+      setStatus({ kind: "saved", text: "" });
+    } catch (failure) {
+      if (!mounted.current) return;
+      setAccountPending(null);
+      setStatus(null);
+      setError(errorText(failure));
+      setRetryTarget(target);
+      return;
+    } finally {
+      saveLock.current = false;
+      if (mounted.current) setSaving(false);
     }
-    await submit({ id: agent.id, worker_defaults: current }, current);
+    setRetryTarget(null);
+    void refresh().catch(() => {});
   };
+  const providerOf = (member: Agent) =>
+    member.provider ||
+    accounts.find((row) => row.id === (member.accountKey || "default"))
+      ?.provider ||
+    "codex";
+  const targetProvider = accountPending
+    ? accounts.find((row) => row.id === accountPending.target)?.provider ||
+      "codex"
+    : "";
+  const members = team.filter(
+    (member) =>
+      member.id !== agent.id && member.rootId === agent.id && !member.deletedAt,
+  );
+  const preview = {
+    moving: members.filter((member) => providerOf(member) === targetProvider),
+    staying: members.filter((member) => providerOf(member) !== targetProvider),
+    stayingProvider: "",
+  };
+  preview.stayingProvider = preview.staying.length
+    ? providerOf(preview.staying[0])
+    : "";
+  const checkedModel = useRef("");
+  useEffect(() => {
+    if (
+      !teamDefaults ||
+      !opened ||
+      saving ||
+      accountPending ||
+      !stored.account_key ||
+      !catalogKnown
+    )
+      return;
+    const key = JSON.stringify([
+      stored.account_key,
+      stored.model,
+      stored.daybreak_enabled,
+    ]);
+    if (checkedModel.current === key) return;
+    checkedModel.current = key;
+    const wanted = stored.model || agent.model;
+    if (supportsMode(infoFor(catalog, wanted), !!stored.daybreak_enabled))
+      return;
+    const eligible = models.filter((row) => supportsMode(row, false));
+    const replacement = eligible.find((row) => row.isDefault) || eligible[0];
+    if (!replacement) return;
+    const next = {
+      ...stored,
+      model: replacement.model,
+      effort: null,
+      fast_mode: false,
+      daybreak_enabled: false,
+    };
+    void submit(
+      { id: agent.id, worker_defaults: next },
+      next,
+      `${shortModel(wanted)} is not available on ${accountLabel(stored.account_key)}. Using ${replacement.displayName || shortModel(replacement.model)}, the account default.`,
+    );
+  });
+  const snapshotTransfer =
+    agent.accountTransfer?.scope === "subagents" ? agent.accountTransfer : null;
+  // The snapshot summary is newer than the local response once it arrives.
+  const shownTransfer = snapshotTransfer || transfer;
   const runTeamTransferAction = async (action: "retry" | "cancel") => {
-    if (saveLock.current || !agent.accountTransfer?.id) return;
+    if (saveLock.current || !shownTransfer?.id) return;
     saveLock.current = true;
     setSaving(true);
     setError("");
     try {
-      await api("/api/agents/account-transfer", {
+      const op = await api<Json>("/api/agents/account-transfer", {
         action,
-        request_id: agent.accountTransfer.id,
+        request_id: shownTransfer.id,
       });
+      if (mounted.current && op && typeof op === "object")
+        setTransfer({ scope: "subagents", ...op });
       await refresh();
     } catch (failure) {
       setError(errorText(failure));
@@ -397,7 +502,7 @@ function ScopedExecutionSettings({
     if (disabled) return;
     const next = { ...current, ...patch };
     const adjustments: string[] = [];
-    if ("daybreak_enabled" in patch) {
+    if ("daybreak_enabled" in patch && catalogKnown) {
       if (
         !supportsMode(
           infoFor(catalog, next.model || agent.model),
@@ -420,6 +525,7 @@ function ScopedExecutionSettings({
       }
     }
     if (
+      catalogKnown &&
       !supportsMode(
         infoFor(catalog, next.model || agent.model),
         !!next.daybreak_enabled,
@@ -430,7 +536,7 @@ function ScopedExecutionSettings({
       );
       return;
     }
-    if ("model" in patch || next.model !== current.model) {
+    if (catalogKnown && ("model" in patch || next.model !== current.model)) {
       const nextInfo = infoFor(catalog, next.model || agent.model);
       if (
         !nextInfo?.supportedReasoningEfforts?.some(
@@ -446,12 +552,6 @@ function ScopedExecutionSettings({
           adjustments.push("Fast mode is unavailable and was turned off.");
         next.fast_mode = false;
       }
-    }
-    if (accountDraft) {
-      setAccountDraft(next);
-      setError("");
-      setAdjustment(adjustments.join(" "));
-      return;
     }
     const request = {
       id: agent.id,
@@ -512,9 +612,12 @@ function ScopedExecutionSettings({
     <Popover
       opened={opened}
       onChange={setOpened}
-      position={openRequest > 0 ? "top-start" : "bottom-end"}
+      position={
+        openRequest > 0 ? "top-start" : teamDefaults ? "top-end" : "bottom-end"
+      }
       width={300}
       shadow="md"
+      middlewares={{ flip: true, shift: true, size: true }}
       trapFocus
       returnFocus
     >
@@ -532,6 +635,7 @@ function ScopedExecutionSettings({
           ].join(" · ")}
           onClick={() => {
             setError("");
+            setStatus(null);
             setOpened(!opened);
           }}
         >
@@ -559,31 +663,27 @@ function ScopedExecutionSettings({
             data={[{ value: "", label: "Automatic" }, ...accountOptions]}
             value={current.account_key || ""}
             disabled={saving}
-            onChange={(event) => {
-              setAccountDraft({
-                ...current,
-                account_key: event.currentTarget.value || null,
-              });
-              setError("");
-              setAdjustment("");
-            }}
-            description="Applies to new subagents. The orchestrator chooses their model and reasoning."
+            onChange={(event) =>
+              void changeAccount(event.currentTarget.value || null)
+            }
           />
         )}
-        {teamDefaults && agent.accountTransfer?.scope === "subagents" && (
+        {teamDefaults && accountPending && (
+          <p className="notice" role="status">
+            {preview.moving.length
+              ? `Moving ${plural(preview.moving.length, "subagent")} to ${accountLabel(accountPending.target)}.`
+              : "No subagents to move."}
+            {preview.staying.length > 0 &&
+              ` ${plural(preview.staying.length, "subagent")} ${preview.staying.length === 1 ? "stays" : "stay"} on ${preview.stayingProvider}: ${preview.staying
+                .map((member) => member.name)
+                .join(", ")}.`}
+          </p>
+        )}
+        {teamDefaults && !accountPending && shownTransfer && (
           <AccountTransferStatus
-            transfer={agent.accountTransfer}
+            transfer={shownTransfer}
             showCompleted
-            targetLabel={
-              accounts.find(
-                (account) =>
-                  account.id === agent.accountTransfer?.targetAccountKey,
-              )?.email ||
-                accounts.find(
-                  (account) =>
-                    account.id === agent.accountTransfer?.targetAccountKey,
-                )?.label
-            }
+            targetLabel={accountLabel(shownTransfer.targetAccountKey)}
             pending={saving}
             onAction={(action) => void runTeamTransferAction(action)}
           />
@@ -687,32 +787,17 @@ function ScopedExecutionSettings({
             />
           </details>
         )}
-        {adjustment && (
-          <p role="status" className="notice">
-            {adjustment}
+        {teamDefaults && (
+          <p className="notice">
+            For new subagents. An account change also moves existing ones.
           </p>
         )}
-        {teamDefaults && <p className="notice">Default for new subagents.</p>}
-        {teamDefaults && accountDraft && (
-          <div>
-            <Button
-              disabled={disabled || !modeSupported || !accountAvailable}
-              loading={saving}
-              onClick={() => void saveTeamSettings()}
-            >
-              Save subagent settings
-            </Button>
-            <Button
-              variant="subtle"
-              disabled={saving}
-              onClick={() => {
-                setAccountDraft(null);
-                setError("");
-              }}
-            >
-              Cancel
-            </Button>
-          </div>
+        {status && (
+          <p role="status" className="notice execution-status">
+            {status.kind === "saving"
+              ? "Saving…"
+              : `Saved${status.text ? ` · ${status.text}` : ""}`}
+          </p>
         )}
         {((!teamDefaults && queued) || (active && canQueueSettings)) && (
           <p className="notice" role="status">
@@ -759,6 +844,16 @@ function ScopedExecutionSettings({
         {error && (
           <p className="execution-error" role="alert">
             {error}
+            {retryTarget && (
+              <Button
+                variant="subtle"
+                size="compact-xs"
+                disabled={saving}
+                onClick={() => void changeAccount(retryTarget)}
+              >
+                Retry
+              </Button>
+            )}
           </p>
         )}
       </Popover.Dropdown>

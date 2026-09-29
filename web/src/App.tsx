@@ -1821,6 +1821,7 @@ export default function App() {
                 agent={lead}
                 catalog={workerModels}
                 accounts={accounts.data.accounts}
+                team={data?.runtime.agents || []}
                 refresh={refresh}
                 teamDefaults
               />
