@@ -996,10 +996,16 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/models" and canvas.runtime:
                     query = parse_qs(path.query)
                     account = query.get("account_key", ["default"])[0]
-                    if query.get("workers") == ["1"]:
-                        from codex_worker_accounts import catalog
-                        return self.send(catalog(canvas.runtime, account))
-                    return self.send(canvas.runtime.catalog(account))
+                    from codex_catalog import DISPLAY_READ
+                    # A settings list may show an expired catalog while it refreshes.
+                    display = DISPLAY_READ.set(True)
+                    try:
+                        if query.get("workers") == ["1"]:
+                            from codex_worker_accounts import catalog
+                            return self.send(catalog(canvas.runtime, account))
+                        return self.send(canvas.runtime.catalog(account))
+                    finally:
+                        DISPLAY_READ.reset(display)
                 if path.path == "/api/import" and canvas.runtime:
                     query = parse_qs(path.query)
                     return self.send(canvas.runtime.import_list(query.get("cursor", [None])[0], account_key=query.get("account_key", ["default"])[0]))
