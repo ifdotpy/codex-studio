@@ -10,6 +10,8 @@ import re
 import sys
 import tempfile
 
+from codex_source_inventory import source_files
+
 
 def publish(scripts, patch, release, scope):
     scripts = Path(scripts).resolve()
@@ -21,11 +23,8 @@ def publish(scripts, patch, release, scope):
         raise ValueError("The release identity and patch scope are required")
     with (scripts / '.studio-update.lock').open('a') as lease:
         fcntl.flock(lease, fcntl.LOCK_EX)
-        paths = sorted(p for p in scripts.iterdir()
-                       if p.is_file() and (p.suffix == '.py' or p.name == 'codex-canvas'))
-        if any(p.is_symlink() or p.resolve().parent != scripts for p in paths):
-            raise ValueError("Live update source must be a local regular file")
-        inputs = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+        paths = source_files(scripts)
+        inputs = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths}
         if patch not in inputs or 'codex-canvas' not in inputs:
             raise ValueError("The patch or backend entry point is missing")
         manifest = {'version': 1, 'id': release, 'scope': scope,

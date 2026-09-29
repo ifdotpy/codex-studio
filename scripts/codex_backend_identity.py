@@ -2,16 +2,17 @@
 import hashlib
 from pathlib import Path
 
+from codex_source_inventory import source_files
+
 
 def backend_build(scripts=None):
     scripts = Path(scripts) if scripts is not None else Path(__file__).parent
-    files = sorted(path for path in scripts.iterdir()
-                   if path.is_file() and (path.suffix == ".py" or path.name == "codex-canvas"))
-    if not any(path.name == "codex-canvas" for path in files):
+    files = source_files(scripts)
+    if not any(name == "codex-canvas" for name, _ in files):
         raise ValueError("The backend entry point is missing")
     digest = hashlib.sha256()
-    for path in files:
-        digest.update((path.name + "\0" + hashlib.sha256(path.read_bytes()).hexdigest() + "\n").encode())
+    for name, path in files:
+        digest.update((name + "\0" + hashlib.sha256(path.read_bytes()).hexdigest() + "\n").encode())
     return digest.hexdigest()
 
 
