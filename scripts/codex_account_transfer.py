@@ -927,7 +927,13 @@ class AccountTransfers:
                 op['status'] = 'completed'
             self.save(db, op)
             db.commit()
-            rt.loaded.discard(aid)
+            if member.get('nativeMethod') == 'thread/start':
+                # A newly started, history-free thread may not have a rollout
+                # file until its first turn. Keep this live session loaded so
+                # the first turn does not try to resume an unmaterialized ID.
+                rt.loaded.add(aid)
+            else:
+                rt.loaded.discard(aid)
             rt.preparations.pop(aid, None)
         rt.changed.set()
         return a
@@ -1355,7 +1361,12 @@ class AccountTransfers:
             op['status'] = 'completed'
         self.save(db, op)
         db.commit()
-        rt.loaded.discard(a['id'])
+        if m.get('nativeMethod') == 'thread/start':
+            # thread/start can return before Codex materializes a paginated
+            # rollout. The first turn must use this live session directly.
+            rt.loaded.add(a['id'])
+        else:
+            rt.loaded.discard(a['id'])
         rt.preparations.pop(a['id'], None)
 
     def copy_history(self, source_home, target_home, path):

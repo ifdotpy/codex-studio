@@ -17,6 +17,32 @@ from codex_account_transfer import transfer_store
 
 
 class ContextWait(f.NativeActionRepair):
+    def test_transfer_retires_cancelled_wait_after_user_pause_without_replay(self):
+        rt = self.runtime
+        transfer_store(rt)
+        rt.send(self.a['id'], 'Keep input cancelled by the pause', message_id='cancelled-transfer-wait')
+        with rt.lock, rt.db() as db:
+            agent = rt.agent(self.a['id'], db)
+            attempt = {'id':'paused-attempt','events':['cancelled-transfer-wait'],
+                       'epoch':agent['epoch'],'accountKey':'default','submitted':False}
+            identity = repair._identity({**agent, 'startAttempt':attempt})
+            agent.update(status='paused', autoWake=False, inFlight=False,
+                         accountTransferId='cancelled-transfer', contextRepairWait={
+                'source':identity, 'events':attempt['events'],
+                'error':'Context repair waits for native notification delivery'})
+            agent.pop('startAttempt', None)
+            db.execute("UPDATE runtime_events SET status='cancelled' WHERE id='cancelled-transfer-wait'")
+            rt.put(db, 'agents', agent)
+            rt.put(db, 'account_transfers', {'id':'cancelled-transfer','leadId':agent['id'],
+                'targetAccountKey':'target','status':'pending',
+                'members':{agent['id']:{'phase':'waiting'}}})
+        with rt.lock, rt.db() as db:
+            self.assertIsNone(transfer_store(rt).local_blocker(db, agent))
+            current = rt.agent(agent['id'], db)
+            self.assertFalse(current.get('contextRepairWait'))
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('cancelled-transfer-wait',)).fetchone()[0], 'cancelled')
+
     def test_transfer_retires_proven_unsent_repair_wait(self):
         rt = self.runtime
         transfer_store(rt)

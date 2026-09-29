@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_agent_management import manage_agent
+from codex_agent_management import manage_agent, _missing_transferred_history
 from codex_efficiency import EfficiencyMixin
 from codex_tool_requests import RequestMixin
 
@@ -64,6 +64,23 @@ class Contract(unittest.TestCase):
     def worker(self,**values):
         with self.rt.db() as db:
             a=self.rt.agent('worker',db);a.update(values);self.rt.put(db,'agents',a)
+    def test_missing_empty_transfer_history_is_reported_without_replaying(self):
+        db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+        db.execute('CREATE TABLE runtime_account_transfers (id TEXT, record TEXT)')
+        db.execute('CREATE TABLE runtime_events (agent TEXT, epoch INT, kind TEXT, status TEXT)')
+        aid='worker';tid='target-thread';transfer_id='transfer-empty'
+        transfer={'id':transfer_id,'status':'completed','members':{aid:{
+            'phase':'completed','sourceThreadId':None,'result':{'thread':{'id':tid}}}}}
+        db.execute('INSERT INTO runtime_account_transfers VALUES (?,?)',(transfer_id,json.dumps(transfer)))
+        db.execute('INSERT INTO runtime_events VALUES (?,?,?,?)',(aid,1,'user','failed'))
+        agent={'id':aid,'epoch':1,'threadId':tid,'error':f'no rollout found for thread id {tid}',
+               'accountHistory':[{'transferId':transfer_id,'threadId':None,'targetThreadId':tid}]}
+        result=_missing_transferred_history(db,agent)
+        self.assertEqual(result['status'],'history_missing')
+        self.assertFalse(result['replayed'])
+        self.assertEqual(result['evidence']['events'],{'user:failed':1})
+        self.assertEqual(db.execute('SELECT status FROM runtime_events').fetchone()[0],'failed')
+        db.close()
     def test_archive_restore_preserves_history_identity_and_never_starts_work(self):
         result=self.call('archive');self.assertEqual(result['status'],'archived')
         self.assertTrue(self.call('archive')['replayed'])
