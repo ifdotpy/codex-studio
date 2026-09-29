@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_agent_management import manage_agent
+from codex_agent_management import manage_agent, _missing_transferred_history
 from codex_efficiency import EfficiencyMixin
 from codex_tool_requests import RequestMixin
 
@@ -31,7 +31,8 @@ class Store(EfficiencyMixin, RequestMixin):
         with self.db() as db:
             for table in ['agents','monitors','tasks','requests','work','tool_requests','items']:
                 db.execute(f'CREATE TABLE runtime_{table} (id TEXT PRIMARY KEY, record TEXT)')
-            db.execute('CREATE TABLE runtime_events (id TEXT PRIMARY KEY, agent TEXT, epoch INT, status TEXT)')
+            db.execute("CREATE TABLE runtime_events (id TEXT PRIMARY KEY, agent TEXT, epoch INT, kind TEXT DEFAULT 'user', status TEXT)")
+            db.execute('CREATE TABLE runtime_account_transfers (id TEXT PRIMARY KEY, record TEXT)')
             db.execute('CREATE TABLE runtime_tool_results (id TEXT PRIMARY KEY, result TEXT)')
             db.execute('CREATE TABLE runtime_completed_turns (id TEXT PRIMARY KEY)')
             for key,parent,root,lead in [('lead',None,'lead',True),('worker','lead','lead',False),('peer',None,'peer',True),('foreign','peer','peer',False)]:
@@ -64,6 +65,45 @@ class Contract(unittest.TestCase):
     def worker(self,**values):
         with self.rt.db() as db:
             a=self.rt.agent('worker',db);a.update(values);self.rt.put(db,'agents',a)
+    def test_missing_empty_transfer_history_is_reported_without_replaying(self):
+        db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+        db.execute('CREATE TABLE runtime_account_transfers (id TEXT, record TEXT)')
+        db.execute('CREATE TABLE runtime_events (agent TEXT, epoch INT, kind TEXT, status TEXT)')
+        aid='worker';tid='target-thread';transfer_id='transfer-empty'
+        transfer={'id':transfer_id,'status':'completed','members':{aid:{
+            'phase':'completed','nativeMethod':'thread/start','sourceThreadId':None,
+            'result':{'thread':{'id':tid}}}}}
+        db.execute('INSERT INTO runtime_account_transfers VALUES (?,?)',(transfer_id,json.dumps(transfer)))
+        db.execute('INSERT INTO runtime_events VALUES (?,?,?,?)',(aid,1,'user','failed'))
+        agent={'id':aid,'epoch':1,'threadId':tid,'error':f'no rollout found for thread id {tid}',
+               'accountHistory':[{'transferId':transfer_id,'threadId':None,'targetThreadId':tid}]}
+        result=_missing_transferred_history(db,agent)
+        self.assertEqual(result['status'],'history_missing')
+        self.assertFalse(result['replayed'])
+        self.assertEqual(result['evidence']['events'],{'user:failed':1})
+        self.assertEqual(db.execute('SELECT status FROM runtime_events').fetchone()[0],'failed')
+        db.close()
+    def test_recover_routes_proven_empty_transfer_to_native_replacement(self):
+        from unittest.mock import Mock
+        from codex_account_transfer import transfer_store
+        transfer_id='transfer-empty';tid='target-thread'
+        transfer={'id':transfer_id,'status':'completed','members':{'worker':{
+            'phase':'completed','nativeMethod':'thread/start','sourceThreadId':None,
+            'result':{'thread':{'id':tid}}}}}
+        self.update('agents', {'id':'worker','name':'worker','parentId':'lead','rootId':'lead',
+                               'isLead':False,'autoWake':True,'epoch':1,'status':'failed',
+                               'inFlight':False,'threadId':tid,'error':f'no rollout found for thread id {tid}',
+                               'accountHistory':[{'transferId':transfer_id,'threadId':None,
+                                                  'targetThreadId':tid}]})
+        with self.rt.db() as db:
+            db.execute('INSERT INTO runtime_account_transfers VALUES (?,?)',
+                       (transfer_id,json.dumps(transfer)))
+        replacement = Mock()
+        replacement.recover_empty_transferred_thread.return_value={'status':'recovered','replayed':False}
+        with patch('codex_account_transfer.transfer_store', return_value=replacement):
+            result=self.call('recover')
+        self.assertEqual(result, {'status':'recovered','replayed':False})
+        replacement.recover_empty_transferred_thread.assert_called_once_with('worker')
     def test_archive_restore_preserves_history_identity_and_never_starts_work(self):
         result=self.call('archive');self.assertEqual(result['status'],'archived')
         self.assertTrue(self.call('archive')['replayed'])
@@ -112,7 +152,7 @@ class Contract(unittest.TestCase):
         with self.rt.db() as db:db.execute("INSERT INTO runtime_completed_turns VALUES ('worker:done')")
         self.assertEqual(self.call('archive')['blockers'][0]['kind'],'background_tasks')
     def test_unknown_input_blocks_archive_but_legacy_claim_does_not(self):
-        with self.rt.db() as db:db.execute("INSERT INTO runtime_events VALUES ('e','worker',1,'uncertain')")
+        with self.rt.db() as db:db.execute("INSERT INTO runtime_events VALUES ('e','worker',1,'user','uncertain')")
         self.assertEqual(self.call('archive')['status'],'blocked')
         with self.rt.db() as db:db.execute('DELETE FROM runtime_events')
         self.rt.claims={'build':{'worker':'worker'}}

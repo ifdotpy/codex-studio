@@ -1237,13 +1237,39 @@ def retire_unsent_wait_for_transfer(rt, db, agent):
     """Release only a proven unsent input wait so its pending input can transfer."""
     wait = agent.get('contextRepairWait') or {}
     attempt = agent.get('startAttempt') or {}
+    source = wait.get('source') or {}
+    event_ids = wait.get('events')
+    same_source = all(source.get(key) == agent.get(key) for key in IDENTITY
+                      if key != 'attemptId')
+    # A user pause can cancel the exact queued events and remove startAttempt
+    # while leaving the wait behind. Retire that stale wait only when every
+    # referenced event is cancelled, belongs to this epoch, and has no turn.
+    cancelled = (agent.get('accountTransferId') and not agent.get('inFlight')
+                 and not wait.get('action') and same_source and source.get('attemptId')
+                 and isinstance(event_ids, list) and event_ids)
+    if cancelled:
+        for event_id in event_ids:
+            row = db.execute("SELECT status,turn_id FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
+                             (event_id, agent['id'], agent['epoch'])).fetchone()
+            if not row or row['status'] != 'cancelled' or row['turn_id']:
+                cancelled = False
+                break
+    if cancelled and attempt.get('id') != source.get('attemptId'):
+        agent.pop('contextRepairWait', None)
+        agent['lastContextRepairWait'] = {**wait, 'status':'superseded',
+                                          'reason':'Cancelled before account transfer',
+                                          'finishedAt':time.time()}
+        if agent.get('error') == wait.get('error'):
+            agent['error'] = None
+        rt.put(db, 'agents', agent)
+        return True
     if (not agent.get('accountTransferId') or not wait or wait.get('action')
             or not _unsubmitted(agent, attempt.get('id'))
             or wait.get('source') != _identity(agent)
-            or wait.get('events') != attempt.get('events')
-            or not wait.get('events') or agent.get('inFlight')):
+            or event_ids != attempt.get('events')
+            or not event_ids or agent.get('inFlight')):
         return False
-    for event_id in wait['events']:
+    for event_id in event_ids:
         row = db.execute("SELECT status,turn_id FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
                          (event_id, agent['id'], agent['epoch'])).fetchone()
         if not row or row['status'] != 'pending' or row['turn_id']:

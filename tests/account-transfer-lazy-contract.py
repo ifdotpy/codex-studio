@@ -70,6 +70,21 @@ class LazyTransferContract(unittest.TestCase):
         self.assertNotIn('lazyAccountTransfer', agent)
         self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
 
+    def test_new_thread_without_source_history_stays_loaded_for_first_turn(self):
+        self.t.set_agent(self.aid, threadId=None)
+        op = self.t.start_transfer()
+        errors = []
+        worker = threading.Thread(target=self._move_member, args=(op['id'], self.aid, errors), daemon=True)
+        worker.start()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.assertEqual(self.t.pending[0][0], 'thread/start')
+        self.t.complete_fork()
+        worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertIn(self.aid, self.rt.loaded)
+        self.assertEqual(self.rt.agent(self.aid)['threadId'], 'target-thread-0')
+
     def test_two_moved_members_waking_together_fork_once_each(self):
         child = self.rt.create({'name': 'Worker', 'prompt': 'Task'}, parent=self.aid, defer=True)
         self.t.set_agent(child['id'], status='complete', threadId='worker-native', autoWake=False)

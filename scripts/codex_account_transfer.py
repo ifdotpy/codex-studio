@@ -928,7 +928,13 @@ class AccountTransfers:
                 op['status'] = 'completed'
             self.save(db, op)
             db.commit()
-            rt.loaded.discard(aid)
+            if member.get('nativeMethod') == 'thread/start':
+                # A newly started, history-free thread may not have a rollout
+                # file until its first turn. Keep this live session loaded so
+                # the first turn does not try to resume an unmaterialized ID.
+                rt.loaded.add(aid)
+            else:
+                rt.loaded.discard(aid)
             rt.preparations.pop(aid, None)
         rt.changed.set()
         return a
@@ -938,6 +944,204 @@ class AccountTransfers:
         if lazy.get('id'):
             return self.move_lazy(lazy['id'], agent['id'])
         return agent
+
+    @staticmethod
+    def missing_rollout_error(error, thread_id):
+        message = str(error or '')
+        return (f'no rollout found for thread id {thread_id}' in message
+                or f'invalid paginated history lineage for {thread_id}: missing source rollout' in message)
+
+    @staticmethod
+    def _thread_has_completed_turn(db, agent, thread_id):
+        rows = db.execute('SELECT record FROM runtime_items WHERE agent=? AND '
+                          "json_extract(record,'$.threadId')=?", (agent['id'], thread_id)).fetchall()
+        for item in rows:
+            record = json.loads(item[0])
+            turn_id = record.get('turnId')
+            if record.get('turnStatus') == 'completed' or (turn_id and db.execute(
+                    'SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                    (agent['id'] + ':' + str(turn_id),)).fetchone()):
+                return True
+        attempt = agent.get('startAttempt') or {}
+        attempt_thread = attempt.get('threadId') or (attempt.get('actionIdentity') or {}).get('threadId')
+        attempt_turn = attempt.get('turnId')
+        return bool(attempt_thread == thread_id and attempt_turn and db.execute(
+            'SELECT 1 FROM runtime_completed_turns WHERE id=?',
+            (agent['id'] + ':' + str(attempt_turn),)).fetchone())
+
+    def recover_empty_transferred_thread(self, aid):
+        """Replace a proven empty transferred thread without touching input receipts."""
+        rt = self.rt
+        saved = None
+        with rt.lock, rt.db() as db:
+            a = rt.agent(aid, db)
+            recovery = a.get('emptyTransferRecovery') or {}
+            if recovery.get('phase') == 'completed':
+                return copy.deepcopy(recovery['report'])
+            if recovery.get('phase') in {'submitting', 'unknown'}:
+                return {'status':'unknown', 'agentId':aid, 'threadId':recovery.get('sourceThreadId'),
+                        'requestId':recovery.get('id'),
+                        'error':recovery.get('error') or 'The fresh thread receipt is unresolved; no request was repeated.',
+                        'replayed':False}
+            thread_id = a.get('threadId')
+            if not thread_id or not self.missing_rollout_error(a.get('error'), thread_id):
+                raise ValueError('The agent has no exact missing-rollout failure to recover')
+            history = next((item for item in reversed(a.get('accountHistory') or [])
+                            if item.get('targetThreadId') == thread_id and item.get('threadId') is None), None)
+            if not history:
+                raise ValueError('The missing thread has no transfer receipt proving an empty source')
+            row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?',
+                             (history.get('transferId'),)).fetchone()
+            if not row:
+                raise ValueError('The source transfer receipt is unavailable')
+            op = json.loads(row[0])
+            member = (op.get('members') or {}).get(aid) or {}
+            result = member.get('result') or {}
+            if (op.get('status') != 'completed' or member.get('phase') != 'completed'
+                    or member.get('nativeMethod') != 'thread/start' or member.get('sourceThreadId') is not None
+                    or result.get('thread', {}).get('id') != thread_id):
+                raise ValueError('The transfer receipt does not prove this was a new empty thread')
+            if self._thread_has_completed_turn(db, a, thread_id):
+                raise ValueError('The transferred thread has a completed turn and cannot be replaced')
+            pending = db.execute("SELECT id,kind,status FROM runtime_events WHERE agent=? AND epoch=? "
+                                 "AND status IN ('reserved','dispatching','uncertain')", (aid, a['epoch'])).fetchall()
+            if pending:
+                raise ValueError('An input receipt is unresolved; the empty thread cannot be replaced yet')
+            connection_id = rt.connection_ids.get(a.get('accountKey', 'default'))
+            if not connection_id:
+                raise ValueError('The agent account is offline')
+            settings = self.settings_snapshot(a)
+            if recovery.get('phase') == 'checking':
+                if (recovery.get('sourceThreadId') != thread_id or recovery.get('epoch') != a['epoch']
+                        or recovery.get('accountKey') != a.get('accountKey', 'default')
+                        or recovery.get('settings') != settings):
+                    raise ValueError('The saved empty-thread check belongs to a different agent state')
+            else:
+                recovery = {'id':str(uuid.uuid4()), 'phase':'checking', 'sourceThreadId':thread_id,
+                            'transferId':op['id'], 'agentId':aid, 'epoch':a['epoch'],
+                            'accountKey':a.get('accountKey', 'default'), 'connectionId':connection_id,
+                            'settings':settings, 'nativeError':a.get('error'), 'startedAt':time.time(),
+                            'failedInputIds':[r[0] for r in db.execute(
+                                "SELECT id FROM runtime_events WHERE agent=? AND epoch=? AND kind='user' "
+                                "AND status='failed' ORDER BY created,id",
+                                (aid,a['epoch']))]}
+                params = rt.new_thread_params(a)
+                params['dynamicTools'] = rt.tool_definitions(a)
+                recovery['nativeParams'] = copy.deepcopy(params)
+            a['emptyTransferRecovery'] = copy.deepcopy(recovery)
+            rt.put(db, 'agents', a)
+            db.commit()
+            saved = copy.deepcopy(a)
+        account = saved.get('accountKey', 'default')
+        server = rt.connect(account)
+        mutation_submitted = False
+        try:
+            # Confirm that the native thread has no turns. A successful empty
+            # page is sufficient; only the exact missing-rollout errors qualify.
+            try:
+                native = server.call('thread/read', {'threadId':thread_id, 'includeTurns':False}, timeout=10)
+                thread = native.get('thread') if isinstance(native, dict) else None
+                if not isinstance(thread, dict) or thread.get('id') != thread_id:
+                    raise ValueError('Native thread identity changed during recovery')
+            except Exception as error:
+                if not self.missing_rollout_error(error, thread_id):
+                    raise
+            try:
+                page = server.call('thread/turns/list', {'threadId':thread_id, 'limit':100,
+                                      'sortDirection':'asc', 'itemsView':'full'}, timeout=10)
+                if not isinstance(page, dict) or not isinstance(page.get('data'), list):
+                    raise ValueError('Native turn history returned an invalid page')
+                if page['data'] or page.get('nextCursor'):
+                    raise ValueError('The transferred thread has saved turns and cannot be replaced')
+            except Exception as error:
+                if not self.missing_rollout_error(error, thread_id):
+                    raise
+            # Mark the one mutating request immediately before sending it. A
+            # restart during read-only checking can safely repeat those reads.
+            with rt.lock, rt.db() as db:
+                current = rt.agent(aid, db)
+                stored = current.get('emptyTransferRecovery') or {}
+                if (stored.get('id') != saved['emptyTransferRecovery']['id']
+                        or stored.get('phase') != 'checking' or current.get('threadId') != thread_id
+                        or current.get('epoch') != saved['epoch']
+                        or current.get('accountKey', 'default') != account
+                        or rt.connection_ids.get(account) != connection_id
+                        or self.settings_snapshot(current) != settings):
+                    raise ValueError('Agent or connection changed before fresh thread start')
+                if self._thread_has_completed_turn(db, current, thread_id):
+                    raise ValueError('The transferred thread has a completed turn and cannot be replaced')
+                unresolved = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                                        "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                                        (aid, current['epoch'])).fetchone()
+                if unresolved:
+                    raise ValueError('An input receipt became unresolved; the empty thread cannot be replaced yet')
+                stored['phase'] = 'submitting'
+                rt.put(db, 'agents', current)
+                db.commit()
+                params = copy.deepcopy(stored['nativeParams'])
+                saved['emptyTransferRecovery'] = copy.deepcopy(stored)
+            mutation_submitted = True
+            result = server.call('thread/start', params, timeout=30)
+            new_thread = (result.get('thread') or {}).get('id') if isinstance(result, dict) else None
+            if not isinstance(new_thread, str) or not new_thread or new_thread == thread_id:
+                raise RuntimeError('Fresh thread start returned no new identity; outcome unknown')
+        except Exception as error:
+            with rt.lock, rt.db() as db:
+                current = rt.agent(aid, db)
+                stored = current.get('emptyTransferRecovery') or {}
+                expected_phase = 'submitting' if mutation_submitted else 'checking'
+                if (stored.get('id') == saved['emptyTransferRecovery']['id']
+                        and stored.get('phase') == expected_phase):
+                    stored.update(phase='unknown' if mutation_submitted else 'checking', error=str(error)[:1000])
+                    current['emptyTransferRecovery'] = stored
+                    rt.put(db, 'agents', current)
+                    db.commit()
+            raise RuntimeError('Fresh thread recovery is unresolved; no retry was submitted: ' + str(error)) from error
+        with rt.lock, rt.db() as db:
+            current = rt.agent(aid, db)
+            stored = current.get('emptyTransferRecovery') or {}
+            if (stored.get('id') != saved['emptyTransferRecovery']['id']
+                    or current.get('threadId') != thread_id or current.get('epoch') != saved['epoch']
+                    or current.get('accountKey', 'default') != account
+                    or rt.connection_ids.get(account) != connection_id
+                    or self.settings_snapshot(current) != settings):
+                stored.update(phase='unknown', error='Agent or connection changed after thread start; saved receipt retained.')
+                current['emptyTransferRecovery'] = stored
+                rt.put(db, 'agents', current)
+                db.commit()
+                raise RuntimeError(stored['error'])
+            report = {'status':'recovered', 'agentId':aid, 'transferId':op['id'],
+                      'oldThreadId':thread_id, 'threadId':new_thread,
+                      'failedInputIds':stored.get('failedInputIds', []),
+                      'resendableFailedInputIds':stored.get('failedInputIds', []), 'replayed':False,
+                      'next':'The owner may explicitly resend the listed failed user inputs after reviewing them. '
+                            'Pending events remain pending. No input was replayed.'}
+            current.setdefault('accountHistory', []).append({
+                'transferId':op['id'], 'recoveryId':stored['id'], 'accountKey':account,
+                'threadId':thread_id, 'targetAccountKey':account, 'targetThreadId':new_thread,
+                'reason':'empty_transferred_thread', 'at':time.time()})
+            transfer_receipt = self.get(db, op['id'])
+            receipt_member = (transfer_receipt.get('members') or {}).get(aid) or {}
+            receipt_member['emptyThreadRecovery'] = {
+                'recoveryId':stored['id'], 'sourceThreadId':thread_id,
+                'replacementThreadId':new_thread, 'failedInputIds':stored.get('failedInputIds', []),
+                'replayed':False, 'completedAt':time.time()}
+            transfer_receipt['members'][aid] = receipt_member
+            self.save(db, transfer_receipt)
+            current.update(threadId=new_thread, turnId=None, status='failed',
+                           error=('Previous transferred thread had no saved rollout. A fresh native thread is ready. '
+                                  'Failed inputs were not resent; see recovery.resendableFailedInputIds.'),
+                           emptyTransferRecovery={**stored, 'phase':'completed', 'threadId':new_thread,
+                                                  'completedAt':time.time(), 'report':report})
+            current.pop('prepareAttempt', None)
+            current.pop('preparedContext', None)
+            rt.put(db, 'agents', current)
+            db.commit()
+            rt.loaded.discard(aid)
+            rt.preparations.pop(aid, None)
+            rt.loaded.add(aid)
+        rt.changed.set()
+        return report
 
     def update(self, key, aid, **changes):
         with self.rt.lock, self.rt.db() as db:
@@ -1356,7 +1560,12 @@ class AccountTransfers:
             op['status'] = 'completed'
         self.save(db, op)
         db.commit()
-        rt.loaded.discard(a['id'])
+        if m.get('nativeMethod') == 'thread/start':
+            # thread/start can return before Codex materializes a paginated
+            # rollout. The first turn must use this live session directly.
+            rt.loaded.add(a['id'])
+        else:
+            rt.loaded.discard(a['id'])
         rt.preparations.pop(a['id'], None)
 
     def copy_history(self, source_home, target_home, path):

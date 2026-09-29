@@ -1,4 +1,5 @@
 """Lead-only worker inspection and reversible, guarded team cleanup."""
+import json
 import os
 import subprocess
 import time
@@ -7,7 +8,7 @@ from pathlib import Path
 
 def management_tools(tool, text):
     return [tool('orchestration_agent_manage',
-        'Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. '
+        'Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. For a transferred thread with no source rollout, recover reports the missing history and does not replay inputs. '
         'archive hides an inactive worker and removes its clean Studio worktree after saving an archive ref; it reports why a worktree stays. '
         'archive_finished archives finished descendants with safe worktrees and reports freed bytes and kept workers. '
         'reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. '
@@ -46,6 +47,45 @@ def _completed_native_turn(a):
     attempt = a.get('startAttempt') or {}
     return (bool(a.get('lastCompletedTurn')) and a.get('lastCompletedTurn') == attempt.get('turnId')
             and a.get('turnId') is None and not a.get('inFlight') and _finished(a))
+
+
+def _missing_transferred_history(db, agent):
+    """Identify empty transfer targets without retrying any saved input."""
+    thread = agent.get('threadId')
+    error = agent.get('error') or ''
+    if not thread or not isinstance(error, str):
+        return None
+    expected = (f'no rollout found for thread id {thread}',
+                f'invalid paginated history lineage for {thread}: missing source rollout')
+    if not any(message in error for message in expected):
+        return None
+    for entry in reversed(agent.get('accountHistory') or []):
+        if entry.get('threadId') is not None or entry.get('targetThreadId') != thread:
+            continue
+        row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?',
+                         (entry.get('transferId'),)).fetchone()
+        if not row:
+            continue
+        transfer = json.loads(row[0])
+        member = (transfer.get('members') or {}).get(agent['id']) or {}
+        result = member.get('result') or {}
+        if (transfer.get('status') == 'completed' and member.get('phase') == 'completed'
+                and member.get('nativeMethod') == 'thread/start'
+                and member.get('sourceThreadId') is None
+                and result.get('thread', {}).get('id') == thread):
+            counts = {}
+            for kind, status, number in db.execute(
+                    'SELECT kind,status,count(*) FROM runtime_events WHERE agent=? AND epoch=? GROUP BY kind,status',
+                    (agent['id'], agent['epoch'])):
+                counts[kind + ':' + status] = number
+            return {'status':'history_missing', 'agent':_brief(agent),
+                    'evidence':{'transferId':transfer['id'], 'sourceThreadId':None,
+                                'targetThreadId':thread, 'events':counts},
+                    'replayed':False,
+                    'next':'The source had no native thread at transfer and the target has no saved rollout. '
+                           'Keep this worker failed with its Studio records intact. Ask the owner before starting a fresh task. '
+                           'Do not resend its failed or pending inputs.'}
+    return None
 
 
 def _blockers(rt, db, a):
@@ -478,6 +518,13 @@ def manage_agent(rt, actor_id, args, epoch=None):
     # Native reads must not hold the runtime lock or a SQLite transaction.
     input_recovery = None
     if action == 'recover':
+        with rt.lock, rt.db() as db:
+            current = rt.agent(target['id'], db)
+            _authorize(rt, db, actor_id, epoch, current)
+            missing = _missing_transferred_history(db, current)
+        if missing:
+            from codex_account_transfer import transfer_store
+            return transfer_store(rt).recover_empty_transferred_thread(target['id'])
         from codex_context_repair import recover_unconfirmed_inputs
         input_recovery = recover_unconfirmed_inputs(rt, target['id'])
         if input_recovery.get('status') == 'waiting':
