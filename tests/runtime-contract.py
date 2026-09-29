@@ -1068,7 +1068,10 @@ class RuntimeContract(unittest.TestCase):
     def test_approval_and_question_responses_reach_codex(self):
         lead = self.lead()
         self.runtime.request({'id': 101, 'method': 'item/commandExecution/requestApproval',
-                              'params': {'threadId': lead['threadId'], 'command': 'git status'}})
+                              'params': {'kind': 'writeStdin', 'threadId': lead['threadId'],
+                                         'turnId': lead['turnId'], 'itemId': 'exec-1',
+                                         'startedAtMs': 1750000000000, 'approvalId': 'approval-stdin',
+                                         'reason': 'Send input to an existing terminal to continue the reviewed command.'}})
         request = self.runtime.snapshot()['requests'][0]
         self.runtime.answer(request['id'], {'decision': 'decline'})
         self.assertEqual(self.runtime.server.responses[-1], {'id': 101, 'result': {'decision': 'decline'}})
@@ -1211,6 +1214,26 @@ class RuntimeContract(unittest.TestCase):
         event('item/started', item={**command, 'id': 'unknown-old-command'})
         self.assertEqual(len(self.runtime.snapshot()['tasks']), 1)
         self.assertNotIn('tail', self.runtime.snapshot()['tasks'][0])
+
+    def test_native_item_timestamps_drive_saved_tool_duration(self):
+        a = self.lead()
+        item = {'id': 'timed-tool', 'type': 'mcpToolCall', 'tool': 'search', 'status': 'completed'}
+        self.runtime.notification({'method': 'item/started', 'params': {
+            'threadId': a['threadId'], 'turnId': a['turnId'], 'startedAtMs': 1000, 'item': item}})
+        self.runtime.notification({'method': 'item/completed', 'params': {
+            'threadId': a['threadId'], 'turnId': a['turnId'], 'startedAtMs': 1000,
+            'completedAtMs': 3425, 'item': item}})
+        key = a['id'] + ':timed-tool'
+        self.assertEqual(self.runtime.task_detail(key)['durationMs'], 2425)
+        saved = next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)
+        payload = json.loads(saved['text'])
+        self.assertEqual(payload['startedAtMs'], 1000)
+        self.assertEqual(payload['completedAtMs'], 3425)
+        self.assertEqual(payload['durationMs'], 2425)
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        restored = next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)
+        self.assertEqual(json.loads(restored['text'])['durationMs'], 2425)
 
     def test_task_history_is_bounded_but_active_tasks_are_not_hidden(self):
         a = self.lead()

@@ -54,6 +54,7 @@ def tool(name, description, properties, required=()):
 
 
 THREAD_CONFIG = {
+    "auto_review.circuit_break_action": "strict",
     "features.context_management.experimental_mode": True,
     "features.multi_agent": False,
     "features.multi_agent_v2": False,
@@ -3496,6 +3497,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for field in ("command", "cwd", "processId", "durationMs", "exitCode", "query", "server"):
                 if item.get(field) is not None:
                     task[field] = item[field]
+            for field in ("startedAtMs", "completedAtMs"):
+                if isinstance(p.get(field), (int, float)):
+                    task[field] = p[field]
+            if (isinstance(task.get("startedAtMs"), (int, float))
+                    and isinstance(task.get("completedAtMs"), (int, float))):
+                task["durationMs"] = max(0, task["completedAtMs"] - task["startedAtMs"])
             for field in ("arguments", "error"):
                 if item.get(field) is not None:
                     value = item[field]
@@ -3509,7 +3516,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 task["tail"] = output[-12000:]
                 task["outputTruncated"] = len(output) > 12000
             if method == "item/completed":
-                task.update(status="failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed", finished=time.time())
+                finished = time.time()
+                if not isinstance(task.get("durationMs"), (int, float)):
+                    task["durationMs"] = max(0, (finished - task.get("created", finished)) * 1000)
+                task.update(status="failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed", finished=finished)
         elif method == "item/commandExecution/outputDelta" and task:
             output = task.get("tail", "") + p.get("delta", "")
             task.update(tail=output[-12000:], outputTruncated=task.get("outputTruncated", False) or len(output) > 12000)
@@ -3525,7 +3535,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 except ValueError:
                     recorded = {"id": item_id, "type": "commandExecution", "command": task.get("command")}
                 recorded.update(aggregatedOutput=task.get("tail", ""), outputTruncated=task.get("outputTruncated", False),
-                                exitCode=task.get("exitCode"), durationMs=task.get("durationMs"))
+                                exitCode=task.get("exitCode"), durationMs=task.get("durationMs"),
+                                startedAtMs=task.get("startedAtMs"), completedAtMs=task.get("completedAtMs"))
                 self.item(db, a["id"], item_id, "output", json.dumps(recorded), "commandExecution",
                           toolStatus=task["status"], turnId=task.get("turnId"))
         self.touch_ui(a["id"])
@@ -3823,6 +3834,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             saved_task = json.loads(saved[0])
                             item = {**item, "aggregatedOutput": saved_task.get("tail", "")[-12000:],
                                     "outputTruncated": saved_task.get("outputTruncated", False)}
+                    started_at = p.get("startedAtMs")
+                    completed_at = p.get("completedAtMs")
+                    duration_ms = (max(0, completed_at - started_at)
+                                   if isinstance(started_at, (int, float))
+                                   and isinstance(completed_at, (int, float))
+                                   else item.get("durationMs"))
+                    if duration_ms is None and not started:
+                        task_row = db.execute("SELECT record FROM runtime_tasks WHERE id=?",
+                                              (a["id"] + ":" + str(item.get("id", "")),)).fetchone()
+                        if task_row:
+                            duration_ms = json.loads(task_row[0]).get("durationMs")
+                    if started_at is not None:
+                        item["startedAtMs"] = started_at
+                    if completed_at is not None:
+                        item["completedAtMs"] = completed_at
+                    if duration_ms is not None:
+                        item["durationMs"] = duration_ms
                     self.item(db, a["id"], item.get("id", uid()), "output", json.dumps(item, ensure_ascii=False), kind,
                               toolStatus="running" if started else "failed" if item.get("status") in {"failed", "declined"} or item.get("success") is False or item.get("exitCode") not in (None, 0) or item.get("error") else "completed",
                               turnId=p.get("turnId") or a.get("turnId"))
@@ -3872,6 +3900,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["contextUsage"] = {"tokens": used, "window": window, "at": time.time()}
             elif method == "turn/completed":
                 turn = p.get("turn", {})
+                from codex_native_errors import error_kind
+                if turn.get("status") == "interrupted" and error_kind(turn.get("error")) == "tooManyDenials":
+                    turn["status"] = "failed"
                 if a["turnId"] and a["turnId"] != turn.get("id"):
                     # A newer turn/start answer can bind its turn before this
                     # older completion callback arrives. Keep effects keyed to
