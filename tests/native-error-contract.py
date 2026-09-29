@@ -15,7 +15,8 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 # Public CodexErrorInfo variants at rust-v0.153.4 (042fb41b7c81).
 CODES = ['contextWindowExceeded', 'sessionBudgetExceeded', 'usageLimitExceeded',
-    'rateLimitExceeded', 'serverOverloaded', 'cyberPolicy', 'misalignmentPolicyViolation',
+    'rateLimitExceeded', 'flexUnavailable', 'serverOverloaded', 'cyberPolicy', 'misalignmentPolicyViolation',
+    'tooManyDenials',
     {'httpConnectionFailed': {'httpStatusCode': 503}},
     {'responseStreamConnectionFailed': {'httpStatusCode': 502}},
     'internalServerError', 'unauthorized', 'badRequest', 'threadRollbackFailed', 'sandboxError',
@@ -99,6 +100,17 @@ class NativeErrorContract(unittest.TestCase):
         self.send('turn/completed', turn={'id': self.turn, 'status': 'failed', 'error': error})
         self.assertEqual(self.runtime.agent(self.key)['error'], error)
         self.assertTrue(any(m.get('nativeError') == error for m in self.messages()))
+
+    def test_guardian_denial_is_failure_not_user_interruption(self):
+        error = {'message': 'Native Guardian limit', 'codexErrorInfo': 'tooManyDenials'}
+        self.send('turn/completed', turn={'id': self.turn, 'status': 'interrupted', 'error': error})
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'failed')
+        self.assertEqual(agent['lastCompletedTurnStatus'], 'failed')
+        self.assertEqual(agent['error'], error)
+        self.assertTrue(agent['nativeFailureHold'])
+        self.assertTrue(any('too many denied actions' in m.get('text', '').lower()
+                            for m in self.messages() if m.get('nativeNotice') == 'error'))
 
     def test_auth_recovery_preserves_turn_and_updates_one_notice(self):
         for suffix in ['Started', 'Completed']:

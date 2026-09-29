@@ -33,7 +33,14 @@ try {
         codexErrorInfo: info,
         additionalDetails: "Cause",
       });
-      assert.equal(view.message, "Native message");
+      assert.equal(
+        view.message,
+        code === "tooManyDenials"
+          ? "Codex stopped this turn after too many denied actions."
+          : code === "flexUnavailable"
+            ? "The selected model's flexible processing tier is unavailable right now."
+            : "Native message",
+      );
       assert.equal(view.kind, code);
       assert.ok(view.hint.length > 0);
       assert.ok(view.details.includes("Cause"));

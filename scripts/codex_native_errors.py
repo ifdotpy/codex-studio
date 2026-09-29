@@ -45,6 +45,13 @@ def error_kind(error):
 
 def error_message(error):
     if isinstance(error, dict):
+        kind = error_kind(error)
+        if kind == 'tooManyDenials':
+            return ('Codex stopped this turn after too many denied actions. '
+                    'Review the request and approval settings before trying again.')
+        if kind == 'flexUnavailable':
+            return ('The selected model is temporarily unavailable on the flexible '
+                    'processing tier. Try again later or choose another model.')
         return str(error.get('message') or 'Codex reported an error.')
     return str(error or 'Codex reported an error.')
 

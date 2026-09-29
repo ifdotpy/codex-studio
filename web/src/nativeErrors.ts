@@ -7,6 +7,10 @@ export const nativeErrorHints: Record<string, string> = {
   usageLimitExceeded: "Check this account's limits and reset time.",
   rateLimitExceeded:
     "Check this account's limits and available recovery options.",
+  flexUnavailable:
+    "Try again later or choose another model. The flexible processing tier is unavailable.",
+  tooManyDenials:
+    "Review the denied actions and approval settings before continuing.",
   serverOverloaded: "Try later or select another model.",
   cyberPolicy: "Eligible security professionals can apply for Trusted Access.",
   misalignmentPolicyViolation:
@@ -146,7 +150,11 @@ export function nativeErrorView(value: unknown, planType?: string) {
     readable?.message ??
     (typeof value === "string" && structured && !kind ? value : undefined);
   const message =
-    typeof rawMessage === "string" && rawMessage.trim()
+    kind === "tooManyDenials"
+      ? "Codex stopped this turn after too many denied actions."
+      : kind === "flexUnavailable"
+        ? "The selected model's flexible processing tier is unavailable right now."
+        : typeof rawMessage === "string" && rawMessage.trim()
       ? rawMessage
       : kind === "serverOverloaded"
         ? "Codex is currently experiencing high load."
@@ -181,6 +189,10 @@ export function nativeErrorView(value: unknown, planType?: string) {
     title:
       kind === "misalignmentPolicyViolation"
         ? "Chat stopped as a precaution"
+        : kind === "tooManyDenials"
+          ? "Too many actions denied"
+          : kind === "flexUnavailable"
+            ? "Flexible processing unavailable"
         : kind === "usageLimitExceeded"
           ? "Usage limit reached"
           : kind === "rateLimitExceeded"
