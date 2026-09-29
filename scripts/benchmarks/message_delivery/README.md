@@ -37,6 +37,9 @@ second); repetitions use fresh runtimes, capped at 100 per setting and 24 total
 matrix cases.
 Each agent receives eight distinct final messages by default. The cap of 100
 messages per agent keeps every transcript inside the production 120-item page.
+At the same total rate, more subscribers receive fewer messages per second each
+and the case lasts longer. Compare matching configurations, not an apparent
+improvement from adding subscribers to a fixed-rate workload.
 
 `--transport sync` measures the primary application route: one shared
 `/api/sync/stream` connection emits invalidations, then concurrent pulls fetch
@@ -80,9 +83,10 @@ agent-count, importer, transport, and repetition combination.
   nearest rank over delivered messages; `samples`, `expected`, and `received`
   show the population. A missing, timed-out, or corrupt message fails the run.
 - `elapsedMs` covers offered workload through the last client receipt.
-  `cpuProcessSeconds` is process CPU time for the case, including fixture setup.
+  `cpuProcessSeconds` includes fixture setup, input generation, and HTTP client
+  work in the case process; it is not backend-only CPU time.
 - `peakRss` is the process high-water RSS from the standard library. The value
-  is cumulative for this benchmark process, not an isolated per-case delta;
+  is the high-water mark of the isolated case process, not a per-phase delta;
   the report states the platform unit and source. It may be unavailable.
 - `queuePeak` and `queueDrained` describe only the benchmark's bounded synthetic
   input queue. There are no automatic retries.
@@ -95,7 +99,9 @@ agent-count, importer, transport, and repetition combination.
   inside either a notification execution interval (`notification_execution`)
   or the complete fixed offer-to-final-client-receipt window
   (`fixed_offer_to_final_client_receipt`). `analyticsProgress` reports which
-  window matched and the timestamps used. The generated records are synthetic
+  window matched, its interval bounds, and the timestamps used. The import is
+  one finite batch, not continuous background load throughout every case.
+  The generated records are synthetic
   token usage responses that exercise the production analytics collector; the
   run fails unless it writes one analytics usage row for every response.
 

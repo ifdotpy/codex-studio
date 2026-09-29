@@ -57,13 +57,38 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(progress["importedRecords"], progress["expectedRecords"])
             self.assertEqual(progress["analyticsRowsWritten"], progress["syntheticDataRecords"])
             self.assertTrue(progress["overlappedEventWindow"])
-            self.assertEqual(progress["overlapWindow"], "fixed_offer_to_final_client_receipt")
+            self.assertIn(progress["overlapWindow"],
+                          {"notification_execution", "fixed_offer_to_final_client_receipt"})
             self.assertTrue(progress["overlapWriteTimestampsNs"])
+            for stamp in progress["overlapWriteTimestampsNs"]:
+                self.assertIn(stamp, progress["writeTimestampsNs"])
+                self.assertTrue(any(start <= stamp <= end
+                                    for start, end in progress["overlapIntervalsNs"]))
+
+    def test_overlap_windows_use_observed_timestamps(self):
+        execution = benchmark.import_overlap([15, 50], [(10, 20)], (0, 100))
+        self.assertEqual(execution["overlapWindow"], "notification_execution")
+        self.assertEqual(execution["overlapWriteTimestampsNs"], [15])
+        fallback = benchmark.import_overlap([50, 150], [(10, 20)], (0, 100))
+        self.assertEqual(fallback["overlapWindow"], "fixed_offer_to_final_client_receipt")
+        self.assertEqual(fallback["overlapWriteTimestampsNs"], [50])
+        self.assertFalse(benchmark.import_overlap([150], [(10, 20)], (0, 100))["overlappedEventWindow"])
 
     def test_parent_kills_stalled_notification_case_process(self):
-        with self.assertRaisesRegex(TimeoutError, "child terminated"):
-            benchmark.run_supervised_case(1, 1, 80, False, transport="transcript",
-                                          inject="stall_notification", timeout=.5)
+        original = tempfile.TemporaryDirectory
+        owned = []
+
+        class CaptureTemp(original):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                owned.append(self.name)
+
+        with patch.object(benchmark.tempfile, "TemporaryDirectory", CaptureTemp):
+            with self.assertRaisesRegex(TimeoutError, "child terminated"):
+                benchmark.run_supervised_case(1, 1, 80, False, transport="transcript",
+                                              inject="stall_notification", timeout=1)
+        self.assertTrue(owned)
+        self.assertTrue(all(not Path(name).exists() for name in owned))
 
     def test_missing_event_and_corrupt_final_text_fail(self):
         with self.assertRaisesRegex(RuntimeError, "offered 2 messages but queued 1"):

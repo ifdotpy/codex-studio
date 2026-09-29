@@ -54,6 +54,19 @@ def summary(values: list[float]) -> dict:
             "p99": percentile(values, .99), "max": max(values) if values else None}
 
 
+def import_overlap(write_times: list[int], execution_intervals: list[tuple[int, int]],
+                   offer_interval: tuple[int, int]) -> dict:
+    """Prefer observed writes during notifications, then the full delivery window."""
+    for name, intervals in (("notification_execution", execution_intervals),
+                            ("fixed_offer_to_final_client_receipt", [offer_interval])):
+        matching = [stamp for stamp in write_times
+                    if any(start <= stamp <= end for start, end in intervals)]
+        if matching:
+            break
+    return {"overlapWindow": name, "overlapIntervalsNs": intervals,
+            "overlapWriteTimestampsNs": matching, "overlappedEventWindow": bool(matching)}
+
+
 def time_left(deadline: float) -> float:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -284,7 +297,7 @@ def _import_history(runtime, agent_id: str, work_started: threading.Event, gate:
 
 def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
              with_analytics: bool, repetition: int = 1, inject: str | None = None,
-             transport: str = "sync") -> dict:
+             transport: str = "sync", temporary_parent: str | None = None) -> dict:
     deadline = time.monotonic() + CASE_TIMEOUT_SECONDS
     if os.environ.get("CODEX_BENCH_NATIVE_TRANSPORT"):
         raise RuntimeError("native transport is forbidden by this benchmark")
@@ -315,7 +328,7 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
     now = time.monotonic_ns
     process_started = time.process_time()
 
-    with tempfile.TemporaryDirectory(prefix="studio-message-bench-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="studio-message-bench-", dir=temporary_parent) as temporary:
         root = Path(temporary) / "state"
         home = Path(temporary) / "profile"
         root.mkdir()
@@ -478,17 +491,12 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
                 if import_report.get("error"):
                     raise RuntimeError("analytics import failed: " + import_report["error"])
                 write_times = import_report.get("writeTimestampsNs", [])
-                dispatch_overlaps = [value for value in write_times if any(
-                    started <= value <= notification_completed_times.get(identity, started)
-                    for identity, started in dispatch_times.items())]
+                execution_intervals = [(started, notification_completed_times[identity])
+                                       for identity, started in dispatch_times.items()]
                 offer_start = min(scheduled_times.values()) if scheduled_times else end_ns
                 receipt_end = max(receipts.values()) if receipts else end_ns
-                receipt_overlaps = [value for value in write_times if offer_start <= value <= receipt_end]
-                import_report["overlapWindow"] = (
-                    "notification_execution" if dispatch_overlaps
-                    else "fixed_offer_to_final_client_receipt")
-                import_report["overlapWriteTimestampsNs"] = dispatch_overlaps or receipt_overlaps
-                import_report["overlappedEventWindow"] = bool(import_report["overlapWriteTimestampsNs"])
+                import_report.update(import_overlap(write_times, execution_intervals,
+                                                    (offer_start, receipt_end)))
                 import_report["expectedRecords"] = SYNTHETIC_HISTORY_RECORDS + 2  # Header, context, and usage rows.
                 import_report["syntheticDataRecords"] = SYNTHETIC_HISTORY_RECORDS
                 import_report["importedRecords"] = (import_report.get("state") or {}).get("importedRecords", 0)
@@ -572,17 +580,24 @@ def run_supervised_case(agent_count: int, messages_per_agent: int, rate_hz: floa
                "rate_hz": rate_hz, "with_analytics": with_analytics,
                "repetition": repetition, "inject": inject, "transport": transport}
     deadline = time.monotonic() + timeout
-    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--_case-worker"],
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True)
-    try:
-        stdout, stderr = process.communicate(json.dumps(payload), timeout=max(0.01, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired as error:
-        process.kill()
-        stdout, stderr = process.communicate()
-        diagnostic = stderr.strip() or stdout.strip()
-        raise TimeoutError(f"case process exceeded its {timeout:g}-second parent deadline; "
-                           f"child terminated. {diagnostic}") from error
+    # The parent owns cleanup even when a killed child cannot run its finally block.
+    with tempfile.TemporaryDirectory(prefix="studio-message-supervisor-") as temporary:
+        payload["temporary_parent"] = temporary
+        process = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "--_case-worker"],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = process.communicate(json.dumps(payload), timeout=max(0.01, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as error:
+            process.kill()
+            stdout, stderr = process.communicate()
+            diagnostic = stderr.strip() or stdout.strip()
+            raise TimeoutError(f"case process exceeded its {timeout:g}-second parent deadline; "
+                               f"child terminated. {diagnostic}") from error
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
     if process.returncode != 0:
         raise RuntimeError(f"case process exited {process.returncode}: {stderr.strip() or stdout.strip()}")
     try:
