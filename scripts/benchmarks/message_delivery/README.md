@@ -1,0 +1,89 @@
+# Message delivery benchmark
+
+This benchmark answers a narrow question: after Studio receives a synthetic
+message notification, how long until a local HTTP client can read that final
+message from the transcript?
+
+Think of it as timing a letter through the real server room: `Runtime.notification`
+writes the production SQLite transcript, then the production HTTP handler serves
+it to a local client. The synthetic agents never start a model or native
+app-server. A fail-fast factory prevents native transport. Every case uses a
+fresh temporary state directory and Codex profile.
+
+## Run it
+
+From the repository root:
+
+```sh
+python3 scripts/benchmarks/message_delivery/benchmark.py --check
+python3 scripts/benchmarks/message_delivery/benchmark.py --agents 1 8 32 --messages-per-agent 8 --repetitions 2 --analytics both --transport both --output /tmp/message-delivery.json
+python3 -m unittest discover -s scripts/benchmarks/message_delivery -p 'test_*.py'
+```
+
+The first command is a quick direct-SSE smoke run. The full command produces
+separate cases for 1, 8, and 32 subscribed agents, with and without the real
+analytics history importer, through both transport paths. Its synthetic offered
+rate defaults to 80 messages per second across the whole case. `--rate` changes
+that fixed-rate arrival schedule (finite and at most 10,000 messages per
+second); repetitions use fresh runtimes, capped at 100 per setting and 24 total
+matrix cases.
+Each agent receives eight distinct final messages by default. The cap of 100
+messages per agent keeps every transcript inside the production 120-item page.
+
+`--transport sync` measures the primary application route: one shared
+`/api/sync/stream` connection emits invalidations, then concurrent pulls fetch
+each subscribed `transcript:<id>` scope from `/api/sync/pull`. `--transport
+transcript` measures the direct `/api/transcript/stream` fallback, with one
+stream per synthetic subscriber. The reports label those cases separately.
+
+The 1/8/32 counts stress increasing numbers of subscribed chats. They do not
+mean a normal foreground view opens 32 streams: the application shares one sync
+invalidation stream across projection subscribers. This benchmark measures
+server and local HTTP delivery only. It does not measure the browser, RxDB,
+rendering, a physical network, a native callback queue, or model response time.
+The synthetic dispatch queue belongs to this fixture and is reported as such;
+its peak depth is not a measurement of the native app-server callback queue.
+Each case has a shared 60-second deadline and bounded cleanup time.
+Each case has a shared 60-second deadline and bounded cleanup time.
+
+## Report fields
+
+The JSON report contains the command configuration and separate rows for every
+agent-count, importer, transport, and repetition combination.
+
+- `latencyMs.scheduledToEnqueue` records producer lateness from the fixed
+  absolute offer schedule until the fixture accepts the input. This keeps late
+  producer work visible instead of shifting the arrival clock forward.
+- `latencyMs.enqueueToDispatch` starts when the fixture queue accepts an input
+  and ends immediately before `Runtime.notification`.
+- `latencyMs.dispatchToClientReceipt` starts immediately before that production
+  notification call and ends when the client sees the exact final item in a
+  transcript response. For sync transport, this includes invalidation cadence
+  and the subsequent pull. SSE frames are not counted as messages.
+- `latencyMs.scheduledToClientReceipt` starts at the fixed-rate due time;
+  `enqueueToClientReceipt` covers acceptance through final receipt. The report
+  also gives exact offered total and per-agent rates. Only 1, 8, or 32 subscribed
+  agents are supported, with at most 100 messages per agent and 100 cases per
+  command.
+- Percentiles use
+  nearest rank over delivered messages; `samples`, `expected`, and `received`
+  show the population. A missing, timed-out, or corrupt message fails the run.
+- `elapsedMs` covers offered workload through the last client receipt.
+  `cpuProcessSeconds` is process CPU time for the case, including fixture setup.
+- `peakRss` is the process high-water RSS from the standard library. The value
+  is cumulative for this benchmark process, not an isolated per-case delta;
+  the report states the platform unit and source. It may be unavailable.
+- `queuePeak` and `queueDrained` describe only the benchmark's bounded synthetic
+  input queue. There are no automatic retries.
+- With analytics enabled, the benchmark starts the actual
+  `Runtime.analytics_history_step` importer on a generated 1,024-record
+  synthetic journal. It requires the complete import and confirms that importer
+  timestamps overlap the notification dispatch window. Import progress is in
+  `analyticsProgress`. The generated records are synthetic token usage
+  responses that exercise the production analytics collector; the run fails
+  unless it writes one analytics usage row for every response.
+
+There is no pass/fail performance target because no baseline has been approved.
+Use the report to compare runs made on the same host and configuration. Keep
+reports and all temporary databases outside the checkout. The benchmark refuses
+native transport if `CODEX_BENCH_NATIVE_TRANSPORT` is set.
