@@ -1,0 +1,594 @@
+#!/usr/bin/env python3
+"""Synthetic end-to-end notification to local transcript SSE benchmark."""
+from __future__ import annotations
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import json
+import math
+import os
+from pathlib import Path
+import queue
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+SCRIPTS = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SCRIPTS))
+
+DEFAULT_AGENT_COUNTS = (1, 8, 32)
+DEFAULT_MESSAGES_PER_AGENT = 8
+DEFAULT_REPETITIONS = 1
+DEFAULT_RATE_HZ = 80.0
+MAX_MESSAGES_PER_AGENT = 100  # The production transcript page is 120 items.
+MAX_CASE_REPETITIONS = 100
+MAX_TOTAL_CASES = 24
+MAX_OFFERED_RATE_HZ = 10000.0
+MAX_OFFER_WINDOW_SECONDS = 45.0
+CASE_TIMEOUT_SECONDS = 60.0
+CLEANUP_TIMEOUT_SECONDS = 5.0
+EVENT_TIMEOUT_SECONDS = 15.0
+QUEUE_CAPACITY = 4096
+SYNTHETIC_HISTORY_RECORDS = 1024
+SUPPORTED_AGENT_COUNTS = frozenset((1, 8, 32))
+
+
+def percentile(values: list[float], percent: float) -> float | None:
+    """Nearest-rank percentile (1-based), retaining observed samples."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, math.ceil(percent * len(ordered)))
+    return ordered[rank - 1]
+
+
+def summary(values: list[float]) -> dict:
+    return {"p50": percentile(values, .50), "p95": percentile(values, .95),
+            "p99": percentile(values, .99), "max": max(values) if values else None}
+
+
+def time_left(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("message delivery case exceeded its 60-second deadline")
+    return remaining
+
+
+def wait_queue_drained(work: queue.Queue, deadline: float) -> None:
+    # Queue.join has no timeout. Its standard task condition accepts our case deadline.
+    with work.all_tasks_done:
+        while work.unfinished_tasks:
+            work.all_tasks_done.wait(time_left(deadline))
+
+
+class TrackedWorkQueue(queue.Queue):
+    def __init__(self, maxsize: int):
+        self.peak = 0
+        super().__init__(maxsize=maxsize)
+
+    def _put(self, item):
+        super()._put(item)
+        if item is not None:
+            self.peak = max(self.peak, len(self.queue))
+
+
+def runtime_class():
+    from codex_runtime import Runtime
+
+    class FixtureRuntime(Runtime):
+        def schedule(self):
+            return
+
+    return FixtureRuntime
+
+
+def rss_peak() -> dict:
+    try:
+        import resource
+        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return {"value": value, "unit": "bytes", "source": "getrusage.ru_maxrss"}
+        return {"value": value, "unit": "KiB", "source": "getrusage.ru_maxrss"}
+    except (ImportError, AttributeError, OSError):
+        return {"value": None, "unit": None, "source": "unavailable"}
+
+
+class SSEClient(threading.Thread):
+    def __init__(self, url: str, agent_id: str, expected: dict[str, str], receipt: dict,
+                 error_queue: queue.Queue, stop: threading.Event,
+                 timeout: float = EVENT_TIMEOUT_SECONDS, ready: threading.Event | None = None,
+                 receipt_changed: threading.Event | None = None,
+                 deadline: float | None = None):
+        super().__init__(name="benchmark-sse-" + agent_id[:8], daemon=False)
+        self.url, self.agent_id, self.expected = url, agent_id, expected
+        self.receipt, self.error_queue, self.stop = receipt, error_queue, stop
+        self.ready = ready or threading.Event()
+        self.receipt_changed = receipt_changed or threading.Event()
+        self.deadline = deadline or (time.monotonic() + timeout)
+
+    def run(self):
+        request = urllib.request.Request(self.url, headers={"Accept": "text/event-stream"})
+        try:
+            with urllib.request.urlopen(request, timeout=min(EVENT_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"SSE returned HTTP {response.status}")
+                data_lines = []
+                while not self.stop.is_set():
+                    raw = response.readline()
+                    if not raw:
+                        break
+                    line = raw.decode("utf-8").rstrip("\r\n")
+                    if line.startswith("data:"):
+                        data_lines.append(line[5:].lstrip())
+                    elif not line and data_lines:
+                        event = json.loads("\n".join(data_lines))
+                        data_lines.clear()
+                        self.ready.set()
+                        observed = time.monotonic_ns()
+                        for item in event.get("items", []):
+                            identity = item.get("id")
+                            if identity in self.expected:
+                                text = item.get("text")
+                                if text != self.expected[identity]:
+                                    raise RuntimeError(f"corrupt final text for {identity}: {text!r}")
+                                if identity not in self.receipt:
+                                    self.receipt[identity] = observed
+                                    self.receipt_changed.set()
+        except (OSError, urllib.error.URLError, ValueError, RuntimeError) as error:
+            if not self.stop.is_set():
+                self.error_queue.put(f"SSE client {self.agent_id}: {error}")
+                self.receipt_changed.set()
+        finally:
+            self.ready.set()
+
+
+class SyncClient(threading.Thread):
+    """One shared invalidation stream and parallel transcript scope pulls."""
+    def __init__(self, base: str, agents: list[dict], expected: dict[str, str], receipt: dict,
+                 error_queue: queue.Queue, stop: threading.Event, ready: threading.Event,
+                 receipt_changed: threading.Event, deadline: float):
+        super().__init__(name="benchmark-sync-client", daemon=False)
+        self.base, self.agents, self.expected, self.receipt = base, agents, expected, receipt
+        self.error_queue, self.stop, self.ready = error_queue, stop, ready
+        self.receipt_changed, self.deadline = receipt_changed, deadline
+        self.checkpoints = {agent["id"]: 0 for agent in agents}
+
+    def pull(self, agent: dict) -> None:
+        query = urllib.parse.urlencode({"scope": "transcript:" + agent["id"],
+                                       "after": self.checkpoints[agent["id"]]})
+        with urllib.request.urlopen(self.base + "/api/sync/pull?" + query,
+                                    timeout=min(EVENT_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
+            result = json.load(response)
+        self.checkpoints[agent["id"]] = result["checkpoint"]["seq"]
+        observed = time.monotonic_ns()
+        for document in result["documents"]:
+            if document.get("id") != "transcript:" + agent["id"]:
+                raise RuntimeError("sync pull returned an unexpected transcript identity")
+            payload = json.loads(document["payload"])
+            for item in payload.get("items", []):
+                identity = item.get("id")
+                if identity not in self.expected:
+                    continue
+                if item.get("text") != self.expected[identity]:
+                    raise RuntimeError(f"corrupt final text for {identity}: {item.get('text')!r}")
+                if identity not in self.receipt:
+                    self.receipt[identity] = observed
+                    self.receipt_changed.set()
+
+    def pulls(self):
+        with ThreadPoolExecutor(max_workers=min(32, len(self.agents))) as pool:
+            list(pool.map(self.pull, self.agents))
+
+    def run(self):
+        request = urllib.request.Request(self.base + "/api/sync/stream",
+                                         headers={"Accept": "text/event-stream"})
+        try:
+            with urllib.request.urlopen(request, timeout=min(EVENT_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"sync stream returned HTTP {response.status}")
+                data_lines = []
+                while not self.stop.is_set():
+                    raw = response.readline()
+                    if not raw:
+                        break
+                    line = raw.decode("utf-8").rstrip("\r\n")
+                    if line.startswith("data:"):
+                        data_lines.append(line[5:].lstrip())
+                    elif not line and data_lines:
+                        payload = "\n".join(data_lines)
+                        data_lines.clear()
+                        if payload == '"RESYNC"':
+                            self.pulls()
+                            self.ready.set()
+        except (OSError, urllib.error.URLError, ValueError, RuntimeError) as error:
+            if not self.stop.is_set():
+                self.error_queue.put(f"sync client: {error}")
+                self.receipt_changed.set()
+        finally:
+            self.ready.set()
+
+
+def _agent(runtime, root: Path, index: int) -> dict:
+    agent = runtime.create({"name": f"Synthetic agent {index}", "cwd": str(root),
+                            "prompt": "Synthetic benchmark fixture", "yolo_mode": True}, defer=True)
+    thread_id = str(uuid.uuid4())
+    agent.update(threadId=thread_id, turnId="bench-turn", autoWake=False, status="paused")
+    with runtime.lock, runtime.db() as db:
+        runtime.put(db, "agents", agent)
+    return agent
+
+
+def _synthetic_rollout(home: Path, agent: dict, lines: int = SYNTHETIC_HISTORY_RECORDS) -> None:
+    session_dir = home / "sessions" / "benchmark" / "message_delivery" / "fixture"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    path = session_dir / f"synthetic-{agent['threadId']}.jsonl"
+    rows = [
+        {"type": "session_meta", "payload": {"id": agent["threadId"]}},
+        {"type": "turn_context", "payload": {"turn_id": "bench-import-turn", "model": "synthetic-benchmark"}},
+    ]
+    rows.extend({"type": "token_usage_record", "payload": {
+        "thread_id": agent["threadId"], "turn_id": "bench-import-turn",
+        "response_id": f"synthetic-response-{index}",
+        "usage": {"input_tokens": 9, "output_tokens": index + 1, "total_tokens": index + 10},
+        "thread_token_usage": {"input_tokens": 9, "output_tokens": index + 1, "total_tokens": index + 10},
+    }} for index in range(lines))
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
+def _import_history(runtime, agent_id: str, started: threading.Event, gate: threading.Event,
+                    report: dict, stop: threading.Event, deadline: float) -> None:
+    started.set()
+    try:
+        if not gate.wait(min(EVENT_TIMEOUT_SECONDS, time_left(deadline))):
+            report["error"] = "analytics import start gate timed out"
+            return
+        report["startedNs"] = time.monotonic_ns()
+        for steps in range(10000):
+            if stop.is_set():
+                raise RuntimeError("analytics import stopped after case failure")
+            time_left(deadline)
+            runtime.analytics_history_step(max_records=128)
+            with runtime.db() as db:
+                row = db.execute("SELECT record FROM analytics_history WHERE agent=?", (agent_id,)).fetchone()
+                usage_rows = db.execute("SELECT COUNT(*) FROM analytics_usage WHERE agent=?", (agent_id,)).fetchone()[0]
+            state = json.loads(row[0]) if row else None
+            if state and state.get("status") == "current" and state.get("offset") == state.get("fileBytes"):
+                report["state"] = state
+                report["steps"] = steps + 1
+                report["analyticsRowsWritten"] = usage_rows
+                report["completedNs"] = time.monotonic_ns()
+                return
+        report["error"] = "analytics import exceeded bounded step count"
+    except Exception as error:  # surfaced by scenario runner
+        report["error"] = f"{type(error).__name__}: {error}"
+    report["completedNs"] = time.monotonic_ns()
+
+
+def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
+             with_analytics: bool, repetition: int = 1, inject: str | None = None,
+             transport: str = "sync") -> dict:
+    deadline = time.monotonic() + CASE_TIMEOUT_SECONDS
+    if os.environ.get("CODEX_BENCH_NATIVE_TRANSPORT"):
+        raise RuntimeError("native transport is forbidden by this benchmark")
+    if (agent_count not in SUPPORTED_AGENT_COUNTS or messages_per_agent < 1
+            or messages_per_agent > MAX_MESSAGES_PER_AGENT
+            or not math.isfinite(rate_hz) or not 0 < rate_hz <= MAX_OFFERED_RATE_HZ):
+        raise ValueError("agents must be 1, 8, or 32; messages per agent and rate must be within supported bounds")
+    expected_count = agent_count * messages_per_agent
+    if expected_count / rate_hz > MAX_OFFER_WINDOW_SECONDS:
+        raise ValueError(f"offered workload must fit within {MAX_OFFER_WINDOW_SECONDS:g} seconds")
+    messages = {}
+    scheduled_times = {}
+    dispatch_times = {}
+    enqueue_times = {}
+    producer_lateness = {}
+    receipts = {}
+    errors = queue.Queue()
+    receipt_changed = threading.Event()
+    stop = threading.Event()
+    gate = threading.Event()
+    import_started = threading.Event()
+    import_report = {}
+    event_start_ns = 0
+    original_home = os.environ.get("CODEX_HOME")
+    drained = [0]
+    work = TrackedWorkQueue(maxsize=QUEUE_CAPACITY)
+    now = time.monotonic_ns
+    process_started = time.process_time()
+
+    with tempfile.TemporaryDirectory(prefix="studio-message-bench-") as temporary:
+        root = Path(temporary) / "state"
+        home = Path(temporary) / "profile"
+        root.mkdir()
+        home.mkdir()
+        os.environ["CODEX_HOME"] = str(home)
+        try:
+            from codex_canvas import Canvas, make_server
+            def forbidden_transport(*_args, **_kwargs):
+                raise RuntimeError("benchmark fixture attempted native transport")
+
+            runtime = runtime_class()(root, server_factory=forbidden_transport)
+        finally:
+            if original_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = original_home
+        if hasattr(runtime, "analytics_history_thread"):
+            runtime.close()
+            raise RuntimeError("unexpected automatic analytics importer in benchmark runtime")
+        canvas = Canvas(root=root)
+        canvas.runtime = runtime
+        server = make_server(canvas)
+        server_thread = threading.Thread(target=server.serve_forever, name="benchmark-http", daemon=False)
+        server_thread.start()
+        clients = []
+        workers = []
+        importer = None
+        try:
+            agents = []
+            for index in range(agent_count):
+                time_left(deadline)
+                agents.append(_agent(runtime, root, index))
+            base = f"http://127.0.0.1:{server.server_port}"
+            expected = {f"{agent['id']}:bench-item-{i}": f"synthetic message {i} for {agent['id']}"
+                        for agent in agents for i in range(messages_per_agent)}
+            ready = threading.Event()
+            if transport == "sync":
+                client = SyncClient(base, agents, expected, receipts, errors, stop, ready,
+                                    receipt_changed, deadline)
+                client.start()
+                clients.append(client)
+            elif transport == "transcript":
+                for agent in agents:
+                    client_ready = threading.Event()
+                    client = SSEClient(base + "/api/transcript/stream?id=" + urllib.parse.quote(agent["id"]),
+                                       agent["id"], expected, receipts, errors, stop,
+                                       ready=client_ready, receipt_changed=receipt_changed, deadline=deadline)
+                    client.start()
+                    clients.append(client)
+                    if not client_ready.wait(time_left(deadline)):
+                        raise TimeoutError(f"transcript client {agent['id']} did not receive its initial SSE event")
+                ready.set()
+            else:
+                raise ValueError("transport must be sync or transcript")
+            if not ready.wait(min(EVENT_TIMEOUT_SECONDS, time_left(deadline))):
+                raise RuntimeError(f"{transport} client did not establish its subscription")
+            if not errors.empty():
+                raise RuntimeError(errors.get())
+            if with_analytics:
+                _synthetic_rollout(home, agents[0])
+                importer = threading.Thread(target=_import_history,
+                    args=(runtime, agents[0]["id"], import_started, gate, import_report, stop, deadline),
+                    name="benchmark-analytics-import", daemon=False)
+                importer.start()
+                if not import_started.wait(min(EVENT_TIMEOUT_SECONDS, time_left(deadline))):
+                    raise RuntimeError("analytics importer did not start")
+
+            # One producer offers at an absolute fixed rate and records queue depth.
+            def produce():
+                for seq in range(expected_count):
+                    if stop.is_set():
+                        return
+                    due = event_start_ns + int(seq * 1_000_000_000 / rate_hz)
+                    time_left(deadline)
+                    delay = (due - now()) / 1_000_000_000
+                    if delay > 0:
+                        stop.wait(min(delay, time_left(deadline)))
+                        time_left(deadline)
+                    if stop.is_set():
+                        return
+                    agent_index = seq % agent_count
+                    local_index = seq // agent_count
+                    agent = agents[agent_index]
+                    item_id = f"bench-item-{local_index}"
+                    identity = f"{agent['id']}:{item_id}"
+                    content = f"synthetic message {local_index} for {agent['id']}"
+                    if inject == "missing" and seq == expected_count - 1:
+                        continue
+                    if inject == "corrupt" and seq == expected_count - 1:
+                        content += " corrupted"
+                    messages[identity] = (agent, item_id, content)
+                    scheduled_times[identity] = due
+                    enqueued = now()
+                    enqueue_times[identity] = enqueued
+                    producer_lateness[identity] = max(0, enqueued - due)
+                    work.put((identity, agent, item_id, content, enqueued), timeout=min(EVENT_TIMEOUT_SECONDS, time_left(deadline)))
+                    if seq == 0 and importer:
+                        gate.set()
+
+            def dispatch_worker():
+                while True:
+                    record = work.get()
+                    try:
+                        if record is None:
+                            return
+                        identity, agent, item_id, content, _enqueued = record
+                        if os.environ.get("CODEX_BENCH_TEST_DISPATCH_FAILURE") == "1":
+                            raise RuntimeError("injected benchmark dispatch failure")
+                        dispatch_times[identity] = now()
+                        runtime.notification({"method": "item/completed", "params": {
+                            "threadId": agent["threadId"], "turnId": agent["turnId"],
+                            "item": {"id": item_id, "type": "agentMessage", "text": content}}})
+                        drained[0] += 1
+                    except BaseException as error:
+                        errors.put(f"dispatch worker {threading.current_thread().name}: {type(error).__name__}: {error}")
+                        stop.set()
+                        receipt_changed.set()
+                    finally:
+                        work.task_done()
+
+            worker_count = min(agent_count, 32)
+            workers = [threading.Thread(target=dispatch_worker, name=f"benchmark-dispatch-{i}", daemon=False)
+                       for i in range(worker_count)]
+            for worker in workers:
+                worker.start()
+            event_start_ns = now()
+            produce()
+            wait_queue_drained(work, deadline)
+            end_ns = now()
+            for _ in workers:
+                work.put(None, timeout=EVENT_TIMEOUT_SECONDS)
+            for worker in workers:
+                worker.join(EVENT_TIMEOUT_SECONDS)
+                if worker.is_alive():
+                    raise RuntimeError(f"dispatch worker {worker.name} failed to stop")
+            while len(receipts) < len(messages):
+                if not errors.empty():
+                    raise RuntimeError(errors.get())
+                receipt_changed.clear()
+                if len(receipts) >= len(messages):
+                    break
+                receipt_changed.wait(time_left(deadline))
+            if importer:
+                importer.join(time_left(deadline))
+                if importer.is_alive():
+                    raise RuntimeError("analytics importer failed to stop")
+                if import_report.get("error"):
+                    raise RuntimeError("analytics import failed: " + import_report["error"])
+                first_enqueue = min(enqueue_times.values()) if enqueue_times else end_ns
+                final_dispatch = max(dispatch_times.values()) if dispatch_times else end_ns
+                import_report["overlappedEventWindow"] = bool(
+                    import_report.get("startedNs", end_ns) <= final_dispatch
+                    and import_report.get("completedNs", first_enqueue) >= first_enqueue)
+                import_report["expectedRecords"] = SYNTHETIC_HISTORY_RECORDS + 2  # Header, context, and usage rows.
+                import_report["syntheticDataRecords"] = SYNTHETIC_HISTORY_RECORDS
+                import_report["importedRecords"] = (import_report.get("state") or {}).get("importedRecords", 0)
+                if not import_report["overlappedEventWindow"]:
+                    raise RuntimeError("analytics import did not overlap the measured event window")
+                if import_report["importedRecords"] < import_report["expectedRecords"]:
+                    raise RuntimeError("analytics history import did not ingest the complete synthetic journal: "
+                                       + repr(import_report.get("state")))
+                if import_report.get("analyticsRowsWritten") != SYNTHETIC_HISTORY_RECORDS:
+                    raise RuntimeError("analytics history import did not write every synthetic usage row")
+
+            if not errors.empty():
+                raise RuntimeError(errors.get())
+            missing = sorted(set(messages) - set(receipts))
+            if missing:
+                raise RuntimeError(f"missing {len(missing)} SSE final messages; first identities: {missing[:5]}")
+            if len(messages) != expected_count:
+                raise RuntimeError(f"offered {expected_count} messages but queued {len(messages)}")
+            enqueue_to_dispatch = [(dispatch_times[key] - enqueue_times[key]) / 1e6 for key in messages]
+            dispatch_to_receipt = [(receipts[key] - dispatch_times[key]) / 1e6 for key in messages]
+            enqueue_to_receipt = [(receipts[key] - enqueue_times[key]) / 1e6 for key in messages]
+            scheduled_to_enqueue = [(enqueue_times[key] - scheduled_times[key]) / 1e6 for key in messages]
+            scheduled_to_receipt = [(receipts[key] - scheduled_times[key]) / 1e6 for key in messages]
+            return {"agents": agent_count, "messagesPerAgent": messages_per_agent,
+                    "expected": expected_count, "received": len(receipts), "samples": len(enqueue_to_receipt),
+                    "repetition": repetition, "analyticsImport": with_analytics, "transport": transport,
+                    "latencyMs": {"scheduledToEnqueue": summary(scheduled_to_enqueue),
+                                  "scheduledToClientReceipt": summary(scheduled_to_receipt),
+                                  "enqueueToDispatch": summary(enqueue_to_dispatch),
+                                  "dispatchToClientReceipt": summary(dispatch_to_receipt),
+                                  "enqueueToClientReceipt": summary(enqueue_to_receipt)},
+                    "elapsedMs": (max(receipts.values()) - event_start_ns) / 1e6,
+                    "offeredRateMessagesPerSecond": rate_hz,
+                    "perAgentOfferedRateMessagesPerSecond": rate_hz / agent_count,
+                    "producerLatenessMs": summary([value / 1e6 for value in producer_lateness.values()]),
+                    "cpuProcessSeconds": time.process_time() - process_started,
+                    "peakRss": rss_peak(), "queuePeak": work.peak,
+                    "queueDrained": drained[0], "analyticsProgress": import_report or None}
+        finally:
+            stop.set()
+            gate.set()
+            prior_exception = sys.exc_info()[0]
+            cleanup_errors = []
+            if importer and importer.is_alive():
+                importer.join(CLEANUP_TIMEOUT_SECONDS)
+                if importer.is_alive():
+                    cleanup_errors.append("analytics importer failed to stop before deadline")
+            active_workers = [worker for worker in workers if worker.is_alive()]
+            try:
+                for _ in active_workers:
+                    work.put(None, timeout=CLEANUP_TIMEOUT_SECONDS)
+                for worker in active_workers:
+                    worker.join(CLEANUP_TIMEOUT_SECONDS)
+                    if worker.is_alive():
+                        cleanup_errors.append(f"dispatch worker {worker.name} failed to stop before deadline")
+            except Exception as error:
+                cleanup_errors.append(f"dispatch worker cleanup failed: {error}")
+            try:
+                runtime.close()
+            except Exception as error:
+                cleanup_errors.append(f"runtime cleanup failed: {error}")
+            server.shutdown()
+            server.server_close()
+            for client in clients:
+                client.join(CLEANUP_TIMEOUT_SECONDS)
+                if client.is_alive():
+                    cleanup_errors.append(f"SSE client {client.name} failed to stop before deadline")
+            server_thread.join(CLEANUP_TIMEOUT_SECONDS)
+            if server_thread.is_alive():
+                cleanup_errors.append("HTTP server thread failed to stop before deadline")
+            if cleanup_errors and prior_exception is None:
+                raise RuntimeError("; ".join(cleanup_errors))
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agents", type=int, nargs="+", default=list(DEFAULT_AGENT_COUNTS))
+    parser.add_argument("--messages-per-agent", type=int, default=DEFAULT_MESSAGES_PER_AGENT)
+    parser.add_argument("--rate", type=float, default=DEFAULT_RATE_HZ, help="offered event rate (messages/second)")
+    parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
+    parser.add_argument("--analytics", choices=("off", "on", "both"), default="both")
+    parser.add_argument("--transport", choices=("sync", "transcript", "both"), default="both")
+    parser.add_argument("--output", type=Path, help="JSON report path; defaults to stdout")
+    parser.add_argument("--check", action="store_true", help="quick local smoke configuration")
+    args = parser.parse_args(argv)
+    if args.check:
+        args.agents, args.messages_per_agent, args.repetitions, args.analytics = [1], 8, 1, "off"
+        args.transport = "transcript"
+    if (not set(args.agents) <= SUPPORTED_AGENT_COUNTS or len(set(args.agents)) != len(args.agents)):
+        parser.error("--agents accepts distinct values from 1, 8, and 32")
+    if not 1 <= args.messages_per_agent <= MAX_MESSAGES_PER_AGENT:
+        parser.error(f"--messages-per-agent must be 1..{MAX_MESSAGES_PER_AGENT}")
+    if (not math.isfinite(args.rate) or not 0 < args.rate <= MAX_OFFERED_RATE_HZ):
+        parser.error(f"--rate must be finite and in (0, {MAX_OFFERED_RATE_HZ:g}]")
+    if not 1 <= args.repetitions <= MAX_CASE_REPETITIONS:
+        parser.error(f"--repetitions must be 1..{MAX_CASE_REPETITIONS}")
+    total_cases = len(args.agents) * (2 if args.analytics == "both" else 1) \
+        * (2 if args.transport == "both" else 1) * args.repetitions
+    if total_cases > MAX_TOTAL_CASES:
+        parser.error(f"the selected matrix exceeds the {MAX_TOTAL_CASES}-case command limit")
+    if max(args.agents) * args.messages_per_agent / args.rate > MAX_OFFER_WINDOW_SECONDS:
+        parser.error(f"the slowest offered workload exceeds {MAX_OFFER_WINDOW_SECONDS:g} seconds")
+    if args.output and args.output.resolve().is_relative_to(Path(__file__).resolve().parents[3]):
+        parser.error("--output must be outside the repository checkout")
+    cases = [False, True] if args.analytics == "both" else [args.analytics == "on"]
+    transports = ["sync", "transcript"] if args.transport == "both" else [args.transport]
+    report = {"schemaVersion": 1, "benchmark": "message_delivery", "timestampUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "config": {"agents": args.agents, "messagesPerAgent": args.messages_per_agent,
+                         "offeredRateMessagesPerSecond": args.rate, "repetitions": args.repetitions,
+                         "analyticsImportModes": ["on" if value else "off" for value in cases],
+                         "transports": transports,
+                         "primaryPath": "Runtime.notification -> SQLite transcript -> sync invalidation SSE -> transcript scope pull",
+                         "fallbackPath": "Runtime.notification -> SQLite transcript -> direct transcript SSE",
+                         "clock": "time.monotonic_ns", "nativeTransport": False},
+              "cases": []}
+    try:
+        for count in args.agents:
+            for analytics in cases:
+                for transport in transports:
+                    for repetition in range(1, args.repetitions + 1):
+                        report["cases"].append(run_case(count, args.messages_per_agent, args.rate,
+                                                        analytics, repetition, transport=transport))
+    except Exception as error:
+        print(f"message delivery benchmark failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+    rendered = json.dumps(report, indent=2, sort_keys=True)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered + "\n", encoding="utf-8")
+    else:
+        print(rendered)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
