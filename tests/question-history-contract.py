@@ -41,6 +41,30 @@ class QuestionHistoryContract(unittest.TestCase):
         self.assertEqual(len(self.runtime.server.responses), before + 1)
         self.assertEqual(self.history(), [])
         self.assertFalse(any(r["id"] == request["id"] for r in self.runtime.snapshot()["requests"]))
+        self.assertTrue(self.entity_deleted(request["id"]))
+
+    def entity_deleted(self, key):
+        with self.runtime.db() as db:
+            return db.execute("SELECT deleted FROM sync_entities WHERE collection='request' AND id=?",
+                              (key,)).fetchone()[0] == 1
+
+    def test_answered_question_leaves_renderer_entities(self):
+        request = self.question()
+        self.assertFalse(self.entity_deleted(request["id"]))
+        self.runtime.answer(request["id"], {"answers": {"q": {"answers": ["native.rs"]}}})
+        self.assertTrue(self.entity_deleted(request["id"]))
+
+    def test_restart_retires_closed_request_entities(self):
+        from codex_sync_entities import put, retire_closed_requests
+        with self.runtime.lock, self.runtime.db() as db:
+            put(db, "request", "old-deleted", {"id": "old-deleted", "status": "deleted",
+                "method": "item/tool/requestUserInput", "agent": self.lead["id"]})
+            put(db, "request", "old-pending", {"id": "old-pending", "status": "pending",
+                "method": "item/tool/requestUserInput", "agent": self.lead["id"]})
+            self.assertEqual(retire_closed_requests(db), 1)
+            self.assertEqual(retire_closed_requests(db), 0)
+        self.assertTrue(self.entity_deleted("old-deleted"))
+        self.assertFalse(self.entity_deleted("old-pending"))
 
     def test_delete_stale_async_question_does_not_send_input(self):
         with self.runtime.lock, self.runtime.db() as db:

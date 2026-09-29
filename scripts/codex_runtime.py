@@ -970,6 +970,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             register_functions(db)
             ensure_sync_entity_tables(db)
             install_bypass_triggers(db)
+            from codex_sync_entities import retire_closed_requests
+            retire_closed_requests(db)
             db.execute(
                 "UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status IN ('dispatching','reserved')"
             )
@@ -1193,6 +1195,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             elif table == "agents":
                 sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),
                                 bool(record.get("deletedAt")))
+            elif table == "requests":
+                # The renderer lists every request entity; only pending ones need an answer.
+                sync_entity_put(db, collection, str(record["id"]), record, record.get("status") != "pending")
             else:
                 sync_entity_put(db, collection, str(record["id"]), record)
         if (table == "agents" and previous and

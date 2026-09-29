@@ -177,6 +177,15 @@ def patch(db, collection, key, changes):
     return put(db, collection, key, {**value, **changes})
 
 
+def retire_closed_requests(db):
+    """Remove answered or deleted requests that an older server kept as live entities."""
+    rows = db.execute("SELECT id FROM sync_entities WHERE collection='request' AND deleted=0 "
+                      "AND COALESCE(json_extract(payload,'$.value.status'),'')!='pending'").fetchall()
+    for (key,) in rows:
+        put(db, "request", key, {}, True)
+    return len(rows)
+
+
 def seed(db, snapshot):
     """Seed once from the compatible view while the caller holds a write lock."""
     if db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone():
