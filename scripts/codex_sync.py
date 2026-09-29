@@ -228,10 +228,13 @@ class SyncStore:
         with self.scope_lock(scope):
             self._ensure_versions()
             if scope == 'state:entities:v1':
-                from codex_sync_entities import max_seq, seed
+                from codex_sync_entities import max_seq, seed, sync_task_window
                 with self.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
                     seed(db, self.chat_snapshot() if self.chat_snapshot else self.snapshot())
+                    # Retire old task DTOs gradually so an existing client checkpoint
+                    # can consume the resulting tombstones through ordinary deltas.
+                    sync_task_window(db)
                     rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities
                                          WHERE collection NOT LIKE 'transcript:%' AND seq>?
                                          ORDER BY seq LIMIT ?''', (after, limit)).fetchall()

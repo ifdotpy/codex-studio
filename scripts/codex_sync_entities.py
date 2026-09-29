@@ -18,7 +18,8 @@ AGENT_FIELDS = frozenset("""
 
 COLLECTION_FIELDS = {
     "room": frozenset("id name kind members rootId updated userHidden projectPath radio peerTeamId peerTeamName lastMessage".split()),
-    "task": frozenset("id turnId agent kind status created finished name command query cwd processId durationMs timeout_ms stdinClosed stdinCloseRequested stdinError cancelRequested exitCode arguments tail error bytes log outputTruncated".split()),
+    # Match recent_tasks(): task details are fetched on demand from the workspace API.
+    "task": frozenset("id turnId agent kind status created finished name command query cwd processId durationMs timeout_ms stdinClosed stdinCloseRequested stdinError cancelRequested exitCode bytes log outputTruncated".split()),
     "monitor": frozenset("id agent status created finished name command cwd processId durationMs timeout_ms stdinClosed stdinCloseRequested stdinError cancelRequested exitCode tail error bytes log outputTruncated".split()),
     "complaint": frozenset("id leadId author authorName leadName title status needsResponse created readAt leadStopped leadDeleted recipient version".split()),
     "request": frozenset("id method agent status created createdAt at updated updatedAt deferred error result params title".split()),
@@ -101,6 +102,8 @@ def ensure_tables(db):
         hash TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(collection,id));
       CREATE INDEX IF NOT EXISTS sync_entities_seq ON sync_entities(seq);
+      CREATE INDEX IF NOT EXISTS sync_entities_collection_deleted
+        ON sync_entities(collection,deleted);
       CREATE TABLE IF NOT EXISTS sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sync_documents (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL,
@@ -220,6 +223,144 @@ def seed(db, snapshot):
     meta["stateDir"] = snapshot.get("stateDir", "")
     put(db, "workspace", "current", meta)
     db.execute("INSERT INTO sync_entity_meta VALUES ('seeded','1')")
+
+
+def sync_task_window(db, batch_size=100, force=False):
+    """Match recent_tasks(); retire legacy rows in bounded batches, then skip pulls."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_tasks'").fetchone():
+        return 0
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
+        return 0
+    migrated = db.execute("SELECT 1 FROM sync_entity_meta WHERE key='task_window_migrated'").fetchone()
+    if migrated and not force:
+        return 0
+    eligible = """SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+        ON json_extract(t.record,'$.agent')=a.id
+        WHERE json_extract(a.record,'$.deletedAt') IS NULL
+          AND json_extract(t.record,'$.status')='running'
+        UNION ALL
+        SELECT record FROM (SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+        ON json_extract(t.record,'$.agent')=a.id
+        WHERE json_extract(a.record,'$.deletedAt') IS NULL
+          AND json_extract(t.record,'$.status')!='running'
+        ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)"""
+    for (raw,) in db.execute(eligible):
+        record = json.loads(raw)
+        if record.get("id"):
+            put(db, "task", str(record["id"]), record)
+    stale = db.execute(f"""SELECT e.id FROM sync_entities e
+        WHERE e.collection='task' AND e.deleted=0 AND NOT EXISTS (
+          SELECT 1 FROM runtime_tasks t JOIN runtime_agents a
+            ON json_extract(t.record,'$.agent')=a.id
+          WHERE t.id=e.id AND json_extract(a.record,'$.deletedAt') IS NULL
+            AND (json_extract(t.record,'$.status')='running' OR t.id IN (
+              SELECT t2.id FROM runtime_tasks t2 JOIN runtime_agents a2
+                ON json_extract(t2.record,'$.agent')=a2.id
+              WHERE json_extract(a2.record,'$.deletedAt') IS NULL
+                AND json_extract(t2.record,'$.status')!='running'
+              ORDER BY json_extract(t2.record,'$.created') DESC LIMIT 100)))
+        LIMIT ?""", (max(1, int(batch_size)),)).fetchall()
+    for (key,) in stale:
+        put(db, "task", key, {}, deleted=True)
+    if not stale:
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('task_window_migrated','1') "
+                   "ON CONFLICT(key) DO UPDATE SET value='1'")
+    return len(stale)
+
+
+def _trim_live_task_history(db):
+    """Keep only the newest hundred archived task DTOs; running tasks are unbounded."""
+    rows = db.execute("""SELECT id FROM sync_entities
+        WHERE collection='task' AND deleted=0
+          AND json_extract(payload,'$.value.status')!='running'
+        ORDER BY CAST(json_extract(payload,'$.value.created') AS REAL) DESC""").fetchall()
+    for (key,) in rows[100:]:
+        put(db, "task", key, {}, deleted=True)
+
+
+def _backfill_task_history(db):
+    """Refill archived slots from the bounded, created-indexed runtime window."""
+    rows = db.execute("""SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+        ON json_extract(t.record,'$.agent')=a.id
+        WHERE json_extract(a.record,'$.deletedAt') IS NULL
+          AND json_extract(t.record,'$.status')!='running'
+        ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100""").fetchall()
+    for (raw,) in rows:
+        record = json.loads(raw)
+        if record.get("id"):
+            put(db, "task", str(record["id"]), record)
+    _trim_live_task_history(db)
+
+
+def sync_task_write(db, record):
+    """Incrementally project a task write without scanning runtime_tasks."""
+    if not db.execute("SELECT 1 FROM sync_entity_meta WHERE key='task_window_migrated'").fetchone():
+        return False
+    key = str(record.get("id") or "")
+    if not key:
+        return False
+    previous = db.execute("""SELECT deleted,json_extract(payload,'$.value.status')
+        FROM sync_entities WHERE collection='task' AND id=?""", (key,)).fetchone()
+    vacates_history = bool(previous and not previous[0] and previous[1] != "running")
+    agent = db.execute("SELECT record FROM runtime_agents WHERE id=?",
+                       (str(record.get("agent") or ""),)).fetchone()
+    if not agent or json.loads(agent[0]).get("deletedAt"):
+        return put(db, "task", key, {}, deleted=True)
+    if record.get("status") == "running":
+        changed = put(db, "task", key, record)
+        if vacates_history:
+            _backfill_task_history(db)
+        return changed
+
+    # A previously retained archived task remains in the window when it is
+    # updated. Otherwise compare it with the 100 live archived rows.
+    recent = db.execute("""SELECT id, CAST(json_extract(payload,'$.value.created') AS REAL) created
+        FROM sync_entities WHERE collection='task' AND deleted=0
+          AND json_extract(payload,'$.value.status')!='running'
+        ORDER BY created DESC LIMIT 100""").fetchall()
+    retained = {row[0] for row in recent}
+    oldest = recent[-1][1] if recent else None
+    created = float(record.get("created") or 0)
+    if key in retained:
+        put(db, "task", key, record)
+        return True
+    if len(recent) < 100 or oldest is None:
+        return put(db, "task", key, record)
+    if created > oldest:
+        changed = put(db, "task", key, record)
+        put(db, "task", recent[-1][0], {}, deleted=True)
+        return changed
+    return put(db, "task", key, {}, deleted=True)
+
+
+def sync_task_agent_change(db, agent_id, deleted):
+    """Refresh one agent's task window after its rare deletedAt transition."""
+    if not db.execute("SELECT 1 FROM sync_entity_meta WHERE key='task_window_migrated'").fetchone():
+        return
+    if deleted:
+        rows = db.execute("""SELECT id FROM sync_entities
+            WHERE collection='task' AND deleted=0
+              AND json_extract(payload,'$.value.agent')=?""", (str(agent_id),)).fetchall()
+        for (key,) in rows:
+            put(db, "task", key, {}, deleted=True)
+    # Agent membership changes are rare, so refill globally only here. This
+    # restores tasks from other agents that become eligible when an agent's
+    # entities are retired.
+    rows = db.execute("""SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+        ON json_extract(t.record,'$.agent')=a.id
+        WHERE json_extract(a.record,'$.deletedAt') IS NULL
+          AND json_extract(t.record,'$.status')='running'
+        UNION ALL
+        SELECT record FROM (SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
+          ON json_extract(t.record,'$.agent')=a.id
+          WHERE json_extract(a.record,'$.deletedAt') IS NULL
+            AND json_extract(t.record,'$.status')!='running'
+          ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)""").fetchall()
+    for (raw,) in rows:
+        record = json.loads(raw)
+        if record.get("id"):
+            put(db, "task", str(record["id"]), record)
+    _trim_live_task_history(db)
 
 
 def next_sequence(db):
