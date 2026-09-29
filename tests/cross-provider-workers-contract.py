@@ -157,7 +157,7 @@ class CrossProviderWorkers(unittest.TestCase):
             child = self.child(model=model, effort="high")
             self.assertEqual((child["accountKey"], child["provider"], child["model"]),
                              ("claude-fixture", "claude", model))
-        with self.assertRaisesRegex(ValueError, "not available"):
+        with self.assertRaisesRegex(ValueError, r"not available.*Available: .*sonnet \(claude-sonnet-5-5\)"):
             self.child(model="claude-sonnet-9-9", effort="high")
 
     def test_unknown_disconnected_and_wrong_catalog_targets_reject(self):
