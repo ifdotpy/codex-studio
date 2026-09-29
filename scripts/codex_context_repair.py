@@ -21,6 +21,13 @@ IDENTITY = ('id', 'accountKey', 'epoch', 'threadId')
 WAIT_SECONDS = 10
 
 
+def _restart_wait_identity(agent):
+    marker = agent.get('restartRecovery') or {}
+    attempt = marker.get('startAttempt') or {}
+    return {**{key: agent.get(key) for key in IDENTITY},
+            'attemptId': attempt.get('id') if not attempt.get('submitted') else None}
+
+
 def blocked(agent):
     return bool(agent.get('contextRepairWait')) or (agent.get('contextRepair') or {}).get('phase') in ACTIVE
 
@@ -118,18 +125,24 @@ def recover_unconfirmed_inputs(rt, agent_id):
         wait = a.get('contextRepairWait') or {}
         if not wait:
             return {'status': 'not_needed', 'inputs': []}
-        if wait.get('source') != _identity(a):
-            return {'status': 'waiting', 'reason': 'The worker changed since the input became uncertain', 'inputs': []}
-        prefix = 'Context repair waits for a confirmed input receipt: '
         error = wait.get('error') or ''
-        if not error.startswith(prefix):
+        prefix = 'Context repair waits for a confirmed input receipt: '
+        restart = a.get('restartRecovery') or {}
+        restart_wait = (error == 'Native input submission has no confirmed turn identity.'
+                        and restart.get('stage') == 'held' and restart.get('autoWake')
+                        and all(restart.get(key) == a.get(key) for key in ('epoch', 'accountKey', 'threadId')))
+        if wait.get('source') != (_restart_wait_identity(a) if restart_wait else _identity(a)):
+            return {'status': 'waiting', 'reason': 'The worker changed since the input became uncertain', 'inputs': []}
+        if not error.startswith(prefix) and not restart_wait:
             return {'status': 'not_needed', 'inputs': []}
-        reported_id = error[len(prefix):]
-        attempt = a.get('startAttempt') or {}
-        if reported_id not in attempt.get('events', []):
+        attempt = a.get('startAttempt') or restart.get('startAttempt') or {}
+        ids = wait.get('events') if restart_wait else [error[len(prefix):]]
+        if (not isinstance(ids, list) or not ids or
+                any(key not in attempt.get('events', []) for key in ids)):
             return {'status': 'waiting', 'reason': 'The unconfirmed input is outside the current start attempt', 'inputs': []}
-        events = db.execute("SELECT id,status FROM runtime_events WHERE id=? AND agent=? AND epoch=? "
-            "AND status IN ('reserved','dispatching','uncertain')", (reported_id, agent_id, a['epoch'])).fetchall()
+        marks = ','.join('?' for _ in ids)
+        events = db.execute("SELECT id,status FROM runtime_events WHERE id IN (" + marks + ") AND agent=? AND epoch=? "
+            "AND status IN ('reserved','dispatching','uncertain') ORDER BY id", (*ids, agent_id, a['epoch'])).fetchall()
         if not events:
             return {'status': 'not_needed', 'inputs': []}
         identity = (a['epoch'], a.get('threadId'), a.get('accountKey', 'default'))
@@ -193,8 +206,11 @@ def recover_unconfirmed_inputs(rt, agent_id):
         if ((current['epoch'], current.get('threadId'), current.get('accountKey', 'default')) != identity
                 or rt.connection_ids.get(identity[2]) != connection_id
                 or (current.get('contextRepairWait') or {}).get('error') != error
-                or (current.get('contextRepairWait') or {}).get('source') != _identity(current)
-                or not current.get('autoWake')):
+                or (current.get('contextRepairWait') or {}).get('source') !=
+                    (_restart_wait_identity(current) if restart_wait else _identity(current))
+                or not (current.get('autoWake') or (restart_wait and
+                    (current.get('restartRecovery') or {}).get('stage') == 'held'
+                    and (current.get('restartRecovery') or {}).get('autoWake')))):
             return {'status': 'waiting', 'reason': 'The worker changed during native history recovery',
                     'inputs': [{'id': item['id'], 'decision': 'waiting'} for item in decisions]}
         for item in decisions:
@@ -214,16 +230,23 @@ def recover_unconfirmed_inputs(rt, agent_id):
                            (item['id'], agent_id, identity[0]))
         delivered = next((item for item in decisions if item['decision'] == 'delivered'), None)
         if delivered:
-            current_attempt = current.get('startAttempt') or {}
-            if reported_id in current_attempt.get('events', []):
+            current_attempt = current.get('startAttempt') or (current.get('restartRecovery') or {}).get('startAttempt') or {}
+            if delivered['id'] in current_attempt.get('events', []):
                 current_attempt.update(submitted=True, turnId=delivered['turnId'], observedTurnId=delivered['turnId'])
                 current['startAttempt'] = current_attempt
+                if restart_wait:
+                    current.update(autoWake=True, nativeFailureHold=None)
                 completed = db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
                     (agent_id + ':' + delivered['turnId'],)).fetchone()
                 if not completed:
                     current.update(status='running', inFlight=True, turnId=delivered['turnId'])
         if all(item['decision'] != 'waiting' for item in decisions):
             current.pop('contextRepairWait', None)
+            if restart_wait:
+                current.update(autoWake=True, nativeFailureHold=None)
+                current['restartRecovery'].update(stage='finished', reconciledAt=time.time())
+                if current.get('error') == error:
+                    current['error'] = None
             if (current.get('error') or '').startswith('Context repair waits for a confirmed input receipt:'):
                 current['error'] = None
             if not delivered:
@@ -233,6 +256,47 @@ def recover_unconfirmed_inputs(rt, agent_id):
     return {'status': 'resolved' if all(item['decision'] != 'waiting' for item in decisions) else 'waiting',
             'reason': None if all(item['decision'] != 'waiting' for item in decisions) else 'Native thread is active; absent inputs remain uncertain',
             'inputs': decisions}
+
+
+def tick_restart_input_waits(rt, agents):
+    """Schedule exact native history checks for restart receipts with no turn ID."""
+    now = time.time()
+    jobs = []
+    with rt.lock, rt.db() as db:
+        for snapshot in agents:
+            a = rt.agent(snapshot['id'], db)
+            wait = a.get('contextRepairWait') or {}
+            restart = a.get('restartRecovery') or {}
+            if (wait.get('error') != 'Native input submission has no confirmed turn identity.'
+                    or restart.get('stage') != 'held' or not restart.get('autoWake')
+                    or not a.get('threadId') or wait.get('source') != _restart_wait_identity(a)
+                    or wait.get('nextCheckAt', 0) > now
+                    or (wait.get('historyCheckId') and wait.get('historyCheckAt', 0) > now)):
+                continue
+            check_id = str(uuid.uuid4())
+            wait.update(historyCheckId=check_id, historyCheckAt=now, nextCheckAt=now + 2)
+            a['contextRepairWait'] = wait
+            rt.put(db, 'agents', a)
+            jobs.append((a['id'], check_id))
+    for agent_id, check_id in jobs:
+        rt.recovery_pool.submit(_run_restart_input_check, rt, agent_id, check_id)
+
+
+def _run_restart_input_check(rt, agent_id, check_id):
+    result = recover_unconfirmed_inputs(rt, agent_id)
+    if result.get('status') != 'waiting':
+        return
+    with rt.lock, rt.db() as db:
+        a = rt.agent(agent_id, db)
+        wait = a.get('contextRepairWait') or {}
+        if wait.get('historyCheckId') != check_id:
+            return
+        checks = wait.get('checks', 0) + 1
+        wait.update(checks=checks, historyCheckId=None, historyCheckAt=None,
+                    nextCheckAt=time.time() + min(60, 2 ** min(checks, 6)),
+                    lastHistoryCheck=result.get('reason'))
+        rt.put(db, 'agents', a)
+    rt.changed.set()
 
 
 def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):

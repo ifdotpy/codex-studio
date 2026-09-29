@@ -246,6 +246,9 @@ class AccountTransfers:
         return op
 
     def adopt(self, db, op, agents, include_later=False):
+        destination_catalog = None
+        destination_catalog_checked = False
+        destination_catalog_error = None
         for a in agents:
             # This is a snapshot. A later request can adopt descendants created afterwards.
             if (a.get('deletedAt') or (a['id'] != op['leadId'] and a.get('rootId') != op['leadId'])
@@ -268,14 +271,33 @@ class AccountTransfers:
             lazy = not done and not active
             source_account = a.get('accountKey', 'default')
             source_thread = a.get('threadId')
-            op['members'][a['id']] = {'phase': 'completed' if done else ('waiting' if active else 'lazy'),
+            resolved = None
+            validation_error = None
+            if lazy:
+                try:
+                    if destination_catalog is None:
+                        if not destination_catalog_checked:
+                            destination_catalog_checked = True
+                            try:
+                                destination_catalog = self.rt.catalog(op['targetAccountKey'])
+                            except Exception as error:
+                                destination_catalog_error = str(error)
+                        if destination_catalog_error:
+                            raise ValueError(destination_catalog_error)
+                    resolved = self.destination_settings(a, op['targetAccountKey'], destination_catalog)
+                except Exception as error:
+                    validation_error = str(error)
+            op['members'][a['id']] = {'phase': 'completed' if done else
+                                      ('blocked' if validation_error else ('waiting' if active else 'lazy')),
                 'sourceAccountKey': a.get('accountKey', 'default'), 'sourceThreadId': a.get('threadId'),
                 'name': a.get('name'), 'provider': provider, 'lazy': lazy,
+                **({'targetSettings': resolved} if resolved is not None else {}),
+                **({'error': validation_error} if validation_error else {}),
                 'pendingSettings': copy.deepcopy(a.get('pendingSettings')),
                 'sourcePendingSettings': copy.deepcopy(a.get('pendingSettings')),
                 'sourceClaudeOptions': copy.deepcopy(a.get('claudeOptions')),
                 **({'continueAfterTransfer': bool(a.get('autoWake'))} if active else {})}
-            if not done:
+            if not done and not validation_error:
                 a['accountTransferId'] = op['id']
                 if lazy:
                     a['lazyAccountTransfer'] = {'id': op['id'], 'sourceAccountKey': source_account,
@@ -361,8 +383,27 @@ class AccountTransfers:
             else:
                 if any(m.get('archiveInvalidated') for m in op['members'].values()):
                     raise ValueError('The source changed after history export. Cancel this transfer and start a new one.')
-                for m in op['members'].values():
+                for aid, m in op['members'].items():
                     if m['phase'] == 'blocked':
+                        if m.get('lazy'):
+                            a = rt.agent(aid, db)
+                            if not a.get('lazyAccountTransfer'):
+                                resolved = self.destination_settings(a, op['targetAccountKey'],
+                                                                     rt.catalog(op['targetAccountKey']))
+                                source_account = a.get('accountKey', 'default')
+                                source_thread = a.get('threadId')
+                                a['accountTransferId'] = key
+                                a['lazyAccountTransfer'] = {'id': key, 'sourceAccountKey': source_account,
+                                    'sourceThreadId': source_thread,
+                                    'sourceState': {field: copy.deepcopy(a.get(field)) for field in (
+                                        'provider', 'model', 'effort', 'nativeEffort', 'fastMode',
+                                        'daybreakEnabled', 'cyberAccessProgram', 'workerDefaults',
+                                        'pendingSettings', 'pendingSettingsAccountKey', 'claudeOptions',
+                                        'executionSettingsAccountKey', 'status', 'error', 'nativeFailureHold')}}
+                                a['accountKey'] = op['targetAccountKey']
+                                a.update(resolved)
+                                m['targetSettings'] = resolved
+                                rt.put(db, 'agents', a)
                         m.update(phase='lazy' if m.get('lazy') else ('ready' if m.get('result') else 'waiting'),
                                  error=None, nextCheck=0)
                         if m.get('interruptSubmittedAt'):

@@ -54,6 +54,26 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual([(r[0],r[1]) for r in events], [(key,'pending')])
         self.assertEqual(self.runtime.agent(self.key)['status'], 'queued')
 
+    def test_disconnect_receipt_keeps_restart_continuation_permission(self):
+        self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
+        self.server.native['turns'][0]['status'] = 'interrupted'
+        self.runtime.disconnected('default', self.runtime.connection_ids['default'])
+        disconnected = self.runtime.agent(self.key)
+        self.assertFalse(disconnected['autoWake'])
+        self.assertTrue(disconnected['disconnectRecovery']['autoWake'])
+        native = copy.deepcopy(self.server.native)
+        self.runtime.close()
+        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+        self.server = self.runtime.connect()
+        self.server.native = native
+        self.server.calls.clear()
+        recovered = self.runtime.agent(self.key)
+        self.assertEqual(recovered['restartRecovery']['stage'], 'pending')
+        self.assertTrue(recovered['restartRecovery']['autoWake'])
+        self.assertTrue(recover(self.runtime, self.key, automatic=True)['continued'])
+        self.assertTrue(self.runtime.agent(self.key)['autoWake'])
+
     def test_unsubmitted_input_restores_exact_batch(self):
         with self.runtime.db() as db:
             a=self.runtime.agent(self.key,db)

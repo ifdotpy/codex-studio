@@ -2689,6 +2689,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_team_isolation import cancel_pending
         decoded = []
         pending_notices = []
+        restart_wait_agents = []
 
         def current_agents(db):
             # Decoding every agent record costs tens of milliseconds under the
@@ -2705,6 +2706,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             cancel_pending(self, db)
             from codex_context_repair import recover_context_failures
             recover_context_failures(self, db, current_agents(db))
+            restart_wait_agents = copy.deepcopy(current_agents(db))
+        from codex_context_repair import tick_restart_input_waits
+        tick_restart_input_waits(self, restart_wait_agents)
         return self.dispatch_candidates(None, current_agents)
 
     def sample_dispatch_lock_holder(self, observations, waited_ms):

@@ -77,7 +77,7 @@ class ContextWait(f.NativeActionRepair):
             if method == 'thread/read':
                 if unreadable:
                     raise RuntimeError('history read is offline')
-                return {'thread':{'id':self.tid,'status':{'type':'idle'}}}
+                return {'thread':{'id':self.tid,'status':{'type':'idle'},'path':str(self.path)}}
             if method == 'thread/turns/list':
                 return {'data':turns or [], 'nextCursor':None}
             return original(method, params, timeout)
@@ -141,6 +141,61 @@ class ContextWait(f.NativeActionRepair):
         with self.runtime.db() as db:
             row = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',('recover-present',)).fetchone()
         self.assertEqual(tuple(row), ('delivered','native-turn'))
+
+    def test_restart_held_input_wait_rechecks_native_history_automatically(self):
+        self.uncertain_input('restart-input', [{'id':'native-turn','clientUserMessageId':'restart-input'}])
+        a = self.runtime.agent(self.a['id'])
+        attempt = copy.deepcopy(a['startAttempt'])
+        wait = copy.deepcopy(a['contextRepairWait'])
+        wait.update(error='Native input submission has no confirmed turn identity.', events=['restart-input'])
+        recovery = {'epoch':a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                    'turnId':None, 'stage':'held', 'autoWake':True, 'startAttempt':attempt}
+        a.update(status='interrupted', autoWake=False, inFlight=False, nativeFailureHold=True,
+                 contextRepairWait=wait, restartRecovery=recovery)
+        self.agent_update(a, status=a['status'], autoWake=False, inFlight=False,
+                          nativeFailureHold=True, contextRepairWait=wait, restartRecovery=recovery)
+        self.runtime.dispatch()
+        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        current = self.runtime.agent(self.a['id'])
+        self.assertTrue(current['autoWake'])
+        self.assertEqual(current['turnId'], 'native-turn')
+        with self.runtime.db() as db:
+            receipt = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                 ('restart-input',)).fetchone()
+        self.assertEqual(tuple(receipt), ('delivered', 'native-turn'))
+
+    def test_restart_held_absent_input_is_retried_once_with_original_identity(self):
+        self.uncertain_input('restart-absent', [{'id':'other-turn','status':'interrupted',
+            'items':[{'type':'userMessage','clientId':'another-input'}]}])
+        self.records.extend([
+            {'type':'turn_context','payload':{'turn_id':'other-turn'}},
+            {'type':'event_msg','payload':{'type':'turn_aborted','turn_id':'other-turn'}},
+        ])
+        self.write_records()
+        a = self.runtime.agent(self.a['id'])
+        attempt = copy.deepcopy(a['startAttempt'])
+        wait = copy.deepcopy(a['contextRepairWait'])
+        wait.update(error='Native input submission has no confirmed turn identity.', events=['restart-absent'])
+        recovery = {'epoch':a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                    'turnId':None, 'stage':'held', 'autoWake':True, 'startAttempt':attempt}
+        self.agent_update(a, status='interrupted', autoWake=False, inFlight=False,
+                          contextRepairWait=wait, restartRecovery=recovery)
+        self.runtime.dispatch()
+        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.assertEqual(self.runtime.agent(self.a['id'])['status'], 'queued')
+        self.assertTrue(self.runtime.agent(self.a['id'])['autoWake'])
+        self.runtime.dispatch()
+        try:
+            eventually(lambda: any(method == 'turn/start' for method, _ in self.server.calls))
+        except AssertionError:
+            with self.runtime.db() as db:
+                receipt = db.execute('SELECT status FROM runtime_events WHERE id=?', ('restart-absent',)).fetchone()
+            self.fail(f"retry did not submit original input: agent={self.runtime.agent(self.a['id'])!r} event={receipt[0]}")
+        for _ in range(2):
+            self.runtime.dispatch()
+        starts = [p for method, p in self.server.calls if method == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'restart-absent')
 
     def test_recover_requeues_absent_idle_input_once(self):
         self.uncertain_input('recover-absent', [{'id':'other-turn',

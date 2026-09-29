@@ -21,6 +21,21 @@ def capture(agent):
 def restore(db, agent):
     settle_reconciled(agent)
     old = agent.get('restartRecovery') or {}
+    # A native connection can die before graceful Runtime.close() captures the
+    # active turn. disconnected() records the permission and exact native scope
+    # before clearing autoWake; on the next process, restore that receipt rather
+    # than treating the agent as an explicit stop.
+    disconnected = agent.get('disconnectRecovery') or {}
+    if (old.get('stage') != 'pending' and disconnected.get('autoWake')
+            and disconnected.get('epoch') == agent.get('epoch')
+            and disconnected.get('accountKey', 'default') == agent.get('accountKey', 'default')
+            and disconnected.get('threadId') == agent.get('threadId')
+            and agent.get('status') == 'interrupted'):
+        agent['restartRecovery'] = {
+            **{key: disconnected.get(key) for key in (*SCOPE, 'turnId')},
+            'autoWake': True, 'at': disconnected.get('at', time.time()),
+            'stage': 'pending', 'startAttempt': copy.deepcopy(agent.get('startAttempt')),
+        }
     if old.get('stage') == 'pending' and any(old.get(key) != agent.get(key) for key in SCOPE):
         old['stage'] = 'superseded'
         return False
