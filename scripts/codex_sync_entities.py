@@ -1,6 +1,7 @@
 """Small renderer DTOs and bounded, per-entity sync versions."""
 import hashlib
 import json
+import sqlite3
 
 
 AGENT_FIELDS = frozenset("""
@@ -160,6 +161,19 @@ def put(db, collection, key, record, deleted=False):
                   seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted""",
                (collection, key, seq, digest, payload, int(deleted)))
     return True
+
+
+def patch(db, collection, key, changes):
+    """Change fields of the stored renderer view; a raw record must not replace it."""
+    try:
+        row = db.execute("SELECT payload,deleted FROM sync_entities WHERE collection=? AND id=?",
+                         (collection, key)).fetchone()
+    except sqlite3.OperationalError:
+        return False  # The entity store has not been created on this database yet.
+    if not row or row[1] or not row[0]:
+        return False
+    value = json.loads(row[0]).get("value") or {}
+    return put(db, collection, key, {**value, **changes})
 
 
 def seed(db, snapshot):

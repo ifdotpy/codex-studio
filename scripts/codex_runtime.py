@@ -1142,6 +1142,36 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                 cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
+    def agent_entity_view(self, db, record):
+        # Match the renderer-facing fields added by snapshot(), so later
+        # internal agent writes cannot erase visible source/team details.
+        view = dict(record)
+        root = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record.get("rootId"),)).fetchone()
+        root_name = json.loads(root[0]).get("name") if root else "Team"
+        block = native_thread_block(record)
+        view.update(kind="agent", source="managed", canSend=not bool(block),
+                    launcherAlive=not self.closed, wave="Team: " + root_name,
+                    nextTurnSettingsSupported=True, readStateSupported=True)
+        if block:
+            view["nativeThreadBlock"] = block
+        else:
+            view.pop("nativeThreadBlock", None)
+        if record.get("isLead"):
+            view["empty"] = self.empty_lead(db, record)
+        else:
+            task = str(record.get("prompt") or "")
+            result = str(record.get("lastAnswer") or "") if (
+                record.get("lastCompletedTurn") and not record.get("turnId")
+                and not record.get("inFlight") and record.get("status") == "completed"
+            ) else ""
+            view["overview"] = {
+                "task": task[:4000], "taskTruncated": len(task) > 4000,
+                "result": result[:4000], "resultTruncated": len(result) > 4000,
+                "resultTurnId": record.get("lastCompletedTurn") if result else None,
+            }
+
+        return view
+
     def put(self, db, table, record):
         previous = None
         if table == "agents":
@@ -1160,33 +1190,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 room = next((item for item in self.chat_rooms(db) if item["id"] == record["id"]), None)
                 sync_entity_put(db, collection, str(record["id"]), room or record, room is None)
             elif table == "agents":
-                # Match the renderer-facing fields added by snapshot(), so later
-                # internal agent writes cannot erase visible source/team details.
-                view = dict(record)
-                root = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record.get("rootId"),)).fetchone()
-                root_name = json.loads(root[0]).get("name") if root else "Team"
-                block = native_thread_block(record)
-                view.update(kind="agent", source="managed", canSend=not bool(block),
-                            launcherAlive=not self.closed, wave="Team: " + root_name,
-                            nextTurnSettingsSupported=True, readStateSupported=True)
-                if block:
-                    view["nativeThreadBlock"] = block
-                else:
-                    view.pop("nativeThreadBlock", None)
-                if record.get("isLead"):
-                    view["empty"] = self.empty_lead(db, record)
-                else:
-                    task = str(record.get("prompt") or "")
-                    result = str(record.get("lastAnswer") or "") if (
-                        record.get("lastCompletedTurn") and not record.get("turnId")
-                        and not record.get("inFlight") and record.get("status") == "completed"
-                    ) else ""
-                    view["overview"] = {
-                        "task": task[:4000], "taskTruncated": len(task) > 4000,
-                        "result": result[:4000], "resultTruncated": len(result) > 4000,
-                        "resultTurnId": record.get("lastCompletedTurn") if result else None,
-                    }
-                sync_entity_put(db, collection, str(record["id"]), view,
+                sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),
                                 bool(record.get("deletedAt")))
             else:
                 sync_entity_put(db, collection, str(record["id"]), record)

@@ -168,6 +168,21 @@ class RuntimeContract(unittest.TestCase):
     def complete(self, a):
         self.runtime.server.complete(a['threadId'], a['turnId'])
 
+    def test_budget_save_keeps_the_chat_visible_in_entity_sync(self):
+        lead = self.lead()
+        import codex_budget
+        state = {'spent': 1234, 'floor': 0, 'after': 1234, 'before': 0, 'noticeSpent': 0,
+                 'historicalNotices': 0, 'faults': 0, 'ambiguousNotices': 0}
+        with self.runtime.lock, self.runtime.db() as db:
+            codex_budget.budget_init(db)
+            codex_budget._save(db, self.runtime.agent(lead['id'], db), state)
+            row = db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                             (lead['id'],)).fetchone()
+        value = json.loads(row[0])['value']
+        self.assertEqual((value.get('source'), value.get('kind')), ('managed', 'agent'))
+        self.assertIn('canSend', value)
+        self.assertEqual(value.get('tokensUsed'), 1234)
+
     def test_empty_current_chat_reuses_identity_even_after_restart(self):
         import uuid
         first = self.runtime.new_lead({})
