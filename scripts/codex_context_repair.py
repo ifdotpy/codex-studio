@@ -280,15 +280,21 @@ def tick_restart_input_waits(rt, agents):
     now = time.time()
     jobs = []
     with rt.lock, rt.db() as db:
+        owner = getattr(rt, '_restart_history_check_owner', None)
+        if owner is None:
+            owner = uuid.uuid4().hex
+            rt._restart_history_check_owner = owner
         for snapshot in agents:
             a = rt.agent(snapshot['id'], db)
             wait = a.get('contextRepairWait') or {}
+            check_active = wait.get('historyCheckId') and wait.get('historyCheckOwner') == owner
             if (not wait or not _held_restart_marker(a)
                     or wait.get('nextCheckAt', 0) > now
-                    or (wait.get('historyCheckId') and wait.get('historyCheckAt', 0) > now)):
+                    or check_active):
                 continue
             check_id = str(uuid.uuid4())
-            wait.update(historyCheckId=check_id, historyCheckAt=now, nextCheckAt=now + 2)
+            wait.update(historyCheckId=check_id, historyCheckOwner=owner,
+                        historyCheckAt=now, nextCheckAt=now + 2)
             a['contextRepairWait'] = wait
             rt.put(db, 'agents', a)
             jobs.append((a['id'], check_id))
@@ -297,8 +303,23 @@ def tick_restart_input_waits(rt, agents):
 
 
 def _run_restart_input_check(rt, agent_id, check_id):
-    result = recover_unconfirmed_inputs(rt, agent_id)
+    try:
+        result = recover_unconfirmed_inputs(rt, agent_id)
+    except Exception as error:
+        result = {'status':'waiting', 'reason':'Restart input history check failed: ' + str(error)}
     if result.get('status') != 'waiting':
+        if result.get('status') == 'not_needed':
+            with rt.lock, rt.db() as db:
+                a = rt.agent(agent_id, db)
+                wait = a.get('contextRepairWait') or {}
+                if wait.get('historyCheckId') == check_id:
+                    checks = wait.get('checks', 0) + 1
+                    wait.update(checks=checks, historyCheckId=None, historyCheckOwner=None,
+                                historyCheckAt=None,
+                                nextCheckAt=time.time() + min(60, 2 ** min(checks, 6)),
+                                lastHistoryCheck=result.get('reason'))
+                    rt.put(db, 'agents', a)
+            rt.changed.set()
         return
     with rt.lock, rt.db() as db:
         a = rt.agent(agent_id, db)
@@ -306,7 +327,7 @@ def _run_restart_input_check(rt, agent_id, check_id):
         if wait.get('historyCheckId') != check_id:
             return
         checks = wait.get('checks', 0) + 1
-        wait.update(checks=checks, historyCheckId=None, historyCheckAt=None,
+        wait.update(checks=checks, historyCheckId=None, historyCheckOwner=None, historyCheckAt=None,
                     nextCheckAt=time.time() + min(60, 2 ** min(checks, 6)),
                     lastHistoryCheck=result.get('reason'))
         rt.put(db, 'agents', a)
@@ -987,6 +1008,9 @@ def _unsubmitted(a, attempt_id):
 def _defer_context(rt, db, a, error, *, historical=False):
     detail = getattr(error, 'contextRepairWait', None)
     attempt = a.get('startAttempt') or {}
+    existing_wait = a.get('contextRepairWait') or {}
+    if _held_restart_marker(a) and existing_wait:
+        return False
     if (not isinstance(detail, dict) or detail.get('source') != _identity(a)
             or not _unsubmitted(a, attempt.get('id'))
             or (a.get('contextRepair') or {}).get('phase') in ACTIVE):
@@ -1041,6 +1065,8 @@ def recover_context_failures(rt, db, agents):
     errors = {'Context repair waits for commands, monitors, and tool receipts',
               'Context repair waits for complete native tool receipts'}
     for a in agents:
+        if _held_restart_marker(a):
+            continue
         attempt = a.get('startAttempt') or {}
         receipt = a.get('contextRepair') or {}
         # A server can die after the repair record is saved but before a turn
@@ -1135,6 +1161,8 @@ def claim_context_wait(rt, db, agent):
     wait = agent.get('contextRepairWait')
     if not isinstance(wait, dict):
         return None
+    if _held_restart_marker(agent):
+        return {'waiting': True}
     attempt = agent.get('startAttempt') or {}
     valid = (not rt.closed and _unsubmitted(agent, wait.get('source', {}).get('attemptId'))
              and wait.get('source') == _identity(agent) and wait.get('events') == attempt.get('events')

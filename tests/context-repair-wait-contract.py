@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -208,16 +209,43 @@ class ContextWait(f.NativeActionRepair):
                  'pending', time.time(), self.a['epoch'], None, None))
         newer_attempt = {'id':'newer-attempt', 'epoch':self.a['epoch'], 'threadId':self.tid,
                          'accountKey':'default', 'events':['newer-input'], 'submitted':False}
+        wait_source = {**repair._identity({**self.a, 'startAttempt':newer_attempt}),
+                       'attemptId':'older-wait-attempt'}
         self.agent_update(self.a, status='queued', autoWake=True, inFlight=False,
             startAttempt=newer_attempt, error='Context repair waits for the existing native recovery receipt',
-            contextRepairWait={'source':repair._identity({**self.a, 'startAttempt':newer_attempt}),
+            contextRepairWait={'source':wait_source,
                 'events':['newer-input'], 'error':'Context repair waits for the existing native recovery receipt',
                 'checks':1},
             restartRecovery={'epoch':self.a['epoch'], 'accountKey':'default', 'threadId':self.tid,
                 'turnId':None, 'stage':'held', 'reason':'Native input submission has no confirmed turn identity.',
                 'autoWake':True, 'startAttempt':None})
 
-        self.runtime.dispatch()
+        history_entered, allow_history = threading.Event(), threading.Event()
+        original_call = self.server.call
+        def blocked_history(method, params, timeout=10):
+            if method == 'thread/read':
+                history_entered.set()
+                if not allow_history.wait(5):
+                    raise TimeoutError('fixture history read was not released')
+            return original_call(method, params, timeout)
+        self.server.call = blocked_history
+        self.runtime.dispatch_all()
+        self.assertTrue(history_entered.wait(2), 'restart history check did not start')
+        with self.runtime.db() as db:
+            initial_wait = self.runtime.agent(self.a['id'], db)['contextRepairWait']
+        check_id = initial_wait['historyCheckId']
+        for _ in range(3):
+            with self.runtime.lock, self.runtime.db() as db:
+                current = self.runtime.agent(self.a['id'], db)
+                current['contextRepairWait']['nextCheckAt'] = 0
+                self.runtime.put(db, 'agents', current)
+            self.runtime.dispatch_all()
+            current_wait = self.runtime.agent(self.a['id'])['contextRepairWait']
+            self.assertEqual(current_wait.get('historyCheckId'), check_id)
+            self.assertEqual(current_wait.get('historyCheckAt'), initial_wait['historyCheckAt'])
+            self.assertEqual(current_wait.get('checks'), 1)
+            self.assertIsNone(current_wait.get('lastHistoryCheck'))
+        allow_history.set()
         eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
         settled = self.runtime.agent(self.a['id'])
         self.assertEqual(settled['restartRecovery']['stage'], 'finished')
