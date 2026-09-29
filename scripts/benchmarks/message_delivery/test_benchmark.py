@@ -48,12 +48,22 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual((result["expected"], result["received"]), (2, 2))
         self.assertEqual(result["transport"], "sync")
 
-    def test_real_analytics_history_import_overlaps_notifications(self):
-        result = benchmark.run_case(1, 2, 2, True, transport="transcript")
-        progress = result["analyticsProgress"]
-        self.assertEqual(progress["importedRecords"], progress["expectedRecords"])
-        self.assertEqual(progress["analyticsRowsWritten"], progress["syntheticDataRecords"])
-        self.assertTrue(progress["overlappedEventWindow"])
+    def test_repeated_single_message_import_has_timestamped_receipt_overlap(self):
+        results = [benchmark.run_supervised_case(1, 1, 80, True, repetition=index,
+                                                  transport="sync")
+                   for index in range(1, 4)]
+        for result in results:
+            progress = result["analyticsProgress"]
+            self.assertEqual(progress["importedRecords"], progress["expectedRecords"])
+            self.assertEqual(progress["analyticsRowsWritten"], progress["syntheticDataRecords"])
+            self.assertTrue(progress["overlappedEventWindow"])
+            self.assertEqual(progress["overlapWindow"], "fixed_offer_to_final_client_receipt")
+            self.assertTrue(progress["overlapWriteTimestampsNs"])
+
+    def test_parent_kills_stalled_notification_case_process(self):
+        with self.assertRaisesRegex(TimeoutError, "child terminated"):
+            benchmark.run_supervised_case(1, 1, 80, False, transport="transcript",
+                                          inject="stall_notification", timeout=.5)
 
     def test_missing_event_and_corrupt_final_text_fail(self):
         with self.assertRaisesRegex(RuntimeError, "offered 2 messages but queued 1"):

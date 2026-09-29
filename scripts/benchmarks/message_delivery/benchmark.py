@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import subprocess
 import sys
 import tempfile
 import threading
@@ -33,6 +34,7 @@ MAX_OFFER_WINDOW_SECONDS = 45.0
 CASE_TIMEOUT_SECONDS = 60.0
 CLEANUP_TIMEOUT_SECONDS = 5.0
 EVENT_TIMEOUT_SECONDS = 15.0
+SOCKET_TIMEOUT_SECONDS = 20.0
 QUEUE_CAPACITY = 4096
 SYNTHETIC_HISTORY_RECORDS = 1024
 SUPPORTED_AGENT_COUNTS = frozenset((1, 8, 32))
@@ -114,7 +116,7 @@ class SSEClient(threading.Thread):
     def run(self):
         request = urllib.request.Request(self.url, headers={"Accept": "text/event-stream"})
         try:
-            with urllib.request.urlopen(request, timeout=min(EVENT_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
+            with urllib.request.urlopen(request, timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
                 if response.status != 200:
                     raise RuntimeError(f"SSE returned HTTP {response.status}")
                 data_lines = []
@@ -162,7 +164,7 @@ class SyncClient(threading.Thread):
         query = urllib.parse.urlencode({"scope": "transcript:" + agent["id"],
                                        "after": self.checkpoints[agent["id"]]})
         with urllib.request.urlopen(self.base + "/api/sync/pull?" + query,
-                                    timeout=min(EVENT_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
+                                    timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
             result = json.load(response)
         self.checkpoints[agent["id"]] = result["checkpoint"]["seq"]
         observed = time.monotonic_ns()
@@ -188,7 +190,7 @@ class SyncClient(threading.Thread):
         request = urllib.request.Request(self.base + "/api/sync/stream",
                                          headers={"Accept": "text/event-stream"})
         try:
-            with urllib.request.urlopen(request, timeout=min(EVENT_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
+            with urllib.request.urlopen(request, timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
                 if response.status != 200:
                     raise RuntimeError(f"sync stream returned HTTP {response.status}")
                 data_lines = []
@@ -242,22 +244,30 @@ def _synthetic_rollout(home: Path, agent: dict, lines: int = SYNTHETIC_HISTORY_R
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
 
-def _import_history(runtime, agent_id: str, started: threading.Event, gate: threading.Event,
+def _import_history(runtime, agent_id: str, work_started: threading.Event, gate: threading.Event,
                     report: dict, stop: threading.Event, deadline: float) -> None:
-    started.set()
     try:
         if not gate.wait(min(EVENT_TIMEOUT_SECONDS, time_left(deadline))):
             report["error"] = "analytics import start gate timed out"
             return
-        report["startedNs"] = time.monotonic_ns()
+        report["writeTimestampsNs"] = []
+        previous_usage_rows = 0
         for steps in range(10000):
             if stop.is_set():
                 raise RuntimeError("analytics import stopped after case failure")
             time_left(deadline)
+            if "startedNs" not in report:
+                report["startedNs"] = time.monotonic_ns()
             runtime.analytics_history_step(max_records=128)
             with runtime.db() as db:
                 row = db.execute("SELECT record FROM analytics_history WHERE agent=?", (agent_id,)).fetchone()
                 usage_rows = db.execute("SELECT COUNT(*) FROM analytics_usage WHERE agent=?", (agent_id,)).fetchone()[0]
+            if usage_rows > previous_usage_rows:
+                report["writeTimestampsNs"].append(time.monotonic_ns())
+                previous_usage_rows = usage_rows
+            if "readyNs" not in report:
+                report["readyNs"] = time.monotonic_ns()
+                work_started.set()
             state = json.loads(row[0]) if row else None
             if state and state.get("status") == "current" and state.get("offset") == state.get("fileBytes"):
                 report["state"] = state
@@ -268,6 +278,7 @@ def _import_history(runtime, agent_id: str, started: threading.Event, gate: thre
         report["error"] = "analytics import exceeded bounded step count"
     except Exception as error:  # surfaced by scenario runner
         report["error"] = f"{type(error).__name__}: {error}"
+        work_started.set()
     report["completedNs"] = time.monotonic_ns()
 
 
@@ -287,6 +298,7 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
     messages = {}
     scheduled_times = {}
     dispatch_times = {}
+    notification_completed_times = {}
     enqueue_times = {}
     producer_lateness = {}
     receipts = {}
@@ -294,7 +306,7 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
     receipt_changed = threading.Event()
     stop = threading.Event()
     gate = threading.Event()
-    import_started = threading.Event()
+    import_work_started = threading.Event()
     import_report = {}
     event_start_ns = 0
     original_home = os.environ.get("CODEX_HOME")
@@ -365,11 +377,19 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
             if with_analytics:
                 _synthetic_rollout(home, agents[0])
                 importer = threading.Thread(target=_import_history,
-                    args=(runtime, agents[0]["id"], import_started, gate, import_report, stop, deadline),
+                    args=(runtime, agents[0]["id"], import_work_started, gate, import_report, stop, deadline),
                     name="benchmark-analytics-import", daemon=False)
                 importer.start()
-                if not import_started.wait(min(EVENT_TIMEOUT_SECONDS, time_left(deadline))):
-                    raise RuntimeError("analytics importer did not start")
+
+            if inject == "stall_notification":
+                lock_held = threading.Event()
+                def hold_runtime_lock():
+                    with runtime.lock:
+                        lock_held.set()
+                        threading.Event().wait()
+                threading.Thread(target=hold_runtime_lock, name="benchmark-test-lock-holder", daemon=True).start()
+                if not lock_held.wait(time_left(deadline)):
+                    raise TimeoutError("test lock holder did not acquire runtime lock")
 
             # One producer offers at an absolute fixed rate and records queue depth.
             def produce():
@@ -400,8 +420,6 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
                     enqueue_times[identity] = enqueued
                     producer_lateness[identity] = max(0, enqueued - due)
                     work.put((identity, agent, item_id, content, enqueued), timeout=min(EVENT_TIMEOUT_SECONDS, time_left(deadline)))
-                    if seq == 0 and importer:
-                        gate.set()
 
             def dispatch_worker():
                 while True:
@@ -412,10 +430,17 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
                         identity, agent, item_id, content, _enqueued = record
                         if os.environ.get("CODEX_BENCH_TEST_DISPATCH_FAILURE") == "1":
                             raise RuntimeError("injected benchmark dispatch failure")
+                        if importer and not gate.is_set():
+                            gate.set()
+                            if not import_work_started.wait(time_left(deadline)):
+                                raise TimeoutError("analytics importer did not begin work after first dispatch")
+                            if import_report.get("error"):
+                                raise RuntimeError("analytics importer failed: " + import_report["error"])
                         dispatch_times[identity] = now()
                         runtime.notification({"method": "item/completed", "params": {
                             "threadId": agent["threadId"], "turnId": agent["turnId"],
                             "item": {"id": item_id, "type": "agentMessage", "text": content}}})
+                        notification_completed_times[identity] = now()
                         drained[0] += 1
                     except BaseException as error:
                         errors.put(f"dispatch worker {threading.current_thread().name}: {type(error).__name__}: {error}")
@@ -452,11 +477,18 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
                     raise RuntimeError("analytics importer failed to stop")
                 if import_report.get("error"):
                     raise RuntimeError("analytics import failed: " + import_report["error"])
-                first_enqueue = min(enqueue_times.values()) if enqueue_times else end_ns
-                final_dispatch = max(dispatch_times.values()) if dispatch_times else end_ns
-                import_report["overlappedEventWindow"] = bool(
-                    import_report.get("startedNs", end_ns) <= final_dispatch
-                    and import_report.get("completedNs", first_enqueue) >= first_enqueue)
+                write_times = import_report.get("writeTimestampsNs", [])
+                dispatch_overlaps = [value for value in write_times if any(
+                    started <= value <= notification_completed_times.get(identity, started)
+                    for identity, started in dispatch_times.items())]
+                offer_start = min(scheduled_times.values()) if scheduled_times else end_ns
+                receipt_end = max(receipts.values()) if receipts else end_ns
+                receipt_overlaps = [value for value in write_times if offer_start <= value <= receipt_end]
+                import_report["overlapWindow"] = (
+                    "notification_execution" if dispatch_overlaps
+                    else "fixed_offer_to_final_client_receipt")
+                import_report["overlapWriteTimestampsNs"] = dispatch_overlaps or receipt_overlaps
+                import_report["overlappedEventWindow"] = bool(import_report["overlapWriteTimestampsNs"])
                 import_report["expectedRecords"] = SYNTHETIC_HISTORY_RECORDS + 2  # Header, context, and usage rows.
                 import_report["syntheticDataRecords"] = SYNTHETIC_HISTORY_RECORDS
                 import_report["importedRecords"] = (import_report.get("state") or {}).get("importedRecords", 0)
@@ -530,7 +562,43 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
             if cleanup_errors and prior_exception is None:
                 raise RuntimeError("; ".join(cleanup_errors))
 
+
+def run_supervised_case(agent_count: int, messages_per_agent: int, rate_hz: float,
+                        with_analytics: bool, repetition: int = 1,
+                        inject: str | None = None, transport: str = "sync",
+                        timeout: float = CASE_TIMEOUT_SECONDS) -> dict:
+    """Run one case in a child process the parent can terminate at its deadline."""
+    payload = {"agent_count": agent_count, "messages_per_agent": messages_per_agent,
+               "rate_hz": rate_hz, "with_analytics": with_analytics,
+               "repetition": repetition, "inject": inject, "transport": transport}
+    deadline = time.monotonic() + timeout
+    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--_case-worker"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True)
+    try:
+        stdout, stderr = process.communicate(json.dumps(payload), timeout=max(0.01, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        stdout, stderr = process.communicate()
+        diagnostic = stderr.strip() or stdout.strip()
+        raise TimeoutError(f"case process exceeded its {timeout:g}-second parent deadline; "
+                           f"child terminated. {diagnostic}") from error
+    if process.returncode != 0:
+        raise RuntimeError(f"case process exited {process.returncode}: {stderr.strip() or stdout.strip()}")
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"case process returned invalid JSON: {stdout[:500]!r}; {stderr.strip()}") from error
+
 def main(argv=None) -> int:
+    if argv is None and sys.argv[1:] == ["--_case-worker"]:
+        try:
+            case = json.load(sys.stdin)
+            print(json.dumps(run_case(**case), separators=(",", ":")))
+            return 0
+        except BaseException as error:
+            print(f"message delivery case worker failed: {type(error).__name__}: {error}", file=sys.stderr)
+            return 1
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agents", type=int, nargs="+", default=list(DEFAULT_AGENT_COUNTS))
     parser.add_argument("--messages-per-agent", type=int, default=DEFAULT_MESSAGES_PER_AGENT)
@@ -576,8 +644,9 @@ def main(argv=None) -> int:
             for analytics in cases:
                 for transport in transports:
                     for repetition in range(1, args.repetitions + 1):
-                        report["cases"].append(run_case(count, args.messages_per_agent, args.rate,
-                                                        analytics, repetition, transport=transport))
+                        report["cases"].append(run_supervised_case(
+                            count, args.messages_per_agent, args.rate, analytics, repetition,
+                            transport=transport))
     except Exception as error:
         print(f"message delivery benchmark failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
