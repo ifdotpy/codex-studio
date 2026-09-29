@@ -4,7 +4,12 @@ Studio checks the installed live update manifest every two seconds. A separate
 worker applies the reviewed patch. HTTP requests and agent connections continue.
 Chats do not show a permanent server update notice.
 
-The manifest identifies one patch and the exact source files it requires.
+The manifest identifies one patch and the exact production source files it
+requires. It covers top-level backend Python files and Python files in package
+directories under `scripts/`, using stable relative paths. Package tests,
+benchmarks, bytecode caches, and vendor or virtual-environment directories are
+excluded. A nested package edit or an incomplete manifest prevents
+application.
 The patch must validate the supported live methods before any change. It must
 preserve existing objects and callbacks, reject unknown implementations, and
 accept a repeated call without repeating work. A patch cannot send messages,
@@ -28,9 +33,9 @@ python3 scripts/codex-publish-update \
   --scope 'Exact methods and behavior changed by this release'
 ```
 
-The command acquires the publication lock, hashes the complete Python source
-set, and atomically replaces `studio-live-update.json`. Sign the application
-after publication, then install the complete artifact.
+The command acquires the publication lock, hashes the complete production
+source inventory, and atomically replaces `studio-live-update.json`. Sign the
+application after publication, then install the complete artifact.
 
 The updater holds a shared publication lock during validation and application.
 An incomplete installation, unknown source, or unsupported Python version does
