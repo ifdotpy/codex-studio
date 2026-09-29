@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { modelOptions, modelValue, selectModel } from "./model-picker.mjs";
 const skill = dirname(dirname(fileURLToPath(import.meta.url)));
 const { chromium, _electron } = createRequire(join(skill, "web/package.json"))(
   "playwright-core",
@@ -133,28 +134,25 @@ try {
   await page.getByRole("button", { name: "Retry model list" }).click();
   const selector = page.locator("#model");
   await page.waitForFunction(() => !document.querySelector("#model").disabled);
-  assert.equal(
-    await selector.locator('option[value="hidden-model"]').count(),
-    0,
-  );
-  await selector.selectOption("test-model");
+  assert.equal((await modelOptions(selector)).includes("hidden-model"), false);
+  await selectModel(selector, "test-model");
   await page.waitForFunction(
     () =>
       !document.querySelector("#model").disabled &&
-      document.querySelector("#model").value === "test-model",
+      document.querySelector("#model").dataset.value === "test-model",
   );
   const state = await (await fetch(url + "/api/state")).json();
   assert.equal(
     state.runtime.agents.find((agent) => agent.id === worker.id).model,
     "test-model",
   );
-  await page.locator("#model").selectOption("ui-only");
+  await selectModel(page.locator("#model"), "ui-only");
   await page
     .getByText("This model is not available for this account", {
       exact: true,
     })
     .waitFor();
-  assert.equal(await page.locator("#model").inputValue(), "test-model");
+  assert.equal(await modelValue(page.locator("#model")), "test-model");
   for (const width of [1440, 768, 420]) {
     await page.setViewportSize({ width, height: 960 });
     await page.waitForFunction(
@@ -203,7 +201,7 @@ try {
   await page
     .getByText("Model settings apply to the next turn.", { exact: false })
     .waitFor();
-  await page.locator("#model").selectOption("test-model");
+  await selectModel(page.locator("#model"), "test-model");
   await page.waitForFunction(async (id) => {
     const snapshot = await fetch("/api/state").then((response) =>
       response.json(),
@@ -224,17 +222,17 @@ try {
   await page.locator("#back-lead").click();
   await openSettings("Main agent settings");
   await page.locator("#model").waitFor();
-  assert.deepEqual(
-    await page
-      .locator("#model option")
-      .evaluateAll((nodes) => nodes.map((n) => n.value)),
-    ["test-model", "gpt-6-astra", "gpt-5.6-sol", "ui-only"],
-  );
-  await page.locator("#model").selectOption("test-model");
+  assert.deepEqual(await modelOptions(page.locator("#model")), [
+    "test-model",
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "ui-only",
+  ]);
+  await selectModel(page.locator("#model"), "test-model");
   await page.waitForFunction(
     () =>
       !document.querySelector("#model").disabled &&
-      document.querySelector("#model").value === "test-model",
+      document.querySelector("#model").dataset.value === "test-model",
   );
   const leadState = await (await fetch(url + "/api/state")).json();
   const selectedLead = leadState.runtime.agents.find(
@@ -256,9 +254,9 @@ try {
     exact: true,
   });
   assert.equal(
-    await defaults
-      .getByLabel("Default subagent model", { exact: true })
-      .inputValue(),
+    await modelValue(
+      defaults.getByLabel("Default subagent model", { exact: true }),
+    ),
     "gpt-6-luna",
   );
   assert.equal(
@@ -267,7 +265,14 @@ try {
       .inputValue(),
     "high",
   );
-  assert.equal(await defaults.locator('option[value="ui-only"]').count(), 0);
+  assert.equal(
+    (
+      await modelOptions(
+        defaults.getByLabel("Default subagent model", { exact: true }),
+      )
+    ).includes("ui-only"),
+    false,
+  );
   assert.ok(
     workerRequests > 0,
     "Subagent defaults use the cross-account worker catalog",

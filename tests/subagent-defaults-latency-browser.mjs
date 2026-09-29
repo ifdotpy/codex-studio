@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { modelValue, selectModel } from "./model-picker.mjs";
 const skill = dirname(dirname(fileURLToPath(import.meta.url)));
 const { chromium } = createRequire(join(skill, "web/package.json"))(
   "playwright-core",
@@ -174,7 +175,7 @@ try {
     [...document.querySelectorAll('[role="dialog"] select')].every((node) => !node.disabled),
   );
   const modelStart = performance.now();
-  await model.selectOption("gpt-5.6-sol");
+  await selectModel(model, "gpt-5.6-sol");
   timings.modelShownMs = Math.round(performance.now() - modelStart);
   if (legacy) {
     await page.waitForFunction(async (id) => {
@@ -210,7 +211,7 @@ try {
       second.id,
     );
     await transferStatus.waitFor();
-    assert.equal(await dialog.getByLabel(/model/i).first().inputValue(), "gpt-5.6-sol");
+    assert.equal(await modelValue(dialog.getByLabel(/model/i).first()), "gpt-5.6-sol");
     assert.equal(await dialog.getByRole("status").filter({ hasText: /^Moving/ }).count(), 0);
   }
   assert.deepEqual(errors, []);
