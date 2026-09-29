@@ -12,6 +12,8 @@ import time
 from types import ModuleType
 import uuid
 
+from codex_source_inventory import source_files
+
 
 class LiveUpdates:
     def __init__(self, runtime, scripts=None, interval=2):
@@ -82,17 +84,17 @@ class LiveUpdates:
         inputs = manifest.get("inputs")
         if not isinstance(inputs, dict) or not inputs:
             raise ValueError("Missing live update source hashes")
-        names = {path.name for path in self.scripts.iterdir()
-                 if path.is_file() and (path.suffix == ".py" or path.name == "codex-canvas")}
+        sources = dict(source_files(self.scripts))
+        names = set(sources)
         if "codex-canvas" not in names or patch not in names or set(inputs) != names:
             raise ValueError("Live update inputs do not cover the complete source tree")
         contents = {}
         for name, expected in inputs.items():
-            if (not isinstance(name, str) or Path(name).name != name
+            if (not isinstance(name, str) or name not in sources
                     or not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected)):
                 raise ValueError("Invalid live update source hash")
-            path = self.scripts / name
-            if path.is_symlink() or path.resolve().parent != self.scripts:
+            path = sources[name]
+            if path.is_symlink() or path.resolve() != (self.scripts / name).resolve():
                 raise ValueError("Live update source must be a local regular file")
             content = path.read_bytes()
             if hashlib.sha256(content).hexdigest() != expected:
@@ -102,11 +104,10 @@ class LiveUpdates:
 
     def _sources(self):
         result = []
-        for path in sorted(self.scripts.iterdir()):
-            if path.suffix == ".py" or path.name == "codex-canvas":
-                info = path.lstat()
-                result.append((path.name, info.st_ino, info.st_mode, info.st_size,
-                               info.st_mtime_ns, info.st_ctime_ns))
+        for name, path in source_files(self.scripts):
+            info = path.lstat()
+            result.append((name, info.st_ino, info.st_mode, info.st_size,
+                           info.st_mtime_ns, info.st_ctime_ns))
         return tuple(result)
 
     def tick(self):

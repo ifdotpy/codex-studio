@@ -8,9 +8,10 @@ import {
   writeFileSync,
   rmSync,
   copyFileSync,
+  symlinkSync,
 } from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -172,11 +173,21 @@ function sourceFixture(run) {
 
 test("the backend build matches the Python source identity", () => {
   sourceFixture((root) => {
+    const packageRoot = path.join(root, "scripts/analytics");
+    mkdirSync(path.join(packageRoot, "tests"), { recursive: true });
+    mkdirSync(path.join(packageRoot, "benchmarks"));
+    mkdirSync(path.join(packageRoot, "__pycache__"));
+    mkdirSync(path.join(packageRoot, "vendor"));
+    mkdirSync(path.join(packageRoot, "venv"));
+    writeFileSync(path.join(packageRoot, "__init__.py"), "\n");
+    writeFileSync(path.join(packageRoot, "rollout_parser.py"), "VALUE = 1\n");
+    for (const directory of ["tests", "benchmarks", "__pycache__", "vendor", "venv"])
+      writeFileSync(path.join(packageRoot, directory, "ignored.py"), "VALUE = 1\n");
     const scripts = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../scripts",
     );
-    const python = execFileSync(
+    const pythonBuild = () => execFileSync(
       process.env.CODEX_AGENTS_PYTHON || "python3",
       [
         "-c",
@@ -186,11 +197,42 @@ test("the backend build matches the Python source identity", () => {
       ],
       { encoding: "utf8" },
     ).trim();
-    assert.equal(backendBuild(root), python);
+    const initial = backendBuild(root);
+    assert.equal(initial, pythonBuild());
     writeFileSync(path.join(root, "scripts/ignored.pyc"), "cache");
-    assert.equal(backendBuild(root), python);
-    writeFileSync(path.join(root, "scripts/runtime.py"), "VALUE = 2\n");
-    assert.notEqual(backendBuild(root), python);
+    writeFileSync(path.join(packageRoot, "tests/ignored.py"), "VALUE = 2\n");
+    assert.equal(backendBuild(root), initial);
+    assert.equal(pythonBuild(), initial);
+    writeFileSync(path.join(packageRoot, "rollout_parser.py"), "VALUE = 2\n");
+    assert.notEqual(backendBuild(root), initial);
+    assert.equal(backendBuild(root), pythonBuild());
+  });
+});
+
+test("backend source identity rejects package symlinks in both implementations", () => {
+  sourceFixture((root) => {
+    const packageRoot = path.join(root, "scripts/analytics");
+    mkdirSync(packageRoot);
+    writeFileSync(path.join(packageRoot, "__init__.py"), "\n");
+    writeFileSync(path.join(packageRoot, "source.py"), "VALUE = 1\n");
+    symlinkSync(path.join(packageRoot, "source.py"), path.join(packageRoot, "linked.py"));
+    assert.throws(() => backendBuild(root), /symlink/i);
+    const scripts = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../scripts",
+    );
+    const result = spawnSync(
+      process.env.CODEX_AGENTS_PYTHON || "python3",
+      [
+        "-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); from codex_backend_identity import backend_build; backend_build(sys.argv[2])",
+        scripts,
+        path.join(root, "scripts"),
+      ],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /symlink/i);
   });
 });
 
@@ -243,6 +285,13 @@ test("a source install does not rewrite the identity of an existing Python proce
         "../scripts/codex_backend_identity.py",
       ),
       path.join(root, "scripts/codex_backend_identity.py"),
+    );
+    copyFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../scripts/codex_source_inventory.py",
+      ),
+      path.join(root, "scripts/codex_source_inventory.py"),
     );
     const initial = backendBuild(root);
     const result = JSON.parse(

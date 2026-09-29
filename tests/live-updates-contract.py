@@ -17,6 +17,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_live_updates import LiveUpdates, start
+from codex_source_inventory import source_files
+from codex_backend_identity import backend_build
 
 PATCH = """def apply(runtime):
     with runtime.lock:
@@ -52,8 +54,8 @@ class LiveUpdatesContract(unittest.TestCase):
     def manifest(self, **overrides):
         value = {"version": 1, "id": "fixture-1", "python": [3, 14], "scope": "Fixture patch only",
                  "patch": "codex_fixture_update.py", "inputs": {
-                     path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                     for path in self.scripts.iterdir() if path.suffix == ".py" or path.name == "codex-canvas"}}
+                     name: hashlib.sha256(path.read_bytes()).hexdigest()
+                     for name, path in source_files(self.scripts)}}
         value.update(overrides)
         (self.scripts / "studio-live-update.json").write_text(json.dumps(value))
         return value
@@ -187,6 +189,83 @@ class LiveUpdatesContract(unittest.TestCase):
         self.assertEqual(self.manager.status()["status"], "applied")
         self.assertEqual(self.manager.status()["scope"], "One fixture function")
         self.assertEqual(self.runtime.mutations, 1)
+
+    def test_nested_package_is_identity_and_manifest_source_but_fixtures_are_excluded(self):
+        package = self.scripts / "analytics"
+        package.mkdir()
+        (package / "__init__.py").write_text("\n")
+        nested = package / "rollout_parser.py"
+        nested.write_text("VALUE = 1\n")
+        excluded = package / "tests"
+        excluded.mkdir()
+        (excluded / "fixture.py").write_text("VALUE = 1\n")
+        benchmark = package / "benchmarks"
+        benchmark.mkdir()
+        (benchmark / "measure.py").write_text("VALUE = 1\n")
+        sources = dict(source_files(self.scripts))
+        self.assertIn("analytics/__init__.py", sources)
+        self.assertIn("analytics/rollout_parser.py", sources)
+        self.assertNotIn("analytics/tests/fixture.py", sources)
+        self.assertNotIn("analytics/benchmarks/measure.py", sources)
+        before = backend_build(self.scripts)
+        nested.write_text("VALUE = 2\n")
+        self.assertNotEqual(backend_build(self.scripts), before)
+        publish = runpy.run_path(str(ROOT / "scripts/codex-publish-update"))["publish"]
+        published = publish(self.scripts, "codex_fixture_update.py", "nested-release", "Nested package")
+        manifest = json.loads((self.scripts / "studio-live-update.json").read_text())
+        self.assertIn("analytics/rollout_parser.py", manifest["inputs"])
+        self.assertNotIn("analytics/tests/fixture.py", manifest["inputs"])
+        self.assertNotIn("analytics/benchmarks/measure.py", manifest["inputs"])
+        self.assertEqual(published["inputs"], len(source_files(self.scripts)))
+        self.manager.tick()
+        self.assertEqual(self.manager.status()["status"], "applied")
+
+    def test_top_level_only_identity_preserves_legacy_digest(self):
+        files = sorted(path for path in self.scripts.iterdir()
+                       if path.is_file() and (path.suffix == ".py" or path.name == "codex-canvas"))
+        digest = hashlib.sha256()
+        for path in files:
+            digest.update((path.name + "\0" + hashlib.sha256(path.read_bytes()).hexdigest() + "\n").encode())
+        self.assertEqual(backend_build(self.scripts), digest.hexdigest())
+
+    def test_nested_tampering_missing_coverage_traversal_and_symlinks_fail_closed(self):
+        package = self.scripts / "analytics"
+        package.mkdir()
+        (package / "__init__.py").write_text("\n")
+        nested = package / "rollout_parser.py"
+        nested.write_text("VALUE = 1\n")
+        manifest = self.manifest()
+        manifest["inputs"].update({name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                   for name, path in source_files(self.scripts)
+                                   if name.startswith("analytics/")})
+        (self.scripts / "studio-live-update.json").write_text(json.dumps(manifest))
+        nested.write_text("VALUE = 2\n")
+        self.manager.tick()
+        self.assertEqual(self.manager.status()["status"], "failed")
+        self.assertEqual(self.runtime.attempts, 0)
+
+        nested.write_text("VALUE = 1\n")
+        manifest = self.manifest(id="missing-nested")
+        manifest["inputs"].pop("analytics/rollout_parser.py", None)
+        (self.scripts / "studio-live-update.json").write_text(json.dumps(manifest))
+        self.manager.tick()
+        self.assertEqual(self.manager.status()["status"], "failed")
+
+        manifest = self.manifest(id="traversal")
+        manifest["inputs"]["../outside.py"] = "0" * 64
+        (self.scripts / "studio-live-update.json").write_text(json.dumps(manifest))
+        self.manager.tick()
+        self.assertEqual(self.manager.status()["status"], "failed")
+
+        self.manifest(id="symlink")
+        (package / "linked.py").symlink_to(nested)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            source_files(self.scripts)
+        self.manager.tick()
+        self.assertEqual(self.manager.status()["status"], "failed")
+        publish = runpy.run_path(str(ROOT / "scripts/codex-publish-update"))["publish"]
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            publish(self.scripts, "codex_fixture_update.py", "symlink-release", "Must reject")
 
     def test_background_update_leaves_status_available_while_runtime_lock_is_busy(self):
         self.manifest()

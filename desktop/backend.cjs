@@ -5,22 +5,106 @@ const { createHash } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const excludedSourceDirectories = new Set([
+  "tests",
+  "benchmarks",
+  "__pycache__",
+  "vendor",
+  "venv",
+]);
+
+function backendSources(scripts) {
+  const root = fs.realpathSync(scripts);
+  const found = new Map();
+  const relativeName = (file) => {
+    const relative = path.relative(root, file).split(path.sep).join("/");
+    const parts = relative.split("/");
+    if (
+      !relative ||
+      relative.includes("\\") ||
+      path.isAbsolute(relative) ||
+      parts.some((part) => part === "" || part === "." || part === "..")
+    )
+      throw new Error(`Unsafe backend source path: ${relative}`);
+    return relative;
+  };
+  const add = (file) => {
+    const relative = relativeName(file);
+    const info = fs.lstatSync(file);
+    if (info.isSymbolicLink() || !info.isFile())
+      throw new Error(`Backend source must be a local regular file: ${relative}`);
+    found.set(relative, file);
+  };
+  const symlinkIsDirectory = (file) => {
+    try {
+      return fs.statSync(file).isDirectory();
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+  };
+  const isPackage = (directory) => {
+    const initializer = path.join(directory, "__init__.py");
+    try {
+      const info = fs.lstatSync(initializer);
+      if (info.isSymbolicLink() || !info.isFile())
+        throw new Error(
+          `Backend package initializer must be a regular file: ${relativeName(initializer)}`,
+        );
+      return true;
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    }
+  };
+  const visitPackage = (directory) => {
+    const info = fs.lstatSync(directory);
+    if (info.isSymbolicLink() || !info.isDirectory())
+      throw new Error(
+        `Backend package must be a local directory: ${relativeName(directory)}`,
+      );
+    for (const name of fs.readdirSync(directory).sort()) {
+      if (excludedSourceDirectories.has(name)) continue;
+      const file = path.join(directory, name);
+      const child = fs.lstatSync(file);
+      if (child.isSymbolicLink()) {
+        if (name.endsWith(".py") || symlinkIsDirectory(file))
+          throw new Error(`Backend source must not be a symlink: ${relativeName(file)}`);
+      } else if (child.isFile() && name.endsWith(".py")) {
+        add(file);
+      } else if (child.isDirectory() && isPackage(file)) {
+        visitPackage(file);
+      }
+    }
+  };
+
+  for (const name of fs.readdirSync(root).sort()) {
+    if (excludedSourceDirectories.has(name)) continue;
+    const file = path.join(root, name);
+    const info = fs.lstatSync(file);
+    if (info.isSymbolicLink()) {
+      if (name.endsWith(".py") || symlinkIsDirectory(file))
+        throw new Error(`Backend source must not be a symlink: ${relativeName(file)}`);
+    } else if (info.isFile() && (name.endsWith(".py") || name === "codex-canvas")) {
+      add(file);
+    } else if (info.isDirectory() && isPackage(file)) {
+      visitPackage(file);
+    }
+  }
+  return [...found.entries()].sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  );
+}
+
 function backendBuild(resources) {
   const scripts = path.join(resources, "scripts");
-  const names = fs
-    .readdirSync(scripts)
-    .filter(
-      (name) =>
-        (name.endsWith(".py") || name === "codex-canvas") &&
-        fs.statSync(path.join(scripts, name)).isFile(),
-    )
-    .sort();
-  if (!names.includes("codex-canvas"))
+  const sources = backendSources(scripts);
+  if (!sources.some(([name]) => name === "codex-canvas"))
     throw new Error("The backend entry point is missing.");
   const digest = createHash("sha256");
-  for (const name of names) {
+  for (const [name, file] of sources) {
     const content = createHash("sha256")
-      .update(fs.readFileSync(path.join(scripts, name)))
+      .update(fs.readFileSync(file))
       .digest("hex");
     digest.update(`${name}\0${content}\n`);
   }
