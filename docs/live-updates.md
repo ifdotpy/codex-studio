@@ -10,6 +10,12 @@ directories under `scripts/`, using stable relative paths. Package tests,
 benchmarks, bytecode caches, and vendor or virtual-environment directories are
 excluded. A nested package edit or an incomplete manifest prevents
 application.
+
+Before introducing nested backend packages, upgrade or restart the backend at
+an idle boundary so its live-update manager uses this complete inventory. An
+older manager only checks top-level sources and cannot validate nested package
+coverage. Do not publish live patches through that older manager after nested
+packages are installed.
 The patch must validate the supported live methods before any change. It must
 preserve existing objects and callbacks, reject unknown implementations, and
 accept a repeated call without repeating work. A patch cannot send messages,
