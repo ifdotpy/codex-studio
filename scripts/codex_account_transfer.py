@@ -139,12 +139,11 @@ class AccountTransfers:
         model = current['model']
         fast = bool(agent.get('fastMode', False)) and any(
             tier.get('id') == 'priority' for tier in current.get('serviceTiers', []))
-        effort, native = rt.validate_execution(catalog, model, agent.get('effort'), fast,
-                                               fallback_effort=agent.get('effort') is None)
+        source_effort = None if changed else agent.get('effort')
+        effort, native = rt.validate_execution(catalog, model, source_effort, fast,
+                                               fallback_effort=changed or source_effort is None)
         # A provider change clears the source-specific override. Keep the
         # destination's resolved effort in nativeEffort for the first request.
-        if changed:
-            effort = None
         from codex_daybreak import resolve_program
         daybreak = False if changed else agent.get("daybreakEnabled", False)
         program = resolve_program(catalog, model, daybreak, provider)
