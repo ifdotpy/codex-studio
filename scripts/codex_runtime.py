@@ -71,6 +71,17 @@ class ComplaintConflict(ValueError):
 
 
 DEFAULT_LEAD_MODEL = "gpt-6-astra"
+LIVE_AGENT_SQL = """(json_type(record,'$.deletedAt') IS NULL
+    OR json_type(record,'$.deletedAt')='null'
+    OR json_type(record,'$.deletedAt')='false'
+    OR (json_type(record,'$.deletedAt') IN ('integer','real')
+        AND json_extract(record,'$.deletedAt')=0)
+    OR (json_type(record,'$.deletedAt')='text'
+        AND json_extract(record,'$.deletedAt')='')
+    OR (json_type(record,'$.deletedAt')='array'
+        AND json_array_length(record,'$.deletedAt')=0)
+    OR (json_type(record,'$.deletedAt')='object' AND NOT EXISTS
+        (SELECT 1 FROM json_each(runtime_agents.record,'$.deletedAt'))))"""
 TEXT = {"type": "string"}
 TOOLS = [
     tool("orchestration_complaint", "Every agent, including the lead, can submit to the complaint book. "
@@ -935,6 +946,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     json_extract(record,'$.threadId'),
                     CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'
                          ELSE json_extract(record,'$.accountKey') END);
+                CREATE INDEX IF NOT EXISTS runtime_agent_root ON runtime_agents(
+                    json_extract(record,'$.rootId'));
                 CREATE TABLE IF NOT EXISTS runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_usage_resumes (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_usage_resume_agent ON runtime_usage_resumes(agent);
@@ -1146,6 +1159,32 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                 cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
+    def team_agents(self, db, root_id):
+        """Decode one team's agents without loading unrelated workspace records."""
+        from codex_agent_modes import mode_fields
+        return [mode_fields(json.loads(row[0])) for row in db.execute(
+            f"SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
+            f"AND {LIVE_AGENT_SQL}", (root_id,))]
+
+    def broadcast_room(self, db, room):
+        """Build one team broadcast room from its indexed, live roster."""
+        rows = db.execute(
+            "SELECT json_extract(record,'$.id'), json_extract(record,'$.name') "
+            f"FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
+            f"AND {LIVE_AGENT_SQL}", (room["rootId"],)).fetchall()
+        agents = {row[0]: row[1] for row in rows}
+        root_name = agents.get(room["rootId"])
+        if room["rootId"] not in agents:
+            return None
+        members = list(agents)
+        view = dict(room)
+        view["members"] = members
+        view["name"] = view.get("customName") or root_name + " · Broadcast"
+        last = db.execute("SELECT seq,text,created,sender FROM runtime_chat_messages "
+                          "WHERE room=? ORDER BY seq DESC LIMIT 1", (room["id"],)).fetchone()
+        view["lastMessage"] = {**dict(last), "text": last["text"][:180]} if last else None
+        return view
+
     def agent_entity_view(self, db, record):
         # Match the renderer-facing fields added by snapshot(), so later
         # internal agent writes cannot erase visible source/team details.
@@ -1191,7 +1230,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         }.get(table)
         if collection:
             if table == "rooms":
-                room = next((item for item in self.chat_rooms(db) if item["id"] == record["id"]), None)
+                room = (self.broadcast_room(db, record) if record.get("kind") == "broadcast"
+                        and record.get("rootId") != "all" else None)
+                if room is None:
+                    room = next((item for item in self.chat_rooms(db) if item["id"] == record["id"]), None)
                 sync_entity_put(db, collection, str(record["id"]), room or record, room is None)
             elif table == "agents":
                 sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),
@@ -4820,7 +4862,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if target == "broadcast":
                 root = sender["rootId"]
                 room = {"id": "broadcast:" + root, "kind": "broadcast", "rootId": root}
-                recipients = [a for a in self.records(db, "agents")
+                recipients = [a for a in self.team_agents(db, root)
                               if root == a["rootId"] and not a.get("deletedAt")]
             else:
                 from codex_peer_teams import peer_pair_allowed
@@ -4877,7 +4919,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 deliveries[recipient["id"]] = "queued"
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
-            derived_room = next((item for item in self.chat_rooms(db) if item["id"] == room["id"]), None)
+            derived_room = (self.broadcast_room(db, room) if room["kind"] == "broadcast"
+                            and room.get("rootId") != "all" else
+                            next((item for item in self.chat_rooms(db) if item["id"] == room["id"]), None))
             if derived_room:
                 from codex_sync_entities import put as sync_entity_put
                 sync_entity_put(db, "room", room["id"], derived_room)
