@@ -45,11 +45,41 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(url);
   await page.locator("#message").waitFor();
+  const openChatActions = async () => {
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    const settingsAction = page.getByRole("menuitem", {
+      name: "Chat settings",
+      exact: true,
+    });
+    await settingsAction.waitFor();
+    return settingsAction;
+  };
+  const openChatSettings = async () => {
+    await (await openChatActions()).click();
+  };
+  const inspectConversationTools = async (hasUsage) => {
+    const menu = page.locator(".conversation-header-tools-menu");
+    const summary = page.locator(
+      '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+    );
+    await menu.waitFor();
+    const wasOpen = (await menu.getAttribute("open")) !== null;
+    if (!wasOpen) await summary.click();
+    const usage = page.locator("#conversation-header-tools #usage-footer");
+    assert.equal(await usage.count(), hasUsage ? 1 : 0);
+    if (hasUsage) {
+      await usage.waitFor({ state: "visible" });
+      await usage
+        .getByRole("button", { name: "Account limits", exact: true })
+        .waitFor({ state: "visible" });
+    }
+    if (!wasOpen) await summary.click();
+  };
   for (const width of [320, 390, 760]) {
     await page.setViewportSize({ width, height: 844 });
-    await page
-      .getByRole("button", { name: "Chat settings", exact: true })
-      .waitFor();
+    const settingsAction = await openChatActions();
     assert.equal(await page.locator(".workspace-shortcuts").count(), 0);
     const snapshot = await (await fetch(url + "/api/state")).json();
     const selected = await page.evaluate(() =>
@@ -59,16 +89,16 @@ try {
       (a) => a.rootId === selected && !a.isLead,
     );
     assert.equal(
-      await page.locator("#team-toggle").count(),
+      await page.getByRole("menuitem", { name: "Team", exact: true }).count(),
       hasWorkers ? 1 : 0,
     );
+    assert.equal(await settingsAction.isVisible(), true);
+    await page.keyboard.press("Escape");
     assert.equal(await page.locator(".terminal-dock").count(), 0);
     const managed =
       snapshot.threads.find((agent) => agent.id === selected)?.source ===
       "managed";
-    assert.equal(await page.locator(".usage-footer").count(), managed ? 1 : 0);
-    if (managed)
-      assert.equal(await page.locator(".usage-footer").isVisible(), true);
+    await inspectConversationTools(managed);
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -105,16 +135,7 @@ try {
   await page.locator("#message").fill("First line");
   await page.locator("#message").press("Enter");
   assert.equal(await page.locator("#message").inputValue(), "First line\n");
-  assert.ok(
-    Number(
-      await page
-        .locator("#message")
-        .evaluate((element) => parseFloat(getComputedStyle(element).fontSize)),
-    ) >= 16,
-  );
-  await page
-    .getByRole("button", { name: "Chat settings", exact: true })
-    .click();
+  await openChatSettings();
   await page.getByTestId("account-picker").waitFor();
   assert.equal(
     await page.getByRole("button", { name: /Add account/ }).count(),
@@ -123,6 +144,14 @@ try {
   assert.equal(
     await page.getByLabel("Subagent defaults", { exact: true }).count(),
     1,
+  );
+  await page.keyboard.press("Escape");
+  const mobileComposerFontSize = await page
+    .locator("#message")
+    .evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+  assert.ok(
+    mobileComposerFontSize >= 16,
+    `Mobile composer font size should stay at least 16px (got ${mobileComposerFontSize}px)`,
   );
   let originalBody, created;
   let confirmServerCreation;
@@ -180,9 +209,7 @@ try {
     0,
   );
   await page.locator("#message").waitFor();
-  await page
-    .getByRole("button", { name: "Chat settings", exact: true })
-    .click();
+  await openChatSettings();
   assert.equal(await page.getByTestId("account-picker").isEnabled(), true);
   await page.keyboard.press("Escape");
   // Use the real runtime to create another chat while the previous chat is empty.
@@ -224,9 +251,7 @@ try {
     expected_revision: project?.accountRevision || 0,
   });
   await page.reload();
-  await page
-    .getByRole("button", { name: "Chat settings", exact: true })
-    .click();
+  await openChatSettings();
   await page.getByTestId("account-picker").waitFor();
   assert.equal(
     await page.getByTestId("account-picker").getAttribute("aria-label"),

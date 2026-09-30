@@ -325,6 +325,9 @@ The sidebar and Team panel can collapse at any window width.
 Prompt history, context usage, and account limits are in the chat header.
 When space is limited or text is enlarged, open **Conversation tools** to access
 them. Agent progress stays visible above the composer.
+On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
+mode switch is inside Chat settings on mobile. Mobile input text stays at least
+16px; larger selected text sizes apply normally.
 **Chat actions** contains agent tasks, your tasks, changes, plan, rules, search, and background tasks.
 **Search chats** searches full history. **Filter projects and chats** filters the sidebar list.
 The search control above the transcript searches the current chat.

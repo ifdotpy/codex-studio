@@ -203,6 +203,19 @@
   min-width: 0;
   max-width: 100%;
 }
+.workspace-header:has(
+    #conversation-header-tools
+      .conversation-header-tools-menu[data-compact="yes"]
+  )
+  :is(#chat-settings-toggle, #team-toggle) {
+  display: none;
+}
+@media (max-width: 760px) {
+  header.workspace-header.simple-workspace-header {
+    gap: 1px;
+    padding-inline: 6px;
+  }
+}
 .conversation-header-tools-menu {
   position: relative;
   min-width: 0;
@@ -234,6 +247,10 @@
 }
 .conversation-header-tools-menu[data-compact="yes"] > summary:hover {
   background: var(--hover);
+}
+.conversation-header-tools-menu[data-compact="yes"]:not([open])
+  > .conversation-header-tools-content {
+  display: none;
 }
 /* Prompt and usage controls live in the persistent conversation header slot. */
 .conversation-header-tools-content {

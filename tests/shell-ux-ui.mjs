@@ -15,7 +15,9 @@ const evidence = await mkdtemp(join(tmpdir(), "studio-ux-navigation-"));
 const fixture = spawn(
   "python3",
   ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
-  { stdio: ["ignore", "pipe", "pipe"] },
+  {
+    stdio: ["ignore", "pipe", "pipe"],
+  },
 );
 let browser,
   log = "";
@@ -161,6 +163,175 @@ try {
       await page.keyboard.press("Escape");
     }
   }
+  const compactPage = await browser.newPage({
+    viewport: { width: 860, height: 960 },
+  });
+  compactPage.on("pageerror", (error) => errors.push(error.message));
+  await compactPage.route("**/api/sync/identity", (route) =>
+    route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
+  );
+  await compactPage.route("**/api/state*", async (route) => {
+    const state = await route.fetch().then((response) => response.json());
+    const usageError = {
+      codexErrorInfo: "usageLimitExceeded",
+      message: "Usage limit reached",
+    };
+    const addError = (agent) =>
+      agent.name === "Release lead" ? { ...agent, error: usageError } : agent;
+    state.threads = state.threads.map(addError);
+    state.runtime.agents = state.runtime.agents.map(addError);
+    if (state.nodes) state.nodes = [...state.threads, ...(state.chats || [])];
+    return route.fulfill({ json: state });
+  });
+  await compactPage.route("**/api/limits*", (route) =>
+    route.fulfill({
+      json: {
+        at: Date.now() / 1000,
+        data: {
+          rateLimits: {
+            limitId: "codex",
+            primary: {
+              usedPercent: 25,
+              windowDurationMins: 300,
+              resetsAt: Date.now() / 1000 + 3600,
+            },
+          },
+        },
+      },
+    }),
+  );
+  await compactPage.goto(origin);
+  if (
+    (await compactPage
+      .locator("#sidebar-toggle")
+      .getAttribute("aria-expanded")) === "false"
+  )
+    await compactPage.locator("#sidebar-toggle").click();
+  await compactPage
+    .locator(".chat-row")
+    .filter({ hasText: "Release lead" })
+    .click();
+  await compactPage.locator(".native-error").waitFor();
+  await compactPage
+    .getByRole("button", { name: "Chat actions", exact: true })
+    .click();
+  await compactPage
+    .getByRole("menuitem", { name: "Team", exact: true })
+    .click();
+  await compactPage.locator("#team").waitFor();
+  await compactPage.waitForFunction(
+    () =>
+      document.querySelector(".conversation-header-tools-menu")?.dataset
+        .compact === "yes",
+  );
+  const toolsSummary = compactPage.locator(
+    '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+  );
+  await toolsSummary.waitFor();
+  const workspaceBounds = await compactPage
+    .locator(".workspace")
+    .evaluate((element) => {
+      const { x, width } = element.getBoundingClientRect();
+      return { x, width };
+    });
+  assert.ok(
+    workspaceBounds.width < 900,
+    `Sidebar/team should constrain the workspace: ${JSON.stringify(workspaceBounds)}`,
+  );
+  await compactPage.locator("#team-close").click();
+  if (
+    (await compactPage
+      .locator("#sidebar-toggle")
+      .getAttribute("aria-expanded")) === "true"
+  )
+    await compactPage.locator("#sidebar-toggle").click();
+  await compactPage.waitForFunction(
+    () =>
+      document.querySelector(".workspace").clientWidth < 900 &&
+      document.querySelector(".conversation-header-tools-menu")?.dataset
+        .compact === "yes",
+  );
+  await toolsSummary.click();
+  await compactPage.waitForFunction(() =>
+    document
+      .querySelector(".conversation-header-tools-menu")
+      ?.hasAttribute("open"),
+  );
+  const limitsAction = compactPage.getByRole("button", {
+    name: "Account limits",
+    exact: true,
+  });
+  await limitsAction.waitFor();
+  const compactMenuBounds = await compactPage
+    .locator(".conversation-header-tools-content")
+    .boundingBox();
+  assert.ok(compactMenuBounds);
+  assert.ok(
+    compactMenuBounds.x >= 0 &&
+      compactMenuBounds.x + compactMenuBounds.width <= 860 &&
+      compactMenuBounds.y >= 0 &&
+      compactMenuBounds.y + compactMenuBounds.height <= 960,
+    JSON.stringify(compactMenuBounds),
+  );
+  await compactPage.screenshot({
+    path: join(evidence, "constrained-header-tools-menu.png"),
+  });
+  await toolsSummary.click();
+  await compactPage.waitForFunction(
+    () =>
+      !document
+        .querySelector(".conversation-header-tools-menu")
+        ?.hasAttribute("open"),
+  );
+  const studioSettings = await compactPage
+    .getByRole("button", { name: "Studio settings", exact: true })
+    .click()
+    .then(() =>
+      compactPage.getByRole("dialog", {
+        name: "Studio settings",
+        exact: true,
+      }),
+    );
+  await studioSettings
+    .getByRole("slider", { name: "Main font size" })
+    .press("End");
+  await compactPage.keyboard.press("Escape");
+  await studioSettings.waitFor({ state: "hidden" });
+  await compactPage.waitForFunction(
+    () =>
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--studio-main-font-size",
+      ) === "24px" &&
+      document.querySelector(".conversation-header-tools-menu")?.dataset
+        .compact === "yes",
+  );
+  await compactPage
+    .getByRole("button", { name: "View account limits", exact: true })
+    .click();
+  await compactPage.waitForFunction(() =>
+    document
+      .querySelector(".conversation-header-tools-menu")
+      ?.hasAttribute("open"),
+  );
+  const accountLimits = compactPage.getByRole("region", {
+    name: "Account limits details",
+  });
+  await accountLimits.waitFor();
+  const limitsBounds = await compactPage
+    .locator(".account-limits-popover")
+    .boundingBox();
+  assert.ok(limitsBounds);
+  assert.ok(
+    limitsBounds.x >= 0 &&
+      limitsBounds.x + limitsBounds.width <= 860 &&
+      limitsBounds.y >= 0 &&
+      limitsBounds.y + limitsBounds.height <= 960,
+    JSON.stringify(limitsBounds),
+  );
+  await compactPage.screenshot({
+    path: join(evidence, "quota-error-open-account-limits.png"),
+  });
+  await compactPage.close();
   const firstUse = await browser.newPage({
     viewport: { width: 320, height: 844 },
     isMobile: true,

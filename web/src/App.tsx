@@ -1281,6 +1281,13 @@ export default function App() {
       </div>
     </aside>
   );
+  const toggleTeam = () => {
+    if (narrowTeam) setTeamOpen(!teamOpen);
+    else {
+      setWideTeamOpen(!wideTeamOpen);
+      save("codex-team-open", !wideTeamOpen);
+    }
+  };
   return (
     <>
       <Sidebar
@@ -1406,7 +1413,7 @@ export default function App() {
                         ? "Broadcast"
                         : ""}
               </span>
-              {lead?.source === "managed" && (
+              {lead?.source === "managed" && !mobileClient && (
                 <AgentModeSwitch
                   lead={lead}
                   stateDir={data.stateDir}
@@ -1427,7 +1434,9 @@ export default function App() {
           <div id="conversation-header-tools" />
           {!room?.radio && (
             <ActionIcon
+              id="chat-settings-toggle"
               aria-label="Chat settings"
+              title="Chat settings"
               onClick={() => setSettingsOpen(true)}
             >
               <Settings size={20} />
@@ -1439,13 +1448,7 @@ export default function App() {
               id="team-toggle"
               aria-label="Team"
               aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
-              onClick={() => {
-                if (narrowTeam) setTeamOpen(!teamOpen);
-                else {
-                  setWideTeamOpen(!wideTeamOpen);
-                  save("codex-team-open", !wideTeamOpen);
-                }
-              }}
+              onClick={toggleTeam}
             >
               Team
               {workers.length > 0 && (
@@ -1517,6 +1520,27 @@ export default function App() {
                 >
                   Activity {taskCount || ""}
                 </Menu.Item>
+                <Menu.Divider />
+                <Menu.Item
+                  id="chat-actions-settings"
+                  aria-label="Chat settings"
+                  leftSection={<Settings size={14} />}
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  Chat settings
+                </Menu.Item>
+                {!!workers.length && (
+                  <Menu.Item
+                    id="chat-actions-team"
+                    aria-label="Team"
+                    leftSection={<Users size={14} />}
+                    onClick={toggleTeam}
+                  >
+                    Team{" "}
+                    {workers.filter((worker) => busy.has(worker.status)).length}
+                    /{workers.length}
+                  </Menu.Item>
+                )}
                 {agent?.source === "managed" && (
                   <Menu.Item
                     id="mark-unread"
@@ -1638,11 +1662,9 @@ export default function App() {
           accounts.data.accounts.some((item) => item.id === claudeLoginKey) && (
             <ClaudeSignIn
               key={claudeLoginKey}
-              account={
-                accounts.data.accounts.find(
-                  (item) => item.id === claudeLoginKey,
-                )!
-              }
+              account={accounts.data.accounts.find(
+                (item) => item.id === claudeLoginKey,
+              )!}
               scope={data.stateDir}
               onClose={() => setClaudeLoginKey("")}
               onReady={accounts.refresh}
@@ -2001,6 +2023,17 @@ export default function App() {
             aria-label="Conversation settings"
           >
             <h2>Conversation</h2>
+            {mobileClient && lead?.source === "managed" && (
+              <div className="settings-field">
+                <span className="settings-label">Agent mode</span>
+                <AgentModeSwitch
+                  lead={lead}
+                  stateDir={data.stateDir}
+                  workspaceId={workspaceId}
+                  refresh={refresh}
+                />
+              </div>
+            )}
             <BrowserAccessNotice
               accountKey={accountKey}
               active={settingsOpen && (agent || lead)?.provider !== "claude"}

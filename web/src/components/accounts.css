@@ -282,20 +282,22 @@
   }
 }
 
-.chat-settings-panel .account-picker {
+:is(.chat-settings-panel, .studio-settings-panel) .account-picker {
   width: auto;
   max-width: 100%;
   min-height: 36px;
   padding: 0 10px;
   justify-self: start;
 }
-.chat-settings-panel .account-picker .account-picker-label,
-.chat-settings-panel
+:is(.chat-settings-panel, .studio-settings-panel)
+  .account-picker
+  .account-picker-label,
+:is(.chat-settings-panel, .studio-settings-panel)
   .account-picker
   .mantine-Button-section[data-position="right"] {
   display: inline-flex;
 }
-.chat-settings-panel
+:is(.chat-settings-panel, .studio-settings-panel)
   .account-picker
   .mantine-Button-section[data-position="left"] {
   margin-inline-end: 8px;

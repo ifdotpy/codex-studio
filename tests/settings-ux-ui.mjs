@@ -271,8 +271,9 @@ try {
   });
   await page.keyboard.press("Escape");
   await studioSettings.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page
-    .getByRole("button", { name: "Chat settings", exact: true })
+    .getByRole("menuitem", { name: "Chat settings", exact: true })
     .click();
   assert.match(
     await picker.locator(".account-picker-label").textContent(),
