@@ -182,6 +182,7 @@ export default function App() {
     {},
   );
   const selectionScope = useRef("");
+  const navigationIntent = useRef(0);
   const createdSelection = useRef<string | null>(null);
   useMobileViewport(mobileClient);
   const narrowTeam = useMediaQuery("(max-width: 1199px)");
@@ -267,11 +268,25 @@ export default function App() {
   const persistSends = () => save(pendingSendKey, sends.current);
   useEffect(() => {
     if (!data?.stateDir) return;
-    try {
-      setPendingCreations(pendingChatCreations(creationKey));
-    } catch (error) {
-      setToast("Cannot read the saved chat requests: " + errorText(error));
-    }
+    const load = () => {
+      try {
+        setPendingCreations(pendingChatCreations(creationKey));
+      } catch (error) {
+        setToast("Cannot read the saved chat requests: " + errorText(error));
+      }
+    };
+    load();
+    const stored = (event: StorageEvent) => {
+      if (
+        event.key === null ||
+        event.key === creationKey ||
+        event.key?.startsWith(`${creationKey}:request:`)
+      ) {
+        load();
+      }
+    };
+    window.addEventListener("storage", stored);
+    return () => window.removeEventListener("storage", stored);
   }, [creationKey, data?.stateDir]);
   const notify = useCallback((s: string) => {
     setToast(s);
@@ -392,6 +407,7 @@ export default function App() {
     [opened, setDrafts],
   );
   const open = (id: string, messageId?: string) => {
+    navigationIntent.current++;
     setJumpTarget(
       messageId
         ? { chatId: id, messageId, requestId: crypto.randomUUID() }
@@ -482,6 +498,7 @@ export default function App() {
     if (!agents.some((item) => item.id === navigationTarget.agentId)) {
       notify("This chat is no longer available.");
     } else {
+      navigationIntent.current++;
       setOpened(navigationTarget.agentId);
       setWorkspaceSection("messages");
       setWorkspaceFocus(
@@ -683,18 +700,24 @@ export default function App() {
     retryId?: string,
   ) => {
     if (creationLock.current) return null;
+    if (!retryId && !cwd) {
+      cwd = lead?.cwd || (mobileClient
+        ? data?.runtime.projects?.[0]?.path || leads.find((item) => item.cwd)?.cwd
+        : undefined);
+      projectFolder = lead?.projectFolder || undefined;
+    }
     try {
       const pending = pendingChatCreations(creationKey);
       creation.current =
         (retryId
           ? pending.find((request) => request.id === retryId)
-          : cwd
-            ? pending.find(
-                (request) =>
-                  request.cwd === cwd &&
-                  (request.project_folder || undefined) === projectFolder,
-              )
-            : pending[0]) || null;
+          : pending.find(
+              (request) =>
+                (request.cwd ||
+                  leads.find((item) => item.id === request.previous)?.cwd) === cwd &&
+                (request.project_folder || undefined) === projectFolder,
+            )) || null;
+      setPendingCreations(pending);
       if (retryId && !creation.current)
         throw new Error("The saved chat request is no longer available.");
     } catch (error) {
@@ -726,6 +749,8 @@ export default function App() {
       }
     }
     creationLock.current = true;
+    const selectionIntent = navigationIntent.current;
+    const selectedScope = selectionScope.current;
     setCreating(true);
     creation.current ||= {
       id: crypto.randomUUID(),
@@ -757,10 +782,15 @@ export default function App() {
       if (!opened && drafts.new) setDraft(drafts.new, a.id);
       setToast("");
       creation.current = null;
-      createdSelection.current = a.id;
-      setOpened(a.id);
-      setSidebar(false);
-      setTeamOpen(false);
+      if (
+        navigationIntent.current === selectionIntent &&
+        selectionScope.current === selectedScope
+      ) {
+        createdSelection.current = a.id;
+        setOpened(a.id);
+        setSidebar(false);
+        setTeamOpen(false);
+      }
       void refresh();
       return a.id as string;
     } catch (e) {
@@ -984,7 +1014,10 @@ export default function App() {
                 );
                 setModal(null);
                 if (!isRoom) forgetCreated(r.deleted);
-                if (r.deleted.includes(opened)) setOpened(null);
+                if (r.deleted.includes(opened)) {
+                  navigationIntent.current++;
+                  setOpened(null);
+                }
                 setDrafts((old) => {
                   const next = { ...old };
                   for (const key of r.deleted) delete next[key];
@@ -1668,6 +1701,7 @@ export default function App() {
               onPhase={onPhase}
               onSelect={open}
               onBranchCreated={(id) => {
+                navigationIntent.current++;
                 createdSelection.current = id;
                 setOpened(id);
                 setSidebar(false);

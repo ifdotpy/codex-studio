@@ -27,6 +27,8 @@ export function ClaudeSettings({ agent }: { agent: Agent }) {
   const thinkingRequired = requiresThinking(agent.model, catalog.models);
   const [state, setState] = useState<Json>({});
   const [stateLoaded, setStateLoaded] = useState(false);
+  const [stateLoading, setStateLoading] = useState(true);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [commands, setCommands] = useState<Json[]>([]);
   const [values, setValues] = useState<ClaudeValues>(() =>
     valuesFrom({}, agent),
@@ -43,7 +45,11 @@ export function ClaudeSettings({ agent }: { agent: Agent }) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const windowSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const call = (action: string, data: Json = {}) =>
-    api("/api/claude/session", { id: agent.id, action, ...data });
+    api(
+      "/api/claude/session",
+      { id: agent.id, action, ...data },
+      { timeoutMs: 15000 },
+    );
   const mutate = async (action: string, data: Json) => {
     const storageKey = `claude-control:${agent.accountKey}:${agent.id}:${action}:${JSON.stringify(data)}`;
     const requestId =
@@ -65,6 +71,8 @@ export function ClaudeSettings({ agent }: { agent: Agent }) {
   useEffect(() => {
     let active = true;
     setStateLoaded(false);
+    setStateLoading(true);
+    setError("");
     call("state")
       .then((value) => {
         if (!active) return;
@@ -76,13 +84,14 @@ export function ClaudeSettings({ agent }: { agent: Agent }) {
         setWindow(next.autoCompactWindow ? String(next.autoCompactWindow) : "");
         setStateLoaded(true);
       })
-      .catch((failure) => active && setError(errorText(failure)));
+      .catch((failure) => active && setError(errorText(failure)))
+      .finally(() => active && setStateLoading(false));
     return () => {
       active = false;
       if (timer.current) clearTimeout(timer.current);
       if (windowSaveTimer.current) clearTimeout(windowSaveTimer.current);
     };
-  }, [agent.id, agent.accountKey]);
+  }, [agent.id, agent.accountKey, loadAttempt]);
 
   const saveSetting = async (field: string, patch: Partial<ClaudeValues>) => {
     if (busyAction || savingField) return;
@@ -158,9 +167,10 @@ export function ClaudeSettings({ agent }: { agent: Agent }) {
     <section
       className="settings-group claude-settings"
       aria-label="Claude settings"
-      aria-busy={!stateLoaded}
+      aria-busy={stateLoading}
     >
       <h2>Permissions</h2>
+      {stateLoading && <p role="status">Loading Claude settings…</p>}
       <NativeSelect
         label="Permission mode"
         value={values.permissionMode}
@@ -328,6 +338,11 @@ export function ClaudeSettings({ agent }: { agent: Agent }) {
         <p role="alert" className="claude-setting-error">
           {error}
         </p>
+      )}
+      {!stateLoaded && error && (
+        <Button onClick={() => setLoadAttempt((value) => value + 1)}>
+          Retry Claude settings
+        </Button>
       )}
     </section>
   );

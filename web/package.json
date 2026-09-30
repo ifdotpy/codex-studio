@@ -20,6 +20,7 @@
     "prebuild": "node scripts/patch-rxdb-runtime.cjs",
     "predev": "node scripts/patch-rxdb-runtime.cjs",
     "test:rxdb-cache": "node ../tests/rxdb-event-cache-gc.mjs",
+    "test:ux-recovery": "npm run build && node ../tests/ux-request-recovery-browser.mjs && node ../tests/account-project-ui.mjs && node ../tests/project-tree-ui.mjs && python3 -B ../tests/sync-entities-contract.py",
     "test:display": "npm run build && node ../tests/ui-error-boundary-browser.mjs && node ../tests/worker-overview-ui.mjs",
     "test:skill-autocomplete": "npm run build && node ../tests/skill-autocomplete-ui.mjs",
     "test:diagnostics": "npm run build && node --experimental-strip-types ../tests/error-presentation-contract.mjs && node ../tests/http-error-diagnostics-browser.mjs && node ../tests/account-settings-errors-browser.mjs && node ../tests/structured-operational-errors-ui.mjs && node ../tests/native-error-ui.mjs",

@@ -13,7 +13,7 @@ import {
   RefreshCw,
   UserRound,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { api, errorText } from "../api";
 import type { Agent, Json } from "../types";
 import "./accounts.css";
@@ -41,27 +41,41 @@ export interface AccountsState {
   supportsDisconnect?: boolean;
 }
 export function useAccounts(stateDir?: string) {
-  const [data, setData] = useState<AccountsState>({
+  const [data, setAccountsData] = useState<AccountsState>({
     accounts: [],
     defaultAccountKey: "default",
   });
   const [error, setError] = useState("");
+  const latestRead = useRef(0);
+  const scope = useRef(stateDir);
+  scope.current = stateDir;
+  const setData = useCallback((value: SetStateAction<AccountsState>) => {
+    latestRead.current++;
+    setAccountsData(value);
+    setError("");
+  }, []);
   const refresh = useCallback(async () => {
+    const read = ++latestRead.current;
     try {
       const result = await api<AccountsState>("/api/accounts");
-      setData(result);
+      if (read !== latestRead.current || scope.current !== stateDir) return null;
+      setAccountsData(result);
       setError("");
       return result;
     } catch (e) {
-      setError(errorText(e));
+      if (read === latestRead.current && scope.current === stateDir)
+        setError(errorText(e));
       return null;
     }
-  }, []);
+  }, [stateDir]);
   useEffect(() => {
     if (!stateDir) return;
     void refresh();
     const timer = window.setInterval(() => void refresh(), 30000);
-    return () => window.clearInterval(timer);
+    return () => {
+      latestRead.current++;
+      window.clearInterval(timer);
+    };
   }, [stateDir, refresh]);
   return { data, setData, error, refresh, scope: stateDir };
 }
@@ -195,10 +209,14 @@ export function AccountTransferStatus({
       <div>
         <div>
           {transfer.moved ?? transfer.completed ?? 0} moved to {targetLabel}
-          {transfer.status === "pending" && ` · ${waiting} waiting`}
+          {transfer.status === "pending" &&
+            waiting > 0 &&
+            ` · ${waiting} waiting`}
         </div>
         {!!transfer.nativeHistoryPending && (
-          <small>{transfer.nativeHistoryPending} native histories pending (lazy)</small>
+          <small>
+            {transfer.nativeHistoryPending} histories will transfer before the next reply.
+          </small>
         )}
         {!!transfer.movingNow && (
           <small>{transfer.movingNow} moving now</small>

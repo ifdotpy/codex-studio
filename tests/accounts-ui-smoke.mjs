@@ -8,6 +8,7 @@ import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const webDist = process.env.STUDIO_WEB_DIST || join(root, "web/dist");
 const { chromium } = createRequire(join(root, "web/package.json"))(
   "playwright-core",
 );
@@ -286,7 +287,7 @@ const server = createServer(async (req, res) => {
     return res.end();
   }
   if (url.pathname === "/api/queue") {
-    if (req.method === "POST" && body.action === "steer")
+    if (req.method === "POST" && body.action === "cancel")
       claudeQueue = claudeQueue.filter((item) => item.id !== body.id);
     return json({
       items: claudeQueue,
@@ -382,8 +383,7 @@ const server = createServer(async (req, res) => {
     return json({ items: [], sessions: [] });
   try {
     const path = join(
-      root,
-      "web/dist",
+      webDist,
       url.pathname === "/" ? "index.html" : url.pathname,
     );
     const file = await readFile(path);
@@ -1065,6 +1065,7 @@ try {
       agentId: claude.id,
       text: "Change the Claude task",
       status: "queued",
+      requestedDelivery: "after_turn",
       created: Date.now() / 1000,
     },
   ];
@@ -1097,18 +1098,18 @@ try {
   });
   await quota.click();
   await page
-    .getByRole("button", { name: "Steer queued message 1", exact: true })
+    .getByRole("button", { name: "Delete queued message 1", exact: true })
     .click();
   await page.waitForFunction(
-    () => !document.querySelector('[aria-label="Steer queued message 1"]'),
+    () => !document.querySelector('[aria-label="Delete queued message 1"]'),
   );
-  const steer = bodies.find(
+  const cancellation = bodies.find(
     (request) =>
-      request.path === "/api/queue" && request.body.action === "steer",
+      request.path === "/api/queue" && request.body.action === "cancel",
   );
-  assert.equal(steer?.body.id, "claude-queued");
-  assert.equal(steer?.body.expectedText, "Change the Claude task");
-  assert.ok(steer?.body.request_id);
+  assert.equal(cancellation?.body.id, "claude-queued");
+  assert.equal(cancellation?.body.expectedText, "Change the Claude task");
+  assert.ok(cancellation?.body.request_id);
   await openSettings();
   await picker.click();
   await page
@@ -1440,7 +1441,7 @@ try {
         "Codex and Spark dual-window quotas",
         "820px and 780px desktop layouts",
         "Claude native quotas and weekly picker",
-        "Claude queue Steer request identity",
+        "Claude queue cancel request identity",
         "Claude profile create and update",
         "Claude session settings and native commands",
         "Claude rollback error and exact retry receipt",

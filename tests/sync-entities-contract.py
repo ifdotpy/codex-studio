@@ -12,7 +12,8 @@ root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "scripts"))
 from codex_sync import SyncStore
 from codex_sync_entities import (AGENT_FIELDS, ensure_tables, project, put,
-                                sync_task_agent_change, sync_task_window, sync_task_write)
+                                sync_task_agent_change, sync_task_window, sync_task_write,
+                                upgrade_agent_organization)
 
 with tempfile.TemporaryDirectory() as directory:
     path = Path(directory) / "state.sqlite3"
@@ -36,9 +37,12 @@ with tempfile.TemporaryDirectory() as directory:
         "activity": {"phase": "tool", "private": 1}, "nativeStatus": {"error": "status error", "private": 1},
         "startAttempt": {"prepareError": "prepare failure", "private": 1},
         "provider": "codex", "nativeToolCatalog": {"secret": "private"}, "timing": {"private": 1},
+        "pinned": True, "archived": False, "projectFolder": "review", "projectFolderRevision": 3,
     }
     projected = project("agent", visible)
     assert projected["error"] == "visible error"
+    for field in ("pinned", "archived", "projectFolder", "projectFolderRevision"):
+        assert projected.get(field) == visible[field], f"{field} must survive entity sync"
     assert len(projected["overview"]["task"]) == 4000
     assert projected["overview"]["taskTruncated"] is True
     assert projected["nativeRelease"] == {"phase": "released", "resetPending": True}
@@ -96,7 +100,18 @@ with tempfile.TemporaryDirectory() as directory:
     with connect() as db:
         db.executescript("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);"
                          "CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, record TEXT NOT NULL);")
-        db.execute("INSERT INTO runtime_agents VALUES ('agent',?)", (json.dumps({"id":"agent","deletedAt":None}),))
+        organization = {"pinned": True, "archived": False, "projectFolder": "review", "projectFolderRevision": 3}
+        db.execute("INSERT INTO runtime_agents VALUES ('agent',?)", (json.dumps({"id":"agent","deletedAt":None, **organization}),))
+        # Existing entity rows lack the new fields but contain derived renderer values.
+        put(db, "agent", "agent", {"id": "agent", "empty": True, "canSend": False})
+        assert upgrade_agent_organization(db) == 1
+        migrated = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id='agent'").fetchone()[0])["value"]
+        for field, value in organization.items():
+            assert migrated[field] == value
+        assert migrated["empty"] is True and migrated["canSend"] is False
+        sequence = db.execute("SELECT max(seq) FROM sync_entities").fetchone()[0]
+        assert upgrade_agent_organization(db) == 0
+        assert db.execute("SELECT max(seq) FROM sync_entities").fetchone()[0] == sequence
         for index in range(107):
             status = "running" if index >= 105 else "completed"
             record = {"id":f"task-{index}","agent":"agent","status":status,"created":index,

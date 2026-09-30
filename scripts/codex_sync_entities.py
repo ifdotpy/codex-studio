@@ -14,6 +14,7 @@ AGENT_FIELDS = frozenset("""
     overview nativeRelease activity nativeStatus startAttempt provider panelVersion panelDataVersion unreadCount lastReadAt deletedAt
     autoWake voiceState nativeError retryAt hasUnread hasQuestion hasApproval
     statusDetail lastAnswer lastCompletedTurn nextTurnSettingsSupported readStateSupported
+    pinned archived projectFolder projectFolderRevision
 """.split())
 
 COLLECTION_FIELDS = {
@@ -189,8 +190,25 @@ def retire_closed_requests(db):
     return len(rows)
 
 
+def upgrade_agent_organization(db):
+    """Restore existing sidebar metadata without replacing derived agent fields."""
+    if db.execute("SELECT 1 FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone():
+        return 0
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
+        return 0
+    changed = 0
+    for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
+        record = json.loads(raw)
+        values = {field: record.get(field, default) for field, default in (
+            ('pinned', False), ('archived', False), ('projectFolder', None), ('projectFolderRevision', 0))}
+        changed += bool(patch(db, 'agent', key, values))
+    db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','1')")
+    return changed
+
+
 def seed(db, snapshot):
     """Seed once from the compatible view while the caller holds a write lock."""
+    upgrade_agent_organization(db)
     if db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone():
         return
     runtime = snapshot.get("runtime") or {}

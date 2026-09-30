@@ -1,6 +1,6 @@
 import { Button, Checkbox, NativeSelect } from "@mantine/core";
 import { useRef, useState } from "react";
-import { api, errorText } from "../api";
+import { useProjectSave } from "./useProjectSave";
 import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 
@@ -21,33 +21,22 @@ export default function ProjectAccount({
   const [keys, setKeys] = useState(
     project?.accountKeys || [project?.accountKey || defaultAccountKey],
   );
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
-  const lock = useRef(false);
+  const save = useProjectSave("/api/projects", saved);
+  const selected = accounts.accounts.find((account) => account.id === key);
+  const ready = selected?.status === "ready" && !selected.disconnected;
   const revision = useRef(project?.accountRevision || 0);
   return (
     <form
-      onSubmit={async (event) => {
+      onSubmit={(event) => {
         event.preventDefault();
-        if (lock.current) return;
-        lock.current = true;
-        setPending(true);
-        setError("");
-        try {
-          await api("/api/projects", {
-            action: "set_accounts",
-            account_keys: keys,
-            path,
-            account_key: key,
-            expected_revision: revision.current,
-          });
-          await saved();
-        } catch (error) {
-          setError(errorText(error));
-        } finally {
-          lock.current = false;
-          setPending(false);
-        }
+        if (!save.frozen && !ready) return;
+        void save.submit({
+          action: "set_accounts",
+          account_keys: keys,
+          path,
+          account_key: key,
+          expected_revision: revision.current,
+        });
       }}
     >
       <p style={{ overflowWrap: "anywhere" }}>{path}</p>
@@ -70,7 +59,8 @@ export default function ProjectAccount({
                 value={account.id}
                 label={`${account.email || account.label || account.id}${account.disconnected ? " (disconnected)" : ""}`}
                 disabled={
-                  pending ||
+                  save.pending ||
+                  save.frozen ||
                   (account.status !== "ready" && !keys.includes(account.id))
                 }
               />
@@ -81,7 +71,7 @@ export default function ProjectAccount({
       <NativeSelect
         label="Default account for new chats"
         value={key}
-        disabled={pending}
+        disabled={save.pending || save.frozen}
         onChange={(event) => setKey(event.currentTarget.value)}
         data={accounts.accounts
           .filter((account) => keys.includes(account.id))
@@ -92,22 +82,20 @@ export default function ProjectAccount({
           }))}
       />
       <p className="notice">New chats in this project use this account.</p>
-      {error && (
+      {!ready && !save.frozen && (
+        <p role="status">Choose an account that is ready before you save.</p>
+      )}
+      {save.error && (
         <p role="alert" className="account-action-error">
-          {error}
+          {save.error}
         </p>
       )}
       <Button
         type="submit"
-        loading={pending}
-        disabled={
-          !keys.length ||
-          !key ||
-          !!accounts.accounts.find((account) => account.id === key)
-            ?.disconnected
-        }
+        loading={save.pending}
+        disabled={!save.frozen && (!keys.length || !key || !ready)}
       >
-        Save accounts
+        {save.retryLabel || "Save accounts"}
       </Button>
     </form>
   );
