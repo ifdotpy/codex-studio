@@ -134,7 +134,11 @@ function FollowLatest(p: {
 }
 
 const compactToolsBreakpoint = "(max-width: 760px)";
+const compactToolsWorkspaceWidthPx = 900;
 const compactToolsFontThresholdPx = 20;
+const compactToolsMenuMaxWidthPx = 360;
+const compactToolsMenuViewportGutterPx = 8;
+const compactToolsMenuGapPx = 4;
 
 function useCompactHeaderTools() {
   const isCompact = () => {
@@ -143,9 +147,13 @@ function useCompactHeaderTools() {
         "--studio-main-font-size",
       ),
     );
+    const workspaceWidth =
+      document.querySelector<HTMLElement>(".workspace")?.clientWidth ??
+      window.innerWidth;
     return (
       window.matchMedia(compactToolsBreakpoint).matches ||
-      fontSize >= compactToolsFontThresholdPx
+      fontSize >= compactToolsFontThresholdPx ||
+      workspaceWidth < compactToolsWorkspaceWidthPx
     );
   };
   const [compact, setCompact] = useState(() =>
@@ -153,8 +161,13 @@ function useCompactHeaderTools() {
   );
   useEffect(() => {
     const viewport = window.matchMedia(compactToolsBreakpoint);
+    const workspace = document.querySelector<HTMLElement>(".workspace");
     const update = () => setCompact(isCompact());
     const preferences = new MutationObserver(update);
+    const workspaceObserver = workspace
+      ? new ResizeObserver(update)
+      : undefined;
+    if (workspace) workspaceObserver?.observe(workspace);
     viewport.addEventListener("change", update);
     preferences.observe(document.documentElement, {
       attributes: true,
@@ -163,6 +176,7 @@ function useCompactHeaderTools() {
     update();
     return () => {
       viewport.removeEventListener("change", update);
+      workspaceObserver?.disconnect();
       preferences.disconnect();
     };
   }, []);
@@ -215,6 +229,11 @@ export default function Conversation(p: {
   const compactHeaderTools = useCompactHeaderTools();
   const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
   const [toolsExpanded, setToolsExpanded] = useState(false);
+  const [toolsMenuPosition, setToolsMenuPosition] = useState<{
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
   useLayoutEffect(() => {
     setHeaderTools(document.getElementById("conversation-header-tools"));
   }, []);
@@ -240,6 +259,44 @@ export default function Conversation(p: {
     return () => {
       document.removeEventListener("pointerdown", dismissOutside, true);
       document.removeEventListener("keydown", dismissEscape, true);
+    };
+  }, [compactHeaderTools, headerTools, toolsExpanded]);
+  useLayoutEffect(() => {
+    if (!compactHeaderTools || !toolsExpanded || !headerTools) {
+      setToolsMenuPosition(null);
+      return;
+    }
+    const summary = headerTools.querySelector(
+      ".conversation-header-tools-summary",
+    );
+    if (!summary) return;
+    const updatePosition = () => {
+      const anchor = summary.getBoundingClientRect();
+      const viewportWidth =
+        document.documentElement.clientWidth || window.innerWidth;
+      const menuWidth = Math.min(
+        compactToolsMenuMaxWidthPx,
+        Math.max(1, viewportWidth - compactToolsMenuViewportGutterPx * 2),
+      );
+      const minLeft = compactToolsMenuViewportGutterPx;
+      const maxLeft = Math.max(minLeft, viewportWidth - menuWidth - minLeft);
+      setToolsMenuPosition({
+        left: Math.max(minLeft, Math.min(anchor.left, maxLeft)),
+        top: anchor.bottom + compactToolsMenuGapPx,
+        width: menuWidth,
+      });
+    };
+    updatePosition();
+    const observer = new ResizeObserver(updatePosition);
+    observer.observe(summary);
+    const workspace = headerTools.closest<HTMLElement>(".workspace");
+    if (workspace) observer.observe(workspace);
+    window.addEventListener("resize", updatePosition);
+    window.visualViewport?.addEventListener("resize", updatePosition);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updatePosition);
+      window.visualViewport?.removeEventListener("resize", updatePosition);
     };
   }, [compactHeaderTools, headerTools, toolsExpanded]);
   const {
@@ -1226,6 +1283,15 @@ export default function Conversation(p: {
           <details
             className="conversation-header-tools-menu"
             data-compact={compactHeaderTools ? "yes" : "no"}
+            style={
+              compactHeaderTools && toolsExpanded && toolsMenuPosition
+                ? {
+                    left: toolsMenuPosition.left,
+                    top: toolsMenuPosition.top,
+                    width: toolsMenuPosition.width,
+                  }
+                : undefined
+            }
             open={!compactHeaderTools || toolsExpanded}
             onToggle={(event) => {
               if (compactHeaderTools)
