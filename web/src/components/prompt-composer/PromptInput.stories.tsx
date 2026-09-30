@@ -184,9 +184,13 @@ export const LongDraft: Story = {
 };
 
 export const ComposingText: Story = {
-  play: async ({ args, canvasElement }) => {
-    const input = canvasElement.querySelector<HTMLTextAreaElement>("#message");
-    input?.dispatchEvent(
+  args: { initialValue: "Draft while composing" },
+  play: async ({ args, canvasElement, userEvent }) => {
+    const input = within(canvasElement).getByRole("combobox", {
+      name: "Message",
+    });
+    await expect(input).toHaveValue("Draft while composing");
+    input.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "Enter",
         bubbles: true,
@@ -194,6 +198,9 @@ export const ComposingText: Story = {
       }),
     );
     await expect(args.onSend).not.toHaveBeenCalled();
+    input.focus();
+    await userEvent.keyboard("{Enter}");
+    await expect(args.onSend).toHaveBeenCalledTimes(1);
   },
 };
 
