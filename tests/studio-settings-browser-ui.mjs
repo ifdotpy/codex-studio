@@ -107,7 +107,7 @@ try {
   assert.equal(await sidebarSize.getAttribute("aria-valuenow"), "24");
   assert.equal(
     await page
-      .locator(".chat-row")
+      .locator(".chat-row .row-copy strong")
       .first()
       .evaluate((element) => getComputedStyle(element).fontSize),
     "24px",
@@ -117,7 +117,7 @@ try {
   assert.equal(await sidebarSize.getAttribute("aria-valuenow"), "12");
   assert.equal(
     await page
-      .locator(".chat-row")
+      .locator(".chat-row .row-copy strong")
       .first()
       .evaluate((element) => getComputedStyle(element).fontSize),
     "12px",
@@ -157,14 +157,16 @@ try {
   await settings
     .getByLabel("Studio font family", { exact: true })
     .selectOption("georgia");
-  assert.match(
-    await page.evaluate(() =>
-      getComputedStyle(document.documentElement).getPropertyValue(
-        "--studio-font-family",
-      ),
-    ),
-    /Georgia/,
-  );
+  for (const selector of [".chat-row .row-copy strong", "#messages .prose"]) {
+    assert.match(
+      await page
+        .locator(selector)
+        .first()
+        .evaluate((element) => getComputedStyle(element).fontFamily),
+      /Georgia/,
+      `Visible ${selector} text follows the selected UI font family`,
+    );
+  }
   assert.match(
     await page.evaluate(() => {
       const code = document.createElement("code");
@@ -203,6 +205,11 @@ try {
     .getByRole("status")
     .filter({ hasText: "Browser-reserved shortcuts cannot be used." })
     .waitFor();
+  assert.equal(
+    await page.getByRole("dialog", { name: "Search chats" }).count(),
+    0,
+    "A rejected shortcut does not bubble into global chat search",
+  );
   assert.equal(await shortcut.inputValue(), defaultShortcut);
   await page.keyboard.press("Tab");
   assert.notEqual(
@@ -227,6 +234,26 @@ try {
   );
   await page.keyboard.press("Escape");
   await shortcutSettings.waitFor({ state: "hidden" });
+
+  const expandedBeforeConfiguredShortcut = await page
+    .locator("#sidebar-toggle")
+    .getAttribute("aria-expanded");
+  await page.keyboard.press("Control+Shift+x");
+  await page.waitForFunction(
+    (before) =>
+      document
+        .querySelector("#sidebar-toggle")
+        .getAttribute("aria-expanded") !== before,
+    expandedBeforeConfiguredShortcut,
+  );
+  await page.keyboard.press("Control+Shift+x");
+  await page.waitForFunction(
+    (before) =>
+      document
+        .querySelector("#sidebar-toggle")
+        .getAttribute("aria-expanded") === before,
+    expandedBeforeConfiguredShortcut,
+  );
 
   const draft = "Keep this draft while Studio preferences change";
   const composer = page.locator("#message");
@@ -254,10 +281,11 @@ try {
       const rect = (selector) => {
         const element = document.querySelector(selector);
         if (!element) return null;
-        const { x, width } = element.getBoundingClientRect();
-        return { x, width };
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return { x, y, width, height };
       };
       return {
+        viewport: rect("#messages"),
         transcript: rect("#messages .message-content"),
         progress: rect(
           '.agent-panel[aria-label="Agent progress"][data-fit="yes"]',
@@ -266,7 +294,8 @@ try {
       };
     });
     assert.ok(Object.values(bounds).every(Boolean), JSON.stringify(bounds));
-    for (const item of Object.values(bounds)) {
+    console.log(`shared-width-${expected}%`, JSON.stringify(bounds));
+    for (const item of [bounds.transcript, bounds.progress, bounds.composer]) {
       assert.ok(
         Math.abs(item.x - bounds.transcript.x) <= 1,
         JSON.stringify(bounds),
@@ -294,11 +323,12 @@ try {
     const rect = (selector) => {
       const element = document.querySelector(selector);
       if (!element) return null;
-      const { x, width } = element.getBoundingClientRect();
-      return { x, width };
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
     };
     return {
       available: document.querySelector("#conversation").clientWidth,
+      viewport: rect("#messages"),
       transcript: rect("#messages .message-content"),
       progress: rect(
         '.agent-panel[aria-label="Agent progress"][data-fit="yes"]',
@@ -306,6 +336,7 @@ try {
       composer: rect("#conversation #composer"),
     };
   });
+  console.log("shared-width-mobile", JSON.stringify(mobileBounds));
   for (const item of [
     mobileBounds.transcript,
     mobileBounds.progress,
@@ -333,6 +364,38 @@ try {
       '.agent-panel[aria-label="Agent progress"][data-fit="yes"] .agent-panel-current.progress-markdown',
     )
     .waitFor();
+  const reloadedSettings = await openStudioSettings();
+  assert.equal(
+    await reloadedSettings.getByRole("alert").count(),
+    0,
+    "Valid persisted Studio preferences do not show an invalid-storage alert",
+  );
+  assert.equal(
+    await reloadedSettings
+      .getByRole("slider", { name: "Sidebar font size" })
+      .getAttribute("aria-valuenow"),
+    "12",
+  );
+  assert.equal(
+    await reloadedSettings
+      .getByRole("slider", { name: "Main font size" })
+      .getAttribute("aria-valuenow"),
+    "24",
+  );
+  assert.equal(
+    await reloadedSettings
+      .getByLabel("Studio font family", { exact: true })
+      .inputValue(),
+    "georgia",
+  );
+  assert.equal(
+    await reloadedSettings
+      .getByLabel("Toggle sidebar shortcut", { exact: true })
+      .inputValue(),
+    "Ctrl+Shift+X",
+  );
+  await page.keyboard.press("Escape");
+  await reloadedSettings.waitFor({ state: "hidden" });
   assert.equal(
     await page.evaluate(() =>
       getComputedStyle(document.documentElement).getPropertyValue(
