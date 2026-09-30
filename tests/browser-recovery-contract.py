@@ -82,7 +82,7 @@ class BrowserRecovery(unittest.TestCase):
 
     def tick(self):
         with self.runtime.lock, self.runtime.db() as db:
-            actors = self.runtime.records(db, 'agents')
+            actors = self.runtime.scheduler_agents(db)
             recovery.tick(self.runtime, db, actors)
 
     def wait_stage(self, stage):
@@ -242,6 +242,14 @@ class BrowserRecovery(unittest.TestCase):
         self.event();self.idle()
         with patch.object(self.runtime.recovery_pool, 'submit', side_effect=AssertionError('must stay available')):
             self.tick();self.wait_stage('verify')
+
+    def test_scoped_scheduler_roster_reaches_pending_browser_recovery(self):
+        self.set_agent(inFlight=False, turnId=None, status='completed', browserRecovery={
+            'id': 'old-browser-recovery', 'stage': 'pending', 'threadId': 'native-thread',
+            'epoch': self.agent['epoch'], 'accountKey': 'default', 'connectionId': 'stale-connection',
+        })
+        self.tick()
+        self.assertEqual(self.runtime.agent(self.agent['id'])['browserRecovery']['stage'], 'failed')
 
     def test_concurrent_recovery_limit_defers_without_losing_request(self):
         self.event();self.idle()

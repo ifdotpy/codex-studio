@@ -40,6 +40,10 @@ class RestartContract(fixture.ConnectionRecoveryContract):
     def test_interrupted_turn_continues_once_across_second_restart(self):
         self.server.native['turns'][0]['status'] = 'interrupted'
         self.restart()
+        with self.runtime.lock, self.runtime.db() as db:
+            scoped = self.runtime.scheduler_agents(db)
+        self.assertIn(self.key, {agent['id'] for agent in scoped})
+        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'pending')
         result = recover(self.runtime, self.key, automatic=True)
         self.assertTrue(result['continued'])
         a = self.runtime.agent(self.key)

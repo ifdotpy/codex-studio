@@ -435,8 +435,13 @@ class AccountTransfers:
         with rt.lock, rt.db() as db:
             referenced = set()
             pending = [o for o in rt.records(db, 'account_transfers') if o.get('status') == 'pending']
-            # Decode every agent only when a pending transfer needs its owner check.
-            for agent in (rt.records(db, 'agents') if pending else []):
+            # Read only agent records that can reference a pending transfer.
+            transfer_agents = (db.execute(
+                "SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.accountTransferId') IS NOT NULL OR "
+                "json_extract(record,'$.accountTransfer.id') IS NOT NULL").fetchall() if pending else [])
+            for (raw,) in transfer_agents:
+                agent = json.loads(raw)
                 if agent.get('accountTransferId'):
                     referenced.add(agent['accountTransferId'])
                 summary_id = (agent.get('accountTransfer') or {}).get('id')

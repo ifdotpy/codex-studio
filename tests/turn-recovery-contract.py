@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -96,6 +97,21 @@ class TurnRecoveryContract(unittest.TestCase):
             row = json.loads(db.execute('SELECT record FROM runtime_items WHERE id=?', (self.key + ':answer',)).fetchone()[0])
             self.assertFalse(row['streaming'])
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_completed_turns').fetchone()[0], 1)
+
+    def test_scheduler_roster_reaches_orphan_busy_turn_recovery(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            a.update(status='running', inFlight=True, turnId=None, startAttempt=None,
+                     threadId='orphan-thread', activity={'at': time.time() - 180}, lastEvent=None)
+            self.runtime.put(db, 'agents', a)
+            agents = self.runtime.scheduler_agents(db)
+        self.assertIn(self.key, {agent['id'] for agent in agents})
+        submitted = []
+        with patch.object(self.runtime.recovery_pool, 'submit',
+                          side_effect=lambda *args: submitted.append(args)):
+            self.runtime.queue_turn_recovery(agents)
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0][1], self.key)
 
     def test_completed_turn_on_later_page_recovers_once(self):
         self.server.native['turns'] = [
