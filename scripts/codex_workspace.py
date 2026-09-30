@@ -1696,7 +1696,11 @@ class WorkspaceMixin:
     def workspace_blockers(self, db, a):
         cwd = Path(a["cwd"]).resolve()
         blockers = []
-        for other in self.records(db, "agents"):
+        # Called under the runtime lock on every start. Decoding every agent
+        # record took about a second on a live workspace and stalled callbacks.
+        for (raw,) in db.execute("SELECT record FROM runtime_agents "
+                                 "WHERE json_extract(record,'$.workspaceOperation') IS NOT NULL"):
+            other = json.loads(raw)
             if not other.get("workspaceOperation") or Path(other["cwd"]).resolve() != cwd:
                 continue
             blocker = {"agentId": other["id"], "operation": other["workspaceOperation"]}

@@ -18,6 +18,28 @@ from codex_native_errors import NativeRpcError
 
 
 class CriticalWorkspaceContract(fixture.WorkspaceContract):
+    def test_workspace_blockers_read_only_busy_agents(self):
+        lead = self.lead()
+        busy = self.lead(name="Busy")
+        for index in range(20):
+            self.lead(name=f"Idle {index}", cwd=self.root)
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(busy["id"], db)
+            current["workspaceOperation"] = "checkpoint"
+            self.runtime.put(db, "agents", current)
+        original = self.runtime.records
+        def records(db, table, *args, **kwargs):
+            if table == "agents":
+                raise AssertionError("workspace_blockers decoded every agent under the runtime lock")
+            return original(db, table, *args, **kwargs)
+        self.runtime.records = records
+        try:
+            with self.runtime.lock, self.runtime.db() as db:
+                blockers = self.runtime.workspace_blockers(db, self.runtime.agent(lead["id"], db))
+        finally:
+            self.runtime.records = original
+        self.assertEqual([b["agentId"] for b in blockers], [busy["id"]])
+
     def test_restore_failure_keeps_durable_recovery_state(self):
         worker, path = self.isolated_worker()
         self.agent_update(worker, threadId="original-thread")
