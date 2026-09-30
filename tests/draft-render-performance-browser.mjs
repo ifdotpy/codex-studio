@@ -53,8 +53,27 @@ try {
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
+    // The first development request starts Vite's dependency optimizer. Do
+    // not import app modules until that one-time scan/build has settled.
+    await page.waitForTimeout(5000);
     await page.evaluate(
       async ({ count, workspaceId }) => {
+        const importWithRetry = async (url) => {
+          for (let attempt = 0; ; attempt++) {
+            try {
+              return await import(url);
+            } catch (error) {
+              if (
+                attempt === 11 ||
+                !String(error).includes(
+                  "Failed to fetch dynamically imported module",
+                )
+              )
+                throw error;
+              await new Promise((resolve) => setTimeout(resolve, 250));
+            }
+          }
+        };
         localStorage.setItem(
           "codex-sync-workspace",
           JSON.stringify(workspaceId),
@@ -65,9 +84,20 @@ try {
           "codex-drafts:" + workspaceId,
           JSON.stringify(drafts),
         );
-        const { useSyncedDrafts } = await import("/src/sync/drafts.ts");
+        const { useSyncedDrafts } = await importWithRetry(
+          "/src/sync/drafts.ts",
+        );
+        try {
+          window.PromptComposer = (
+            await importWithRetry(
+              "/src/components/prompt-composer/PromptComposer.tsx",
+            )
+          ).default;
+        } catch {
+          window.PromptComposer = null;
+        }
         const { db } = await (
-          await import("/src/sync/client.ts")
+          await importWithRetry("/src/sync/client.ts")
         ).syncDatabase();
         window.db = db;
         const docs = Object.entries(drafts).map(([session, text]) => ({
@@ -82,14 +112,19 @@ try {
           }),
         }));
         await db.drafts.bulkInsert(docs);
-        const r = await import("/node_modules/.vite/deps/react.js"),
-          d = await import("/node_modules/.vite/deps/react-dom_client.js");
+        const r = await importWithRetry("/node_modules/.vite/deps/react.js"),
+          d = await importWithRetry(
+            "/node_modules/.vite/deps/react-dom_client.js",
+          );
         const React = r.default || r,
           { createRoot } = d.default || d;
         const node = document.createElement("div");
         document.body.append(node);
         window.commits = 0;
         window.renders = 0;
+        window.composerCommits = 0;
+        window.sidebarRenders = 0;
+        window.transcriptRenders = 0;
         createRoot(node).render(
           React.createElement(
             React.Profiler,
@@ -97,7 +132,50 @@ try {
             React.createElement(function Harness() {
               window.renders++;
               window.draft = useSyncedDrafts();
-              return null;
+              return React.createElement(
+                React.Fragment,
+                null,
+                React.createElement(function SidebarFixture() {
+                  window.sidebarRenders++;
+                  return React.createElement("aside");
+                }),
+                React.createElement(function TranscriptFixture() {
+                  window.transcriptRenders++;
+                  return React.createElement("main");
+                }),
+                typeof window.draft.getDraft === "function" &&
+                  window.PromptComposer
+                  ? React.createElement(
+                      window.PromptComposer,
+                      {
+                        session: "chat-0",
+                        getDraft: window.draft.getDraft,
+                        subscribeDraft: window.draft.subscribeDraft,
+                        onSubmit: (event) => event.preventDefault(),
+                      },
+                      (value) =>
+                        React.createElement(
+                          React.Profiler,
+                          {
+                            id: "prompt-composer",
+                            onRender: () => window.composerCommits++,
+                          },
+                          React.createElement("span", null, value),
+                        ),
+                    )
+                  : React.createElement(
+                      React.Profiler,
+                      {
+                        id: "prompt-composer",
+                        onRender: () => window.composerCommits++,
+                      },
+                      React.createElement(
+                        "span",
+                        null,
+                        window.draft.drafts["chat-0"],
+                      ),
+                    ),
+              );
             }),
           ),
         );
@@ -114,7 +192,10 @@ try {
     }
     const result = await page.evaluate(async (workspaceId) => {
       const baseCommits = window.commits,
-        baseRenders = window.renders;
+        baseRenders = window.renders,
+        baseComposerCommits = window.composerCommits,
+        baseSidebarRenders = window.sidebarRenders,
+        baseTranscriptRenders = window.transcriptRenders;
       let mapWrites = 0,
         mapBytes = 0,
         journalWrites = 0;
@@ -159,6 +240,9 @@ try {
         setMaxMs: Math.max(...setTimes),
         commits: window.commits - baseCommits,
         renders: window.renders - baseRenders,
+        composerCommits: window.composerCommits - baseComposerCommits,
+        sidebarRenders: window.sidebarRenders - baseSidebarRenders,
+        transcriptRenders: window.transcriptRenders - baseTranscriptRenders,
         mapWrites,
         mapBytes,
         journalWrites,
@@ -174,9 +258,32 @@ try {
       20,
       "Each input keeps its synchronous journal write",
     );
-    assert.ok(
-      result.commits <= 22,
-      `Local persistence must not force extra consumer commits: ${result.commits}`,
+    assert.equal(
+      result.commits,
+      20,
+      "The active composer must still commit once per edit",
+    );
+    const expectedOwnerRenders =
+      process.env.RENDER_ISOLATION === "baseline" ? 20 : 0;
+    assert.equal(
+      result.renders,
+      expectedOwnerRenders,
+      `Expected ${expectedOwnerRenders} harness renders in ${process.env.RENDER_ISOLATION === "baseline" ? "baseline" : "isolated"} mode`,
+    );
+    assert.equal(
+      result.sidebarRenders,
+      expectedOwnerRenders,
+      "Harness sidebar render count must match the selected baseline/current mode",
+    );
+    assert.equal(
+      result.transcriptRenders,
+      expectedOwnerRenders,
+      "Harness transcript render count must match the selected baseline/current mode",
+    );
+    assert.equal(
+      result.composerCommits,
+      20,
+      "Only the active composer should commit for the 20 edits",
     );
     assert.ok(
       result.mapBytes < 45_000_000,

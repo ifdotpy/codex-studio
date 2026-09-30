@@ -59,6 +59,29 @@ export function useSyncedDrafts() {
   });
   const importUnassigned = useRef(storageKey.current.endsWith(":unassigned"));
   const current = useRef(drafts);
+  const draftListeners = useRef(new Map<string, Set<() => void>>());
+  const getDraft = useCallback(
+    (session: string) => current.current[session] || "",
+    [],
+  );
+  const subscribeDraft = useCallback(
+    (session: string, listener: () => void) => {
+      let listeners = draftListeners.current.get(session);
+      if (!listeners)
+        draftListeners.current.set(session, (listeners = new Set()));
+      listeners.add(listener);
+      return () => {
+        listeners?.delete(listener);
+        if (!listeners?.size) draftListeners.current.delete(session);
+      };
+    },
+    [],
+  );
+  const publishDraftChanges = (previous: Drafts, next: Drafts) => {
+    for (const [session, listeners] of draftListeners.current)
+      if (previous[session] !== next[session])
+        listeners.forEach((listener) => listener());
+  };
   const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
   const conflictValues = useRef<DraftVersion[]>([]);
   const [localError, setLocalError] = useState(recovery.error);
@@ -152,8 +175,10 @@ export function useSyncedDrafts() {
       }
     }
     if (next !== current.current) {
+      const previous = current.current;
       current.current = next;
       update(next);
+      publishDraftChanges(previous, next);
       save(storageKey.current, next);
     }
     const unique = new Set<string>();
@@ -226,6 +251,7 @@ export function useSyncedDrafts() {
         journal.current.set(moved.key, moved);
       }
     }
+    const previous = current.current;
     storageKey.current = targetKey;
     for (const entry of readDraftJournal(targetKey))
       journal.current.set(entry.key, entry);
@@ -235,6 +261,7 @@ export function useSyncedDrafts() {
     dismissed.current = saved(`${targetKey}:dismissed`, []);
     current.current = next;
     update(next);
+    publishDraftChanges(previous, next);
     save(targetKey, next);
   }, []);
   const flushDrafts = useCallback(() => {
@@ -317,7 +344,7 @@ export function useSyncedDrafts() {
       const previous = current.current;
       const next = typeof value === "function" ? value(previous) : value;
       current.current = next;
-      update(next);
+      publishDraftChanges(previous, next);
       const updated = Math.max(
         Date.now(),
         ...versions.current.map((version) => version.updated + 1),
@@ -453,8 +480,12 @@ export function useSyncedDrafts() {
     };
   }, [reconcile, adoptScope, flushDrafts, decodeDrafts, reportSyncFailure]);
   return {
-    drafts,
+    get drafts() {
+      return current.current;
+    },
     setDrafts,
+    getDraft,
+    subscribeDraft,
     conflicts,
     dismissDraft,
     error: localError || syncNotice,
