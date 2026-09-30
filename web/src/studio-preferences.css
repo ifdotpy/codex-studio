@@ -65,7 +65,7 @@
 }
 
 #conversation-title,
-#conversation .conversation-meta #conversation-status {
+.workspace-header .conversation-meta #conversation-status {
   font-size: var(--studio-main-font-size);
 }
 
