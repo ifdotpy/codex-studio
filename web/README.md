@@ -40,6 +40,21 @@ and creates the production bundle. `npm test` builds that bundle and checks it i
 a separate headless Chrome process against an isolated server and database.
 Set `CHROME_BIN` if Chrome uses another executable path.
 
+## Component workbench
+
+Storybook runs inside this package and reads stories colocated with components
+under `src/`. Start the local workbench with `npm run storybook`, create its
+static bundle with `npm run build-storybook`, and run story interaction tests in
+headless Chromium with `CHROME_BIN=/path/to/chromium npm run test:storybook`.
+The Storybook config and package scripts disable telemetry. The Vitest addon
+runs each story's play function in a local browser; no hosted Storybook service
+is used. Keep story props typed from the component or a small typed harness, and
+include representative keyboard and disabled/loading states for interactive UI.
+
+`npm run test:prompt-composer` remains the production composer regression check.
+It verifies the actual prompt input and draft subscription path independently
+from the isolated Storybook stories.
+
 ## Source
 
 - `src/App.tsx`: screen selection, drafts, conversation actions, imports, and team panel.
