@@ -124,6 +124,12 @@ class PricingSessionCostContract(unittest.TestCase):
                                  "delta": {"inputTokens": 1000, "cachedInputTokens": 100, "cacheWriteInputTokens": 0, "outputTokens": 100}}),
             ("lead", "turn-1", {"model": "gpt-6-luna", "delta": {"inputTokens": 1000, "outputTokens": 100}}),
             ("worker-unknown", "turn-3", {"responseId": "future-r", "model": "gpt-5.6-luna", "delta": {"inputTokens": 10, "outputTokens": 1}}),
+            ("lead", "turn-2", {"responseId": "imported-r", "model": None, "agentId": "lead", "threadId": "thread-lead",
+                                "turnId": "turn-2", "delta": {"inputTokens": 1000, "cachedInputTokens": 0,
+                                                             "cacheWriteInputTokens": 0, "outputTokens": 0}}),
+            ("lead", "turn-4", {"responseId": "later-r", "model": "gpt-6-luna", "agentId": "lead", "threadId": "thread-lead",
+                                "turnId": "turn-4", "delta": {"inputTokens": 0, "cachedInputTokens": 0,
+                                                             "cacheWriteInputTokens": 0, "outputTokens": 0}}),
         ]
         for index, (agent, turn, record) in enumerate(rows, 1):
             db.execute("INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?)",
@@ -133,10 +139,10 @@ class PricingSessionCostContract(unittest.TestCase):
         FixedPricing.missing_refreshes = 0
         value = SessionCostReader(db_path, FixedPricing()).snapshot("worker-unknown")
         self.assertEqual(FixedPricing.missing_refreshes, 1)
-        self.assertEqual(value["pricedSamples"], 1)
+        self.assertEqual(value["pricedSamples"], 3)
         self.assertIn("openai", value["breakdown"]["providers"])
         self.assertEqual(value["unknownModels"], ["gpt-5.6-luna"])
-        self.assertAlmostEqual(value["totalUSD"], (900 * .1 + 100 * .01 + 100 * .5) / 1_000_000)
+        self.assertAlmostEqual(value["totalUSD"], (900 * .1 + 100 * .01 + 100 * .5 + 1000 * .1) / 1_000_000)
         canvas = Canvas(self.root)
         canvas.runtime = types.SimpleNamespace(lock=threading.RLock())
         with patch("codex_pricing.PricingCatalog", return_value=FixedPricing()):

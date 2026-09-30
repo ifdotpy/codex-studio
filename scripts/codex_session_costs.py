@@ -309,8 +309,17 @@ class SessionCostReader:
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
+            # Rollout imports can lack the model; the same turn or thread names it.
+            turn_models, thread_models = {}, {}
+            for record in records:
+                if isinstance(record.get("model"), str):
+                    turn_models[(record.get("agentId"), record.get("turnId"))] = record["model"]
+                    thread_models[(record.get("agentId"), record.get("threadId"))] = record["model"]
             for record in records:
                 model = record.get("model")
+                if not isinstance(model, str):
+                    model = (turn_models.get((record.get("agentId"), record.get("turnId")))
+                             or thread_models.get((record.get("agentId"), record.get("threadId"))))
                 provider = provider_for(model)
                 if provider is None:
                     unpriced.add(str(model or "Unknown model"))
