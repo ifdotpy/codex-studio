@@ -45,7 +45,7 @@ const server = await createServer({
       load(id) {
         if (
           process.env.BASELINE === "1" &&
-          id === join(root, "src/components/ExecutionSettings.tsx")
+          id === join(root, "src/components/agents/ExecutionSettings.tsx")
         )
           return execFileSync(
             "git",
@@ -53,7 +53,7 @@ const server = await createServer({
             { cwd: root, encoding: "utf8" },
           );
         if (id !== entry) return;
-        return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/ExecutionSettings.tsx';
+        return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';
 const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'low',fastMode:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
 const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}]}));
 window.catalogRequests=[];window.calls=[];window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;const nativeFetch=window.fetch;window.fetch=async(url,options)=>{if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);return new Response(JSON.stringify({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models}),{headers:{'Content-Type':'application/json'}})}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return new Response(JSON.stringify({error:'The account changed. Select the model again'}),{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return new Response(JSON.stringify(window.fail?{error:'Rejected'}:window.reply),{status:window.fail?409:200,headers:{'Content-Type':'application/json'}})};

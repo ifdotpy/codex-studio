@@ -46,7 +46,7 @@ const server = await createServer({
       load(id) {
         if (id !== entry) return;
         return `
-import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import AgentPanel from'/src/components/AgentPanel.tsx';import{setToken}from'/src/api.ts';import'/src/studio-theme.css';setToken('fixture-token');
+import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import AgentPanel from'/src/components/agents/AgentPanel.tsx';import{setToken}from'/src/api.ts';import'/src/studio-theme.css';setToken('fixture-token');
 function Fixture(){const[agent,setAgent]=useState('first');window.switchAgent=id=>flushSync(()=>setAgent(id));return <MantineProvider><div id='host' style={{width:'100%',maxWidth:520}}><AgentPanel agentId={agent} stateDir='/workspace'/></div></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
       },
     },

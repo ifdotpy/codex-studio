@@ -44,7 +44,7 @@ const server = await createServer({
       },
       load(id) {
         if (id !== entry) return;
-        return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import AgentPanel from '/src/components/AgentPanel.tsx';import '/src/studio-theme.css';
+        return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import AgentPanel from '/src/components/agents/AgentPanel.tsx';import '/src/studio-theme.css';
 function Fixture(){const[agent,setAgent]=useState('first'),[scope,setScope]=useState('/workspace-a'),[draft,setDraft]=useState('Saved draft');window.switchAgent=id=>flushSync(()=>setAgent(id));window.switchScope=id=>flushSync(()=>setScope(id));return <MantineProvider><div style={{width:360,height:500,display:'flex',flexDirection:'column'}}><div id='history' style={{height:150,overflow:'auto',flex:'0 0 auto'}}><div style={{height:1000}}>Saved conversation</div></div><AgentPanel agentId={agent} stateDir={scope}/><textarea id='composer' value={draft} onChange={event=>setDraft(event.target.value)}/></div></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
       },
     },

@@ -16,7 +16,7 @@ import {createRoot} from 'react-dom/client';
 import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
 import '/src/style.css';
-import BackgroundTasks from '/src/components/BackgroundTasks.tsx';
+import BackgroundTasks from '/src/components/shell/BackgroundTasks.tsx';
 const root=createRoot(document.getElementById('root'));
 window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
  React.createElement(MantineProvider,{defaultColorScheme:"dark"},React.createElement(BackgroundTasks,{

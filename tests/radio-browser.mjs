@@ -32,7 +32,7 @@ const server = await createServer({
         if (id !== entry) return;
         return `
 import React,{useState} from 'react'; import {createRoot} from 'react-dom/client'; import {MantineProvider} from '@mantine/core'; import '@mantine/core/styles.css';
-import RadioChat from '/src/components/RadioChat.tsx';import {PeerTeamGroup} from '/src/components/PeerTeams.tsx';import '/src/style.css';import '/src/appearance.css';import {theme} from '/src/theme.ts';
+import RadioChat from '/src/components/RadioChat.tsx';import {PeerTeamGroup} from '/src/components/shell/messages/PeerTeams.tsx';import '/src/style.css';import '/src/appearance.css';import {theme} from '/src/theme.ts';
 const team={id:'t',name:'Research',projectPath:'/p',members:['a','b']};
 const room={id:'radio:t',name:'Research',kind:'private',projectPath:'/p',peerTeamId:'t',members:['a','b'],radio:{teamId:'t',revision:1,status:'idle',speaker:null,next:[],active:null,error:null}};
 const initial={stateDir:'radio-test',threads:[{id:'a',name:'Astra',model:'gpt-6-astra',provider:'codex'},{id:'b',name:'Claude',model:'claude-opus-5-5',provider:'claude'}],runtime:{requests:[],peerTeams:[team]}};

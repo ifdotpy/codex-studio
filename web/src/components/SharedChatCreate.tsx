@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, errorText, save, saved } from "../api";
 import type { Json, Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
-import { useWorkerModels } from "./WorkerModelPicker";
+import { useWorkerModels } from "./agents/WorkerModelPicker";
 import "./shared-chat-create.css";
 
 type Participant = { account_key: string; model: string; effort?: string };

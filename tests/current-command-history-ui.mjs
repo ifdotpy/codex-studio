@@ -18,7 +18,7 @@ import React, {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
-import TurnHistory from '/src/components/TurnHistory.tsx';
+import TurnHistory from '/src/components/conversation/transcript/TurnHistory.tsx';
 function Fixture(){
  const [snapshot,setSnapshot]=useState(null);window.applySnapshot=setSnapshot;
  return <MantineProvider><main data-case={snapshot?.label}>
@@ -110,7 +110,9 @@ try {
       items: rows,
       enabled,
     });
-    await page.locator(`main[data-case="${label}"]`).waitFor({state:"attached"});
+    await page
+      .locator(`main[data-case="${label}"]`)
+      .waitFor({ state: "attached" });
     for (const disclosure of await page
       .locator(".turn-work,.tool-group")
       .all()) {

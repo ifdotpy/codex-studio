@@ -1,5 +1,5 @@
 import { serviceTimeText } from "../local-time";
-import AgentAvatar from "./AgentAvatar";
+import AgentAvatar from "./agents/AgentAvatar";
 import MessageQueue from "./MessageQueue";
 import { useMessageQueue } from "./useMessageQueue";
 import { useVisibleChatResult, type ChatReadProof } from "./useChatReadState";
@@ -15,16 +15,11 @@ import { createPortal } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
-  Copy,
   MoreHorizontal,
-  GitBranch,
-  Quote,
-  Pencil,
   Trash2,
   Square,
   Terminal,
   ListEnd,
-  RotateCcw,
 } from "lucide-react";
 import {
   useCallback,
@@ -36,7 +31,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { api, errorText, save, saved } from "../api";
-import SafetyBuffering from "./SafetyBuffering";
+import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
 import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
@@ -74,19 +69,22 @@ import PromptComposer, {
 } from "./prompt-composer/PromptComposer";
 import PromptInput from "./prompt-composer/PromptInput";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
-import Requests from "./Requests";
-import MessageDate from "./MessageDate";
-import TurnHistory from "./TurnHistory";
+import Requests from "./questions/Requests";
+import MessageDate from "./conversation/transcript/MessageDate";
+import TurnHistory from "./conversation/transcript/TurnHistory";
 import { isEmptyAssistantMessage } from "./turnHistoryModel";
 import { Dictation } from "./Dictation";
 import RealtimeVoice from "./RealtimeVoice";
 import OutboxControls from "./OutboxControls";
-import StreamingText from "./StreamingText";
-import SelectionQuote, { selectedExcerpt } from "./SelectionQuote";
-import AgentPhase from "./AgentPhase";
-import AgentPanel from "./AgentPanel";
-import { ExecutionSettings } from "./ExecutionSettings";
-import { useWorkerModels } from "./WorkerModelPicker";
+import StreamingText from "./conversation/transcript/StreamingText";
+import SelectionQuote, {
+  selectedExcerpt,
+} from "./conversation/transcript/SelectionQuote";
+import MessageActions from "./conversation/transcript/MessageActions";
+import AgentPhase from "./agents/AgentPhase";
+import AgentPanel from "./agents/AgentPanel";
+import { ExecutionSettings } from "./agents/ExecutionSettings";
+import { useWorkerModels } from "./agents/WorkerModelPicker";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
@@ -1064,87 +1062,60 @@ export default function Conversation(p: {
       {(p.room || m.role === "user") && (
         <MessageDate at={m.at ?? m.created ?? m.timestamp} />
       )}
-      <div className="message-bottom" hidden={!!m.streaming}>
-        <ActionIcon
-          size="sm"
-          className="copy-message"
-          aria-label="Copy message"
-          onClick={() => void copy(m.text)}
-        >
-          <Copy size={14} />
-        </ActionIcon>
-        {!p.room && !m.pending && (
-          <>
-            <ActionIcon
-              size="sm"
-              aria-label="Quote message"
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => {
+      <MessageActions
+        hidden={!!m.streaming}
+        onCopy={() => void copy(m.text)}
+        onQuote={
+          !p.room && !m.pending
+            ? () => {
                 const excerpt = selectedExcerpt(scroll.current);
                 quote(excerpt?.messageId === m.id ? excerpt.text : m.text);
                 window.getSelection()?.removeAllRanges();
-              }}
-            >
-              <Quote size={14} />
-            </ActionIcon>
-            {managed &&
-              m.role === "user" &&
-              m.turnId &&
-              (!m.deliveryStatus || m.deliveryStatus === "accepted") && (
-                <ActionIcon
-                  size="sm"
-                  aria-label="Edit in a new chat"
-                  title="Edit in a new chat"
-                  disabled={
-                    branching || !!editLoading || m.turnId === agent?.turnId
-                  }
-                  onClick={() => void editMessage(m)}
-                >
-                  {editLoading === m.id ? (
-                    <Loader size={14} />
-                  ) : (
-                    <Pencil size={14} />
-                  )}
-                </ActionIcon>
-              )}
-            {managed &&
-              m.role === "assistant" &&
-              m.turnId &&
-              m.turnId !== agent?.turnId &&
-              lastAssistantByTurn.get(m.turnId) === m.id && (
-                <ActionIcon
-                  size="sm"
-                  aria-label="Branch after this turn"
-                  disabled={m.turnId === agent?.turnId && !!agent?.inFlight}
-                  onClick={() => void branch(m)}
-                >
-                  <GitBranch size={14} />
-                </ActionIcon>
-              )}
-            {managed &&
-              m.role === "assistant" &&
-              m.turnId &&
-              m.turnId !== agent?.turnId &&
-              lastAssistantByTurn.get(m.turnId) === m.id && (
-                <ActionIcon
-                  size="sm"
-                  aria-label="Another answer in a new chat"
-                  title="Another answer in a new chat"
-                  disabled={branching}
-                  onClick={() =>
-                    setBranchDraft({
-                      message: m,
-                      before: false,
-                      text: "Give another answer to my previous request. Use the existing results. Do not run tools or commands unless I explicitly ask.",
-                    })
-                  }
-                >
-                  <RotateCcw size={14} />
-                </ActionIcon>
-              )}
-          </>
-        )}
-      </div>
+              }
+            : undefined
+        }
+        onEdit={
+          !p.room &&
+          !m.pending &&
+          managed &&
+          m.role === "user" &&
+          m.turnId &&
+          (!m.deliveryStatus || m.deliveryStatus === "accepted")
+            ? () => void editMessage(m)
+            : undefined
+        }
+        editLoading={editLoading === m.id}
+        editDisabled={branching || !!editLoading || m.turnId === agent?.turnId}
+        onBranch={
+          !p.room &&
+          !m.pending &&
+          managed &&
+          m.role === "assistant" &&
+          m.turnId &&
+          m.turnId !== agent?.turnId &&
+          lastAssistantByTurn.get(m.turnId) === m.id
+            ? () => void branch(m)
+            : undefined
+        }
+        branchDisabled={m.turnId === agent?.turnId && !!agent?.inFlight}
+        onAnotherAnswer={
+          !p.room &&
+          !m.pending &&
+          managed &&
+          m.role === "assistant" &&
+          m.turnId &&
+          m.turnId !== agent?.turnId &&
+          lastAssistantByTurn.get(m.turnId) === m.id
+            ? () =>
+                setBranchDraft({
+                  message: m,
+                  before: false,
+                  text: "Give another answer to my previous request. Use the existing results. Do not run tools or commands unless I explicitly ask.",
+                })
+            : undefined
+        }
+        anotherAnswerDisabled={branching}
+      />
     </article>
   );
   const transcript = useMemo(

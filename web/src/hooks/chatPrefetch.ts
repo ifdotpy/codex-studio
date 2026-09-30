@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { prefetchTranscript, watchSyncInvalidations } from "../sync/client";
 import { peekTranscript } from "../sync/transcriptCache";
-import { prefetchProgress } from "../components/progressCache";
+import { prefetchProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
 

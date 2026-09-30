@@ -1,0 +1,172 @@
+import { Button, Modal } from "@mantine/core";
+import {
+  ChevronRight,
+  FileDiff as FileDiffIcon,
+  FileText,
+  Image,
+  Shapes,
+} from "lucide-react";
+import { memo, useEffect, useMemo, useState } from "react";
+import type { Message } from "../../../types";
+import FilePreview from "../../FilePreview";
+import RichPreview from "../../RichPreview";
+import FileDiff from "../../FileDiff";
+import { fileChanges, unifiedDiff } from "../../fileChangeModel";
+import {
+  conversationResults,
+  type ConversationResult,
+} from "../../conversationResultModel";
+import "./conversation-results.css";
+
+export default memo(function ConversationResults({
+  messages,
+  agentId,
+  onJump,
+}: {
+  messages: Message[];
+  agentId?: string;
+  onJump?: (messageId: string) => void;
+}) {
+  const results = useMemo(() => conversationResults(messages), [messages]);
+  const [open, setOpen] = useState(true);
+  const [all, setAll] = useState(false);
+  const [dialogMounted, setDialogMounted] = useState(false);
+  const [dialogReady, setDialogReady] = useState(false);
+  // Mount closed once so Mantine records the trigger before the first opening.
+  useEffect(() => {
+    if (dialogMounted) setDialogReady(true);
+  }, [dialogMounted]);
+  const [selection, setSelection] = useState<{ id: string; agent?: string }>();
+  // Selection cannot carry an old conversation's result into another chat.
+  const selected =
+    selection?.agent === agentId
+      ? results.find((result) => result.id === selection?.id)
+      : undefined;
+  const visible = all ? results : results.slice(0, 3);
+  if (!results.length) return null;
+  const icon = (result: ConversationResult) =>
+    result.kind === "patch" ? (
+      <FileDiffIcon size={14} />
+    ) : result.kind === "html" || result.kind === "mermaid" ? (
+      <Shapes size={14} />
+    ) : (result.kind === "file" || result.kind === "asset") && result.image ? (
+      <Image size={14} />
+    ) : (
+      <FileText size={14} />
+    );
+  const file = selected?.kind === "file" || selected?.kind === "asset";
+  return (
+    <section
+      className="conversation-results"
+      aria-label="Results in these messages"
+    >
+      <button
+        type="button"
+        className="conversation-results-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <ChevronRight size={13} className={open ? "expanded" : ""} />
+        <span>Results</span>
+        <span className="conversation-results-count">{results.length}</span>
+      </button>
+      {open && (
+        <div className="conversation-results-list">
+          {visible.map((result) => (
+            <button
+              type="button"
+              className="conversation-result"
+              key={result.id}
+              title={
+                result.kind === "file"
+                  ? result.path
+                  : result.kind === "patch"
+                    ? result.paths.join("\n")
+                    : result.label
+              }
+              disabled={result.kind === "file" && !agentId}
+              onClick={() => {
+                if (result.kind !== "file" && result.kind !== "asset")
+                  setDialogMounted(true);
+                setSelection({ id: result.id, agent: agentId });
+              }}
+            >
+              {icon(result)}
+              <span>{result.label}</span>
+              {result.kind === "patch" && <small>Patch</small>}
+            </button>
+          ))}
+          {results.length > 3 && (
+            <button
+              type="button"
+              className="conversation-results-more"
+              onClick={() => setAll(!all)}
+            >
+              {all ? "Show fewer" : `Show ${results.length - 3} more`}
+            </button>
+          )}
+        </div>
+      )}
+      {file && (
+        <FilePreview
+          target={
+            selected.kind === "asset"
+              ? { asset: selected.asset }
+              : { agent: agentId, path: selected.path, line: selected.line }
+          }
+          onClose={() => setSelection(undefined)}
+        />
+      )}
+      {dialogMounted && (
+        <Modal
+          opened={!!selected && !file && dialogReady}
+          onClose={() => setSelection(undefined)}
+          title={selected?.label}
+          size="xl"
+          className="conversation-result-modal"
+        >
+          {selected && !file && (
+            <>
+              {selected.kind === "patch" ? (
+                <>
+                  <p className="conversation-results-note">
+                    Recorded patch from this message.
+                    {selected.truncated ? " The saved content is clipped." : ""}
+                  </p>
+                  <FileDiff
+                    files={
+                      selected.change
+                        ? fileChanges([selected.change])
+                        : unifiedDiff(selected.source, selected.paths[0])
+                    }
+                    showCounts={!selected.truncated}
+                  />
+                  <details className="file-change-source">
+                    <summary>Original patch</summary>
+                    <pre className="file-diff-raw">{selected.source}</pre>
+                  </details>
+                </>
+              ) : (
+                (selected.kind === "html" || selected.kind === "mermaid") && (
+                  <RichPreview kind={selected.kind} source={selected.source} />
+                )
+              )}
+              {onJump && (
+                <Button
+                  size="compact-sm"
+                  variant="subtle"
+                  onClick={() => {
+                    onJump(selected.messageId);
+                    setSelection(undefined);
+                  }}
+                >
+                  Show message
+                </Button>
+              )}
+            </>
+          )}
+        </Modal>
+      )}
+    </section>
+  );
+});

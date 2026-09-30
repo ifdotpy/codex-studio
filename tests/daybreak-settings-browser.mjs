@@ -50,7 +50,7 @@ import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
 import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
-import {ExecutionSettings} from '/src/components/ExecutionSettings.tsx';
+import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';
 const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'high',fastMode:true,daybreakEnabled:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
 const row=(model,cyber,extra={})=>({model,displayName:model,supportedReasoningEfforts:['low','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}],...(cyber===undefined?{}:{availableAccessPrograms:{cyber}}),...extra});
 const initialModels=[row('gpt-6-astra',['standard']),row('gpt-5.6-sol',['standard','daybreakBlue'],{isDefault:true}),row('gpt-5.6-terra',['standard','daybreakRed']),row('gpt-5.6-luna',undefined),row('daybreak-only',['daybreakBlue'],{serviceTiers:[],supportedReasoningEfforts:[{reasoningEffort:'low'}]}),row('gpt-daybreak-blue-latest',['daybreakBlue']),row('gpt-daybreak-red-latest',['daybreakRed'])];

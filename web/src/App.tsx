@@ -71,8 +71,6 @@ import { useSyncedDrafts } from "./sync/drafts";
 import { reportPromptComposerRender } from "./components/prompt-composer/renderProbe";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
-import ChatStatus from "./components/ChatStatus";
-import AgentModeSwitch from "./components/AgentModeSwitch";
 import {
   chatIndicators,
   chatActivities,
@@ -81,9 +79,9 @@ import {
 import { useChatReadState } from "./components/useChatReadState";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
-import SessionActivity from "./components/SessionActivity";
-import { useWorkerModels } from "./components/WorkerModelPicker";
-import { ExecutionSettings } from "./components/ExecutionSettings";
+import SessionActivity from "./components/agents/SessionActivity";
+import { useWorkerModels } from "./components/agents/WorkerModelPicker";
+import { ExecutionSettings } from "./components/agents/ExecutionSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
 import ClaudeSignIn from "./components/ClaudeSignIn";
@@ -97,16 +95,19 @@ import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import TerminalDock from "./components/TerminalDock";
 import "./desktop";
 import "./components/team-navigation.css";
-import WorkerCard, {
+import WorkerCard from "./components/agents/WorkerCard";
+import {
   awaitingAnswerIds,
   TeamSummary,
   workerState,
-} from "./components/WorkerOverview";
-import Workspace from "./components/Workspace";
+} from "./components/agents/WorkerOverview";
+import Workspace from "./components/shell/Workspace";
+import ConversationTitle from "./components/shell/ConversationTitle";
+import AgentModeSwitch from "./components/agents/AgentModeSwitch";
 import BackgroundTasks, {
   activeTask,
   backgroundTasks,
-} from "./components/BackgroundTasks";
+} from "./components/shell/BackgroundTasks";
 export default function App() {
   reportPromptComposerRender("app");
   const outbox = useOutbox();
@@ -1368,54 +1369,44 @@ export default function App() {
           >
             <PanelLeft size={18} />
           </ActionIcon>
-          <div className="conversation-heading">
-            {lead && agent?.id !== lead.id && (
-              <Button
-                size="compact-xs"
-                leftSection={<ArrowLeft size={13} />}
-                id="back-lead"
-                onClick={() => open(lead.id)}
-              >
-                Back to main agent
-              </Button>
-            )}
-            <h1 id="conversation-title" title={title}>
-              <ChatStatus
-                provider={agent?.provider}
-                model={agent?.model}
-                status={agent ? indicators.get(agent.id) : undefined}
-              />
-              {title}
-            </h1>
-            <div className="conversation-meta">
-              <span id="conversation-status">
-                {mobileClient && agent?.cwd ? `${projectName} · ` : ""}
-                {agent
-                  ? indicators.get(agent.id)?.kind === "answer" ||
-                    (indicators.get(agent.id)?.kind === "working" &&
-                      !agent.inFlight)
-                    ? indicators.get(agent.id)?.label
-                    : livePhase?.id === agent.id
-                      ? livePhase.label
-                      : statusLabel(agent.status, agent.activity?.phase)
-                  : room?.radio
-                    ? "Shared chat · One agent speaks at a time"
-                    : room?.kind === "private"
-                      ? "Private agent chat"
-                      : room
-                        ? "Broadcast"
-                        : ""}
-              </span>
-              {lead?.source === "managed" && (
+          <ConversationTitle
+            title={title}
+            agent={agent}
+            indicator={agent ? indicators.get(agent.id) : undefined}
+            projectPrefix={
+              mobileClient && agent?.cwd ? `${projectName} · ` : ""
+            }
+            onBack={
+              lead && agent?.id !== lead.id ? () => open(lead.id) : undefined
+            }
+            modeControl={
+              lead?.source === "managed" ? (
                 <AgentModeSwitch
                   lead={lead}
                   stateDir={data.stateDir}
                   workspaceId={workspaceId}
                   refresh={refresh}
                 />
-              )}
-            </div>
-          </div>
+              ) : undefined
+            }
+            statusText={
+              agent
+                ? indicators.get(agent.id)?.kind === "answer" ||
+                  (indicators.get(agent.id)?.kind === "working" &&
+                    !agent.inFlight)
+                  ? indicators.get(agent.id)?.label || ""
+                  : livePhase?.id === agent.id
+                    ? livePhase.label
+                    : statusLabel(agent.status, agent.activity?.phase)
+                : room?.radio
+                  ? "Shared chat · One agent speaks at a time"
+                  : room?.kind === "private"
+                    ? "Private agent chat"
+                    : room
+                      ? "Broadcast"
+                      : ""
+            }
+          />
           <ActionIcon
             id="studio-settings-toggle"
             aria-label="Studio settings"
