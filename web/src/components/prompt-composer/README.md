@@ -16,11 +16,11 @@ put the letter in the same saved draft record right away.
 
 `useSyncedDrafts` in [`../../sync/drafts.ts`](../../sync/drafts.ts) remains the
 only owner of draft text, the recovery journal, sync, and conflict handling. On
-each edit, it updates its current value and notifies the chat's subscriber; in
-the same synchronous call it writes the recovery journal and saved scope map.
-Both writes finish before the input handler returns. No debounce or new storage
-format was added. Remote reconciliation and workspace adoption still update the
-legacy hook state and notify changed chat subscribers.
+each edit, it updates its current value and notifies the chat's subscriber,
+then writes the recovery journal and saved scope map in the same synchronous
+call. Both writes finish before the input handler returns. No debounce or new
+storage format was added. Remote reconciliation and workspace adoption still
+update the legacy hook state and notify changed chat subscribers.
 
 App and Conversation read the current value by chat ID when a send begins. This
 keeps an immediate Enter send and a send that waits on uploads or delivery from
@@ -55,12 +55,17 @@ removes its temporary worktree and linked dependency directory when complete.
 The command needs enough free disk quota for that baseline checkout and browser
 build. Set `CHROME_BIN` if Chromium is not at the default path.
 
-The 500-draft fixture has 20 edits and checks the real `PromptComposer` with the
-production draft hook. Its surrounding Harness, SidebarFixture, and
-TranscriptFixture stand in for caller-owned UI; it deterministically requires
-zero renders in those three functions, 20 composer commits, one synchronous map
-write and one journal write per edit, and no writes for unchanged reconciliation.
-This fixture is the strict per-keystroke contract. The separate 301-message UI
+`PromptInput.test.mjs` directly mounts the production input without App or
+Conversation. It checks controlled and programmatic value changes, disabled
+and overlength states, Enter, Shift+Enter, Tab, IME composition, and skill
+insertion. The 500-draft fixture has 20 edits and checks the real
+`PromptComposer` with the production draft hook. Its surrounding Harness,
+SidebarFixture, and TranscriptFixture are explicitly test stand-ins, not the
+production App/sidebar/transcript. It deterministically requires zero renders
+in those three functions for the isolated revision (and 20 for the historical
+baseline), 20 composer commits, one synchronous map write and one journal write
+per edit, and no writes for unchanged reconciliation. This fixture checks the
+store/composer boundary. The separate 301-message UI
 fixture runs the production App, Sidebar, and Conversation at four-times CPU
 slowdown on desktop and mobile, checks chat switching and streamed updates, and
 records function-level render probes and timings. It asserts App and Sidebar do

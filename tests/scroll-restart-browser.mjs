@@ -15,7 +15,10 @@ const server = await createServer({
   configFile: false,
   root: join(repo, "web"),
   cacheDir: cache,
-  optimizeDeps: { include: ["react", "react-dom/client"] },
+  optimizeDeps: {
+    noDiscovery: true,
+    include: ["react", "react-dom/client"],
+  },
   server: { host: "127.0.0.1", port: 0, hmr: false },
   plugins: [
     {
@@ -82,21 +85,36 @@ try {
   await mount();
   await ready();
   await page.evaluate(() => {
+    window.followChanges = 0;
+    window.followUnsubscribe = window.fixture.position.subscribeFollow(() => {
+      window.followChanges++;
+    });
     const root = document.getElementById("scroll");
     root.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
     root.scrollTop = 900;
     root.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
-  await page.waitForFunction(() => !window.fixture.position.follow);
+  await page.waitForFunction(
+    () => !window.fixture.position.getFollow() && window.followChanges > 0,
+  );
+  assert.equal(
+    await page.evaluate(() => window.fixture.position.getFollow()),
+    false,
+  );
+  assert.ok(await page.evaluate(() => window.followChanges > 0));
+  await page.evaluate(() => window.followUnsubscribe());
   await mount();
   assert.equal(
-    await page.evaluate(() => window.fixture.position.follow),
+    await page.evaluate(() => window.fixture.position.getFollow()),
     false,
   );
   await ready();
   await page.waitForFunction(
     () => document.getElementById("scroll").scrollTop === 900,
   );
+  // Let native scroll delivery and the hook's 600 ms user-input window settle
+  // before counting layout reads caused by unrelated React renders.
+  await page.waitForTimeout(650);
   await page.evaluate(() => {
     window.messageMeasurements = 0;
     const original = Element.prototype.getBoundingClientRect;
@@ -105,6 +123,8 @@ try {
       return original.apply(this, args);
     };
   });
+  await page.evaluate(() => window.fixture.position.remember());
+  await page.evaluate(() => (window.messageMeasurements = 0));
   for (let revision = 1; revision <= 20; revision++) {
     await page.evaluate((value) => window.fixture.redraw(value), revision);
     await page.waitForFunction(
@@ -113,9 +133,12 @@ try {
       revision,
     );
   }
+  const messageMeasurements = await page.evaluate(
+    () => window.messageMeasurements,
+  );
   assert.ok(
-    (await page.evaluate(() => window.messageMeasurements)) < 100,
-    "Unrelated renders reuse the visible anchor without rescanning earlier messages",
+    messageMeasurements < 100,
+    `Unrelated renders reuse the visible anchor without rescanning earlier messages (measured ${messageMeasurements})`,
   );
   assert.equal(
     await page.locator("#scroll").evaluate((node) => node.scrollTop),
@@ -134,7 +157,7 @@ try {
   await ready();
   await page.waitForFunction(
     () =>
-      window.fixture.position.follow &&
+      window.fixture.position.getFollow() &&
       document.getElementById("scroll").scrollTop === 4500,
   );
   assert.deepEqual(errors, []);
