@@ -263,20 +263,22 @@ try {
       20,
       "The active composer must still commit once per edit",
     );
-    const isolated = result.renders === 0;
-    assert.ok(
-      isolated || result.renders === 20,
-      `Unexpected owner render count: ${result.renders}`,
+    const expectedOwnerRenders =
+      process.env.RENDER_ISOLATION === "baseline" ? 20 : 0;
+    assert.equal(
+      result.renders,
+      expectedOwnerRenders,
+      `Expected ${expectedOwnerRenders} harness renders in ${process.env.RENDER_ISOLATION === "baseline" ? "baseline" : "isolated"} mode`,
     );
     assert.equal(
       result.sidebarRenders,
-      isolated ? 0 : 20,
-      "Sidebar render count must match its draft owner",
+      expectedOwnerRenders,
+      "Harness sidebar render count must match the selected baseline/current mode",
     );
     assert.equal(
       result.transcriptRenders,
-      isolated ? 0 : 20,
-      "Transcript render count must match its draft owner",
+      expectedOwnerRenders,
+      "Harness transcript render count must match the selected baseline/current mode",
     );
     assert.equal(
       result.composerCommits,

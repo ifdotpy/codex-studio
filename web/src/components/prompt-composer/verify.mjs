@@ -2,11 +2,12 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const tests = [
-  "composer-stability-ui.mjs",
-  "skill-autocomplete-ui.mjs",
-  "draft-render-performance-browser.mjs",
+  "web/src/components/prompt-composer/PromptInput.test.mjs",
+  "tests/composer-stability-ui.mjs",
+  "tests/skill-autocomplete-ui.mjs",
+  "tests/draft-render-performance-browser.mjs",
 ];
-const root = fileURLToPath(new URL("../../../../tests/", import.meta.url));
+const root = fileURLToPath(new URL("../../../../", import.meta.url));
 
 for (const test of tests) {
   const result = spawnSync(process.execPath, [`${root}${test}`], {
