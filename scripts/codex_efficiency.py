@@ -93,37 +93,43 @@ class EfficiencyMixin:
     def task_brief(task):
         return {k: task.get(k) for k in ('id', 'title', 'owner', 'status', 'version', 'blockedBy')}
 
+    def model_peers_directory(self, db, actor_id, args, actor):
+        scope = args.get('scope', 'team')
+        if scope != 'team':
+            raise ValueError('Agent discovery is limited to your team')
+        from codex_peer_teams import peers_for
+        agents = [a for a in self.records(db, 'agents') if not a.get('deletedAt')]
+        peer_ids = {peer['id'] for peer in peers_for(self, db, actor)}
+        rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
+                for a in agents if a['rootId'] == actor['rootId'] or a['id'] in peer_ids]
+        rows.sort(key=lambda a: a['id'])
+        rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId', 'peerTeamId', 'peerTeamName')}
+                 for r in self.chat_rooms(db, actor_id)]
+        rooms.sort(key=lambda r: r['id'])
+        # One cursor covers both collections. Room discovery continues
+        # after the agents, without repeating rooms on each agent page.
+        entries = [{'entry': 'agent', 'value': r} for r in rows]
+        entries += [{'entry': 'room', 'value': r} for r in rooms]
+        result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000)
+        page = result.pop('items')
+        result.update(self=actor_id, lead=actor['rootId'],
+                      items=[r['value'] for r in page if r['entry'] == 'agent'],
+                      rooms=[r['value'] for r in page if r['entry'] == 'room'],
+                      total=len(rows), roomTotal=len(rooms), totalRecords=len(entries))
+        if actor.get('parentId'):
+            result['parent'] = actor['parentId']
+        return result
+
     def model_directory(self, actor_id, name, args):
         if name == 'orchestration_status' and 'include_finished' in args and type(args['include_finished']) is not bool:
             raise ValueError('include_finished must be a boolean')
+        if name == 'orchestration_peers':
+            with self.read_db() as db:
+                actor = self.checked_actor(db, actor_id, actor_id)
+                return self.model_peers_directory(db, actor_id, args, actor)
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             agents = [a for a in self.records(db, 'agents') if not a.get('deletedAt')]
-            if name == 'orchestration_peers':
-                scope = args.get('scope', 'team')
-                if scope != 'team':
-                    raise ValueError('Agent discovery is limited to your team')
-                from codex_peer_teams import peers_for
-                peer_ids = {peer['id'] for peer in peers_for(self, db, actor)}
-                rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
-                        for a in agents if a['rootId'] == actor['rootId'] or a['id'] in peer_ids]
-                rows.sort(key=lambda a: a['id'])
-                rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId', 'peerTeamId', 'peerTeamName')}
-                         for r in self.chat_rooms(db, actor_id)]
-                rooms.sort(key=lambda r: r['id'])
-                # One cursor covers both collections. Room discovery continues
-                # after the agents, without repeating rooms on each agent page.
-                entries = [{'entry': 'agent', 'value': r} for r in rows]
-                entries += [{'entry': 'room', 'value': r} for r in rooms]
-                result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000)
-                page = result.pop('items')
-                result.update(self=actor_id, lead=actor['rootId'],
-                              items=[r['value'] for r in page if r['entry'] == 'agent'],
-                              rooms=[r['value'] for r in page if r['entry'] == 'room'],
-                              total=len(rows), roomTotal=len(rooms), totalRecords=len(entries))
-                if actor.get('parentId'):
-                    result['parent'] = actor['parentId']
-                return result
             team = [a for a in agents if a['rootId'] == actor['rootId']]
             ids = {a['id'] for a in team}
             terminal_agents = {'completed', 'failed', 'interrupted'}
