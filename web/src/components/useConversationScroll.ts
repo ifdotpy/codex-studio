@@ -1,15 +1,39 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import { saved, save } from "../api";
 
 type Position = { top: number; following: boolean; distance: number };
+
+export function useFollowState(
+  subscribe: (listener: () => void) => () => void,
+  getSnapshot: () => boolean,
+) {
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
 
 // One owner for scroll anchoring. Browser anchoring and React effects must not
 // both compensate for the same composer resize or streamed paragraph.
 export function useConversationScroll(id: string, ready: boolean) {
   const scroll = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
-  const [follow, updateFollow] = useState(true);
   const following = useRef(true);
+  const followListeners = useRef(new Set<() => void>());
+  const getFollow = useCallback(() => following.current, []);
+  const subscribeFollow = useCallback((listener: () => void) => {
+    followListeners.current.add(listener);
+    return () => {
+      followListeners.current.delete(listener);
+    };
+  }, []);
+  const updateFollow = (value: boolean) => {
+    if (following.current === value) return;
+    following.current = value;
+    followListeners.current.forEach((listener) => listener());
+  };
   const positions = useRef(new Map<string, Position>());
   const current = useRef("");
   const available = useRef(ready);
@@ -85,7 +109,6 @@ export function useConversationScroll(id: string, ready: boolean) {
     if (!hadAnchor && !following.current) anchor.current = null;
   };
   const setFollow = (value: boolean) => {
-    following.current = value;
     updateFollow(value);
     if (value) {
       bottomDistance.current = 0;
@@ -110,8 +133,7 @@ export function useConversationScroll(id: string, ready: boolean) {
         typeof stored.following === "boolean";
       lastTop.current = valid ? stored.top : 0;
       bottomDistance.current = valid ? stored.distance : 0;
-      following.current = valid ? stored.following : true;
-      updateFollow(following.current);
+      updateFollow(valid ? stored.following : true);
     }
     restore();
   });
@@ -177,10 +199,17 @@ export function useConversationScroll(id: string, ready: boolean) {
     const value =
       atBottom &&
       (following.current || performance.now() - lastScrollInput.current < 600);
-    following.current = value;
     updateFollow(value);
     remember();
     persist();
   };
-  return { scroll, content, follow, setFollow, onScroll, remember };
+  return {
+    scroll,
+    content,
+    getFollow,
+    subscribeFollow,
+    setFollow,
+    onScroll,
+    remember,
+  };
 }

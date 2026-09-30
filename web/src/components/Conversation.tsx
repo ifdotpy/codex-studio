@@ -31,6 +31,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { api, errorText, save, saved } from "../api";
 import SafetyBuffering from "./SafetyBuffering";
@@ -65,6 +66,12 @@ import {
 import Usage from "./Usage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
+import PromptComposer, {
+  type DraftReader,
+  type DraftSubscription,
+} from "./prompt-composer/PromptComposer";
+import PromptInput from "./prompt-composer/PromptInput";
+import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 import Requests from "./Requests";
 import MessageDate from "./MessageDate";
 import TurnHistory from "./TurnHistory";
@@ -84,8 +91,6 @@ import ComposerAttachments, {
 } from "./ComposerAttachments";
 import "./chat-controls.css";
 import { copyText } from "../clipboard";
-import { useSkillAutocomplete } from "./useSkillAutocomplete";
-import ComposerAutocomplete from "./ComposerAutocomplete";
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
 function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
@@ -99,6 +104,33 @@ function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
   );
 }
 
+function FollowLatest(p: {
+  subscribe: (listener: () => void) => () => void;
+  getSnapshot: () => boolean;
+  onClick: () => void;
+}) {
+  const following = useSyncExternalStore(
+    p.subscribe,
+    p.getSnapshot,
+    p.getSnapshot,
+  );
+  if (following) return null;
+  return (
+    <div className="jump-slot">
+      <Button
+        id="jump-latest"
+        className="jump"
+        variant="default"
+        radius="xl"
+        leftSection={<ArrowDown size={14} />}
+        onClick={p.onClick}
+      >
+        Latest
+      </Button>
+    </div>
+  );
+}
+
 export default function Conversation(p: {
   id: string | null;
   syncWorkspaceId?: string;
@@ -106,7 +138,8 @@ export default function Conversation(p: {
   room?: Room;
   legacy?: Json;
   data: Snapshot;
-  draft: string;
+  getDraft: DraftReader;
+  subscribeDraft: DraftSubscription;
   setDraft: (v: string | ((current: string) => string), id?: string) => void;
   draftConflicts?: DraftVersion[];
   dismissDraft?: (version: DraftVersion) => void;
@@ -135,6 +168,7 @@ export default function Conversation(p: {
   reloadLimits: () => void;
   onPhase: (id: string | null, label: string) => void;
 }) {
+  reportPromptComposerRender("conversation");
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const shortViewport = useMediaQuery(
     "(max-width: 760px) and (max-height: 750px)",
@@ -178,7 +212,7 @@ export default function Conversation(p: {
   const promptRecall = usePromptRecall(
     `${p.data.stateDir}:${kind}:${p.id}:${historyVersion}`,
     p.room ? [] : items,
-    p.draft,
+    () => p.getDraft(p.id || "new"),
     p.setDraft,
     p.agent?.source === "managed" && kind === "agent" && p.id
       ? {
@@ -214,8 +248,15 @@ export default function Conversation(p: {
   useEffect(() => {
     if (observed) p.onObserved?.(observed.split(","));
   }, [observed, p.onObserved]);
-  const { scroll, content, follow, setFollow, onScroll, remember } =
-    useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  const {
+    scroll,
+    content,
+    getFollow,
+    subscribeFollow,
+    setFollow,
+    onScroll,
+    remember,
+  } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
   const input = useRef<HTMLTextAreaElement>(null);
   const navigationAttempt = useRef(0);
   const handledJump = useRef("");
@@ -324,7 +365,6 @@ export default function Conversation(p: {
   const activeId = useRef(p.id);
   activeId.current = p.id;
   const assets = attachments[p.id || ""] || [];
-  const draftTooLong = p.draft.length > 12000;
   const agent = useMemo(
     () =>
       p.agent && liveAgent?.id === p.id
@@ -352,8 +392,6 @@ export default function Conversation(p: {
     setModelCommandOpen(false);
     setModelCommandRequest(0);
   }, [p.id, p.agent?.accountKey, p.syncWorkspaceId, p.data.stateDir]);
-  const modelCommand = /^\/model(?:\s|$)/i.test(p.draft.trim());
-  const exactModelCommand = /^\/model$/i.test(p.draft.trim());
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
   const errorKind = nativeErrorKind(agent?.error);
   const failureKey = [
@@ -424,32 +462,6 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const insertSkill = useCallback(
-    (text: string, start: number, end: number) => {
-      const current = input.current?.value ?? p.draft;
-      const next = current.slice(0, start) + text + current.slice(end);
-      p.setDraft(next);
-      requestAnimationFrame(() => {
-        const element = input.current;
-        if (!element) return;
-        const caret = start + text.length;
-        element.focus();
-        element.setSelectionRange(caret, caret);
-      });
-    },
-    [p.draft, p.setDraft],
-  );
-  const skillAutocomplete = useSkillAutocomplete({
-    enabled: !!managed && !p.room && !!p.id && p.id === agent?.id,
-    agentId: p.id || "",
-    workspace: p.syncWorkspaceId || p.data.stateDir,
-    account: p.agent?.accountKey || "default",
-    cwd: p.agent?.cwd || "",
-    provider: String(p.agent?.provider || "codex"),
-    draft: p.draft,
-    input,
-    insert: insertSkill,
-  });
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
   const messageQueue = useMessageQueue({
     id: p.id,
@@ -521,6 +533,10 @@ export default function Conversation(p: {
     }
   };
   const submit = async (delivery: "queue" | "after_tool" = "after_tool") => {
+    const draft = p.getDraft(p.id || "new");
+    const draftTooLong = draft.length > 12000;
+    const modelCommand = /^\/model(?:\s|$)/i.test(draft.trim());
+    const exactModelCommand = /^\/model$/i.test(draft.trim());
     if (modelCommand) {
       if (!exactModelCommand) {
         p.notify("Use /model without arguments to choose a model.");
@@ -541,7 +557,7 @@ export default function Conversation(p: {
       threadBlock ||
       uploading ||
       draftTooLong ||
-      (!p.draft.trim() && !assets.length)
+      (!draft.trim() && !assets.length)
     )
       return;
     const attempt = Symbol();
@@ -603,7 +619,7 @@ export default function Conversation(p: {
     )
       return;
     const id = p.id;
-    const text = p.draft;
+    const text = p.getDraft(p.id || "new");
     uploadLock.current = true;
     setUploading(true);
     try {
@@ -723,13 +739,14 @@ export default function Conversation(p: {
       .split(/\r?\n/)
       .map((line) => `> ${line}`)
       .join("\n");
+    const draft = p.getDraft(p.id || "new");
     const separator =
-      !p.draft || p.draft.endsWith("\n\n")
+      !draft || draft.endsWith("\n\n")
         ? ""
-        : p.draft.endsWith("\n")
+        : draft.endsWith("\n")
           ? "\n"
           : "\n\n";
-    p.setDraft(`${p.draft}${separator}${quoted}\n\n`);
+    p.setDraft(`${draft}${separator}${quoted}\n\n`);
     input.current?.focus();
   });
   const team = p.data.threads.filter(
@@ -769,7 +786,7 @@ export default function Conversation(p: {
   );
   const userText = (m: Message) => <div className="prose plain">{m.text}</div>;
   const editOutgoing = useMessageAction(async (entry: OutgoingMessage) => {
-    if (p.draft.trim() || assets.length)
+    if (p.getDraft(p.id || "new").trim() || assets.length)
       throw new Error("Send or clear the current draft first.");
     await changeOutbox(entry.id, "cancel");
     p.setDraft(
@@ -792,9 +809,10 @@ export default function Conversation(p: {
       input.current?.focus({ preventScroll: true });
   });
   const restoreDraft = useMessageAction((m: Message) => {
+    const draft = p.getDraft(p.id || "new");
     const separator =
-      p.draft.trim() && p.draft.trim() !== m.text.trim() ? "\n\n" : "";
-    p.setDraft(separator ? p.draft + separator + m.text : m.text);
+      draft.trim() && draft.trim() !== m.text.trim() ? "\n\n" : "";
+    p.setDraft(separator ? draft + separator + m.text : m.text);
     setAttachments((current) => ({
       ...current,
       [p.id || ""]: [
@@ -1257,20 +1275,11 @@ export default function Conversation(p: {
           onQuote={quote}
         />
       )}
-      {!follow && (
-        <div className="jump-slot">
-          <Button
-            id="jump-latest"
-            className="jump"
-            variant="default"
-            radius="xl"
-            leftSection={<ArrowDown size={14} />}
-            onClick={returnToLatest}
-          >
-            Latest
-          </Button>
-        </div>
-      )}
+      <FollowLatest
+        subscribe={subscribeFollow}
+        getSnapshot={getFollow}
+        onClick={returnToLatest}
+      />
       {p.room ? (
         <p className="room-footer">
           {p.room.kind === "private"
@@ -1335,8 +1344,10 @@ export default function Conversation(p: {
               />
             </>
           )}
-          <form
-            id="composer"
+          <PromptComposer
+            session={p.id || "new"}
+            getDraft={p.getDraft}
+            subscribeDraft={p.subscribeDraft}
             className={dragging ? "attachment-drop" : ""}
             onDragOver={(event) => {
               if (managed) {
@@ -1360,350 +1371,303 @@ export default function Conversation(p: {
               void submit();
             }}
           >
-            <ComposerAutocomplete
-              id="skill-suggestions"
-              loadingMessage="Loading skills…"
-              emptyMessage="No matching skills"
-              label="Skills"
-              opened={!!skillAutocomplete.range}
-              resetKey={skillAutocomplete.range?.signature}
-              options={skillAutocomplete.matches.map((skill) => ({
-                value: skill.name,
-                label: skill.name,
-                description: skill.description,
-              }))}
-              loading={skillAutocomplete.loading}
-              error={
-                skillAutocomplete.loadError
-                  ? "Could not load skills"
-                  : undefined
-              }
-              warning={
-                skillAutocomplete.hasErrors
-                  ? "Some skills could not be loaded"
-                  : undefined
-              }
-              onDismiss={skillAutocomplete.dismiss}
-              onSelect={(name) => {
-                const skill = skillAutocomplete.matches.find(
-                  (skill) => skill.name === name,
-                );
-                if (skill) skillAutocomplete.choose(skill);
-              }}
-            >
-              <Textarea
-                onPaste={(event) => {
-                  const files = Array.from(event.clipboardData.files);
-                  if (managed && files.length) {
-                    event.preventDefault();
-                    void addFiles(files).catch((error) =>
-                      p.notify(errorText(error)),
-                    );
-                  }
-                }}
-                variant="unstyled"
-                autosize
-                minRows={1}
-                maxRows={shortViewport ? 3 : 8}
-                id="message"
-                ref={input}
-                aria-label="Message"
-                aria-description={
-                  mobileClient
-                    ? "Use the send button to send."
-                    : managed
-                      ? "Enter sends after tool calls. Tab adds a message to the queue. Shift + Enter adds a new line."
-                      : "Enter to send. Shift + Enter for a new line."
-                }
-                placeholder={
-                  threadBlock
-                    ? "Start a new chat or open another chat."
-                    : canSend
-                      ? "What should we work on?"
-                      : "This session has no live mailbox"
-                }
-                disabled={!canSend}
-                value={p.draft}
-                onChange={(e) => {
-                  promptRecall.reset();
-                  p.setDraft(e.target.value);
-                }}
-                error={draftTooLong}
-                aria-describedby={
-                  draftTooLong ? "draft-length-error" : undefined
-                }
-                rows={1}
-                onClick={skillAutocomplete.updateRange}
-                onBlur={skillAutocomplete.blur}
-                onKeyUp={skillAutocomplete.updateRange}
-                onSelect={skillAutocomplete.updateRange}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "Tab" &&
-                    managed &&
-                    canSend &&
-                    !modelCommand &&
-                    !e.shiftKey &&
-                    !e.altKey &&
-                    !e.ctrlKey &&
-                    !e.metaKey &&
-                    !e.repeat &&
-                    !e.nativeEvent.isComposing &&
-                    !p.sending &&
-                    !uploading &&
-                    !draftTooLong &&
-                    (p.draft.trim() || assets.length)
-                  ) {
-                    e.preventDefault();
-                    void submit("queue");
-                    return;
-                  }
-                  if (promptRecall.onKeyDown(e)) return;
-                  if (
-                    !mobileClient &&
-                    e.key === "Enter" &&
-                    !e.shiftKey &&
-                    !e.nativeEvent.isComposing
-                  ) {
-                    e.preventDefault();
-                    void submit();
-                  }
-                }}
-              />
-            </ComposerAutocomplete>
-            {exactModelCommand && (
-              <Button
-                type="button"
-                variant="subtle"
-                size="compact-sm"
-                aria-label="Choose model with /model"
-                onClick={() => void submit()}
-              >
-                /model · Choose model and reasoning
-              </Button>
-            )}
-            {modelCommandRequest > 0 && p.agent?.source === "managed" && (
-              <ExecutionSettings
-                // Transcript metadata can predate a settings change.
-                agent={p.agent}
-                catalog={modelCatalog}
-                refresh={p.refresh}
-                openRequest={modelCommandRequest}
-                onOpenChange={setModelCommandOpen}
-              />
-            )}
-            {draftTooLong && (
-              <div
-                id="draft-length-error"
-                className="draft-length-error"
-                role="alert"
-              >
-                <span>
-                  {p.draft.length.toLocaleString()} characters. The message
-                  limit is 12,000. Your full draft is preserved.
-                </span>
-                {managed && (
-                  <Button
-                    type="button"
-                    size="compact-xs"
-                    variant="subtle"
-                    disabled={
-                      !canSend || p.sending || uploading || assets.length >= 8
-                    }
-                    onClick={() => void attachDraft()}
-                  >
-                    Attach text as a file
-                  </Button>
-                )}
-              </div>
-            )}
-            <div className="composer-bar">
-              <DraftVersions
-                key={`drafts:${p.id || "new"}`}
-                versions={p.draftConflicts || []}
-                useVersion={(version, mode) =>
-                  p.setDraft((current) =>
-                    mode === "append" && current
-                      ? `${current}\n\n${version.text}`
-                      : version.text,
-                  )
-                }
-                dismiss={(version) => p.dismissDraft?.(version)}
-              />
-              {managed && (
+            {(draft) => {
+              const draftTooLong = draft.length > 12000;
+              const modelCommand = /^\/model(?:\s|$)/i.test(draft.trim());
+              const exactModelCommand = /^\/model$/i.test(draft.trim());
+              return (
                 <>
-                  {!!pendingFiles.length && (
-                    <div className="attachment-list" role="status">
-                      {pendingFiles.map((file) => (
-                        <div className="attachment-chip" key={file.id}>
-                          <span>
-                            {file.name}: saved on this device, waiting for
-                            upload
-                          </span>
-                          <Button
-                            size="compact-xs"
-                            onClick={() => {
-                              void uploadRecovery
-                                .remove(file.id, () => {
-                                  setAttachments((current) => ({
-                                    ...current,
-                                    [file.agent]: (
-                                      current[file.agent] || []
-                                    ).filter((asset) => asset.id !== file.id),
-                                  }));
-                                })
-                                .catch((error) => p.notify(errorText(error)));
-                            }}
-                          >
-                            Remove pending {file.name}
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {uploadRecovery.error && (
-                    <p role="status">
-                      {uploadRecovery.error}{" "}
-                      <button type="button" onClick={uploadRecovery.retry}>
-                        Retry file upload
-                      </button>
-                    </p>
-                  )}
-                  <ComposerAttachments
-                    notify={p.notify}
-                    assets={assets}
+                  <PromptInput
+                    value={draft}
+                    session={p.id || "new"}
+                    getDraft={p.getDraft}
+                    setDraft={p.setDraft}
+                    input={input}
+                    mobile={mobileClient}
+                    shortViewport={shortViewport}
+                    managed={!!managed}
+                    canSend={canSend}
+                    blocked={!!threadBlock}
+                    sending={p.sending}
                     uploading={uploading}
-                    disabled={!canSend || p.sending}
-                    add={addFiles}
-                    remove={(id) => {
-                      const agentId = p.id || "";
-                      void uploadRecovery
-                        .remove(id, () => {
-                          setAttachments((current) => ({
-                            ...current,
-                            [agentId]: (current[agentId] || []).filter(
-                              (asset) => asset.id !== id,
-                            ),
-                          }));
-                        })
-                        .catch((error) => p.notify(errorText(error)));
+                    draftTooLong={draftTooLong}
+                    modelCommand={modelCommand}
+                    hasAttachments={!!assets.length}
+                    onChange={(value) => {
+                      promptRecall.reset();
+                      p.setDraft(value);
                     }}
-                  />
-                </>
-              )}
-              {managed && p.id && (
-                <Dictation
-                  key={`${p.data.stateDir}:${p.id}`}
-                  chatId={`${p.data.stateDir}:${p.id}`}
-                  disabled={!canSend || p.sending}
-                  onInsert={(text) => {
-                    const next =
-                      p.draft +
-                      (p.draft && !p.draft.endsWith("\n") ? "\n" : "") +
-                      text;
-                    p.setDraft(next);
-                  }}
-                />
-              )}
-              {managed &&
-                agent?.isLead &&
-                agent?.provider !== "claude" &&
-                p.id &&
-                !threadBlock && (
-                  <RealtimeVoice
-                    key={`voice:${p.id}`}
-                    agentId={p.id}
-                    notify={p.notify}
-                  />
-                )}
-              <span id="send-state" role="status" aria-live="polite">
-                {p.sending ? "Sending…" : ""}
-              </span>
-              <div className="composer-submit-actions">
-                {managed && (
-                  <ActionIcon
-                    type="button"
-                    variant="subtle"
-                    aria-label="Queue after turn"
-                    title="Queue after the current turn (Tab)"
-                    aria-keyshortcuts="Tab"
-                    disabled={
-                      !canSend ||
-                      p.sending ||
-                      uploading ||
-                      draftTooLong ||
-                      (!p.draft.trim() && !assets.length)
-                    }
-                    onClick={() => void submit("queue")}
-                  >
-                    <ListEnd size={18} />
-                  </ActionIcon>
-                )}
-                {agent && (
-                  <ActionIcon
-                    type="button"
-                    id="stop"
-                    aria-label="Stop agent"
-                    title={
-                      ["running", "starting", "approval"].includes(agent.status)
-                        ? "Stop agent"
-                        : "No active turn to stop"
-                    }
-                    disabled={
-                      stopping ||
-                      !["running", "starting", "approval"].includes(
-                        agent.status,
+                    onPasteFiles={(files) =>
+                      void addFiles(files).catch((error) =>
+                        p.notify(errorText(error)),
                       )
                     }
-                    aria-busy={stopping}
-                    onClick={() => {
-                      if (stopping) return;
-                      const attempt = ++stopAttempt.current;
-                      setStopping(true);
-                      void api("/api/stop", { id: p.id, descendants: false })
-                        .then(p.refresh)
-                        .catch((e) => p.notify(errorText(e)))
-                        .finally(() => {
-                          if (stopAttempt.current === attempt)
-                            setStopping(false);
-                        });
+                    onSend={() => void submit()}
+                    onQueue={() => void submit("queue")}
+                    onRecallKeyDown={promptRecall.onKeyDown}
+                    skillCatalog={{
+                      enabled:
+                        !!managed && !p.room && !!p.id && p.id === agent?.id,
+                      agentId: p.id || "",
+                      workspace: p.syncWorkspaceId || p.data.stateDir,
+                      account: p.agent?.accountKey || "default",
+                      cwd: p.agent?.cwd || "",
+                      provider: String(p.agent?.provider || "codex"),
                     }}
-                  >
-                    {stopping ? (
-                      <Loader size={14} color="currentColor" />
-                    ) : (
-                      <Square size={14} fill="currentColor" />
-                    )}
-                  </ActionIcon>
-                )}
-                <ActionIcon
-                  type="submit"
-                  variant="filled"
-                  color="gray"
-                  radius="xl"
-                  id="send"
-                  className="send"
-                  disabled={
-                    !canSend ||
-                    p.sending ||
-                    uploading ||
-                    draftTooLong ||
-                    (!p.draft.trim() && !assets.length)
-                  }
-                  aria-label="Send message"
-                  title={
-                    managed ? "Send after tool calls (Enter)" : "Send message"
-                  }
-                >
-                  {p.sending ? (
-                    <Loader size={19} color="currentColor" />
-                  ) : (
-                    <ArrowUp size={19} />
+                  />
+                  {exactModelCommand && (
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      size="compact-sm"
+                      aria-label="Choose model with /model"
+                      onClick={() => void submit()}
+                    >
+                      /model · Choose model and reasoning
+                    </Button>
                   )}
-                </ActionIcon>
-              </div>
-            </div>
-          </form>
+                  {modelCommandRequest > 0 && p.agent?.source === "managed" && (
+                    <ExecutionSettings
+                      // Transcript metadata can predate a settings change.
+                      agent={p.agent}
+                      catalog={modelCatalog}
+                      refresh={p.refresh}
+                      openRequest={modelCommandRequest}
+                      onOpenChange={setModelCommandOpen}
+                    />
+                  )}
+                  {draftTooLong && (
+                    <div
+                      id="draft-length-error"
+                      className="draft-length-error"
+                      role="alert"
+                    >
+                      <span>
+                        {draft.length.toLocaleString()} characters. The message
+                        limit is 12,000. Your full draft is preserved.
+                      </span>
+                      {managed && (
+                        <Button
+                          type="button"
+                          size="compact-xs"
+                          variant="subtle"
+                          disabled={
+                            !canSend ||
+                            p.sending ||
+                            uploading ||
+                            assets.length >= 8
+                          }
+                          onClick={() => void attachDraft()}
+                        >
+                          Attach text as a file
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                  <div className="composer-bar">
+                    <DraftVersions
+                      key={`drafts:${p.id || "new"}`}
+                      versions={p.draftConflicts || []}
+                      useVersion={(version, mode) =>
+                        p.setDraft((current) =>
+                          mode === "append" && current
+                            ? `${current}\n\n${version.text}`
+                            : version.text,
+                        )
+                      }
+                      dismiss={(version) => p.dismissDraft?.(version)}
+                    />
+                    {managed && (
+                      <>
+                        {!!pendingFiles.length && (
+                          <div className="attachment-list" role="status">
+                            {pendingFiles.map((file) => (
+                              <div className="attachment-chip" key={file.id}>
+                                <span>
+                                  {file.name}: saved on this device, waiting for
+                                  upload
+                                </span>
+                                <Button
+                                  size="compact-xs"
+                                  onClick={() => {
+                                    void uploadRecovery
+                                      .remove(file.id, () => {
+                                        setAttachments((current) => ({
+                                          ...current,
+                                          [file.agent]: (
+                                            current[file.agent] || []
+                                          ).filter(
+                                            (asset) => asset.id !== file.id,
+                                          ),
+                                        }));
+                                      })
+                                      .catch((error) =>
+                                        p.notify(errorText(error)),
+                                      );
+                                  }}
+                                >
+                                  Remove pending {file.name}
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {uploadRecovery.error && (
+                          <p role="status">
+                            {uploadRecovery.error}{" "}
+                            <button
+                              type="button"
+                              onClick={uploadRecovery.retry}
+                            >
+                              Retry file upload
+                            </button>
+                          </p>
+                        )}
+                        <ComposerAttachments
+                          notify={p.notify}
+                          assets={assets}
+                          uploading={uploading}
+                          disabled={!canSend || p.sending}
+                          add={addFiles}
+                          remove={(id) => {
+                            const agentId = p.id || "";
+                            void uploadRecovery
+                              .remove(id, () => {
+                                setAttachments((current) => ({
+                                  ...current,
+                                  [agentId]: (current[agentId] || []).filter(
+                                    (asset) => asset.id !== id,
+                                  ),
+                                }));
+                              })
+                              .catch((error) => p.notify(errorText(error)));
+                          }}
+                        />
+                      </>
+                    )}
+                    {managed && p.id && (
+                      <Dictation
+                        key={`${p.data.stateDir}:${p.id}`}
+                        chatId={`${p.data.stateDir}:${p.id}`}
+                        disabled={!canSend || p.sending}
+                        onInsert={(text) => {
+                          const next =
+                            draft +
+                            (draft && !draft.endsWith("\n") ? "\n" : "") +
+                            text;
+                          p.setDraft(next);
+                        }}
+                      />
+                    )}
+                    {managed &&
+                      agent?.isLead &&
+                      agent?.provider !== "claude" &&
+                      p.id &&
+                      !threadBlock && (
+                        <RealtimeVoice
+                          key={`voice:${p.id}`}
+                          agentId={p.id}
+                          notify={p.notify}
+                        />
+                      )}
+                    <span id="send-state" role="status" aria-live="polite">
+                      {p.sending ? "Sending…" : ""}
+                    </span>
+                    <div className="composer-submit-actions">
+                      {managed && (
+                        <ActionIcon
+                          type="button"
+                          variant="subtle"
+                          aria-label="Queue after turn"
+                          title="Queue after the current turn (Tab)"
+                          aria-keyshortcuts="Tab"
+                          disabled={
+                            !canSend ||
+                            p.sending ||
+                            uploading ||
+                            draftTooLong ||
+                            (!draft.trim() && !assets.length)
+                          }
+                          onClick={() => void submit("queue")}
+                        >
+                          <ListEnd size={18} />
+                        </ActionIcon>
+                      )}
+                      {agent && (
+                        <ActionIcon
+                          type="button"
+                          id="stop"
+                          aria-label="Stop agent"
+                          title={
+                            ["running", "starting", "approval"].includes(
+                              agent.status,
+                            )
+                              ? "Stop agent"
+                              : "No active turn to stop"
+                          }
+                          disabled={
+                            stopping ||
+                            !["running", "starting", "approval"].includes(
+                              agent.status,
+                            )
+                          }
+                          aria-busy={stopping}
+                          onClick={() => {
+                            if (stopping) return;
+                            const attempt = ++stopAttempt.current;
+                            setStopping(true);
+                            void api("/api/stop", {
+                              id: p.id,
+                              descendants: false,
+                            })
+                              .then(p.refresh)
+                              .catch((e) => p.notify(errorText(e)))
+                              .finally(() => {
+                                if (stopAttempt.current === attempt)
+                                  setStopping(false);
+                              });
+                          }}
+                        >
+                          {stopping ? (
+                            <Loader size={14} color="currentColor" />
+                          ) : (
+                            <Square size={14} fill="currentColor" />
+                          )}
+                        </ActionIcon>
+                      )}
+                      <ActionIcon
+                        type="submit"
+                        variant="filled"
+                        color="gray"
+                        radius="xl"
+                        id="send"
+                        className="send"
+                        disabled={
+                          !canSend ||
+                          p.sending ||
+                          uploading ||
+                          draftTooLong ||
+                          (!draft.trim() && !assets.length)
+                        }
+                        aria-label="Send message"
+                        title={
+                          managed
+                            ? "Send after tool calls (Enter)"
+                            : "Send message"
+                        }
+                      >
+                        {p.sending ? (
+                          <Loader size={19} color="currentColor" />
+                        ) : (
+                          <ArrowUp size={19} />
+                        )}
+                      </ActionIcon>
+                    </div>
+                  </div>
+                </>
+              );
+            }}
+          </PromptComposer>
           {agent?.source === "managed" && (
             <Usage
               key={p.agent?.accountKey || "default"}

@@ -5,7 +5,7 @@ import type { Message } from "../types";
 export function usePromptRecall(
   scope: string,
   messages: Message[],
-  draft: string,
+  getDraft: () => string,
   setDraft: (text: string) => void,
   history?: {
     before: string | null;
@@ -24,8 +24,8 @@ export function usePromptRecall(
     index: number;
     value: string;
   } | null>(null);
-  const latest = useRef({ scope, draft, setDraft });
-  latest.current = { scope, draft, setDraft };
+  const latest = useRef({ scope, getDraft, setDraft });
+  latest.current = { scope, getDraft, setDraft };
   const eligible = (items: Message[]) =>
     items.filter(
       (item) => item.role === "user" && !item.pending && item.text.trim(),
@@ -50,6 +50,7 @@ export function usePromptRecall(
       !["ArrowUp", "ArrowDown"].includes(event.key)
     )
       return false;
+    const draft = getDraft();
     if (cursor.current?.scope !== scope || cursor.current.value !== draft)
       reset();
     if (!cursor.current) {
@@ -85,7 +86,7 @@ export function usePromptRecall(
         cursor.current === current &&
         current.request === request &&
         latest.current.scope === scope &&
-        latest.current.draft === current.value;
+        latest.current.getDraft() === current.value;
       void (async () => {
         try {
           while (current.before && valid()) {

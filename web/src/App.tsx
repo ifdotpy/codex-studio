@@ -57,6 +57,7 @@ import {
   type OutgoingMessage,
 } from "./sync/send";
 import { useSyncedDrafts } from "./sync/drafts";
+import { reportPromptComposerRender } from "./components/prompt-composer/renderProbe";
 import { busy, statusLabel, type Agent, type Json } from "./types";
 import Sidebar from "./components/Sidebar";
 import ChatStatus from "./components/ChatStatus";
@@ -96,6 +97,7 @@ import BackgroundTasks, {
   backgroundTasks,
 } from "./components/BackgroundTasks";
 export default function App() {
+  reportPromptComposerRender("app");
   const outbox = useOutbox();
   const [outgoing, setOutgoing] = useState<Record<string, OutgoingMessage>>({});
   const observedSends = useRef(new Set<string>());
@@ -239,8 +241,9 @@ export default function App() {
     [outgoingMessages, receipts],
   );
   const {
-    drafts,
     setDrafts,
+    getDraft,
+    subscribeDraft,
     conflicts: draftConflicts,
     dismissDraft,
     error: draftError,
@@ -677,7 +680,8 @@ export default function App() {
           }
         : {}),
     };
-    if (!opened && drafts.new) setDraft(drafts.new, creation.current.id);
+    if (!opened && getDraft("new"))
+      setDraft(getDraft("new"), creation.current.id);
     try {
       // Save the exact request before sending it. A lost response must retain this identity.
       localStorage.setItem(creationKey, JSON.stringify(creation.current));
@@ -688,7 +692,7 @@ export default function App() {
       rememberCreated(a, creationScope);
       localStorage.removeItem(creationKey);
       setPendingCreation(null);
-      if (!opened && drafts.new) setDraft(drafts.new, a.id);
+      if (!opened && getDraft("new")) setDraft(getDraft("new"), a.id);
       setToast("");
       creation.current = null;
       createdSelection.current = a.id;
@@ -712,7 +716,7 @@ export default function App() {
     onPersist?: () => void | Promise<void>;
   }) => {
     const draftKey = opened || "new",
-      text = (drafts[draftKey] || "").trim();
+      text = getDraft(draftKey).trim();
     if ((!text && !options?.assets?.length) || sendingLock.current) return;
     const attempt = Symbol();
     sendingLock.current = attempt;
@@ -1561,7 +1565,8 @@ export default function App() {
               key={room.id}
               room={room}
               data={data}
-              draft={drafts[opened || "new"] || ""}
+              getDraft={getDraft}
+              subscribeDraft={subscribeDraft}
               setDraft={setDraft}
               refresh={refresh}
               notify={notify}
@@ -1574,7 +1579,8 @@ export default function App() {
               room={room}
               legacy={legacy}
               data={data}
-              draft={drafts[opened || "new"] || ""}
+              getDraft={getDraft}
+              subscribeDraft={subscribeDraft}
               setDraft={setDraft}
               draftConflicts={draftConflicts.filter(
                 (version) => version.session === (opened || "new"),
