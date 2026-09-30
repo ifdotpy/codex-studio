@@ -456,7 +456,7 @@ class WorkMixin:
         match = " AND ".join(
             '"' + word.replace('"', '""') + '"' for word in query.split()
         )
-        with self.lock, self.db() as db:
+        with self.read_db() as db:
             caller = self.checked_actor(db, agent_id) if agent_id else None
             allowed = {
                 a["id"]

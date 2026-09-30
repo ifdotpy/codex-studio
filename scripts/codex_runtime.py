@@ -1304,7 +1304,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 room = (self.broadcast_room(db, record) if record.get("kind") == "broadcast"
                         and record.get("rootId") != "all" else None)
                 if room is None:
-                    room = next((item for item in self.chat_rooms(db) if item["id"] == record["id"]), None)
+                    room = next(iter(self.chat_rooms(db, room_id=record["id"])), None)
                 sync_entity_put(db, collection, str(record["id"]), room or record, room is None)
             elif table == "agents":
                 sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),
@@ -4817,13 +4817,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return c
             raise ValueError("Choose submit, read, or respond")
 
-    def chat_rooms(self, db, viewer=None):
+    def chat_rooms(self, db, viewer=None, room_id=None):
         agents = {a["id"]: a for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")}
         viewer_root = agents.get(viewer, {}).get("rootId") if viewer else None
         from codex_peer_teams import snapshot as peer_snapshot
         peer_teams = peer_snapshot(self, db)
         rooms = []
-        for room in self.records(db, "rooms"):
+        if room_id is None:
+            room_records = self.records(db, "rooms")
+        else:
+            row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
+            room_records = [json.loads(row[0])] if row else []
+        for room in room_records:
             members = ([a["id"] for a in agents.values() if room.get("rootId") in {"all", a["rootId"]}]
                        if room["kind"] == "broadcast" else room["members"])
             if any(m not in agents for m in members) or not members or (viewer and viewer not in members):
@@ -4992,7 +4997,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
             derived_room = (self.broadcast_room(db, room) if room["kind"] == "broadcast"
                             and room.get("rootId") != "all" else
-                            next((item for item in self.chat_rooms(db) if item["id"] == room["id"]), None))
+                            next(iter(self.chat_rooms(db, room_id=room["id"])), None))
             if derived_room:
                 from codex_sync_entities import put as sync_entity_put
                 sync_entity_put(db, "room", room["id"], derived_room)
