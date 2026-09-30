@@ -1166,6 +1166,51 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             f"SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
             f"AND {LIVE_AGENT_SQL}", (root_id,))]
 
+    def scheduler_agents(self, db):
+        """Load only agents that can participate in this pass or own cleanup work."""
+        from codex_agent_modes import mode_fields
+        transfer_roots = ""
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                      "AND name='runtime_account_transfers'").fetchone():
+            transfer_roots = (
+                " OR json_extract(record,'$.rootId') IN (SELECT json_extract(record,'$.leadId') "
+                "FROM runtime_account_transfers WHERE json_extract(record,'$.status')='pending')")
+        filters = (
+            "(json_extract(record,'$.autoWake')=1 AND json_extract(record,'$.status')='queued') OR "
+            "json_extract(record,'$.inFlight')=1 OR "
+            "json_extract(record,'$.status') IN ('running','starting','approval') OR "
+            "(json_type(record,'$.workspaceOperation')='text' "
+            "AND json_extract(record,'$.workspaceOperation')!='') OR "
+            "json_extract(record,'$.accountTransferId') IS NOT NULL OR "
+            "json_extract(record,'$.accountTransfer.status')='pending' OR "
+            "json_extract(record,'$.contextRepair') IS NOT NULL OR "
+            "json_extract(record,'$.contextRepairWait') IS NOT NULL OR "
+            "json_extract(record,'$.lastContextRepairWait') IS NOT NULL OR "
+            "json_extract(record,'$.startAttempt') IS NOT NULL OR "
+            "json_extract(record,'$.browserRecovery') IS NOT NULL OR "
+            "json_extract(record,'$.liveSteerAttempt') IS NOT NULL OR "
+            "json_extract(record,'$.liveSteerRejectedTurnId') IS NOT NULL OR "
+            "json_extract(record,'$.queueNotice') IS NOT NULL")
+        filters += transfer_roots
+        filters += (
+            " OR json_extract(runtime_agents.record,'$.id') IN ("
+            "SELECT json_extract(runtime_work.record,'$.owner') FROM runtime_work "
+            "WHERE json_extract(runtime_work.record,'$.status') IN ('ready','running','blocked'))")
+        rows = db.execute("SELECT id,record FROM runtime_agents WHERE " + filters).fetchall()
+        cache = self.__dict__.setdefault("_scheduler_agent_cache", {})
+        guard = self.__dict__.setdefault("_scheduler_agent_cache_lock", threading.RLock())
+        agents = []
+        with guard:
+            for agent_id, raw in rows:
+                cached = cache.get(agent_id)
+                if cached is None or cached[0] != raw:
+                    cached = (raw, mode_fields(json.loads(raw)))
+                    cache[agent_id] = cached
+                agents.append(copy.deepcopy(cached[1]))
+            while len(cache) > 4096:
+                cache.pop(next(iter(cache)))
+        return agents
+
     def broadcast_room(self, db, room):
         """Build one team broadcast room from its indexed, live roster."""
         rows = db.execute(
@@ -2753,7 +2798,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # the generation; each writer saves what it edits.
             generation = write_generation(db)
             if generation is None or not decoded or decoded[0] != generation:
-                decoded[:] = [generation, self.records(db, "agents")]
+                decoded[:] = [generation, self.scheduler_agents(db)]
             return decoded[1]
 
         with self.lock, self.db() as db:

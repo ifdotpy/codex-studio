@@ -59,13 +59,15 @@ def main():
         return runtime.records(db, "agents")
 
     full = measure(runtime, all_agents, args.repetitions)
+    scheduler = measure(runtime, lambda: runtime.scheduler_agents(db), args.repetitions)
     team = measure(runtime, lambda: runtime.team_agents(db, root_id), args.repetitions)
     plan = [row[3] for row in db.execute(
         "EXPLAIN QUERY PLAN SELECT record FROM runtime_agents "
         "WHERE json_extract(record,'$.rootId')=?", (root_id,))]
     print(json.dumps({"agentRows": db.execute("SELECT COUNT(*) FROM runtime_agents").fetchone()[0],
                       "teamRoot": root_id, "teamRows": roots["n"],
-                      "fullDecode": full, "teamRead": team, "teamQueryPlan": plan}, indent=2))
+                      "fullDecode": full, "schedulerRoster": scheduler,
+                      "teamRead": team, "teamQueryPlan": plan}, indent=2))
     db.close()
 
 
