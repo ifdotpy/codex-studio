@@ -63,7 +63,10 @@ try {
     route.fulfill({ json: {} }),
   );
   await page.addInitScript((key) => {
+    const seedKey = `${key}:invalid-seed-applied`;
+    if (sessionStorage.getItem(seedKey)) return;
     localStorage.setItem(key, '{"theme":"dark","sidebarFontSize":99}');
+    sessionStorage.setItem(seedKey, "1");
   }, storageKey);
   await page.goto(origin);
   await page.locator("#message").waitFor();
@@ -210,12 +213,12 @@ try {
   await shortcut.focus();
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "hidden" });
-  assert.equal(await shortcut.inputValue(), defaultShortcut);
   const shortcutSettings = await openStudioSettings();
   const configurableShortcut = shortcutSettings.getByLabel(
     "Toggle sidebar shortcut",
     { exact: true },
   );
+  assert.equal(await configurableShortcut.inputValue(), defaultShortcut);
   await configurableShortcut.focus();
   await page.keyboard.press("Control+Shift+x");
   await page.waitForFunction(
@@ -398,7 +401,7 @@ try {
   await emptyPage
     .getByRole("button", { name: "Studio settings", exact: true })
     .waitFor();
-  assert.equal(await emptyPage.locator("#message").count(), 0);
+  assert.equal(await emptyPage.locator(".chat-row").count(), 0);
   const noChatSettings = await emptyPage
     .getByRole("button", { name: "Studio settings", exact: true })
     .click()

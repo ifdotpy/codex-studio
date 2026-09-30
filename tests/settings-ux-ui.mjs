@@ -252,12 +252,12 @@ try {
   const studioAccount = studioSettings.getByTestId("account-picker");
   await studioAccount.click();
   await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
-  await page.waitForFunction(
-    (element) =>
-      element
-        .querySelector(".account-picker-label")
-        ?.textContent?.includes("Work"),
-    await studioAccount.elementHandle(),
+  await page.waitForFunction(() =>
+    document
+      .querySelector(
+        '[data-testid="studio-settings"] [data-testid="account-picker"] .account-picker-label',
+      )
+      ?.textContent?.includes("work@example.invalid"),
   );
   assert.equal(defaultAccountCalls, 1);
   assert.equal(defaultAccountKey, "work");
@@ -276,7 +276,7 @@ try {
     .click();
   assert.match(
     await picker.locator(".account-picker-label").textContent(),
-    /Personal/,
+    /personal@example.invalid/,
   );
   await picker.click();
   await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
