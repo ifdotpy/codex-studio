@@ -15,7 +15,7 @@ import type { Snapshot } from "../types";
 import StreamingText from "./StreamingText";
 import Requests from "./Requests";
 import UserMessages from "./UserMessages";
-import { useConversationScroll } from "./useConversationScroll";
+import { useConversationScroll, useFollowState } from "./useConversationScroll";
 import "./team-chats.css";
 
 export default function TeamChats({
@@ -66,8 +66,7 @@ export default function TeamChats({
         ? room.rootId === leadId
         : room.members.length > 0 &&
           (room.members.every((id) => members.has(id)) ||
-            (!!room.peerTeamId &&
-              room.members.some((id) => members.has(id))))),
+            (!!room.peerTeamId && room.members.some((id) => members.has(id))))),
   );
   const name = (room: (typeof rooms)[number]) => {
     if (room.kind === "broadcast") return "Team broadcast";
@@ -153,8 +152,9 @@ export default function TeamChats({
     save(seenKey, next);
     setSeen(next);
   }, [room?.id, room?.lastMessage?.seq, seenKey, loaded, selection.detail]);
-  const { scroll, content, follow, setFollow, onScroll } =
+  const { scroll, content, getFollow, subscribeFollow, setFollow, onScroll } =
     useConversationScroll(`${scope}:messages:${selected}`, loaded);
+  const follow = useFollowState(subscribeFollow, getFollow);
   const events = [
     ...(showYou ? [] : items).map((message) => ({
       id: `message:${message.id}`,

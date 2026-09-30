@@ -40,6 +40,7 @@ import { type Agent, type Snapshot } from "../types";
 import { PeerTeamForm, PeerTeamGroup, usePeerTeamMove } from "./PeerTeams";
 import ChatStatus from "./ChatStatus";
 import { hasCompletedResult, type ChatIndicator } from "./chatStatusModel";
+import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 type Props = {
   data: Snapshot;
   opened: string | null;
@@ -64,6 +65,7 @@ type Props = {
   markingRead: Set<string>;
 };
 export default function Sidebar(p: Props) {
+  reportPromptComposerRender("sidebar");
   const compact = useMediaQuery("(max-width: 760px)");
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
