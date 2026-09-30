@@ -1263,6 +1263,7 @@ export default function Conversation(p: {
           planType={p.limits?.data?.rateLimits?.planType}
           limits={p.limits}
           openLimits={() => {
+            if (compactHeaderTools) setToolsExpanded(true);
             setLimitsOpen(true);
             p.reloadLimits();
           }}
