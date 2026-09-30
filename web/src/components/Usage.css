@@ -19,7 +19,8 @@
   font-size: var(--studio-main-font-size, inherit);
 }
 .usage-header .session-cost-summary {
-  flex: 0 1 132px;
+  flex: 0 0 132px;
+  width: 132px;
   max-width: 132px;
   font-size: inherit;
 }

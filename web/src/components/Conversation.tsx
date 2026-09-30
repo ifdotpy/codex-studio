@@ -1310,24 +1310,26 @@ export default function Conversation(p: {
               }
             >
               {!p.room && p.id && (
-                <PromptNavigator
-                  compact
-                  key={p.id}
-                  messages={items}
-                  loadOlder={
-                    before
-                      ? () => {
-                          setFollow(false);
-                          void older().catch((e) => p.notify(errorText(e)));
-                        }
-                      : undefined
-                  }
-                  loadingOlder={pageLoading}
-                  agentId={managed ? p.id || undefined : undefined}
-                  container={scroll}
-                  storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
-                  jump={jumpToPrompt}
-                />
+                <div className="conversation-prompt-navigation-slot">
+                  <PromptNavigator
+                    compact
+                    key={p.id}
+                    messages={items}
+                    loadOlder={
+                      before
+                        ? () => {
+                            setFollow(false);
+                            void older().catch((e) => p.notify(errorText(e)));
+                          }
+                        : undefined
+                    }
+                    loadingOlder={pageLoading}
+                    agentId={managed ? p.id || undefined : undefined}
+                    container={scroll}
+                    storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+                    jump={jumpToPrompt}
+                  />
+                </div>
               )}
               {!p.room && agent?.source === "managed" && (
                 <Usage

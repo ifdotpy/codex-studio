@@ -242,6 +242,25 @@
   gap: 4px;
   min-width: 0;
 }
+.conversation-prompt-navigation-slot {
+  flex: 0 0 72px;
+  width: 72px;
+  min-width: 0;
+}
+.conversation-prompt-navigation-slot .prompt-navigation-compact {
+  width: 100%;
+}
+.conversation-prompt-navigation-slot .prompt-history-toggle {
+  width: 100%;
+  overflow: hidden;
+}
+.conversation-prompt-navigation-slot
+  .prompt-history-toggle
+  .mantine-Button-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .conversation-header-tools-content .prompt-navigation-compact {
   height: 30px;
   min-width: 0;
@@ -280,6 +299,11 @@
 .conversation-header-tools-menu[data-compact="yes"] .prompt-navigation-compact {
   width: 100%;
   justify-content: flex-start;
+}
+.conversation-header-tools-menu[data-compact="yes"]
+  .conversation-prompt-navigation-slot {
+  flex: 0 0 auto;
+  width: 100%;
 }
 
 /* Routine activity changes within one toolbar slot, not the transcript. */
