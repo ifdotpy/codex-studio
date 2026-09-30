@@ -37,6 +37,20 @@
   font-size: var(--studio-main-font-size);
 }
 
+.workspace
+  :is(
+    input:not(.xterm-helper-textarea),
+    textarea:not(.xterm-helper-textarea),
+    select,
+    button
+  ) {
+  font-family: var(--studio-font-family);
+}
+
+#sidebar :is(button, input, textarea, select) {
+  font-family: var(--studio-font-family);
+}
+
 #conversation .message-content,
 #conversation .conversation-navigation,
 #conversation .room-footer {
