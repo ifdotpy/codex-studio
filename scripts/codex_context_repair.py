@@ -1239,18 +1239,21 @@ def retire_unsent_wait_for_transfer(rt, db, agent):
     attempt = agent.get('startAttempt') or {}
     source = wait.get('source') or {}
     event_ids = wait.get('events')
-    same_source = all(source.get(key) == agent.get(key) for key in IDENTITY
-                      if key != 'attemptId')
+    # A pause advances the epoch, so the wait may name an older one.
+    source_epoch = source.get('epoch')
+    same_source = (all(source.get(key) == agent.get(key) for key in IDENTITY
+                       if key not in {'attemptId', 'epoch'})
+                   and isinstance(source_epoch, int) and source_epoch <= agent['epoch'])
     # A user pause can cancel the exact queued events and remove startAttempt
     # while leaving the wait behind. Retire that stale wait only when every
-    # referenced event is cancelled, belongs to this epoch, and has no turn.
+    # referenced event is cancelled, belongs to the wait's epoch, and has no turn.
     cancelled = (agent.get('accountTransferId') and not agent.get('inFlight')
                  and not wait.get('action') and same_source and source.get('attemptId')
                  and isinstance(event_ids, list) and event_ids)
     if cancelled:
         for event_id in event_ids:
             row = db.execute("SELECT status,turn_id FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
-                             (event_id, agent['id'], agent['epoch'])).fetchone()
+                             (event_id, agent['id'], source_epoch)).fetchone()
             if not row or row['status'] != 'cancelled' or row['turn_id']:
                 cancelled = False
                 break

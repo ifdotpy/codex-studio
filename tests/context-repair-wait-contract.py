@@ -31,6 +31,8 @@ class ContextWait(f.NativeActionRepair):
                 'source':identity, 'events':attempt['events'],
                 'error':'Context repair waits for native notification delivery'})
             agent.pop('startAttempt', None)
+            # The live pause also advanced the epoch past the wait's events.
+            agent['epoch'] += 1
             db.execute("UPDATE runtime_events SET status='cancelled' WHERE id='cancelled-transfer-wait'")
             rt.put(db, 'agents', agent)
             rt.put(db, 'account_transfers', {'id':'cancelled-transfer','leadId':agent['id'],
