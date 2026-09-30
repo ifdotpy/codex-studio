@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
@@ -8,6 +8,8 @@ import Conversation from "../../web/src/components/Conversation";
 function Fixture() {
   const [id, setId] = useState("lead");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const currentDrafts = useRef(drafts);
+  const draftListeners = useRef(new Map<string, Set<() => void>>());
   const [notice, setNotice] = useState("");
   const [jumpTarget, setJumpTarget] = useState<{
     messageId: string;
@@ -40,12 +42,34 @@ function Fixture() {
       nativeNotices: [],
     },
   };
-  const setDraft = (value: string | ((text: string) => string), target = id) =>
-    setDrafts((current) => ({
-      ...current,
-      [target]:
-        typeof value === "function" ? value(current[target] || "") : value,
-    }));
+  const getDraft = useCallback(
+    (session: string) => currentDrafts.current[session] || "",
+    [],
+  );
+  const subscribeDraft = useCallback(
+    (session: string, listener: () => void) => {
+      let listeners = draftListeners.current.get(session);
+      if (!listeners)
+        draftListeners.current.set(session, (listeners = new Set()));
+      listeners.add(listener);
+      return () => {
+        listeners?.delete(listener);
+        if (!listeners?.size) draftListeners.current.delete(session);
+      };
+    },
+    [],
+  );
+  const setDraft = (
+    value: string | ((text: string) => string),
+    target = id,
+  ) => {
+    const previous = currentDrafts.current[target] || "";
+    const text = typeof value === "function" ? value(previous) : value;
+    currentDrafts.current = { ...currentDrafts.current, [target]: text };
+    setDrafts(currentDrafts.current);
+    if (text !== previous)
+      draftListeners.current.get(target)?.forEach((listener) => listener());
+  };
   (window as any).chatFixture = {
     select: setId,
     jump: (messageId: string) =>
@@ -70,7 +94,8 @@ function Fixture() {
           syncWorkspaceId={"a".repeat(32)}
           agent={agent}
           data={data}
-          draft={drafts[id] || ""}
+          getDraft={getDraft}
+          subscribeDraft={subscribeDraft}
           setDraft={setDraft}
           sending={sending}
           send={async (options) => {
@@ -79,7 +104,7 @@ function Fixture() {
               await fetch("/api/fixture-send", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text: drafts[id] || "", ...options }),
+                body: JSON.stringify({ text: getDraft(id), ...options }),
               });
               setDraft("");
             } finally {

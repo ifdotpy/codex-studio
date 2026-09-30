@@ -222,24 +222,24 @@ try {
         }),
     );
   await composer.fill("Draft must remain unsent");
-  await composer.press("Tab");
-  assert.equal(writes.length, 0);
-  assert.equal(await composer.inputValue(), "Draft must remain unsent");
-  assert.equal(await composer.evaluate((element) => element === document.activeElement), false);
   const firstSettled = sendSettled();
   const firstSend = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/fixture-send",
   );
-  await composer.press("Enter");
+  await composer.press("Tab");
   await firstSend;
   await firstSettled;
   await page.waitForFunction(
     () => document.querySelector("#message").value === "",
   );
+  assert.equal(
+    await composer.evaluate((element) => element === document.activeElement),
+    true,
+  );
   assert.equal(writes.length, 1);
   assert.equal(writes[0].path, "/api/fixture-send");
   assert.equal(writes[0].body.text, "Draft must remain unsent");
-  assert.equal(writes[0].body.delivery, undefined);
+  assert.equal(writes[0].body.delivery, "after_turn");
   await composer.fill("Send from button");
   const buttonSend = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/fixture-send",
@@ -252,7 +252,7 @@ try {
     () => document.querySelector("#message").value === "",
   );
   assert.equal(writes.length, 2);
-  assert.equal(writes[1].body.delivery, undefined);
+  assert.equal(writes[1].body.delivery, "after_tool");
   assert.equal(writes[1].body.text, "Send from button");
   const longDraft = "L".repeat(12050);
   await composer.fill(longDraft);
