@@ -103,14 +103,14 @@ try {
     await page.setViewportSize({ width, height: 960 });
     for (const scheme of ["light", "dark"]) {
       await page
-        .getByRole("button", { name: "Chat settings", exact: true })
+        .getByRole("button", { name: "Studio settings", exact: true })
         .click();
       const dialog = page.getByRole("dialog", {
-        name: "Chat settings",
+        name: "Studio settings",
         exact: true,
       });
       await dialog
-        .getByLabel("Appearance", { exact: true })
+        .getByLabel("Studio theme", { exact: true })
         .selectOption(scheme);
       await page.waitForFunction(
         (scheme) =>

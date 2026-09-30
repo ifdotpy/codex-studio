@@ -42,13 +42,15 @@ try {
     },
     { id: "signedout", label: "Signed out", status: "signedOut" },
   ];
+  let defaultAccountKey = "default";
   const state = () => ({
     accounts,
-    defaultAccountKey: "default",
+    defaultAccountKey,
     supportsDisconnect: true,
     logins: [],
   });
   let transferCalls = 0,
+    defaultAccountCalls = 0,
     disconnectCalls = 0,
     analyticsCalls = 0;
   let holdLimits = true;
@@ -67,6 +69,11 @@ try {
   await page.route("**/api/accounts", (route) =>
     route.fulfill({ json: state() }),
   );
+  await page.route("**/api/accounts/default", async (route) => {
+    defaultAccountCalls++;
+    defaultAccountKey = route.request().postDataJSON().account_key;
+    await route.fulfill({ json: state() });
+  });
   await page.route("**/api/accounts/disconnect", async (route) => {
     disconnectCalls++;
     accounts.find(
@@ -226,9 +233,51 @@ try {
     await picker.locator(".account-picker-label").isVisible(),
     "Mobile settings retain the account name",
   );
-  await chatSettings
-    .getByLabel("Appearance", { exact: true })
+  await page.keyboard.press("Escape");
+  await chatSettings.waitFor({ state: "hidden" });
+  await page
+    .getByRole("button", { name: "Studio settings", exact: true })
+    .click();
+  const studioSettings = page.getByRole("dialog", {
+    name: "Studio settings",
+    exact: true,
+  });
+  await studioSettings
+    .getByLabel("Studio theme", { exact: true })
     .selectOption("dark");
+  await page.waitForFunction(
+    () => document.documentElement.dataset.mantineColorScheme === "dark",
+  );
+  const transfersBeforeDefaultChange = transferCalls;
+  const studioAccount = studioSettings.getByTestId("account-picker");
+  await studioAccount.click();
+  await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
+  await page.waitForFunction(
+    (element) =>
+      element
+        .querySelector(".account-picker-label")
+        ?.textContent?.includes("Work"),
+    await studioAccount.elementHandle(),
+  );
+  assert.equal(defaultAccountCalls, 1);
+  assert.equal(defaultAccountKey, "work");
+  assert.equal(
+    transferCalls,
+    transfersBeforeDefaultChange,
+    "Changing the default account does not transfer the selected chat",
+  );
+  await page.screenshot({
+    path: join(evidence, "studio-settings-dark-390.png"),
+  });
+  await page.keyboard.press("Escape");
+  await studioSettings.waitFor({ state: "hidden" });
+  await page
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
+  assert.match(
+    await picker.locator(".account-picker-label").textContent(),
+    /Personal/,
+  );
   await picker.click();
   await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
   await manager.waitFor();
