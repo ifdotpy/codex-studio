@@ -87,7 +87,7 @@ class Contract(unittest.TestCase):
         from unittest.mock import Mock
         from codex_account_transfer import transfer_store
         transfer_id='transfer-empty';tid='target-thread'
-        transfer={'id':transfer_id,'status':'completed','members':{'worker':{
+        transfer={'id':transfer_id,'status':'pending','members':{'worker':{
             'phase':'completed','nativeMethod':'thread/start','sourceThreadId':None,
             'result':{'thread':{'id':tid}}}}}
         self.update('agents', {'id':'worker','name':'worker','parentId':'lead','rootId':'lead',

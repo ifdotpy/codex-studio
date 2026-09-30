@@ -49,7 +49,7 @@ def _completed_native_turn(a):
             and a.get('turnId') is None and not a.get('inFlight') and _finished(a))
 
 
-def _missing_transferred_history(db, agent):
+def _missing_transferred_history(db, agent, rt=None):
     """Identify empty transfer targets without retrying any saved input."""
     thread = agent.get('threadId')
     error = agent.get('error') or ''
@@ -58,6 +58,28 @@ def _missing_transferred_history(db, agent):
     expected = (f'no rollout found for thread id {thread}',
                 f'invalid paginated history lineage for {thread}: missing source rollout')
     if not any(message in error for message in expected):
+        if rt is None:
+            return None
+        from codex_account_transfer import AccountTransfers
+        for row in db.execute('SELECT record FROM runtime_account_transfers'):
+            transfer = json.loads(row[0])
+            member = (transfer.get('members') or {}).get(agent['id']) or {}
+            if (member.get('phase') != 'completed' or member.get('sourceThreadId') != thread
+                    or member.get('sourceAccountKey') != agent.get('accountKey', 'default')
+                    or not member.get('error') or '[Errno 2]' not in str(member['error'])
+                    or member.get('result') or member.get('nativeMethod')):
+                continue
+            proof = AccountTransfers.source_history_missing(
+                rt.accounts.home(member['sourceAccountKey']), thread, member['error'])
+            if proof:
+                return {'status':'history_missing', 'agent':_brief(agent),
+                        'evidence':{'transferId':transfer['id'], 'sourceThreadId':thread,
+                                    'targetAccountKey':transfer.get('targetAccountKey'),
+                                    'sourceHistoryMissing':proof},
+                        'replayed':False,
+                        'next':'The source native rollout and paginated records are missing. '
+                               'Recover by starting a fresh thread on the transfer target. '
+                               'Saved inputs remain untouched.'}
         return None
     for entry in reversed(agent.get('accountHistory') or []):
         if entry.get('threadId') is not None or entry.get('targetThreadId') != thread:
@@ -69,7 +91,7 @@ def _missing_transferred_history(db, agent):
         transfer = json.loads(row[0])
         member = (transfer.get('members') or {}).get(agent['id']) or {}
         result = member.get('result') or {}
-        if (transfer.get('status') == 'completed' and member.get('phase') == 'completed'
+        if (member.get('phase') == 'completed'
                 and member.get('nativeMethod') == 'thread/start'
                 and member.get('sourceThreadId') is None
                 and result.get('thread', {}).get('id') == thread):
@@ -521,7 +543,7 @@ def manage_agent(rt, actor_id, args, epoch=None):
         with rt.lock, rt.db() as db:
             current = rt.agent(target['id'], db)
             _authorize(rt, db, actor_id, epoch, current)
-            missing = _missing_transferred_history(db, current)
+            missing = _missing_transferred_history(db, current, rt)
         if missing:
             from codex_account_transfer import transfer_store
             return transfer_store(rt).recover_empty_transferred_thread(target['id'])
