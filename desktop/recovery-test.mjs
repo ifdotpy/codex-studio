@@ -14,9 +14,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-const { configureRecovery, recoveryPaths, recoveryPreference } = createRequire(
-  import.meta.url,
-)("./recovery.cjs");
+const {
+  configureRecovery,
+  recoveryPaths,
+  recoveryPreference,
+  isInstalledApplication,
+  recoveryStatusLabel,
+} = createRequire(import.meta.url)("./recovery.cjs");
 function fixture() {
   const root = mkdtempSync(
     path.join(tmpdir(), "studio-recovery-registration-"),
@@ -37,8 +41,74 @@ function fixture() {
     CODEX_BOARD_STATE_DIR: path.join(root, "legacy-board"),
     OPENAI_API_KEY: "must-not-persist",
   };
-  return { root, resources, supervisor, env, home: root, uid: 777 };
+  return {
+    root,
+    resources,
+    supervisor,
+    env,
+    home: root,
+    uid: 777,
+    applicationPath:
+      "/Applications/Codex Studio.app/Contents/Resources/app.asar",
+  };
 }
+
+test(
+  "only the installed Studio bundle can configure background recovery",
+  async () => {
+    const data = fixture();
+    const state = path.join(data.root, "state");
+    const calls = [];
+    try {
+      assert.equal(isInstalledApplication(data.applicationPath), true);
+      assert.equal(
+        isInstalledApplication(
+          path.join(data.root, "Codex Studio.app/app.asar"),
+        ),
+        false,
+      );
+      assert.equal(
+        isInstalledApplication(
+          "/Users/test/Library/Caches/chrompile/CodexStudio-Electron-Isolated.app/Contents/Resources/app.asar",
+        ),
+        false,
+      );
+      for (const enabled of [true, false]) {
+        const attempt = {
+          ...data,
+          applicationPath: path.join(
+            data.root,
+            "Library/Caches/test-copy/Contents/Resources/app.asar",
+          ),
+          env: { ...data.env, CODEX_AGENTS_STATE_DIR: state },
+          enabled,
+          run: async (...args) => calls.push(args),
+        };
+        await assert.rejects(
+          configureRecovery(attempt),
+          /only by \/Applications\/Codex Studio\.app/,
+        );
+      }
+      assert.deepEqual(calls, []);
+      assert.equal(
+        existsSync(path.join(state, "background-recovery.json")),
+        false,
+      );
+      assert.equal(
+        existsSync(path.join(data.home, "Library/LaunchAgents")),
+        false,
+      );
+      assert.equal(
+        recoveryStatusLabel(false, false),
+        "Background recovery: Unavailable",
+      );
+      assert.equal(recoveryStatusLabel(true), "Background recovery: On");
+      assert.equal(recoveryStatusLabel(false), "Background recovery: Off");
+    } finally {
+      rmSync(data.root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("register and read back the exact-state launch agent without storing credentials", async () => {
   const fixtureData = fixture();

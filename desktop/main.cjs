@@ -15,7 +15,9 @@ const { randomUUID } = require("node:crypto");
 const { ensureBackend, identity, updateStatus } = require("./backend.cjs");
 const {
   configureRecovery,
+  isInstalledApplication,
   recoveryPreference,
+  recoveryStatusLabel,
   trackDesktopRecovery,
 } = require("./recovery.cjs");
 const { loadWindowState, trackWindowState } = require("./window-state.cjs");
@@ -23,11 +25,14 @@ const { createRendererRecovery } = require("./renderer-recovery.cjs");
 const hidden = process.argv.includes("--hidden");
 const backgroundRecovery = process.argv.includes("--background-recovery");
 let recoveryEnabled = false;
+let recoveryAvailable = true;
+let recoveryStatusItem;
 let desktopRecovery;
 const recoverySupported =
   app.isPackaged && process.platform === "darwin" && !hidden;
 async function setBackgroundRecovery(enabled) {
   const result = await configureRecovery({
+    applicationPath: app.getAppPath(),
     resources: backendResources,
     supervisor: path.join(process.resourcesPath, "recover_backend.py"),
     port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
@@ -35,6 +40,15 @@ async function setBackgroundRecovery(enabled) {
     restartEnvironment: backend?.restartEnvironment,
   });
   recoveryEnabled = result.enabled;
+  recoveryAvailable = true;
+  if (recoveryStatusItem)
+    recoveryStatusItem.label = recoveryStatusLabel(recoveryEnabled);
+}
+function markBackgroundRecoveryUnavailable(error) {
+  recoveryAvailable = false;
+  if (recoveryStatusItem)
+    recoveryStatusItem.label = recoveryStatusLabel(false, false);
+  console.error("Background recovery is unavailable:", error.message);
 }
 // Preserve the existing browser profile when the product name changes.
 app.setPath(
@@ -385,10 +399,16 @@ async function nativeAction(event, request) {
 }
 async function start() {
   if (recoverySupported) {
-    try {
-      desktopRecovery = trackDesktopRecovery({ app });
-    } catch (error) {
-      console.error("Desktop recovery is unavailable:", error.message);
+    if (isInstalledApplication(app.getAppPath())) {
+      try {
+        desktopRecovery = trackDesktopRecovery({ app });
+      } catch (error) {
+        console.error("Desktop recovery is unavailable:", error.message);
+      }
+    } else {
+      console.error(
+        "Desktop recovery is unavailable: this is not the installed Studio application.",
+      );
     }
   }
   backendResources = app.isPackaged
@@ -400,9 +420,13 @@ async function start() {
   });
   if (recoverySupported) {
     try {
+      if (!isInstalledApplication(app.getAppPath()))
+        throw new Error(
+          "Background recovery can be registered only by /Applications/Codex Studio.app.",
+        );
       await setBackgroundRecovery(recoveryPreference());
     } catch (error) {
-      console.error("Background recovery is unavailable:", error.message);
+      markBackgroundRecoveryUnavailable(error);
     }
   }
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -488,63 +512,74 @@ async function start() {
   win.webContents.on("will-redirect", (event) => event.preventDefault());
   win.webContents.session.on?.("will-download", nativeDownload);
   ipcMain.handle("codex-desktop", nativeAction);
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate([
-      {
-        label: "Codex Studio",
-        submenu: [
-          { role: "about" },
-          ...(recoverySupported
-            ? [
-                {
-                  label: "Restore server after login or failure",
-                  type: "checkbox",
-                  checked: recoveryEnabled,
-                  click: async (item) => {
-                    try {
-                      await setBackgroundRecovery(item.checked);
-                    } catch (error) {
-                      item.checked = recoveryEnabled;
-                      dialog.showErrorBox(
-                        "Cannot change background recovery",
-                        error.message,
-                      );
-                    }
-                  },
+  const applicationMenu = Menu.buildFromTemplate([
+    {
+      label: "Codex Studio",
+      submenu: [
+        { role: "about" },
+        ...(recoverySupported
+          ? [
+              {
+                id: "background-recovery-status",
+                label: recoveryStatusLabel(
+                  recoveryEnabled,
+                  recoveryAvailable,
+                ),
+                enabled: false,
+              },
+              {
+                label: "Restore server after login or failure",
+                type: "checkbox",
+                checked: recoveryEnabled,
+                click: async (item) => {
+                  try {
+                    await setBackgroundRecovery(item.checked);
+                  } catch (error) {
+                    item.checked = recoveryEnabled;
+                    markBackgroundRecoveryUnavailable(error);
+                    dialog.showErrorBox(
+                      "Cannot change background recovery",
+                      error.message,
+                    );
+                  }
                 },
-              ]
-            : []),
-          { type: "separator" },
-          {
-            label: "Quit Codex Studio",
-            accelerator: "CommandOrControl+Q",
-            click: () => {
-              desktopRecovery?.closeExplicitly();
-              app.quit();
-            },
+              },
+            ]
+          : []),
+        { type: "separator" },
+        {
+          label: "Quit Codex Studio",
+          accelerator: "CommandOrControl+Q",
+          click: () => {
+            desktopRecovery?.closeExplicitly();
+            app.quit();
           },
-        ],
-      },
-      { role: "editMenu" },
-      {
-        label: "View",
-        submenu: [
-          {
-            id: "reload-workspace",
-            label: "Reload",
-            accelerator: "CommandOrControl+R",
-            click: () => {
-              void rendererRecovery.reload();
-            },
+        },
+      ],
+    },
+    { role: "editMenu" },
+    {
+      label: "View",
+      submenu: [
+        {
+          id: "reload-workspace",
+          label: "Reload",
+          accelerator: "CommandOrControl+R",
+          click: () => {
+            void rendererRecovery.reload();
           },
-          { role: "resetZoom" },
-          { role: "zoomIn" },
-          { role: "zoomOut" },
-          { role: "togglefullscreen" },
-        ],
-      },
-    ]),
+        },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { role: "togglefullscreen" },
+      ],
+    },
+  ]);
+  recoveryStatusItem = applicationMenu.getMenuItemById(
+    "background-recovery-status",
   );
+  Menu.setApplicationMenu(applicationMenu);
   await rendererRecovery.reload({ manual: false });
   windowState.restore();
   if (!hidden) win.showInactive();

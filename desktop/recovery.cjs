@@ -4,6 +4,8 @@ const os = require("node:os");
 const { createHash } = require("node:crypto");
 const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
+const installedApplicationPath =
+  "/Applications/Codex Studio.app/Contents/Resources/app.asar";
 const { executable, stateDirectory } = require("./backend.cjs");
 const runFile = promisify(execFile);
 const restartKeys = [
@@ -89,7 +91,18 @@ function launchAgent({ label, python, supervisor, config, state }) {
 <key>StandardErrorPath</key><string>${xml(path.join(state, "background-recovery.log"))}</string>
 </dict></plist>\n`;
 }
+function isInstalledApplication(applicationPath) {
+  return (
+    typeof applicationPath === "string" &&
+    path.resolve(applicationPath) === installedApplicationPath
+  );
+}
+function recoveryStatusLabel(enabled, available = true) {
+  if (!available) return "Background recovery: Unavailable";
+  return `Background recovery: ${enabled ? "On" : "Off"}`;
+}
 async function configureRecovery({
+  applicationPath,
   resources,
   supervisor,
   enabled,
@@ -102,6 +115,10 @@ async function configureRecovery({
 }) {
   if (!Number.isInteger(port) || port < 1024 || port > 65535)
     throw new Error("Invalid recovery port.");
+  if (!isInstalledApplication(applicationPath))
+    throw new Error(
+      "Background recovery can be registered only by /Applications/Codex Studio.app.",
+    );
   const files = recoveryPaths(env, home);
   const domain = `gui/${uid}`;
   const service = `${domain}/${files.label}`;
@@ -206,6 +223,8 @@ module.exports = {
   recoveryPreference,
   recoveryPaths,
   launchAgent,
+  isInstalledApplication,
+  recoveryStatusLabel,
 };
 
 function trackDesktopRecovery({ app, env = process.env }) {
