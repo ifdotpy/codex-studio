@@ -1,5 +1,6 @@
 """Preserve continuation authority across process exit and host restart."""
 import copy
+import json
 import time
 
 RESTART_ERROR = 'Server restarted during a turn. Review history, then send a new instruction.'
@@ -85,13 +86,31 @@ def restore(db, agent):
 
 
 def can_continue(db, agent, turn):
-    from codex_connection_recovery import can_deliver_completion
+    # A restart interrupts running commands by design. The agent continues and
+    # checks them itself; only an input with an unknown delivery blocks it.
     marker = agent.get('restartRecovery') or {}
-    return (marker.get('stage') == 'pending' and marker.get('autoWake')
-            and turn.get('status') == 'interrupted'
-            and marker.get('turnId') == turn.get('id')
-            and all(marker.get(key) == agent.get(key) for key in SCOPE)
-            and can_deliver_completion(db, agent, {**turn, 'status': 'completed'}))
+    return bool(marker.get('stage') == 'pending' and marker.get('autoWake')
+                and turn.get('status') == 'interrupted'
+                and marker.get('turnId') == turn.get('id')
+                and all(marker.get(key) == agent.get(key) for key in SCOPE)
+                and not agent.get('nativeFailureHold')
+                and not db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                                   "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                                   (agent['id'], agent['epoch'])).fetchone())
+
+
+def _interrupted_work(db, agent, turn):
+    names = []
+    for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
+                          "AND json_extract(record,'$.status') IN ('lost','running','starting','approval') "
+                          "ORDER BY json_extract(record,'$.created') DESC LIMIT 5", (agent['id'],)):
+        task = json.loads(row[0])
+        names.append(str(task.get('command') or task.get('tool') or task.get('kind') or task['id'])[:160])
+    for item in turn.get('items', []):
+        if (item.get('type') == 'commandExecution' and item.get('status') not in {'completed', 'failed', 'declined'}
+                and len(names) < 5):
+            names.append(str(item.get('command') or item.get('id'))[:160])
+    return names
 
 
 def settle_reconciled(agent):
@@ -124,8 +143,11 @@ def continue_interrupted(runtime, db, agent, turn):
                  activity=None, activeTools=[])
     marker.update(stage='continued', eventId=key, reconciledAt=time.time())
     runtime.put(db, 'agents', agent)
+    work = _interrupted_work(db, agent, turn)
     runtime.enqueue(db, agent, 'followup',
         'Studio restarted. The previous native turn is confirmed interrupted. '
         'Continue the existing authorized task from its saved history. '
-        'Check existing results before repeating any operation.', key)
+        'Check existing results before repeating any operation.'
+        + (' The restart stopped these commands; check their effects first: ' + '; '.join(work) if work else ''),
+        key)
     return key

@@ -107,16 +107,32 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(a['status'],'paused')
         self.assertFalse(a['autoWake'])
 
-    def test_lost_command_does_not_auto_continue(self):
+    def test_lost_command_continues_once_and_names_it(self):
         self.server.native['turns'][0]['status']='interrupted'
         with self.runtime.db() as db:
-            self.runtime.put(db,'tasks',{'id':'lost-command','agent':self.key,'status':'running','kind':'command'})
+            self.runtime.put(db,'tasks',{'id':'lost-command','agent':self.key,'status':'running','kind':'command',
+                                         'command':'make deploy-preview'})
         self.restart()
+        self.assertTrue(recover(self.runtime,self.key,automatic=True)['continued'])
         self.assertNotIn('continued',recover(self.runtime,self.key,automatic=True))
-        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
-        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'finished')
+        a=self.runtime.agent(self.key)
+        self.assertTrue(a['autoWake'])
+        self.assertEqual(a['restartRecovery']['stage'], 'continued')
         with self.runtime.db() as db:
             self.assertEqual(self.runtime.records(db,'tasks')[0]['status'],'lost')
+            rows=db.execute("SELECT text FROM runtime_events WHERE id=?",(a['restartRecovery']['eventId'],)).fetchall()
+        self.assertEqual(len(rows),1)
+        self.assertIn('make deploy-preview',rows[0][0])
+
+    def test_unknown_input_delivery_blocks_continuation(self):
+        self.server.native['turns'][0]['status']='interrupted'
+        self.restart()
+        with self.runtime.db() as db:
+            a=self.runtime.agent(self.key,db)
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                       ('unknown-input',self.key,'user','Maybe sent','uncertain',0,a['epoch'],None,None))
+        self.assertNotIn('continued',recover(self.runtime,self.key,automatic=True))
+        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
 
     def test_manual_reconciliation_releases_restart_gate_without_followup(self):
         from codex_context_repair import _local_idle
@@ -183,12 +199,16 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertTrue(before['autoWake'])
         self.read_calls_only()
 
-    def test_unobserved_native_command_blocks_continuation(self):
+    def test_unobserved_native_command_is_named_in_continuation(self):
         self.server.native['turns'][0].update(status='interrupted',items=[
-            {'id':'missed-command','type':'commandExecution','status':'inProgress'}])
+            {'id':'missed-command','type':'commandExecution','status':'inProgress','command':'git push origin'}])
         self.restart()
-        self.assertNotIn('continued',recover(self.runtime,self.key,automatic=True))
-        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
+        self.assertTrue(recover(self.runtime,self.key,automatic=True)['continued'])
+        a=self.runtime.agent(self.key)
+        self.assertTrue(a['autoWake'])
+        with self.runtime.db() as db:
+            text=db.execute("SELECT text FROM runtime_events WHERE id=?",(a['restartRecovery']['eventId'],)).fetchone()[0]
+        self.assertIn('git push origin',text)
 
     def test_abrupt_process_exit_restores_only_committed_unsent_input(self):
         child_root=Path(self.temp.name)/'crashed-runtime'
