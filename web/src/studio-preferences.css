@@ -39,9 +39,6 @@
 
 #conversation .message-content,
 #conversation .conversation-navigation,
-#conversation .agent-panel,
-#conversation .usage-footer,
-#conversation .message-queue,
 #conversation .room-footer {
   width: var(--studio-content-column);
   max-width: 100%;
@@ -49,10 +46,11 @@
   margin-inline: auto;
 }
 
-#conversation #composer {
+#conversation :is(#composer, .agent-panel, .usage-footer, .message-queue) {
   width: var(--studio-content-column);
   max-width: none;
   margin-inline: auto;
+  align-self: center;
 }
 
 #conversation #messages {
@@ -67,7 +65,7 @@
 }
 
 #conversation-title,
-#conversation-status {
+#conversation .conversation-meta #conversation-status {
   font-size: var(--studio-main-font-size);
 }
 
@@ -153,12 +151,12 @@
 
   #conversation .message-content,
   #conversation .conversation-navigation,
-  #conversation .agent-panel,
-  #conversation .usage-footer,
-  #conversation .message-queue,
-  #conversation #composer,
   #conversation.room-footer {
     width: var(--studio-content-column);
     max-width: 100%;
+  }
+
+  #conversation :is(#composer, .agent-panel, .usage-footer, .message-queue) {
+    width: var(--studio-content-column);
   }
 }
