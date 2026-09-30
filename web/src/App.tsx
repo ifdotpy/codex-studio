@@ -14,6 +14,7 @@ import {
   Modal,
   Menu,
   NativeSelect,
+  Slider,
   useMantineColorScheme,
   TextInput,
   UnstyledButton,
@@ -36,6 +37,7 @@ import {
   PanelLeft,
   Plus,
   Search,
+  Settings2,
   Users,
   X,
 } from "lucide-react";
@@ -49,6 +51,15 @@ import {
 } from "react";
 import { api, ApiError, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
+import {
+  defaultStudioPreferences,
+  fontFamilies,
+  formatSidebarShortcut,
+  parseSidebarShortcut,
+  parseStudioPreferences,
+  studioPreferencesStorageKey,
+  type StudioPreferences,
+} from "./studioPreferences";
 import {
   acknowledgeOutbox,
   editOutboxDisplay,
@@ -146,15 +157,115 @@ export default function App() {
   );
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [studioSettingsOpen, setStudioSettingsOpen] = useState(false);
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
   const [subagentSettingsOpen, setSubagentSettingsOpen] = useState(false);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
+  const preferenceLoad = useMemo(() => {
+    try {
+      const stored = localStorage.getItem(studioPreferencesStorageKey);
+      return {
+        value: stored
+          ? parseStudioPreferences(stored)
+          : { ...defaultStudioPreferences, theme: colorScheme },
+        error: stored
+          ? "Saved Studio preferences were invalid; safe defaults are active."
+          : "",
+      };
+    } catch {
+      return {
+        value: { ...defaultStudioPreferences, theme: colorScheme },
+        error:
+          "Studio preferences could not be read. Changes may not persist in this browser.",
+      };
+    }
+  }, []);
+  const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
+    preferenceLoad.value,
+  );
+  const [studioPreferencesError, setStudioPreferencesError] = useState(
+    preferenceLoad.error,
+  );
+  const [sidebarShortcutError, setSidebarShortcutError] = useState("");
+  const updateStudioPreferences = useCallback(
+    (next: StudioPreferences) => {
+      setStudioPreferences(next);
+      if (next.theme !== colorScheme) setColorScheme(next.theme);
+      try {
+        localStorage.setItem(studioPreferencesStorageKey, JSON.stringify(next));
+        setStudioPreferencesError("");
+      } catch {
+        setStudioPreferencesError(
+          "Studio preferences could not be saved in this browser.",
+        );
+      }
+    },
+    [colorScheme, setColorScheme],
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     saved("codex-sidebar-collapsed", false),
   );
+  useEffect(() => {
+    if (studioPreferences.theme !== colorScheme)
+      setColorScheme(studioPreferences.theme);
+  }, [studioPreferences.theme, colorScheme, setColorScheme]);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      "--studio-font-family",
+      fontFamilies[studioPreferences.fontFamily].css,
+    );
+    root.style.setProperty(
+      "--studio-sidebar-font-size",
+      `${studioPreferences.sidebarFontSize}px`,
+    );
+    root.style.setProperty(
+      "--studio-main-font-size",
+      `${studioPreferences.mainFontSize}px`,
+    );
+    root.style.setProperty(
+      "--studio-content-width",
+      `${studioPreferences.contentWidth}%`,
+    );
+  }, [studioPreferences]);
+  const toggleSidebar = useCallback(() => {
+    if (mobileClient) {
+      setSidebar((visible) => !visible);
+      return;
+    }
+    setSidebarCollapsed((collapsed) => {
+      save("codex-sidebar-collapsed", !collapsed);
+      return !collapsed;
+    });
+  }, [mobileClient]);
+  useEffect(() => {
+    const shortcut = parseSidebarShortcut(studioPreferences.sidebarShortcut);
+    if (!shortcut) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.closest("input, textarea, select, [role='textbox']"))
+      )
+        return;
+      if (
+        event.key.toLowerCase() !== shortcut.key ||
+        event.metaKey !== shortcut.meta ||
+        event.ctrlKey !== shortcut.ctrl ||
+        event.altKey !== shortcut.alt ||
+        event.shiftKey !== shortcut.shift
+      )
+        return;
+      event.preventDefault();
+      toggleSidebar();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [studioPreferences.sidebarShortcut, toggleSidebar]);
   const [wideTeamOpen, setWideTeamOpen] = useState(() =>
     saved("codex-team-open", false),
   );
@@ -1247,13 +1358,7 @@ export default function App() {
             id="sidebar-toggle"
             aria-label="Toggle conversations"
             aria-expanded={mobileClient ? sidebar : !sidebarCollapsed}
-            onClick={() => {
-              if (mobileClient) setSidebar(!sidebar);
-              else {
-                setSidebarCollapsed(!sidebarCollapsed);
-                save("codex-sidebar-collapsed", !sidebarCollapsed);
-              }
-            }}
+            onClick={toggleSidebar}
           >
             <PanelLeft size={18} />
           </ActionIcon>
@@ -1305,6 +1410,15 @@ export default function App() {
               )}
             </div>
           </div>
+          <ActionIcon
+            id="studio-settings-toggle"
+            aria-label="Studio settings"
+            title="Studio settings"
+            onClick={() => setStudioSettingsOpen(true)}
+          >
+            <Settings2 size={18} />
+          </ActionIcon>
+          <div id="conversation-header-tools" />
           {!room?.radio && (
             <ActionIcon
               aria-label="Chat settings"
@@ -1684,6 +1798,180 @@ export default function App() {
         notify={notify}
       />
       <Modal
+        opened={studioSettingsOpen}
+        onClose={() => setStudioSettingsOpen(false)}
+        title="Studio settings"
+      >
+        <div className="studio-settings-panel" data-testid="studio-settings">
+          <section className="settings-group" aria-label="Studio account">
+            <h2>Default account</h2>
+            <p className="settings-help">
+              Used for new chats. Changing this setting does not change the
+              account on the current chat.
+            </p>
+            <Accounts
+              onModalOpenChange={setAccountModalOpen}
+              state={accounts}
+              accountKey={accounts.data.defaultAccountKey}
+              onError={notify}
+              changeAccount={async (key) => {
+                accounts.setData(
+                  await api("/api/accounts/default", { account_key: key }),
+                );
+              }}
+            />
+          </section>
+          <section className="settings-group" aria-label="Studio appearance">
+            <h2>Appearance</h2>
+            <div className="settings-field">
+              <span className="settings-label">Theme</span>
+              <NativeSelect
+                aria-label="Studio theme"
+                value={studioPreferences.theme}
+                data={[
+                  { value: "auto", label: "System" },
+                  { value: "light", label: "Light" },
+                  { value: "dark", label: "Dark" },
+                ]}
+                onChange={(event) =>
+                  updateStudioPreferences({
+                    ...studioPreferences,
+                    theme: event.currentTarget
+                      .value as StudioPreferences["theme"],
+                  })
+                }
+              />
+            </div>
+            <div className="settings-field">
+              <span className="settings-label">Font family</span>
+              <NativeSelect
+                aria-label="Studio font family"
+                value={studioPreferences.fontFamily}
+                data={Object.entries(fontFamilies).map(([value, font]) => ({
+                  value,
+                  label: font.label,
+                }))}
+                onChange={(event) =>
+                  updateStudioPreferences({
+                    ...studioPreferences,
+                    fontFamily: event.currentTarget
+                      .value as StudioPreferences["fontFamily"],
+                  })
+                }
+              />
+            </div>
+            <label className="studio-range-field">
+              <span>
+                Sidebar text{" "}
+                <output>{studioPreferences.sidebarFontSize}px</output>
+              </span>
+              <Slider
+                aria-label="Sidebar font size"
+                min={12}
+                max={24}
+                step={1}
+                value={studioPreferences.sidebarFontSize}
+                onChange={(value) =>
+                  updateStudioPreferences({
+                    ...studioPreferences,
+                    sidebarFontSize: value,
+                  })
+                }
+              />
+            </label>
+            <label className="studio-range-field">
+              <span>
+                Main text <output>{studioPreferences.mainFontSize}px</output>
+              </span>
+              <Slider
+                aria-label="Main font size"
+                min={12}
+                max={24}
+                step={1}
+                value={studioPreferences.mainFontSize}
+                onChange={(value) =>
+                  updateStudioPreferences({
+                    ...studioPreferences,
+                    mainFontSize: value,
+                  })
+                }
+              />
+            </label>
+            <label className="studio-range-field">
+              <span>
+                Transcript width{" "}
+                <output>{studioPreferences.contentWidth}%</output>
+              </span>
+              <Slider
+                aria-label="Transcript width"
+                min={60}
+                max={100}
+                step={1}
+                value={studioPreferences.contentWidth}
+                onChange={(value) =>
+                  updateStudioPreferences({
+                    ...studioPreferences,
+                    contentWidth: value,
+                  })
+                }
+              />
+              <small>
+                Applies to messages, progress, and composer. Narrow screens use
+                the full available width.
+              </small>
+            </label>
+          </section>
+          <section className="settings-group" aria-label="Sidebar shortcut">
+            <h2>Keyboard shortcut</h2>
+            <div className="settings-field">
+              <span className="settings-label">Toggle sidebar</span>
+              <TextInput
+                aria-label="Toggle sidebar shortcut"
+                readOnly
+                value={formatSidebarShortcut(studioPreferences.sidebarShortcut)}
+                onKeyDown={(event) => {
+                  if (["Control", "Meta", "Alt", "Shift"].includes(event.key))
+                    return;
+                  event.preventDefault();
+                  const mods = [
+                    event.metaKey ? "Meta" : "",
+                    event.ctrlKey ? "Control" : "",
+                    event.altKey ? "Alt" : "",
+                    event.shiftKey ? "Shift" : "",
+                  ].filter(Boolean);
+                  const candidate = [...mods, event.key].join("+");
+                  if (!parseSidebarShortcut(candidate)) {
+                    setSidebarShortcutError(
+                      "Choose a letter or number with Ctrl or ⌘. Browser-reserved shortcuts cannot be used.",
+                    );
+                    return;
+                  }
+                  setSidebarShortcutError("");
+                  updateStudioPreferences({
+                    ...studioPreferences,
+                    sidebarShortcut: candidate,
+                  });
+                }}
+                onFocus={() =>
+                  setSidebarShortcutError(
+                    "Press a modifier and a letter or number to set the shortcut.",
+                  )
+                }
+                onBlur={() => setSidebarShortcutError("")}
+              />
+              {sidebarShortcutError && (
+                <small role="status">{sidebarShortcutError}</small>
+              )}
+            </div>
+          </section>
+          {studioPreferencesError && (
+            <p className="studio-preferences-error" role="alert">
+              {studioPreferencesError}
+            </p>
+          )}
+        </div>
+      </Modal>
+      <Modal
         opened={settingsOpen}
         closeOnEscape={
           !accountModalOpen && !mainSettingsOpen && !subagentSettingsOpen
@@ -1799,9 +2087,11 @@ export default function App() {
                 { value: "dark", label: "Dark" },
               ]}
               onChange={(event) =>
-                setColorScheme(
-                  event.currentTarget.value as "auto" | "light" | "dark",
-                )
+                updateStudioPreferences({
+                  ...studioPreferences,
+                  theme: event.currentTarget
+                    .value as StudioPreferences["theme"],
+                })
               }
             />
           </section>

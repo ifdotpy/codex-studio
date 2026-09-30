@@ -1,0 +1,128 @@
+:root {
+  --studio-font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --studio-sidebar-font-size: 14px;
+  --studio-main-font-size: 14px;
+  --studio-content-width: 100%;
+}
+
+#sidebar {
+  font-family: var(--studio-font-family);
+  font-size: var(--studio-sidebar-font-size);
+}
+
+.workspace {
+  font-family: var(--studio-font-family);
+  font-size: var(--studio-main-font-size);
+}
+
+#conversation .message-content,
+#conversation .conversation-navigation,
+#conversation .agent-panel,
+#conversation .usage-footer,
+#conversation .message-queue,
+#conversation .room-footer {
+  width: min(var(--studio-content-width), 100%);
+  max-width: 100%;
+  align-self: center;
+  margin-inline: auto;
+}
+
+#conversation #composer {
+  width: min(
+    var(--studio-content-width),
+    calc(100% - 2 * var(--chat-gutter, 28px))
+  );
+  max-width: none;
+  margin-inline: auto;
+}
+
+#conversation #messages .prose,
+#conversation #composer #message,
+#conversation .agent-panel .progress-markdown {
+  font-size: var(--studio-main-font-size);
+}
+
+#sidebar code,
+#conversation code,
+#conversation pre,
+#conversation kbd,
+.xterm,
+.xterm * {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.studio-settings-panel {
+  display: grid;
+  gap: 22px;
+}
+
+.studio-settings-panel .settings-group {
+  gap: 12px;
+}
+
+.studio-settings-panel .settings-help {
+  margin: -5px 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.studio-settings-panel .account-picker {
+  width: 100%;
+}
+
+.studio-settings-panel .settings-field > .mantine-NativeSelect-root {
+  width: 100%;
+}
+
+.studio-range-field {
+  display: grid;
+  gap: 10px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.studio-range-field > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.studio-range-field output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.studio-range-field small,
+.studio-settings-panel .settings-field small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.studio-preferences-error {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: var(--mantine-color-red-light);
+  color: var(--mantine-color-red-light-color);
+  font-size: 12px;
+}
+
+#conversation-header-tools:empty {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  #conversation .message-content,
+  #conversation .conversation-navigation,
+  #conversation .agent-panel,
+  #conversation .usage-footer,
+  #conversation .message-queue,
+  #conversation #composer,
+  #conversation.room-footer {
+    width: calc(100% - 2 * var(--chat-gutter, 14px));
+    max-width: 100%;
+  }
+}
