@@ -2720,7 +2720,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             cancel_pending(self, db)
             from codex_context_repair import recover_context_failures
             recover_context_failures(self, db, current_agents(db))
-            restart_wait_agents = copy.deepcopy(current_agents(db))
+            from codex_context_repair import _held_restart_marker
+            restart_wait_agents = [copy.deepcopy(a) for a in current_agents(db)
+                                   if a.get("contextRepairWait") and _held_restart_marker(a)]
         from codex_context_repair import tick_restart_input_waits
         tick_restart_input_waits(self, restart_wait_agents)
         return self.dispatch_candidates(None, current_agents)

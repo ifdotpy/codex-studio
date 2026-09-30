@@ -303,6 +303,8 @@ def tick_restart_input_waits(rt, agents):
             owner = uuid.uuid4().hex
             rt._restart_history_check_owner = owner
         for snapshot in agents:
+            if not snapshot.get('contextRepairWait') or not _held_restart_marker(snapshot):
+                continue
             a = rt.agent(snapshot['id'], db)
             wait = a.get('contextRepairWait') or {}
             check_active = wait.get('historyCheckId') and wait.get('historyCheckOwner') == owner
