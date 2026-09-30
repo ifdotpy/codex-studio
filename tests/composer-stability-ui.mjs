@@ -218,7 +218,11 @@ try {
     await page.locator("#send").click();
     await waitForSend();
     await stable("sending before failed delivery");
-    assert.equal(pendingSend.request().postDataJSON().delivery, undefined);
+    assert.equal(
+      pendingSend.request().postDataJSON().delivery,
+      "after_tool",
+      "An ordinary Send action keeps the current after-tool delivery mode",
+    );
     await pendingSend.fulfill({
       status: 400,
       json: { error: "Fixture delivery failed" },
@@ -238,7 +242,7 @@ try {
       {
         id: "queued-fixture",
         text: "Later instruction",
-        delivery: "queue",
+        delivery: "after_turn",
         status: "queued",
       },
     ];

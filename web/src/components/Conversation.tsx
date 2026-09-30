@@ -21,6 +21,7 @@ import {
   Trash2,
   Square,
   Terminal,
+  ListEnd,
   RotateCcw,
 } from "lucide-react";
 import {
@@ -546,7 +547,9 @@ export default function Conversation(p: {
       setUploading(false);
     }
   };
-  const submit = async (delivery: "after_tool" | "after_turn" = "after_tool") => {
+  const submit = async (
+    delivery: "after_tool" | "after_turn" = "after_tool",
+  ) => {
     const draft = p.getDraft(p.id || "new");
     const draftTooLong = draft.length > 12000;
     const modelCommand = /^\/model(?:\s|$)/i.test(draft.trim());
