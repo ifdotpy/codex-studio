@@ -109,10 +109,10 @@
     padding-inline: var(--chat-gutter);
   }
   #conversation #messages {
-    padding: 20px var(--chat-inset) 12px;
+    padding: 16px var(--chat-inset) 8px;
     scrollbar-gutter: auto;
   }
-  #conversation :is(#composer, .agent-panel, .usage-footer, .message-queue) {
+  #conversation :is(#composer, .agent-panel, .message-queue) {
     width: calc(100% - 2 * var(--chat-gutter));
     max-width: var(--chat-width);
     align-self: center;
@@ -131,11 +131,6 @@
   }
   #conversation #requests {
     padding: 0;
-  }
-  #conversation .usage-footer {
-    margin-block: 5px 6px;
-    min-height: 22px;
-    gap: 10px;
   }
   #conversation .agent-panel {
     margin-block: 0;
@@ -179,11 +174,14 @@
   .workspace {
     --chat-gutter: 14px;
   }
-  #conversation :is(#composer, .agent-panel, .usage-footer, .message-queue) {
+  #conversation :is(#composer, .agent-panel, .message-queue) {
     width: calc(100% - 2 * var(--chat-gutter));
     max-width: none;
     align-self: center;
     margin-inline: auto;
+  }
+  #conversation #messages {
+    padding: 12px var(--chat-gutter) 8px;
   }
   #conversation #requests {
     padding: 0;
@@ -198,30 +196,92 @@
   padding: 0;
 }
 
-/* Prompt history shares the composer toolbar instead of reserving a row. */
-#composer .prompt-navigation-compact {
-  height: 28px;
+#conversation-header-tools {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.conversation-header-tools-menu {
+  position: relative;
+  min-width: 0;
+}
+#conversation-header-tools .conversation-header-tools-menu[data-compact="no"] {
+  display: flex;
+  align-items: center;
+}
+.conversation-header-tools-menu > summary {
+  display: none;
+  list-style: none;
+}
+.desktop-mac .conversation-header-tools-summary {
+  -webkit-app-region: no-drag;
+}
+.conversation-header-tools-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.conversation-header-tools-menu[data-compact="yes"] > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+.conversation-header-tools-menu[data-compact="yes"] > summary:hover {
+  background: var(--hover);
+}
+/* Prompt and usage controls live in the persistent conversation header slot. */
+.conversation-header-tools-content {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.conversation-header-tools-content .prompt-navigation-compact {
+  height: 30px;
+  min-width: 0;
   padding: 0;
   gap: 2px;
   border: 0;
   background: transparent;
 }
-#composer .prompt-navigation-compact .current-prompt {
+.conversation-header-tools-content .prompt-navigation-compact .current-prompt {
   display: none;
 }
-@media (max-width: 760px) {
-  #conversation-status {
-    display: block;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  #composer .prompt-navigation-compact > .mantine-ActionIcon-root {
-    display: none;
-  }
-  #composer .prompt-history-toggle {
-    min-height: 44px;
-  }
+.conversation-header-tools-content .prompt-history-toggle {
+  min-height: 30px;
+  height: 30px;
+  padding-inline: 6px;
+  font-size: var(--studio-main-font-size, inherit);
+  white-space: nowrap;
+}
+.conversation-header-tools-menu[data-compact="yes"][open]
+  > .conversation-header-tools-content {
+  position: absolute;
+  z-index: 300;
+  top: calc(100% + 4px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(620px, 78dvh);
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 30px #0004;
+}
+.conversation-header-tools-menu[data-compact="yes"] .prompt-navigation-compact {
+  width: 100%;
+  justify-content: flex-start;
 }
 
 /* Routine activity changes within one toolbar slot, not the transcript. */
@@ -259,6 +319,15 @@
   }
 }
 @media (max-width: 760px) {
+  .conversation-header-tools-menu[data-compact="yes"] > summary {
+    width: 44px;
+    height: 44px;
+  }
+  .conversation-header-tools-content .prompt-history-toggle {
+    min-height: 34px;
+    height: 34px;
+    padding-inline: 4px;
+  }
   .composer-activity {
     flex-basis: 0;
   }

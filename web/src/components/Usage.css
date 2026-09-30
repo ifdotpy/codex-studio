@@ -9,6 +9,47 @@
   font-size: 11px;
   font-weight: 500;
 }
+.conversation-header-tools-content .usage-footer.usage-header {
+  width: auto;
+  max-width: none;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin: 0;
+  font-size: var(--studio-main-font-size, inherit);
+}
+.usage-header .session-cost-summary {
+  flex: 0 1 132px;
+  max-width: 132px;
+  font-size: inherit;
+}
+.conversation-header-tools-content .usage-header .mantine-Popover-target,
+.conversation-header-tools-content .usage-header .account-limits-toggle {
+  margin-left: 0;
+  font-size: var(--studio-main-font-size, inherit);
+}
+.usage-header .account-limits-toggle {
+  flex-shrink: 0;
+  padding-inline: 4px;
+}
+.usage-header .context-use {
+  min-height: 30px;
+  padding-inline: 4px;
+  white-space: nowrap;
+}
+.conversation-header-tools-content .usage-header.usage-menu {
+  width: 100%;
+  max-width: none;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px;
+}
+.conversation-header-tools-content
+  .usage-header.usage-menu
+  .session-cost-summary {
+  flex-basis: 100%;
+  max-width: none;
+}
 .session-cost-summary {
   min-width: 0;
   overflow: hidden;
@@ -166,6 +207,20 @@
   }
   .account-limits-panel {
     padding: 14px;
+  }
+}
+
+@media (max-width: 760px) {
+  .usage-header .session-cost-summary {
+    flex-basis: 76px;
+    max-width: 76px;
+  }
+  .usage-header .context-use {
+    min-height: 34px;
+  }
+  .usage-header .account-limits-toggle {
+    min-height: 34px;
+    height: 34px;
   }
 }
 /* Dense quota rows keep both pools and reset clocks visible together. */

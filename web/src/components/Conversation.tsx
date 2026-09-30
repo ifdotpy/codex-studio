@@ -11,10 +11,12 @@ import {
 } from "./NativeNotice";
 import { ActionIcon, Button, Loader, Modal, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
+import { createPortal } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
   Copy,
+  MoreHorizontal,
   GitBranch,
   Quote,
   Pencil,
@@ -131,6 +133,42 @@ function FollowLatest(p: {
   );
 }
 
+const compactToolsBreakpoint = "(max-width: 760px)";
+const compactToolsFontThresholdPx = 20;
+
+function useCompactHeaderTools() {
+  const isCompact = () => {
+    const fontSize = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--studio-main-font-size",
+      ),
+    );
+    return (
+      window.matchMedia(compactToolsBreakpoint).matches ||
+      fontSize >= compactToolsFontThresholdPx
+    );
+  };
+  const [compact, setCompact] = useState(() =>
+    typeof window === "undefined" ? false : isCompact(),
+  );
+  useEffect(() => {
+    const viewport = window.matchMedia(compactToolsBreakpoint);
+    const update = () => setCompact(isCompact());
+    const preferences = new MutationObserver(update);
+    viewport.addEventListener("change", update);
+    preferences.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["style"],
+    });
+    update();
+    return () => {
+      viewport.removeEventListener("change", update);
+      preferences.disconnect();
+    };
+  }, []);
+  return compact;
+}
+
 export default function Conversation(p: {
   id: string | null;
   syncWorkspaceId?: string;
@@ -174,6 +212,36 @@ export default function Conversation(p: {
     "(max-width: 760px) and (max-height: 750px)",
   );
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
+  const compactHeaderTools = useCompactHeaderTools();
+  const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
+  const [toolsExpanded, setToolsExpanded] = useState(false);
+  useLayoutEffect(() => {
+    setHeaderTools(document.getElementById("conversation-header-tools"));
+  }, []);
+  useEffect(() => {
+    if (!compactHeaderTools) setToolsExpanded(false);
+  }, [compactHeaderTools]);
+  useEffect(() => {
+    if (!compactHeaderTools || !toolsExpanded || !headerTools) return;
+    const menu = headerTools.querySelector(".conversation-header-tools-menu");
+    if (!menu) return;
+    const dismissOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (menu.contains(target) || target.closest(".mantine-Popover-dropdown"))
+        return;
+      setToolsExpanded(false);
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setToolsExpanded(false);
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("keydown", dismissEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("keydown", dismissEscape, true);
+    };
+  }, [compactHeaderTools, headerTools, toolsExpanded]);
   const {
     items: history,
     historyVersion,
@@ -1151,28 +1219,70 @@ export default function Conversation(p: {
           accountKey={agent.accountKey || "default"}
         />
       )}
-      <div className="conversation-navigation">
-        {!p.room && p.id && (
-          <PromptNavigator
-            compact
-            key={p.id}
-            messages={items}
-            loadOlder={
-              before
-                ? () => {
-                    setFollow(false);
-                    void older().catch((e) => p.notify(errorText(e)));
+      {headerTools &&
+        !p.room &&
+        (p.id || managed) &&
+        createPortal(
+          <details
+            className="conversation-header-tools-menu"
+            data-compact={compactHeaderTools ? "yes" : "no"}
+            open={!compactHeaderTools || toolsExpanded}
+            onToggle={(event) => {
+              if (compactHeaderTools)
+                setToolsExpanded(event.currentTarget.open);
+            }}
+          >
+            <summary
+              className="conversation-header-tools-summary"
+              aria-label="Conversation tools"
+              title="Conversation tools"
+            >
+              <MoreHorizontal size={18} />
+              <span className="sr-only">Conversation tools</span>
+            </summary>
+            <div className="conversation-header-tools-content">
+              {!p.room && p.id && (
+                <PromptNavigator
+                  compact
+                  key={p.id}
+                  messages={items}
+                  loadOlder={
+                    before
+                      ? () => {
+                          setFollow(false);
+                          void older().catch((e) => p.notify(errorText(e)));
+                        }
+                      : undefined
                   }
-                : undefined
-            }
-            loadingOlder={pageLoading}
-            agentId={managed ? p.id || undefined : undefined}
-            container={scroll}
-            storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
-            jump={jumpToPrompt}
-          />
+                  loadingOlder={pageLoading}
+                  agentId={managed ? p.id || undefined : undefined}
+                  container={scroll}
+                  storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+                  jump={jumpToPrompt}
+                />
+              )}
+              {!p.room && agent?.source === "managed" && (
+                <Usage
+                  key={p.agent?.accountKey || "default"}
+                  compact
+                  menu={compactHeaderTools}
+                  agent={{
+                    ...agent,
+                    accountKey: p.agent?.accountKey || "default",
+                  }}
+                  stateDir={p.data.stateDir}
+                  limits={p.limits}
+                  limitsLoading={p.limitsLoading}
+                  accountLabel={p.limitsAccountLabel}
+                  reload={p.reloadLimits}
+                  opened={limitsOpen}
+                  onChange={setLimitsOpen}
+                />
+              )}
+            </div>
+          </details>,
+          headerTools,
         )}
-      </div>
       <div id="messages" ref={scroll} onScroll={onScroll}>
         <div ref={content} className="message-content">
           {notice && <p className="notice">{notice}</p>}
@@ -1668,19 +1778,6 @@ export default function Conversation(p: {
               );
             }}
           </PromptComposer>
-          {agent?.source === "managed" && (
-            <Usage
-              key={p.agent?.accountKey || "default"}
-              agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
-              stateDir={p.data.stateDir}
-              limits={p.limits}
-              limitsLoading={p.limitsLoading}
-              accountLabel={p.limitsAccountLabel}
-              reload={p.reloadLimits}
-              opened={limitsOpen}
-              onChange={setLimitsOpen}
-            />
-          )}
         </>
       )}
     </section>
