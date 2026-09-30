@@ -1283,15 +1283,6 @@ export default function Conversation(p: {
           <details
             className="conversation-header-tools-menu"
             data-compact={compactHeaderTools ? "yes" : "no"}
-            style={
-              compactHeaderTools && toolsExpanded && toolsMenuPosition
-                ? {
-                    left: toolsMenuPosition.left,
-                    top: toolsMenuPosition.top,
-                    width: toolsMenuPosition.width,
-                  }
-                : undefined
-            }
             open={!compactHeaderTools || toolsExpanded}
             onToggle={(event) => {
               if (compactHeaderTools)
@@ -1306,7 +1297,18 @@ export default function Conversation(p: {
               <MoreHorizontal size={18} />
               <span className="sr-only">Conversation tools</span>
             </summary>
-            <div className="conversation-header-tools-content">
+            <div
+              className="conversation-header-tools-content"
+              style={
+                compactHeaderTools && toolsExpanded && toolsMenuPosition
+                  ? {
+                      left: toolsMenuPosition.left,
+                      top: toolsMenuPosition.top,
+                      width: toolsMenuPosition.width,
+                    }
+                  : undefined
+              }
+            >
               {!p.room && p.id && (
                 <PromptNavigator
                   compact
