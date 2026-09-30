@@ -1,7 +1,7 @@
-import { Textarea } from "@mantine/core";
 import { useCallback, type KeyboardEvent, type RefObject } from "react";
 import ComposerAutocomplete from "../ComposerAutocomplete";
 import { useSkillAutocomplete } from "../useSkillAutocomplete";
+import { AutosizeTextarea } from "../ui/fields/AutosizeTextarea";
 import type { DraftReader, DraftWriter } from "./PromptComposer";
 
 export default function PromptInput(p: {
@@ -79,7 +79,7 @@ export default function PromptInput(p: {
         if (skill) skills.choose(skill);
       }}
     >
-      <Textarea
+      <AutosizeTextarea
         onPaste={(event) => {
           const files = Array.from(event.clipboardData.files);
           if (p.managed && files.length) {
@@ -87,9 +87,6 @@ export default function PromptInput(p: {
             p.onPasteFiles(files);
           }
         }}
-        variant="unstyled"
-        autosize
-        minRows={1}
         maxRows={p.shortViewport ? 3 : 8}
         id="message"
         ref={p.input}
