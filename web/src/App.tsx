@@ -1874,7 +1874,7 @@ export default function App() {
                 <output>{studioPreferences.sidebarFontSize}px</output>
               </span>
               <Slider
-                aria-label="Sidebar font size"
+                thumbLabel="Sidebar font size"
                 min={12}
                 max={24}
                 step={1}
@@ -1892,7 +1892,7 @@ export default function App() {
                 Main text <output>{studioPreferences.mainFontSize}px</output>
               </span>
               <Slider
-                aria-label="Main font size"
+                thumbLabel="Main font size"
                 min={12}
                 max={24}
                 step={1}
@@ -1911,7 +1911,7 @@ export default function App() {
                 <output>{studioPreferences.contentWidth}%</output>
               </span>
               <Slider
-                aria-label="Transcript width"
+                thumbLabel="Transcript width"
                 min={60}
                 max={100}
                 step={1}
@@ -1944,6 +1944,7 @@ export default function App() {
                   }
                   if (["Control", "Meta", "Alt", "Shift"].includes(event.key))
                     return;
+                  if (event.ctrlKey || event.metaKey) event.stopPropagation();
                   event.preventDefault();
                   const mods = [
                     event.metaKey ? "Meta" : "",
