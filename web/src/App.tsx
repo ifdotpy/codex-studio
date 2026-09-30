@@ -167,14 +167,20 @@ export default function App() {
   const preferenceLoad = useMemo(() => {
     try {
       const stored = localStorage.getItem(studioPreferencesStorageKey);
-      return {
-        value: stored
-          ? parseStudioPreferences(stored)
-          : { ...defaultStudioPreferences, theme: colorScheme },
-        error: stored
-          ? "Saved Studio preferences were invalid; safe defaults are active."
-          : "",
-      };
+      if (!stored)
+        return {
+          value: { ...defaultStudioPreferences, theme: colorScheme },
+          error: "",
+        };
+      try {
+        return { value: parseStudioPreferences(stored), error: "" };
+      } catch {
+        return {
+          value: { ...defaultStudioPreferences, theme: colorScheme },
+          error:
+            "Saved Studio preferences were invalid; safe defaults are active.",
+        };
+      }
     } catch {
       return {
         value: { ...defaultStudioPreferences, theme: colorScheme },
@@ -227,8 +233,8 @@ export default function App() {
       `${studioPreferences.mainFontSize}px`,
     );
     root.style.setProperty(
-      "--studio-content-width",
-      `${studioPreferences.contentWidth}%`,
+      "--studio-content-width-ratio",
+      String(studioPreferences.contentWidth / 100),
     );
   }, [studioPreferences]);
   const toggleSidebar = useCallback(() => {
@@ -1799,6 +1805,8 @@ export default function App() {
       />
       <Modal
         opened={studioSettingsOpen}
+        closeOnEscape={!accountModalOpen}
+        closeOnClickOutside={!accountModalOpen}
         onClose={() => setStudioSettingsOpen(false)}
         title="Studio settings"
       >
@@ -1930,6 +1938,10 @@ export default function App() {
                 readOnly
                 value={formatSidebarShortcut(studioPreferences.sidebarShortcut)}
                 onKeyDown={(event) => {
+                  if (event.key === "Tab" || event.key === "Escape") {
+                    setSidebarShortcutError("");
+                    return;
+                  }
                   if (["Control", "Meta", "Alt", "Shift"].includes(event.key))
                     return;
                   event.preventDefault();
@@ -2076,25 +2088,6 @@ export default function App() {
           {agent?.provider === "claude" && (
             <ClaudeSettings agent={agent} refresh={refresh} />
           )}
-          <section className="settings-group settings-appearance">
-            <h2>Appearance</h2>
-            <NativeSelect
-              aria-label="Appearance"
-              value={colorScheme}
-              data={[
-                { value: "auto", label: "System" },
-                { value: "light", label: "Light" },
-                { value: "dark", label: "Dark" },
-              ]}
-              onChange={(event) =>
-                updateStudioPreferences({
-                  ...studioPreferences,
-                  theme: event.currentTarget
-                    .value as StudioPreferences["theme"],
-                })
-              }
-            />
-          </section>
           {agent?.cwd && (
             <Button
               variant="subtle"

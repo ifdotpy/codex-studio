@@ -3,11 +3,32 @@
     system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --studio-sidebar-font-size: 14px;
   --studio-main-font-size: 14px;
-  --studio-content-width: 100%;
+  --studio-content-width-ratio: 1;
+}
+
+.workspace #conversation {
+  --studio-content-column: calc(
+    (100cqw - 2 * var(--chat-gutter)) * var(--studio-content-width-ratio)
+  );
 }
 
 #sidebar {
   font-family: var(--studio-font-family);
+  font-size: var(--studio-sidebar-font-size);
+}
+
+#sidebar
+  :is(
+    .chat-row,
+    .row-copy strong,
+    .row-copy small,
+    .row-meta,
+    #chat-search,
+    .sidebar-nav-button,
+    .sidebar-footer,
+    .load-more,
+    #open-complaints
+  ) {
   font-size: var(--studio-sidebar-font-size);
 }
 
@@ -22,24 +43,31 @@
 #conversation .usage-footer,
 #conversation .message-queue,
 #conversation .room-footer {
-  width: min(var(--studio-content-width), 100%);
+  width: var(--studio-content-column);
   max-width: 100%;
   align-self: center;
   margin-inline: auto;
 }
 
 #conversation #composer {
-  width: min(
-    var(--studio-content-width),
-    calc(100% - 2 * var(--chat-gutter, 28px))
-  );
+  width: var(--studio-content-column);
   max-width: none;
   margin-inline: auto;
+}
+
+#conversation #messages {
+  padding-inline: 0;
+  scrollbar-gutter: stable both-edges;
 }
 
 #conversation #messages .prose,
 #conversation #composer #message,
 #conversation .agent-panel .progress-markdown {
+  font-size: var(--studio-main-font-size);
+}
+
+#conversation-title,
+#conversation-status {
   font-size: var(--studio-main-font-size);
 }
 
@@ -115,6 +143,14 @@
 }
 
 @media (max-width: 760px) {
+  .workspace {
+    --studio-content-width-ratio: 1;
+  }
+
+  #conversation #messages {
+    padding-inline: 0;
+  }
+
   #conversation .message-content,
   #conversation .conversation-navigation,
   #conversation .agent-panel,
@@ -122,7 +158,7 @@
   #conversation .message-queue,
   #conversation #composer,
   #conversation.room-footer {
-    width: calc(100% - 2 * var(--chat-gutter, 14px));
+    width: var(--studio-content-column);
     max-width: 100%;
   }
 }

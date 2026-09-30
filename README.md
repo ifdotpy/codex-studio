@@ -303,7 +303,7 @@ Workers ask their lead to contact the user. Workers cannot send spoken responses
 **Back to main agent** returns to the main agent.
 The sidebar and Team panel can collapse at any window width.
 
-**Studio settings** is available without opening a chat. It contains the application default account and per-browser appearance, text size, transcript width, and sidebar shortcut preferences. Chat settings continues to select the account for the current conversation and manage its project, model, and permissions. Both appearance selectors use the same saved theme.
+**Studio settings** is available without opening a chat. It contains the application default account and per-browser appearance, text size, transcript width, and sidebar shortcut preferences. Chat settings continues to select the account for the current conversation and manage its project, model, and permissions; use Studio settings for the shared theme.
 **Chat actions** contains agent tasks, your tasks, changes, plan, rules, search, and background tasks.
 **Search chats** searches full history. **Filter projects and chats** filters the sidebar list.
 The search control above the transcript searches the current chat.
