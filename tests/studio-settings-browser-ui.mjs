@@ -76,6 +76,38 @@ try {
       '.agent-panel[aria-label="Agent progress"][data-fit="yes"] .agent-panel-current.progress-markdown',
     )
     .waitFor();
+  const captureBaselineGeometry = async () =>
+    page.evaluate(() => {
+      const rect = (selector) => {
+        const element = document.querySelector(selector);
+        if (!element) return null;
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return { x, y, width, height };
+      };
+      return {
+        viewport: rect("#messages"),
+        transcript: rect("#messages .message-content"),
+        progress: rect(
+          '.agent-panel[aria-label="Agent progress"][data-fit="yes"]',
+        ),
+        composer: rect("#conversation #composer"),
+      };
+    });
+  console.log(
+    "baseline-1440x960",
+    JSON.stringify(await captureBaselineGeometry()),
+  );
+  await page.setViewportSize({ width: 1280, height: 800 });
+  console.log(
+    "baseline-1280x800",
+    JSON.stringify(await captureBaselineGeometry()),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  console.log(
+    "baseline-390x844",
+    JSON.stringify(await captureBaselineGeometry()),
+  );
+  await page.setViewportSize({ width: 1440, height: 960 });
 
   const openStudioSettings = async () => {
     await page
