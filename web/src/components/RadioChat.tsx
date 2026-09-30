@@ -8,6 +8,11 @@ import MessageDate from "./MessageDate";
 import Requests from "./Requests";
 import StreamingText from "./StreamingText";
 import { useConversationScroll } from "./useConversationScroll";
+import {
+  usePromptDraft,
+  type DraftReader,
+  type DraftSubscription,
+} from "./prompt-composer/PromptComposer";
 import "./radio-chat.css";
 
 // Keep the exact command across navigation and reloads until the server confirms it.
@@ -15,18 +20,21 @@ type Attempt = { body: Json; acknowledged?: boolean; rejected?: boolean };
 export default function RadioChat({
   room,
   data,
-  draft,
+  getDraft,
+  subscribeDraft,
   setDraft,
   refresh,
   notify,
 }: {
   room: Room;
   data: Snapshot;
-  draft: string;
+  getDraft: DraftReader;
+  subscribeDraft: DraftSubscription;
   setDraft: (text: string) => void;
   refresh: () => Promise<void>;
   notify: (message: string) => void;
 }) {
+  const draft = usePromptDraft(room.id, getDraft, subscribeDraft);
   const radio = room.radio!;
   const key = `studio-radio-command:${data.stateDir}:${room.id}`;
   const [attempt, setAttempt] = useState<Attempt | null>(() =>
@@ -63,7 +71,7 @@ export default function RadioChat({
       if (
         next.acknowledged &&
         next.body.radio_action === "send" &&
-        draft === next.body.text
+        getDraft(room.id) === next.body.text
       )
         setDraft("");
       await refresh();

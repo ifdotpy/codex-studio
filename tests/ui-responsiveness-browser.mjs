@@ -189,13 +189,31 @@ try {
         };
         window.metrics = {
           phase: "startup",
+          inputSequence: 0,
+          lastInputAt: -Infinity,
           input: [],
           layoutReads: {},
           longTasks: [],
           events: [],
+          renderProbe: [],
           switches: [],
           stream: [],
         };
+        window.__studioPromptComposerRenderProbe = (component) =>
+          window.metrics.renderProbe.push({
+            component,
+            phase: window.metrics.phase,
+            inputSequence: window.metrics.inputSequence,
+            inputAgeMs: performance.now() - window.metrics.lastInputAt,
+          });
+        document.addEventListener(
+          "input",
+          () => {
+            window.metrics.inputSequence++;
+            window.metrics.lastInputAt = performance.now();
+          },
+          true,
+        );
         const rectangle = Element.prototype.getBoundingClientRect;
         Element.prototype.getBoundingClientRect = function (...args) {
           const key = `${window.metrics.phase}:${this.tagName}`;
@@ -354,6 +372,9 @@ try {
     });
     await page.waitForTimeout(150);
     await setPhase("scrolled-input");
+    // Let the scroll-state and background sync transitions settle before
+    // attributing renders to the following keyboard input.
+    await page.waitForTimeout(1000);
     const scrolledSuffix = " Type while reading older text.";
     await page.keyboard.type(scrolledSuffix, { delay: 35 });
     firstText += scrolledSuffix;
@@ -481,6 +502,22 @@ try {
       ),
       streamPaint: summarize(metrics.stream.map((x) => x.duration)),
       switches: metrics.switches,
+      renderCounts: Object.fromEntries(
+        ["idle-input", "scrolled-input", "stream-and-input"].map((phase) => [
+          phase,
+          Object.fromEntries(
+            ["app", "sidebar", "conversation"].map((component) => [
+              component,
+              metrics.renderProbe.filter(
+                (entry) =>
+                  entry.phase === phase &&
+                  entry.component === component &&
+                  entry.inputAgeMs < 20,
+              ).length,
+            ]),
+          ),
+        ]),
+      ),
       longTasks: Object.fromEntries(
         [
           "startup",
@@ -499,6 +536,34 @@ try {
         ]),
       ),
     };
+    await writeFile(
+      join(dir, `${name}-metrics.json`),
+      JSON.stringify(metrics, null, 2),
+    );
+    for (const phase of ["idle-input", "scrolled-input"]) {
+      const counts = summary.renderCounts[phase];
+      if (process.env.RENDER_ISOLATION === "baseline") {
+        assert.ok(
+          counts.app > 0 && counts.sidebar > 0 && counts.conversation > 0,
+          `${name}/${phase}: legacy draft owner should rerender its caller tree`,
+        );
+      } else {
+        assert.equal(
+          counts.app,
+          0,
+          `${name}/${phase}: typing must not rerender App`,
+        );
+        assert.equal(
+          counts.sidebar,
+          0,
+          `${name}/${phase}: typing must not rerender the sidebar`,
+        );
+        assert.ok(
+          counts.conversation <= 1,
+          `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
+        );
+      }
+    }
     results.push(summary);
     await writeFile(
       join(dir, `${name}-metrics.json`),
