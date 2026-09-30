@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location('turn_fixture', Path(__file__).wit
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_canvas import Canvas, make_server
-from codex_connection_recovery import recover
+from codex_connection_recovery import recover, tick as connection_recovery_tick
 
 
 class Runtime(fixture.Runtime):
@@ -107,6 +107,21 @@ class ConnectionRecoveryContract(unittest.TestCase):
         self.assertEqual(self.server.calls, calls)
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_completed_turns').fetchone()[0], 1)
+
+    def test_scheduler_roster_reaches_interrupted_disconnect_recovery(self):
+        from unittest.mock import patch
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            a['disconnectRecovery'] = {'autoWake': True, 'turnId': 'lost-turn'}
+            self.runtime.put(db, 'agents', a)
+            agents = self.runtime.scheduler_agents(db)
+        self.assertIn(self.key, {a['id'] for a in agents})
+        submitted = []
+        with patch.object(self.runtime.recovery_pool, 'submit',
+                          side_effect=lambda *args: submitted.append(args)):
+            connection_recovery_tick(self.runtime, agents)
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0][2], self.key)
 
     def test_completed_target_on_later_page_reconciles(self):
         self.server.native['turns'] = [

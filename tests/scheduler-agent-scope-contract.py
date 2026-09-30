@@ -52,6 +52,28 @@ class SchedulerAgentScope(unittest.TestCase):
         self.assertIn("archived-repair-owner", selected)
         self.assertNotIn("archived-worker", selected)
 
+    def test_every_recovery_and_wait_marker_is_retained(self):
+        root = self.runtime.create({"name": "Root", "cwd": self.tmp.name, "prompt": "Coordinate"}, defer=True)
+        markers = {
+            "interrupted-connection": {"status": "interrupted", "threadId": "thread", "turnId": "turn"},
+            "disconnect-marker": {"disconnectRecovery": {"stage": "pending"}},
+            "restart-marker": {"restartRecovery": {"stage": "pending"}},
+            "failure-hold": {"nativeFailureHold": True},
+            "budget-action-wait": {"budgetActionWait": {"action": "capacity"}},
+            "budget-start-wait": {"budgetStartWait": {"stage": "waiting"}},
+            "capacity-retry": {"capacityRetry": {"status": "scheduled"}},
+            "usage-resume": {"usageResume": {"status": "scheduled"}},
+            "safety-retry": {"nativeSafetyRetry": {"stage": "verify_turns"}},
+        }
+        with self.runtime.lock, self.runtime.db() as db:
+            for key, fields in markers.items():
+                agent = dict(root, id=key, rootId=root["id"], parentId=root["id"], isLead=False,
+                             name=key, status="failed", autoWake=False)
+                agent.update(fields)
+                self.runtime.put(db, "agents", agent)
+            selected = {agent["id"] for agent in self.runtime.scheduler_agents(db)}
+        self.assertTrue(set(markers) <= selected)
+
 
 if __name__ == "__main__":
     unittest.main()

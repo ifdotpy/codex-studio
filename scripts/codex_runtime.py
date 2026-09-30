@@ -1167,7 +1167,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             f"AND {LIVE_AGENT_SQL}", (root_id,))]
 
     def scheduler_agents(self, db):
-        """Load only agents that can participate in this pass or own cleanup work."""
+        """Load the rows consumed by dispatch and recovery hooks, not archived history."""
         from codex_agent_modes import mode_fields
         transfer_roots = ""
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
@@ -1176,6 +1176,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 " OR json_extract(record,'$.rootId') IN (SELECT json_extract(record,'$.leadId') "
                 "FROM runtime_account_transfers WHERE json_extract(record,'$.status')='pending')")
         filters = (
+            # dispatch_candidates: queued work, active capacity, workspace reservations,
+            # legacy steer receipts, budget/capacity waits, safety retries, and failure holds.
             "(json_extract(record,'$.autoWake')=1 AND json_extract(record,'$.status')='queued') OR "
             "json_extract(record,'$.inFlight')=1 OR "
             "json_extract(record,'$.status') IN ('running','starting','approval') OR "
@@ -1183,6 +1185,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "AND json_extract(record,'$.workspaceOperation')!='') OR "
             "json_extract(record,'$.accountTransferId') IS NOT NULL OR "
             "json_extract(record,'$.accountTransfer.status')='pending' OR "
+            "json_extract(record,'$.nativeRelease.resetPending')=1 OR "
+            "json_extract(record,'$.nativeFailureHold')=1 OR "
+            "json_extract(record,'$.budgetActionWait') IS NOT NULL OR "
+            "json_extract(record,'$.budgetStartWait') IS NOT NULL OR "
+            "json_extract(record,'$.capacityRetry') IS NOT NULL OR "
+            "json_extract(record,'$.usageResume') IS NOT NULL OR "
+            "json_extract(record,'$.nativeSafetyRetry') IS NOT NULL OR "
+            # Recovery consumers: connection/restart reconciliation can start from
+            # an interrupted native turn even though it is neither active nor queued.
+            "(json_extract(record,'$.status')='interrupted' "
+            "AND json_extract(record,'$.threadId') IS NOT NULL "
+            "AND json_extract(record,'$.turnId') IS NOT NULL) OR "
+            "json_extract(record,'$.disconnectRecovery') IS NOT NULL OR "
+            "json_extract(record,'$.restartRecovery') IS NOT NULL OR "
             "json_extract(record,'$.contextRepair') IS NOT NULL OR "
             "json_extract(record,'$.contextRepairWait') IS NOT NULL OR "
             "json_extract(record,'$.lastContextRepairWait') IS NOT NULL OR "
@@ -1190,12 +1206,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "json_extract(record,'$.browserRecovery') IS NOT NULL OR "
             "json_extract(record,'$.liveSteerAttempt') IS NOT NULL OR "
             "json_extract(record,'$.liveSteerRejectedTurnId') IS NOT NULL OR "
+            "json_extract(record,'$.steerRejectedTurnId') IS NOT NULL OR "
             "json_extract(record,'$.queueNotice') IS NOT NULL")
         filters += transfer_roots
         filters += (
             " OR json_extract(runtime_agents.record,'$.id') IN ("
             "SELECT json_extract(runtime_work.record,'$.owner') FROM runtime_work "
             "WHERE json_extract(runtime_work.record,'$.status') IN ('ready','running','blocked'))")
+        # The selected rows are consumed by AccountTransfers.tick/adopt,
+        # retire_legacy_steer, release_failed_work, queue_turn_recovery,
+        # connection_recovery.tick, browser_recovery.tick, recover_context_failures,
+        # tick_restart_input_waits, and dispatch_candidates' capacity/budget/radio
+        # and candidate checks. A pending transfer needs its full lead-root roster
+        # for adoption and member settlement. radio.tick reads its own participant
+        # records and cancel_pending reads its event tables; capacity_tick and
+        # usage_resume_tick use durable retry tables in schedule(). Those hooks do
+        # not consume this list.
         rows = db.execute("SELECT id,record FROM runtime_agents WHERE " + filters).fetchall()
         cache = self.__dict__.setdefault("_scheduler_agent_cache", {})
         guard = self.__dict__.setdefault("_scheduler_agent_cache_lock", threading.RLock())
