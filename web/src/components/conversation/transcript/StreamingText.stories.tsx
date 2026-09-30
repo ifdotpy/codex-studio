@@ -19,9 +19,9 @@ export const CompletedReply: Story = {
     expect(
       canvas.getByRole("heading", { name: "Release summary" }),
     ).toBeVisible();
-    expect(canvas.getByRole("listitem")).toHaveTextContent(
-      "typed transcript actions",
-    );
+    expect(
+      canvas.getByText("typed transcript actions", { exact: true }),
+    ).toBeVisible();
   },
 };
 

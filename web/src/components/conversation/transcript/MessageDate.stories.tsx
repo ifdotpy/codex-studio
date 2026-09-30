@@ -13,7 +13,7 @@ type Story = StoryObj<typeof meta>;
 export const RecordedTimestamp: Story = {
   args: { at: "2026-09-30T12:00:00.000Z" },
   play: async ({ canvasElement }) => {
-    const time = within(canvasElement).container.querySelector("time");
+    const time = canvasElement.querySelector("time");
     expect(time).toHaveAttribute("datetime", "2026-09-30T12:00:00.000Z");
     expect(time).not.toBeEmptyDOMElement();
   },

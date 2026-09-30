@@ -28,7 +28,7 @@ export const Thinking: Story = {
   args: { agent: thinkingAgent },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    expect(canvas.getByRole("status")).toHaveTextContent("Thinking");
+    expect(canvas.getByText("Thinking", { exact: true })).toBeVisible();
   },
 };
 
@@ -44,9 +44,11 @@ export const WaitingForAnswer: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    expect(within(canvasElement).getByRole("status")).toHaveTextContent(
-      "Waiting for your answer",
-    );
+    expect(
+      within(canvasElement).getByText("Waiting for your answer", {
+        exact: true,
+      }),
+    ).toBeVisible();
   },
 };
 
@@ -56,8 +58,10 @@ export const Reconnecting: Story = {
     connection: "reconnecting",
   },
   play: async ({ canvasElement }) => {
-    expect(within(canvasElement).getByRole("status")).toHaveTextContent(
-      "Connection lost. Reconnecting",
-    );
+    expect(
+      within(canvasElement).getByText("Connection lost. Reconnecting…", {
+        exact: true,
+      }),
+    ).toBeVisible();
   },
 };

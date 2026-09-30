@@ -466,7 +466,7 @@ try {
   assert.equal(await page.evaluate(() => maxActiveReports), 1);
   const payloads = await page.evaluate(() => reports.map((item) => item.body));
   execFileSync(
-    "/opt/homebrew/bin/python3",
+    process.env.PYTHON || "python3",
     [
       "-B",
       "-c",
