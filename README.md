@@ -1,5 +1,14 @@
 # Codex Studio
 
+## Change Contract
+
+The repository pre-commit hook checks staged JavaScript, TypeScript, CSS, HTML,
+Markdown, YAML, and JSON. It reads the Git index, leaves staged and unstaged
+files untouched, and requires locally installed tools. Oxlint and Oxfmt
+configuration belongs to [`.oxlintrc.json`](.oxlintrc.json) and
+[`.oxfmtrc.json`](.oxfmtrc.json); `npm run test:pre-commit` exercises the hook
+against staged-content fixtures.
+
 A desktop workspace for one lead agent and many workers. The application uses
 Codex app-server for model sessions, tools, and permissions. It adds durable
 orchestration, agent messages, command monitors, and user replies.
@@ -49,6 +58,8 @@ The desktop package currently targets macOS on Apple silicon.
 From this repository:
 
 ```sh
+npm ci
+git config --local core.hooksPath .githooks
 python3 scripts/install-cli.py
 npm --prefix web ci
 npm --prefix web run build
@@ -56,6 +67,12 @@ npm --prefix desktop ci
 (cd scripts/claude_bridge && npm --prefix . ci --ignore-scripts --omit=optional)
 npm --prefix desktop start
 ```
+
+The root `npm ci` installs Oxlint and Oxfmt. Set `core.hooksPath` once per clone
+to activate the mandatory staged-content checks. The hook does not download
+dependencies; install them before committing.
+For full-repository audits, run `npm run lint:all` and
+`npm run format:check:all`. Append paths after `--` to check selected files.
 
 Claude Code is also supported through the installed CLI and its Claude subscription.
 Run `claude auth login`, then select **Claude Code** in the account menu for a new
@@ -229,13 +246,13 @@ start voice again after their current work finishes.
 
 ## Source and contracts
 
-| Path | Contents |
-|---|---|
-| `web/` | React, TypeScript, Mantine, Vite |
-| `desktop/` | Electron host, native bridge, package tools |
+| Path                            | Contents                                                 |
+| ------------------------------- | -------------------------------------------------------- |
+| `web/`                          | React, TypeScript, Mantine, Vite                         |
+| `desktop/`                      | Electron host, native bridge, package tools              |
 | [`scripts/`](scripts/README.md) | Python server, command tools, and component-local checks |
-| `prompts/` | Runtime worker instructions |
-| `tests/` | Backend, protocol, browser, and process contracts |
+| `prompts/`                      | Runtime worker instructions                              |
+| `tests/`                        | Backend, protocol, browser, and process contracts        |
 
 - [Orchestration](ORCHESTRATION.md): managed agents, messages, monitors, and state.
 - [Command guide](CLI.md): waves, steering, and CLI usage.

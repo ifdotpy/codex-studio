@@ -1,0 +1,17 @@
+{
+  "name": "codex-studio-tooling",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "lint:all": "oxlint --deny-warnings",
+    "format:check:all": "oxfmt --check",
+    "lint:staged": "node scripts/check-code.mjs staged lint",
+    "format:staged": "node scripts/check-code.mjs staged format",
+    "check:staged": "node scripts/check-code.mjs staged",
+    "test:pre-commit": "node tests/pre-commit-hook.mjs"
+  },
+  "devDependencies": {
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0"
+  }
+}

@@ -1,4 +1,7 @@
 scripts/claude_bridge/node_modules/
+node_modules/
+dist/
+coverage/
 __pycache__/
 *.py[cod]
 .DS_Store
