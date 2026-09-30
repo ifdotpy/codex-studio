@@ -8,6 +8,11 @@ import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
 import {
+  pendingChatCreations,
+  saveChatCreation,
+  confirmChatCreation,
+} from "./chatCreation";
+import {
   ActionIcon,
   Button,
   Drawer,
@@ -247,7 +252,7 @@ export default function App() {
     dismissDraft,
     error: draftError,
   } = useSyncedDrafts();
-  const [pendingCreation, setPendingCreation] = useState<Json | null>(null);
+  const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<Json | null>(null),
     sends = useRef<Record<string, Json>>({}),
@@ -262,9 +267,11 @@ export default function App() {
   const persistSends = () => save(pendingSendKey, sends.current);
   useEffect(() => {
     if (!data?.stateDir) return;
-    const pending = saved<Json | null>(creationKey, null);
-    creation.current = pending;
-    setPendingCreation(pending);
+    try {
+      setPendingCreations(pendingChatCreations(creationKey));
+    } catch (error) {
+      setToast("Cannot read the saved chat requests: " + errorText(error));
+    }
   }, [creationKey, data?.stateDir]);
   const notify = useCallback((s: string) => {
     setToast(s);
@@ -670,26 +677,28 @@ export default function App() {
       notify(errorText(e));
     }
   };
-  const newChat = async (cwd?: string, projectFolder?: string) => {
+  const newChat = async (
+    cwd?: string,
+    projectFolder?: string,
+    retryId?: string,
+  ) => {
     if (creationLock.current) return null;
     try {
-      const pending = JSON.parse(localStorage.getItem(creationKey) || "null");
-      if (pending && (typeof pending.id !== "string" || !pending.id))
-        throw new Error("The saved chat request is invalid.");
-      creation.current = pending;
+      const pending = pendingChatCreations(creationKey);
+      creation.current =
+        (retryId
+          ? pending.find((request) => request.id === retryId)
+          : cwd
+            ? pending.find(
+                (request) =>
+                  request.cwd === cwd &&
+                  (request.project_folder || undefined) === projectFolder,
+              )
+            : pending[0]) || null;
+      if (retryId && !creation.current)
+        throw new Error("The saved chat request is no longer available.");
     } catch (error) {
       notify("Cannot read the saved chat request: " + errorText(error));
-      return null;
-    }
-    if (
-      creation.current &&
-      cwd &&
-      (creation.current.cwd !== cwd ||
-        (creation.current.project_folder || undefined) !== projectFolder)
-    ) {
-      notify(
-        "Retry the previous chat request before you start a chat in another project or folder.",
-      );
       return null;
     }
     if (creation.current) cwd = creation.current.cwd;
@@ -737,14 +746,14 @@ export default function App() {
     if (!opened && drafts.new) setDraft(drafts.new, creation.current.id);
     try {
       // Save the exact request before sending it. A lost response must retain this identity.
-      localStorage.setItem(creationKey, JSON.stringify(creation.current));
-      setPendingCreation(creation.current);
+      saveChatCreation(creationKey, creation.current);
+      setPendingCreations(pendingChatCreations(creationKey));
       const a = await api("/api/leads", creation.current, { timeoutMs: 15000 });
       if (a.id !== creation.current.id)
         throw new Error("The server returned another chat identity.");
       rememberCreated(a, creationScope);
-      localStorage.removeItem(creationKey);
-      setPendingCreation(null);
+      confirmChatCreation(creationKey, creation.current.id);
+      setPendingCreations(pendingChatCreations(creationKey));
       if (!opened && drafts.new) setDraft(drafts.new, a.id);
       setToast("");
       creation.current = null;
@@ -1580,15 +1589,28 @@ export default function App() {
           </div>
         )}
         <div className="sync-notices">
-          {pendingCreation && !creating && (
-            <div className="sync-status">
-              <p>
-                The previous chat request needs confirmation:{" "}
-                {pendingCreation.cwd || "default project"}.
-              </p>
-              <Button onClick={() => void newChat()}>Retry chat request</Button>
-            </div>
-          )}
+          {!creating &&
+            pendingCreations.map((request) => (
+              <div className="sync-status" key={request.id}>
+                <p>
+                  The previous chat request needs confirmation:{" "}
+                  {request.cwd || "default project"}
+                  {request.project_folder ? ` (${request.project_folder})` : ""}
+                  .
+                </p>
+                <Button
+                  onClick={() =>
+                    void newChat(
+                      request.cwd,
+                      request.project_folder,
+                      request.id,
+                    )
+                  }
+                >
+                  Retry chat request
+                </Button>
+              </div>
+            ))}
           {draftError && (
             <p className="sync-status" role="status" data-draft-sync-status>
               {draftError}

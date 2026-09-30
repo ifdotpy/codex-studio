@@ -8,6 +8,7 @@ import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const webDist = process.env.STUDIO_WEB_DIST || join(root, "web/dist");
 const { chromium } = createRequire(join(root, "web/package.json"))(
   "playwright-core",
 );
@@ -54,6 +55,7 @@ const projects = [
     created: 1,
     accountKey: "other",
     accountRevision: 1,
+    folders: [{ id: "review", name: "Review", parentId: null }],
   },
 ];
 let loseCreation = false;
@@ -150,6 +152,7 @@ const server = createServer(async (req, res) => {
       runtime: {
         agents,
         projects,
+        projectOrganizationVersion: 1,
         rooms: [],
         complaints: [],
         requests: [],
@@ -230,6 +233,7 @@ const server = createServer(async (req, res) => {
         true,
       );
       lead.cwd = body.cwd;
+      lead.projectFolder = body.project_folder || null;
       agents.push(lead);
     }
     if (loseCreation) {
@@ -268,8 +272,7 @@ const server = createServer(async (req, res) => {
     return json({ items: [], sessions: [] });
   try {
     const path = join(
-      root,
-      "web/dist",
+      webDist,
       url.pathname === "/" ? "index.html" : url.pathname,
     );
     const file = await readFile(path);
@@ -491,24 +494,90 @@ try {
   await page
     .getByRole("button", { name: "Retry chat request", exact: true })
     .waitFor();
+  const lostRequest = bodies.filter((r) => r.path === "/api/leads").at(-1).body;
+  // Existing clients store one pending request under the legacy key.
+  await page.evaluate(
+    ({ key, request }) => {
+      for (const name of Object.keys(localStorage))
+        if (name.startsWith(`${key}:request:`)) localStorage.removeItem(name);
+      localStorage.setItem(key, JSON.stringify(request));
+    },
+    { key: `codex-pending-creation:${evidence}`, request: lostRequest },
+  );
   projects[1].accountKey = "default";
+  const beforeFolder = bodies.filter((r) => r.path === "/api/leads").length;
+  const folderResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/leads"),
+  );
+  await newChat("folder Review");
+  await folderResponse;
+  assert.equal(
+    bodies.filter((r) => r.path === "/api/leads").length,
+    beforeFolder + 1,
+  );
+  const folderRequest = bodies
+    .filter((r) => r.path === "/api/leads")
+    .at(-1).body;
+  assert.equal(folderRequest.cwd, lostRequest.cwd);
+  assert.equal(folderRequest.project_folder, "review");
+  assert.notEqual(folderRequest.id, lostRequest.id);
+  await page.locator(`[data-chat="${folderRequest.id}"]`).waitFor();
+  await page
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .waitFor();
+  const beforeOtherProject = bodies.filter(
+    (r) => r.path === "/api/leads",
+  ).length;
+  loseCreation = true;
+  await newChat("arbitrary");
+  await page.waitForFunction(
+    () => document.querySelectorAll(".sync-status button").length === 2,
+  );
+  assert.equal(
+    bodies.filter((r) => r.path === "/api/leads").length,
+    beforeOtherProject + 1,
+    "A pending request must allow a chat in another project",
+  );
+  const otherRequest = bodies
+    .filter((r) => r.path === "/api/leads")
+    .at(-1).body;
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .nth(1)
+    .waitFor();
+  const retryOther = page
+    .locator(".sync-status")
+    .filter({ hasText: otherRequest.cwd });
+  await retryOther
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".sync-status button").length === 1,
+  );
+  assert.deepEqual(
+    bodies.filter((r) => r.path === "/api/leads").at(-1).body,
+    otherRequest,
+    "Each project retains its exact request after reload",
+  );
   await page
     .getByRole("button", { name: "Retry chat request", exact: true })
     .click();
   await page
     .getByRole("button", { name: "Retry chat request", exact: true })
     .waitFor({ state: "hidden" });
-  const creates = bodies.filter((r) => r.path === "/api/leads");
   assert.deepEqual(
-    creates.at(-1).body,
-    creates.at(-2).body,
-    "Lost response retains exact request identity",
+    bodies.filter((r) => r.path === "/api/leads").at(-1).body,
+    lostRequest,
+    "The legacy request retains its identity and original account",
   );
   assert.equal(
-    agents.at(-1).accountKey,
+    agents.find((item) => item.id === lostRequest.id).accountKey,
     "other",
     "Committed request retains selected server account",
   );
+  for (const request of [lostRequest, otherRequest])
+    assert.equal(agents.filter((item) => item.id === request.id).length, 1);
   await openSettings();
   await picker.click();
   await page
@@ -579,6 +648,9 @@ try {
         "conflict retry",
         "virtual project",
         "new chats across projects",
+        "new chat in another project folder with a pending request",
+        "multiple pending requests after reload",
+        "legacy request recovery",
         "lost response identity",
         "obsolete rules removed",
         "390px and 320px project settings",
