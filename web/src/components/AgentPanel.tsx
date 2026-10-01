@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { NetworkTimeoutError } from "../api";
 import { onResume } from "../sync/resume";
 import ErrorDescription from "./ErrorDescription";
@@ -200,13 +207,16 @@ function ProgressDisplay({
     () => progressMarkdown(current.markdown),
     [current.markdown],
   );
+  const contentId = useId();
   const root = useRef<HTMLElement>(null);
+  const visibleContent = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLDivElement>(null);
   const candidate = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState<{
     markdown: string;
     layout: ProgressLayout;
   } | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [dialogError, setDialogError] = useState<unknown>(null);
   const valid =
@@ -218,7 +228,7 @@ function ProgressDisplay({
     scope,
     current.cached || current.error ? null : layout,
   );
-  const approved = !!layout?.fits;
+  const clipped = layout?.reason === "overflow";
 
   useLayoutEffect(() => {
     const container = root.current;
@@ -227,7 +237,6 @@ function ProgressDisplay({
     if (!container || !content || !title) return;
     let active = true;
     const invalidate = () => {
-      container.dataset.fit = "no";
       setMeasured(null);
     };
     const measure = () => {
@@ -237,8 +246,12 @@ function ProgressDisplay({
         return;
       }
       const viewport = window.visualViewport?.height || window.innerHeight;
-      const budget = Math.min(150, Math.max(80, Math.floor(viewport / 4)));
+      const budget = Math.min(280, Math.max(100, Math.floor(viewport * 0.28)));
       container.style.setProperty("--progress-height", `${budget}px`);
+      container.style.setProperty(
+        "--progress-expanded-height",
+        `${Math.floor(viewport / 2)}px`,
+      );
       const width = Math.max(0, container.clientWidth - 20);
       const height = Math.max(
         0,
@@ -277,18 +290,44 @@ function ProgressDisplay({
         height > 0 &&
         contentWidth <= width + 0.5 &&
         contentHeight <= height + 0.5;
+      const overflowX = Math.max(0, contentWidth - width);
+      const overflowY = Math.max(0, contentHeight - height);
+      // Count complete top-level paragraphs/headings and direct list items.
+      // Leave the fade out of the fully visible area when content is clipped.
+      const lines = Array.from(
+        content.querySelectorAll<HTMLElement>(
+          ":scope > :not(ul):not(ol), :scope > ul > li, :scope > ol > li",
+        ),
+      );
+      const visible = lines.filter((line) => {
+        const rect = line.getBoundingClientRect();
+        return (
+          rect.bottom - bounds.top <= height - (fits ? 0 : 12) + 0.5 &&
+          rect.right - bounds.left <= width + 0.5 &&
+          rect.left >= bounds.left - 0.5
+        );
+      });
+      const label = (line?: HTMLElement) => {
+        const text = line?.textContent?.replace(/\s+/g, " ").trim();
+        return text ? Array.from(text).slice(0, 200).join("") : null;
+      };
       const next: ProgressLayout = {
         revision: current.revision,
         width,
         height,
         contentWidth,
         contentHeight,
+        overflowX,
+        overflowY,
+        totalLines: lines.length,
+        visibleLines: visible.length,
+        lastVisibleLine: label(visible.at(-1)),
+        lastVisibleHeading: label(
+          visible.filter((line) => /^H[1-6]$/.test(line.tagName)).at(-1),
+        ),
         fits,
         reason: !parsed.supported ? "unsupported" : fits ? null : "overflow",
       };
-      // ResizeObserver runs before paint. Hide a now-invalid visible copy before
-      // React commits the new notice, including changes in loaded font metrics.
-      container.dataset.fit = fits ? "yes" : "no";
       setMeasured((previous) =>
         previous?.markdown === current.markdown &&
         JSON.stringify(previous.layout) === JSON.stringify(next)
@@ -297,8 +336,7 @@ function ProgressDisplay({
       );
     };
     const observer = new ResizeObserver(measure);
-    // The zero-height measurement layer follows width changes but never changes
-    // height when the visible copy is accepted or rejected.
+    // Measure the collapsed preview even while the visible copy is expanded.
     observer.observe(content.parentElement!);
     observer.observe(title);
     observer.observe(content);
@@ -322,6 +360,21 @@ function ProgressDisplay({
     };
   }, [current.markdown, current.revision, current.error, parsed]);
 
+  useLayoutEffect(() => {
+    const content = visibleContent.current;
+    if (!content) return;
+    const bounds = content.getBoundingClientRect();
+    for (const link of content.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+      const rect = link.getBoundingClientRect();
+      link.tabIndex =
+        (expanded && clipped) ||
+        (rect.top >= bounds.top &&
+          rect.bottom <= bounds.bottom - (clipped ? 12 : 0))
+          ? 0
+          : -1;
+    }
+  }, [layout, expanded, clipped, current.markdown]);
+
   const openOriginal = () => setPreview({ agent: agentId, path: current.path });
   return (
     <>
@@ -332,7 +385,9 @@ function ProgressDisplay({
         data-agent={agentId}
         data-panel-revision={current.revision ?? undefined}
         data-cached={current.cached ? "yes" : "no"}
-        data-fit={approved ? "yes" : "no"}
+        data-fit={layout?.fits ? "yes" : "no"}
+        data-clipped={clipped ? "yes" : "no"}
+        data-expanded={expanded && clipped ? "yes" : "no"}
       >
         <div ref={heading} className="agent-panel-heading">
           <button
@@ -343,6 +398,19 @@ function ProgressDisplay({
           >
             <code>PROGRESS.md</code>
           </button>
+          {parsed.supported && (
+            <button
+              type="button"
+              className="agent-panel-expand"
+              style={{ visibility: clipped ? "visible" : "hidden" }}
+              disabled={!clipped}
+              aria-expanded={expanded && clipped}
+              aria-controls={contentId}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded && clipped ? "Collapse" : "Expand"}
+            </button>
+          )}
           {current.cached && <span>Saved copy</span>}
           {Boolean(current.error) && current.markdown.trim() && (
             <>
@@ -369,7 +437,12 @@ function ProgressDisplay({
             {parsed.nodes}
           </div>
         </div>
-        <div className="agent-panel-content">
+        <div
+          ref={visibleContent}
+          id={contentId}
+          className="agent-panel-content"
+          tabIndex={expanded && clipped ? 0 : undefined}
+        >
           {Boolean(current.error) && !current.markdown.trim() ? (
             <div className="agent-panel-notice" role="alert">
               <span>Cannot read PROGRESS.md.</span>
@@ -385,14 +458,12 @@ function ProgressDisplay({
             </div>
           ) : (
             <>
-              <div className="agent-panel-notice" role="status">
-                {!parsed.supported
-                  ? "Progress format is unsupported."
-                  : layout?.fits === false
-                    ? "Progress does not fit."
-                    : "Checking progress layout."}
-              </div>
-              {approved && (
+              {!parsed.supported && (
+                <div className="agent-panel-notice" role="status">
+                  Progress format is unsupported.
+                </div>
+              )}
+              {parsed.supported && (
                 <div
                   className={`${current.cached ? "agent-panel-saved" : "agent-panel-current"} progress-markdown`}
                   onClick={(event) => {

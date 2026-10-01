@@ -4,7 +4,7 @@
   flex-direction: column;
   flex: 0 0 auto;
   min-height: 0;
-  max-height: var(--progress-height, 150px);
+  max-height: var(--progress-height, clamp(100px, 28vh, 280px));
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
@@ -41,7 +41,8 @@
 .agent-panel-content {
   min-height: 0;
   margin: 0 10px 6px;
-  overflow: visible;
+  overflow: clip;
+  flex: 0 1 auto;
   overflow-anchor: none;
 }
 .agent-panel-measure {
@@ -108,9 +109,22 @@
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
-.agent-panel[data-fit="yes"] .agent-panel-notice {
-  display: none;
+.agent-panel[data-clipped="yes"][data-expanded="no"] .agent-panel-content {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 12px), transparent);
 }
-.agent-panel[data-fit="no"] .agent-panel-current {
-  display: none;
+.agent-panel[data-expanded="yes"] {
+  max-height: var(--progress-expanded-height, 50vh);
+}
+.agent-panel[data-expanded="yes"] .agent-panel-content {
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+.agent-panel-expand {
+  min-width: 52px;
+}
+@media (max-width: 760px) {
+  .agent-panel-heading button {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }

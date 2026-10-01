@@ -209,15 +209,21 @@ try {
       "height",
       "contentWidth",
       "contentHeight",
+      "overflowX",
+      "overflowY",
+      "totalLines",
+      "visibleLines",
+      "lastVisibleLine",
+      "lastVisibleHeading",
       "fits",
       "reason",
     ].sort(),
   );
-  assert.equal(report.body.renderer, "progress-markdown-v1");
+  assert.equal(report.body.renderer, "progress-markdown-v2");
   assert.match(report.body.client, /^[\w-]{36}$/);
   assert.equal(report.body.reason, null);
   assert(
-    report.body.width > 0 && report.body.height > 0 && report.body.height < 150,
+    report.body.width > 0 && report.body.height > 0 && report.body.height < 280,
   );
   const change = async (text) => {
     const revision = await page.evaluate(
@@ -252,7 +258,7 @@ try {
   assert.equal(await current.locator("code").innerText(), "&lt;tag&gt;");
   await page.addStyleTag({
     content:
-      ".progress-markdown{font-size:14.7px!important;line-height:1.35!important}.agent-panel-heading{line-height:16.25px!important}",
+      ".progress-markdown{font-size:14.7px!important;line-height:1.35!important}.agent-panel-heading{line-height:16.25px!important;padding-top:4.25px!important}",
   });
   await change(Array.from({ length: 6 }, (_, i) => `Line ${i}.`).join("  \n"));
   const fractional = await page.evaluate(() => reports.at(-1).body);
@@ -261,7 +267,7 @@ try {
   assert(fractional.contentHeight <= fractional.height + 0.5);
   await page.addStyleTag({
     content:
-      ".progress-markdown{font-size:12px!important}.agent-panel-heading{line-height:16px!important}",
+      ".progress-markdown{font-size:12px!important}.agent-panel-heading{line-height:16px!important;padding-top:4px!important}",
   });
   await change("1. Ready\n2. Review");
   assert.equal(await current.locator("ol").count(), 1);
@@ -290,8 +296,8 @@ try {
   await change(wrapping);
   await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
   await page.setViewportSize({ width: 210, height: 800 });
-  await panel.getByText("Progress does not fit.", { exact: true }).waitFor();
-  assert.equal(await current.count(), 0);
+  await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
+  assert.equal(await current.count(), 1);
   const narrow = await page.evaluate(() => reports.at(-1).body);
   assert.equal(narrow.reason, "overflow");
   assert(
@@ -304,27 +310,29 @@ try {
         (el) =>
           el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth,
       ),
-    false,
+    true,
   );
   await page.setViewportSize({ width: 540, height: 800 });
   await current.waitFor();
-  await change("First line.  \nSecond line.  \nThird line.  \nFourth line.");
+  await change(
+    "First line.  \nSecond line.  \nThird line.  \nFourth line.  \nFifth line.  \nSixth line.",
+  );
   await page.setViewportSize({ width: 540, height: 270 });
-  await panel.getByText("Progress does not fit.", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
   assert.equal(
     await panel
       .locator(".agent-panel-measure .progress-markdown")
       .evaluate((el) => getComputedStyle(el).fontSize),
     "12px",
   );
-  assert((await panel.boundingBox()).height <= 80.5);
+  assert((await panel.boundingBox()).height <= 100.5);
   await page.setViewportSize({ width: 540, height: 800 });
-  await change("Measured font change. ".repeat(8));
+  await change("Measured font change. ".repeat(12));
   await current.waitFor();
   await page.addStyleTag({
     content: ".progress-markdown{font-size:24px!important}",
   });
-  await panel.getByText("Progress does not fit.", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
   await page.addStyleTag({
     content: ".progress-markdown{font-size:12px!important}",
   });
@@ -352,7 +360,51 @@ try {
     (_, i) => `- Complete step ${i}`,
   ).join("\n");
   await change(long);
-  await panel.getByText("Progress does not fit.", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
+  if (process.env.PROGRESS_SCREENSHOTS) {
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(150);
+      if (width === 390) {
+        assert.ok(
+          (
+            await panel
+              .getByRole("button", { name: "Expand", exact: true })
+              .boundingBox()
+          ).height >= 44,
+        );
+      }
+      await page.screenshot({
+        path: `docs/verification/progress-fit/${process.env.PROGRESS_SCREENSHOTS}-${width}.png`,
+      });
+    }
+    await page.setViewportSize({ width: 540, height: 800 });
+  }
+  const clippedReport = await page.evaluate(() => reports.at(-1).body);
+  assert.equal(clippedReport.totalLines, 50);
+  assert.ok(clippedReport.visibleLines > 0 && clippedReport.visibleLines < 50);
+  assert.equal(
+    clippedReport.lastVisibleLine,
+    `Complete step ${clippedReport.visibleLines - 1}`,
+  );
+  assert.equal(clippedReport.lastVisibleHeading, null);
+  assert.equal(
+    clippedReport.overflowY,
+    clippedReport.contentHeight - clippedReport.height,
+  );
+  assert.equal(clippedReport.overflowX, 0);
+  await page.waitForFunction(() => reports.at(-1)?.body.width > 400);
+  const reportCount = await page.evaluate(() => reports.length);
+  await panel.getByRole("button", { name: "Expand", exact: true }).click();
+  await page.waitForTimeout(100);
+  assert.equal(
+    await page.evaluate(() => reports.length),
+    reportCount,
+    "Expansion must not replace the collapsed preview measurement",
+  );
+  assert.equal(await panel.getAttribute("data-expanded"), "yes");
+  assert.ok((await panel.boundingBox()).height <= 400.5);
+  await panel.getByRole("button", { name: "Collapse", exact: true }).click();
   await panel.getByRole("button", { name: "Open PROGRESS.md" }).click();
   const fileDialog = page.getByRole("dialog", {
     name: "PROGRESS.md",
@@ -363,6 +415,11 @@ try {
   assert.equal(await fileDialog.locator("pre").innerText(), long);
   await page.keyboard.press("Escape");
   await fileDialog.waitFor({ state: "hidden" });
+  await change("# Status\n\n- Ready\n- Verified\n\n## Next step\n\n" + long);
+  const sections = await page.evaluate(() => reports.at(-1).body);
+  assert.equal(sections.totalLines, 54);
+  assert.equal(sections.lastVisibleHeading, "Next step");
+  assert.ok(sections.visibleLines > 4 && sections.visibleLines < 54);
   await change("[Result](../../project/report.txt)");
   await current.getByRole("link", { name: "Result" }).click();
   await page.waitForFunction(
