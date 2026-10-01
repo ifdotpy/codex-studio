@@ -37,6 +37,9 @@ conflict handling, and immutable message request IDs remain unchanged.
 - A pull whose runtime snapshot cannot capture connection permissions because
   native startup holds `start_lock` returns a retryable HTTP 503. It does not
   cache a partial snapshot; retrying after startup returns the current view.
+  Snapshot lock acquisition never waits while holding the other runtime lock.
+  Team roster tools read committed database rows directly and remain available
+  during native startup without capturing UI connection permissions.
 - `sync_scope_generation.transcripts` advances for records used to build
   transcripts and their pending user receipts, including durable
   `runtime_item_bodies` once that table is installed. The derived,

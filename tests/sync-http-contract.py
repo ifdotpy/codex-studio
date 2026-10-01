@@ -17,9 +17,21 @@ with tempfile.TemporaryDirectory() as directory:
     )
     try:
         port = process.stdout.readline().strip()
+        assert port.isdigit(), process.stderr.read()
         origin = 'http://127.0.0.1:' + port
         def get(path):
-            return json.load(urllib.request.urlopen(origin + path, timeout=10))
+            # Native startup can defer read-only snapshots; the browser retries
+            # this same documented response. Never retry mutation requests here.
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    with urllib.request.urlopen(origin + path, timeout=10) as response:
+                        return json.load(response)
+                except urllib.error.HTTPError as error:
+                    error.close()
+                    if error.code != 503 or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(.1)
         identity, state = get('/api/sync/identity'), get('/api/state')
         generations = get('/api/sync/generations')
         assert identity['syncProtocol'] == generations['protocol'] == 2

@@ -154,6 +154,17 @@ class MobileStateContract(unittest.TestCase):
         self.assertEqual(snapshot["rateLimitsByAccount"]["secondary"],
                          self.runtime.rate_limits_by_account["secondary"])
 
+    def test_team_remains_available_during_native_startup(self):
+        lead = self.lead()
+        other = self.lead("Other team")
+        before = self.runtime.team(lead["id"])
+        with self.runtime.start_lock:
+            with patch.object(self.runtime, "snapshot", side_effect=AssertionError("UI snapshot requested")):
+                during = self.runtime.team(lead["id"])
+        self.assertEqual(during, before)
+        self.assertIn(lead["id"], {a["id"] for a in during["agents"]})
+        self.assertNotIn(other["id"], {a["id"] for a in during["agents"]})
+
     def test_snapshot_does_not_hold_start_lock_waiting_for_runtime_lock(self):
         finished = threading.Event()
         outcomes = []

@@ -4858,11 +4858,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             }
 
     def team(self, root):
-        state = self.snapshot(include_work=False)
-        agents = [a for a in state["agents"] if a["rootId"] == root]
-        return {"workerDefaults": self.worker_defaults(self.agent(root)),
-                "agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "effort", "fastMode", "workerDefaults", "tokensUsed", "error")} for a in agents],
-                "monitors": [m for m in state["monitors"] if m["agent"] in {a["id"] for a in agents}]}
+        # Team tools need only durable roster data, not connection permissions
+        # or the UI snapshot's volatile fields. Native startup must not defer them.
+        with self.db() as db:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            lead = self.agent(root, db)
+            agents = [a for a in self.records(db, "agents")
+                      if a["rootId"] == root and not a.get("deletedAt")]
+            agent_ids = {a["id"] for a in agents}
+            return {"workerDefaults": self.worker_defaults(lead),
+                    "agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "effort", "fastMode", "workerDefaults", "tokensUsed", "error")} for a in agents],
+                    "monitors": [m for m in self.recent_monitors(db) if m["agent"] in agent_ids]}
 
     def transcript(self, key, before=None, around=None, limit=120, after=None):
         with self.db() as db:
