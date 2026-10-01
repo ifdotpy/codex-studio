@@ -70,6 +70,7 @@ import ChatStatus from "./components/ChatStatus";
 import AgentModeSwitch from "./components/AgentModeSwitch";
 import {
   chatIndicators,
+  backgroundActivities,
   chatActivities,
   hasCompletedResult,
 } from "./components/chatStatusModel";
@@ -1595,7 +1596,7 @@ export default function App() {
         {agent && (
           <SessionActivity
             key={`${data.stateDir}:${agent.id}`}
-            activities={activities.get(agent.id) || []}
+            activities={backgroundActivities(activities.get(agent.id) || [])}
             onOpen={(activity) => {
               if (activity.kind === "agent") open(activity.agentId);
               else if (lead) {

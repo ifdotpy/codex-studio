@@ -27,6 +27,12 @@ export interface ChatActivity {
   command?: string;
   created?: number;
   status: string;
+  // Monitors and commands that outlive their turn. Only these appear above the chat.
+  background?: boolean;
+}
+
+export function backgroundActivities(activities: ChatActivity[]) {
+  return activities.filter((activity) => activity.background);
 }
 
 // The visible reasons and the spinner use the same activity records.
@@ -49,6 +55,7 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
       const entry = record as typeof record & {
         epoch?: number;
         type?: string;
+        turnId?: string;
       };
       const agent = byId.get(entry.agent);
       if (
@@ -60,13 +67,17 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
       )
         continue;
       concrete.add(agent.id);
+      const background =
+        kind === "monitor" ||
+        agent.inFlight === false ||
+        !!(entry.turnId && agent.turnId && agent.turnId !== entry.turnId);
       add(agent, {
         id: entry.id,
         kind,
         agentId: agent.id,
         agentName: agent.name,
         label:
-          kind === "monitor"
+          kind === "monitor" || (background && entry.command)
             ? "Background command"
             : entry.command
               ? "Command"
@@ -74,6 +85,7 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
         command: entry.command || entry.query || entry.name || entry.type,
         created: entry.created,
         status: entry.status,
+        background,
       });
     }
   }

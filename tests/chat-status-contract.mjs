@@ -7,7 +7,7 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { chatIndicators, unreadResult, chatActivities } = await import(
+const { chatIndicators, unreadResult, chatActivities, backgroundActivities } = await import(
   "../web/src/components/chatStatusModel.ts"
 );
 hooks.deregister();
@@ -286,6 +286,24 @@ assert.equal(
     snapshot([lead, pausedChild, otherRoot], { tasks: [command] }),
   ).has("other-root"),
   false,
+);
+// The bar above the chat shows only monitors and commands outside their turn.
+const turnChild = { ...child, status: "running", inFlight: true, turnId: "t2" };
+const strip = (tasks, monitors = [], agents = [lead, turnChild]) =>
+  backgroundActivities(
+    chatActivities(snapshot(agents, { tasks, monitors })).get("lead") || [],
+  ).map((activity) => activity.id);
+assert.deepEqual(strip([{ ...command, turnId: "t2" }]), []);
+assert.deepEqual(strip([{ ...command, turnId: "t1" }]), [command.id]);
+assert.deepEqual(strip([command], [], [lead, pausedChild]), [command.id]);
+assert.deepEqual(
+  strip([], [{ id: "watch", agent: child.id, status: "running" }]),
+  ["watch"],
+);
+assert.deepEqual(strip([]), []);
+assert.equal(
+  chatActivities(snapshot([lead, turnChild])).get("lead")[0].kind,
+  "agent",
 );
 console.log(
   "PASS visible activity reasons match spinner, including live commands from stopped workers and scope boundaries",
