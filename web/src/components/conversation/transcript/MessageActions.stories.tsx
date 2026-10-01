@@ -44,7 +44,10 @@ export const AssistantActionTooltips: Story = {
       ["Copy message", "Copy this message"],
       ["Quote message", "Quote this message in your reply"],
       ["Branch after this turn", "Start a new branch after this turn"],
-      ["Another answer in a new chat", "Ask for another answer in a new chat"],
+      [
+        "Another answer in a new chat",
+        "Prepare a request for another answer in a new chat",
+      ],
     ] as const;
 
     for (const [name, label] of actions) {
@@ -86,7 +89,10 @@ export const EditInProgress: Story = {
     const actions = [
       ["Edit in a new chat", "Edit this message in a new chat"],
       ["Branch after this turn", "Start a new branch after this turn"],
-      ["Another answer in a new chat", "Ask for another answer in a new chat"],
+      [
+        "Another answer in a new chat",
+        "Prepare a request for another answer in a new chat",
+      ],
     ] as const;
 
     for (const [name, label] of actions) {

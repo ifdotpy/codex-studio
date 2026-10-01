@@ -320,11 +320,17 @@ Workers ask their lead to contact the user. Workers cannot send spoken responses
 **Back to main agent** returns to the main agent.
 The sidebar and Team panel can collapse at any window width.
 
-**Studio settings** is available without opening a chat. It contains the application default account and per-browser appearance, text size, transcript width, and sidebar shortcut preferences. Chat settings continues to select the account for the current conversation and manage its project, model, and permissions; use Studio settings for the shared theme.
+**Studio settings** is available without opening a chat. Its Accounts, Appearance,
+and Hotkeys tabs group the application default account, per-browser appearance,
+text size, transcript width, message author icons, and sidebar shortcut preferences.
+Author icons are hidden by default. Chat settings continues to select the account
+for the current conversation and manage its project, model, and permissions.
 
-Prompt history, context usage, and account limits are in the chat header.
-When space is limited or text is enlarged, open **Conversation tools** to access
-them. Agent progress stays visible above the composer.
+Prompt history is in the chat header; open **Conversation tools** when space is
+limited. Context usage, session cost, and account limits sit below the composer.
+Agent progress stays visible above it. An orange **Warnings** icon appears in the
+header when the current account or chat has notices. It opens their full details
+in a dialog; errors that block work remain visible in the conversation.
 On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
 mode switch is inside Chat settings on mobile. Mobile input text stays at least
 16px; larger selected text sizes apply normally.

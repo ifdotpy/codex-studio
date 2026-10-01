@@ -188,33 +188,11 @@ try {
     page.getByRole("button", { name: "Account limits", exact: true });
   const details = () =>
     page.getByRole("region", { name: "Account limits details", exact: true });
-  const openCompactHeaderTools = async () => {
-    await page.waitForFunction(
-      () => document.querySelector(".conversation-header-tools-menu") !== null,
-    );
-    const menu = page.locator(
-      '.conversation-header-tools-menu[data-compact="yes"]',
-    );
-    if (!(await menu.count())) return;
-    if ((await menu.getAttribute("open")) === null) {
-      await page
-        .locator(
-          '.conversation-header-tools-summary[aria-label="Conversation tools"]',
-        )
-        .click();
-      await page.waitForFunction(() =>
-        document
-          .querySelector('.conversation-header-tools-menu[data-compact="yes"]')
-          ?.hasAttribute("open"),
-      );
-    }
-  };
   const load = async () => {
     await page.goto(origin);
     if (page.viewportSize().width <= 600)
       await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${selectedChat.id}"]`).click();
-    await openCompactHeaderTools();
     await toggle().waitFor();
   };
   await load();

@@ -117,12 +117,21 @@ try {
     message: "Account configuration needs review",
     details: accountDetails,
   });
-  const accountNotice = page.locator(".native-account-notices");
-  await accountNotice.locator("summary").click();
+  await page.getByRole("button", { name: "Warnings", exact: true }).click();
+  const accountNotice = page.getByRole("dialog", {
+    name: "Warnings",
+    exact: true,
+  });
   assert.deepEqual(
     JSON.parse(await accountNotice.locator("pre").innerText()),
     accountDetails,
     "Account-wide native diagnostics retain object details without removing the UI",
+  );
+  await page.keyboard.press("Escape");
+  await accountNotice.waitFor({ state: "hidden" });
+  assert.equal(
+    await page.locator("#conversation .native-account-notices").count(),
+    0,
   );
   assert.equal(
     await page.locator("#conversation-title").innerText(),

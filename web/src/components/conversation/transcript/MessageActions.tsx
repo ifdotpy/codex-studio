@@ -112,7 +112,7 @@ export default function MessageActions({
       )}
       {onAnotherAnswer && (
         <Tooltip
-          label="Ask for another answer in a new chat"
+          label="Prepare a request for another answer in a new chat"
           position="top"
           withArrow
           events={messageActionTooltipEvents}
