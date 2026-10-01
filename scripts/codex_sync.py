@@ -229,13 +229,16 @@ class SyncStore:
         with self.scope_lock(scope):
             self._ensure_versions()
             if scope == 'state:entities:v1':
-                from codex_sync_entities import max_seq, seed, sync_task_window
+                from codex_sync_entities import (max_seq, seed, sync_task_window,
+                                                 sync_event_window, sync_monitor_window)
                 with self.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
                     seed(db, self.chat_snapshot() if self.chat_snapshot else self.snapshot())
                     # Retire old task DTOs gradually so an existing client checkpoint
                     # can consume the resulting tombstones through ordinary deltas.
                     sync_task_window(db)
+                    sync_event_window(db)
+                    sync_monitor_window(db)
                     high = max_seq(db)
                     initial_high = min(high, max(0, int(initial_high))) if fresh and after else high
                     # A new browser has no rows to remove. Existing checkpoints

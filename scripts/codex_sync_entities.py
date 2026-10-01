@@ -243,6 +243,56 @@ def seed(db, snapshot):
     db.execute("INSERT INTO sync_entity_meta VALUES ('seeded','1')")
 
 
+def sync_event_window(db):
+    """Match the 200 receipts in the chat snapshot."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
+        return 0
+    recent = db.execute("""SELECT id,agent,kind,status,created,error FROM runtime_events
+                           ORDER BY created DESC LIMIT 200""").fetchall()
+    for row in recent:
+        record = dict(zip(("id", "agent", "kind", "status", "created", "error"), row))
+        put(db, "event", str(record["id"]), record)
+    stale = db.execute("""SELECT id FROM sync_entities WHERE collection='event' AND deleted=0
+        AND id NOT IN (SELECT id FROM runtime_events ORDER BY created DESC LIMIT 200)""").fetchall()
+    for (key,) in stale:
+        put(db, "event", key, {}, deleted=True)
+    return len(stale)
+
+
+def _recent_monitor_records(db):
+    from codex_workspace import WorkspaceMixin
+    active_agents = {row[0] for row in db.execute("""SELECT id FROM runtime_agents
+        WHERE json_extract(record,'$.deletedAt') IS NULL""")}
+    return [row for row in WorkspaceMixin().recent_monitors(db)
+            if row.get("agent") in active_agents]
+
+
+def sync_monitor_window(db):
+    """Match active monitors and the recent terminal window in the chat snapshot."""
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_monitors'").fetchone():
+        return 0
+    recent = _recent_monitor_records(db)
+    kept = {str(row["id"]) for row in recent}
+    for row in recent:
+        put(db, "monitor", str(row["id"]), row)
+    stale = db.execute("SELECT id FROM sync_entities WHERE collection='monitor' AND deleted=0").fetchall()
+    retired = 0
+    for (key,) in stale:
+        if key not in kept:
+            retired += bool(put(db, "monitor", key, {}, deleted=True))
+    return retired
+
+
+def sync_monitor_write(db, record):
+    """Project a monitor write and retire the displaced terminal record."""
+    sync_monitor_window(db)
+
+
+def sync_monitor_agent_change(db):
+    """Refresh monitors after an agent's deletedAt state changes."""
+    sync_monitor_window(db)
+
+
 def sync_task_window(db, batch_size=100, force=False):
     """Match recent_tasks(); retire legacy rows in bounded batches, then skip pulls."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_tasks'").fetchone():
