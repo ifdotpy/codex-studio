@@ -23,6 +23,7 @@ export function useMobileViewport(enabled: boolean) {
       if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(top))
         return;
       const keyboard = layoutHeight - height - top > 100;
+      root.dataset.mobileKeyboard = String(keyboard);
       root.style.setProperty("--mobile-viewport-height", `${height}px`);
       root.style.setProperty("--mobile-viewport-top", `${top}px`);
       root.style.setProperty(
@@ -61,6 +62,7 @@ export function useMobileViewport(enabled: boolean) {
         "--mobile-safe-area-top",
       ])
         root.style.removeProperty(property);
+      delete root.dataset.mobileKeyboard;
     };
   }, [enabled]);
 }

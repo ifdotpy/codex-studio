@@ -214,6 +214,36 @@ try {
         },
       }),
     );
+    // Terminal transport data is a completed fixture shell, never a real PTY.
+    await page.route("**/api/terminals", (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            {
+              id: "audit-terminal",
+              agent: lead.id,
+              title: "Release logs",
+              cwd: "/workspace/release",
+              status: "exited",
+              exitCode: 0,
+              created: 1,
+            },
+          ],
+        },
+      }),
+    );
+    await page.route("**/api/terminals/output?*", (route) =>
+      route.fulfill({
+        json: {
+          text: route.request().url().includes("offset=0")
+            ? "Release checks complete\r\n"
+            : "",
+          offset: 25,
+          status: "exited",
+          truncated: false,
+        },
+      }),
+    );
     const capture = async (name) => {
       // Mantine drawers need their 200 ms transition to finish before capture.
       await page.waitForTimeout(250);
@@ -263,6 +293,17 @@ try {
         return {
           viewport: { width: innerWidth, height: innerHeight },
           scrollWidth: document.documentElement.scrollWidth,
+          root: document
+            .querySelector("#root")
+            .getBoundingClientRect()
+            .toJSON(),
+          drawers: [
+            ...document.querySelectorAll(".mantine-Drawer-content"),
+          ].map((node) => node.getBoundingClientRect().toJSON()),
+          header: document
+            .querySelector(".workspace-header")
+            .getBoundingClientRect()
+            .toJSON(),
           targets,
           smallTargets: targets.filter(
             (target) => target.width < 44 || target.height < 44,
@@ -280,19 +321,35 @@ try {
       console.log(
         `${phase}: ${width} ${name}, ${measurement.smallTargets.length} small targets`,
       );
-      if (verify && !desktop)
+      if (verify && !desktop) {
         assert.ok(
           measurement.scrollWidth <= width,
           `${name}: page overflow at ${width}`,
         );
+        assert.deepEqual(
+          measurement.smallTargets,
+          [],
+          `${name}: targets smaller than 44 px at ${width}`,
+        );
+      }
     };
     await page.goto(origin);
     await page.locator("#message").waitFor();
+    if (desktop)
+      await page
+        .locator("[data-chat]")
+        .filter({ hasText: "Release lead" })
+        .click();
     await page.locator('[data-message$=":audit-answer"]').waitFor();
     await page.locator("#messages").evaluate((node) => {
       node.scrollTop = 0;
     });
     await capture("chat");
+    if (verify)
+      assert.equal(
+        await page.locator(".workspace-header .agent-mode-switch").count(),
+        desktop ? 1 : 0,
+      );
     await page
       .locator('[data-message$=":audit-answer"] pre')
       .evaluate((node) => node.scrollIntoView({ block: "center" }));
@@ -329,27 +386,54 @@ try {
         const box = await page.locator("#send").boundingBox();
         assert.ok(box.y + box.height <= 444, "Send fits above the keyboard");
       }
+      await page
+        .locator("#message")
+        .fill(
+          Array.from(
+            { length: 12 },
+            (_, index) => `Draft line ${index + 1}`,
+          ).join("\n"),
+        );
+      await capture("keyboard-long-draft");
+      if (verify) {
+        const box = await page.locator("#send").boundingBox();
+        assert.ok(
+          box.y + box.height <= 444,
+          "A long draft keeps Send above the keyboard",
+        );
+        assert.equal(
+          await page
+            .locator("#message")
+            .evaluate((node) => getComputedStyle(node).overflowY),
+          "auto",
+        );
+      }
+      await page
+        .locator("#message")
+        .fill("Check the mobile layout.\nKeep this draft on the phone.");
       await page.evaluate(
         ({ height }) => window.auditViewport({ height, offsetTop: 0 }),
         { height },
       );
       await page.evaluate(() => window.auditStandalone());
       // Standalone safe-area geometry is simulated explicitly, not claimed as native iOS evidence.
-      await page.addStyleTag({
+      const standaloneStyle = await page.addStyleTag({
         content:
           ":root { --mobile-safe-area-top: 47px !important; --mobile-safe-area-bottom: 34px !important; }",
       });
       await capture("standalone");
-      await page
-        .locator("style")
-        .last()
-        .evaluate((node) => node.remove());
+      await standaloneStyle.evaluate((node) => node.remove());
     }
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
     await page.getByTestId("account-picker").waitFor();
     await capture("settings");
+    if (verify && !desktop)
+      assert.equal(
+        await page.locator(".chat-settings-panel .agent-mode-switch").count(),
+        1,
+      );
     await page.getByTestId("account-picker").click();
     await capture("account-picker");
     await page.keyboard.press("Escape");
@@ -386,9 +470,23 @@ try {
       .getByRole("button", { name: "Search chats", exact: true })
       .waitFor();
     await capture("chat-list-project-tree");
+    await page
+      .locator("[data-chat]")
+      .filter({ hasText: "Other project" })
+      .click();
+    await page
+      .locator("#conversation-title")
+      .filter({ hasText: "Other project" })
+      .waitFor();
+    await capture("chat-switch");
     if (!desktop)
-      await page.getByLabel("Close conversations", { exact: true }).click();
-    else await page.getByLabel("Toggle conversations", { exact: true }).click();
+      await page.getByLabel("Toggle conversations", { exact: true }).click();
+    await page
+      .locator("[data-chat]")
+      .filter({ hasText: "Release lead" })
+      .click();
+    if (desktop)
+      await page.getByLabel("Toggle conversations", { exact: true }).click();
     await page.getByLabel("Team", { exact: true }).click();
     await page.locator("#team").waitFor();
     await capture("team-workers");
@@ -398,6 +496,15 @@ try {
     await page.locator("#team .worker").first().click();
     await page.locator("#back-lead").waitFor();
     await capture("worker-chat");
+    if (verify && !desktop)
+      assert.ok(
+        await page.locator("#back-lead").evaluate((node) => {
+          const box = node.getBoundingClientRect();
+          const header = node.closest("header").getBoundingClientRect();
+          return box.top >= header.top && box.bottom <= header.bottom;
+        }),
+        "Back to main agent stays in the phone header",
+      );
     await page.locator("#back-lead").click();
     await page.getByRole("button", { name: /^Messages/ }).click();
     await page.locator(".workspace-messages").waitFor();
@@ -425,15 +532,12 @@ try {
         ({ height }) => window.auditViewport({ height, offsetTop: 0 }),
         { height },
       );
-      await page.addStyleTag({
+      const standaloneStyle = await page.addStyleTag({
         content:
           ":root { --mobile-safe-area-top: 47px !important; --mobile-safe-area-bottom: 34px !important; }",
       });
       await capture("messages-standalone");
-      await page
-        .locator("style")
-        .last()
-        .evaluate((node) => node.remove());
+      await standaloneStyle.evaluate((node) => node.remove());
     }
     await page.locator(".mantine-Drawer-close").click();
     await page
@@ -472,6 +576,26 @@ try {
     await page.locator(".analytics-root").waitFor();
     await capture("analytics");
     await page.locator(".mantine-Modal-close").click();
+    if (desktop) {
+      const dock = page.locator(".terminal-dock");
+      await dock
+        .getByRole("button", { name: "Show terminals", exact: true })
+        .click();
+      await dock
+        .getByRole("button", { name: /Release logs Your terminal/ })
+        .click();
+      await dock.getByText("Session ended", { exact: true }).waitFor();
+      await capture("terminal-output");
+      await dock
+        .getByRole("button", { name: "Hide terminals", exact: true })
+        .click();
+    } else {
+      assert.equal(
+        await page.locator(".terminal-dock").count(),
+        0,
+        "The current phone UI exposes background commands, not the desktop shell dock",
+      );
+    }
     let sent;
     await page.route("**/api/messages", (route) => {
       sent = route.request().postDataJSON();

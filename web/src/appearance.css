@@ -309,12 +309,21 @@
   .simple-workspace-header #team-toggle {
     width: 44px;
   }
+  .workspace-header.simple-workspace-header:has(#back-lead) {
+    height: auto;
+    min-height: 100px;
+  }
   .chat-settings-panel .agent-mode-control {
     margin: 0;
   }
   .chat-settings-panel .agent-mode-switch {
     font-size: 13px;
     padding-inline: 10px;
+  }
+  /* Safari keeps layout media queries tall while the keyboard reduces visibility. */
+  html[data-mobile-keyboard="true"] #message {
+    max-height: 80px !important;
+    overflow-y: auto !important;
   }
   .chat-settings-panel :is(.mantine-Button-label, .account-picker-label) {
     min-width: 0;
