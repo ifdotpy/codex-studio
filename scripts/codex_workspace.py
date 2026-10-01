@@ -331,7 +331,10 @@ class WorkspaceMixin:
                     return project
                 if revision != current:
                     raise ValueError("Project account changed. Reload it before saving")
-                if self.accounts.get(desired).get("disconnected"):
+                selected_account = self.accounts.get(desired)
+                if selected_account.get("deleted"):
+                    raise ValueError("This account was deleted. Select another account")
+                if selected_account.get("disconnected"):
                     raise ValueError("Reconnect this account before selecting it")
             else:
                 current = 0
@@ -1071,7 +1074,10 @@ class WorkspaceMixin:
                         a["workspaceOperation"] = None
                         self.put(db, "agents", a)
                 return prior
-            if self.accounts.get(a.get("accountKey", "default")).get("disconnected"):
+            current_account = self.accounts.get(a.get("accountKey", "default"))
+            if current_account.get("deleted"):
+                raise ValueError("This account was deleted. Select another account before creating a branch")
+            if current_account.get("disconnected"):
                 raise ValueError("Reconnect this account before creating a branch")
             operation = self._workspace_operation(db, operation_id)
             resume_local = False

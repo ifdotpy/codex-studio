@@ -58,6 +58,39 @@ class DisconnectContract(unittest.TestCase):
         self.assertTrue(self.store.get(key)['disconnected'])
         self.assertEqual(self.store.get(key)['accountId'], 'account-two')
 
+
+class DeleteContract(unittest.TestCase):
+    setUp = module.AccountsContract.setUp
+    tearDown = module.AccountsContract.tearDown
+
+    def test_delete_tombstone_hides_choice_but_preserves_credentials_and_chat_identity(self):
+        profile = self.home / 'Projects' / 'sample' / '.codex'
+        module.auth(profile, 'account-two')
+        key = self.store.register(str(profile))
+        credential = (profile / 'auth.json').read_bytes()
+        self.store.discover()
+        self.store.delete(key)
+        self.store.delete(key)
+        restored = module.AccountStore(self.root / 'state')
+        restored.discover()
+        self.assertNotIn(key, [account['id'] for account in restored.list()])
+        self.assertTrue(restored.get(key)['deleted'])
+        self.assertEqual(restored.home(key), profile.resolve())
+        self.assertEqual((profile / 'auth.json').read_bytes(), credential)
+        with self.assertRaises(ValueError):
+            restored.default(key)
+
+    def test_deleting_default_requires_and_selects_a_connected_replacement(self):
+        with self.assertRaises(ValueError):
+            self.store.delete('default')
+        self.assertFalse(self.store.get('default').get('deleted', False))
+        profile = self.home / 'other'
+        module.auth(profile, 'account-two')
+        key = self.store.register(str(profile))
+        self.store.delete('default')
+        self.assertEqual(self.store.default(), key)
+        self.assertTrue(self.store.get('default')['deleted'])
+
 project_spec = importlib.util.spec_from_file_location('project_links', Path(__file__).with_name('project-account-links-contract.py'))
 project_fixture = importlib.util.module_from_spec(project_spec)
 project_spec.loader.exec_module(project_fixture)
@@ -115,7 +148,7 @@ class TransferDisconnectContract(transfer_fixture.TransferContract):
 
 if __name__ == '__main__':
     suite = unittest.TestSuite()
-    for case in (DisconnectContract, ProjectDisconnectContract):
+    for case in (DisconnectContract, DeleteContract, ProjectDisconnectContract):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
     for name in ('test_new_transfer_rejects_disconnected_destination', 'test_transfer_replay_and_pending_operation_keep_original_identity'):
         suite.addTest(TransferDisconnectContract(name))

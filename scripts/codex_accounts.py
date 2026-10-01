@@ -190,7 +190,8 @@ class AccountStore:
     def list(self):
         with self.lock:
             return [self.get(key) for key, row in self.data["accounts"].items()
-                    if not key.startswith("login-") or row.get("status") == "ready"]
+                    if (not key.startswith("login-") or row.get("status") == "ready")
+                    and not row.get("deleted")]
 
     def snapshot(self):
         if not self.discovered:
@@ -199,16 +200,19 @@ class AccountStore:
             logins = self.login_receipts()
             return {
                 "accounts": self.list(),
+                "archivedAccounts": [self.get(key) for key, row in self.data["accounts"].items()
+                                     if row.get("deleted")],
                 "defaultAccountKey": self.data["defaultAccountKey"],
                 "logins": logins,
                 "supportsDisconnect": True,
+                "supportsDelete": True,
             }
 
     def default(self, key=None):
         with self.lock:
             if key is not None:
                 row = self.get(key)
-                if row["status"] != "ready" or row.get("disconnected"):
+                if row["status"] != "ready" or row.get("disconnected") or row.get("deleted"):
                     raise ValueError("Sign in to this account first")
                 self.data["defaultAccountKey"] = key
                 self._save()
@@ -224,12 +228,31 @@ class AccountStore:
                 replacement = next((other for other in self.data["accounts"]
                                     if other != key
                                     and not self.data["accounts"][other].get("disconnected")
+                                    and not self.data["accounts"][other].get("deleted")
                                     and not self.data["accounts"][other].get("duplicateOf")
                                     and self.get(other).get("status") == "ready"), None)
                 if replacement is None:
                     raise ValueError("Connect another account before disconnecting the application default.")
                 self.data["defaultAccountKey"] = replacement
             row["disconnected"] = True
+            self._save()
+            return self.snapshot()
+
+    def delete(self, key):
+        """Hide an account from new choices while retaining its native identity for old chats."""
+        with self.lock:
+            row = self._row(key)
+            if row.get("deleted"):
+                return self.snapshot()
+            if self.data["defaultAccountKey"] == key:
+                replacement = next((other for other, value in self.data["accounts"].items()
+                                    if other != key and not value.get("deleted")
+                                    and not value.get("disconnected") and not value.get("duplicateOf")
+                                    and self.get(other).get("status") == "ready"), None)
+                if replacement is None:
+                    raise ValueError("Add another connected account before deleting the application default.")
+                self.data["defaultAccountKey"] = replacement
+            row["deleted"] = True
             self._save()
             return self.snapshot()
 

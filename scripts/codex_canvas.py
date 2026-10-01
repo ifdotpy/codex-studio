@@ -971,6 +971,8 @@ def make_server(canvas, port=0, public_origin=None):
                     if self.path == "/api/accounts/disconnect":
                         runtime.accounts.disconnect(body.get("account_key"))
                         return self.send(runtime.accounts.snapshot())
+                    if self.path == "/api/accounts/delete":
+                        return self.send(runtime.accounts.delete(body.get("account_key")))
                     if self.path == "/api/accounts/reconnect":
                         runtime.accounts.reconnect(body.get("account_key"))
                         return self.send(runtime.accounts.snapshot())

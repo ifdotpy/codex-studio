@@ -156,7 +156,10 @@ class AccountTransfers:
                 if old['targetAccountKey'] == target:
                     return self.get(db, old['id'])
                 raise ValueError('Finish or cancel the current transfer first')
-            if rt.accounts.get(target).get("disconnected"):
+            target_account = rt.accounts.get(target)
+            if target_account.get("deleted"):
+                raise ValueError("This account was deleted. Select another destination")
+            if target_account.get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
             # Account migration moves the orchestrator only. Subagents keep
             # their source account and continue under their existing context.

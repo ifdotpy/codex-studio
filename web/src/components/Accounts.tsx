@@ -35,9 +35,11 @@ export interface Account {
 }
 export interface AccountsState {
   accounts: Account[];
+  archivedAccounts?: Account[];
   defaultAccountKey: string;
   logins?: LoginReceipt[];
   supportsDisconnect?: boolean;
+  supportsDelete?: boolean;
 }
 export function useAccounts(stateDir?: string) {
   const [data, setData] = useState<AccountsState>({
@@ -292,12 +294,14 @@ export default function Accounts({
   onError,
   projectAccountKeys,
   onModalOpenChange,
+  showManagerButton = false,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
   accountKey: string;
   projectAccountKeys?: string[];
   onModalOpenChange?: (opened: boolean) => void;
+  showManagerButton?: boolean;
   changeAccount: (key: string) => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -317,15 +321,22 @@ export default function Accounts({
   const [disconnectChoice, setDisconnectChoice] = useState<Account | null>(
     null,
   );
+  const [deleteChoice, setDeleteChoice] = useState<Account | null>(null);
   const actionLock = useRef(false);
   const childModalOpen =
-    opened || !!transferChoice || !!disconnectChoice || !!claudeLogin;
+    opened ||
+    !!transferChoice ||
+    !!disconnectChoice ||
+    !!deleteChoice ||
+    !!claudeLogin;
   useEffect(() => {
     onModalOpenChange?.(childModalOpen);
     return () => onModalOpenChange?.(false);
   }, [childModalOpen, onModalOpenChange]);
   const accounts = state.data.accounts || [];
-  const selected = accounts.find((a) => a.id === accountKey);
+  const selected =
+    accounts.find((a) => a.id === accountKey) ||
+    state.data.archivedAccounts?.find((a) => a.id === accountKey);
   const pinned =
     !!agent &&
     (!agent.isLead || !agent.empty || !!agent.threadId || !!agent.inFlight);
@@ -344,6 +355,13 @@ export default function Accounts({
   );
   const disconnectsDefault =
     disconnectChoice?.id === state.data.defaultAccountKey;
+  const deletesDefault = deleteChoice?.id === state.data.defaultAccountKey;
+  const deleteReplacement = accounts.find(
+    (account) =>
+      account.id !== deleteChoice?.id &&
+      !account.disconnected &&
+      account.status === "ready",
+  );
   const action = async (key: string, run: () => Promise<unknown>) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -365,6 +383,18 @@ export default function Accounts({
   }, [opened, state.refresh]);
   return (
     <>
+      {showManagerButton && (
+        <Button
+          variant="default"
+          leftSection={<UserRound size={14} />}
+          onClick={() => {
+            setAdding(false);
+            setOpened(true);
+          }}
+        >
+          Manage accounts
+        </Button>
+      )}
       {claudeLogin && (
         <ClaudeSignIn
           key={claudeLogin.id}
@@ -637,6 +667,16 @@ export default function Accounts({
                         : "Disconnect account"}
                     </Button>
                   )}
+                  {state.data.supportsDelete && (
+                    <Button
+                      variant="subtle"
+                      size="compact-xs"
+                      disabled={!!pending}
+                      onClick={() => setDeleteChoice(account)}
+                    >
+                      Delete account
+                    </Button>
+                  )}
                 </section>
               ))}
             </div>
@@ -771,6 +811,58 @@ export default function Accounts({
           }
         >
           Disconnect account
+        </Button>
+        {error && <p role="alert">{error}</p>}
+      </Modal>
+      <Modal
+        opened={!!deleteChoice}
+        onClose={() => {
+          if (!pending) setDeleteChoice(null);
+        }}
+        title="Delete account"
+        closeOnClickOutside={!pending}
+        closeOnEscape={!pending}
+        withCloseButton={!pending}
+      >
+        <p>
+          Delete <strong>{deleteChoice?.email || deleteChoice?.label}</strong>{" "}
+          from this account list?
+        </p>
+        <p>
+          New chats and account choices will no longer use it. Existing chats
+          and active work keep their account identity. Native credentials and
+          saved history are preserved.
+        </p>
+        {deletesDefault && (
+          <p>
+            {deleteReplacement
+              ? `The application default changes to ${deleteReplacement.email || deleteReplacement.label}.`
+              : "Add another connected account before deleting the application default."}
+          </p>
+        )}
+        <Button
+          variant="default"
+          disabled={!!pending}
+          onClick={() => setDeleteChoice(null)}
+        >
+          Cancel
+        </Button>
+        <Button
+          color="red"
+          loading={pending === "delete"}
+          disabled={!!pending || (deletesDefault && !deleteReplacement)}
+          onClick={() =>
+            void action("delete", async () => {
+              state.setData(
+                await api<AccountsState>("/api/accounts/delete", {
+                  account_key: deleteChoice?.id,
+                }),
+              );
+              setDeleteChoice(null);
+            })
+          }
+        >
+          Delete account
         </Button>
         {error && <p role="alert">{error}</p>}
       </Modal>

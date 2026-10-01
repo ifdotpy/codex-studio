@@ -7,7 +7,7 @@ def account_order(runtime, parent_account):
     rows = {row['id']: row for row in runtime.accounts.list()}
     preferred = [parent_account, runtime.accounts.default(), *rows]
     return list(dict.fromkeys(key for key in preferred if key in rows and
-                not rows[key].get('disconnected') and not rows[key].get('duplicateOf') and
+                not rows[key].get('disconnected') and not rows[key].get('deleted') and not rows[key].get('duplicateOf') and
                 (key == parent_account or rows[key].get('status') == 'ready')))
 
 
@@ -35,7 +35,7 @@ def resolve(runtime, parent, data, *, catalogs=None):
         if not isinstance(explicit, str) or not explicit:
             raise ValueError('Select an available worker account')
         row = runtime.accounts.get(explicit)
-        if row.get('disconnected') or (explicit != parent_account and row.get('status') != 'ready'):
+        if row.get('disconnected') or row.get('deleted') or (explicit != parent_account and row.get('status') != 'ready'):
             raise ValueError('Sign in to the worker account before creating a worker')
         candidates = [explicit]
     else:
@@ -85,7 +85,7 @@ def selected_account(runtime, value):
     if not isinstance(key, str) or not key:
         raise ValueError('Select an available subagent account')
     account = runtime.accounts.get(key)
-    if account.get('disconnected') or account.get('status') != 'ready':
+    if account.get('disconnected') or account.get('deleted') or account.get('status') != 'ready':
         raise ValueError('Sign in to the subagent account before selecting it')
     return key
 

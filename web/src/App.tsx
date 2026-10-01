@@ -1842,6 +1842,7 @@ export default function App() {
                   account on the current chat.
                 </p>
                 <Accounts
+                  showManagerButton
                   onModalOpenChange={setAccountModalOpen}
                   state={accounts}
                   accountKey={accounts.data.defaultAccountKey}

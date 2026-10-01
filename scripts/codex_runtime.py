@@ -1284,6 +1284,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 assert_delegation(root)
             account_key = catalog_account
             account = self.accounts.get(account_key)
+            if account.get("deleted"):
+                raise ValueError("This account was deleted. Select another account for new chats")
             if account.get("disconnected"):
                 raise ValueError("Reconnect this account before creating a chat")
             if p and account_key != p.get("accountKey", "default") and account.get("status") != "ready":
@@ -1463,7 +1465,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 account_key = data["account_key"] if "account_key" in data else self.project_account(cwd, db=db)
                 if catalog_account is not None and account_key != catalog_account:
                     raise ValueError("The account changed. Select the model again")
-                if self.accounts.get(account_key).get("disconnected"):
+                selected_account = self.accounts.get(account_key)
+                if selected_account.get("deleted"):
+                    raise ValueError("This account was deleted. Select another account for new chats")
+                if selected_account.get("disconnected"):
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
                 project_folder = folder_for(self, db, cwd, data.get('project_folder'))
@@ -1521,7 +1526,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 directory = str(Path(cwd).expanduser().resolve())
             if a.get("accountKey", "default") == account_key and directory == a["cwd"]:
                 return a
-            if self.accounts.get(account_key).get("disconnected"):
+            selected_account = self.accounts.get(account_key)
+            if selected_account.get("deleted"):
+                raise ValueError("This account was deleted. Select another account")
+            if selected_account.get("disconnected"):
                 raise ValueError("Reconnect this account before selecting it")
             if not self.empty_lead(db, a) or a.get("inFlight"):
                 raise ValueError("The account is fixed after the first message. Create a new chat")

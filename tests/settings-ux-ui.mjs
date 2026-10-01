@@ -42,16 +42,20 @@ try {
     },
     { id: "signedout", label: "Signed out", status: "signedOut" },
   ];
+  const archivedAccounts = [];
   let defaultAccountKey = "default";
   const state = () => ({
     accounts,
+    archivedAccounts,
     defaultAccountKey,
     supportsDisconnect: true,
+    supportsDelete: true,
     logins: [],
   });
   let transferCalls = 0,
     defaultAccountCalls = 0,
     disconnectCalls = 0,
+    deleteCalls = 0,
     analyticsCalls = 0;
   let holdLimits = true;
   const held = [];
@@ -85,6 +89,20 @@ try {
     delete accounts.find(
       (account) => account.id === route.request().postDataJSON().account_key,
     ).disconnected;
+    await route.fulfill({ json: state() });
+  });
+  await page.route("**/api/accounts/delete", async (route) => {
+    deleteCalls++;
+    if (deleteCalls === 1) {
+      await route.fulfill({ status: 500, json: { error: "Delete failed" } });
+      return;
+    }
+    const key = route.request().postDataJSON().account_key;
+    const [deleted] = accounts.splice(
+      accounts.findIndex((account) => account.id === key),
+      1,
+    );
+    archivedAccounts.push({ ...deleted, deleted: true });
     await route.fulfill({ json: state() });
   });
   await page.route("**/api/agents/account-transfer", async (route) => {
@@ -277,6 +295,32 @@ try {
   );
   assert.equal(defaultAccountCalls, 1);
   assert.equal(defaultAccountKey, "work");
+  await studioSettings.getByRole("button", { name: "Manage accounts" }).click();
+  const studioManager = page.getByRole("dialog", {
+    name: "Accounts",
+    exact: true,
+  });
+  await studioManager.waitFor();
+  const personal = studioManager.locator('[data-account="default"]');
+  await personal
+    .getByRole("button", { name: "Delete account", exact: true })
+    .click();
+  const deletion = page.getByRole("dialog", {
+    name: "Delete account",
+    exact: true,
+  });
+  await deletion
+    .getByRole("button", { name: "Delete account", exact: true })
+    .click();
+  await deletion.getByRole("alert").waitFor();
+  assert.equal(deleteCalls, 1, "failed deletion remains visible and retryable");
+  await deletion
+    .getByRole("button", { name: "Delete account", exact: true })
+    .click();
+  await personal.waitFor({ state: "detached" });
+  assert.equal(deleteCalls, 2);
+  await page.keyboard.press("Escape");
+  await studioManager.waitFor({ state: "hidden" });
   assert.equal(
     transferCalls,
     transfersBeforeDefaultChange,
