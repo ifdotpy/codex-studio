@@ -10,6 +10,21 @@ export function readRetryKey(tab, url) {
   ].join("\u0000");
 }
 
+export function isRetryableSnapshotDeferred(status, method, url, detail) {
+  if (status !== 503 || method !== "GET") return false;
+  if (new URL(url).pathname !== "/api/sync/pull") return false;
+  let body;
+  try {
+    body = typeof detail === "string" ? JSON.parse(detail) : detail;
+  } catch {
+    return false;
+  }
+  return (
+    body?.error ===
+    "Runtime snapshot is temporarily unavailable; retry shortly."
+  );
+}
+
 export function isExpectedSyntheticUnavailable(status, url, detail) {
   if (status !== 400) return false;
   const parsed = new URL(url);
@@ -43,35 +58,34 @@ export class HttpOutcomeTracker {
         const key = readRetryKey(tab, url);
         const pending = key && this.#pendingReads.get(key);
         if (pending?.length) {
-          const prior = pending.shift();
-          prior.recoveredAtEpochMs = atEpochMs;
-          prior.recoveryLatencyMs = atEpochMs - prior.atEpochMs;
-          prior.recoveredByStatus = status;
-          if (!pending.length) this.#pendingReads.delete(key);
+          for (const prior of pending) {
+            prior.recoveredAtEpochMs = atEpochMs;
+            prior.recoveryLatencyMs = atEpochMs - prior.atEpochMs;
+            prior.recoveredByStatus = status;
+          }
+          this.#pendingReads.delete(key);
         }
       }
       return;
     }
 
-    if (status === 503 && method === "GET") {
+    if (isRetryableSnapshotDeferred(status, method, url, detail)) {
       const key = readRetryKey(tab, url);
-      if (key) {
-        const attempt = {
-          tab,
-          url,
-          method,
-          scope: new URL(url).searchParams.get("scope") || "state",
-          atEpochMs,
-          recoveredAtEpochMs: null,
-          recoveryLatencyMs: null,
-          recoveredByStatus: null,
-        };
-        const pending = this.#pendingReads.get(key) || [];
-        pending.push(attempt);
-        this.#pendingReads.set(key, pending);
-        this.retryableSnapshotDeferred.push(attempt);
-        return;
-      }
+      const attempt = {
+        tab,
+        url,
+        method,
+        scope: new URL(url).searchParams.get("scope") || "state",
+        atEpochMs,
+        recoveredAtEpochMs: null,
+        recoveryLatencyMs: null,
+        recoveredByStatus: null,
+      };
+      const pending = this.#pendingReads.get(key) || [];
+      pending.push(attempt);
+      this.#pendingReads.set(key, pending);
+      this.retryableSnapshotDeferred.push(attempt);
+      return;
     }
 
     if (isExpectedSyntheticUnavailable(status, url, detail)) {
