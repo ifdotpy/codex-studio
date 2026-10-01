@@ -44,11 +44,13 @@ def verify_registered_worktree(repo, directory, project_directory, branch, head)
         raise ValueError('Worker worktree registration is missing; inspect the existing directory')
 
 
-def create_worker_worktree(repo, directory, project_directory, branch, *, run=subprocess.run,
-                           sleep=time.sleep):
+def create_worker_worktree(repo, directory, project_directory, branch, *, base_commit=None,
+                           run=subprocess.run, sleep=time.sleep):
     """Retry timeouts only when the exact reserved worktree is safe to retry or adopt."""
     repo, directory, project_directory = map(Path, (repo, directory, project_directory))
-    head = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], timeout=30).decode().strip()
+    head = base_commit or subprocess.check_output(
+        ['git', '-C', str(repo), 'rev-parse', 'HEAD'], timeout=30
+    ).decode().strip()
     for attempt, timeout in enumerate((60, 180, 300)):
         if _verified_checkout(repo, directory, project_directory, branch, head):
             return True

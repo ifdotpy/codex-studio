@@ -514,7 +514,11 @@ Lowering a limit does not interrupt existing turns.
 `orchestration_spawn` accepts `cwd`, absolute or relative to the lead's folder. The default
 is the lead's folder. An implementer receives a separate Git worktree of the repository that
 contains `cwd`: `.worktrees/codex-agents/<agent-id>`, on branch `codex-agent/<agent-id>`.
-It starts from committed HEAD. Parent changes that are not committed are absent.
+An agent can set `base_ref` to a branch, tag, or commit. Otherwise Studio uses the closest
+project's **Default worker base ref**, then the repository HEAD. Studio resolves and records
+the commit when it creates the worker. Retries use the same saved commit. The result and the
+worker's first input report the commit and its distance behind main when it is behind.
+Parent changes that are not committed are absent unless their commit is selected.
 Outside a Git repository the implementer works directly in `cwd`, and Studio shows a warning.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
 Reviewers use the chosen folder. They have a read-only sandbox when YOLO is off.

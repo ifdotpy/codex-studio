@@ -4,6 +4,8 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -66,6 +68,32 @@ class SpawnRequestRecovery(unittest.TestCase):
         self.assertIn('different content', self.response('changed')['contentItems'][0]['text'])
         self.assertEqual(len(self.children()), 2)
         self.assertEqual(self.request()['result'], original)
+
+    def test_replayed_spawn_keeps_the_original_resolved_base_commit(self):
+        repo = Path(self.tmp.name) / 'base-repo'
+        repo.mkdir()
+        def git(*args):
+            return subprocess.run(['git', '-C', str(repo), *args], check=True,
+                                  capture_output=True, text=True, timeout=30).stdout.strip()
+        git('init', '-q', '-b', 'main')
+        git('config', 'user.name', 'Fixture')
+        git('config', 'user.email', 'fixture@example.test')
+        (repo / 'tracked.txt').write_text('first\n')
+        git('add', 'tracked.txt'); git('commit', '-qm', 'first')
+        first = git('rev-parse', 'HEAD')
+        args = {'request_id': 'batch-1', 'agents': [
+            {'name': 'based worker', 'prompt': 'Inspect', 'cwd': str(repo)}]}
+        self.runtime.dynamic(self.message('based-1', args=args))
+        original = self.response('based-1')
+        self.assertTrue(original['success'], original)
+        self.assertEqual(self.value(original)['agents'][0]['baseCommit'], first)
+        (repo / 'tracked.txt').write_text('second\n')
+        git('add', 'tracked.txt'); git('commit', '-qm', 'second')
+        self.actor = self.agent_update(self.actor, turnId='lead-turn-2')
+        self.runtime.dynamic(self.message('based-2', args=args))
+        self.assertEqual(self.response('based-2'), original)
+        worker = next(a for a in self.children() if a['name'] == 'based worker')
+        self.assertEqual(worker['workerBaseCommit'], first)
 
     def test_batch_write_failure_rolls_back_children_initial_events_and_receipt(self):
         original_put = self.runtime.put

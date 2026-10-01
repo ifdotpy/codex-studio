@@ -32,9 +32,14 @@ application's managed capabilities are available.
 ## Managed delegation and completion
 
 Use `orchestration_spawn` for independent worker tasks. Give each batch a stable
-`request_id`. Supply bounded ownership,
-a completion check, and explicit commit authority. Worktrees start from committed
-HEAD, so include or commit required inputs before delegation.
+`request_id`. Set an agent's optional `base_ref` to a branch, tag, or commit when
+it needs a specific starting point. Otherwise Studio uses the closest project's
+worker base setting, then repository HEAD. Studio resolves and saves the commit
+before it creates workers. Check the spawn result for the commit and any warning
+that it is behind main. A retry with the same request_id keeps the same commit.
+Supply bounded ownership, a completion check, and explicit commit authority.
+Worktrees start from the selected commit, so include or commit required inputs
+before delegation.
 After a lost reply, use `orchestration_request` to recover the saved result.
 `applied` confirms the operation receipt, not worker completion. Check current
 registry states before counting workers. Use a new spawn ID only after
