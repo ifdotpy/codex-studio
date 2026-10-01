@@ -317,7 +317,7 @@ class EfficiencyContract(unittest.TestCase):
         params = self.runtime.new_thread_params(self.runtime.agent(lead['id']))
         self.assertNotIn('[Studio panel guidance:', params['developerInstructions'])
         self.assertIn(str(self.runtime.progress_file(lead)), params['developerInstructions'])
-        self.assertIn('150px', self.runtime.model_context(lead['id'], {'topic': 'panel'})['content'])
+        self.assertIn('clipped', self.runtime.model_context(lead['id'], {'topic': 'panel'})['content'])
 
     def test_context_uses_delivery_order_when_urgent_events_overtake_progress(self):
         lead = self.lead(); worker = self.worker(lead)

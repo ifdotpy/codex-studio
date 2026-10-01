@@ -34,33 +34,37 @@ provide interactive previews or hidden sections. Links can open a complete file.
 Relative links use the progress file directory. Use absolute paths for project files.
 
 Read the current file before an edit. Update it when the facts change.
-Studio reads the file while the chat is visible. The panel has no scrollbar.
-Its maximum height is 150px, with less space in a small window.
+Studio reads the file while the chat is visible. Put the current status first.
+The collapsed budget uses 28% of viewport height, between 100px and 280px.
+Longer content stays visible with clipping and a fade. The Expand control opens
+a scroll area bounded by half the viewport. Collapse restores the top preview.
+The PROGRESS.md link opens the complete original file.
+
 Studio measures the complete rendered revision at the current width and font.
-If it does not fit, Studio shows a short notice with access to the original file.
-It does not cut text, shrink the font, or show old content as current.
-
-Studio writes measurements to `PROGRESS.layout.json` beside `PROGRESS.md`.
-Read this feedback file. Do not edit it. Each report contains the renderer,
-required and available pixel dimensions, file revision and measurement time.
+It writes measurements to `PROGRESS.layout.json` beside `PROGRESS.md`.
+Read this feedback file. Do not edit it. Reports contain the renderer,
+required and available pixel dimensions, overflow pixels, total and fully visible
+top-level lines or list items, the last visible line and heading, the revision,
+and measurement time. A paragraph or heading counts as one top-level line.
+Wrapped lines count only when the complete paragraph or item is visible.
 The top-level SHA-256 identifies the file content. Reports from separate clients
-remain separate. A wide desktop success cannot erase a recent narrow-client failure.
+remain separate. A desktop report cannot erase a recent phone report.
 Reports expire after 90 seconds. A previous revision does not validate a new edit.
+Expansion does not change the report of the collapsed preview.
 
-After an edit, run the check command in your runtime instructions. It reads the
-feedback file and can wait up to three seconds for a visible client.
-Shorten or simplify the status until the check succeeds for the current revision.
-Use the measured dimensions. Do not estimate fit from line or character counts.
-The command returns:
+After an edit, run the check command in your runtime instructions once.
+It reads the feedback file and can wait up to three seconds for a visible client.
+Its hint describes the client with the fewest fully visible lines or items.
+Overflow is allowed. Trim only when important lines are hidden.
+Do not repeat rewrites just to remove overflow. The command returns:
 
-- Exit 0: the current revision fits recent visible clients, or the file is empty.
-- Exit 1: a current client reports overflow, unsupported content, or a file-read error.
+- Exit 0: the current revision is visible, including clipped content, or the file is empty.
+- Exit 1: a current client reports unsupported content, or a file-read error occurs.
 - Exit 2: the current revision has no recent measurement.
 
-If no client is visible, leave a short status and treat fit as unmeasured.
+Older clients that hide overflow still report failure until they update.
+If no client is visible, leave a short status and treat the layout as unmeasured.
 Do not start a browser, wake another agent, or repeat checks indefinitely.
-A later narrower window or a larger font can require a shorter status.
-The interface checks that window again before showing the full revision.
 
 An empty or missing file clears the display. A read error, invalid UTF-8, or an
 oversized file shows an error. The source stays unchanged. Studio accepts an atomic

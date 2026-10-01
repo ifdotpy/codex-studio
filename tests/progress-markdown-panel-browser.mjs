@@ -315,19 +315,36 @@ try {
     "Long progress.\n\n" +
     Array.from({ length: 30 }, (_, i) => `- Step ${i}`).join("\n");
   await page.evaluate((value) => window.panelResponse(value), next(long));
-  await panel.getByText("Progress does not fit.", { exact: true }).waitFor();
-  assert.equal(await current.count(), 0);
+  await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
+  assert.equal(await current.count(), 1);
   const geometry = await panel.evaluate((el) => {
     const content = el.querySelector(".agent-panel-content");
     return {
       height: el.getBoundingClientRect().height,
-      scroll: content.scrollHeight > content.clientHeight,
+      clipped: content.scrollHeight > content.clientHeight,
       overflow: getComputedStyle(content).overflowY,
+      fade: getComputedStyle(content).maskImage,
     };
   });
-  assert.ok(geometry.height <= 150.5);
-  assert.equal(geometry.scroll, false);
-  assert.notEqual(geometry.overflow, "auto");
+  assert.ok(geometry.height <= 196.5);
+  assert.equal(geometry.clipped, true);
+  assert.equal(geometry.overflow, "clip");
+  assert.match(geometry.fade, /linear-gradient/);
+  await panel.getByRole("button", { name: "Expand", exact: true }).click();
+  assert.equal(await panel.getAttribute("data-expanded"), "yes");
+  assert.ok((await panel.boundingBox()).height <= 350.5);
+  await panel.locator(".agent-panel-content").evaluate((el) => {
+    if (getComputedStyle(el).overflowY !== "auto")
+      throw Error("Expand must scroll");
+    el.scrollTop = el.scrollHeight;
+    if (!el.scrollTop) throw Error("The full file must be accessible");
+  });
+  await panel.getByRole("button", { name: "Collapse", exact: true }).click();
+  assert.equal(await panel.getAttribute("data-expanded"), "no");
+  assert.equal(
+    await panel.locator(".agent-panel-content").evaluate((el) => el.scrollTop),
+    0,
+  );
   await page.evaluate(
     (value) => window.panelResponse(value),
     next(
@@ -364,7 +381,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    `PASS ${browserType.name()}: file polling, hide/resume, deadlines, scoped late replies, explicit read errors, empty/removal, rejected unsupported/overflow content, bounded height and unchanged composer/history`,
+    `PASS ${browserType.name()}: file polling, hide/resume, deadlines, scoped late replies, explicit read errors, empty/removal, unsupported rejection, clipped overflow and expansion, bounded height and unchanged composer/history`,
   );
 } finally {
   await browser?.close();

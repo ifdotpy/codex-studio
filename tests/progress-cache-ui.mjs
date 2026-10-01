@@ -327,12 +327,15 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await currentText().getByText(texts.update, { exact: true }).waitFor();
   assert.equal(await panel().getAttribute("data-fit"), "yes");
+  const phoneGeometry = await panel().evaluate((node) => ({
+    width: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+    height: node.getBoundingClientRect().height,
+  }));
   assert.ok(
-    await panel().evaluate(
-      (node) =>
-        node.scrollWidth <= node.clientWidth + 1 &&
-        node.getBoundingClientRect().height <= 151,
-    ),
+    phoneGeometry.scrollWidth <= phoneGeometry.width + 1 &&
+      phoneGeometry.height <= 237,
+    JSON.stringify(phoneGeometry),
   );
   assert.ok(
     await page.evaluate(
@@ -347,17 +350,49 @@ try {
   await release();
   await writeFile(
     files.get(lead.id),
-    Array.from({ length: 80 }, (_, index) => `Paragraph ${index}.`).join(
+    Array.from({ length: 80 }, (_, index) => `Lead paragraph ${index}.`).join(
       "\n\n",
     ),
   );
-  await panel().getByText("Progress does not fit.", { exact: true }).waitFor();
+  await panel().getByRole("button", { name: "Expand", exact: true }).waitFor();
   assert.equal(await panel().getAttribute("data-fit"), "no");
   assert.equal(
     await currentText().count(),
-    0,
-    "Cache cannot bypass the layout safety check",
+    1,
+    "Overflow remains visible with clipping",
   );
+  assert.ok((await panel().boundingBox()).height <= 237);
+  assert.ok((await page.locator("#messages").boundingBox()).height > 100);
+  assert.ok((await page.locator("#composer").boundingBox()).height > 80);
+  if (process.env.PROGRESS_SCREENSHOTS) {
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(150);
+      await page.screenshot({
+        path: `docs/verification/progress-fit/app-${process.env.PROGRESS_SCREENSHOTS}-${width}.png`,
+      });
+      await panel()
+        .getByRole("button", { name: "Expand", exact: true })
+        .click();
+      await page.screenshot({
+        path: `docs/verification/progress-fit/app-expanded-${width}.png`,
+      });
+      await panel()
+        .getByRole("button", { name: "Collapse", exact: true })
+        .click();
+    }
+  }
+  hold = true;
+  await page.reload();
+  await panel().locator(".agent-panel-saved").waitFor();
+  await context.setOffline(true);
+  assert.equal(await panel().getAttribute("data-clipped"), "yes");
+  assert.equal(await panel().getAttribute("data-cached"), "yes");
+  await panel().getByRole("button", { name: "Expand", exact: true }).click();
+  assert.equal(await panel().getAttribute("data-expanded"), "yes");
+  await panel().getByRole("button", { name: "Collapse", exact: true }).click();
+  await context.setOffline(false);
+  await release();
   await writeFile(files.get(lead.id), "");
   await panel().waitFor({ state: "hidden" });
   assert.deepEqual(
@@ -374,7 +409,7 @@ try {
     "A cached empty file cannot resurrect old progress",
   );
   console.log(
-    "PASS cached mobile content fits; oversized and empty revisions retain safety behavior",
+    "PASS cached mobile content fits; clipped overflow and empty revisions preserve the current content",
   );
   assert.deepEqual(
     await page.evaluate(() => window.progressFlashes || []),

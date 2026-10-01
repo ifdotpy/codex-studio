@@ -212,7 +212,8 @@ working directory. Do not substitute the project's own `PROGRESS.md`.
 
 Use plain UTF-8 Markdown for current status, verified results, and blockers.
 Keep the file at most 128 KiB. Studio displays it above the composer in an area
-with a maximum height of 150px. Longer content scrolls. An empty or missing file
+with a viewport-based height budget, up to 280px. Put the current status first.
+Longer content stays visible with clipping and a fade. Users can expand it and scroll. An empty or missing file
 clears the display. Update it when the facts change. No special panel tool,
 command output feed, or model wake is required.
 
