@@ -9,7 +9,8 @@ import time
 from transcript_storage.storage import STREAM_INDEX_DELAY_SECONDS, drain, index_item, initialize, persist
 
 FRAGMENT_INTERVAL_SECONDS = 0.1
-SCHEDULER_INTERVAL_SECONDS = 0.5
+# Keep in sync with Runtime.schedule's changed.wait(1) interval.
+SCHEDULER_INTERVAL_SECONDS = 1.0
 SCHEDULER_FRAGMENT_CADENCE = round(SCHEDULER_INTERVAL_SECONDS / FRAGMENT_INTERVAL_SECONDS)
 
 
