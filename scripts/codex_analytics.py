@@ -200,6 +200,41 @@ class _UsageTotals:
         return {field: sum(values) if values else None for field, values in self.deltas.items()}
 
 
+class _ContextBuckets:
+    def __init__(self, limit=500):
+        self.limit = limit
+        self.width = 3600
+        self.points = {}
+
+    @staticmethod
+    def percent(row):
+        last = number(row.get('last', {}).get('totalTokens'))
+        window = number(row.get('modelContextWindow'))
+        return last / window if last is not None and window else None
+
+    def add(self, row):
+        percent = self.percent(row)
+        at = number(row.get('at'))
+        if percent is None or at is None:
+            return
+        bucket = int(at // self.width)
+        previous = self.points.get(bucket)
+        if previous is None or percent > self.percent(previous):
+            self.points[bucket] = row
+        while len(self.points) > self.limit:
+            self.width *= 2
+            compacted = {}
+            for point in self.points.values():
+                key = int(point['at'] // self.width)
+                old = compacted.get(key)
+                if old is None or self.percent(point) > self.percent(old):
+                    compacted[key] = point
+            self.points = compacted
+
+    def rows(self):
+        return sorted(self.points.values(), key=lambda row: row['at'])
+
+
 class AnalyticsMixin:
     def analytics_init(self, db):
         db.executescript('''
@@ -685,6 +720,7 @@ class AnalyticsMixin:
                 'SELECT DISTINCT agent,thread,turn FROM analytics_usage WHERE '
                 + ' AND '.join(authoritative_where), authoritative_args)}
             usage_totals = _UsageTotals()
+            chart_buckets = _ContextBuckets()
             provisional_count = 0
             timeline = [] if export else deque(maxlen=500)
             provisional_rows = [] if export else deque(maxlen=100)
@@ -697,6 +733,7 @@ class AnalyticsMixin:
                     provisional_rows.append(row)
                     continue
                 usage_totals.add(row)
+                chart_buckets.add(row)
                 timeline.append(row)
                 usage_agents.add(row['agentId'])
                 if row.get('turnId'):
@@ -894,7 +931,8 @@ class AnalyticsMixin:
                                'approvalCounts': {status: sum(r.get('status') == status for r in approvals) for status in {r.get('status') for r in approvals}}},
                 'notifications': notifications, 'history': [r for r in history if not r.get('agent') and not r.get('agentId') or r.get('agent') in relevant_ids or r.get('agentId') in relevant_ids],
                 'rateLimits': [{'accountKey': r['account'], 'at': r['at'], 'data': json.loads(r['record'])} for r in limit_rows if r['account'] in account_keys and within(r['at'])],
-                'turns': turns, 'timeline': list(timeline), 'timelineTotal': usage_totals.count, 'provisionalUsage': list(provisional_rows),
+                'turns': turns, 'timeline': list(timeline), 'chartBuckets': chart_buckets.rows(),
+                'timelineTotal': usage_totals.count, 'provisionalUsage': list(provisional_rows),
                 'calls': calls_page,
                 'items': [{'type': kind, 'count': rows.count, 'bytes': nullable_sum([size(rows, 'input', 'bytes'), size(rows, 'output', 'bytes')]),
                            'chars': nullable_sum([size(rows, 'input', 'chars'), size(rows, 'output', 'chars')])} for kind, rows in item_groups.items()],

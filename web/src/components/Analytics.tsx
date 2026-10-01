@@ -93,9 +93,11 @@ function Raw({
 function ContextChart({
   timeline,
   compactions,
+  aggregate,
 }: {
   timeline: Json[];
   compactions: Json[];
+  aggregate: boolean;
 }) {
   const points = timeline
     .filter(
@@ -115,9 +117,10 @@ function ContextChart({
   const start = points[0].at,
     end = points.at(-1)!.at;
   const groups = new Map<string, Json[]>();
-  points.forEach((p) =>
-    groups.set(p.agentId, [...(groups.get(p.agentId) || []), p]),
-  );
+  points.forEach((p) => {
+    const id = aggregate ? "Selected agents" : p.agentId;
+    groups.set(id, [...(groups.get(id) || []), p]);
+  });
   const peak = Math.max(
     100,
     ...points.map((p) => (p.last.totalTokens / p.modelContextWindow) * 100),
@@ -186,7 +189,7 @@ function ContextChart({
         {[...groups].map(([id, group], i) => (
           <span key={id}>
             <i style={{ background: colors[i % colors.length] }} />
-            {group[0].agentName || id}
+          {aggregate ? id : group[0].agentName || id}
           </span>
         ))}
       </div>
@@ -703,14 +706,15 @@ export default function Analytics({
                 <section className="analytics-section">
                   <header>
                     <h3>Context over time</h3>
-                    <span>Last reported total / model window</span>
+                    <span>Peak report per time bucket / model window</span>
                   </header>
                   <ContextChart
-                    timeline={timeline}
+                    timeline={data.chartBuckets || timeline}
                     compactions={data.compactions || []}
+                    aggregate={scope !== "agent"}
                   />
                   <p className="analytics-note">
-                    One line per agent. Dotted lines mark compactions.
+                    Each point is the highest context report in its time bucket. Dotted lines mark compactions.
                   </p>
                 </section>
                 <section className="analytics-section">

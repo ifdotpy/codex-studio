@@ -47,6 +47,9 @@ with tempfile.TemporaryDirectory() as folder:
         assert result['summary']['usageSamples'] == COUNT
         assert result['timelineTotal'] == COUNT
         assert len(result['timeline']) == 500
+        assert 1 < len(result['chartBuckets']) <= 500
+        assert result['chartBuckets'][0]['at'] < 3600
+        assert result['chartBuckets'][-1]['at'] > COUNT - 3600
         peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         if sys.platform != 'darwin':
             peak *= 1024
