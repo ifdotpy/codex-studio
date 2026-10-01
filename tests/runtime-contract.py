@@ -127,6 +127,56 @@ class RuntimeContract(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.runtime = Runtime(self.root, FakeServer)
 
+    def test_budget_schema_is_ready_before_runtime_workers(self):
+        from unittest.mock import patch
+        from sync.sync_store import SyncStore
+        import uuid
+
+        thread_id = str(uuid.uuid4())
+        agent = self.runtime.create({'name': 'History import', 'cwd': str(self.root),
+                                     'prompt': 'fixture', 'threadId': thread_id}, defer=True)
+        agent.update(threadId=thread_id, turnId='history-turn', status='paused')
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, 'agents', agent)
+        profile = self.root / 'history-profile'
+        profile.mkdir()
+        rollout = profile / 'rollout.jsonl'
+        at = agent['created'] + 1
+        usage = {'input_tokens': 1, 'output_tokens': 2, 'total_tokens': 3}
+        rollout.write_text(''.join(json.dumps(record) + '\n' for record in (
+            {'type': 'session_meta', 'timestamp': at, 'payload': {'id': thread_id}},
+            {'type': 'token_usage_record', 'timestamp': at,
+             'payload': {'thread_id': thread_id, 'turn_id': 'history-turn',
+                         'response_id': 'history-response', 'usage': usage,
+                         'thread_token_usage': usage}},
+        )))
+
+        store = SyncStore(self.runtime.db, lambda: {}, lambda _agent: {})
+        store.generation_state()
+        with self.runtime.db() as db:
+            tables = {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            before = db.execute('PRAGMA schema_version').fetchone()[0]
+            triggers = {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger'"
+            )}
+        self.assertIn('runtime_budget', tables)
+        self.assertIn('runtime_budget_usage', tables)
+        self.assertTrue({'sync_watch_runtime_budget_INSERT', 'sync_watch_runtime_budget_usage_INSERT'} <= {
+            name for name in triggers
+        })
+        with patch.object(self.runtime.accounts, 'home', return_value=profile), \
+                patch.object(self.runtime, '_analytics_rollout_path', return_value=(rollout, None)):
+            self.assertTrue(self.runtime.analytics_history_step())
+        with self.runtime.db() as db:
+            after = db.execute('PRAGMA schema_version').fetchone()[0]
+            imported = db.execute('SELECT COUNT(*) FROM analytics_usage WHERE agent=?', (agent['id'],)).fetchone()[0]
+            charged = db.execute('SELECT COUNT(*) FROM runtime_budget_usage WHERE agent=?', (agent['id'],)).fetchone()[0]
+        self.assertEqual(after, before)
+        self.assertEqual(imported, 1)
+        self.assertEqual(charged, 1)
+
     def tearDown(self):
         self.runtime.close()
         self.tmp.cleanup()

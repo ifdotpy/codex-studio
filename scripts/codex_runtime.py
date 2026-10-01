@@ -871,6 +871,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     r["status"] = "expired"
                     self.put(db, "requests", r)
             self.analytics_init(db)
+            # Budget history import can run beside native notifications and
+            # browser sync. Create its tables before those workers start so
+            # first use cannot change the SQLite schema during a write.
+            from codex_budget import budget_init
+            budget_init(db)
             self.analytics_history_init(db)
             self.setup_work(db)
             self.setup_tool_requests(db)

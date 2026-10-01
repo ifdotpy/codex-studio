@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -290,7 +291,7 @@ def _import_history(runtime, agent_id: str, work_started: threading.Event, gate:
                 return
         report["error"] = "analytics import exceeded bounded step count"
     except Exception as error:  # surfaced by scenario runner
-        report["error"] = f"{type(error).__name__}: {error}"
+        report["error"] = f"{type(error).__name__}: {error}\n{traceback.format_exc()}"
         work_started.set()
     report["completedNs"] = time.monotonic_ns()
 
