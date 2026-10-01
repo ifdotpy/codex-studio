@@ -65,6 +65,8 @@ class PayloadContract(unittest.TestCase):
                 self.runtime.enqueue(db, actor, 'user', 'continue', 'changed-role')
                 self.assertIn('Changed role content', self.runtime.model_turn_context(db, actor, 'changed-role'))
                 db.execute("UPDATE runtime_events SET status='delivered' WHERE id='changed-role'")
+                from codex_efficiency import remember_context_manifest
+                remember_context_manifest(db, actor['id'], 'changed-role')
                 self.assertNotIn('Changed role content', self.runtime.model_turn_context(db, actor, 'after-role'))
 
     def test_mode_projection_requires_delivery_and_replay_keeps_same_result(self):
@@ -179,6 +181,12 @@ class PayloadContract(unittest.TestCase):
         preview = self.runtime.model_event_text([row])
         self.assertLess(len(preview.encode()), 3500)
         self.assertIn('event:' + row['id'], preview)
+        preview_value = json.loads(preview.split('\n', 1)[1])
+        result_file = Path(preview_value['resultFile'])
+        self.assertTrue(result_file.is_absolute())
+        self.assertIn(full, result_file.read_text())
+        repeated = json.loads(self.runtime.model_event_text([row]).split('\n', 1)[1])
+        self.assertEqual(repeated['resultFile'], preview_value['resultFile'])
         pieces, offset = [], 0
         while True:
             page = self.runtime.model_read(lead['id'], {'output_ref': 'event:' + row['id'], 'offset': offset})

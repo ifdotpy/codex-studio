@@ -9,6 +9,7 @@ import {
   nativeReleaseLabel,
   statusLabel,
   type Agent,
+  type Json,
 } from "../../types";
 import type { WorktreeDiskSnapshot } from "../../hooks/useWorktreeDisk";
 import ChatStatus from "./ChatStatus";
@@ -79,6 +80,7 @@ export default function WorkerCard({
   awaitingAnswer,
   deferred,
   open,
+  previewResult,
   indicator,
   remove,
 }: {
@@ -88,6 +90,7 @@ export default function WorkerCard({
   awaitingAnswer: boolean;
   deferred: boolean;
   open: () => void;
+  previewResult: () => void;
   remove?: () => void;
   indicator?: ChatIndicator;
 }) {
@@ -213,6 +216,20 @@ export default function WorkerCard({
       ) : agent.status === "completed" ? (
         <p className="worker-missing">No final report available</p>
       ) : null}
+      {overview?.resultFile && (
+        <Button
+          component="a"
+          href={overview.resultFile}
+          size="compact-xs"
+          variant="subtle"
+          onClick={(event) => {
+            event.preventDefault();
+            previewResult();
+          }}
+        >
+          Open submitted result
+        </Button>
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 ---
 name: codex-workspace
-description: Operate Codex Studio managed teams, monitors, agent chats, user messages, and progress files. Use when the session exposes Studio orchestration tools or the user asks to control Studio. Native Codex CLI sessions are outside this skill.
+description: Operate Codex Studio managed teams, monitors, agent chats, user messages, and the lead progress file. Use when the session exposes Studio orchestration tools or the user asks to control Studio. Native Codex CLI sessions are outside this skill.
 ---
 
 # Codex Studio workspace
@@ -86,7 +86,7 @@ calls and delivers an exit event. Read the exit code, status, and output before
 claiming success. Inspect an uncertain command result before attempting a rerun.
 Use `wake_on=failure` only when a successful exit needs no agent follow-up.
 Set `success_exit_codes` when a nonzero code means success, for example `[0, 1]` for `grep` or `diff`.
-Record verified status in your PROGRESS.md file. Do not poll through model calls to refresh its display.
+Leads record verified status in their PROGRESS.md file. Workers do not use this file.
 
 For an optional low-worker alert, the orchestrator saves an `orchestration_watch`
 with `kind=low_workers`, a stable `id`, and a `name`. Set `minimumWorkers` (default 8)
@@ -204,9 +204,12 @@ when the task needs them, under the native permission settings.
 The chat renders fenced Mermaid diagrams and isolated static HTML/CSS/SVG.
 Scripts and remote resources do not run in these previews.
 
-## Studio progress file
+## Lead progress file
 
-Read and edit your `PROGRESS.md` with ordinary file tools. Studio supplies the exact
+Only the lead has a Studio progress file and progress panel. Workers do not read,
+write, or check a PROGRESS.md file.
+
+Leads read and edit their `PROGRESS.md` with ordinary file tools. Studio supplies the exact
 path in your runtime instructions and through `orchestration_context topic=panel`.
 Each agent has a separate file outside the project, even when agents share a
 working directory. Do not substitute the project's own `PROGRESS.md`.

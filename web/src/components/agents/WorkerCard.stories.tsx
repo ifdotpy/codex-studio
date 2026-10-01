@@ -32,6 +32,7 @@ export const Working: Story = {
     awaitingAnswer: false,
     deferred: false,
     open: fn(),
+    previewResult: fn(),
   },
   play: async ({ canvasElement, args }) => {
     await userEvent.click(
@@ -48,6 +49,7 @@ export const SelectedNeedsAnswer: Story = {
     awaitingAnswer: true,
     deferred: false,
     open: fn(),
+    previewResult: fn(),
     remove: fn(),
   },
 };

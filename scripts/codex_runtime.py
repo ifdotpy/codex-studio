@@ -235,7 +235,6 @@ Scope and authority:
 Output:
 - Use fenced mermaid blocks for diagrams and fenced html blocks for static HTML/CSS previews. Scripts and remote resources do not run.
 - Plans and complaints arrive when they change and after compaction. orchestration_context returns the full current context.
-- Your PROGRESS.md rules follow below. orchestration_context topic=background explains script-driven panels.
 """
 
 
@@ -1656,10 +1655,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 record.get("lastCompletedTurn") and not record.get("turnId")
                 and not record.get("inFlight") and record.get("status") == "completed"
             ) else ""
+            result_file = self.latest_work_result_file(db, record['id'])
             view["overview"] = {
                 "task": task[:4000], "taskTruncated": len(task) > 4000,
                 "result": result[:4000], "resultTruncated": len(result) > 4000,
                 "resultTurnId": record.get("lastCompletedTurn") if result else None,
+                "resultFile": result_file,
             }
 
         return view
@@ -2893,7 +2894,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a.get("yoloMode") is False:
             sandbox = {"type": "readOnly"}
             if a["role"] != "reviewer":
-                progress = self.progress_file(a)
+                progress = self.progress_file(a) if a.get("isLead") else None
                 roots = [a["cwd"]] + ([str(progress.parent)] if progress else [])
                 sandbox = {"type": "workspaceWrite", "writableRoots": roots, "networkAccess": False}
             return {"approvalPolicy": "on-request", "sandboxPolicy": sandbox}
@@ -2926,17 +2927,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return None
 
     def new_thread_params(self, a):
-        from codex_progress import progress_context
-        progress = self.progress_file(a)
+        progress = self.progress_file(a) if a.get("isLead") else None
         role_text = self.role_guidance(a)
-        progress_text = progress_context(self.root, a["id"])
+        if a.get("isLead"):
+            from codex_progress import progress_context
+            progress_text = progress_context(self.root, a["id"])
+        else:
+            progress_text = ""
         params = {
             "cwd": a["cwd"],
             "config": THREAD_CONFIG.copy(),
             "serviceTier": "priority" if a.get("fastMode", False) else "default",
             "developerInstructions": INSTRUCTIONS
             + "\n" + role_text
-            + "\n" + progress_text
+            + ("\n" + progress_text if progress_text else "")
             + "\n"
             + a.get("profileInstructions", ""),
         }
@@ -6418,10 +6422,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a.get("lastCompletedTurn") and not a.get("turnId")
                     and not a.get("inFlight") and a.get("status") == "completed"
                 ) else ""
+                result_file = self.latest_work_result_file(db, a['id'])
                 a["overview"] = {
                     "task": task[:4000], "taskTruncated": len(task) > 4000,
                     "result": result[:4000], "resultTruncated": len(result) > 4000,
                     "resultTurnId": a.get("lastCompletedTurn") if result else None,
+                    "resultFile": result_file,
                 }
             for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
                 ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",

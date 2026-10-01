@@ -11,6 +11,7 @@ spec = importlib.util.spec_from_file_location('efficiency_fixture', Path(__file_
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_efficiency import EfficiencyMixin, packed, remember_context_manifest
+from codex_payloads import resolve_result, state_root
 
 
 class EfficiencyContract(unittest.TestCase):
@@ -196,10 +197,13 @@ class EfficiencyContract(unittest.TestCase):
         key = preview['outputRef']
         with self.runtime.db() as db:
             saved = json.loads(db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (key,)).fetchone()[0])
-        raw = '\n'.join(c['text'] for c in saved['contentItems'] if c['type'] == 'inputText')
+        raw_result = resolve_result(state_root(self.runtime), saved)
+        raw = '\n'.join(c['text'] for c in raw_result['contentItems'] if c['type'] == 'inputText')
         chunks, offset = [], 0
         while True:
             page = self.runtime.model_read(lead['id'], {'output_ref': key, 'offset': offset})
+            if not chunks:
+                self.assertEqual(len(page['text']), 30000)
             chunks.append(page['text'])
             if page['nextOffset'] is None:
                 break
@@ -212,6 +216,16 @@ class EfficiencyContract(unittest.TestCase):
             self.runtime.model_read(other['id'], {'output_ref': key})
         with self.assertRaises(ValueError):
             self.runtime.model_read(lead['id'], {'output_ref': key, 'offset': -1})
+
+    def test_read_pages_keep_thirty_thousand_characters_inline_once(self):
+        lead = self.lead()
+        page = {'outputRef': 'event:large', 'offset': 0, 'totalChars': 30000,
+                'nextOffset': None, 'text': 'x' * 30000}
+        result = {'success': True, 'contentItems': [{'type': 'inputText', 'text': packed(page)}]}
+        projected = self.runtime.model_tool_result(lead['id'], 'read-page', result)
+        self.assertEqual(projected, result)
+        self.assertEqual(len(projected['contentItems']), 1)
+        self.assertIn('x' * 30000, projected['contentItems'][0]['text'])
 
     def test_projection_retains_images_clocks_failure_and_spawn_ids(self):
         lead = self.lead()
