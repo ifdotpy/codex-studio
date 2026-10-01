@@ -115,3 +115,32 @@ preserve exact message identity and offline/reconnect behavior, avoid per-tab
 permanent streams, and pass the full 256-worker/eight-tab scenario. Its
 implementation and final load results remain pending. No live backend update
 is claimed.
+
+## Local-main integration checks
+
+The integration incorporates the existing local target `3920a87`, without the
+TanStack Query experiment. Merge `03702fe` preserves provider-version warnings
+in the pinned snapshot and its volatile invalidation signature. Both snapshot
+locks are acquired nonblocking to avoid inversion with native send/startup.
+Correction `9a287dd` gives team tools a separate committed roster read;
+`4a50afa` makes snapshot-observation tests tolerate only the documented transient
+read deferral. Independent review found no remaining issue in those changes.
+The 16 mobile-state checks, HTTP contract, frontend build, and 52 runtime
+contracts passed before the budget-schema addition.
+
+A subsequent small delivery run failed with SQLite's `database schema has
+changed` during analytics import. It did not reproduce in two later six-case
+runs. `32e3119` initializes budget tables before runtime workers and adds a real
+history-import regression that checks unchanged schema version and one budget
+charge. This removes a plausible late-DDL race; the original failure's exact
+cause remains unproven. Future benchmark failures include importer tracebacks.
+
+The six-case follow-up delivered and drained every expected message: 8, 64,
+and 256 messages for 1, 8, and 32 agents, with analytics both off and on. At 32
+agents, enqueue-to-client p95 was 1397.71 ms without analytics and 1471.34 ms
+with it, versus 1156.40 and 1091.73 ms in the original baseline. These are single
+runs with a one-second legacy SSE cadence and additional target changes; they
+do not establish an application speedup. Evidence:
+`message-delivery-analytics-fixed.json` in the external latency evidence folder.
+The required 256-worker/eight-tab workload remains the acceptance gate for the
+shared-stream change.
