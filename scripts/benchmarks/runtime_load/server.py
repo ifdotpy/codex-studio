@@ -544,6 +544,7 @@ def main():
     callback_count = 0
     callback_timing_totals = {"productionMs": 0.0, "wrapperMs": 0.0,
                               "productionMaxMs": 0.0, "wrapperMaxMs": 0.0}
+    callback_timing_by_method = {}
     callback_done = threading.Condition()
     progress_lock = threading.Lock()
     progress_phase = ["ready"]
@@ -645,6 +646,17 @@ def main():
                     callback_timing_totals["productionMs"] += production_ms
                     callback_timing_totals["productionMaxMs"] = max(
                         callback_timing_totals["productionMaxMs"], production_ms)
+                method_key = method if method in callback_timing_by_method or len(callback_timing_by_method) < 32 else "other"
+                method_timing = callback_timing_by_method.setdefault(
+                    method_key, {"count": 0, "productionMs": 0.0, "wrapperMs": 0.0,
+                                 "productionMaxMs": 0.0, "wrapperMaxMs": 0.0})
+                method_timing["count"] += 1
+                method_timing["wrapperMs"] += wrapper_ms
+                method_timing["wrapperMaxMs"] = max(method_timing["wrapperMaxMs"], wrapper_ms)
+                if production_ended is not None:
+                    method_timing["productionMs"] += production_ms
+                    method_timing["productionMaxMs"] = max(
+                        method_timing["productionMaxMs"], production_ms)
                 callback_done.notify_all()
 
     runtime.notification = measured_notification
@@ -750,6 +762,11 @@ def main():
                 callback_timings["productionMs"] / callback_count if callback_count else 0)
             callback_timings["meanWrapperMs"] = (
                 callback_timings["wrapperMs"] / callback_count if callback_count else 0)
+            callback_methods = {
+                name: {**values,
+                       "meanProductionMs": values["productionMs"] / values["count"],
+                       "meanWrapperMs": values["wrapperMs"] / values["count"]}
+                for name, values in callback_timing_by_method.items()}
         with lock:
             dispatched_count = len(dispatched)
             dispatched_categories = dict(category_dispatched)
@@ -766,6 +783,7 @@ def main():
             "offeredByCategory": offered, "completedCallbackSamples": callbacks["samples"],
             "callbackInvocations": callbacks["invocations"],
             "callbackTimingTotalsMs": callback_timings,
+            "callbackTimingByMethodMs": callback_methods,
             "dispatchedIdentities": dispatched_count,
             "dispatchedByCategory": dispatched_categories,
             "callbackQueues": [{"transport": index, "depth": appserver.callbacks.qsize(),
