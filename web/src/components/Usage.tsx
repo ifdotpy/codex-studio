@@ -140,8 +140,6 @@ export default function Usage({
   opened,
   onChange,
   limitsLoading,
-  compact = false,
-  menu = false,
 }: {
   agent: Agent;
   stateDir: string;
@@ -151,8 +149,6 @@ export default function Usage({
   opened?: boolean;
   onChange?: (opened: boolean) => void;
   limitsLoading?: boolean;
-  compact?: boolean;
-  menu?: boolean;
 }) {
   const [localOpened, setLocalOpened] = useState(false);
   const limitsOpened = opened ?? localOpened;
@@ -381,16 +377,9 @@ export default function Usage({
   const windows = selected?.windows.slice(0, 2) || [];
   const recovered = useRecoveredLimit(agent, limits, now);
   const recovery = recovered ? null : limitRecovery(agent, limits, now);
-  const usageClassName = [
-    "usage-footer",
-    compact ? "usage-header" : "",
-    menu ? "usage-menu" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
   return (
     <div
-      className={usageClassName}
+      className="usage-footer"
       id="usage-footer"
       data-account-key={agent.accountKey || "default"}
     >

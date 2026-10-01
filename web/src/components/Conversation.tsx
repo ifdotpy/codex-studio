@@ -7,7 +7,7 @@ import { displayError } from "../errorPresentation";
 import {
   NativeError,
   NativeNotice,
-  NativeAccountNotices,
+  isNonBlockingWarning,
 } from "./NativeNotice";
 import { ActionIcon, Button, Loader, Modal, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
@@ -61,6 +61,7 @@ import {
   type Snapshot,
 } from "../types";
 import Usage from "./Usage";
+import ConversationWarnings from "./ConversationWarnings";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
 import PromptComposer, {
@@ -1129,11 +1130,13 @@ export default function Conversation(p: {
         storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
         renderMessage={(item) =>
           item.nativeNotice ? (
-            <NativeNotice
-              key={item.id}
-              item={item}
-              planType={p.limits?.data?.rateLimits?.planType}
-            />
+            isNonBlockingWarning(item) ? null : (
+              <NativeNotice
+                key={item.id}
+                item={item}
+                planType={p.limits?.data?.rateLimits?.planType}
+              />
+            )
           ) : (
             renderMessage(item)
           )
@@ -1234,7 +1237,6 @@ export default function Conversation(p: {
           planType={p.limits?.data?.rateLimits?.planType}
           limits={p.limits}
           openLimits={() => {
-            if (compactHeaderTools) setToolsExpanded(true);
             setLimitsOpen(true);
             p.reloadLimits();
           }}
@@ -1242,12 +1244,19 @@ export default function Conversation(p: {
           chooseChat={p.onChooseChat}
         />
       )}
-      {agent && (
-        <NativeAccountNotices
-          notices={p.data.runtime.nativeNotices}
-          accountKey={agent.accountKey || "default"}
-        />
-      )}
+      {headerTools &&
+        agent &&
+        !p.room &&
+        createPortal(
+          <ConversationWarnings
+            key={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
+            scope={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
+            notices={p.data.runtime.nativeNotices}
+            accountKey={agent.accountKey || "default"}
+            messages={items}
+          />,
+          headerTools,
+        )}
       {headerTools &&
         !p.room &&
         (p.id || managed) &&
@@ -1304,24 +1313,6 @@ export default function Conversation(p: {
                     jump={jumpToPrompt}
                   />
                 </div>
-              )}
-              {!p.room && agent?.source === "managed" && (
-                <Usage
-                  key={p.agent?.accountKey || "default"}
-                  compact
-                  menu={compactHeaderTools}
-                  agent={{
-                    ...agent,
-                    accountKey: p.agent?.accountKey || "default",
-                  }}
-                  stateDir={p.data.stateDir}
-                  limits={p.limits}
-                  limitsLoading={p.limitsLoading}
-                  accountLabel={p.limitsAccountLabel}
-                  reload={p.reloadLimits}
-                  opened={limitsOpen}
-                  onChange={setLimitsOpen}
-                />
               )}
             </div>
           </details>,
@@ -1822,6 +1813,19 @@ export default function Conversation(p: {
               );
             }}
           </PromptComposer>
+          {agent?.source === "managed" && (
+            <Usage
+              key={p.agent?.accountKey || "default"}
+              agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
+              stateDir={p.data.stateDir}
+              limits={p.limits}
+              limitsLoading={p.limitsLoading}
+              accountLabel={p.limitsAccountLabel}
+              reload={p.reloadLimits}
+              opened={limitsOpen}
+              onChange={setLimitsOpen}
+            />
+          )}
         </>
       )}
     </section>

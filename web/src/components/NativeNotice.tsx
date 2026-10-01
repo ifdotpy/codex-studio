@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { displayError, errorDetails } from "../errorPresentation";
-import ErrorDescription from "./ErrorDescription";
 import { currentCapacityRetry } from "../capacityRetry";
 import { limitRecovery } from "../limitRecovery";
 import { useRecoveredLimit } from "./useRecoveredLimit";
@@ -37,6 +36,16 @@ function Guidance({ error }: { error: ReturnType<typeof nativeErrorView> }) {
         </div>
       )}
     </>
+  );
+}
+
+export function isNonBlockingWarning(item: Message): boolean {
+  return (
+    item.nativeNotice === "warning" &&
+    !item.nativeError &&
+    !item.nativeReview &&
+    !item.nativeHook &&
+    !item.nativeHookQuiet
   );
 }
 
@@ -222,29 +231,5 @@ export function NativeNotice({
       </details>
       {error && <Guidance error={error} />}
     </div>
-  );
-}
-
-export function NativeAccountNotices({
-  notices,
-  accountKey,
-}: {
-  notices?: Json[];
-  accountKey: string;
-}) {
-  const current = notices?.filter((n) => n.accountKey === accountKey) || [];
-  if (!current.length) return null;
-  return (
-    <details className="native-account-notices native-notice">
-      <summary>Account notices ({current.length})</summary>
-      {current.map((n) => (
-        <div key={n.id}>
-          <p>
-            <ErrorDescription value={n.message} role="status" />
-          </p>
-          {n.details && <pre>{errorDetails(n.details)}</pre>}
-        </div>
-      ))}
-    </details>
   );
 }
