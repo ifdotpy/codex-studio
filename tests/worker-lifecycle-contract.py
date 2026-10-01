@@ -109,6 +109,8 @@ class LifecycleContract(unittest.TestCase):
                                                               'result': 'Reviewed'}, 'accept-' + worker['id'],
                                               actor=lead['id'])
             self.assertEqual(result['archive']['status'], 'kept' if dirty else 'archived')
+            detail = self.runtime.model_work(lead['id'], {'action': 'get', 'task_id': task['id']})
+            self.assertEqual(detail['archive']['status'], result['archive']['status'])
             if dirty:
                 self.assertIn('changes', result['archive']['reason'])
                 self.assertTrue(path.exists())
