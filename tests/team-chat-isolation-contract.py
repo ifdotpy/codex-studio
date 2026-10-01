@@ -56,6 +56,45 @@ class TeamChatIsolation(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.runtime.chat_read("feed:" + worker["id"])
 
+    def test_room_pages_are_byte_bounded_bidirectional_and_targeted(self):
+        lead, outsider = self.lead(), self.lead("Outside")
+        worker = self.worker(lead)
+        receipt = self.runtime.chat_message(lead["id"], worker["id"], "seed", "room-page-seed")
+        with self.runtime.lock, self.runtime.db() as db:
+            for index in range(180):
+                db.execute(
+                    "INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (f"page-{index}", receipt["room"], lead["id"], "x" * 12000,
+                     time.time() + index / 1000, "{}"),
+                )
+        original = self.runtime.chat_rooms
+
+        def targeted(db, viewer=None, room_id=None, *, include_last_message=True):
+            self.assertEqual(room_id, receipt["room"])
+            self.assertFalse(include_last_message)
+            return original(db, viewer, room_id, include_last_message=include_last_message)
+
+        with patch.object(self.runtime, "chat_rooms", side_effect=targeted), \
+                patch.object(self.runtime, "records", side_effect=AssertionError("global record scan")):
+            latest = self.runtime.chat_read(receipt["room"], worker["id"])
+            older = self.runtime.chat_read(receipt["room"], worker["id"],
+                                           before=latest["nextBefore"])
+            newer = self.runtime.chat_read(receipt["room"], worker["id"],
+                                           after=older["nextAfter"])
+        for page in (latest, older, newer):
+            self.assertLessEqual(len(page["messages"]), 100)
+            size = sum(len(message["text"].encode()) +
+                       len(json.dumps(message["deliveries"]).encode()) + 256
+                       for message in page["messages"])
+            self.assertLessEqual(size, 1_000_000)
+        self.assertIsNotNone(latest["nextBefore"])
+        self.assertIsNotNone(older["nextAfter"])
+        self.assertLess(older["messages"][-1]["seq"], latest["messages"][0]["seq"])
+        self.assertEqual(newer["messages"][0]["seq"], older["nextAfter"] + 1)
+        with self.assertRaisesRegex(ValueError, "not a participant"):
+            self.runtime.chat_read(receipt["room"], outsider["id"])
+
     def test_cross_team_tools_fail_before_any_write_or_wake(self):
         lead, other = self.lead(), self.lead('Other')
         worker = self.worker(lead)
@@ -75,6 +114,38 @@ class TeamChatIsolation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'another team'):
             self.runtime.send(other['id'], 'Forbidden', 'direct-send', manual=False, resume=True,
                               sender=worker['id'], sender_epoch=worker['epoch'])
+
+    def test_short_agent_ids_route_tools_and_reject_ambiguous_or_foreign_ids(self):
+        lead, foreign = self.lead(), self.lead('Foreign')
+        worker = self.worker(lead)
+        short = worker['id'][:8]
+        message = self.tool(lead, 'orchestration_message', {'target': short, 'text': 'Hello'})
+        self.assertTrue(message['success'], message)
+        sent = self.tool(lead, 'orchestration_send', {'agent_id': short, 'text': 'Continue'})
+        self.assertTrue(sent['success'], sent)
+        inspected = self.tool(lead, 'orchestration_agent_manage', {'action': 'inspect', 'agent_id': short})
+        self.assertTrue(inspected['success'], inspected)
+        self.assertEqual(json.loads(inspected['contentItems'][0]['text'])['agent']['id'], worker['id'])
+        assigned = self.tool(lead, 'orchestration_task',
+                             {'action': 'create', 'title': 'Short owner', 'owner': short})
+        self.assertTrue(assigned['success'], assigned)
+        missing = self.tool(lead, 'orchestration_message', {'target': 'ffffffff', 'text': 'Hello'})
+        self.assertFalse(missing['success'])
+        self.assertIn(worker['id'], missing['contentItems'][0]['text'])
+        too_short = self.tool(lead, 'orchestration_message', {'target': worker['id'][:7], 'text': 'Hello'})
+        self.assertFalse(too_short['success'])
+        self.assertIn(worker['id'], too_short['contentItems'][0]['text'])
+        denied = self.tool(lead, 'orchestration_message', {'target': foreign['id'][:8], 'text': 'Hello'})
+        self.assertFalse(denied['success'])
+        with self.runtime.lock, self.runtime.db() as db:
+            for suffix in ('1111', '2222'):
+                clone = {**worker, 'id': 'abcdef12-' + suffix, 'threadId': None,
+                         'status': 'completed', 'autoWake': False}
+                self.runtime.put(db, 'agents', clone)
+        ambiguous = self.tool(lead, 'orchestration_send', {'agent_id': 'abcdef12', 'text': 'Hello'})
+        self.assertFalse(ambiguous['success'])
+        self.assertIn('abcdef12-1111', ambiguous['contentItems'][0]['text'])
+        self.assertIn('abcdef12-2222', ambiguous['contentItems'][0]['text'])
 
     def test_same_team_resume_and_sender_provenance(self):
         lead = self.lead()

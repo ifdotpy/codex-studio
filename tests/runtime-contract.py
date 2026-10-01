@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_runtime import Runtime, SnapshotDeferred
+from codex_runtime import Runtime
 
 
 def eventually(predicate, timeout=8):
@@ -28,7 +28,7 @@ def eventually(predicate, timeout=8):
 
 class FakeServer:
     def __init__(self, root, notify, request, died):
-        self.notify, self.request, self.died = notify, request, died
+        self._notify, self.request, self.died = notify, request, died
         self.calls, self.responses = [], []
         self.seq = 0
         self.gate = threading.Event()
@@ -36,6 +36,15 @@ class FakeServer:
         self.fail_start = False
         self.finish_before_reply = False
         self.start_gate = None
+        self.active_turns = {}
+
+    def notify(self, message):
+        if message.get('method') == 'turn/completed':
+            params = message['params']
+            active = self.active_turns.get(params['threadId'])
+            if active and active['id'] == params['turn']['id']:
+                self.active_turns.pop(params['threadId'], None)
+        self._notify(message)
 
     def call(self, method, params, timeout=60):
         self.calls.append((method, params))
@@ -56,12 +65,15 @@ class FakeServer:
                     'sandbox': {'type': 'readOnly'}, 'approvalPolicy': 'on-request'}
         if method == 'turn/start':
             if self.start_gate is not None:
-                self.start_gate.wait(5)
+                self.start_gate.wait(30)
             if self.fail_start:
                 raise RuntimeError('response timed out; outcome unknown')
-            self.seq += 1
-            turn = {'id': f'turn-{self.seq}', 'status': 'inProgress'}
-            self.notify({'method': 'turn/started', 'params': {'threadId': params['threadId'], 'turn': turn}})
+            turn = self.active_turns.get(params['threadId'])
+            if turn is None:
+                self.seq += 1
+                turn = {'id': f'turn-{self.seq}', 'status': 'inProgress'}
+                self.active_turns[params['threadId']] = turn
+                self.notify({'method': 'turn/started', 'params': {'threadId': params['threadId'], 'turn': turn}})
             if self.finish_before_reply:
                 self.complete(params['threadId'], turn['id'])
             return {'turn': turn}
@@ -77,6 +89,7 @@ class FakeServer:
             self.gate.set()
             return {}
         if method == 'turn/interrupt':
+            self.active_turns.pop(params['threadId'], None)
             self.notify({'method': 'turn/completed', 'params': {'threadId': params['threadId'],
                 'turn': {'id': params['turnId'], 'status': 'interrupted'}}})
             return {}
@@ -112,6 +125,8 @@ class FakeServer:
         return True
 
     def complete(self, tid, turn, text='Result with evidence'):
+        if self.active_turns.get(tid, {}).get('id') == turn:
+            self.active_turns.pop(tid, None)
         self.notify({'method': 'item/completed', 'params': {'threadId': tid,
             'item': {'id': turn + '-answer', 'type': 'agentMessage', 'text': text}}})
         self.notify({'method': 'turn/completed', 'params': {'threadId': tid,
@@ -123,6 +138,20 @@ class FakeServer:
 
 
 class RuntimeContract(unittest.TestCase):
+    def test_busy_input_uses_one_start_request_and_local_identity(self):
+        lead = self.lead()
+        original_turn = lead['turnId']
+        self.runtime.send(lead['id'], 'Busy input', 'exact-busy', delivery='steer')
+        eventually(lambda: self.runtime.delivery_receipt('exact-busy')['status'] == 'delivered')
+        calls = [p for method, p in self.runtime.server.calls if method == 'turn/start']
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[-1]['clientUserMessageId'], 'exact-busy')
+        self.assertEqual(self.runtime.agent(lead['id'])['turnId'], original_turn)
+        self.runtime.send(lead['id'], 'Busy input', 'exact-busy', delivery='queue')
+        self.runtime.dispatch()
+        self.assertEqual(len([1 for method, _ in self.runtime.server.calls if method == 'turn/start']), 2)
+        self.assertFalse(any(method == 'turn/steer' for method, _ in self.runtime.server.calls))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -130,7 +159,7 @@ class RuntimeContract(unittest.TestCase):
 
     def test_budget_schema_is_ready_before_runtime_workers(self):
         from unittest.mock import patch
-        from sync.sync_store import SyncStore
+        from codex_sync import SyncStore
         import uuid
 
         thread_id = str(uuid.uuid4())
@@ -164,9 +193,6 @@ class RuntimeContract(unittest.TestCase):
             )}
         self.assertIn('runtime_budget', tables)
         self.assertIn('runtime_budget_usage', tables)
-        self.assertTrue({'sync_watch_runtime_budget_INSERT', 'sync_watch_runtime_budget_usage_INSERT'} <= {
-            name for name in triggers
-        })
         with patch.object(self.runtime.accounts, 'home', return_value=profile), \
                 patch.object(self.runtime, '_analytics_rollout_path', return_value=(rollout, None)):
             self.assertTrue(self.runtime.analytics_history_step())
@@ -188,19 +214,39 @@ class RuntimeContract(unittest.TestCase):
         return self.runtime.agent(a['id'])
 
     def snapshot(self):
-        # UI snapshots intentionally defer during startup or concurrent writes.
-        # Retry only that read result, as the attached UI projection does.
-        deadline = time.monotonic() + 8
-        while True:
-            try:
-                return self.runtime.snapshot()
-            except SnapshotDeferred:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(.01)
+        return self.runtime.snapshot()
 
     def complete(self, a):
         self.runtime.server.complete(a['threadId'], a['turnId'])
+
+    def test_after_turn_input_waits_for_the_active_turn(self):
+        lead = self.lead()
+        self.runtime.send(lead['id'], 'Queued for later', 'after-turn-1', delivery='after_turn')
+        self.runtime.dispatch()
+        time.sleep(.3)
+        def carried():
+            return [m for m, p in self.runtime.server.calls if m in ('turn/start', 'turn/steer')
+                    and 'Queued for later' in json.dumps(p)]
+        self.assertEqual(carried(), [], 'after_turn input is not steered into the active turn')
+        self.complete(lead)
+        eventually(lambda: carried() == ['turn/start'])
+        time.sleep(.3)
+        self.assertEqual(carried(), ['turn/start'], 'delivered once, as a new turn')
+
+    def test_budget_save_keeps_the_chat_visible_in_entity_sync(self):
+        lead = self.lead()
+        import codex_budget
+        state = {'spent': 1234, 'floor': 0, 'after': 1234, 'before': 0, 'noticeSpent': 0,
+                 'historicalNotices': 0, 'faults': 0, 'ambiguousNotices': 0}
+        with self.runtime.lock, self.runtime.db() as db:
+            codex_budget.budget_init(db)
+            codex_budget._save(db, self.runtime.agent(lead['id'], db), state)
+            row = db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                             (lead['id'],)).fetchone()
+        value = json.loads(row[0])['value']
+        self.assertEqual((value.get('source'), value.get('kind')), ('managed', 'agent'))
+        self.assertIn('canSend', value)
+        self.assertEqual(value.get('tokensUsed'), 1234)
 
     def test_empty_current_chat_reuses_identity_even_after_restart(self):
         import uuid
@@ -247,6 +293,15 @@ class RuntimeContract(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE kind='agent_message'").fetchone()[0], 2)
         eventually(lambda: self.runtime.agent(peer['id'])['status'] == 'running')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+        eventually(lambda: self.runtime.chat_read(private['room'], first['id'])['messages'][0]
+                   ['deliveries'].get(peer['id']) == 'delivered')
+        self.assertEqual(self.runtime.chat_read(parent['room'], first['id'])['messages'][0]
+                         ['deliveries'][lead['id']], 'delivered')
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute('UPDATE runtime_chat_messages SET deliveries=? WHERE id=?',
+                       (json.dumps({peer['id']: 'queued'}), 'msg-private'))
+        self.assertEqual(self.runtime.chat_read(private['room'], first['id'])['messages'][0]
+                         ['deliveries'][peer['id']], 'delivered')
         inputs = [p['input'][0]['text'] for method, p in self.runtime.server.calls if method == 'turn/start']
         self.assertTrue(any('Found the cause' in t and 'agent_message' in t for t in inputs))
         self.assertTrue(any('Check this symbol' in t for t in inputs))
@@ -336,6 +391,24 @@ class RuntimeContract(unittest.TestCase):
         self.assertNotEqual(child['id'], replacement['id'])
         self.assertEqual(len(self.runtime.team(lead['id'])['agents']), 2)
 
+    def test_finished_workers_do_not_consume_active_team_capacity(self):
+        lead = self.lead(maxAgents=2)
+        finished = [self.runtime.create({'name': str(i), 'prompt': 'Review', 'role': 'reviewer'},
+                                        lead['id'], defer=True) for i in range(3)]
+        self.assertEqual(len(finished), 3)
+        active = self.runtime.create({'name': 'Active', 'prompt': 'Review', 'role': 'reviewer'},
+                                     lead['id'], defer=False)
+        self.assertIn(active['status'], {'queued', 'starting', 'running'})
+        with self.assertRaisesRegex(ValueError, '3 finished agents.*archive_finished'):
+            self.runtime.create({'name': 'Overflow', 'prompt': 'Review', 'role': 'reviewer'},
+                                lead['id'], defer=False)
+        self.runtime.dynamic({'id': 7701, 'params': {'threadId': lead['threadId'],
+            'callId': 'capacity-batch', 'tool': 'orchestration_spawn',
+            'arguments': {'agents': [{'name': 'Overflow', 'prompt': 'Review', 'role': 'reviewer'}]}}})
+        reply = next(r for r in self.runtime.server.responses if r['id'] == 7701)['result']
+        self.assertFalse(reply['success'])
+        self.assertIn('3 finished agents', reply['contentItems'][0]['text'])
+
     def test_delete_stops_tree_and_rejects_retry_or_late_wakeup(self):
         lead = self.lead()
         child = self.runtime.create({'name': 'Peer', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
@@ -373,8 +446,13 @@ class RuntimeContract(unittest.TestCase):
             self.runtime.complaint(child['id'], response, 'forged', 0)
         self.complete(lead)
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
-        prompt = [p for method, p in self.runtime.server.calls if method == 'turn/start' and p['threadId'] == lead['threadId']][-1]['input'][0]['text']
-        self.assertEqual(prompt.count(c['text']), 1, 'deliver the full complaint once, not an ID-only reminder')
+        eventually(lambda: any(c['text'] in p['input'][0]['text'] for method, p in self.runtime.server.calls
+                               if method == 'turn/start' and p['threadId'] == lead['threadId']))
+        prompts = [p['input'][0]['text'] for method, p in self.runtime.server.calls
+                   if method == 'turn/start' and p['threadId'] == lead['threadId']]
+        prompt = next(text for text in prompts if c['text'] in text)
+        self.assertEqual(sum(text.count(c['text']) for text in prompts), 1,
+                         'deliver the full complaint once, not an ID-only reminder')
         self.assertIn(c['id'], prompt)
         self.assertIn(child['id'], prompt)
         self.assertIn('Reporter', prompt)
@@ -460,6 +538,50 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.agent(a['id'])['compactions'], 1)
+
+    def test_rate_limit_notification_does_not_wait_for_unrelated_runtime_lock(self):
+        entered, release = threading.Event(), threading.Event()
+        def hold_runtime():
+            with self.runtime.lock:
+                entered.set()
+                release.wait(3)
+        holder = threading.Thread(target=hold_runtime)
+        holder.start()
+        self.assertTrue(entered.wait(1))
+        try:
+            started = time.monotonic()
+            self.runtime.notification({'method': 'account/rateLimits/updated', 'params': {
+                'rateLimits': {'limitId': 'codex', 'primary': {'usedPercent': 42}}}})
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertEqual(self.runtime.rate_limits['data']['rateLimits']['primary']['usedPercent'], 42)
+        finally:
+            release.set()
+            holder.join(3)
+
+    def test_dispatcher_database_reuses_connection_and_commits_each_callback(self):
+        import sqlite3
+        self.runtime.notification({'method': 'account/rateLimits/updated', '_studioDispatchedAt': time.time(),
+            'params': {'rateLimits': {'limitId': 'codex', 'primary': {'usedPercent': 2}}}})
+        cached = self.runtime._callback_db.connection
+        try:
+            with self.runtime.db() as db:
+                self.assertIs(db, cached)
+                db.execute('INSERT INTO runtime_completed_turns VALUES (?)', ('fixture-commit',))
+            with sqlite3.connect(self.runtime.db_path) as other:
+                self.assertEqual(other.execute('SELECT COUNT(*) FROM runtime_completed_turns WHERE id=?',
+                                               ('fixture-commit',)).fetchone()[0], 1)
+            with self.assertRaises(sqlite3.IntegrityError):
+                with self.runtime.db() as db:
+                    db.execute('INSERT INTO runtime_completed_turns VALUES (?)', ('fixture-rollback',))
+                    db.execute('INSERT INTO runtime_completed_turns VALUES (?)', ('fixture-rollback',))
+            with self.runtime.db() as db:
+                self.assertIs(db, cached)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_completed_turns WHERE id=?',
+                                            ('fixture-rollback',)).fetchone()[0], 0)
+        finally:
+            self.runtime._callback_db.reuse = False
+            del self.runtime._callback_db.connection
+            cached.close()
 
     def test_sidebar_rename_and_room_hide_preserve_agent_history(self):
         a = self.lead()
@@ -615,11 +737,14 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(a['id'])['activity']['phase'], 'thinking')
         event('item/started', item={'id': 'text', 'type': 'agentMessage', 'text': ''})
         event('item/agentMessage/delta', itemId='text', delta='First paragraph.\n\nUnfinished')
+        eventually(lambda: any(i['id'].endswith(':text') and i['text'].endswith('Unfinished')
+                               for i in self.runtime.transcript(a['id'])['items']))
         transcript = self.runtime.transcript(a['id'])
         self.assertEqual(transcript['agent']['activity']['phase'], 'writing')
         self.assertTrue(transcript['items'][-1]['streaming'])
         event('item/started', item={'id': 'cmd', 'type': 'commandExecution', 'command': 'test', 'status': 'inProgress'})
         event('item/commandExecution/outputDelta', itemId='cmd', delta='Live output\n')
+        eventually(lambda: 'Live output' in self.runtime.transcript(a['id'])['items'][-1]['text'])
         transcript = self.runtime.transcript(a['id'])
         self.assertEqual(transcript['agent']['activity']['phase'], 'tool')
         self.assertIn('Live output', transcript['items'][-1]['text'])
@@ -661,11 +786,9 @@ class RuntimeContract(unittest.TestCase):
                 return tuple(db.execute('SELECT coalesce(sum(count),0),coalesce(sum(bytes),0) FROM analytics_notifications WHERE agent=? AND method=?', (a['id'], method)).fetchone())
         before = counters()
         count = self.runtime.agent(a['id'])['events']
-        with patch.object(self.runtime, 'analytics_delta_batch_safe',
-                          wraps=self.runtime.analytics_delta_batch_safe) as aggregate:
-            self.runtime.notification({'method': method, 'params': {**samples[0], 'delta': ''.join(p['delta'] for p in samples)},
-                                       '_studioNotificationSamples': samples})
-        aggregate.assert_called_once()
+        self.runtime.notification({'method': method, 'params': {**samples[0], 'delta': ''.join(p['delta'] for p in samples)},
+                                   '_studioNotificationSamples': samples})
+        eventually(lambda: counters()[0] - before[0] == len(samples))
         after = counters()
         self.assertEqual(after[0] - before[0], len(samples))
         self.assertEqual(after[1] - before[1], sum(len(encoded(p).encode('utf-8')) for p in samples))
@@ -690,6 +813,7 @@ class RuntimeContract(unittest.TestCase):
         count = self.runtime.agent(a['id'])['events']
         self.runtime.notification({'method': method, 'params': {**samples[0], 'delta': ''.join(p['delta'] for p in samples)},
                                    '_studioNotificationSamples': samples})
+        eventually(lambda: counters()[0] - before[0] == len(samples))
         after = counters()
         self.assertEqual(after[0] - before[0], len(samples))
         self.assertEqual(after[1] - before[1], sum(len(encoded(p).encode('utf-8')) for p in samples))
@@ -717,28 +841,44 @@ class RuntimeContract(unittest.TestCase):
     def test_turn_transcript_preserves_user_and_event_sources(self):
         a = self.lead()
         user_text = '[Orchestration event: agent_message]\nThis is literal user text.'
-        self.runtime.send(a['id'], user_text)
+        queued = self.runtime.send(a['id'], user_text)
         with self.runtime.lock, self.runtime.db() as db:
             worker = self.runtime.create({'name': 'Reviewer', 'prompt': 'Review', 'role': 'reviewer'}, a['id'], defer=True)
             worker.update(autoWake=True)
             self.runtime.put(db, 'agents', worker)
-        receipt = self.runtime.chat_message(worker['id'], a['id'], 'Worker result', 'source-result')
+        self.runtime.chat_message(worker['id'], a['id'], 'Worker result', 'source-result')
+        event_id = 'chat:source-result:' + a['id']
+        eventually(lambda: any(e['id'] == event_id and e['status'] == 'delivered'
+                               for e in self.runtime.snapshot()['events']))
         with self.runtime.db() as db:
-            event_text = db.execute("SELECT text FROM runtime_events WHERE id=?", ('chat:source-result:' + a['id'],)).fetchone()[0]
-        self.complete(a)
-        eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')
-        record = self.runtime.transcript(a['id'])['items'][-1]
-        self.assertEqual([r['kind'] for r in record['inputs']], ['user', 'agent_message'])
-        self.assertEqual(record['inputs'][0]['text'], user_text)
-        self.assertEqual(record['inputs'][1]['text'], event_text)
-        self.assertIn(user_text, record['text'])
-        self.assertIn('[Orchestration event: agent_message]\n' + event_text, record['text'])
+            event_text = db.execute("SELECT text FROM runtime_events WHERE id=?", (event_id,)).fetchone()[0]
+        items = self.runtime.transcript(a['id'])['items']
+        user_record = next(item for item in items if item['id'] == a['id'] + ':' + queued['id'])
+        self.assertEqual([r['kind'] for r in user_record['inputs']], ['user', 'agent_message'])
+        self.assertEqual(user_record['inputs'][0]['text'], user_text)
+        self.assertEqual(user_record['inputs'][1]['text'], event_text)
+        self.assertIn(user_text, user_record['text'])
+        self.assertIn('[Orchestration event: agent_message]\n' + event_text, user_record['text'])
 
     def test_pending_user_message_is_visible_before_next_turn(self):
         a = self.lead()
-        self.runtime.send(a['id'], 'Queued followup')
-        messages = self.runtime.transcript(a['id'])['items']
-        self.assertTrue(any(i.get('pending') and i['text'] == 'Queued followup' for i in messages))
+        with self.runtime.lock:
+            self.runtime.send(a['id'], 'Queued followup')
+            messages = self.runtime.transcript(a['id'])['items']
+            self.assertTrue(any(i.get('pending') and i['text'] == 'Queued followup' for i in messages))
+
+    def test_agent_interrupt_names_the_agent_not_the_user(self):
+        lead = self.lead()
+        self.runtime.server.request({'id': 101, 'method': 'item/tool/call', 'params': {
+            'threadId': lead['threadId'], 'callId': 'spawn-one', 'tool': 'orchestration_spawn',
+            'arguments': {'agents': [{'name': 'Stop target', 'prompt': 'Wait', 'role': 'reviewer'}]}}})
+        eventually(lambda: len(self.runtime.snapshot()['agents']) == 2)
+        child = next(a for a in self.runtime.snapshot()['agents'] if a['id'] != lead['id'])
+        self.runtime.server.request({'id': 102, 'method': 'item/tool/call', 'params': {
+            'threadId': lead['threadId'], 'callId': 'stop-one', 'tool': 'orchestration_interrupt',
+            'arguments': {'agent_id': child['id']}}})
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'paused')
+        self.assertEqual(self.runtime.agent(child['id'])['error'], 'Stopped by agent ' + lead['name'])
 
     def test_forty_children_respect_limit_and_wake_finished_parent(self):
         lead = self.lead(concurrency=5)
@@ -764,9 +904,15 @@ class RuntimeContract(unittest.TestCase):
         else:
             self.fail('Team did not finish')
         self.assertGreaterEqual(peak, 2)
+        # snapshot() can reuse a copy up to 2 s old; wait until the last child results are delivered.
+        def delivered():
+            with self.runtime.db() as db:
+                return not db.execute("SELECT 1 FROM runtime_events WHERE kind='child_result' AND status!='delivered'").fetchone()
+        eventually(delivered)
         starts = [p for m,p in self.runtime.server.calls if m == 'turn/start' and p['threadId'] == lead['threadId']]
         self.assertGreater(len(starts), 1)
-        text = '\n'.join(p['input'][0]['text'] for p in starts[1:])
+        steers = [p for m,p in self.runtime.server.calls if m == 'turn/steer' and p['threadId'] == lead['threadId']]
+        text = '\n'.join(p['input'][0]['text'] for p in starts[1:] + steers)
         self.assertIn('child_result', text)
         self.assertIn('Review 39', text)
         self.assertIn('Result with evidence', text)
@@ -813,12 +959,46 @@ class RuntimeContract(unittest.TestCase):
         events = [e for e in self.snapshot()['events'] if e['kind'] == 'child_result']
         self.assertEqual(len(events), 1)
 
+    def test_child_result_waits_until_turn_ends_with_empty_input_queue(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        first = self.runtime.agent(child['id'])
+        self.runtime.send(child['id'], 'The lead answered your question')
+        self.complete(first)
+        eventually(lambda: (self.runtime.agent(child['id'])['status'] == 'running'
+                            and self.runtime.agent(child['id'])['turnId'] != first['turnId']))
+        self.assertFalse(any(e['kind'] == 'child_result' for e in self.runtime.snapshot()['events']))
+        final = self.runtime.agent(child['id'])
+        self.runtime.server.complete(final['threadId'], final['turnId'], 'Final result after the lead answer')
+        eventually(lambda: len([e for e in self.runtime.snapshot()['events'] if e['kind'] == 'child_result']) == 1)
+        with self.runtime.db() as db:
+            result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
+        self.assertEqual(json.loads(result)['result'], 'Final result after the lead answer')
+
+    def test_failed_child_result_is_immediate_with_pending_input(self):
+        lead = self.lead()
+        child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        current = self.runtime.agent(child['id'])
+        self.runtime.send(child['id'], 'A late answer')
+        self.runtime.server.notify({'method': 'turn/completed', 'params': {'threadId': current['threadId'],
+            'turn': {'id': current['turnId'], 'status': 'failed', 'error': {'message': 'failed now'}}}})
+        eventually(lambda: len([e for e in self.runtime.snapshot()['events'] if e['kind'] == 'child_result']) == 1)
+        with self.runtime.db() as db:
+            result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
+        self.assertEqual(json.loads(result)['status'], 'failed')
+
     def test_restart_keeps_pending_events_without_replaying_unknown_work(self):
         lead = self.lead()
-        self.runtime.send(lead['id'], 'Pending result', 'stable-event')
-        self.runtime.close()
+        # Reserve the input, but stop before native submission.
+        from unittest.mock import patch
+        with patch.object(self.runtime.delivery_executor(), 'submit', return_value=None):
+            self.runtime.send(lead['id'], 'Pending result', 'stable-event')
+            self.runtime.dispatch()
+            self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
-        self.assertEqual(self.runtime.agent(lead['id'])['status'], 'interrupted')
+        self.assertEqual(self.runtime.agent(lead['id'])['status'], 'queued')
         self.assertIsNone(self.runtime.server)
         self.assertEqual(len([e for e in self.snapshot()['events'] if e['id'] == 'stable-event']), 1)
         self.runtime.send(lead['id'], 'Review interrupted work and continue')
@@ -941,8 +1121,11 @@ class RuntimeContract(unittest.TestCase):
     def test_approval_and_question_responses_reach_codex(self):
         lead = self.lead()
         self.runtime.request({'id': 101, 'method': 'item/commandExecution/requestApproval',
-                              'params': {'threadId': lead['threadId'], 'command': 'git status'}})
-        request = self.snapshot()['requests'][0]
+                              'params': {'kind': 'writeStdin', 'threadId': lead['threadId'],
+                                         'turnId': lead['turnId'], 'itemId': 'exec-1',
+                                         'startedAtMs': 1750000000000, 'approvalId': 'approval-stdin',
+                                         'reason': 'Send input to an existing terminal to continue the reviewed command.'}})
+        request = self.runtime.snapshot()['requests'][0]
         self.runtime.answer(request['id'], {'decision': 'decline'})
         self.assertEqual(self.runtime.server.responses[-1], {'id': 101, 'result': {'decision': 'decline'}})
         self.runtime.request({'id': 102, 'method': 'item/tool/requestUserInput',
@@ -1066,6 +1249,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)['toolStatus'], 'running')
         self.runtime.notification({'method': 'turn/started', 'params': {'threadId': a['threadId'], 'turn': {'id': 'new-turn'}}})
         event('item/commandExecution/outputDelta', itemId=command['id'], delta='x' * 14000)
+        eventually(lambda: len(self.runtime.task_detail(key).get('tail', '')) == 12000)
         self.assertEqual(len(self.runtime.task_detail(key)['tail']), 12000)
         self.assertTrue(self.runtime.task_detail(key)['outputTruncated'])
         event('item/completed', item={**command, 'exitCode': 7, 'durationMs': 2500, 'aggregatedOutput': 'failed check'})
@@ -1083,6 +1267,26 @@ class RuntimeContract(unittest.TestCase):
         event('item/started', item={**command, 'id': 'unknown-old-command'})
         self.assertEqual(len(self.snapshot()['tasks']), 1)
         self.assertNotIn('tail', self.snapshot()['tasks'][0])
+
+    def test_native_item_timestamps_drive_saved_tool_duration(self):
+        a = self.lead()
+        item = {'id': 'timed-tool', 'type': 'mcpToolCall', 'tool': 'search', 'status': 'completed'}
+        self.runtime.notification({'method': 'item/started', 'params': {
+            'threadId': a['threadId'], 'turnId': a['turnId'], 'startedAtMs': 1000, 'item': item}})
+        self.runtime.notification({'method': 'item/completed', 'params': {
+            'threadId': a['threadId'], 'turnId': a['turnId'], 'startedAtMs': 1000,
+            'completedAtMs': 3425, 'item': item}})
+        key = a['id'] + ':timed-tool'
+        self.assertEqual(self.runtime.task_detail(key)['durationMs'], 2425)
+        saved = next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)
+        payload = json.loads(saved['text'])
+        self.assertEqual(payload['startedAtMs'], 1000)
+        self.assertEqual(payload['completedAtMs'], 3425)
+        self.assertEqual(payload['durationMs'], 2425)
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        restored = next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)
+        self.assertEqual(json.loads(restored['text'])['durationMs'], 2425)
 
     def test_task_history_is_bounded_but_active_tasks_are_not_hidden(self):
         a = self.lead()

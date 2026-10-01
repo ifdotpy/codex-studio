@@ -251,4 +251,31 @@ check("only completed status claims a completed edit", () => {
 check("a final carriage return stays in raw file contents", () => {
   assert.equal(native("a\r", "add").lines[0].text, "a\r");
 });
+check("a Claude Edit diff is rebuilt from its multi-line input", () => {
+  const args = {
+    file_path: "/r/scripts/a.py",
+    old_string: "one\n    two",
+    new_string: "one\n    two\n    # note\n    three",
+  };
+  const saved = "-" + args.old_string + "\n+" + args.new_string;
+  const [file] = fileChanges(
+    [{ path: args.file_path, kind: { type: "update" }, diff: saved }],
+    args,
+  );
+  assert.equal(file.parsed, true);
+  assert.deepEqual(
+    file.lines
+      .filter((line) => line.kind !== "meta")
+      .map((line) => [line.kind, line.text]),
+    [
+      ["delete", "one"],
+      ["delete", "    two"],
+      ["add", "one"],
+      ["add", "    two"],
+      ["add", "    # note"],
+      ["add", "    three"],
+    ],
+  );
+  assert.deepEqual([file.added, file.removed], [4, 2]);
+});
 console.log(`PASS ${checks} file change model contracts`);

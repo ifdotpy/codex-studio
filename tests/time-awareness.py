@@ -77,7 +77,8 @@ class TimeAwareness(unittest.TestCase):
         self.runtime.dispatch()
         f.eventually(lambda: self.runtime.agent(agent["id"]).get("turnId"))
         params = [p for m, p in self.runtime.server.calls if m == "turn/start"][-1]
-        self.assertEqual(params["input"][0]["text"], "Legacy question")
+        self.assertTrue(params["input"][0]["text"].startswith("Legacy question"))
+        self.assertNotIn("accepted_at_utc", params["input"][0]["text"])
 
     def test_edit_updates_acceptance_once_without_reorder_clock(self):
         agent = self.lead()
@@ -94,10 +95,12 @@ class TimeAwareness(unittest.TestCase):
         )
         self.assertEqual(after, self.metadata("edit"))
 
-    def test_steer_timestamp_is_durable_and_ui_is_clean(self):
+    def test_busy_input_timestamp_is_durable_and_ui_is_clean(self):
         agent = self.start(self.lead())
         self.runtime.send(agent["id"], "Correct this", "steer", delivery="steer")
-        wire = [p for m, p in self.runtime.server.calls if m == "turn/steer"][-1]
+        self.runtime.dispatch()
+        f.eventually(lambda: self.runtime.delivery_receipt("steer")["status"] == "delivered")
+        wire = [p for m, p in self.runtime.server.calls if m == "turn/start"][-1]
         self.assertIn(
             message_clock("steer", self.metadata("steer")["acceptedAt"])[
                 "accepted_at_utc"
@@ -105,8 +108,9 @@ class TimeAwareness(unittest.TestCase):
             wire["input"][0]["text"],
         )
         self.runtime.send(agent["id"], "Correct this", "steer", delivery="steer")
+        self.runtime.dispatch()
         self.assertEqual(
-            1, len([1 for m, p in self.runtime.server.calls if m == "turn/steer"])
+            2, len([1 for m, p in self.runtime.server.calls if m == "turn/start"])
         )
         with self.runtime.db() as db:
             item = json.loads(

@@ -49,6 +49,28 @@ work you can still complete within your scope. Preserve the thread, source
 revision, command identities, and remaining work for continuation after a failure.
 Recover the saved receipt before deciding whether an uncertain operation needs another attempt.
 
+## Working rules
+
+- Do not end a turn to wait for an external condition. Start a monitor with a
+  timeout and continue when it exits.
+- Before you ask the orchestrator, read the latest messages in the room. Do not
+  ask again about a point that already has an answer.
+- Work only in your own worktree. Do not switch branches or edit files in a
+  shared clone.
+- Change declared state through its source of truth, for example Git. Use a
+  direct change, for example `kubectl`, only as a documented break-glass step,
+  and record it in your evidence.
+- Delete in dependency order: first the dependents, then what they reference.
+- Report evidence as a measured current state with named fields and times.
+  Status fields can be stale. Report a claim that you cannot prove as
+  inconclusive.
+- Do not print secret values. Compare them by hash. Do not read Secrets with
+  `-o yaml`, `-o json` or `.data`.
+- Do not request reviews or approvals that the orchestrator did not require.
+- If a finding conflicts with an orchestrator decision, report the evidence and
+  wait for the decision. Do not deviate silently.
+- Send one progress message for each real state change. Use `progress_key`.
+
 ## Requests and problems
 
 Send conversational questions, complaints, and requests for user action to the

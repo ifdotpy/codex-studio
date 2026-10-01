@@ -10,9 +10,11 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from analytics.rollout_parser import rollout_actions
+import codex_analytics_history as history
 from codex_analytics_history import AnalyticsHistoryMixin, inherited_usage_threads
 
 THREAD = "01a07781-5d19-7390-bc74-c12094143962"
@@ -55,11 +57,13 @@ class Fixture(AnalyticsHistoryMixin):
     def agent(self, key, db):
         return json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (key,)).fetchone()[0])
 
-    def analytics_event(self, db, a, method, p, *, at=None, source=None):
-        db.execute("INSERT INTO captured VALUES (?,?,?)", ("event", method, json.dumps({"a": a, "p": p, "at": at, "source": source})))
+    def analytics_event(self, db, a, method, p, *, at=None, source=None, measurements=None):
+        db.execute("INSERT INTO captured VALUES (?,?,?)", ("event", method, json.dumps({"a": a, "p": p, "at": at, "source": source,
+                                                                           "measurements": measurements})))
 
-    def analytics_model_payload(self, db, a, p, *, at=None, turn_id=None, source=None):
-        db.execute("INSERT INTO captured VALUES (?,?,?)", ("payload", p.get("type"), json.dumps({"a": a, "p": p, "at": at, "turnId": turn_id, "source": source})))
+    def analytics_model_payload(self, db, a, p, *, at=None, turn_id=None, source=None, measurements=None):
+        db.execute("INSERT INTO captured VALUES (?,?,?)", ("payload", p.get("type"), json.dumps({"a": a, "p": p, "at": at, "turnId": turn_id,
+                                                                                         "source": source, "measurements": measurements})))
 
     def state(self):
         with self.db() as db:
@@ -131,6 +135,51 @@ class ImportTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_payload_measurements_run_before_the_runtime_lock(self):
+        self.f.path.write_bytes(self.header +
+            line("response_item", {"type": "function_call_output", "call_id": "one", "output": "model output"}) +
+            line("event_msg", {"type": "item_completed", "item": {"id": "two", "type": "commandExecution",
+                "aggregatedOutput": "native output"}}))
+        seen = []
+        original_event = history.event_payload_measurements
+        original_model = history.model_payload_measurements
+
+        def event_measure(method, payload):
+            self.assertFalse(self.f.lock._is_owned())
+            seen.append("event")
+            return original_event(method, payload)
+
+        def model_measure(payload):
+            self.assertFalse(self.f.lock._is_owned())
+            seen.append("payload")
+            return original_model(payload)
+
+        with patch.object(history, "event_payload_measurements", event_measure), patch.object(
+                history, "model_payload_measurements", model_measure):
+            self.assertTrue(self.f.analytics_history_step())
+        self.assertEqual(seen, ["payload", "event"])
+        captured = self.f.captured()
+        self.assertEqual(captured[0][2]["measurements"]["output"]["bytes"], 12)
+        self.assertEqual(captured[1][2]["measurements"]["output"]["bytes"], 13)
+
+    def test_idle_checkpoint_does_not_rewrite(self):
+        self.f.path.write_bytes(self.header)
+        self.assertTrue(self.f.analytics_history_step())
+        with self.f.db() as db:
+            before = db.execute('SELECT record FROM analytics_history').fetchone()[0]
+        changes = []
+        original = self.f._analytics_history_record
+        def observe(db, *args):
+            start = db.total_changes
+            result = original(db, *args)
+            changes.append(db.total_changes - start)
+            return result
+        self.f._analytics_history_record = observe
+        self.assertFalse(self.f.analytics_history_step())
+        self.assertEqual(changes, [0])
+        with self.f.db() as db:
+            self.assertEqual(db.execute('SELECT record FROM analytics_history').fetchone()[0], before)
 
     def test_bounded_import_resume_and_no_historical_model_guess(self):
         self.f.path.write_bytes(self.header + line("turn_context", {"turn_id": "past", "model": "past-model"}) +

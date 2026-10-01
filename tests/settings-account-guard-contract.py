@@ -18,6 +18,7 @@ class SettingsAccountGuardContract(fixture.RuntimeContract):
         self.runtime.catalog = unavailable
         for values in [{"model": "gpt-5.6-sol"}, {"yolo_mode": False},
                        {"worker_defaults": {"model": None, "effort": None, "fast_mode": False}},
+                       {"review_defaults": {"model": "gpt-5.6-sol", "effort": "high"}},
                        {"model": "gpt-5.6-sol", "next_turn": True, "request_id": "stale"}]:
             with self.subTest(values=values), self.assertRaisesRegex(ValueError, "account changed"):
                 self.runtime.conversation_settings(a["id"], {**values, "expected_account_key": "old-account"})

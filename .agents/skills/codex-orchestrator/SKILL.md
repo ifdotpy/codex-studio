@@ -20,6 +20,7 @@ acceptance. Request corrections when the evidence does not support completion.
 Create a task for each delegated result and pass its `task_id` to `orchestration_spawn`.
 The worker then submits evidence to that task, and you accept or reject it.
 Inspect the agent's state before recovery if it is stopped or cannot continue.
+Run `orchestration_agent_manage action=archive_finished` after accepting finished worker results.
 
 Keep one agent plan. Send changes to a subagent's plan through its chat.
 Use agent messages for coordination. Use the shared team channel when all team
@@ -72,6 +73,19 @@ Resume remaining authorized work in the existing threads when possible. Report a
 harness defect if recovery cannot preserve their context. Follow the shared skill's
 request recovery rules before retrying any uncertain operation.
 Base reports of continued work on an active worker, command, or automatic continuation.
+
+## Coordination rules
+
+- Give each worker an explicit list of pre-authorized actions, for example a
+  merge into the integration branch or a one-time annotation.
+- Put decisions into the task (reject or update) or into `orchestration_send`,
+  not only into chat. A chat message can arrive late.
+- Give every shared branch and every shared file one owner. State who may merge
+  into an integration branch.
+- Pass `cwd` with the repository folder when the project root is not a git
+  repository. An implementer then gets its own worktree of that repository.
+- Do not run two live verifications that change the same system state at the
+  same time. Schedule them, or give them independent criteria.
 
 ## Decisions, quality, and progress
 

@@ -189,6 +189,7 @@ try {
     ];
   }, workspaceId);
   await until(() => running === 2, "Two background transfers can run");
+  assert.equal(streams.size, 0, "Background prefetch holds no live stream");
   assert.equal(
     await page.evaluate(
       (workspace) => client.prefetchTranscript(workspace, "c"),
@@ -206,6 +207,10 @@ try {
     );
   });
   assert.equal(running, 2, "Foreground joins the same in-flight chat transfer");
+  await until(
+    () => streams.size === 1,
+    "Foreground opens one transcript stream",
+  );
   releaseA();
   releaseB();
   assert.deepEqual(await page.evaluate(() => Promise.all(jobs)), [true, true]);

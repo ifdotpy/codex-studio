@@ -4,6 +4,7 @@ import { api, ApiError, errorText, save, saved } from "../api";
 import type { Json, Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
+import { ModelPicker, type ModelOption } from "./ModelPicker";
 import "./shared-chat-create.css";
 
 type Participant = { account_key: string; model: string; effort?: string };
@@ -27,9 +28,11 @@ function ParticipantFields({
   valid: (ready: boolean) => void;
 }) {
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
-  const options = catalog.models.map((row) => ({
+  const options: ModelOption[] = catalog.models.map((row) => ({
     value: row.model,
     label: row.displayName || row.model,
+    description: row.description || undefined,
+    isDefault: !!row.isDefault,
   }));
   const info = catalog.models.find((row) => row.model === value.model);
   useEffect(() => {
@@ -66,20 +69,13 @@ function ParticipantFields({
           change({ account_key: e.currentTarget.value, model: "" })
         }
       />
-      <NativeSelect
+      <ModelPicker
         label={`Model for agent ${index + 1}`}
         value={value.model}
         disabled={frozen || catalog.loading || !!catalog.error}
-        data={[
-          {
-            value: "",
-            label: catalog.loading ? "Loading models…" : "Select a model",
-          },
-          ...options,
-        ]}
-        onChange={(e) =>
-          change({ ...value, model: e.currentTarget.value, effort: undefined })
-        }
+        placeholder={catalog.loading ? "Loading models…" : "Select a model"}
+        options={options}
+        onChange={(model) => change({ ...value, model, effort: undefined })}
       />
       {!!info?.supportedReasoningEfforts?.length && (
         <NativeSelect

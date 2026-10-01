@@ -14,7 +14,10 @@ import uuid
 
 from codex_progress import _directory, progress_path, read_progress
 
-RENDERER = "progress-markdown-v1"
+RENDERER = "progress-markdown-v2"
+LEGACY_RENDERER = "progress-markdown-v1"
+VISIBILITY_FIELDS = {"overflowX", "overflowY", "totalLines", "visibleLines",
+                     "lastVisibleLine", "lastVisibleHeading"}
 FRESH_SECONDS = 90
 MAX_CLIENTS = 32
 LAYOUT_FILE = "PROGRESS.layout.json"
@@ -69,15 +72,20 @@ def _fresh_reports(value, now):
 def _status(reports):
     if not reports:
         return "unmeasured"
-    return "fits" if all(row["fits"] for row in reports) else "does_not_fit"
+    if any(row["reason"] == "unsupported" or
+           (row["renderer"] == LEGACY_RENDERER and not row["fits"]) for row in reports):
+        return "does_not_fit"
+    return "fits" if all(row["fits"] for row in reports) else "clipped"
 
 
 def _report(body):
     fields = {"agent", "revision", "client", "sequence", "renderer", "width", "height",
               "contentWidth", "contentHeight", "fits", "reason"}
+    if isinstance(body, dict) and body.get("renderer") == RENDERER:
+        fields |= VISIBILITY_FIELDS
     if not isinstance(body, dict) or set(body) != fields:
         raise ValueError("Supply the exact progress layout fields")
-    if body["renderer"] != RENDERER:
+    if body["renderer"] not in (RENDERER, LEGACY_RENDERER):
         raise ValueError("Unsupported progress renderer")
     if not isinstance(body["revision"], str) or not 1 <= len(body["revision"]) <= 200:
         raise ValueError("A progress file revision is required")
@@ -90,7 +98,7 @@ def _report(body):
         number = body[field]
         if type(number) not in (float, int) or not math.isfinite(number) or not 0 <= number <= 10000000:
             raise ValueError("Invalid progress measurement dimensions")
-    if not 0 < body["width"] <= 100000 or not 0 < body["height"] <= 150:
+    if not 0 < body["width"] <= 100000 or not 0 < body["height"] <= (280 if body["renderer"] == RENDERER else 150):
         raise ValueError("Invalid progress panel size")
     if type(body["fits"]) is not bool or body["reason"] not in (None, "overflow", "unsupported"):
         raise ValueError("Invalid progress fit result")
@@ -100,6 +108,21 @@ def _report(body):
         raise ValueError("Progress dimensions contradict a successful fit")
     if not body["fits"] and body["reason"] is None:
         raise ValueError("A failed fit needs a reason")
+    if body["renderer"] == RENDERER:
+        for field, dimension, content in (("overflowX", "width", "contentWidth"),
+                                         ("overflowY", "height", "contentHeight")):
+            number = body[field]
+            if (type(number) not in (float, int) or not math.isfinite(number)
+                    or number < 0 or abs(number - max(0, body[content] - body[dimension])) > 0.5):
+                raise ValueError("Invalid progress overflow dimensions")
+        if any(type(body[field]) is not int or not 0 <= body[field] <= 2048
+               for field in ("totalLines", "visibleLines")) or body["visibleLines"] > body["totalLines"]:
+            raise ValueError("Invalid progress visible line counts")
+        for field in ("lastVisibleLine", "lastVisibleHeading"):
+            if body[field] is not None and (not isinstance(body[field], str) or len(body[field]) > 200):
+                raise ValueError("Invalid progress visible line description")
+        if body["fits"] and body["visibleLines"] != body["totalLines"]:
+            raise ValueError("A successful fit must show all progress lines")
     return {key: body[key] for key in fields - {"agent", "revision"}}
 
 
@@ -189,6 +212,18 @@ def layout_status(state_dir, agent_id):
     result = {"status": _status(reports), "revision": current["revision"], "sha256": digest,
               "reports": reports,
               "note": "Only current, recent visible-client measurements count. Without a renderer, fit is unmeasured."}
+    measured = [row for row in reports if row["renderer"] == RENDERER and row["reason"] != "unsupported"]
+    if measured:
+        # Describe the least visible client; keep every report and its identity.
+        limiting = min(measured, key=lambda row: (row["visibleLines"], -row["overflowY"], -row["overflowX"]))
+        hidden = limiting["totalLines"] - limiting["visibleLines"]
+        hint = f"Visible: first {limiting['visibleLines']} top-level lines/items."
+        if hidden:
+            label = limiting["lastVisibleHeading"] or limiting["lastVisibleLine"]
+            hint += f" Hidden: {hidden} lines/items" + (f" below {label}." if label else ".")
+        if limiting["overflowX"] or limiting["overflowY"]:
+            hint += f" Overflow: {limiting['overflowY']:.0f}px down, {limiting['overflowX']:.0f}px across."
+        result = {"status": result["status"], "hint": hint, **result}
     if result["status"] == "unmeasured":
         result["reason"], result["next"] = (
             ("expired", "No visible client measured this revision recently. "
@@ -203,15 +238,17 @@ def progress_fit_context(state_dir, agent_id):
     path = progress_path(state_dir, agent_id)
     command = shlex.join([sys.executable, str(Path(__file__).resolve()), str(path), "--wait", "3"])
     return (
-        " The progress panel has no scroll. Its available space depends on the window and font. "
-        "Use a short current status, verified result, next step or blocker. Put details in another file or the chat. "
+        " Put the current status first, then verified results, a next step or a blocker. "
+        "Studio shows the top of long content clipped with a fade; users can expand it and scroll. "
+        "The collapsed budget scales with viewport height, up to 280px. Overflow is allowed. "
         "Use passive Markdown text, headings, lists, inline code and links. Do not use images, tables, fenced code or raw HTML. "
         f"Studio writes renderer feedback to {path.with_name(LAYOUT_FILE)}. Read it, do not edit it. "
-        f"After editing PROGRESS.md, run {command}. Shorten or simplify until the current revision fits. "
-        "Check the required and available pixel sizes, not a guessed number of lines or characters. "
-        "Exit 0 means the current revision fits recent visible clients (or is empty); 1 means it does not fit; "
-        "2 means no current measurement exists; its reason and next fields say what to do. Do not loop or wake another agent. "
-        "A later narrower window can require a shorter status. Studio shows a fit notice instead of partial content."
+        f"After editing PROGRESS.md, run {command} once to check which top-level lines or list items are visible. "
+        "Trim only when important lines are hidden. Do not repeat rewrites just to remove overflow. "
+        "Exit 0 means the current revision is visible, including clipped content (or is empty); "
+        "1 means unsupported content or a file-read error; 2 means no current measurement exists. "
+        "The hint describes the least visible current client. Exact revisions and recent clients remain separate. "
+        "Do not loop or wake another agent. Put details in another file or the chat. "
     )
 
 
@@ -227,16 +264,21 @@ def main():
     try:
         if path.name != "PROGRESS.md" or path.parent.parent.name != "progress":
             raise ValueError("Use the exact per-agent PROGRESS.md path from Studio")
-        deadline = time.monotonic() + args.wait
+        started = time.monotonic()
+        deadline = started + args.wait
         while True:
             result = layout_status(path.parent.parent.parent, path.parent.name)
             if result["status"] != "unmeasured" or time.monotonic() >= deadline:
                 break
             time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        if args.wait and result['status'] == 'unmeasured':
+            result['waitedSeconds'] = round(time.monotonic() - started, 3)
+            result['next'] = ('No client measured the current revision during this wait. '
+                              'Keep a short status until a visible client measures it.')
     except (OSError, ValueError) as error:
         result = {"status": "unmeasured", "error": str(error)}
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return {"fits": 0, "empty": 0, "does_not_fit": 1}.get(result["status"], 2)
+    return {"fits": 0, "clipped": 0, "empty": 0, "does_not_fit": 1}.get(result["status"], 2)
 
 
 if __name__ == "__main__":

@@ -50,8 +50,11 @@ def action(rt, body):
         operations = [o for o in rt._workspace_operations(db, key) if o.get('kind', '').startswith('claude_')]
     if kind == 'state':
         state = {'settings': agent.get('claudeOptions', {}), 'turns': [], 'tasks': []}
-        if agent.get('threadId'):
-            state = rt.connect(agent.get('accountKey', 'default')).call('claude/state', {'threadId': agent['threadId']}, timeout=20)
+        lazy = agent.get('lazyAccountTransfer') or {}
+        account = lazy.get('sourceAccountKey', agent.get('accountKey', 'default'))
+        thread = lazy.get('sourceThreadId') if lazy else agent.get('threadId')
+        if thread and rt.accounts.get(account).get('provider') == 'claude':
+            state = rt.connect(account).call('claude/state', {'threadId': thread}, timeout=20)
         if operations:
             op = operations[0]
             state['controlOperation'] = {field: op.get(field) for field in ('requestId', 'turnId', 'phase', 'error')}
@@ -66,6 +69,8 @@ def action(rt, body):
         if not isinstance(request, str) or not request:
             raise ValueError('Supply a command request identity')
         return rt.send(key, command.strip(), message_id=request, delivery='queue')
+    if agent.get('accountTransferId'):
+        raise ValueError('Finish the account transfer before changing the Claude session')
     if kind == 'stop_task':
         if not agent.get('threadId') or not isinstance(body.get('task_id'), str) or not body['task_id']:
             raise ValueError('Select an active Claude task')
@@ -197,7 +202,7 @@ def action(rt, body):
 def retire_idle_bridge(rt, key, account, server):
     """Retire only an idle native process; Runtime.connect holds start_lock."""
     version = getattr(server, 'initialize_result', {}).get('capabilities', {}).get('claudeVersion')
-    if version == 7 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
+    if version == 14 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
         return False
 
     def eligible(db):
@@ -227,7 +232,7 @@ def retire_idle_bridge(rt, key, account, server):
         agents = eligible(db)
         if agents is False:
             return False
-    if version in {2, 3, 4, 5, 6, 7}:
+    if isinstance(version, int) and version >= 2:
         try:
             for agent in agents:
                 if agent.get('threadId'):

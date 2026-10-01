@@ -2,11 +2,12 @@
 // Browser checks against the production React build, real HTTP and isolated SQLite.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { modelOptions, selectModel } from "./model-picker.mjs";
 const skill = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(skill, "web/package.json"));
 const { chromium } = require("playwright-core");
@@ -85,7 +86,7 @@ try {
     .click();
   await page.locator("#model").waitFor();
   assert.ok(
-    await page.locator('#model option[value="gpt-6-luna"]').count(),
+    (await modelOptions(page.locator("#model"))).includes("gpt-6-luna"),
     "lead settings include models beyond the original two-model filter",
   );
   await page.keyboard.press("Escape");
@@ -185,9 +186,13 @@ try {
     .getByRole("button", { name: "Earlier messages", exact: true })
     .click();
   await poll(
-    async () => (await page.locator(".team-message").count()) === 106,
+    async () =>
+      (await page
+        .locator(".unified-message-scroll")
+        .getAttribute("data-room-retained")) === "106",
     "earlier history",
   );
+  assert.ok((await page.locator(".team-message").count()) < 60);
   await page.waitForTimeout(1100);
   assert.equal(
     await page
@@ -254,7 +259,7 @@ try {
   await page
     .getByRole("button", { name: "Main agent settings", exact: true })
     .click();
-  await page.locator("#model").selectOption("gpt-5.6-sol");
+  await selectModel(page.locator("#model"), "gpt-5.6-sol");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   let loseMessage = true,

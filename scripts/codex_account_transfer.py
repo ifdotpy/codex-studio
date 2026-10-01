@@ -5,11 +5,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import threading
 import time
 import uuid
 
 TERMINAL = {'completed', 'cancelled'}
+MEMBER_TERMINAL = {'completed', 'left'}
 ACTIVE = {'running', 'starting', 'approval'}
 
 
@@ -34,16 +36,21 @@ class AccountTransfers:
         self.copy_lock = threading.Lock()
         with rt.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+            db.execute("CREATE INDEX IF NOT EXISTS runtime_account_transfer_status ON runtime_account_transfers(json_extract(record,'$.status'))")
             for op in rt.records(db, 'account_transfers'):
                 if op.get('status') in TERMINAL:
                     continue
                 dirty = False
                 for member in op['members'].values():
                     if member['phase'] == 'reading':
-                        member['phase'] = 'waiting'
+                        member['phase'] = 'lazy' if member.get('lazy') else 'waiting'
                         dirty = True
-                    elif member['phase'] == 'submitted':
+                    elif member['phase'] in {'submitted', 'lazy_submitted'}:
                         member.update(phase='unknown', error='The server restarted before the transfer receipt arrived. No request was repeated.')
+                        dirty = True
+                    elif member['phase'] == 'interrupting':
+                        member.update(phase='blocked', interruptOutcome='unknown',
+                                      error='The server restarted before the turn interrupt receipt arrived. No request was repeated.')
                         dirty = True
                 if dirty:
                     self.save(db, op)
@@ -71,16 +78,43 @@ class AccountTransfers:
         current = lead.get('accountTransfer') or {}
         if lead.get('accountTransferId') not in {None, op['id']}:
             return
-        if (current.get('id') not in {None, op['id']}
-                and current.get('status') not in TERMINAL):
-            return
+        # A finished earlier transfer does not own the summary. A lead that is
+        # already on the target has no exact pointer to the new operation.
+        if current.get('id') not in {None, op['id']} and lead.get('accountTransferId') != op['id']:
+            if current.get('status') not in TERMINAL or not self.newer(db, op, current['id']):
+                return
         members = list(op['members'].values())
-        lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated')}
-        lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] == 'completed' for m in members),
+        lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated', 'scope', 'finishHistory')}
+        lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] in MEMBER_TERMINAL for m in members),
+            moved=sum(m.get('lazy') or m['phase'] == 'completed' for m in members),
+            nativeHistoryPending=sum(bool(m.get('lazy') and m['phase'] != 'completed') for m in members),
+            movingNow=sum(m['phase'] in {'reading', 'submitted', 'lazy_submitted', 'interrupting'} for m in members),
+            # Old clients also show automatic progress without a new button.
+            canFinishHistory=False, finishHistory=True,
+            interrupted=[{'id': aid, 'name': m.get('name'), 'reason': m.get('interruptReason')}
+                         for aid, m in op['members'].items() if m.get('interruptReason')],
+            leftOnSource=[{'id': aid, 'name': m.get('name'), 'provider': m.get('provider'),
+                           'reason': m.get('reason')} for aid, m in op['members'].items()
+                          if m['phase'] == 'left'],
+            blocked=[{'id': aid, 'name': m.get('name'), 'reason': m.get('error')}
+                     for aid, m in op['members'].items() if m['phase'] in {'blocked', 'unknown'}],
+            waitingCount=sum(m['phase'] not in MEMBER_TERMINAL and m['phase'] not in {'blocked', 'unknown', 'lazy', 'lazy_submitted'}
+                             for m in members),
             waiting=next((m.get('error') or m.get('waiting') for m in members if m.get('error') or m.get('waiting')), None),
             needsAttention=any(m['phase'] in {'blocked', 'unknown'} for m in members),
             canRetry=any(m['phase'] == 'blocked' and not m.get('archiveInvalidated') for m in members))
         self.rt.put(db, 'agents', lead)
+
+    @staticmethod
+    def already_committed(op, m, a):
+        thread = ((m.get('result') or {}).get('thread') or {}).get('id')
+        return bool(thread and a.get('threadId') == thread and not a.get('deletedAt')
+                    and a.get('accountKey', 'default') == op['targetAccountKey']
+                    and a.get('accountTransferId') in {None, op['id']})
+
+    def newer(self, db, op, other_id):
+        row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (other_id,)).fetchone()
+        return row is None or op.get('created', 0) > json.loads(row[0]).get('created', 0)
 
     def check_destination(self, actor, target, db=None):
         self.rt.accounts.home(target)  # Validate the registered account identity.
@@ -98,7 +132,7 @@ class AccountTransfers:
         provider = rt.accounts.get(target).get('provider', 'codex')
         changed = source_provider != provider
         rows = [row for row in catalog.get('data', []) if not row.get('hidden')]
-        current = next((row for row in rows if row.get('model') == agent['model']), None)
+        current = next((row for row in rows if agent['model'] in (row.get('model'), row.get('resolvedModel'))), None)
         if changed or current is None:
             from codex_runtime import DEFAULT_LEAD_MODEL
             default = 'default' if provider == 'claude' else DEFAULT_LEAD_MODEL
@@ -106,20 +140,28 @@ class AccountTransfers:
                 (row for row in rows if row.get('model') == default), None)
             if current is None:
                 raise ValueError('The destination account has no available default model')
-        model = current['model']
+        model = (agent['model'] if not changed and current.get('resolvedModel') == agent['model']
+                 else current['model'])
         fast = bool(agent.get('fastMode', False)) and any(
             tier.get('id') == 'priority' for tier in current.get('serviceTiers', []))
-        effort, native = rt.validate_execution(catalog, model, agent.get('effort'), fast,
-                                               fallback_effort=True)
+        source_effort = None if changed else agent.get('effort')
+        effort, native = rt.validate_execution(catalog, model, source_effort, fast,
+                                               fallback_effort=changed or source_effort is None)
+        # A provider change clears the source-specific override. Keep the
+        # destination's resolved effort in nativeEffort for the first request.
         from codex_daybreak import resolve_program
         daybreak = False if changed else agent.get("daybreakEnabled", False)
         program = resolve_program(catalog, model, daybreak, provider)
         resolved = dict(provider=provider, model=model, effort=effort, nativeEffort=native, fastMode=fast,
                         daybreakEnabled=daybreak, cyberAccessProgram=program)
-        # Worker execution belongs to its own account, not the destination lead.
-        resolved['workerDefaults'] = rt.worker_defaults(agent)
+        # New team workers use the destination. A provider switch needs native
+        # defaults for that provider; same-provider transfers preserve choices.
+        worker_defaults = rt.worker_defaults(agent)
         if changed:
-            resolved['claudeOptions'] = {}
+            worker_defaults.update(model=None, effort='medium', fastMode=False,
+                                   daybreakEnabled=False, cyberAccessProgram='standard')
+        worker_defaults['accountKey'] = target
+        resolved['workerDefaults'] = worker_defaults
         if agent.get('pendingSettings'):
             if agent.get('pendingSettingsAccountKey', agent.get('accountKey', 'default')) != agent.get('accountKey', 'default'):
                 raise ValueError('Queued settings belong to another account. Save them again before transfer')
@@ -135,80 +177,262 @@ class AccountTransfers:
                                 pendingSettingsAccountKey=target)
         return resolved
 
-    def request(self, key, target, request_id):
+    def request(self, key, target, request_id, scope='team'):
         if not isinstance(request_id, str):
             raise ValueError('Supply a transfer request id')
         uuid.UUID(request_id)
+        if scope not in {'team', 'subagents'}:
+            raise ValueError('Choose a team or subagents account transfer')
         rt = self.rt
         rt.accounts.get(target)
         with rt.lock, rt.db() as db:
             lead = rt.checked_actor(db, key)
             if not lead.get('isLead'):
                 raise ValueError('Choose the orchestrator to transfer its team')
+            alias = next(((op, op.get('requests', {}).get(request_id))
+                          for op in rt.records(db, 'account_transfers')
+                          if request_id in op.get('requests', {})), None)
+            if alias:
+                op, receipt = alias
+                if (receipt['leadId'] != key or receipt['targetAccountKey'] != target
+                        or receipt.get('scope', 'team') != scope):
+                    raise ValueError('This transfer id has different content')
+                return op
             row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (request_id,)).fetchone()
             if row:
                 op = json.loads(row[0])
-                if op['leadId'] != key or op['targetAccountKey'] != target:
+                if (op['leadId'] != key or op['targetAccountKey'] != target
+                        or op.get('scope', 'team') != scope):
                     raise ValueError('This transfer id has different content')
                 return op
             old = lead.get('accountTransfer') or {}
             if old and old['status'] not in TERMINAL:
-                if old['targetAccountKey'] == target:
-                    return self.get(db, old['id'])
+                if old['targetAccountKey'] == target and old.get('scope', 'team') == scope:
+                    op = self.get(db, old['id'])
+                    members = [a for a in rt.records(db, 'agents')
+                               if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]
+                    op.setdefault('targetProvider', rt.accounts.get(target).get('provider', 'codex'))
+                    self.adopt(db, op, members, include_later=True)
+                    if lead.get('accountKey', 'default') == target:
+                        defaults = copy.deepcopy(lead.get('workerDefaults') or rt.worker_defaults(lead))
+                        defaults['accountKey'] = target
+                        lead['workerDefaults'] = defaults
+                        rt.put(db, 'agents', lead)
+                    op.setdefault('requests', {})[request_id] = {
+                        'leadId': key, 'targetAccountKey': target, 'scope': scope}
+                    if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
+                        op['status'] = 'completed'
+                    self.save(db, op)
+                    rt.changed.set()
+                    return op
                 raise ValueError('Finish or cancel the current transfer first')
             target_account = rt.accounts.get(target)
             if target_account.get("deleted"):
                 raise ValueError("This account was deleted. Select another destination")
             if target_account.get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
-            # Account migration moves the orchestrator only. Subagents keep
-            # their source account and continue under their existing context.
             members = [a for a in rt.records(db, 'agents')
-                       if a['id'] == key and not a.get('deletedAt')]
-            for a in members:
-                self.check_destination(a, target, db)
+                       if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]
+            target_provider = rt.accounts.get(target).get('provider', 'codex')
             op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
-                  'status': 'pending', 'created': time.time(), 'members': {}}
+                  'status': 'pending', 'scope': scope, 'created': time.time(), 'members': {},
+                  'requests': {request_id: {'leadId': key, 'targetAccountKey': target, 'scope': scope}}}
+            # Subagent-only changes take effect now; team transfers set this as the lead moves.
+            root = rt.agent(key, db)
+            op['targetProvider'] = target_provider
             self.adopt(db, op, members)
-            if all(m["phase"] == "completed" for m in op["members"].values()):
+            if scope == 'subagents' or root.get('accountKey', 'default') == target:
+                defaults = copy.deepcopy(root.get('workerDefaults') or rt.worker_defaults(root))
+                defaults['accountKey'] = target
+                root['workerDefaults'] = defaults
+                rt.put(db, 'agents', root)
+            if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
                 op["status"] = "completed"
             self.save(db, op)
         rt.changed.set()
         return op
 
-    def adopt(self, db, op, agents):
+    def adopt(self, db, op, agents, include_later=False):
+        destination_catalog = None
+        destination_catalog_checked = False
+        destination_catalog_error = None
         for a in agents:
-            # Do not add subagents created after the migration starts.
-            if a['id'] != op['leadId'] or a.get('deletedAt') or a['id'] in op['members']:
+            # This is a snapshot. A later request can adopt descendants created afterwards.
+            if (a.get('deletedAt') or (a['id'] != op['leadId'] and a.get('rootId') != op['leadId'])
+                    or a['id'] in op['members']):
                 continue
+            if not include_later and op.get('created') and a.get('created', 0) > op['created']:
+                continue
+            if op.get('scope', 'team') == 'subagents' and a['id'] == op['leadId']:
+                continue
+            provider = self.rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')
+            if (a['id'] != op['leadId']
+                    and provider != op.get('targetProvider', self.rt.accounts.get(op['targetAccountKey']).get('provider', 'codex'))):
+                op['members'][a['id']] = {'phase': 'left', 'sourceAccountKey': a.get('accountKey', 'default'),
+                    'sourceThreadId': a.get('threadId'), 'provider': provider, 'name': a.get('name'),
+                    'reason': f'Uses {provider}; the destination account uses {op["targetProvider"]}'}
+                continue
+            self.check_destination(a, op['targetAccountKey'], db)
             done = a.get('accountKey', 'default') == op['targetAccountKey']
-            op['members'][a['id']] = {'phase': 'completed' if done else 'waiting',
-                'sourceAccountKey': a.get('accountKey', 'default'), 'sourceThreadId': a.get('threadId')}
-            if not done:
+            active = bool(a.get('inFlight') or a.get('status') in ACTIVE)
+            lazy = not done and not active
+            source_account = a.get('accountKey', 'default')
+            source_thread = a.get('threadId')
+            resolved = None
+            validation_error = None
+            source_settings = self.settings_snapshot(a) if lazy else None
+            source_pending = copy.deepcopy(a.get('pendingSettings'))
+            source_pending_account = a.get('pendingSettingsAccountKey')
+            if lazy:
+                try:
+                    if destination_catalog is None:
+                        if not destination_catalog_checked:
+                            destination_catalog_checked = True
+                            try:
+                                destination_catalog = self.rt.catalog(op['targetAccountKey'])
+                            except Exception as error:
+                                destination_catalog_error = str(error)
+                        if destination_catalog_error:
+                            raise ValueError(destination_catalog_error)
+                    resolved = self.destination_settings(a, op['targetAccountKey'], destination_catalog)
+                    current = self.rt.agent(a['id'], db)
+                    if (self.settings_snapshot(current) != source_settings
+                            or current.get('pendingSettings') != source_pending
+                            or current.get('pendingSettingsAccountKey') != source_pending_account):
+                        raise TransferSettingsConflict(
+                            'Agent settings changed during transfer. The newer choice is preserved')
+                except Exception as error:
+                    validation_error = str(error)
+            op['members'][a['id']] = {'phase': 'completed' if done else
+                                      ('blocked' if validation_error else ('waiting' if active else 'lazy')),
+                'sourceAccountKey': a.get('accountKey', 'default'), 'sourceThreadId': a.get('threadId'),
+                'name': a.get('name'), 'provider': provider, 'lazy': lazy,
+                **({'targetSettings': resolved} if resolved is not None else {}),
+                **({'error': validation_error} if validation_error else {}),
+                'pendingSettings': copy.deepcopy(a.get('pendingSettings')),
+                'sourcePendingSettings': copy.deepcopy(a.get('pendingSettings')),
+                'sourceClaudeOptions': copy.deepcopy(a.get('claudeOptions')),
+                **({'continueAfterTransfer': bool(a.get('autoWake'))} if active else {})}
+            if not done and not validation_error:
                 a['accountTransferId'] = op['id']
+                if lazy:
+                    a['lazyAccountTransfer'] = {'id': op['id'], 'sourceAccountKey': source_account,
+                                                'sourceThreadId': source_thread,
+                                                'sourceState': {field: copy.deepcopy(a.get(field)) for field in (
+                                                    'provider', 'model', 'effort', 'nativeEffort', 'fastMode',
+                                                    'daybreakEnabled', 'cyberAccessProgram', 'workerDefaults',
+                                                    'pendingSettings', 'pendingSettingsAccountKey', 'claudeOptions',
+                                                    'executionSettingsAccountKey', 'status', 'error',
+                                                    'nativeFailureHold')}}
+                    a['accountKey'] = op['targetAccountKey']
+                    if provider != op.get('targetProvider', provider):
+                        from codex_runtime import DEFAULT_LEAD_MODEL
+                        a.update(provider=op['targetProvider'],
+                                 model='default' if op['targetProvider'] == 'claude' else DEFAULT_LEAD_MODEL,
+                                 effort=None, nativeEffort='medium', fastMode=False, daybreakEnabled=False,
+                                 cyberAccessProgram='standard')
+                        a.pop('claudeOptions', None)
+                        a.pop('pendingSettings', None)
+                        a.pop('pendingSettingsAccountKey', None)
+                    defaults = copy.deepcopy(a.get('workerDefaults') or self.rt.worker_defaults(a))
+                    if provider != op.get('targetProvider', provider):
+                        defaults.update(model=None, effort='medium', fastMode=False,
+                                        daybreakEnabled=False, cyberAccessProgram='standard')
+                    defaults['accountKey'] = op['targetAccountKey']
+                    a['workerDefaults'] = defaults
+                    a['pendingSettingsAccountKey'] = op['targetAccountKey'] if a.get('pendingSettings') else None
+                    if not a.get('pendingSettings'):
+                        a['executionSettingsAccountKey'] = source_account
                 self.rt.put(db, 'agents', a)
 
     def action(self, key, action):
-        if action not in {'cancel', 'retry'}:
-            raise ValueError('Choose cancel or retry')
+        if action not in {'cancel', 'retry', 'finish_history'}:
+            raise ValueError('Choose cancel, retry, or finish_history')
         rt = self.rt
         with rt.lock, rt.db() as db:
             op = self.get(db, key)
             if op['status'] in TERMINAL:
                 return op
-            if action == 'cancel':
+            if action == 'finish_history':
+                # Persist only the intent. The scheduler uses the original
+                # member identities and receipt guards without a model turn.
+                op['finishHistory'] = True
+            elif action == 'cancel':
+                lazy_active = [m for m in op['members'].values() if m.get('lazy')
+                               and m['phase'] not in MEMBER_TERMINAL and m['phase'] != 'lazy']
+                if lazy_active:
+                    raise ValueError('A native history move has started. Resolve its receipt before cancelling.')
+                unresolved = [aid for aid, member in op['members'].items()
+                              if member.get('interruptSubmittedAt')
+                              and member.get('interruptOutcome') != 'acknowledged']
+                if unresolved:
+                    raise ValueError('Retry the unresolved turn interruption before cancelling this transfer')
+                active_interrupts = [aid for aid, member in op['members'].items()
+                                     if member.get('interruptOutcome') == 'acknowledged'
+                                     and rt.agent(aid, db).get('inFlight')]
+                if active_interrupts:
+                    raise ValueError('Wait for the active turn interruption to finish before cancelling this transfer')
                 op['status'] = 'cancelled'
                 for aid in op['members']:
                     a = rt.agent(aid, db)
                     if a.get('accountTransferId') == key and op['members'][aid]['phase'] != 'reading':
+                        member = op['members'][aid]
+                        lazy = a.get('lazyAccountTransfer') or {}
+                        if lazy.get('id') == key and member.get('lazy'):
+                            a['accountKey'] = lazy['sourceAccountKey']
+                            for field in ('provider', 'model', 'effort', 'nativeEffort', 'fastMode',
+                                          'daybreakEnabled', 'cyberAccessProgram', 'workerDefaults',
+                                          'pendingSettings', 'pendingSettingsAccountKey', 'claudeOptions',
+                                          'executionSettingsAccountKey'):
+                                if field in lazy.get('sourceState', {}):
+                                    value = lazy['sourceState'][field]
+                                    if value is None:
+                                        a.pop(field, None)
+                                    else:
+                                        a[field] = copy.deepcopy(value)
+                            a.pop('lazyAccountTransfer', None)
+                        if member.get('interruptReason') and member.get('continueAfterTransfer') and a.get('autoWake'):
+                            rt.enqueue(db, a, 'followup',
+                                'The account transfer was cancelled after this turn was interrupted. '
+                                'Continue the existing task on this account from saved context. '
+                                'Preserve completed work and check existing receipts before any command with an unknown outcome.',
+                                'account-transfer-cancel:' + op['id'] + ':' + aid)
+                            a['status'] = 'queued'
                         a.pop('accountTransferId', None)
                         rt.put(db, 'agents', a)
             else:
                 if any(m.get('archiveInvalidated') for m in op['members'].values()):
                     raise ValueError('The source changed after history export. Cancel this transfer and start a new one.')
-                for m in op['members'].values():
+                for aid, m in op['members'].items():
                     if m['phase'] == 'blocked':
-                        m.update(phase='ready' if m.get('result') else 'waiting', error=None, nextCheck=0)
+                        if m.get('lazy'):
+                            a = rt.agent(aid, db)
+                            if not a.get('lazyAccountTransfer'):
+                                try:
+                                    resolved = self.destination_settings(a, op['targetAccountKey'],
+                                                                         rt.catalog(op['targetAccountKey']))
+                                except Exception as error:
+                                    m.update(error=str(error))
+                                    continue
+                                source_account = a.get('accountKey', 'default')
+                                source_thread = a.get('threadId')
+                                a['accountTransferId'] = key
+                                a['lazyAccountTransfer'] = {'id': key, 'sourceAccountKey': source_account,
+                                    'sourceThreadId': source_thread,
+                                    'sourceState': {field: copy.deepcopy(a.get(field)) for field in (
+                                        'provider', 'model', 'effort', 'nativeEffort', 'fastMode',
+                                        'daybreakEnabled', 'cyberAccessProgram', 'workerDefaults',
+                                        'pendingSettings', 'pendingSettingsAccountKey', 'claudeOptions',
+                                        'executionSettingsAccountKey', 'status', 'error', 'nativeFailureHold')}}
+                                a['accountKey'] = op['targetAccountKey']
+                                a.update(resolved)
+                                m['targetSettings'] = resolved
+                                rt.put(db, 'agents', a)
+                        m.update(phase='lazy' if m.get('lazy') else ('ready' if m.get('result') else 'waiting'),
+                                 error=None, nextCheck=0)
+                        if m.get('interruptSubmittedAt'):
+                            for field in ('interruptTurnId', 'interruptSubmittedAt', 'interruptOutcome'):
+                                m.pop(field, None)
                     # Unknown native mutations keep their original callback and receipt.
             self.save(db, op)
         rt.changed.set()
@@ -219,6 +443,40 @@ class AccountTransfers:
             return
         rt = self.rt
         with rt.lock, rt.db() as db:
+            referenced = set()
+            pending = [o for o in rt.records(db, 'account_transfers') if o.get('status') == 'pending']
+            # Read only agent records that can reference a pending transfer.
+            transfer_agents = (db.execute(
+                "SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.accountTransferId') IS NOT NULL OR "
+                "json_extract(record,'$.accountTransfer.id') IS NOT NULL").fetchall() if pending else [])
+            for (raw,) in transfer_agents:
+                agent = json.loads(raw)
+                if agent.get('accountTransferId'):
+                    referenced.add(agent['accountTransferId'])
+                summary_id = (agent.get('accountTransfer') or {}).get('id')
+                if summary_id:
+                    referenced.add(summary_id)
+            # A transfer with no surviving owner reference and no submitted native
+            # mutation cannot advance. Settle it through the same durable receipt path.
+            for orphan in pending:
+                if (orphan.get('status') != 'pending' or orphan['id'] in referenced
+                        or any(member['phase'] not in {'waiting', 'lazy', *MEMBER_TERMINAL}
+                               for member in orphan['members'].values())):
+                    continue
+                orphan['status'] = 'cancelled'
+                orphan['cancelledAt'] = time.time()
+                self.save(db, orphan)
+            # Repair a pending operation whose lead summary still names a
+            # finished earlier transfer; the scan below finds it by summary.
+            for op in pending:
+                if op.get('status') != 'pending':
+                    continue
+                lead = rt.agent(op['leadId'], db)
+                current = lead.get('accountTransfer') or {}
+                if (not lead.get('accountTransferId') and current.get('id') not in {None, op['id']}
+                        and current.get('status') in TERMINAL and self.newer(db, op, current['id'])):
+                    self.save(db, op)
             operations = set()
             for a in agents:
                 if not a.get('isLead'):
@@ -253,9 +511,18 @@ class AccountTransfers:
                 op = self.get(db, key)
                 before = len(op['members'])
                 self.adopt(db, op, agents)
-                dirty = before != len(op['members'])
+                summary = rt.agent(op['leadId'], db).get('accountTransfer') or {}
+                dirty = (before != len(op['members']) or summary.get('canFinishHistory') is not False
+                         or not summary.get('finishHistory'))
                 for aid, member in list(op['members'].items()):
                     a = rt.agent(aid, db)
+                    if member['phase'] in MEMBER_TERMINAL:
+                        continue
+                    if (member['phase'] == 'unknown' and aid not in self.running
+                            and (key, aid) not in self.futures and self.already_committed(op, member, a)):
+                        member.update(phase='completed', error=None, waiting=None)
+                        dirty = True
+                        continue
                     if (a.get('deletedAt') and member['phase'] not in {'submitted', 'unknown', 'ready'}
                             and aid not in self.running and (key, aid) not in self.futures):
                         member.update(phase='completed', waiting=None)
@@ -264,7 +531,40 @@ class AccountTransfers:
                             a.pop('accountTransferId')
                             rt.put(db, 'agents', a)
                         dirty = True
-                    if member['phase'] not in {'waiting', 'ready'} or aid in self.running:
+                    if member['phase'] == 'interrupting':
+                        if not a.get('inFlight') and a['status'] not in ACTIVE:
+                            member.update(phase='waiting', waiting=None, interruptConfirmedAt=time.time())
+                            dirty = True
+                        else:
+                            member['waiting'] = 'Waiting for the active turn to stop'
+                            continue
+                    finish_lazy = member['phase'] == 'lazy'
+                    if (member['phase'] not in {'waiting', 'ready'} and not finish_lazy) or aid in self.running:
+                        continue
+                    if member['phase'] == 'waiting' and (a.get('inFlight') or a['status'] in ACTIVE):
+                        if not a.get('turnId'):
+                            member['waiting'] = 'Waiting for the active turn id before interrupting'
+                            dirty = True
+                            continue
+                        if member.get('interruptTurnId') == a.get('turnId'):
+                            member.update(phase='interrupting', waiting='Waiting for the active turn to stop')
+                            dirty = True
+                            continue
+                        member.update(phase='interrupting', interruptTurnId=a['turnId'],
+                                      interruptSubmittedAt=time.time(), waiting='Interrupting active turn')
+                        member['continueAfterTransfer'] = bool(a.get('autoWake'))
+                        reason = f'Moved to account {self.rt.accounts.get(op["targetAccountKey"]).get("label") or op["targetAccountKey"]}'
+                        member['interruptReason'] = reason
+                        a['error'] = reason
+                        rt.put(db, 'agents', a)
+                        self.save(db, op)
+                        db.commit()
+                        self.running.add(aid)
+                        worker = threading.Thread(target=self.interrupt_for_transfer,
+                            args=(key, aid, a.copy(), member['interruptTurnId']), daemon=True,
+                            name='studio-account-transfer-interrupt')
+                        self.workers.add(worker)
+                        worker.start()
                         continue
                     # Keep the slot until the native receipt, not only submission.
                     # Paginated forks import into one SQLite history database.
@@ -279,15 +579,20 @@ class AccountTransfers:
                         continue
                     self.running.add(aid)
                     busy_targets.add(op['targetAccountKey'])
-                    member.update(nextCheck=time.time() + 10, waiting=None)
+                    member['waiting'] = None
+                    if not finish_lazy:
+                        member['nextCheck'] = time.time() + 10
                     dirty = True
                     # Commit the reservation before the worker reads its receipt.
                     self.save(db, op)
                     db.commit()
-                    worker = threading.Thread(target=self.run, args=(key, aid), daemon=True, name='studio-account-transfer')
+                    if finish_lazy:
+                        self.futures[(key, aid)] = concurrent.futures.Future()
+                    worker = threading.Thread(target=self.run_lazy if finish_lazy else self.run,
+                        args=(key, aid), daemon=True, name='studio-account-transfer')
                     self.workers.add(worker)
                     worker.start()
-                if all(m['phase'] == 'completed' for m in op['members'].values()):
+                if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
                     op['status'] = 'completed'
                     dirty = True
                 if dirty:
@@ -295,16 +600,18 @@ class AccountTransfers:
 
     def local_blocker(self, db, a):
         rt = self.rt
-        from codex_context_repair import blocked
+        from codex_context_repair import blocked, retire_unsent_wait_for_transfer
         from codex_native_tools import account_reserved
         accounts = {a.get('accountKey', 'default')}
         if a.get('accountTransferId'):
             accounts.add(self.get(db, a['accountTransferId'])['targetAccountKey'])
         if any(account_reserved(rt, key) for key in accounts):
             return 'Waiting for the account tool catalog update'
+        retire_unsent_wait_for_transfer(rt, db, a)
         if blocked(a):
             return "Waiting for the exact context repair receipt"
-        if a.get('inFlight') or a['status'] in ACTIVE:
+        lazy_start = bool(a.get('lazyAccountTransfer') and (a.get('startAttempt') or {}).get('submitted') is False)
+        if (a.get('inFlight') or a['status'] in ACTIVE) and not lazy_start:
             return 'Waiting for the current turn'
         if a.get('workspaceOperation'):
             return 'Waiting for the workspace operation'
@@ -314,9 +621,16 @@ class AccountTransfers:
         # A previous backend cannot still deliver its RPC. Carry its uncertainty
         # unchanged; it is not an active operation and must never be replayed.
         boot = rt.started_at
+        attempt_events = (a.get('startAttempt') or {}).get('events', []) if lazy_start else []
+        event_filter = ''
+        event_values = []
+        if attempt_events:
+            event_filter = ' AND id NOT IN (' + ','.join('?' for _ in attempt_events) + ')'
+            event_values = attempt_events
         if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND "
-                      "(status IN ('reserved','dispatching') OR (status='uncertain' AND created>=?)) LIMIT 1",
-                      (a['id'], a['epoch'], boot)).fetchone():
+                      "(status IN ('reserved','dispatching') OR (status='uncertain' AND created>=?))" +
+                      event_filter + " LIMIT 1",
+                      (a['id'], a['epoch'], boot, *event_values)).fetchone():
             return 'Waiting for confirmed message delivery'
         for table, statuses in [('monitors', ACTIVE), ('tasks', ACTIVE | {'pending', 'unknown'}), ('requests', {'pending'})]:
             if db.execute(f"SELECT 1 FROM runtime_{table} WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status') IN ({','.join('?' for _ in statuses)}) LIMIT 1",
@@ -332,6 +646,661 @@ class AccountTransfers:
             if db.execute('SELECT 1 FROM voice_sessions WHERE agent=? AND state IS NOT NULL AND ended IS NULL', (a['id'],)).fetchone():
                 return 'End voice to transfer this agent'
         return None
+
+    def run_lazy(self, key, aid):
+        from codex_runtime import PreparationPending
+        try:
+            with self.rt.lock, self.rt.db() as db:
+                op = self.get(db, key)
+                if self.rt.closed or self.closing or op['status'] != 'pending':
+                    return
+            self.move_lazy(key, aid, background=True)
+        except (PreparationPending, RuntimeError):
+            # move_lazy saves failures and deferred checks before returning.
+            pass
+        finally:
+            with self.rt.lock:
+                self.running.discard(aid)
+                self.workers.discard(threading.current_thread())
+                future = self.futures.pop((key, aid), None)
+                if future and not future.done():
+                    future.set_result(None)
+            self.rt.changed.set()
+
+    def move_lazy(self, key, aid, *, background=False):
+        """Move one rebound idle member's native history before its first start."""
+        rt = self.rt
+        saved_result = None
+        with rt.lock, rt.db() as db:
+            op = self.get(db, key)
+            a = rt.agent(aid, db)
+            member = op['members'][aid]
+            lazy = a.get('lazyAccountTransfer') or {}
+            if lazy.get('id') != key:
+                return a
+            background_receipt = self.futures.get((key, aid))
+            if not background and background_receipt and not background_receipt.done():
+                from codex_runtime import PreparationPending
+                raise PreparationPending(background_receipt)
+            if member.get('result'):
+                saved_result = copy.deepcopy(member['result'])
+            if saved_result is None and member['phase'] == 'unknown':
+                raise RuntimeError(member.get('error') or 'Native history move outcome is unknown; no request was repeated')
+            if saved_result is None and member['phase'] in {'lazy_submitted', 'submitted'}:
+                raise RuntimeError('Native history move receipt is still pending; no request was repeated')
+            if saved_result is None and member['phase'] == 'blocked':
+                raise RuntimeError(member.get('error') or 'Native history move is blocked; retry it explicitly')
+            if saved_result is None and member['phase'] != 'lazy':
+                raise RuntimeError('Native history move is not ready')
+            delay = member.get('nextCheck', 0) - time.time() if saved_result is None else 0
+            if delay > 0:
+                future = concurrent.futures.Future()
+                timer = threading.Timer(delay, lambda: not future.done() and future.set_result(None))
+                timer.daemon = True
+                timer.start()
+                from codex_runtime import PreparationPending
+                raise PreparationPending(future)
+            reason = self.local_blocker(db, a)
+            if reason:
+                member.update(phase='blocked', error=reason)
+                self.save(db, op)
+                db.commit()
+                raise RuntimeError(reason)
+            if saved_result is None:
+                member.update(phase='reading', error=None, source={
+                    'epoch': a.get('epoch'), 'accountKey': lazy['sourceAccountKey'],
+                    'threadId': lazy.get('sourceThreadId'), 'cwd': a.get('cwd')},
+                    settings=self.settings_snapshot(a),
+                    pendingSettings=copy.deepcopy(a.get('pendingSettings')),
+                    pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'))
+            self.save(db, op)
+            db.commit()
+            snapshot = copy.deepcopy(a)
+        if saved_result is not None:
+            try:
+                reusable_settings = False
+                with rt.lock, rt.db() as db:
+                    op = self.get(db, key)
+                    member = op['members'][aid]
+                    a = rt.agent(aid, db)
+                    if isinstance(member.get('targetSettings'), dict):
+                        try:
+                            self.assert_settings(member, a)
+                        except TransferSettingsConflict:
+                            pass
+                        else:
+                            reusable_settings = True
+                if reusable_settings:
+                    return self.commit_lazy(key, aid, saved_result, background=background)
+                catalog = rt.catalog(op['targetAccountKey'])
+                resolved = self.destination_settings(snapshot, op['targetAccountKey'], catalog)
+                with rt.lock, rt.db() as db:
+                    op = self.get(db, key)
+                    member = op['members'][aid]
+                    a = rt.agent(aid, db)
+                    if (a.get('lazyAccountTransfer') or {}).get('id') != key:
+                        return a
+                    member.update(targetSettings=resolved, settings=self.settings_snapshot(a),
+                                  pendingSettings=copy.deepcopy(a.get('pendingSettings')),
+                                  pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'))
+                    self.save(db, op)
+                    db.commit()
+                return self.commit_lazy(key, aid, saved_result, background=background)
+            except Exception as error:
+                with rt.lock, rt.db() as db:
+                    op = self.get(db, key)
+                    member = op['members'][aid]
+                    member.update(phase='blocked', result=saved_result, error=str(error))
+                    self.save(db, op)
+                raise RuntimeError(str(error)) from error
+        try:
+            target = op['targetAccountKey']
+            source_key = lazy['sourceAccountKey']
+            source_thread = lazy.get('sourceThreadId')
+            from codex_native_tools import account_reserved
+            if account_reserved(rt, target) or account_reserved(rt, source_key):
+                raise RuntimeError('Waiting for the account tool catalog update')
+            source = rt.connect(source_key) if source_thread else None
+            server = rt.connect(target)
+            catalog = rt.catalog(target)
+            resolved = self.destination_settings(snapshot, target, catalog)
+            with rt.lock, rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                a = rt.agent(aid, db)
+                if (a.get('lazyAccountTransfer') or {}).get('id') != key:
+                    return a
+                self.assert_settings(member, a)
+            source_path = None
+            portable = 'claude' in {rt.accounts.get(source_key).get('provider', 'codex'),
+                                    rt.accounts.get(target).get('provider', 'codex')}
+            native = None
+            if source:
+                native = source.call('thread/read', {'threadId': source_thread, 'includeTurns': False}, timeout=10)['thread']
+                if native.get('id') != source_thread or native.get('status', {}).get('type') not in {'idle', 'notLoaded', 'systemError'}:
+                    raise ValueError('Source native thread is not idle; the saved input remains queued')
+                if self.wait_for_native_queue(key, aid, source, source_thread):
+                    raise ValueError('Source native thread has queued input; the saved input remains queued')
+                if native.get('status', {}).get('type') in {'idle', 'systemError'}:
+                    jobs = source.call('thread/backgroundTerminals/list', {'threadId': source_thread}, timeout=10)
+                    if jobs.get('data') or jobs.get('nextCursor'):
+                        raise ValueError('Source native thread has background commands; the saved input remains queued')
+                    flushed = rt.submit_reserved(source, 'thread/unsubscribe', {'threadId': source_thread})
+                    source.wait(flushed, timeout=10)
+                if portable:
+                    with rt.lock, rt.db() as db:
+                        op = self.get(db, key)
+                        op['members'][aid]['archiveSourceThread'] = copy.deepcopy(native)
+                        self.save(db, op)
+                if not portable:
+                    if not native.get('path'):
+                        raise ValueError('Codex returned no saved context path')
+                    source_path = self.copy_history(rt.accounts.home(source_key), rt.accounts.home(target), native['path'])
+                if self.wait_for_native_queue(key, aid, source, source_thread):
+                    raise ValueError('Source native thread has queued input; the saved input remains queued')
+            if portable:
+                from codex_portable_history import export_history
+                portable_snapshot = {**snapshot, 'accountKey': source_key, 'threadId': source_thread}
+                descriptor = export_history(rt, portable_snapshot, key, source)
+                resolved['portableHistory'] = descriptor
+                with rt.lock, rt.db() as db:
+                    op = self.get(db, key)
+                    op['members'][aid].update(portableHistory=descriptor, targetSettings=resolved)
+                    self.save(db, op)
+                if not self.archive_source_current(key, aid):
+                    raise RuntimeError('The source changed during history export; cancel this transfer and start a new one')
+            method = 'thread/start'
+            params = rt.new_thread_params({**snapshot, **resolved, 'accountKey': target})
+            params.pop('dynamicTools', None)
+            if source_path:
+                method = 'thread/fork'
+                params.update(threadId=source_thread, path=str(source_path), excludeTurns=True, deferGoalContinuation=True)
+            else:
+                params['dynamicTools'] = rt.tool_definitions({**snapshot, **resolved, 'accountKey': target})
+            with rt.lock, rt.db() as db:
+                op = self.get(db, key)
+                a = rt.agent(aid, db)
+                member = op['members'][aid]
+                if (a.get('lazyAccountTransfer') or {}).get('id') != key:
+                    return a
+                self.assert_settings(member, a)
+                if account_reserved(rt, target):
+                    raise RuntimeError('Waiting for the account tool catalog update')
+                member.update(phase='lazy_submitted', nativeMethod=method, nativeParams=copy.deepcopy(params),
+                              targetSettings=resolved, targetConnection=rt.connection_ids[target], submittedAt=time.time())
+                self.save(db, op)
+                db.commit()
+                future = rt.submit_reserved(server, method, params)
+            result = server.wait(future, timeout=60)
+            if not result.get('thread', {}).get('id'):
+                raise RuntimeError('Native history move returned no thread identity; outcome unknown')
+            # Persist an exact successful receipt before any local validation
+            # can fail. A retry can then reuse this fork and never submit twice.
+            with rt.lock, rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                if member.get('phase') == 'lazy_submitted':
+                    member['result'] = copy.deepcopy(result)
+                    self.save(db, op)
+            if not self.archive_source_current(key, aid):
+                raise RuntimeError('The source changed after history export; the saved fork will not be repeated')
+            return self.commit_lazy(key, aid, result, background=background)
+        except Exception as error:
+            if self.retry_preparation(key, aid, error):
+                with rt.db() as db:
+                    member = self.get(db, key)['members'][aid]
+                    delay = max(0.0, member.get('nextCheck', 0) - time.time())
+                future = concurrent.futures.Future()
+                timer = threading.Timer(delay, lambda: not future.done() and future.set_result(None))
+                timer.daemon = True
+                timer.start()
+                from codex_runtime import PreparationPending
+                raise PreparationPending(future) from error
+            with rt.lock, rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                from codex_runtime import SubmissionRejected
+                rejected = isinstance(error, SubmissionRejected) or str(error) == 'Codex app-server is offline'
+                # commit_lazy can reject adoption after saving the exact fork
+                # receipt (for example, a settings or epoch race). Keep that
+                # known receipt blocked and reusable; do not relabel it unknown.
+                if member.get('phase') == 'blocked' and member.get('result'):
+                    db.commit()
+                    raise RuntimeError(str(error)) from error
+                if member.get('phase') == 'lazy_submitted' and member.get('result'):
+                    member.update(phase='blocked', error=str(error))
+                    self.save(db, op)
+                    db.commit()
+                    raise RuntimeError(str(error)) from error
+                unknown = member.get('phase') == 'lazy_submitted' and not rejected
+                member.update(phase='unknown' if unknown else 'blocked', error=str(error))
+                if rejected:
+                    for field in ('nativeMethod', 'nativeParams', 'targetConnection', 'submittedAt'):
+                        member.pop(field, None)
+                self.save(db, op)
+                a = rt.agent(aid, db)
+                a['error'] = 'Native history move blocked: ' + str(error)
+                rt.put(db, 'agents', a)
+                db.commit()
+            rt.changed.set()
+            raise RuntimeError('Native history move blocked: ' + str(error)) from error
+
+    def commit_lazy(self, key, aid, result, *, background=False):
+        rt = self.rt
+        with rt.lock, rt.db() as db:
+            op = self.get(db, key)
+            a = rt.agent(aid, db)
+            member = op['members'][aid]
+            lazy = a.get('lazyAccountTransfer') or {}
+            if lazy.get('id') != key:
+                return a
+            source_key, source_thread = lazy['sourceAccountKey'], lazy.get('sourceThreadId')
+            if member.get('targetConnection') != rt.connection_ids[op['targetAccountKey']]:
+                member.update(phase='unknown', error='Destination connection changed after history move submission; no request was repeated')
+                self.save(db, op)
+                db.commit()
+                raise RuntimeError(member['error'])
+            expected = member.get('source') or {}
+            if any(a.get(field) != value for field, value in expected.items()
+                   if field in {'epoch', 'threadId', 'cwd'}):
+                member.update(phase='blocked', result=result,
+                              error='Agent state changed while native history moved; the saved fork will not be repeated')
+                self.save(db, op)
+                db.commit()
+                raise RuntimeError(member['error'])
+            if not isinstance(member.get('targetSettings'), dict):
+                member.update(phase='blocked', result=result,
+                              error='Destination settings need validation before this saved history move can finish')
+                self.save(db, op)
+                db.commit()
+                raise RuntimeError(member['error'])
+            try:
+                self.assert_settings(member, a)
+            except TransferSettingsConflict as error:
+                member.update(phase='blocked', result=result, error=str(error))
+                self.save(db, op)
+                db.commit()
+                raise
+            reason = self.local_blocker(db, a)
+            if reason:
+                member.update(phase='blocked', result=result, error=reason)
+                self.save(db, op)
+                db.commit()
+                raise RuntimeError(reason)
+            from codex_native_tools import mark_current, needs_refresh
+            same_codex_provider = (member.get('provider') == 'codex'
+                                   and op.get('targetProvider') == 'codex')
+            inherited_catalog = (a.get('nativeToolCatalog') if same_codex_provider
+                                 and member.get('nativeMethod') == 'thread/fork'
+                                 and not needs_refresh(a, rt.tool_definitions(a)) else None)
+            history = {'transferId': key, 'accountKey': source_key, 'threadId': source_thread,
+                       'provider': member.get('provider'), 'targetAccountKey': op['targetAccountKey'],
+                       'targetProvider': op.get('targetProvider'), 'targetThreadId': result['thread']['id'], 'at': time.time()}
+            if member.get('provider') != op.get('targetProvider') and member.get('sourcePendingSettings'):
+                history['settingsDiscarded'] = {'reason': 'provider_changed',
+                                                'pendingSettings': member.get('sourcePendingSettings')}
+            if member.get('provider') != op.get('targetProvider') and member.get('sourceClaudeOptions'):
+                history['providerOptionsDiscarded'] = {'reason': 'provider_changed',
+                    'claudeOptions': member['sourceClaudeOptions']}
+            if member.get('portableHistory'):
+                history['portableHistory'] = member['portableHistory']
+            a.setdefault('accountHistory', []).append(history)
+            a.update(threadId=result['thread']['id'], turnId=None,
+                     sandbox=result.get('sandbox', a.get('sandbox')),
+                     approvalPolicy=result.get('approvalPolicy', a.get('approvalPolicy')))
+            if inherited_catalog:
+                mark_current(a, rt.tool_definitions(a))
+            a.update(member.get('targetSettings') or {})
+            if member.get('portableHistory'):
+                a['portableHistory'] = copy.deepcopy(member['portableHistory'])
+            a.pop('lazyAccountTransfer', None)
+            a.pop('accountTransferId', None)
+            a.pop('error', None)
+            a.pop('nativeFailureHold', None)
+            a.pop('prepareAttempt', None)
+            a['executionSettingsAccountKey'] = op['targetAccountKey']
+            source_state = lazy.get('sourceState') or {}
+            resume_failed = bool(a.get('autoWake') and source_state.get('status') in {'failed', 'interrupted'}
+                                 and not op.get('finishHistory') and not background)
+            pending_input = db.execute(
+                "SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                "AND status IN ('pending','reserved','dispatching','uncertain') LIMIT 1",
+                (aid, a['epoch'])).fetchone()
+            if resume_failed and not pending_input:
+                rt.enqueue(db, a, 'followup',
+                    'The owner transferred this team to another account. Continue the existing task from its saved context. '
+                    'Preserve completed work. Check existing receipts before any command with an unknown outcome.',
+                    'account-transfer:' + key + ':' + aid)
+            rt.put(db, 'agents', a)
+            member.update(phase='completed', result=result, error=None)
+            if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
+                op['status'] = 'completed'
+            self.save(db, op)
+            db.commit()
+            if member.get('nativeMethod') == 'thread/start':
+                # A newly started, history-free thread may not have a rollout
+                # file until its first turn. Keep this live session loaded so
+                # the first turn does not try to resume an unmaterialized ID.
+                rt.loaded.add(aid)
+            else:
+                rt.loaded.discard(aid)
+            rt.preparations.pop(aid, None)
+        rt.changed.set()
+        return a
+
+    def before_start(self, agent):
+        lazy = agent.get('lazyAccountTransfer') or {}
+        if lazy.get('id'):
+            return self.move_lazy(lazy['id'], agent['id'])
+        return agent
+
+    @staticmethod
+    def missing_rollout_error(error, thread_id):
+        message = str(error or '')
+        return (f'no rollout found for thread id {thread_id}' in message
+                or f'invalid paginated history lineage for {thread_id}: missing source rollout' in message)
+
+    @staticmethod
+    def _thread_has_completed_turn(db, agent, thread_id):
+        rows = db.execute('SELECT record FROM runtime_items WHERE agent=? AND '
+                          "json_extract(record,'$.threadId')=?", (agent['id'], thread_id)).fetchall()
+        for item in rows:
+            record = json.loads(item[0])
+            turn_id = record.get('turnId')
+            if record.get('turnStatus') == 'completed' or (turn_id and db.execute(
+                    'SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                    (agent['id'] + ':' + str(turn_id),)).fetchone()):
+                return True
+        attempt = agent.get('startAttempt') or {}
+        attempt_thread = attempt.get('threadId') or (attempt.get('actionIdentity') or {}).get('threadId')
+        attempt_turn = attempt.get('turnId')
+        return bool(attempt_thread == thread_id and attempt_turn and db.execute(
+            'SELECT 1 FROM runtime_completed_turns WHERE id=?',
+            (agent['id'] + ':' + str(attempt_turn),)).fetchone())
+
+    @staticmethod
+    def source_history_missing(home, thread_id, reported_error=None):
+        """Prove a source rollout and its native paginated records are absent."""
+        home = Path(home).resolve()
+        state_db = home / 'state_5.sqlite'
+        history_db = home / 'thread_history_1.sqlite'
+        if not state_db.is_file() or not history_db.is_file():
+            return None
+        try:
+            state = sqlite3.connect(state_db.as_uri() + '?mode=ro', uri=True)
+            try:
+                row = state.execute('SELECT rollout_path,history_mode FROM threads WHERE id=?',
+                                    (thread_id,)).fetchone()
+            finally:
+                state.close()
+            if not row or row[1] != 'paginated' or not row[0]:
+                return None
+            rollout = Path(row[0]).resolve()
+            if not rollout.is_relative_to(home) or rollout.exists():
+                return None
+            if reported_error is not None and str(rollout) not in str(reported_error):
+                return None
+            history = sqlite3.connect(history_db.as_uri() + '?mode=ro', uri=True)
+            try:
+                tables = {r[0] for r in history.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                required = {'thread_turns', 'thread_items'}
+                if not required.issubset(tables):
+                    return None
+                names = required | ({'thread_realtime_items'} & tables)
+                counts = {name: history.execute(
+                    f'SELECT count(*) FROM "{name}" WHERE thread_id=?', (thread_id,)).fetchone()[0]
+                          for name in names}
+            finally:
+                history.close()
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+        if any(counts.values()):
+            return None
+        return {'threadId':thread_id, 'rolloutMissing':True, 'nativeTurns':0,
+                'nativeItems':0, 'nativeRealtimeItems':counts.get('thread_realtime_items', 0)}
+
+    def missing_source_transfer(self, db, agent):
+        """Find a completed member whose source rollout copy failed before submission."""
+        thread_id = agent.get('threadId')
+        if not thread_id:
+            return None
+        for row in db.execute('SELECT record FROM runtime_account_transfers'):
+            op = json.loads(row[0])
+            member = (op.get('members') or {}).get(agent['id']) or {}
+            if (member.get('phase') != 'completed' or member.get('sourceThreadId') != thread_id
+                    or member.get('sourceAccountKey') != agent.get('accountKey', 'default')
+                    or not member.get('error') or '[Errno 2]' not in str(member['error'])
+                    or member.get('result') or member.get('nativeMethod')):
+                continue
+            proof = self.source_history_missing(self.rt.accounts.home(member['sourceAccountKey']),
+                                                thread_id, member['error'])
+            if proof:
+                return op, member, proof
+        return None
+
+    def recover_empty_transferred_thread(self, aid):
+        """Replace a proven empty transferred thread without touching input receipts."""
+        rt = self.rt
+        saved = None
+        with rt.lock, rt.db() as db:
+            a = rt.agent(aid, db)
+            recovery = a.get('emptyTransferRecovery') or {}
+            if recovery.get('phase') == 'completed':
+                return copy.deepcopy(recovery['report'])
+            if recovery.get('phase') in {'submitting', 'unknown'}:
+                return {'status':'unknown', 'agentId':aid, 'threadId':recovery.get('sourceThreadId'),
+                        'requestId':recovery.get('id'),
+                        'error':recovery.get('error') or 'The fresh thread receipt is unresolved; no request was repeated.',
+                        'replayed':False}
+            thread_id = a.get('threadId')
+            source_transfer = self.missing_source_transfer(db, a)
+            if (not thread_id or (not source_transfer
+                                  and not self.missing_rollout_error(a.get('error'), thread_id))):
+                raise ValueError('The agent has no exact missing-rollout failure to recover')
+            history = next((item for item in reversed(a.get('accountHistory') or [])
+                            if item.get('targetThreadId') == thread_id and item.get('threadId') is None), None)
+            source_history_missing = None
+            if source_transfer:
+                op, member, source_history_missing = source_transfer
+                transfer_id = op['id']
+                source_account = member['sourceAccountKey']
+                target_account = op['targetAccountKey']
+            elif history:
+                transfer_id = history.get('transferId')
+                source_account = history.get('accountKey', 'default')
+                target_account = history.get('targetAccountKey', a.get('accountKey', 'default'))
+            else:
+                raise ValueError('The missing thread has no transfer receipt proving an empty source')
+            row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (transfer_id,)).fetchone()
+            if not row:
+                raise ValueError('The source transfer receipt is unavailable')
+            op = json.loads(row[0])
+            member = (op.get('members') or {}).get(aid) or {}
+            result = member.get('result') or {}
+            new_empty_thread = (member.get('nativeMethod') == 'thread/start'
+                                and member.get('sourceThreadId') is None
+                                and result.get('thread', {}).get('id') == thread_id)
+            missing_source = (source_history_missing is not None
+                              and member.get('sourceThreadId') == thread_id
+                              and member.get('sourceAccountKey') == a.get('accountKey', 'default'))
+            if member.get('phase') != 'completed' or not (new_empty_thread or missing_source):
+                raise ValueError('The transfer receipt does not prove this was a new empty thread')
+            missing_history_evidence = copy.deepcopy(source_history_missing)
+            if new_empty_thread and self.missing_rollout_error(a.get('error'), thread_id):
+                missing_history_evidence = {'threadId':thread_id, 'rolloutMissing':True,
+                                            'lineageSourceMissing':True, 'nativeTurns':0}
+            if self._thread_has_completed_turn(db, a, thread_id):
+                raise ValueError('The transferred thread has a completed turn and cannot be replaced')
+            pending = db.execute("SELECT id,kind,status FROM runtime_events WHERE agent=? AND epoch=? "
+                                 "AND status IN ('reserved','dispatching','uncertain')", (aid, a['epoch'])).fetchall()
+            if pending:
+                raise ValueError('An input receipt is unresolved; the empty thread cannot be replaced yet')
+            connection_id = rt.connection_ids.get(target_account)
+            if not connection_id:
+                raise ValueError('The target account is offline')
+            settings = self.settings_snapshot(a)
+            if source_history_missing and member.get('settings') and member['settings'] != settings:
+                raise ValueError('Agent settings changed after the source history transfer failed')
+            target_settings = copy.deepcopy(member.get('targetSettings') or {})
+            if not target_settings and target_account != a.get('accountKey', 'default'):
+                target_settings = self.destination_settings(a, target_account, rt.catalog(target_account))
+            if recovery.get('phase') == 'checking':
+                if (recovery.get('sourceThreadId') != thread_id or recovery.get('epoch') != a['epoch']
+                        or recovery.get('accountKey') != target_account
+                        or recovery.get('settings') != settings):
+                    raise ValueError('The saved empty-thread check belongs to a different agent state')
+            else:
+                recovery = {'id':str(uuid.uuid4()), 'phase':'checking', 'sourceThreadId':thread_id,
+                            'transferId':op['id'], 'agentId':aid, 'epoch':a['epoch'],
+                            'accountKey':target_account, 'sourceAccountKey':source_account,
+                            'connectionId':connection_id,
+                            'settings':settings,
+                            'sourceHistoryMissing':copy.deepcopy(missing_history_evidence),
+                            'startedAt':time.time(),
+                            'failedInputIds':[r[0] for r in db.execute(
+                                "SELECT id FROM runtime_events WHERE agent=? AND epoch=? AND kind='user' "
+                                "AND status='failed' ORDER BY created,id",
+                                (aid,a['epoch']))]}
+                params = rt.new_thread_params({**a, **target_settings, 'accountKey':target_account})
+                params['dynamicTools'] = rt.tool_definitions({**a, **target_settings, 'accountKey':target_account})
+                recovery['targetSettings'] = target_settings
+                recovery['nativeParams'] = copy.deepcopy(params)
+            a['emptyTransferRecovery'] = copy.deepcopy(recovery)
+            rt.put(db, 'agents', a)
+            db.commit()
+            saved = copy.deepcopy(a)
+        account = target_account
+        agent_account = source_account if source_history_missing else target_account
+        server = rt.connect(account)
+        mutation_submitted = False
+        try:
+            # Confirm that the native thread has no turns. A successful empty
+            # page is sufficient; only the exact missing-rollout errors qualify.
+            verifier = rt.connect(source_account) if source_history_missing else server
+            try:
+                native = verifier.call('thread/read', {'threadId':thread_id, 'includeTurns':False}, timeout=10)
+                thread = native.get('thread') if isinstance(native, dict) else None
+                if not isinstance(thread, dict) or thread.get('id') != thread_id:
+                    raise ValueError('Native thread identity changed during recovery')
+            except Exception as error:
+                if not self.missing_rollout_error(error, thread_id):
+                    raise
+            try:
+                page = verifier.call('thread/turns/list', {'threadId':thread_id, 'limit':100,
+                                      'sortDirection':'asc', 'itemsView':'full'}, timeout=10)
+                if not isinstance(page, dict) or not isinstance(page.get('data'), list):
+                    raise ValueError('Native turn history returned an invalid page')
+                if page['data'] or page.get('nextCursor'):
+                    raise ValueError('The transferred thread has saved turns and cannot be replaced')
+            except Exception as error:
+                if not self.missing_rollout_error(error, thread_id):
+                    raise
+            # Mark the one mutating request immediately before sending it. A
+            # restart during read-only checking can safely repeat those reads.
+            with rt.lock, rt.db() as db:
+                current = rt.agent(aid, db)
+                stored = current.get('emptyTransferRecovery') or {}
+                if (stored.get('id') != saved['emptyTransferRecovery']['id']
+                        or stored.get('phase') != 'checking' or current.get('threadId') != thread_id
+                        or current.get('epoch') != saved['epoch']
+                        or current.get('accountKey', 'default') != agent_account
+                        or stored.get('accountKey') != account
+                        or rt.connection_ids.get(account) != connection_id
+                        or self.settings_snapshot(current) != settings):
+                    raise ValueError('Agent or connection changed before fresh thread start')
+                if self._thread_has_completed_turn(db, current, thread_id):
+                    raise ValueError('The transferred thread has a completed turn and cannot be replaced')
+                unresolved = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                                        "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                                        (aid, current['epoch'])).fetchone()
+                if unresolved:
+                    raise ValueError('An input receipt became unresolved; the empty thread cannot be replaced yet')
+                stored['phase'] = 'submitting'
+                rt.put(db, 'agents', current)
+                db.commit()
+                params = copy.deepcopy(stored['nativeParams'])
+                saved['emptyTransferRecovery'] = copy.deepcopy(stored)
+            mutation_submitted = True
+            result = server.call('thread/start', params, timeout=30)
+            new_thread = (result.get('thread') or {}).get('id') if isinstance(result, dict) else None
+            if not isinstance(new_thread, str) or not new_thread or new_thread == thread_id:
+                raise RuntimeError('Fresh thread start returned no new identity; outcome unknown')
+        except Exception as error:
+            with rt.lock, rt.db() as db:
+                current = rt.agent(aid, db)
+                stored = current.get('emptyTransferRecovery') or {}
+                expected_phase = 'submitting' if mutation_submitted else 'checking'
+                if (stored.get('id') == saved['emptyTransferRecovery']['id']
+                        and stored.get('phase') == expected_phase):
+                    stored.update(phase='unknown' if mutation_submitted else 'checking', error=str(error)[:1000])
+                    current['emptyTransferRecovery'] = stored
+                    rt.put(db, 'agents', current)
+                    db.commit()
+            raise RuntimeError('Fresh thread recovery is unresolved; no retry was submitted: ' + str(error)) from error
+        with rt.lock, rt.db() as db:
+            current = rt.agent(aid, db)
+            stored = current.get('emptyTransferRecovery') or {}
+            if (stored.get('id') != saved['emptyTransferRecovery']['id']
+                    or current.get('threadId') != thread_id or current.get('epoch') != saved['epoch']
+                    or current.get('accountKey', 'default') != agent_account
+                    or stored.get('accountKey') != account
+                    or rt.connection_ids.get(account) != connection_id
+                    or self.settings_snapshot(current) != settings):
+                stored.update(phase='unknown', error='Agent or connection changed after thread start; saved receipt retained.')
+                current['emptyTransferRecovery'] = stored
+                rt.put(db, 'agents', current)
+                db.commit()
+                raise RuntimeError(stored['error'])
+            stored.pop('error', None)
+            report = {'status':'recovered', 'agentId':aid, 'transferId':op['id'],
+                      'oldThreadId':thread_id, 'threadId':new_thread,
+                      'failedInputIds':stored.get('failedInputIds', []),
+                      'resendableFailedInputIds':stored.get('failedInputIds', []), 'replayed':False,
+                      'next':'The owner may explicitly resend the listed failed user inputs after reviewing them. '
+                            'Pending events remain pending. No input was replayed.'}
+            current.setdefault('accountHistory', []).append({
+                'transferId':op['id'], 'recoveryId':stored['id'], 'accountKey':source_account,
+                'threadId':thread_id, 'targetAccountKey':account, 'targetThreadId':new_thread,
+                'reason':'empty_transferred_thread', 'sourceHistoryMissing':copy.deepcopy(missing_history_evidence),
+                'at':time.time()})
+            transfer_receipt = self.get(db, op['id'])
+            receipt_member = (transfer_receipt.get('members') or {}).get(aid) or {}
+            receipt_member['emptyThreadRecovery'] = {
+                'recoveryId':stored['id'], 'sourceThreadId':thread_id,
+                'replacementThreadId':new_thread, 'failedInputIds':stored.get('failedInputIds', []),
+                'replayed':False, 'sourceHistoryMissing':copy.deepcopy(missing_history_evidence),
+                'completedAt':time.time()}
+            if missing_history_evidence:
+                receipt_member['sourceHistoryMissing'] = copy.deepcopy(missing_history_evidence)
+            if source_history_missing:
+                receipt_member['result'] = copy.deepcopy(result)
+                receipt_member['nativeMethod'] = 'thread/start'
+                receipt_member.pop('error', None)
+            transfer_receipt['members'][aid] = receipt_member
+            self.save(db, transfer_receipt)
+            if source_history_missing:
+                current['accountKey'] = account
+                current.update(stored.get('targetSettings') or {})
+                current['executionSettingsAccountKey'] = account
+                current.pop('lazyAccountTransfer', None)
+                current.pop('accountTransferId', None)
+            current.update(threadId=new_thread, turnId=None, status='failed',
+                           error=('Source native history is missing. A fresh native thread is ready. '
+                                  'Saved inputs were not replayed.' if source_history_missing else
+                                  'Previous transferred thread had no saved rollout. A fresh native thread is ready. '
+                                  'Failed inputs were not resent; see recovery.resendableFailedInputIds.'),
+                           emptyTransferRecovery={**stored, 'phase':'completed', 'threadId':new_thread,
+                                                  'completedAt':time.time(), 'report':report})
+            current.pop('prepareAttempt', None)
+            current.pop('preparedContext', None)
+            rt.put(db, 'agents', current)
+            db.commit()
+            rt.loaded.discard(aid)
+            rt.preparations.pop(aid, None)
+            rt.loaded.add(aid)
+        rt.changed.set()
+        return report
 
     def update(self, key, aid, **changes):
         with self.rt.lock, self.rt.db() as db:
@@ -549,6 +1518,8 @@ class AccountTransfers:
                 self.futures[(key, aid)] = submitted
             server.on_result(submitted, lambda future: self.received(key, aid, future))
         except Exception as error:
+            if self.retry_preparation(key, aid, error):
+                return
             with rt.lock, rt.db() as db:
                 op = self.get(db, key)
                 m = op['members'][aid]
@@ -566,6 +1537,44 @@ class AccountTransfers:
                 if op['status'] == 'cancelled' and a.get('accountTransferId') == key:
                     a.pop('accountTransferId', None)
                     rt.put(db, 'agents', a)
+            rt.changed.set()
+
+    def interrupt_for_transfer(self, key, aid, agent, turn_id):
+        """Interrupt one active native turn without touching queued event receipts."""
+        rt = self.rt
+        try:
+            server = rt.servers.get(agent.get('accountKey', 'default'))
+            if not server or not agent.get('threadId'):
+                raise RuntimeError('The active native turn cannot be reached to interrupt it')
+            stream = getattr(rt, '_stream_buffer', None)
+            if stream:
+                with rt.lock, rt.db() as db:
+                    stream.flush_locked(db, account=agent.get('accountKey', 'default'),
+                                        thread_id=agent['threadId'], force=True)
+            try:
+                server.call('turn/interrupt', {'threadId': agent['threadId'], 'turnId': turn_id}, timeout=10)
+            except Exception as error:
+                current = rt.agent(aid)
+                if current.get('inFlight') and current.get('turnId') == turn_id:
+                    raise RuntimeError(f'Interrupt acknowledgement is unknown: {error}')
+            with rt.lock, rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                if member.get('phase') == 'interrupting' and member.get('interruptTurnId') == turn_id:
+                    member['interruptOutcome'] = 'acknowledged'
+                    member['waiting'] = 'Waiting for the active turn to stop'
+                    self.save(db, op)
+        except Exception as error:
+            with rt.lock, rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                if member.get('phase') == 'interrupting' and member.get('interruptTurnId') == turn_id:
+                    member.update(phase='blocked', error=str(error), waiting=None)
+                    self.save(db, op)
+        finally:
+            with rt.lock:
+                self.running.discard(aid)
+                self.workers.discard(threading.current_thread())
             rt.changed.set()
 
     @staticmethod
@@ -609,6 +1618,18 @@ class AccountTransfers:
             rt.changed.set()
 
     def retry_preparation(self, key, aid, error):
+        from codex_catalog import CatalogPending
+        if isinstance(error, CatalogPending):
+            with self.rt.lock, self.rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                if (op['status'] != 'pending' or member['phase'] != 'reading'
+                        or any(member.get(field) for field in ('submittedAt', 'nativeMethod', 'result'))):
+                    return False
+                member.update(phase='lazy' if member.get('lazy') else 'waiting', error=None,
+                              waiting='Waiting for the destination model list', nextCheck=time.time() + 1)
+                self.save(db, op)
+            return True
         from codex_native_errors import NativeRpcError
         # Codex 0.153.4 returns this before fork_thread. Other internal errors
         # can follow creation and must retain their unknown outcome.
@@ -620,7 +1641,7 @@ class AccountTransfers:
         with self.rt.lock, self.rt.db() as db:
             op = self.get(db, key)
             member = op['members'][aid]
-            if op['status'] != 'pending' or member['phase'] not in {'submitted', 'unknown'}:
+            if op['status'] != 'pending' or member['phase'] not in {'submitted', 'unknown', 'lazy_submitted'}:
                 return False
             rejections = member.setdefault('preparationRejections', [])
             if not any(r['submittedAt'] == member.get('submittedAt') for r in rejections):
@@ -630,7 +1651,7 @@ class AccountTransfers:
             if len(rejections) > 3:
                 member.update(phase='blocked', error=message, waiting=None)
             else:
-                member.update(phase='waiting', error=None,
+                member.update(phase='lazy' if member.get('lazy') else 'waiting', error=None,
                               waiting='Codex history database is busy; retrying',
                               nextCheck=time.time() + 2 ** len(rejections))
             self.save(db, op)
@@ -639,6 +1660,14 @@ class AccountTransfers:
     def commit(self, db, op, a):
         rt = self.rt
         m = op['members'][a['id']]
+        if self.already_committed(op, m, a):
+            # A second commit of the same receipt: the first one moved the agent.
+            m.update(phase='completed', error=None, waiting=None)
+            if op['status'] == 'pending' and all(member['phase'] in MEMBER_TERMINAL
+                                                 for member in op['members'].values()):
+                op['status'] = 'completed'
+            self.save(db, op)
+            return
         self.assert_source(m, a)
         if rt.closed or self.closing or a.get('accountTransferId') != op['id'] or self.local_blocker(db, a):
             return
@@ -649,7 +1678,8 @@ class AccountTransfers:
         self.check_destination(a, target, db)
         rt.usage_resume_cancel(db, a, 'The chat moved to another account.')
         result = m['result']
-        resume_failed = a.get('autoWake') and a.get('status') in {'failed', 'interrupted'}
+        resume_failed = a.get('autoWake') and (a.get('status') in {'failed', 'interrupted'}
+                                                or m.get('continueAfterTransfer'))
         source_provider = rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')
         target_provider = rt.accounts.get(target).get('provider', 'codex')
         from codex_native_tools import digest, needs_refresh, mark_current
@@ -671,6 +1701,10 @@ class AccountTransfers:
         a.update(accountKey=target, threadId=result['thread']['id'], turnId=None,
                  sandbox=result.get('sandbox', a.get('sandbox')), approvalPolicy=result.get('approvalPolicy', a.get('approvalPolicy')))
         a.update(m['targetSettings'])
+        if a.get('isLead'):
+            defaults = copy.deepcopy(a.get('workerDefaults') or rt.worker_defaults(a))
+            defaults['accountKey'] = target
+            a['workerDefaults'] = defaults
         if inherited_catalog and inherited_catalog['digest'] == digest(rt.tool_definitions(a)):
             mark_current(a, rt.tool_definitions(a))
         if source_provider != target_provider:
@@ -685,20 +1719,26 @@ class AccountTransfers:
             a['error'] = None
             pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND status='pending' LIMIT 1",
                                  (a['id'], a['epoch'])).fetchone()
-            if not pending:
+            if not pending or m.get('continueAfterTransfer'):
                 rt.enqueue(db, a, 'followup',
                     'The owner transferred this team to another account. Continue the existing task from its saved context. '
                     'Preserve completed work. Check existing receipts before any command with an unknown outcome.',
                     'account-transfer:' + op['id'] + ':' + a['id'])
-            else:
+            if pending or m.get('continueAfterTransfer'):
                 a['status'] = 'queued'
         rt.put(db, 'agents', a)
         m.update(phase='completed', error=None, waiting=None)
-        if op['status'] == 'pending' and all(member['phase'] == 'completed' for member in op['members'].values()):
+        if op['status'] == 'pending' and all(member['phase'] in MEMBER_TERMINAL
+                                             for member in op['members'].values()):
             op['status'] = 'completed'
         self.save(db, op)
         db.commit()
-        rt.loaded.discard(a['id'])
+        if m.get('nativeMethod') == 'thread/start':
+            # thread/start can return before Codex materializes a paginated
+            # rollout. The first turn must use this live session directly.
+            rt.loaded.add(a['id'])
+        else:
+            rt.loaded.discard(a['id'])
         rt.preparations.pop(a['id'], None)
 
     def copy_history(self, source_home, target_home, path):

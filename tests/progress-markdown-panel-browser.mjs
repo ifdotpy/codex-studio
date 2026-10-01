@@ -150,6 +150,7 @@ try {
   );
   const panel = page.getByRole("region", { name: "Agent progress" });
   const current = panel.locator(".agent-panel-current");
+  await panel.getByRole("button", { name: "Show", exact: true }).click();
   await current.getByText("Initial", { exact: false }).waitFor();
   await page.locator("#history").evaluate((el) => (el.scrollTop = 321));
   await page.locator("#composer").fill("Keep my draft and focus");
@@ -214,6 +215,31 @@ try {
     await dialog.waitFor({ state: "hidden" });
   };
   await page.evaluate(() => window.panelMode("offline"));
+  await panel.getByRole("button", { name: "Hide", exact: true }).click();
+  await panel
+    .getByRole("button", {
+      name: "Cannot read PROGRESS.md. Error details",
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await panel.getAttribute("data-hidden"), "yes");
+  await panel
+    .locator(".agent-panel-compact-saved")
+    .getByText("Saved copy", { exact: true })
+    .waitFor();
+  await panel
+    .getByRole("button", {
+      name: "Cannot read PROGRESS.md. Error details",
+      exact: true,
+    })
+    .click();
+  const compactError = page.getByRole("dialog", { name: "Progress error" });
+  await compactError
+    .getByText("Connection interrupted", { exact: true })
+    .waitFor();
+  await page.keyboard.press("Escape");
+  await compactError.waitFor({ state: "hidden" });
+  await panel.getByRole("button", { name: "Show", exact: true }).click();
   await closeError(await readError("Connection interrupted"));
   const diagnostic = {
     message: "Read denied",
@@ -283,7 +309,8 @@ try {
   );
   await current
     .getByText("Other workspace content.", { exact: true })
-    .waitFor();
+    .waitFor({ state: "attached" });
+  await panel.getByRole("button", { name: "Show", exact: true }).click();
   await page.evaluate(() => window.resolvePanel());
   await page.waitForTimeout(50);
   assert.equal(
@@ -315,19 +342,36 @@ try {
     "Long progress.\n\n" +
     Array.from({ length: 30 }, (_, i) => `- Step ${i}`).join("\n");
   await page.evaluate((value) => window.panelResponse(value), next(long));
-  await panel.getByText("Progress does not fit.", { exact: true }).waitFor();
-  assert.equal(await current.count(), 0);
+  await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
+  assert.equal(await current.count(), 1);
   const geometry = await panel.evaluate((el) => {
     const content = el.querySelector(".agent-panel-content");
     return {
       height: el.getBoundingClientRect().height,
-      scroll: content.scrollHeight > content.clientHeight,
+      clipped: content.scrollHeight > content.clientHeight,
       overflow: getComputedStyle(content).overflowY,
+      fade: getComputedStyle(content).maskImage,
     };
   });
-  assert.ok(geometry.height <= 150.5);
-  assert.equal(geometry.scroll, false);
-  assert.notEqual(geometry.overflow, "auto");
+  assert.ok(geometry.height <= 196.5);
+  assert.equal(geometry.clipped, true);
+  assert.equal(geometry.overflow, "clip");
+  assert.match(geometry.fade, /linear-gradient/);
+  await panel.getByRole("button", { name: "Expand", exact: true }).click();
+  assert.equal(await panel.getAttribute("data-expanded"), "yes");
+  assert.ok((await panel.boundingBox()).height <= 350.5);
+  await panel.locator(".agent-panel-content").evaluate((el) => {
+    if (getComputedStyle(el).overflowY !== "auto")
+      throw Error("Expand must scroll");
+    el.scrollTop = el.scrollHeight;
+    if (!el.scrollTop) throw Error("The full file must be accessible");
+  });
+  await panel.getByRole("button", { name: "Collapse", exact: true }).click();
+  assert.equal(await panel.getAttribute("data-expanded"), "no");
+  assert.equal(
+    await panel.locator(".agent-panel-content").evaluate((el) => el.scrollTop),
+    0,
+  );
   await page.evaluate(
     (value) => window.panelResponse(value),
     next(
@@ -364,7 +408,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    `PASS ${browserType.name()}: file polling, hide/resume, deadlines, scoped late replies, explicit read errors, empty/removal, rejected unsupported/overflow content, bounded height and unchanged composer/history`,
+    `PASS ${browserType.name()}: file polling, hide/resume, deadlines, scoped late replies, explicit read errors, empty/removal, unsupported rejection, clipped overflow and expansion, bounded height and unchanged composer/history`,
   );
 } finally {
   await browser?.close();

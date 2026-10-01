@@ -52,6 +52,7 @@ try {
     supportsDelete: true,
     logins: [],
   });
+  const transferRequests = [];
   let transferCalls = 0,
     defaultAccountCalls = 0,
     disconnectCalls = 0,
@@ -74,10 +75,30 @@ try {
   await page.route("**/api/accounts", (route) =>
     route.fulfill({ json: state() }),
   );
-  await page.route("**/api/accounts/default", async (route) => {
-    defaultAccountCalls++;
-    defaultAccountKey = route.request().postDataJSON().account_key;
-    await route.fulfill({ json: state() });
+  await page.route("**/api/models?*", (route) =>
+    route.fulfill({
+      json: {
+        data: [
+          {
+            model: "gpt-6-luna",
+            displayName: "Luna",
+            provider: "codex",
+            isDefault: true,
+            supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/conversation", async (route) => {
+    const body = route.request().postDataJSON();
+    await route.fulfill({
+      json: {
+        id: body.id,
+        accountKey: "default",
+        workerDefaults: body.worker_defaults,
+      },
+    });
   });
   await page.route("**/api/accounts/disconnect", async (route) => {
     disconnectCalls++;
@@ -112,6 +133,14 @@ try {
   });
   await page.route("**/api/agents/account-transfer", async (route) => {
     transferCalls++;
+    const body = route.request().postDataJSON();
+    transferRequests.push(body);
+    if (
+      body.scope === "subagents" &&
+      transferRequests.filter((request) => request.scope === "subagents")
+        .length === 1
+    )
+      return route.abort();
     await route.fulfill({ json: { status: "pending" } });
   });
   const limits = (route) => ({
@@ -193,6 +222,43 @@ try {
     .click();
   await transfer.waitFor({ state: "hidden" });
   assert.equal(transferCalls, 1);
+  await page
+    .getByRole("button", { name: "Subagent defaults", exact: true })
+    .click();
+  const subagentAccount = page.getByLabel("Subagent account", { exact: true });
+  const defaults = page.getByRole("dialog", {
+    name: "Subagent defaults",
+    exact: true,
+  });
+  assert.equal(
+    await defaults.getByRole("button", { name: /Save/ }).count(),
+    0,
+    "The account choice applies at once",
+  );
+  await subagentAccount.selectOption("work");
+  await page.locator(".execution-error[role=alert]").waitFor();
+  assert.equal(transferCalls, 2, "the account choice transfers without a save");
+  assert.equal(
+    await subagentAccount.inputValue(),
+    "",
+    "a failed transfer reverts the account",
+  );
+  const subagentTransferResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/agents/account-transfer"),
+  );
+  await defaults.getByRole("button", { name: "Retry", exact: true }).click();
+  await subagentTransferResponse;
+  await defaults
+    .getByRole("status")
+    .filter({ hasText: /^Saved/ })
+    .waitFor();
+  assert.equal(transferCalls, 3);
+  assert.ok(transferRequests[1].request_id);
+  assert.equal(transferRequests[1].request_id, transferRequests[2].request_id);
+  assert.equal(transferRequests[2].account_key, "work");
+  assert.equal(transferRequests[2].scope, "subagents");
+  assert.equal(await subagentAccount.inputValue(), "work");
+  await page.keyboard.press("Escape");
   await picker.click();
   await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
   const manager = page.getByRole("dialog", { name: "Accounts", exact: true });

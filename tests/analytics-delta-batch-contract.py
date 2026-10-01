@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Differential contract for aggregated live assistant-delta analytics."""
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 import sys
@@ -44,6 +45,7 @@ def make_store(item_state, *, fail=False):
         if fail:
             db.execute("CREATE TRIGGER reject_delta BEFORE INSERT ON analytics_notifications "
                        "WHEN NEW.method='item/agentMessage/delta' BEGIN SELECT RAISE(ABORT,'injected'); END")
+    db.commit()
     return store, db
 
 
@@ -55,23 +57,32 @@ def capture_rows(db):
 
 
 class DeltaBatchContract(unittest.TestCase):
-    def compare_case(self, item_state, *, fail=False):
+    def compare_case(self, item_state, *, fail=False, separate=False):
         sequential, seq_db = make_store(item_state, fail=fail)
         aggregated, agg_db = make_store(item_state, fail=fail)
+        seq_caller, agg_caller = seq_db, agg_db
+        if separate:
+            @contextmanager
+            def analytics_connection(connection):
+                with connection:
+                    yield connection
+            sequential.analytics_db = lambda: analytics_connection(seq_db)
+            aggregated.analytics_db = lambda: analytics_connection(agg_db)
+            seq_caller, agg_caller = sqlite3.connect(':memory:'), sqlite3.connect(':memory:')
         with patch('codex_analytics.time.time', return_value=9000):
             for sample, at in zip(SAMPLES, TIMES):
-                sequential.analytics_safe(seq_db, sequential.analytics_event, AGENT,
+                sequential.analytics_safe(seq_caller, sequential.analytics_event, AGENT,
                                           'item/agentMessage/delta', sample, at=at)
-            aggregated.analytics_delta_batch_safe(agg_db, AGENT, SAMPLES, at_values=TIMES)
+            aggregated.analytics_delta_batch_safe(agg_caller, AGENT, SAMPLES, at_values=TIMES)
             final = {'threadId': 'thread', 'turnId': 'turn',
                      'item': {'id': 'item', 'type': 'agentMessage', 'text': 'authoritative final'}}
-            sequential.analytics_safe(seq_db, sequential.analytics_event, AGENT,
+            sequential.analytics_safe(seq_caller, sequential.analytics_event, AGENT,
                                       'item/completed', final, at=8000)
-            aggregated.analytics_safe(agg_db, aggregated.analytics_event, AGENT,
+            aggregated.analytics_safe(agg_caller, aggregated.analytics_event, AGENT,
                                       'item/completed', final, at=8000)
         self.assertEqual(capture_rows(seq_db), capture_rows(agg_db))
         turn = json.loads(agg_db.execute('SELECT record FROM analytics_turns').fetchone()[0])
-        expected_first_output = 8000 if fail else 1200 if item_state == 'finished' else 7201
+        expected_first_output = 1200 if item_state == 'finished' else 8000 if fail else 7201
         self.assertEqual(turn['firstOutputAt'], expected_first_output)
         item = json.loads(agg_db.execute('SELECT record FROM analytics_items').fetchone()[0])
         self.assertEqual(item['output']['bytes'], len('authoritative final'.encode('utf-8')))
@@ -80,6 +91,11 @@ class DeltaBatchContract(unittest.TestCase):
         if fail:
             errors = json.loads(agg_db.execute("SELECT value FROM analytics_meta WHERE key='captureErrors'").fetchone()[0])
             self.assertEqual(errors['count'], len(SAMPLES))
+        if separate:
+            self.assertEqual(seq_caller.execute("SELECT name FROM sqlite_master").fetchall(), [])
+            self.assertEqual(agg_caller.execute("SELECT name FROM sqlite_master").fetchall(), [])
+            seq_caller.close()
+            agg_caller.close()
         seq_db.close()
         agg_db.close()
 
@@ -87,6 +103,12 @@ class DeltaBatchContract(unittest.TestCase):
         for state in ('missing', 'open', 'finished'):
             with self.subTest(item_state=state):
                 self.compare_case(state)
+
+    def test_separate_analytics_database_preserves_equivalence_and_fallback(self):
+        for state in ('missing', 'open', 'finished'):
+            for fail in (False, True):
+                with self.subTest(item_state=state, fail=fail):
+                    self.compare_case(state, fail=fail, separate=True)
 
     def test_fast_path_failure_rolls_back_before_per_sample_fallback(self):
         self.compare_case('open', fail=True)

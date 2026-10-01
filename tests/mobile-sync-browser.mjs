@@ -10,6 +10,8 @@ const { createServer } = await import(
 );
 const streams = new Set();
 let opened = 0;
+let revision = 1;
+const streamScopes = [];
 const server = await createServer({
   configFile: false,
   root: fileURLToPath(new URL("../web", import.meta.url)),
@@ -21,8 +23,13 @@ const server = await createServer({
         server.middlewares.use("/api/sync/stream", (_request, response) => {
           response.setHeader("Content-Type", "text/event-stream");
           response.setHeader("Cache-Control", "no-cache");
-          response.write('data: "RESYNC"\n\n');
+          response.write(`data: ${revision}\n\n`);
           opened++;
+          streamScopes.push(
+            new URL(_request.url, "http://localhost").searchParams.get(
+              "scope",
+            ) || "legacy",
+          );
           streams.add(response);
           response.on("close", () => streams.delete(response));
         });
@@ -53,7 +60,6 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  let revision = 1;
   let identities = 0;
   const pulls = [];
   const pullCursors = [];
@@ -71,6 +77,7 @@ try {
     const after = Number(url.searchParams.get("after"));
     pulls.push(scope);
     pullCursors.push({ scope, after });
+    const entityScope = scope === "state:entities:v1";
     return route.fulfill({
       json: {
         workspaceId,
@@ -78,9 +85,22 @@ try {
           scope !== "drafts" && after < revision
             ? [
                 {
-                  id: scope,
+                  id: entityScope ? "entity:agent:lead" : scope,
                   seq: revision,
-                  payload: JSON.stringify({ revision }),
+                  payload: JSON.stringify(
+                    entityScope
+                      ? {
+                          collection: "agent",
+                          id: "lead",
+                          value: {
+                            id: "lead",
+                            name: `Agent ${revision}`,
+                            status: "running",
+                            source: "managed",
+                          },
+                        }
+                      : { revision },
+                  ),
                 },
               ]
             : [],
@@ -115,23 +135,31 @@ try {
   await page.waitForFunction(
     () =>
       Object.values(window.values).length === 3 &&
-      Object.values(window.values).every((v) => v?.revision === 1),
+      window.values.state?.runtime?.agents?.[0]?.name === "Agent 1" &&
+      window.values.team?.revision === 1 &&
+      window.values["history:lead"]?.revision === 1,
   );
-  await until(() => streams.size === 1, "All scopes share one live stream");
-  assert.equal(opened, 1, "Mounting three scopes and drafts opens one stream");
+  await until(
+    () => streams.size === 3,
+    `Each active sync scope opens a live stream, opened=${opened} scopes=${streamScopes.join(",")} pulls=${pulls.join(",")}`,
+  );
+  assert.equal(opened, 3, "Entity, legacy, and transcript scopes open streams");
   await delay(250);
   const beforeBurst = pulls.length;
   revision = 2;
   for (let index = 0; index < 30; index++)
-    for (const stream of streams) stream.write('data: "RESYNC"\n\n');
-  await page.waitForFunction(() =>
-    Object.values(window.values).every((v) => v?.revision === 2),
+    for (const stream of streams) stream.write(`data: ${revision}\n\n`);
+  await page.waitForFunction(
+    () =>
+      window.values.state?.runtime?.agents?.[0]?.name === "Agent 2" &&
+      window.values.team?.revision === 2 &&
+      window.values["history:lead"]?.revision === 2,
   );
   await delay(150);
   assert.equal(
     pulls.length - beforeBurst,
     4,
-    "A burst causes one pull per distinct scope, including drafts",
+    "A burst causes one pull per subscribed projection scope, including draft replication",
   );
 
   await page.evaluate(() => {
@@ -143,7 +171,7 @@ try {
   });
   await until(
     () => streams.size === 0,
-    "Backgrounding closes the shared socket",
+    "Backgrounding closes the live sockets",
   );
   await delay(100);
   const hiddenPulls = pulls.length;
@@ -160,21 +188,27 @@ try {
     window.dispatchEvent(new Event("pageshow"));
     window.dispatchEvent(new Event("online"));
   });
-  await page.waitForFunction(() =>
-    Object.values(window.values).every((v) => v?.revision === 3),
+  await page.waitForFunction(
+    () =>
+      window.values.state?.runtime?.agents?.[0]?.name === "Agent 3" &&
+      window.values.team?.revision === 3 &&
+      window.values["history:lead"]?.revision === 3,
   );
   assert.ok(
     Date.now() - resumedAt < 1500,
     "Visible state recovers without waiting for fallback polling",
   );
   await page.waitForFunction(() => window.resumeCalls === 1);
-  await until(() => opened === 2, "Resume opens the replacement stream");
+  await until(
+    () => opened >= 6,
+    `Resume opens replacement streams, opened=${opened} scopes=${streamScopes.join(",")}`,
+  );
   assert.equal(
     await page.evaluate(() => window.resumeCalls),
     1,
     "One PWA return invokes each resume consumer once",
   );
-  assert.equal(opened, 2, "One PWA return creates one replacement stream");
+  assert.equal(opened, 6, "One PWA return recreates each live stream");
 
   await page.evaluate(() => {
     Object.defineProperty(navigator, "onLine", {
@@ -188,7 +222,7 @@ try {
   await delay(120);
   assert.equal(
     opened,
-    2,
+    6,
     "History restore does not open a socket while offline",
   );
   await page.evaluate(() => {
@@ -198,8 +232,8 @@ try {
     });
     window.dispatchEvent(new Event("online"));
   });
-  await until(() => streams.size === 1, "Online recreates the stream");
-  assert.equal(opened, 3);
+  await until(() => streams.size === 3, "Online recreates the streams");
+  assert.equal(opened, 9);
   await page.evaluate(() => {
     for (const stop of window.stops) stop();
     window.stopResume();
@@ -228,36 +262,42 @@ try {
       () => {},
     );
   });
-  await page.waitForFunction(() => window.value?.revision === 4);
+  await page.waitForFunction(
+    () => window.value?.runtime?.agents?.[0]?.name === "Agent 4",
+  );
   assert.equal(
-    pullCursors.find((pull) => pull.scope === "state:chat").after,
+    pullCursors.find((pull) => pull.scope === "state:entities:v1").after,
     0,
     "The new projection starts with its own checkpoint",
   );
   assert.ok(
-    pulls.slice(beforeCompact).includes("state:chat"),
-    "The current client always uses the compact state scope",
+    pulls.slice(beforeCompact).includes("state:entities:v1"),
+    "The current client uses the entity projection scope",
   );
   assert.ok(
     !pulls.slice(beforeCompact).includes("state"),
-    "Compact clients do not fetch the full state projection",
+    "Entity clients do not fetch the legacy state projection",
   );
   const localState = await page.evaluate(async () => {
     const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
     return {
-      state: JSON.parse((await db.projections.findOne("state").exec()).payload),
+      ready: (await db.projections.findOne("state:entities:ready").exec())
+        ?.payload,
+      entity: JSON.parse(
+        (await db.projections.findOne("entity:agent:lead").exec()).payload,
+      ),
       remote: Boolean(await db.projections.findOne("state:chat").exec()),
     };
   });
   assert.equal(
-    localState.state.revision,
-    4,
-    "A new response replaces the existing cached state",
+    localState.entity.value.name,
+    "Agent 4",
+    "A new response replaces the cached entity",
   );
   assert.equal(
-    localState.remote,
-    false,
-    "All subscribers use the same local state identity",
+    localState.ready,
+    "ready",
+    "The entity projection publishes its ready marker",
   );
   await page.evaluate(() => window.stopCompact());
 
@@ -276,14 +316,16 @@ try {
     ).syncDatabase();
     return {
       workspaceId,
-      value: JSON.parse((await db.projections.findOne("state").exec()).payload),
+      value: JSON.parse(
+        (await db.projections.findOne("entity:agent:lead").exec()).payload,
+      ),
       elapsed: performance.now() - started,
     };
   });
   assert.equal(cached.workspaceId, workspaceId);
   assert.equal(
-    cached.value.revision,
-    4,
+    cached.value.value.name,
+    "Agent 4",
     "Offline startup retains the cached server projection",
   );
   assert.equal(
@@ -297,7 +339,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: one shared SSE, coalesced pulls, hidden/offline suspension, resume recovery, complete disposal, cached offline startup",
+    "PASS: scoped SSE, coalesced pulls, hidden/offline suspension, resume recovery, complete disposal, cached offline startup",
   );
 } finally {
   await browser.close();

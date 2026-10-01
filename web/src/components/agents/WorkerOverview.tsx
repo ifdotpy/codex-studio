@@ -1,4 +1,6 @@
 import type { Agent, Json } from "../../types";
+import type { WorktreeDiskSnapshot } from "../../hooks/useWorktreeDisk";
+import { TeamDiskTotal } from "../WorktreeDisk";
 
 export function awaitingAnswerIds(requests: Json[]) {
   return new Set(
@@ -22,48 +24,67 @@ export function workerState(
     return deferred?.has(agent.id) ? "waiting" : "answer";
   if (["failed", "interrupted"].includes(agent.status)) return "attention";
   if (["running", "starting"].includes(agent.status)) return "working";
+  if (agent.status === "parked") return "waiting";
   if (agent.status === "completed") return "completed";
+  // A paused worker was stopped. It does not wait for input or delivery.
+  if (agent.status === "paused") return "stopped";
   return "waiting";
 }
+
+export const TEAM_STATES = [
+  ["answer", "Need you"],
+  ["attention", "Failed"],
+  ["working", "Working"],
+  ["waiting", "Waiting"],
+  ["stopped", "Stopped"],
+  ["completed", "Finished"],
+] as const;
+
+// Keep active work at the top of the panel in compact and grouped layouts.
+export const TEAM_PANEL_STATES = [
+  ...TEAM_STATES.filter(([state]) => state === "working"),
+  ...TEAM_STATES.filter(([state]) => state !== "working"),
+];
 
 export function TeamSummary({
   workers,
   answers,
   deferred,
+  disk,
 }: {
   workers: Agent[];
   answers: Set<string>;
   deferred: Set<string>;
+  disk?: WorktreeDiskSnapshot;
 }) {
   const count = (state: string) =>
     workers.filter((agent) => workerState(agent, answers, deferred) === state)
       .length;
+  const working = count("working");
+  const answer = count("answer");
+  // One sentence for the current activity; each state then appears once.
+  const headline = [
+    working
+      ? `${working} ${working === 1 ? "subagent is" : "subagents are"} working.`
+      : "No subagent is working.",
+    answer > 0 && `${answer} ${answer === 1 ? "needs" : "need"} your answer.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <div className="team-overview" aria-label="Team status summary">
+      <p className="team-headline">{headline}</p>
       <dl>
-        {[
-          ["working", "Working"],
-          ["answer", "Need you"],
-          ["completed", "Finished"],
-        ].map(([state, label]) => (
-          <div
-            key={state}
-            data-team-count={state}
-            data-active={count(state) > 0}
-          >
-            <dt>{label}</dt>
-            <dd>{count(state)}</dd>
-          </div>
-        ))}
+        {TEAM_STATES.filter(([state]) => count(state) > 0).map(
+          ([state, label]) => (
+            <div key={state} data-team-count={state}>
+              <dt>{label}</dt>
+              <dd>{count(state)}</dd>
+            </div>
+          ),
+        )}
       </dl>
-      <p aria-hidden={count("waiting") === 0 && count("attention") === 0}>
-        {[
-          count("waiting") > 0 && `${count("waiting")} waiting`,
-          count("attention") > 0 && `${count("attention")} need attention`,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-      </p>
+      <TeamDiskTotal workers={workers} disk={disk} />
     </div>
   );
 }

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import uuid
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -145,6 +146,57 @@ class ReviewRuntimeContract(unittest.TestCase):
         conflict = self.invoke({'request_id': 'review-fixture', 'target': {'type': 'baseBranch', 'branch': 'other'}})
         self.assertFalse(conflict['success'])
         self.assertFalse(self.server.reviews)
+
+    def test_non_repository_failure_settles_and_reconciles_without_child(self):
+        nonrepo_temp = tempfile.TemporaryDirectory(prefix='studio-review-outside-')
+        self.addCleanup(nonrepo_temp.cleanup)
+        nonrepo = Path(nonrepo_temp.name)
+        self.update(self.parent['id'], cwd=str(nonrepo))
+        failed = self.invoke({'request_id': 'require-repository-failure'})
+        self.assertFalse(failed['success'], failed)
+        self.assertIn('needs a git repository', failed['contentItems'][0]['text'])
+        key = self.parent['threadId'] + ':review:require-repository-failure'
+        receipt = self.rt.request_action(self.parent['id'], {'action': 'get', 'request_id': key})
+        self.assertEqual(receipt['outcome'], 'not_applied')
+        self.assertEqual(receipt['stage'], 'failed')
+        self.assertEqual(receipt['result']['contentItems'][0]['text'], failed['contentItems'][0]['text'])
+        with self.rt.db() as db:
+            child = db.execute('SELECT 1 FROM runtime_agents WHERE id=?',
+                               (str(uuid.uuid5(uuid.NAMESPACE_URL, key)),)).fetchone()
+        self.assertIsNone(child)
+        self.assertEqual(self.server.reviews, [])
+
+        legacy_key = self.parent['threadId'] + ':review:legacy-review-failure'
+        preserved = {'success': False, 'contentItems': [{'type': 'inputText', 'text': 'original failure'}]}
+        with self.rt.lock, self.rt.db() as db:
+            self.rt.put(db, 'tool_requests', {'id': legacy_key, 'agent': self.parent['id'],
+                'tool': 'orchestration_review', 'stage': 'failed', 'outcome': 'unknown',
+                'result': preserved, 'updated': 1})
+            result = self.rt.reconcile_tool_requests(db, self.parent['id'])
+        self.assertIn(legacy_key, result['reconciled'])
+        reconciled = self.rt.request_action(self.parent['id'], {'action': 'get', 'request_id': legacy_key})
+        self.assertEqual(reconciled['outcome'], 'not_applied')
+        self.assertEqual(reconciled['result'], preserved)
+
+    def test_review_tool_schema_exposes_cwd(self):
+        definition = next(tool for tool in self.rt.tool_definitions(self.parent)
+                          if tool['name'] == 'orchestration_review')
+        self.assertIn('cwd', definition['inputSchema']['properties'])
+        self.assertIn('repository folder for the review; defaults to the agent cwd',
+                      definition['description'])
+
+    def test_failure_after_reviewer_creation_stays_uncertain(self):
+        original_put = self.rt.put
+        def fail_after_child(db, table, row):
+            original_put(db, table, row)
+            if table == 'agents' and row.get('nativeReview'):
+                raise OSError('post-creation write failed')
+        with patch.object(self.rt, 'put', side_effect=fail_after_child):
+            failed = self.invoke({'request_id': 'post-create-write-failure'})
+        self.assertFalse(failed['success'])
+        key = self.parent['threadId'] + ':review:post-create-write-failure'
+        receipt = self.rt.request_action(self.parent['id'], {'action': 'get', 'request_id': key})
+        self.assertEqual(receipt['outcome'], 'unknown')
 
     def test_receipt_recovery_reports_current_child(self):
         request_id = 'recovery-direct'

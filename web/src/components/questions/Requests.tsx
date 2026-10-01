@@ -262,6 +262,9 @@ function RequestCard({
   };
   const p = r.params || {},
     asynchronous = r.method === "agent/asyncQuestion",
+    stdinApproval =
+      r.method === "item/commandExecution/requestApproval" &&
+      p.kind === "writeStdin",
     question =
       ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(
         r.method,
@@ -299,7 +302,9 @@ function RequestCard({
                   : question
                     ? "Answer required"
                     : approval
-                      ? "Approval required"
+                      ? stdinApproval
+                        ? "Terminal input approval required"
+                        : "Approval required"
                       : "Request"}
             </span>
           </div>
@@ -323,7 +328,7 @@ function RequestCard({
               </p>
             )}
           {!open && questions.length > 1 && <p>{questions.length} questions</p>}
-          {(p.command || r.preview?.command) && (
+          {!stdinApproval && (p.command || r.preview?.command) && (
             <pre className="request-command">
               {commandText(p.command || r.preview.command)}
             </pre>
@@ -387,7 +392,7 @@ function RequestCard({
                 disabled={sending}
                 onClick={() => void post({ decision: "decline" })}
               >
-                Decline
+                {stdinApproval ? "Decline input" : "Decline"}
               </Button>
               <Button
                 variant="filled"
@@ -395,7 +400,7 @@ function RequestCard({
                 disabled={sending}
                 onClick={() => void post({ decision: "accept" })}
               >
-                Approve
+                {stdinApproval ? "Allow input" : "Approve"}
               </Button>
             </>
           ) : (

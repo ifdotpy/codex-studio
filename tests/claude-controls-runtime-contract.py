@@ -138,6 +138,47 @@ class Controls(unittest.TestCase):
         self.assertEqual(self.call('state')['turns'], [])
         self.call('settings', settings={'permissionMode': 'default'})
 
+    def set_lazy_transfer(self):
+        self.rt.accounts.get.side_effect = lambda account: {'provider': 'claude', 'status': 'ready'}
+        with self.rt.lock, self.rt.db() as db:
+            agent = self.rt.agent(self.key, db)
+            agent.update(accountKey='destination', accountTransferId='transfer',
+                         lazyAccountTransfer={'id': 'transfer', 'sourceAccountKey': 'default',
+                                              'sourceThreadId': 'source-thread'})
+            self.rt.put(db, 'agents', agent)
+
+    def test_lazy_transfer_state_reads_original_claude_profile(self):
+        self.set_lazy_transfer()
+        calls = []
+        def native(method, params, timeout=60):
+            calls.append((method, params))
+            self.assertEqual(params['threadId'], 'source-thread')
+            return copy.deepcopy(self.server.state)
+        with patch.object(self.rt, 'connect', side_effect=lambda account: self.server if account == 'default' else self.fail('Destination has no source session')):
+            with patch.object(self.server, 'call', side_effect=native):
+                state = self.call('state')
+        self.assertEqual(state['turns'], self.server.state['turns'])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.rt.agent(self.key)['accountTransferId'], 'transfer')
+
+    def test_lazy_transfer_from_codex_has_no_claude_session_state(self):
+        self.set_lazy_transfer()
+        self.account_patch.stop()
+        with patch.object(self.rt.accounts, 'get', side_effect=lambda key: {'provider': 'codex' if key == 'default' else 'claude'}):
+            with patch.object(self.rt, 'connect', side_effect=AssertionError('No Claude source session')):
+                state = self.call('state')
+        self.assertEqual(state['turns'], [])
+        self.assertEqual(state['tasks'], [])
+
+    def test_transfer_blocks_session_mutations_before_native_access(self):
+        self.set_lazy_transfer()
+        for kind, body in [('settings', {'settings': {}, 'request_id': 'settings'}),
+                           ('rollback', {'turn_id': 't2', 'request_id': 'rollback'}),
+                           ('stop_task', {'task_id': 'task'})]:
+            with self.subTest(kind=kind), patch.object(self.rt, 'connect', side_effect=AssertionError('Transfer owns the session')):
+                with self.assertRaisesRegex(ValueError, 'account transfer'):
+                    self.call(kind, **body)
+
     def test_idle_bridge_upgrade_preserves_tasks_and_invalidates_before_close(self):
         self.server.initialize_result = {'capabilities': {'claudeVersion': 2}}
         self.server.provider_options = {}
@@ -153,6 +194,13 @@ class Controls(unittest.TestCase):
         self.server.close = close
         self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {'customModels': []}}, self.server))
         self.assertNotIn('default', self.rt.servers)
+
+    def test_current_bridge_version_stays_and_checks_native_tasks(self):
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 14}}
+        self.server.provider_options = {}
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
+        self.server.state['tasks'] = [{'task_id': 'background'}]
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {'customModels': []}}, self.server))
 
     def test_bridge_upgrade_waits_for_studio_monitors(self):
         self.server.initialize_result = {'capabilities': {'claudeVersion': 2}}

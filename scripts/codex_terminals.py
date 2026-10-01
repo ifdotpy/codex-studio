@@ -31,6 +31,7 @@ class TerminalManager:
         self.connection = None
         self.native_root = self.root / "terminal-server"
         self.native_root.mkdir(mode=0o700, exist_ok=True)
+        self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         with self.db() as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS user_terminals (id TEXT PRIMARY KEY, record TEXT NOT NULL, output TEXT NOT NULL, offset INTEGER NOT NULL)"
@@ -45,9 +46,13 @@ class TerminalManager:
             )
             db.execute("CREATE INDEX IF NOT EXISTS user_terminal_output_end "
                        "ON user_terminal_output (terminal,end)")
+            db.execute("CREATE TABLE IF NOT EXISTS user_terminal_event_cursor "
+                       "(terminal TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS user_terminal_decoder_state "
+                       "(terminal TEXT PRIMARY KEY, pending BLOB NOT NULL)")
             for row in db.execute("SELECT id,record FROM user_terminals"):
                 record = json.loads(row["record"])
-                if record["status"] == "running":
+                if record["status"] == "running" and not self.supervisor_mode:
                     record.update(
                         status="exited",
                         error="The server restarted. This shell cannot be resumed.",
@@ -58,6 +63,18 @@ class TerminalManager:
                         "UPDATE user_terminals SET record=? WHERE id=?",
                         (json.dumps(record), row["id"]),
                     )
+                elif record["status"] == "running":
+                    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                    pending = db.execute("SELECT pending FROM user_terminal_decoder_state WHERE terminal=?",
+                                         (row["id"],)).fetchone()
+                    if pending:
+                        decoder.setstate((bytes(pending[0]), 0))
+                    self.processes[row["id"]] = {
+                        "server": None, "connection": None,
+                        "pid_path": self.native_root / (row["id"] + ".pid"),
+                        "decoder": decoder,
+                        "eventSequence": 0,
+                    }
 
     @contextmanager
     def db(self):
@@ -158,7 +175,8 @@ class TerminalManager:
                 }
                 from codex_runtime import SubmissionUnknown
                 try:
-                    submitted = server.submit("process/spawn", params)
+                    submitted = server.submit("process/spawn", params,
+                                              operation_id="terminal-spawn:" + key)
                 except SubmissionUnknown as error:
                     submitted = error.submitted
                 server.on_result(submitted, lambda future: self.spawn_result(key, data["id"], future))
@@ -208,7 +226,11 @@ class TerminalManager:
             '[features]\nplugins = false\nremote_plugin = false\napps = false\nskip_host_skill_discovery = true\n')
         connection = self.connection = object()
         self.server = AppServer(self.native_root, self.notification, lambda _: None,
-                                lambda: self.disconnected(connection), home=home, isolated=True)
+                                lambda: self.disconnected(connection), home=home, isolated=True,
+                                supervisor_handle="terminals")
+        for owned in self.processes.values():
+            owned["server"] = self.server
+            owned["connection"] = connection
         return self.server
 
     def notification(self, message):
@@ -219,7 +241,11 @@ class TerminalManager:
             if owned is None:
                 return
             if method == "process/outputDelta":
-                self.append(key, owned["decoder"].decode(base64.b64decode(params["deltaBase64"], validate=True)))
+                sequence = message.get("_studioSupervisorSequence")
+                decoder = owned["decoder"]
+                text = decoder.decode(base64.b64decode(params["deltaBase64"], validate=True))
+                self.append(key, text, supervisor_sequence=sequence,
+                            decoder_pending=decoder.getstate()[0])
                 return
         if method == "process/exited":
             # Codex kills one process group. Interactive jobs use other groups.
@@ -253,13 +279,31 @@ class TerminalManager:
             self.terminate(owned)
             self.finish(key, error="The terminal connection closed. The exit code is unknown.")
 
-    def append(self, key, text):
-        if not text:
+    def append(self, key, text, *, supervisor_sequence=None, decoder_pending=None):
+        if not text and supervisor_sequence is None and decoder_pending is None:
             return
         with self.lock, self.db() as db:
+            if supervisor_sequence is not None:
+                row = db.execute("SELECT sequence FROM user_terminal_event_cursor WHERE terminal=?", (key,)).fetchone()
+                if row and supervisor_sequence <= row[0]:
+                    return
+            if not text:
+                if decoder_pending is not None:
+                    db.execute("INSERT INTO user_terminal_decoder_state VALUES (?,?) "
+                               "ON CONFLICT(terminal) DO UPDATE SET pending=excluded.pending",
+                               (key, sqlite3.Binary(decoder_pending)))
+                if supervisor_sequence is not None:
+                    db.execute("INSERT INTO user_terminal_event_cursor VALUES (?,?) "
+                               "ON CONFLICT(terminal) DO UPDATE SET sequence=excluded.sequence",
+                               (key, supervisor_sequence))
+                return
             row = db.execute(
                 "SELECT output,offset FROM user_terminals WHERE id=?", (key,)
             ).fetchone()
+            if decoder_pending is not None:
+                db.execute("INSERT INTO user_terminal_decoder_state VALUES (?,?) "
+                           "ON CONFLICT(terminal) DO UPDATE SET pending=excluded.pending",
+                           (key, sqlite3.Binary(decoder_pending)))
             self.seed_archive(db, key, row)
             start = row["offset"] + len(row["output"])
             self.archive_text(db, key, start, text)
@@ -269,6 +313,10 @@ class TerminalManager:
                 "UPDATE user_terminals SET output=?,offset=? WHERE id=?",
                 (value[dropped:], row["offset"] + dropped, key),
             )
+            if supervisor_sequence is not None:
+                db.execute("INSERT INTO user_terminal_event_cursor VALUES (?,?) "
+                           "ON CONFLICT(terminal) DO UPDATE SET sequence=excluded.sequence",
+                           (key, supervisor_sequence))
 
     @staticmethod
     def archive_text(db, key, start, text):
@@ -390,7 +438,7 @@ class TerminalManager:
             try:
                 submitted = server.submit("process/writeStdin", {
                     "processHandle": key, "deltaBase64": base64.b64encode(text.encode()).decode(),
-                })
+                }, operation_id="terminal-input:" + data["request_id"])
             except SubmissionUnknown as error:
                 submitted = error.submitted
             def delivered(future):
@@ -473,6 +521,13 @@ class TerminalManager:
         with self.lock:
             self.closed = True
             active = list(self.processes.values())
+        if self.supervisor_mode:
+            if self.server:
+                self.server.close()
+                if not self.server.join_callbacks():
+                    raise RuntimeError("Terminal callbacks did not drain")
+                self.close_streams(self.server)
+            return
         for owned in active:
             self.terminate(owned)
         if self.server:

@@ -544,7 +544,7 @@ def main():
     from concurrent.futures import ThreadPoolExecutor
     from codex_canvas import Canvas, make_server
     import codex_canvas
-    from codex_runtime import AppServer, Runtime, SnapshotDeferred
+    from codex_runtime import AppServer, Runtime
 
     sqlite_synchronous = diagnostic_synchronous_mode()
     idle_connection_diagnostic = idle_connection_diagnostic_enabled()
@@ -572,24 +572,7 @@ def main():
     start_lock = MeasuredLock(runtime.start_lock)
     runtime.start_lock = start_lock
     snapshot_lock_failures = {"startLock": 0, "runtimeLock": 0, "unattributed": 0}
-    snapshot_lock_failures_lock = threading.Lock()
-    original_snapshot = runtime.snapshot
-
-    def measured_snapshot(*args, **kwargs):
-        try:
-            return original_snapshot(*args, **kwargs)
-        except SnapshotDeferred:
-            if getattr(start_lock._local, "last_nonblocking_failed", False):
-                label = "startLock"
-            elif getattr(runtime_lock._local, "last_nonblocking_failed", False):
-                label = "runtimeLock"
-            else:
-                label = "unattributed"
-            with snapshot_lock_failures_lock:
-                snapshot_lock_failures[label] += 1
-            raise
-
-    runtime.snapshot = measured_snapshot
+    # Current Runtime snapshots read committed WAL state without lock deferral.
     runtime.ui_condition = threading.Condition(runtime_lock)
     faulthandler.enable(file=sys.stderr)
 

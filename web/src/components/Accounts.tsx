@@ -2,6 +2,7 @@ import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import ClaudeProfile from "./ClaudeProfile";
 import ClaudeSignIn from "./ClaudeSignIn";
+import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { accountLimits } from "../accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
@@ -13,7 +14,13 @@ import {
   RefreshCw,
   UserRound,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type SetStateAction,
+} from "react";
 import { api, errorText } from "../api";
 import type { Agent, Json } from "../types";
 import "./accounts.css";
@@ -76,6 +83,7 @@ export interface Account {
   status: string;
   disconnected?: boolean;
   error?: unknown;
+  authenticationRecovery?: string;
 }
 export interface AccountsState {
   accounts: Account[];
@@ -86,27 +94,42 @@ export interface AccountsState {
   supportsDelete?: boolean;
 }
 export function useAccounts(stateDir?: string) {
-  const [data, setData] = useState<AccountsState>({
+  const [data, setAccountsData] = useState<AccountsState>({
     accounts: [],
     defaultAccountKey: "default",
   });
   const [error, setError] = useState("");
+  const latestRead = useRef(0);
+  const scope = useRef(stateDir);
+  scope.current = stateDir;
+  const setData = useCallback((value: SetStateAction<AccountsState>) => {
+    latestRead.current++;
+    setAccountsData(value);
+    setError("");
+  }, []);
   const refresh = useCallback(async () => {
+    const read = ++latestRead.current;
     try {
       const result = await api<AccountsState>("/api/accounts");
-      setData(result);
+      if (read !== latestRead.current || scope.current !== stateDir)
+        return null;
+      setAccountsData(result);
       setError("");
       return result;
     } catch (e) {
-      setError(errorText(e));
+      if (read === latestRead.current && scope.current === stateDir)
+        setError(errorText(e));
       return null;
     }
-  }, []);
+  }, [stateDir]);
   useEffect(() => {
     if (!stateDir) return;
     void refresh();
     const timer = window.setInterval(() => void refresh(), 30000);
-    return () => window.clearInterval(timer);
+    return () => {
+      latestRead.current++;
+      window.clearInterval(timer);
+    };
   }, [stateDir, refresh]);
   return { data, setData, error, refresh, scope: stateDir };
 }
@@ -219,22 +242,65 @@ export function AccountTransferStatus({
   transfer,
   targetLabel,
   pending,
+  showCompleted = false,
   onAction,
 }: {
   transfer?: Json;
   targetLabel?: string;
   pending?: boolean;
+  showCompleted?: boolean;
   onAction: (action: "retry" | "cancel") => void;
 }) {
-  if (transfer?.status !== "pending") return null;
+  if (!transfer) return null;
+  const waiting = Number(transfer.waitingCount || 0);
+  const left = Array.isArray(transfer.leftOnSource)
+    ? transfer.leftOnSource
+    : [];
+  const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
+  const interrupted = Array.isArray(transfer.interrupted)
+    ? transfer.interrupted
+    : [];
+  if (
+    transfer.status !== "pending" &&
+    !left.length &&
+    !blocked.length &&
+    !showCompleted
+  )
+    return null;
   return (
     <div className="account-menu-note" role="status">
       <ArrowRightLeft size={14} />
       <div>
         <div>
-          {transfer.completed}/{transfer.total} transferred to {targetLabel}
+          {transfer.moved ?? transfer.completed ?? 0} moved to {targetLabel}
+          {transfer.status === "pending" &&
+            waiting > 0 &&
+            ` · ${waiting} waiting`}
         </div>
+        {!!transfer.nativeHistoryPending && (
+          <small>
+            History transfer in progress: {transfer.nativeHistoryPending}{" "}
+            remaining.
+          </small>
+        )}
+        {!!transfer.movingNow && <small>{transfer.movingNow} moving now</small>}
         {transfer.waiting && <small>{transfer.waiting}</small>}
+        {interrupted.map((member: Json) => (
+          <small key={String(member.id)}>
+            {member.name || "Agent"}: {member.reason}
+          </small>
+        ))}
+        {blocked.map((member: Json) => (
+          <small key={String(member.id)} role="alert">
+            {member.name || "Agent"} blocked: {member.reason}
+          </small>
+        ))}
+        {left.map((member: Json) => (
+          <small key={String(member.id)}>
+            {member.name || "Agent"} left on source ({member.provider}):{" "}
+            {member.reason}
+          </small>
+        ))}
         <div className="account-transfer-actions">
           {transfer.canRetry && (
             <Button
@@ -246,14 +312,16 @@ export function AccountTransferStatus({
               Retry
             </Button>
           )}
-          <Button
-            size="compact-xs"
-            variant="subtle"
-            disabled={pending}
-            onClick={() => onAction("cancel")}
-          >
-            Cancel remaining
-          </Button>
+          {transfer.status === "pending" && (
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              disabled={pending}
+              onClick={() => onAction("cancel")}
+            >
+              Cancel remaining
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -265,12 +333,14 @@ export function AccountTransferConfirmation({
   onClose,
   target,
   sourceProvider,
+  extend = false,
   onConfirm,
 }: {
   opened: boolean;
   onClose: () => void;
   target: Account | null;
   sourceProvider: string;
+  extend?: boolean;
   onConfirm: () => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
@@ -285,17 +355,20 @@ export function AccountTransferConfirmation({
       onClose={() => {
         if (!pending) onClose();
       }}
-      title="Transfer this chat"
+      title={extend ? "Add agents to this transfer" : "Transfer this chat"}
       closeOnClickOutside={!pending}
       closeOnEscape={!pending}
       withCloseButton={!pending}
     >
       <p>
-        Transfer this chat to <strong>{target?.email || target?.label}</strong>?
+        {extend
+          ? "Add descendants to the pending team transfer to"
+          : "Transfer this chat to"}{" "}
+        <strong>{target?.email || target?.label}</strong>?
       </p>
       <p>
-        The switch happens after the current turn. Subagents keep their
-        accounts.
+        Active turns move immediately and continue on the destination. Same
+        provider subagents move too; other providers stay on their accounts.
       </p>
       {target && sourceProvider !== (target.provider || "codex") && (
         <p>The destination model uses the saved chat context.</p>
@@ -324,7 +397,7 @@ export function AccountTransferConfirmation({
           }
         }}
       >
-        Transfer chat
+        {extend ? "Add agents" : "Transfer chat"}
       </Button>
     </Modal>
   );
@@ -356,11 +429,13 @@ export default function Accounts({
   const [home, setHome] = useState("");
   const [adding, setAdding] = useState(false);
   const [claudeLogin, setClaudeLogin] = useState<Account | null>(null);
+  const [codexLogin, setCodexLogin] = useState<Account | null>(null);
   const [transferChoice, setTransferChoice] = useState<{
     target: Account;
     sourceProvider: string;
     agentId: string;
     requestId: string;
+    extend: boolean;
   } | null>(null);
   const [disconnectChoice, setDisconnectChoice] = useState<Account | null>(
     null,
@@ -373,11 +448,12 @@ export default function Accounts({
     !!transferChoice ||
     !!disconnectChoice ||
     !!deleteChoice ||
-    !!claudeLogin;
+    !!claudeLogin ||
+    !!codexLogin;
   useEffect(() => {
     onModalOpenChange?.(
       managerOnly
-        ? !!disconnectChoice || !!deleteChoice || !!claudeLogin
+        ? !!disconnectChoice || !!deleteChoice || !!claudeLogin || !!codexLogin
         : childModalOpen,
     );
     return () => onModalOpenChange?.(false);
@@ -387,6 +463,7 @@ export default function Accounts({
     disconnectChoice,
     deleteChoice,
     claudeLogin,
+    codexLogin,
     onModalOpenChange,
   ]);
   const accounts = state.data.accounts || [];
@@ -398,9 +475,10 @@ export default function Accounts({
     (!agent.isLead || !agent.empty || !!agent.threadId || !!agent.inFlight);
   const owner = agent?.isLead ? agent : undefined;
   const transfer = owner?.accountTransfer;
-  const transferring = transfer?.status === "pending";
+  const teamTransfer = transfer?.scope === "subagents" ? undefined : transfer;
+  const transferring = teamTransfer?.status === "pending";
   const transferTarget = accounts.find(
-    (a) => a.id === transfer?.targetAccountKey,
+    (a) => a.id === teamTransfer?.targetAccountKey,
   );
   const title = selected?.email || selected?.label || "Codex account";
   const replacement = accounts.find(
@@ -439,6 +517,13 @@ export default function Accounts({
   }, [opened, managerOnly, state.refresh]);
   return (
     <>
+      {codexLogin && (
+        <CodexSignIn
+          account={codexLogin}
+          state={state}
+          onClose={() => setCodexLogin(null)}
+        />
+      )}
       {claudeLogin && (
         <ClaudeSignIn
           key={claudeLogin.id}
@@ -468,7 +553,7 @@ export default function Accounts({
               <span className="account-picker-label">{title}</span>
               {transferring && (
                 <span aria-label="Account transfer in progress">
-                  {transfer.completed}/{transfer.total}
+                  {transfer.moved ?? transfer.completed}/{transfer.total}
                 </span>
               )}
             </Button>
@@ -496,7 +581,8 @@ export default function Accounts({
                     account.status !== "ready" ||
                     account.disconnected ||
                     (pinned && !owner) ||
-                    transferring
+                    (transferring &&
+                      account.id !== teamTransfer?.targetAccountKey)
                   }
                   leftSection={
                     account.id === accountKey ? (
@@ -506,7 +592,10 @@ export default function Accounts({
                     )
                   }
                   onClick={() => {
-                    if (account.id === accountKey) return;
+                    const extendTransfer =
+                      transferring &&
+                      account.id === teamTransfer?.targetAccountKey;
+                    if (account.id === accountKey && !extendTransfer) return;
                     if (pinned && owner)
                       setTransferChoice({
                         target: account,
@@ -514,12 +603,12 @@ export default function Accounts({
                           selected?.provider || owner.provider || "codex",
                         agentId: owner.id,
                         requestId: crypto.randomUUID(),
+                        extend: !!extendTransfer,
                       });
                     else if (!pinned)
-                      if (changeAccount)
-                        void action(account.id, () =>
-                          changeAccount(account.id!),
-                        );
+                      void action(account.id, async () => {
+                        await changeAccount?.(account.id);
+                      });
                   }}
                 >
                   <span className="account-menu-identity">
@@ -548,14 +637,14 @@ export default function Accounts({
                 </Menu.Item>
               ))}
             <AccountTransferStatus
-              transfer={transfer}
+              transfer={teamTransfer}
               targetLabel={transferTarget?.email || transferTarget?.label}
               pending={!!pending}
               onAction={(kind) =>
                 void action(`${kind}-transfer`, () =>
                   api("/api/agents/account-transfer", {
                     action: kind,
-                    request_id: transfer.id,
+                    request_id: teamTransfer?.id,
                   }),
                 )
               }
@@ -675,6 +764,9 @@ export default function Accounts({
                       value={account.error}
                     />
                   )}
+                  {account.authenticationRecovery && (
+                    <p role="alert">{account.authenticationRecovery}</p>
+                  )}
                   {account.disconnected && <p>Hidden from new chats.</p>}
                   {!account.disconnected && (
                     <AccountCapacity
@@ -696,6 +788,15 @@ export default function Accounts({
                         onSaved={state.setData}
                       />
                     </>
+                  )}
+                  {account.provider !== "claude" && account.accountId && (
+                    <Button
+                      variant="subtle"
+                      size="compact-xs"
+                      onClick={() => setCodexLogin(account)}
+                    >
+                      Sign in again
+                    </Button>
                   )}
                   {state.data.supportsDisconnect && (
                     <Button
@@ -809,6 +910,7 @@ export default function Accounts({
         opened={!!transferChoice}
         target={transferChoice?.target || null}
         sourceProvider={transferChoice?.sourceProvider || "codex"}
+        extend={transferChoice?.extend}
         onClose={() => setTransferChoice(null)}
         onConfirm={async () => {
           if (!transferChoice) return;

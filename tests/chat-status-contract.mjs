@@ -7,9 +7,14 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { chatIndicators, unreadResult, chatActivities } = await import(
-  "../web/src/components/chatStatusModel.ts"
-);
+const {
+  chatIndicators,
+  unreadResult,
+  chatActivities,
+  backgroundActivities,
+  chatWaitState,
+  endedWaitLabel,
+} = await import("../web/src/components/chatStatusModel.ts");
 hooks.deregister();
 const lead = {
   id: "lead",
@@ -24,7 +29,13 @@ const lead = {
   lastCompletedTurnStatus: "completed",
   epoch: 2,
 };
-const child = { ...lead, id: "child", rootId: "lead", isLead: false };
+const child = {
+  ...lead,
+  id: "child",
+  rootId: "lead",
+  parentId: "lead",
+  isLead: false,
+};
 const snapshot = (agents = [lead], runtime = {}) => ({
   threads: agents,
   runtime: {
@@ -54,8 +65,13 @@ for (const readState of [
   assert(unreadResult({ ...lead, readState }));
 assert.equal(state({ ...lead, lastCompletedTurnStatus: "failed" }), "none");
 assert.equal(state({ ...lead, lastCompletedTurn: null }), "none");
-for (const status of ["running", "starting", "queued", "waiting"])
+for (const status of ["running", "starting", "queued"])
   assert.equal(state({ ...lead, status }), "working", status);
+assert.equal(
+  state({ ...lead, status: "waiting" }),
+  "none",
+  "A stale waiting state without an active child does not show busy",
+);
 assert.equal(
   state(lead, { monitors: [{ agent: "lead", status: "running" }] }),
   "working",
@@ -150,6 +166,16 @@ assert.equal(
   chatIndicators(snapshot([lead, { ...child, status: "running" }])).get("lead")
     .kind,
   "working",
+);
+assert.equal(
+  chatIndicators(
+    snapshot([
+      { ...lead, status: "waiting" },
+      { ...child, status: "running" },
+    ]),
+  ).get("lead").kind,
+  "working",
+  "A lead waiting for an active child remains busy",
 );
 assert.equal(
   chatIndicators(
@@ -276,6 +302,164 @@ assert.equal(
   ).has("other-root"),
   false,
 );
+// The bar above the chat shows only monitors and commands outside their turn.
+const turnChild = { ...child, status: "running", inFlight: true, turnId: "t2" };
+const strip = (tasks, monitors = [], agents = [lead, turnChild]) =>
+  backgroundActivities(
+    chatActivities(snapshot(agents, { tasks, monitors })).get("lead") || [],
+  ).map((activity) => activity.id);
+assert.deepEqual(strip([{ ...command, turnId: "t2" }]), []);
+assert.deepEqual(strip([{ ...command, turnId: "t1" }]), [command.id]);
+assert.deepEqual(strip([command], [], [lead, pausedChild]), [command.id]);
+assert.deepEqual(
+  strip([], [{ id: "watch", agent: child.id, status: "running" }]),
+  ["watch"],
+);
+assert.deepEqual(strip([]), []);
+assert.equal(
+  chatActivities(snapshot([lead, turnChild])).get("lead")[0].kind,
+  "agent",
+);
 console.log(
   "PASS visible activity reasons match spinner, including live commands from stopped workers and scope boundaries",
+);
+
+const waitingLead = { ...lead, status: "waiting", inFlight: false };
+const waitState = (agents = [waitingLead], runtime = {}, agent = agents[0]) =>
+  chatWaitState(snapshot(agents, runtime), agent);
+assert.equal(waitState().live, false);
+assert.equal(waitState().label, endedWaitLabel);
+assert.deepEqual(chatIndicators(snapshot([waitingLead])).get("lead"), {
+  kind: "none",
+  label: endedWaitLabel,
+});
+for (const status of ["queued", "starting", "running", "approval"]) {
+  const agents = [waitingLead, { ...child, status }];
+  assert.equal(waitState(agents).label, "Waiting for 1 agent", status);
+  assert.deepEqual(chatIndicators(snapshot(agents)).get("lead"), {
+    kind: "working",
+    label: "Waiting for 1 agent",
+  });
+}
+assert.equal(
+  waitState([waitingLead, { ...child, status: "completed", inFlight: true }])
+    .live,
+  true,
+);
+for (const status of ["idle", "completed", "failed", "paused", "interrupted"])
+  assert.equal(
+    waitState([waitingLead, { ...child, status, inFlight: false }]).live,
+    false,
+    status,
+  );
+assert.equal(
+  waitState([waitingLead, { ...child, status: "running", parentId: "other" }])
+    .live,
+  false,
+);
+const ownCommand = { ...command, agent: "lead", kind: "command", epoch: 2 };
+const ownMonitor = {
+  id: "monitor",
+  agent: "lead",
+  epoch: 2,
+  command: "watch build",
+  status: "running",
+};
+for (const status of ["starting", "running", "approval"]) {
+  assert.equal(
+    waitState(undefined, { tasks: [{ ...ownCommand, status }] }).label,
+    "Waiting for 1 command",
+  );
+  assert.equal(
+    waitState(undefined, { monitors: [{ ...ownMonitor, status }] }).label,
+    "Waiting for 1 monitor",
+  );
+}
+for (const record of [
+  { status: "completed" },
+  { status: "failed" },
+  { epoch: 1 },
+  { agent: "other" },
+]) {
+  assert.equal(
+    waitState(undefined, { tasks: [{ ...ownCommand, ...record }] }).live,
+    false,
+  );
+  assert.equal(
+    waitState(undefined, { monitors: [{ ...ownMonitor, ...record }] }).live,
+    false,
+  );
+}
+assert.equal(
+  waitState(undefined, {
+    tasks: [
+      { ...ownCommand, command: undefined, kind: "tool", query: "search" },
+    ],
+  }).live,
+  false,
+);
+assert.equal(
+  waitState([{ ...waitingLead, inFlight: true, turnId: "current" }], {
+    tasks: [{ ...ownCommand, turnId: "current" }],
+  }).live,
+  false,
+  "A foreground tool is not a wake trigger after a turn",
+);
+const parked = {
+  ...waitingLead,
+  status: "parked",
+  parkedEvent: "build-ready",
+  autoWake: false,
+};
+assert.equal(waitState([parked]).label, "Waiting for event build-ready");
+assert.deepEqual(chatIndicators(snapshot([parked])).get("lead"), {
+  kind: "working",
+  label: "Waiting for event build-ready",
+});
+const input = { id: "input", agent: "lead", status: "pending", epoch: 2 };
+assert.equal(
+  waitState(undefined, { requests: [input] }).label,
+  "Waiting for 1 input",
+);
+assert.deepEqual(
+  chatIndicators(snapshot([waitingLead], { requests: [input] })).get("lead"),
+  {
+    kind: "answer",
+    label: "Waiting for 1 input",
+  },
+);
+for (const record of [
+  { status: "answered" },
+  { deferred: true },
+  { epoch: 1 },
+  { agent: "other" },
+])
+  assert.equal(
+    waitState(undefined, { requests: [{ ...input, ...record }] }).live,
+    false,
+  );
+const twoWorkers = [
+  waitingLead,
+  { ...child, status: "running" },
+  { ...child, id: "child-2", status: "queued" },
+];
+assert.equal(waitState(twoWorkers).label, "Waiting for 2 agents");
+assert.equal(
+  waitState(twoWorkers, { monitors: [ownMonitor] }).label,
+  "Waiting for 2 agents and 1 monitor",
+);
+assert.equal(
+  waitState(twoWorkers, { tasks: [ownCommand], monitors: [ownMonitor] }).label,
+  "Waiting for 2 agents, 1 command and 1 monitor",
+);
+assert.equal(
+  waitState([{ ...waitingLead, parkedEvent: "ready" }], {
+    tasks: [ownCommand, { ...ownCommand, id: "cmd-2" }],
+    monitors: [ownMonitor, { ...ownMonitor, id: "monitor-2" }],
+    requests: [input, { ...input, id: "input-2" }],
+  }).label,
+  "Waiting for 2 commands, 2 monitors, event ready and 2 inputs",
+);
+console.log(
+  "PASS live wait triggers: workers, commands, monitors, event, input, exact counts, stale records, ownership, and static turn end",
 );

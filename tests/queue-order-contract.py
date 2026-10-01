@@ -150,7 +150,8 @@ class QueueOrderContract(unittest.TestCase):
                 self.runtime.queue_action(key, request)
             except ValueError as error:
                 errors.append(str(error))
-        with self.runtime.lock, patch.object(self.runtime.pool, "submit", side_effect=lambda *args: submitted.append(args)):
+        with self.runtime.lock, patch.object(self.runtime.delivery_executor(), "submit",
+                                             side_effect=lambda *args: submitted.append(args)):
             worker = threading.Thread(target=edit)
             worker.start()
             self.assertTrue(entered.wait(1))
@@ -171,7 +172,8 @@ class QueueOrderContract(unittest.TestCase):
         self.runtime.queue_action(key, self.request(key, ordered_ids=["attachment", "message-0"]))
         self.assertEqual(self.metadata("attachment"), before)
         row = self.queue(key)["items"][0]
-        self.assertEqual(row["delivery"], "queue")
+        # The requested mode is recorded for the queue view; delivery ignores it.
+        self.assertEqual(row["delivery"], "after_tool")
         self.assertEqual(row["requestedDelivery"], "after_tool")
         self.assertEqual(row["assets"][0]["id"], asset["id"])
         self.assertNotIn("path", row["assets"][0])

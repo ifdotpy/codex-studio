@@ -177,9 +177,9 @@ class AccountStore:
         with self.lock:
             return self.refresh(key)
 
-    def home(self, key):
+    def home(self, key, *, for_login=False):
         row = self.get(key)
-        if row["status"] in {"changed", "error"}:
+        if not for_login and row["status"] in {"changed", "error"}:
             raise ValueError(row["error"])
         home = Path(row["home"])
         if key == "default":
@@ -470,6 +470,18 @@ class AccountStore:
                     receipt.update(status="uncertain", error="Sign-in response is unconfirmed. Check status or start a separate attempt.")
                 key = receipt["accountKey"]
                 row = self.refresh(key)
+                if receipt.get("reauthAccountKey"):
+                    # Cached credentials do not prove that this sign-in completed.
+                    if not receipt.get("nativeCompleted"):
+                        continue
+                    if row.get("status") != "ready" or row.get("accountId") != receipt["expectedAccountId"]:
+                        receipt.update(status="error", error="Sign in with this profile's original account.")
+                        continue
+                    receipt.update(status="ready", resolvedAccountKey=key)
+                    receipt.pop("error", None)
+                    receipt.pop("userCode", None)
+                    receipt.pop("verificationUrl", None)
+                    continue
                 if row.get("status") != "ready":
                     continue
                 duplicate = next((other for other, value in self.data["accounts"].items()
@@ -490,7 +502,7 @@ class AccountStore:
                 self._save()
             return [dict(r) for r in self.data["logins"].values()]
 
-    def start_login(self, runtime, request):
+    def start_login(self, runtime, request, account_key=None):
         try:
             request = str(uuid.UUID(request))
         except (ValueError, TypeError, AttributeError):
@@ -500,16 +512,29 @@ class AccountStore:
             self.login_receipts()
             previous = self.data["logins"].get(request)
             if previous:
+                if previous.get("reauthAccountKey") != account_key:
+                    raise ValueError("This sign-in request belongs to a different account")
                 return dict(previous)
-            key = self._login_profile(request)
+            if account_key is not None:
+                row = self._row(account_key)
+                if row.get("provider", "codex") != "codex" or not row.get("accountId") or row.get("duplicateOf"):
+                    raise ValueError("Select a saved Codex subscription account")
+                if any(r.get("accountKey") == account_key and r.get("status") in {"starting", "pending", "uncertain"}
+                       for r in self.data["logins"].values()):
+                    raise ValueError("Sign-in is already active for this account. Check its status first.")
+                key = account_key
+            else:
+                key = self._login_profile(request)
             self.data["logins"][request] = {
                 "requestId": request, "accountKey": key,
                 "status": "starting", "createdAt": time.time(),
             }
+            if account_key is not None:
+                self.data["logins"][request].update(reauthAccountKey=key, expectedAccountId=row["accountId"], email=row.get("email"))
             self._save()
         submitted = False
         try:
-            server = runtime.connect(key)
+            server = runtime.connect(key, for_login=True) if account_key is not None else runtime.connect(key)
             submitted = True
             response = server.call("account/login/start", {"type": "chatgptDeviceCode"}, timeout=20)
             if response.get("type") != "chatgptDeviceCode" or not all(
@@ -530,7 +555,7 @@ class AccountStore:
                     receipt.update(status="uncertain" if submitted else "error",
                                    error="Sign-in response is unconfirmed. Check its status before starting again." if submitted
                                    else "Could not start sign-in. Try again.")
-                    if not submitted:
+                    if not submitted and account_key is None:
                         self.data["accounts"][key].update(status="error", error=receipt["error"])
                     self._save()
         with self.lock:
@@ -549,7 +574,8 @@ class AccountStore:
                 raise ValueError("The sign-in response is still unknown. Check its status first.")
             key, login_id = receipt["accountKey"], receipt["loginId"]
         try:
-            result = runtime.connect(key).call("account/login/cancel", {"loginId": login_id}, timeout=10)
+            server = runtime.connect(key, for_login=True) if receipt.get("reauthAccountKey") else runtime.connect(key)
+            result = server.call("account/login/cancel", {"loginId": login_id}, timeout=10)
             if result.get("status") not in {"canceled", "notFound"}:
                 raise RuntimeError("Invalid cancellation response")
         except Exception:
@@ -564,7 +590,8 @@ class AccountStore:
                 receipt.pop("error", None)
                 receipt.pop("userCode", None)
                 receipt.pop("verificationUrl", None)
-                self.data["accounts"][key]["status"] = "signedOut"
+                if not receipt.get("reauthAccountKey"):
+                    self.data["accounts"][key]["status"] = "signedOut"
                 self._save()
             return dict(receipt)
 
@@ -574,16 +601,19 @@ class AccountStore:
             receipts = [r for r in self.data.setdefault("logins", {}).values() if r.get("accountKey") == key]
             for receipt in receipts:
                 if receipt.get("loginId") and params.get("loginId") and params["loginId"] != receipt["loginId"]:
-                    return
+                    continue
                 if receipt.get("status") in {"ready", "duplicate", "cancelled"}:
-                    return
+                    continue
                 if params.get("loginId"):
                     receipt["loginId"] = params["loginId"]
                 if not params.get("success"):
                     receipt.update(status="error", error="Sign-in failed or expired. Try again.")
                     receipt.pop("userCode", None)
                     receipt.pop("verificationUrl", None)
-                    row.update(status="error", error=receipt["error"])
+                    if not receipt.get("reauthAccountKey"):
+                        row.update(status="error", error=receipt["error"])
+                elif receipt.get("reauthAccountKey"):
+                    receipt["nativeCompleted"] = True
             if params.get("success"):
                 self.refresh(key)
                 self.login_receipts()

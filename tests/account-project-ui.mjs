@@ -8,6 +8,7 @@ import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const webDist = process.env.STUDIO_WEB_DIST || join(root, "web/dist");
 const { chromium } = createRequire(join(root, "web/package.json"))(
   "playwright-core",
 );
@@ -54,10 +55,13 @@ const projects = [
     created: 1,
     accountKey: "other",
     accountRevision: 1,
+    folders: [{ id: "review", name: "Review", parentId: null }],
   },
 ];
 const archivedAccounts = [];
 let loseCreation = false;
+let holdCreation = false;
+let releaseCreation;
 let defaultAccountKey = "default";
 let conflict = false;
 const makeLead = (id, name, accountKey, empty) => ({
@@ -150,6 +154,7 @@ const server = createServer(async (req, res) => {
       runtime: {
         agents,
         projects,
+        projectOrganizationVersion: 1,
         rooms: [],
         complaints: [],
         requests: [],
@@ -250,12 +255,18 @@ const server = createServer(async (req, res) => {
         true,
       );
       lead.cwd = body.cwd;
+      lead.projectFolder = body.project_folder || null;
       agents.push(lead);
     }
     if (loseCreation) {
       loseCreation = false;
       res.statusCode = 503;
       return json({ error: "Response lost" });
+    }
+    if (holdCreation) {
+      holdCreation = false;
+      releaseCreation = () => json(lead);
+      return;
     }
     return json(lead);
   }
@@ -288,8 +299,7 @@ const server = createServer(async (req, res) => {
     return json({ items: [], sessions: [] });
   try {
     const path = join(
-      root,
-      "web/dist",
+      webDist,
       url.pathname === "/" ? "index.html" : url.pathname,
     );
     const file = await readFile(path);
@@ -506,28 +516,159 @@ try {
     before + 1,
     "Explicit New chat creates a new chat",
   );
+  const previousSelection = agents.at(-1);
   loseCreation = true;
   await newChat("Lumina");
   await page
     .getByRole("button", { name: "Retry chat request", exact: true })
     .waitFor();
+  const lostRequest = bodies.filter((r) => r.path === "/api/leads").at(-1).body;
+  // Existing clients store one pending request under the legacy key.
+  await page.evaluate(
+    ({ key, request }) => {
+      for (const name of Object.keys(localStorage))
+        if (name.startsWith(`${key}:request:`)) localStorage.removeItem(name);
+      localStorage.setItem(key, JSON.stringify(request));
+    },
+    { key: `codex-pending-creation:${evidence}`, request: lostRequest },
+  );
   projects[1].accountKey = "default";
+  await page.locator(`[data-chat="${previousSelection.id}"]`).click();
+  const defaultCreate = page.waitForResponse((response) =>
+    response.url().endsWith("/api/leads"),
+  );
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await defaultCreate;
+  const defaultRequest = bodies
+    .filter((r) => r.path === "/api/leads")
+    .at(-1).body;
+  assert.equal(
+    defaultRequest.cwd,
+    previousSelection.cwd,
+    "New chat must keep the selected project instead of retrying another project",
+  );
+  assert.notEqual(defaultRequest.id, lostRequest.id);
+  await page
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .waitFor();
+  const beforeFolder = bodies.filter((r) => r.path === "/api/leads").length;
+  const folderResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/leads"),
+  );
+  await newChat("folder Review");
+  await folderResponse;
+  assert.equal(
+    bodies.filter((r) => r.path === "/api/leads").length,
+    beforeFolder + 1,
+  );
+  const folderRequest = bodies
+    .filter((r) => r.path === "/api/leads")
+    .at(-1).body;
+  assert.equal(folderRequest.cwd, lostRequest.cwd);
+  assert.equal(folderRequest.project_folder, "review");
+  assert.notEqual(folderRequest.id, lostRequest.id);
+  await page.locator(`[data-chat="${folderRequest.id}"]`).waitFor();
+  const inFolder = page.waitForResponse((response) =>
+    response.url().endsWith("/api/leads"),
+  );
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await inFolder;
+  assert.equal(
+    bodies.filter((r) => r.path === "/api/leads").at(-1).body.project_folder,
+    "review",
+    "New chat keeps the selected logical folder",
+  );
+  await page
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .waitFor();
+  const beforeOtherProject = bodies.filter(
+    (r) => r.path === "/api/leads",
+  ).length;
+  loseCreation = true;
+  await newChat("arbitrary");
+  await page.waitForFunction(
+    () => document.querySelectorAll(".sync-status button").length === 2,
+  );
+  assert.equal(
+    bodies.filter((r) => r.path === "/api/leads").length,
+    beforeOtherProject + 1,
+    "A pending request must allow a chat in another project",
+  );
+  const otherRequest = bodies
+    .filter((r) => r.path === "/api/leads")
+    .at(-1).body;
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .nth(1)
+    .waitFor();
+  const retryOther = page
+    .locator(".sync-status")
+    .filter({ hasText: otherRequest.cwd });
+  await retryOther
+    .getByRole("button", { name: "Retry chat request", exact: true })
+    .click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".sync-status button").length === 1,
+  );
+  assert.deepEqual(
+    bodies.filter((r) => r.path === "/api/leads").at(-1).body,
+    otherRequest,
+    "Each project retains its exact request after reload",
+  );
   await page
     .getByRole("button", { name: "Retry chat request", exact: true })
     .click();
   await page
     .getByRole("button", { name: "Retry chat request", exact: true })
     .waitFor({ state: "hidden" });
-  const creates = bodies.filter((r) => r.path === "/api/leads");
   assert.deepEqual(
-    creates.at(-1).body,
-    creates.at(-2).body,
-    "Lost response retains exact request identity",
+    bodies.filter((r) => r.path === "/api/leads").at(-1).body,
+    lostRequest,
+    "The legacy request retains its identity and original account",
   );
   assert.equal(
-    agents.at(-1).accountKey,
+    agents.find((item) => item.id === lostRequest.id).accountKey,
     "other",
     "Committed request retains selected server account",
+  );
+  for (const request of [lostRequest, otherRequest])
+    assert.equal(agents.filter((item) => item.id === request.id).length, 1);
+  const pendingKey = `codex-pending-creation:${evidence}:request:external`;
+  await page.evaluate((key) => {
+    const value = JSON.stringify({ id: "external", cwd: "/projects/Lumina" });
+    localStorage.setItem(key, value);
+    window.dispatchEvent(new StorageEvent("storage", { key, newValue: value }));
+  }, pendingKey);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Retry chat request", exact: true })
+      .count(),
+    1,
+    "Requests saved by another tab must become visible",
+  );
+  await page.evaluate((key) => {
+    localStorage.removeItem(key);
+    window.dispatchEvent(new StorageEvent("storage", { key, newValue: null }));
+  }, pendingKey);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Retry chat request", exact: true })
+      .count(),
+    0,
+    "Confirmed requests in another tab must remove the stale retry notice",
   );
   await openSettings();
   await picker.click();
@@ -548,6 +689,35 @@ try {
   await manager.locator(".mantine-Modal-close").click();
   await manager.waitFor({ state: "hidden" });
   await closeSettings();
+  holdCreation = true;
+  const delayedCreate = page.waitForResponse((response) =>
+    response.url().endsWith("/api/leads"),
+  );
+  await newChat("Lumina");
+  for (let attempt = 0; attempt < 100 && !releaseCreation; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(typeof releaseCreation, "function");
+  await page.locator(`[data-chat="${previousSelection.id}"]`).click();
+  await page.locator("#message").fill("Keep this selected chat and its draft");
+  releaseCreation();
+  await delayedCreate;
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  assert.equal(
+    await page
+      .locator(".sidebar-row.selected [data-chat]")
+      .getAttribute("data-chat"),
+    previousSelection.id,
+    "A late creation response must not replace a later chat selection",
+  );
+  assert.equal(
+    await page.locator("#message").inputValue(),
+    "Keep this selected chat and its draft",
+  );
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
     await page
@@ -657,6 +827,12 @@ try {
         "conflict retry",
         "virtual project",
         "new chats across projects",
+        "new chat in another project folder with a pending request",
+        "multiple pending requests after reload",
+        "legacy request recovery",
+        "new chat keeps the selected project",
+        "pending chat notices follow other tabs",
+        "late creation preserves a later chat selection and its draft",
         "lost response identity",
         "obsolete rules removed",
         "390px and 320px project settings",

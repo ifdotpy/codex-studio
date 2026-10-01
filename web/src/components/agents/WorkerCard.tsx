@@ -4,19 +4,16 @@ import { useState } from "react";
 import { save, saved } from "../../api";
 import { nativeErrorView } from "../../nativeErrors";
 import { shortModel } from "./ExecutionSettings";
-import { agentErrorLabel, statusLabel, type Agent } from "../../types";
+import {
+  agentErrorLabel,
+  nativeReleaseLabel,
+  statusLabel,
+  type Agent,
+} from "../../types";
+import type { WorktreeDiskSnapshot } from "../../hooks/useWorktreeDisk";
 import ChatStatus from "./ChatStatus";
 import type { ChatIndicator } from "../chatStatusModel";
-
-export type WorkerCardProps = {
-  agent: Agent;
-  selected: boolean;
-  awaitingAnswer: boolean;
-  deferred: boolean;
-  open: () => void;
-  remove?: () => void;
-  indicator?: ChatIndicator;
-};
+import { WorkerDiskLabel } from "../WorktreeDisk";
 
 function WorkerExcerpt({
   agentId,
@@ -77,13 +74,23 @@ function WorkerExcerpt({
 
 export default function WorkerCard({
   agent,
+  disk,
   selected,
   awaitingAnswer,
   deferred,
   open,
   indicator,
   remove,
-}: WorkerCardProps) {
+}: {
+  agent: Agent;
+  disk?: WorktreeDiskSnapshot["workers"][string];
+  selected: boolean;
+  awaitingAnswer: boolean;
+  deferred: boolean;
+  open: () => void;
+  remove?: () => void;
+  indicator?: ChatIndicator;
+}) {
   const overview = agent.overview;
   const errorView = nativeErrorView(agent.error);
   const error = agent.error ? agentErrorLabel(agent) : "";
@@ -92,7 +99,7 @@ export default function WorkerCard({
       ? "Could not prepare the project folder."
       : error.length > 160 ||
           /[\r\n]/.test(error) ||
-          /^Command [\["']/.test(error)
+          /^Command [["']/.test(error)
         ? "The agent stopped with an error."
         : error;
   return (
@@ -114,8 +121,9 @@ export default function WorkerCard({
             <span className="worker-meta">
               <small>
                 {indicator?.kind === "answer" ||
-                indicator?.label === "Waiting for a monitor"
-                  ? indicator.label
+                ["waiting", "parked"].includes(agent.status) ||
+                (indicator?.kind === "working" && !agent.inFlight)
+                  ? indicator?.label || statusLabel(agent.status)
                   : awaitingAnswer
                     ? "Needs your answer"
                     : deferred && agent.status === "approval"
@@ -124,7 +132,16 @@ export default function WorkerCard({
                           (agent.startAttempt?.prepareError ||
                             agent.startAttempt?.responseError)
                         ? "Waiting for Codex"
-                        : statusLabel(agent.status)}
+                        : [
+                            statusLabel(
+                              agent.status,
+                              undefined,
+                              agent.parkedEvent,
+                            ),
+                            nativeReleaseLabel(agent),
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
               </small>
               <span
                 className="worker-model-summary"
@@ -138,6 +155,7 @@ export default function WorkerCard({
                 {agent.fastMode ? " · Fast" : ""}
               </span>
             </span>
+            <WorkerDiskLabel agent={agent} disk={disk} />
             {Boolean(agent.error) && (
               <span className="worker-error">{errorSummary}</span>
             )}

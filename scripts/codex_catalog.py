@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import copy
 import threading
 import time
@@ -30,10 +31,12 @@ class ModelCatalogCache:
         self.lock = threading.Lock()
         self.entries = {}
 
-    def read(self, account, server, connection_id, current, *, submit=None):
+    def read(self, account, server, connection_id, current, *, submit=None, stale_ok=False):
+        """stale_ok serves an expired catalog for display while it refreshes; never for admission."""
         if not current():
             raise CatalogUnavailable("Model catalog connection changed; no workers were created")
         start = False
+        stale = None
         with self.lock:
             entry = self.entries.get(account)
             same = (entry is not None and entry["server"] is server
@@ -42,10 +45,12 @@ class ModelCatalogCache:
                 result = copy.deepcopy(entry["value"])
                 future = None
             else:
+                if stale_ok and same and entry.get("value") is not None:
+                    stale = copy.deepcopy(entry["value"])
                 if not same or entry["future"].done():
                     entry = {"server": server, "connectionId": connection_id,
                              "future": concurrent.futures.Future(),
-                             "expires": 0, "value": None}
+                             "expires": 0, "value": entry["value"] if same and entry else None}
                     self.entries[account] = entry
                     start = True
                 future = entry["future"]
@@ -109,9 +114,13 @@ class ModelCatalogCache:
                     native_future.add_done_callback(complete)
 
             submit_page()
-        if future is not None:
+        # The refresh callbacks above read `future`; wait through a separate name.
+        waiting = None if stale is not None else future
+        if stale is not None:
+            result = stale
+        if waiting is not None:
             try:
-                result = copy.deepcopy(future.result(self.wait_seconds))
+                result = copy.deepcopy(waiting.result(self.wait_seconds))
             except concurrent.futures.TimeoutError as error:
                 raise CatalogPending(
                     "Model catalog is pending; no workers were created. "
@@ -121,7 +130,13 @@ class ModelCatalogCache:
         return result
 
 
-def runtime_catalog(runtime, account):
+# Set only by display reads (/api/models). Admission never serves an expired list.
+DISPLAY_READ = contextvars.ContextVar("studio_catalog_display_read", default=False)
+
+
+def runtime_catalog(runtime, account, *, stale_ok=None):
+    if stale_ok is None:
+        stale_ok = DISPLAY_READ.get()
     # connect validates account existence and handles an offline connection.
     # Never wait for the catalog under Runtime.lock or Runtime.start_lock.
     server = runtime.connect(account)
@@ -141,4 +156,4 @@ def runtime_catalog(runtime, account):
         def submit(_method, _params):
             return submit_model_catalog(home, executable=executable, isolated=account != "default", current=current)
 
-    return cache.read(account, server, connection_id, current, submit=submit)
+    return cache.read(account, server, connection_id, current, submit=submit, stale_ok=stale_ok)

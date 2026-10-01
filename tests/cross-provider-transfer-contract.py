@@ -60,7 +60,7 @@ class PortableTransfers(unittest.TestCase):
     def submit(self):
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.until(lambda: len(self.t.pending) == 1)
         self.assertEqual(len(self.t.pending), 1, self.member(op))
         self.assertEqual(self.t.pending[0][0], 'thread/start')
         self.assertNotIn('input', self.t.pending[0][1])
@@ -94,15 +94,31 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(agent['nativeEffort'], 'medium')
         self.assertFalse(agent['fastMode'])
         self.assertEqual(agent['provider'], 'claude')
-        self.assertEqual(agent['workerDefaults']['model'], 'gpt-6-luna')
+        self.assertIsNone(agent['workerDefaults']['model'])
+        self.assertEqual(agent['workerDefaults']['accountKey'], self.t.other_key)
         self.assertNotIn('pendingSettings', agent)
         self.assertEqual(agent['accountHistory'][-1]['threadId'], 'native-source')
         self.assertEqual(agent['accountHistory'][-1]['settingsDiscarded']['reason'], 'provider_changed')
         self.assertEqual(self.rt.agent(child['id']), child_before)
-        self.assertEqual(set(op['members']), {self.aid})
+        self.assertEqual(set(op['members']), {self.aid, child['id']})
+        self.assertEqual(op['members'][child['id']]['phase'], 'left')
         with self.rt.db() as db:
             self.assertEqual(list(db.execute('SELECT * FROM runtime_items WHERE agent=?', (self.aid,))), before)
-        self.assertEqual(self.member(op)['pendingSettings'], source['pendingSettings'])
+        self.assertEqual(self.member(op)['sourcePendingSettings'], source['pendingSettings'])
+        self.export.assert_called_once()
+
+    def test_automatic_portable_history_uses_original_transfer_without_model_turn(self):
+        self.t.drive_lazy_for_tests = False
+        op = self.t.start_transfer()
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.assertEqual(self.t.pending[0][0], 'thread/start')
+        self.assertNotIn('input', self.t.pending[0][1])
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+        self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, _ in self.t.native_calls))
+        self.assertEqual(self.agent()['portableHistory'], self.descriptor)
         self.export.assert_called_once()
 
     def test_claude_to_codex_needs_no_codex_rollout_path(self):
@@ -133,7 +149,7 @@ class PortableTransfers(unittest.TestCase):
                          claudeOptions={'permissionMode': 'plan'})
         op = self.submit()
         self.finish(op)
-        self.assertEqual(self.agent()['workerDefaults'], {'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True, 'daybreakEnabled': False})
+        self.assertEqual(self.agent()['workerDefaults'], {'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True, 'daybreakEnabled': False, 'accountKey': self.t.other_key})
         self.assertEqual(self.agent()['claudeOptions'], {'permissionMode': 'plan'})
 
     def test_same_provider_profile_preserves_inherited_worker_model(self):
@@ -142,7 +158,7 @@ class PortableTransfers(unittest.TestCase):
                          workerDefaults={'model': None, 'effort': 'high', 'fastMode': False})
         op = self.submit()
         self.finish(op)
-        self.assertEqual(self.agent()['workerDefaults'], {'model': None, 'effort': 'high', 'fastMode': False, 'daybreakEnabled': False})
+        self.assertEqual(self.agent()['workerDefaults'], {'model': None, 'effort': 'high', 'fastMode': False, 'daybreakEnabled': False, 'accountKey': self.t.other_key})
 
     def test_provider_roundtrip_clears_old_permission_bypass(self):
         self.providers.update(default='claude', **{self.t.other_key: 'codex'})
@@ -174,7 +190,8 @@ class PortableTransfers(unittest.TestCase):
         self.t.source_server.submit = submit
         second = self.store.request(self.aid, 'default', str(f.uuid.uuid4()))
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: len(self.t.pending) == 2)
         self.assertEqual(len(self.t.pending), 2, self.member(second))
         params = self.t.pending[1][1]
         self.assertEqual(params['approvalPolicy'], 'on-request')
@@ -229,7 +246,7 @@ class PortableTransfers(unittest.TestCase):
             self.t.tick()
         self.assertEqual(self.member(op)['phase'], 'unknown')
         self.assertEqual(len(self.t.pending), 1)
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.assertEqual(self.member(op)['portableHistory'], self.descriptor)
 
     def test_restart_marks_submitted_start_unknown_without_repeating_it(self):
@@ -243,6 +260,9 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(len(self.t.pending), 1)
         self.assertEqual(self.member(op)['portableHistory'], self.descriptor)
         self.assertEqual(self.member(op)['nativeParams'], self.t.pending[0][1])
+        # Settle the original fixture worker through its exact receipt.
+        self.t.complete_fork()
+        self.assertEqual(len(self.t.pending), 1)
         restarted.close()
 
     def test_settings_race_reuses_receipt_archive_and_native_parameters(self):
@@ -251,10 +271,11 @@ class PortableTransfers(unittest.TestCase):
         self.t.set_agent(self.aid, effort='high', workerDefaults={'model': 'gpt-5.6-sol', 'effort': 'high', 'fastMode': False})
         self.t.complete_fork()
         self.assertEqual(self.member(op)['phase'], 'blocked')
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.store.action(op['id'], 'retry')
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertEqual(self.member(op)['phase'], 'completed')
         self.assertEqual(len(self.t.pending), 1)
         self.assertEqual(self.member(op)['nativeParams'], submitted)
@@ -266,7 +287,8 @@ class PortableTransfers(unittest.TestCase):
         self.export.side_effect = lambda *args: (self.t.set_agent(self.aid, effort='high') and self.descriptor)
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertEqual(self.member(op)['phase'], 'blocked')
         self.assertEqual(self.t.pending, [])
         self.assertEqual(self.agent()['effort'], 'high')
@@ -286,7 +308,8 @@ class PortableTransfers(unittest.TestCase):
         self.t.source_server.call = call
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertEqual(self.member(op)['phase'], 'blocked')
         self.assertTrue(self.member(op)['archiveInvalidated'])
         with self.assertRaisesRegex(ValueError, 'Cancel this transfer'):
@@ -309,7 +332,8 @@ class PortableTransfers(unittest.TestCase):
         self.export.side_effect = export
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertTrue(self.member(op)['archiveInvalidated'])
         self.assertEqual(self.t.pending, [])
         with self.assertRaisesRegex(ValueError, 'Cancel this transfer'):
@@ -326,7 +350,7 @@ class PortableTransfers(unittest.TestCase):
         self.t.complete_fork()
         self.assertTrue(self.member(op)['archiveInvalidated'])
         self.assertEqual(self.member(op)['result']['thread']['id'], 'target-thread-0')
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.assertEqual(len(self.t.pending), 1)
 
     def test_source_check_timeout_retries_known_receipt_without_new_session(self):
@@ -339,11 +363,12 @@ class PortableTransfers(unittest.TestCase):
         self.t.source_server.call = call
         self.t.complete_fork()
         self.assertEqual(self.member(op)['phase'], 'blocked')
-        self.assertEqual(self.agent()['accountKey'], 'default')
+        self.assertEqual(self.agent()['accountKey'], self.t.other_key)
         self.t.source_server.call = original
         self.store.action(op['id'], 'retry')
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertEqual(self.member(op)['phase'], 'completed')
         self.assertEqual(len(self.t.pending), 1)
         self.export.assert_called_once()
@@ -364,7 +389,8 @@ class PortableTransfers(unittest.TestCase):
         self.export.side_effect = export
         op = self.t.start_transfer()
         self.t.tick()
-        self.t.until(lambda: not self.store.running)
+        self.t.wake_one_lazy_for_test()
+        self.t.until(lambda: self.member(op)['phase'] in {'blocked', 'completed'})
         self.assertTrue(self.member(op)['archiveInvalidated'])
         self.assertEqual(self.t.pending, [])
 
@@ -376,9 +402,10 @@ class PortableTransfers(unittest.TestCase):
         with self.rt.db() as db:
             self.assertFalse(db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending'", (self.aid,)).fetchone())
 
-    def test_failed_auto_resume_enqueues_one_continuation_without_replay(self):
+    def test_first_native_start_of_failed_agent_enqueues_one_continuation_without_replay(self):
         self.t.set_agent(self.aid, status='failed', autoWake=True)
-        op = self.submit()
+        op = self.t.start_transfer()
+        self.t.until(lambda: len(self.t.pending) == 1)
         self.finish(op)
         self.t.tick()
         with self.rt.db() as db:

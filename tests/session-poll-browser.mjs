@@ -48,10 +48,10 @@ try {
   await page.route("**/api/sync/identity", (route) =>
     route.fulfill({ json: { workspaceId } }),
   );
-  await page.route("**/api/sync/stream*", (route) =>
+  await page.route("**/api/sync/stream**", (route) =>
     route.fulfill({
       contentType: "text/event-stream",
-      body: 'data: "RESYNC"\n\n',
+      body: "data: 1\n\n",
     }),
   );
   await page.route("**/api/sync/pull?*", (route) => {
@@ -65,13 +65,19 @@ try {
           ? []
           : [
               {
-                id: "state:chat",
+                id: "entity:workspace:current",
                 seq: 1,
                 _deleted: false,
-                payload: JSON.stringify({ marker: "replicated" }),
+                payload: JSON.stringify({
+                  collection: "workspace",
+                  id: "current",
+                  value: { marker: "replicated", stateDir: "fixture" },
+                }),
               },
             ],
         checkpoint: { seq: 1 },
+        maxSeq: 1,
+        initialHigh: 1,
       },
     });
   });
@@ -92,7 +98,7 @@ try {
     );
   });
   await page.waitForFunction(
-    () => window.snapshot?.data?.marker === "replicated",
+    () => window.snapshot?.data?.runtime?.marker === "replicated",
   );
   await page.evaluate(() => window.snapshot.refresh());
   assert.ok(sessions >= 2);
@@ -108,7 +114,7 @@ try {
     "rotated",
   );
   assert.equal(
-    await page.evaluate(() => window.snapshot.data.marker),
+    await page.evaluate(() => window.snapshot.data.runtime.marker),
     "replicated",
   );
   for (const failure of [503, 404]) {

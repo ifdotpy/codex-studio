@@ -61,11 +61,10 @@ from the isolated Storybook stories.
 - `src/components/Sidebar.tsx`: lead and agent tabs, search, previews, unread state, inline names, and deletion.
 - `src/components/Conversation.tsx`: Markdown messages, agent bubbles, composer, and questions.
 - `src/components/prompt-composer/`: production prompt input, isolated checks, benchmark entrypoints, and the [prompt composer guide](src/components/prompt-composer/README.md).
-- `src/components/ui/`: typed reusable action and field primitives used by the composer, with colocated interaction stories.
-- `src/components/conversation/transcript/`: streaming Markdown, tool activity, turn history, and result previews.
-- `src/components/agents/`: agent status, worker cards, model settings, and progress.
-- `src/components/questions/`: active questions, answers, deferral, and request history.
-- `src/components/shell/`: workspace, background tasks, and team messages.
+- `src/components/TurnHistory.tsx`: collapsible results with recorded terminal outcomes.
+- `src/components/ConversationResults.tsx`: linked files, images, saved patches, and previews.
+- `src/components/WorkerOverview.tsx`: worker assignments, reports, and team counts.
+- `src/components/Requests.tsx`: active questions, deferral, and answer history.
 - `src/components/Dictation.tsx`: saved recordings and explicit transcript insertion.
 - `src/components/Usage.tsx`: context usage, compaction count, and account limits.
 - `src/components/Analytics.tsx`: response usage history, tool payload measurements, and export.

@@ -24,7 +24,7 @@
 }
 .execution-dropdown {
   display: grid;
-  gap: 16px;
+  gap: 12px;
   max-width: calc(100vw - 24px);
   max-height: calc(100dvh - 24px);
   overflow: auto;
@@ -35,8 +35,24 @@
   font-size: 11px;
 }
 .execution-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
   color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-5));
   overflow-wrap: anywhere;
+}
+.execution-dropdown .account-menu-note {
+  margin: 0;
+}
+/* The result line stays visible while a long dropdown scrolls. */
+.execution-dropdown .execution-status,
+.execution-dropdown .execution-error {
+  position: sticky;
+  bottom: -16px;
+  padding: 6px 0;
+  background: var(--mantine-color-body);
 }
 .worker-model-summary {
   color: var(--muted);

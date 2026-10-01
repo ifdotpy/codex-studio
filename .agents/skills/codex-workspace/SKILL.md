@@ -58,12 +58,17 @@ This continuation behavior belongs to the managed runtime.
 Codex agents use `orchestration_review` for native code review. Supply a stable
 `request_id`. Omit `target` to review uncommitted changes. Other targets use
 `type: "baseBranch"` with `branch`, `type: "commit"` with `sha`, or
-`type: "custom"` with `instructions`.
+`type: "custom"` with `instructions`. Pass `model` (for example `gpt-6-astra`)
+and optional `effort` to override the team review default. Without that default,
+the reviewer uses the caller's model and effort. A different model without
+`effort` uses its native default. The result reports both selected values.
+A Claude agent cannot run native review. To get a review on another model, use
+`orchestration_spawn` with `role: "reviewer"` and `model: "gpt-6-astra"`.
 Studio creates a separate reviewer with read-only access to `cwd`. `cwd`
 defaults to the caller's folder; a relative path starts there, and a shell `cd`
 does not change it. `cwd` must be inside a git repository, or the call fails
-before a reviewer exists. The native `ReviewTask` uses configured `review_model`, or the
-caller's model when that setting is absent. The caller continues its current
+before a reviewer exists. Studio sets `review_model` on the reviewer thread,
+so the account's `review_model` does not override this choice. The caller continues its current
 turn. Findings arrive as a child result; the reviewer chat retains the complete
 output. Use `orchestration_request` to recover the receipt after a lost reply.
 Use `orchestration_interrupt` with the returned reviewer ID to stop the review.
@@ -121,23 +126,29 @@ responses return to voice automatically. Do not repeat them with
 Without active voice, it saves text silently. Its receipt does not confirm exact
 playback. Ending voice stops audio, not the task. Continue unless the user asks
 to stop work. Use chat permission buttons; do not infer approval from playback.
+
 ## Agent work and messages
 
 Use the operation that matches the task's next transition. The caller supplies the
 content; the harness records the change and delivers its event.
 
-| Goal | Caller and operation | Input | Harness result |
-|---|---|---|---|
-| Define work | Orchestrator: `orchestration_task action=create` | `title`; scope and completion criteria in `description`; optional `owner` and `dependencies` | Saves the work item. |
-| Delegate defined work | Orchestrator: `orchestration_spawn` | `task_id` on the agent entry | Sets the new worker as owner and names the task in its first message. |
-| Start ready work | Worker: `orchestration_task action=claim` | `task_id` | Reserves the task atomically and sets `running`. |
-| Request review | Owner: `orchestration_task action=submit` | `task_id`, `result`, `checks`, `revision`, `files` | Sets `review` and delivers evidence to the lead. |
-| Accept evidence | Orchestrator: `orchestration_task action=accept` | `task_id` and review reason in `result` | Sets `accepted`, notifies the owner, and releases eligible dependent work. |
-| Request corrections | Orchestrator: `orchestration_task action=reject` | `task_id`; reason and required corrections in `result` | Sets `ready` and delivers these instructions to the owner as `work_decision`. |
-| Give a new or revised assignment | Parent: `orchestration_send` | `agent_id` and instruction in `text`; optional `delivery=queue` | Steers an active turn by default; starts a turn when idle. Explicit queue waits for the current turn. |
+| Goal                             | Caller and operation                                     | Input                                                                                        | Harness result                                                                                                      |
+| -------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Define work                      | Orchestrator: `orchestration_task action=create`         | `title`; scope and completion criteria in `description`; optional `owner` and `dependencies` | Saves the work item.                                                                                                |
+| Cancel work                      | Lead or task creator: `orchestration_task action=cancel` | `task_id` and required `reason`                                                              | Closes the task, records the actor and reason, releases its assignment, and notifies a live owner.                  |
+| Delegate defined work            | Orchestrator: `orchestration_spawn`                      | `task_id` on the agent entry                                                                 | Sets the new worker as owner and names the task in its first message.                                               |
+| Start ready work                 | Worker: `orchestration_task action=claim`                | `task_id`                                                                                    | Reserves the task atomically and sets `running`.                                                                    |
+| Request review                   | Owner: `orchestration_task action=submit`                | `task_id`, `result`, `checks`, `revision`, `files`                                           | Sets `review` and delivers evidence to the lead.                                                                    |
+| Accept evidence                  | Orchestrator: `orchestration_task action=accept`         | `task_id` and review reason in `result`                                                      | Sets `accepted`, notifies the owner, and releases eligible dependent work.                                          |
+| Request corrections              | Orchestrator: `orchestration_task action=reject`         | `task_id`; reason and required corrections in `result`                                       | Sets `ready` and delivers these instructions to the owner as `work_decision`.                                       |
+| Give a new or revised assignment | Parent: `orchestration_send`                             | `agent_id` and instruction in `text`                                                         | Native delivery steers an active turn or starts a turn when idle. The old `delivery` field is accepted and ignored. |
+
+The outbox holds input for stops, account moves, context repair, native Review
+or Compact actions, new turn slot waits, and active shared radio turns.
 | Exchange information during work | Agent: `orchestration_message` | `target` and new finding, question, or answer in `text` | Delivers through the selected chat. |
 
 The owner continues from a rejection's `work_decision`, then submits revised evidence.
+Cancellation does not require a submit; it uses `work_decision` to notify a live owner.
 Task events queue the owner when automatic continuation is enabled. Explicit stops
 and native failure holds remain in effect. Inspect the agent's state and receipt
 before an authorized recovery action.
@@ -171,7 +182,9 @@ An orchestrator's response cannot replace required user approval.
 
 ## State and output
 
-Use `since_revision` with `orchestration_status` when you need changes for a decision.
+`orchestration_status` returns active agents and monitors by default, with counts of finished items.
+Set `include_finished=true` to read finished items in pages with `limit` and `cursor`.
+Use `since_revision` when you need changes for a decision.
 Use `orchestration_context` for the shared plan, complaints, profiles, or tool schemas.
 The runtime supplies changed plan and complaint text automatically. An unchanged
 complaint reminder still requires a response. Read context when it is needed for a decision.
@@ -200,7 +213,8 @@ working directory. Do not substitute the project's own `PROGRESS.md`.
 
 Use plain UTF-8 Markdown for current status, verified results, and blockers.
 Keep the file at most 128 KiB. Studio displays it above the composer in an area
-with a maximum height of 150px. Longer content scrolls. An empty or missing file
+with a viewport-based height budget, up to 280px. Put the current status first.
+Longer content stays visible with clipping and a fade. Users can expand it and scroll. An empty or missing file
 clears the display. Update it when the facts change. No special panel tool,
 command output feed, or model wake is required.
 
@@ -212,7 +226,8 @@ Existing read-only permissions still apply.
 Only the orchestrator uses `orchestration_agent_manage`. Inspect a worker before
 recovery or archive. `recover` reconciles native turn state; it never replays input.
 Archive only after reviewing the result or assigning its remaining work elsewhere.
-`archive` requires `agent_id` and `reason`. It preserves history and files, and
+`archive_finished` checks finished descendants and removes safe worktrees after archive.
+`archive` requires `agent_id` and `reason`. It preserves history and dirty files, and
 refuses active commands, pending or uncertain requests, unfinished
 assignments, or unarchived children. `list_archived` supports `limit` and `cursor`.
 `restore` returns a worker paused. Use `orchestration_send` for explicit continuation.

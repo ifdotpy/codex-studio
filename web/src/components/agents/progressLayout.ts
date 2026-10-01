@@ -8,6 +8,12 @@ export interface ProgressLayout {
   height: number;
   contentWidth: number;
   contentHeight: number;
+  overflowX: number;
+  overflowY: number;
+  totalLines: number;
+  visibleLines: number;
+  lastVisibleLine: string | null;
+  lastVisibleHeading: string | null;
   fits: boolean;
   reason: null | "overflow" | "unsupported";
 }
@@ -72,7 +78,7 @@ export function useProgressLayoutReport(
             agent,
             client,
             sequence: ++sequence,
-            renderer: "progress-markdown-v1",
+            renderer: "progress-markdown-v2",
             ...candidate,
           },
           { timeoutMs: 8000, signal: current.signal },

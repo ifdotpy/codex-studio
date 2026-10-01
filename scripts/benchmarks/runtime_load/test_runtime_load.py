@@ -28,6 +28,8 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runtime = object.__new__(FixtureRuntime)
             runtime.db_path = Path(directory) / "production-runtime.sqlite3"
+            runtime.analytics_db_path = Path(directory) / "analytics.sqlite3"
+            runtime.changed = threading.Event()
             for mode, expected in (("FULL", 2), ("NORMAL", 1)):
                 with self.subTest(mode=mode), mock.patch.dict(
                         "os.environ", {"BENCH_SQLITE_SYNCHRONOUS": mode}):
@@ -420,6 +422,8 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runtime = object.__new__(FixtureRuntime)
             runtime.db_path = Path(directory) / "production-runtime.sqlite3"
+            runtime.analytics_db_path = Path(directory) / "analytics.sqlite3"
+            runtime.changed = threading.Event()
             records = []
             original_runtime_db = runtime.db
 
@@ -429,7 +433,7 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
                 with module.measured_runtime_db_context(
                         original_runtime_db, True,
                         lambda metric, elapsed: records.append((metric, elapsed))) as connection:
-                    self.assertIs(type(connection), sqlite3.Connection)
+                    self.assertIsInstance(connection, sqlite3.Connection)
                     yielded_connection = connection
                     connection.execute("CREATE TABLE sample(value INTEGER)")
                     connection.execute("INSERT INTO sample VALUES (7)")

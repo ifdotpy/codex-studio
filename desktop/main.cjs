@@ -15,7 +15,9 @@ const { randomUUID } = require("node:crypto");
 const { ensureBackend, identity, updateStatus } = require("./backend.cjs");
 const {
   configureRecovery,
+  isInstalledApplication,
   recoveryPreference,
+  recoveryStatusLabel,
   trackDesktopRecovery,
 } = require("./recovery.cjs");
 const { loadWindowState, trackWindowState } = require("./window-state.cjs");
@@ -23,18 +25,35 @@ const { createRendererRecovery } = require("./renderer-recovery.cjs");
 const hidden = process.argv.includes("--hidden");
 const backgroundRecovery = process.argv.includes("--background-recovery");
 let recoveryEnabled = false;
+let recoveryAvailable = true;
+let recoveryStatusItem;
 let desktopRecovery;
 const recoverySupported =
   app.isPackaged && process.platform === "darwin" && !hidden;
 async function setBackgroundRecovery(enabled) {
   const result = await configureRecovery({
+    applicationPath: app.getAppPath(),
     resources: backendResources,
     supervisor: path.join(process.resourcesPath, "recover_backend.py"),
     port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
     enabled,
-    restartEnvironment: backend?.restartEnvironment,
+    restartEnvironment: backend?.supervisorFallback
+      ? {
+          ...backend.restartEnvironment,
+          CODEX_AGENTS_SUPERVISOR_MODE: "1",
+        }
+      : backend?.restartEnvironment,
   });
   recoveryEnabled = result.enabled;
+  recoveryAvailable = true;
+  if (recoveryStatusItem)
+    recoveryStatusItem.label = recoveryStatusLabel(recoveryEnabled);
+}
+function markBackgroundRecoveryUnavailable(error) {
+  recoveryAvailable = false;
+  if (recoveryStatusItem)
+    recoveryStatusItem.label = recoveryStatusLabel(false, false);
+  console.error("Background recovery is unavailable:", error.message);
 }
 // Preserve the existing browser profile when the product name changes.
 app.setPath(
@@ -64,7 +83,8 @@ function notificationTarget(value) {
 }
 function trusted(event) {
   if (
-    !win || win.isDestroyed() ||
+    !win ||
+    win.isDestroyed() ||
     event.sender !== win.webContents ||
     event.senderFrame !== win.webContents.mainFrame ||
     event.senderFrame.url !== `${backend.origin}/`
@@ -110,31 +130,45 @@ function mime(file) {
 }
 const MAX_SAVE_BYTES = 64 * 1024 * 1024;
 const DOCUMENT_EXTENSIONS = new Set(
-  ".txt .md .markdown .pdf .rtf .csv .tsv .json .xml .yaml .yml .toml .log .diff .patch .png .jpg .jpeg .gif .webp .avif .heic .heif .tif .tiff .bmp .svg .mp3 .m4a .wav .aac .ogg .flac .mp4 .m4v .mov .webm .doc .docx .xls .xlsx .ppt .pptx .odt .ods .odp .pages .numbers .key".split(" "),
+  ".txt .md .markdown .pdf .rtf .csv .tsv .json .xml .yaml .yml .toml .log .diff .patch .png .jpg .jpeg .gif .webp .avif .heic .heif .tif .tiff .bmp .svg .mp3 .m4a .wav .aac .ogg .flac .mp4 .m4v .mov .webm .doc .docx .xls .xlsx .ppt .pptx .odt .ods .odp .pages .numbers .key".split(
+    " ",
+  ),
 );
 function saveName(value) {
   const name = path.basename(string(value, 1024).replaceAll("\\", "/"));
+  // Reject control characters in exported file names.
+  // oxlint-disable-next-line no-control-regex
   if (name === "." || name === ".." || /[\x00-\x1f]/.test(name))
     throw new Error("Invalid file name.");
   return name;
 }
 async function resolvedFile(event, target) {
-  if (!target || typeof target !== "object" ||
-      Object.keys(target).some((key) => !["agent", "path", "asset"].includes(key)) ||
-      (target.asset ? target.path !== undefined : !target.agent || !target.path))
+  if (
+    !target ||
+    typeof target !== "object" ||
+    Object.keys(target).some(
+      (key) => !["agent", "path", "asset"].includes(key),
+    ) ||
+    (target.asset ? target.path !== undefined : !target.agent || !target.path)
+  )
     throw new Error("Select a workspace file or attachment.");
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(target))
     query.set(key, string(value));
   const response = await fetch(`${backend.origin}/api/file-info?${query}`, {
-    signal: AbortSignal.timeout(15000), redirect: "error",
+    signal: AbortSignal.timeout(15000),
+    redirect: "error",
   });
   const info = await response.json();
   if (!response.ok || info.error)
     throw new Error(info.error || "Cannot resolve the selected file.");
   trusted(event);
   const file = string(info.path);
-  if (!path.isAbsolute(file) || await fs.realpath(file) !== file || !(await fs.stat(file)).isFile())
+  if (
+    !path.isAbsolute(file) ||
+    (await fs.realpath(file)) !== file ||
+    !(await fs.stat(file)).isFile()
+  )
     throw new Error("The selected file is no longer available.");
   return { path: file, name: saveName(info.name) };
 }
@@ -144,15 +178,24 @@ function nativeDownload(event, item, contents) {
     return;
   }
   const url = item.getURL();
-  if (contents !== win.webContents || contents.getURL() !== `${backend.origin}/` ||
-      !(url.startsWith(`blob:${backend.origin}/`) || url.startsWith(`${backend.origin}/`))) {
+  if (
+    contents !== win.webContents ||
+    contents.getURL() !== `${backend.origin}/` ||
+    !(
+      url.startsWith(`blob:${backend.origin}/`) ||
+      url.startsWith(`${backend.origin}/`)
+    )
+  ) {
     event.preventDefault();
     return;
   }
   try {
     item.setSaveDialogOptions({
       title: "Save As",
-      defaultPath: path.join(app.getPath("downloads"), saveName(item.getFilename())),
+      defaultPath: path.join(
+        app.getPath("downloads"),
+        saveName(item.getFilename()),
+      ),
       properties: ["createDirectory", "showOverwriteConfirmation"],
     });
   } catch (error) {
@@ -162,7 +205,10 @@ function nativeDownload(event, item, contents) {
   }
   item.once("done", (_event, state) => {
     if (state !== "completed" && state !== "cancelled")
-      dialog.showErrorBox("Cannot save file", "The file transfer did not complete. Try Save As again.");
+      dialog.showErrorBox(
+        "Cannot save file",
+        "The file transfer did not complete. Try Save As again.",
+      );
   });
 }
 async function nativeAction(event, request) {
@@ -173,17 +219,29 @@ async function nativeAction(event, request) {
     case "saveFile": {
       const name = saveName(request.value?.name);
       const data = request.value?.data;
-      if (!(data instanceof ArrayBuffer) || !Number.isSafeInteger(data.byteLength) || data.byteLength > MAX_SAVE_BYTES)
+      if (
+        !(data instanceof ArrayBuffer) ||
+        !Number.isSafeInteger(data.byteLength) ||
+        data.byteLength > MAX_SAVE_BYTES
+      )
         throw new Error("Save accepts at most 64 MiB of file data.");
       const result = await dialog.showSaveDialog(win, {
-        title: "Save As", defaultPath: path.join(app.getPath("downloads"), name),
+        title: "Save As",
+        defaultPath: path.join(app.getPath("downloads"), name),
         properties: ["createDirectory", "showOverwriteConfirmation"],
       });
       if (result.canceled || !result.filePath) return false;
       trusted(event);
-      const temporary = path.join(path.dirname(result.filePath), `.studio-save-${randomUUID()}.tmp`);
+      const temporary = path.join(
+        path.dirname(result.filePath),
+        `.studio-save-${randomUUID()}.tmp`,
+      );
       try {
-        await fs.writeFile(temporary, Buffer.from(data), { flag: "wx", mode: 0o600, flush: true });
+        await fs.writeFile(temporary, Buffer.from(data), {
+          flag: "wx",
+          mode: 0o600,
+          flush: true,
+        });
         trusted(event);
         await fs.rename(temporary, result.filePath);
       } catch (error) {
@@ -201,12 +259,20 @@ async function nativeAction(event, request) {
       if (action === "reveal") {
         shell.showItemInFolder(file.path);
       } else if (action === "preview") {
-        if (process.platform !== "darwin" || typeof win.previewFile !== "function") return false;
+        if (
+          process.platform !== "darwin" ||
+          typeof win.previewFile !== "function"
+        )
+          return false;
         win.previewFile(file.path, file.name);
       } else {
-        if (!DOCUMENT_EXTENSIONS.has(path.extname(file.path).toLowerCase()) ||
-            ((await fs.stat(file.path)).mode & 0o111) !== 0)
-          throw new Error("Use Quick Look or Show in Folder for this file type.");
+        if (
+          !DOCUMENT_EXTENSIONS.has(path.extname(file.path).toLowerCase()) ||
+          ((await fs.stat(file.path)).mode & 0o111) !== 0
+        )
+          throw new Error(
+            "Use Quick Look or Show in Folder for this file type.",
+          );
         trusted(event);
         const error = await shell.openPath(file.path);
         if (error) throw new Error(error);
@@ -359,11 +425,17 @@ async function nativeAction(event, request) {
         win.webContents.send("codex-desktop-navigate", target);
       });
       activeNotifications.add(notification);
-      notification.once("close", () => activeNotifications.delete(notification));
+      notification.once("close", () =>
+        activeNotifications.delete(notification),
+      );
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           activeNotifications.delete(notification);
-          reject(new Error("macOS did not confirm the notification. Check Studio in System Settings > Notifications."));
+          reject(
+            new Error(
+              "macOS did not confirm the notification. Check Studio in System Settings > Notifications.",
+            ),
+          );
         }, 15000);
         notification.once("show", () => {
           clearTimeout(timer);
@@ -372,9 +444,13 @@ async function nativeAction(event, request) {
         notification.once("failed", (_event, error) => {
           clearTimeout(timer);
           activeNotifications.delete(notification);
-          reject(new Error(/not allowed/i.test(error || "")
-            ? "STUDIO_NOTIFICATIONS_DENIED: Enable Allow notifications for Codex Studio in macOS System Settings > Notifications."
-            : error || "macOS could not show the notification."));
+          reject(
+            new Error(
+              /not allowed/i.test(error || "")
+                ? "STUDIO_NOTIFICATIONS_DENIED: Enable Allow notifications for Codex Studio in macOS System Settings > Notifications."
+                : error || "macOS could not show the notification.",
+            ),
+          );
         });
         notification.show();
       });
@@ -385,26 +461,36 @@ async function nativeAction(event, request) {
 }
 async function start() {
   if (recoverySupported) {
-    try {
-      desktopRecovery = trackDesktopRecovery({ app });
-    } catch (error) {
-      console.error("Desktop recovery is unavailable:", error.message);
+    if (isInstalledApplication(app.getAppPath())) {
+      try {
+        desktopRecovery = trackDesktopRecovery({ app });
+      } catch (error) {
+        console.error("Desktop recovery is unavailable:", error.message);
+      }
+    } else {
+      console.error(
+        "Desktop recovery is unavailable: this is not the installed Studio application.",
+      );
     }
   }
   backendResources = app.isPackaged
     ? path.join(process.resourcesPath, "workspace")
     : path.resolve(__dirname, "..");
+  if (recoverySupported) {
+    try {
+      if (!isInstalledApplication(app.getAppPath()))
+        throw new Error(
+          "Background recovery can be registered only by /Applications/Codex Studio.app.",
+        );
+      await setBackgroundRecovery(recoveryPreference());
+    } catch (error) {
+      markBackgroundRecoveryUnavailable(error);
+    }
+  }
   backend = await ensureBackend({
     resources: backendResources,
     port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
   });
-  if (recoverySupported) {
-    try {
-      await setBackgroundRecovery(recoveryPreference());
-    } catch (error) {
-      console.error("Background recovery is unavailable:", error.message);
-    }
-  }
   const primaryDisplay = screen.getPrimaryDisplay();
   const restoredWindow = loadWindowState(app.getPath("userData"), [
     primaryDisplay,
@@ -448,14 +534,14 @@ async function start() {
           permission === "clipboard-sanitized-write" &&
           details.isMainFrame === true &&
           details.requestingUrl?.startsWith(`${backend.origin}/`)) ||
-        (contents === win.webContents &&
-          permission === "media" &&
-          details.isMainFrame === true &&
-          details.requestingUrl === `${backend.origin}/` &&
-          microphoneUntil > Date.now() &&
-          Array.isArray(details.mediaTypes) &&
-          details.mediaTypes.length === 1 &&
-          details.mediaTypes[0] === "audio"),
+          (contents === win.webContents &&
+            permission === "media" &&
+            details.isMainFrame === true &&
+            details.requestingUrl === `${backend.origin}/` &&
+            microphoneUntil > Date.now() &&
+            Array.isArray(details.mediaTypes) &&
+            details.mediaTypes.length === 1 &&
+            details.mediaTypes[0] === "audio"),
       ),
   );
   win.webContents.session.setPermissionCheckHandler(
@@ -465,11 +551,11 @@ async function start() {
         origin === backend.origin &&
         details.isMainFrame === true) ||
       (contents === win.webContents &&
-      permission === "media" &&
-      origin === backend.origin &&
-      details.isMainFrame === true &&
-      details.mediaType === "audio" &&
-      microphoneUntil > Date.now()),
+        permission === "media" &&
+        origin === backend.origin &&
+        details.isMainFrame === true &&
+        details.mediaType === "audio" &&
+        microphoneUntil > Date.now()),
   );
   win.on("close", () => desktopRecovery?.windowClosing());
   const rendererRecovery = createRendererRecovery({
@@ -488,63 +574,71 @@ async function start() {
   win.webContents.on("will-redirect", (event) => event.preventDefault());
   win.webContents.session.on?.("will-download", nativeDownload);
   ipcMain.handle("codex-desktop", nativeAction);
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate([
-      {
-        label: "Codex Studio",
-        submenu: [
-          { role: "about" },
-          ...(recoverySupported
-            ? [
-                {
-                  label: "Restore server after login or failure",
-                  type: "checkbox",
-                  checked: recoveryEnabled,
-                  click: async (item) => {
-                    try {
-                      await setBackgroundRecovery(item.checked);
-                    } catch (error) {
-                      item.checked = recoveryEnabled;
-                      dialog.showErrorBox(
-                        "Cannot change background recovery",
-                        error.message,
-                      );
-                    }
-                  },
+  const applicationMenu = Menu.buildFromTemplate([
+    {
+      label: "Codex Studio",
+      submenu: [
+        { role: "about" },
+        ...(recoverySupported
+          ? [
+              {
+                id: "background-recovery-status",
+                label: recoveryStatusLabel(recoveryEnabled, recoveryAvailable),
+                enabled: false,
+              },
+              {
+                label: "Restore server after login or failure",
+                type: "checkbox",
+                checked: recoveryEnabled,
+                click: async (item) => {
+                  try {
+                    await setBackgroundRecovery(item.checked);
+                  } catch (error) {
+                    item.checked = recoveryEnabled;
+                    markBackgroundRecoveryUnavailable(error);
+                    dialog.showErrorBox(
+                      "Cannot change background recovery",
+                      error.message,
+                    );
+                  }
                 },
-              ]
-            : []),
-          { type: "separator" },
-          {
-            label: "Quit Codex Studio",
-            accelerator: "CommandOrControl+Q",
-            click: () => {
-              desktopRecovery?.closeExplicitly();
-              app.quit();
-            },
+              },
+            ]
+          : []),
+        { type: "separator" },
+        {
+          label: "Quit Codex Studio",
+          accelerator: "CommandOrControl+Q",
+          click: () => {
+            desktopRecovery?.closeExplicitly();
+            app.quit();
           },
-        ],
-      },
-      { role: "editMenu" },
-      {
-        label: "View",
-        submenu: [
-          {
-            id: "reload-workspace",
-            label: "Reload",
-            accelerator: "CommandOrControl+R",
-            click: () => {
-              void rendererRecovery.reload();
-            },
+        },
+      ],
+    },
+    { role: "editMenu" },
+    {
+      label: "View",
+      submenu: [
+        {
+          id: "reload-workspace",
+          label: "Reload",
+          accelerator: "CommandOrControl+R",
+          click: () => {
+            void rendererRecovery.reload();
           },
-          { role: "resetZoom" },
-          { role: "zoomIn" },
-          { role: "zoomOut" },
-          { role: "togglefullscreen" },
-        ],
-      },
-    ]),
+        },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { role: "togglefullscreen" },
+      ],
+    },
+  ]);
+  recoveryStatusItem = applicationMenu.getMenuItemById(
+    "background-recovery-status",
   );
+  Menu.setApplicationMenu(applicationMenu);
   await rendererRecovery.reload({ manual: false });
   windowState.restore();
   if (!hidden) win.showInactive();

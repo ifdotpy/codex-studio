@@ -16,7 +16,8 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 # Public CodexErrorInfo variants at rust-v0.153.4 (042fb41b7c81).
 CODES = ['contextWindowExceeded', 'sessionBudgetExceeded', 'usageLimitExceeded',
-    'rateLimitExceeded', 'serverOverloaded', 'cyberPolicy', 'misalignmentPolicyViolation',
+    'rateLimitExceeded', 'flexUnavailable', 'serverOverloaded', 'cyberPolicy', 'misalignmentPolicyViolation',
+    'tooManyDenials',
     {'httpConnectionFailed': {'httpStatusCode': 503}},
     {'responseStreamConnectionFailed': {'httpStatusCode': 502}},
     'internalServerError', 'unauthorized', 'badRequest', 'threadRollbackFailed', 'sandboxError',
@@ -70,6 +71,7 @@ class NativeErrorContract(unittest.TestCase):
         self.send('thread/tokenUsage/updated', tokenUsage={})
         self.assertIn('nativeStatus', self.runtime.agent(self.key))
         self.send('item/agentMessage/delta', itemId='answer', delta='Recovered')
+        fixture.eventually(lambda: 'nativeStatus' not in self.runtime.agent(self.key))
         self.assertNotIn('nativeStatus', self.runtime.agent(self.key))
         self.assertEqual(self.runtime.agent(self.key)['activity']['phase'], 'writing')
 
@@ -99,6 +101,17 @@ class NativeErrorContract(unittest.TestCase):
         self.send('turn/completed', turn={'id': self.turn, 'status': 'failed', 'error': error})
         self.assertEqual(self.runtime.agent(self.key)['error'], error)
         self.assertTrue(any(m.get('nativeError') == error for m in self.messages()))
+
+    def test_guardian_denial_is_failure_not_user_interruption(self):
+        error = {'message': 'Native Guardian limit', 'codexErrorInfo': 'tooManyDenials'}
+        self.send('turn/completed', turn={'id': self.turn, 'status': 'interrupted', 'error': error})
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'failed')
+        self.assertEqual(agent['lastCompletedTurnStatus'], 'failed')
+        self.assertEqual(agent['error'], error)
+        self.assertTrue(agent['nativeFailureHold'])
+        self.assertTrue(any('too many denied actions' in m.get('text', '').lower()
+                            for m in self.messages() if m.get('nativeNotice') == 'error'))
 
     def test_auth_recovery_preserves_turn_and_updates_one_notice(self):
         for suffix in ['Started', 'Completed']:
@@ -135,10 +148,12 @@ class NativeErrorContract(unittest.TestCase):
             self.runtime.answer(records[0]['id'], {'answers': {}})
 
     def test_failed_native_turn_holds_pending_events_until_explicit_resume(self):
-        queued = self.runtime.send(self.key, 'Next task', manual=False)
         error = {'message': 'Usage limit reached', 'codexErrorInfo': 'usageLimitExceeded'}
-        calls = sum(method == 'turn/start' for method, _ in self.server.calls)
         self.send('turn/completed', turn={'id': self.turn, 'status': 'failed', 'error': error})
+        fixture.eventually(lambda: self.runtime.agent(self.key)['status'] == 'failed'
+                            and not self.runtime.agent(self.key)['inFlight'])
+        calls = sum(method == 'turn/start' for method, _ in self.server.calls)
+        queued = self.runtime.send(self.key, 'Next task', manual=False)
         self.runtime.send(self.key, 'Worker result', manual=False)
         self.runtime.dispatch()
         self.assertEqual(self.runtime.agent(self.key)['status'], 'failed')
@@ -162,7 +177,10 @@ class NativeErrorContract(unittest.TestCase):
         for _ in range(3):
             self.runtime.snapshot()
             self.runtime.limits()
-        self.assertEqual(self.server.calls[len(calls):], [('account/rateLimits/read', {})])
+        recovered = self.server.calls[len(calls):]
+        self.assertEqual([call for call in recovered if call[0] == 'account/rateLimits/read'],
+                         [('account/rateLimits/read', {})])
+        self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, _ in recovered))
         self.assertEqual(self.runtime.agent(self.key)['nativeLimitErrorAt'], episode)
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_native_limit_refreshes').fetchone()[0], 1)
@@ -174,7 +192,10 @@ class NativeErrorContract(unittest.TestCase):
         self.send('turn/completed', turn={'id': self.turn, 'status': 'failed', 'error': error})
         fixture.eventually(lambda: len(self.server.calls) > len(calls))
         self.send('turn/completed', turn={'id': self.turn, 'status': 'failed', 'error': error})
-        self.assertEqual(self.server.calls[len(calls):], [('account/rateLimits/read', {})])
+        recovered = self.server.calls[len(calls):]
+        self.assertEqual([call for call in recovered if call[0] == 'account/rateLimits/read'],
+                         [('account/rateLimits/read', {})])
+        self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, _ in recovered))
         self.assertEqual(self.runtime.agent(self.key)['status'], 'failed')
 
     def test_limit_recovery_skips_replaced_connection_before_read(self):

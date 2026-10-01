@@ -215,9 +215,10 @@ try {
       .getByRole("region", { name, exact: true })
       .locator("[data-worker]")
       .evaluateAll((nodes) => nodes.map((node) => node.dataset.worker));
+  assert.deepEqual(await groupIds("Need you"), [worker(2).id]);
   assert.deepEqual(
-    (await groupIds("Attention")).sort(),
-    [worker(2).id, worker(3).id, worker(7).id].sort(),
+    (await groupIds("Failed")).sort(),
+    [worker(3).id, worker(7).id].sort(),
   );
   assert.deepEqual(
     (await groupIds("Working")).sort(),
@@ -230,14 +231,14 @@ try {
     false,
     "completed workers start collapsed",
   );
-  await team.getByRole("button", { name: "Attention 3", exact: true }).click();
-  assert.equal(await team.locator("[data-worker]").count(), 3);
+  await team.getByRole("button", { name: "Failed", exact: true }).click();
+  assert.equal(await team.locator("[data-worker]").count(), 2);
   await search.fill("Worker 39");
   await row(39).waitFor({ state: "visible" });
   assert.equal(
     await team.locator("[data-worker]").count(),
     1,
-    "search includes completed workers even from the Attention filter",
+    "search includes completed workers even from the Failed filter",
   );
   await row(39).click();
   assert.equal(await row(39).getAttribute("aria-current"), "page");
@@ -253,14 +254,14 @@ try {
   await search.fill("");
   assert.equal(
     await team
-      .getByRole("button", { name: "Attention 3" })
+      .getByRole("button", { name: "Failed", exact: true })
       .getAttribute("aria-pressed"),
     "true",
   );
-  await team.getByRole("button", { name: "Active 5", exact: true }).click();
+  await team.getByRole("button", { name: "Active", exact: true }).click();
   assert.equal(await team.locator("[data-worker]").count(), 5);
   assert.equal(await row(3).count(), 0, "interrupted workers are not active");
-  await team.getByRole("button", { name: "All 40", exact: true }).click();
+  await team.getByRole("button", { name: "All", exact: true }).click();
   await row(2).click();
   assert.equal(await row(2).getAttribute("aria-current"), "page");
   assert.equal(
@@ -312,7 +313,7 @@ try {
   );
   assert.equal(
     await team
-      .getByRole("button", { name: "All 40" })
+      .getByRole("button", { name: "All" })
       .getAttribute("aria-pressed"),
     "true",
   );

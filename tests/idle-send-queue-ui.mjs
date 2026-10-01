@@ -150,12 +150,6 @@ try {
     },
     { id: lead.id, stateDir: initial.stateDir },
   );
-  await page.route("**/api/sync/**", (route) =>
-    route.fulfill({ status: 404, json: { error: "Fixture uses HTTP" } }),
-  );
-  await page.route("**/api/transcript/stream?*", (route) =>
-    route.fulfill({ status: 404, json: { error: "Fixture uses HTTP" } }),
-  );
   let deliveredId = null;
   await page.route("**/api/transcript?*", async (route) => {
     const response = await route.fetch();
@@ -187,97 +181,37 @@ try {
   assert(!lead.inFlight && !lead.turnId, "Fixture chat has no active turn");
   await composer.fill("Normal idle send");
   await composer.press("Enter");
-  await wait(
-    async () => (await queue()).items.length === 1,
-    "Idle Send reaches scheduler",
-  );
+  await wait(async () => sent.length === 1, "Idle Send reaches scheduler");
+  assert.equal(sent.length, 1);
   assert.equal(sent[0].delivery, "after_tool");
-  await bubble("Normal idle send")
-    .getByText("Sending…", { exact: true })
-    .waitFor();
-  assert.equal(
-    await panel.count(),
-    0,
-    "Normal scheduler input is not an editable queued message",
-  );
-  const implicit = (await queue()).items[0].id;
-  await page.reload();
-  await bubble("Normal idle send")
-    .getByText("Sending…", { exact: true })
-    .waitFor();
-  assert.equal(
-    await panel.count(),
-    0,
-    "Reload keeps ordinary Send outside the editable queue",
-  );
-  assert.equal(sent.length, 1, "Reload does not submit the message again");
-  for (const text of ["Explicit queue A", "Explicit queue B"]) {
-    await composer.fill(text);
-    await composer.press("Tab");
-  }
-  await wait(
-    async () => (await queue()).items.length === 3,
-    "All inputs remain durable",
-  );
-  await panel.getByText("Explicit queue B", { exact: true }).waitFor();
-  const visible = panel
-    .getByRole("list", { name: "Queued messages", exact: true })
-    .locator("li[data-message-id]");
-  assert.equal(await visible.count(), 2);
-  const raw = (await queue()).items;
-  await panel
-    .getByRole("button", { name: "Move queued message 2 up", exact: true })
-    .click();
-  await wait(
-    async () => (await queue()).items[1].id === raw[2].id,
-    "Visible reorder preserves hidden scheduler slot",
-  );
-  assert.deepEqual(
-    (await queue()).items.map((item) => item.id),
-    [implicit, raw[2].id, raw[1].id],
-  );
-  const reorder = mutations.find((value) => value.action === "reorder");
-  assert.deepEqual(reorder.ordered_ids, [implicit, raw[2].id, raw[1].id]);
+  // A message for after the current tool call is never queued. It stays in
+  // the chat while it waits, also after a reload.
   await bubble("Normal idle send").waitFor();
-  deliveredId = raw[1].id;
-  await bubble("Explicit queue A").waitFor();
-  await wait(
-    async () => (await visible.count()) === 1,
-    "Delivered transcript removes stale editable queue row",
-  );
+  // Tab sends the draft for after the turn; it waits in the queue panel.
+  await composer.fill("Tab queues this draft");
+  await composer.press("Tab");
+  await wait(async () => sent.length === 2, "Tab input reaches scheduler");
+  assert.equal(sent[1].delivery, "after_turn");
+  assert.equal(await composer.inputValue(), "");
+  await panel.getByText("Tab queues this draft", { exact: true }).waitFor();
+  assert.equal(await bubble("Tab queues this draft").count(), 0);
+  await page.waitForTimeout(3500);
   assert.equal(
-    (await queue()).items.length,
-    3,
-    "Queue deliberately remains stale",
-  );
-  assert.equal(
-    await panel.getByText("Explicit queue A", { exact: true }).count(),
+    await panel.getByText("Normal idle send", { exact: true }).count(),
     0,
+    "an after-tool message is not in the queue",
   );
+  await page.reload();
+  await bubble("Normal idle send").waitFor();
   assert.equal(
-    await bubble("Explicit queue A")
-      .getByText("Queued", { exact: true })
-      .count(),
+    await panel.getByText("Normal idle send", { exact: true }).count(),
     0,
+    "Reload keeps the after-tool message out of the queue",
   );
-  assert.equal(
-    await bubble("Normal idle send")
-      .getByText("Queued", { exact: true })
-      .count(),
-    0,
-  );
-  assert.equal(sent.length, 3);
+  assert.equal(sent.length, 2, "Reload does not send input again");
   assert.deepEqual(errors, []);
   console.log(
-    JSON.stringify({
-      browser: browserType.name(),
-      evidence: root,
-      messages: sent.length,
-      mutations: mutations.length,
-    }),
-  );
-  console.log(
-    "PASS idle Send stays visible, Tab queue remains editable, mixed reorder keeps hidden slots, delivered transcript wins over stale queue",
+    "PASS idle send, Tab queues after the turn, after-tool messages stay out of the queue, reload identity",
   );
 } catch (error) {
   console.error(error);

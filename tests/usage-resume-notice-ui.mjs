@@ -21,12 +21,14 @@ import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
 import {NativeError} from '/src/components/NativeNotice.tsx';
 const resume={id:'resume-1',status:'scheduled',dueAt:${dueAt},plannedAt:${dueAt},updatedAt:1};
+const authResume={id:'auth-resume-1',status:'scheduled',cause:'auth',dueAt:${dueAt},updatedAt:1};
 const agent={id:'chat-1',rootId:'chat-1',accountKey:'work',threadId:'thread-1',model:'gpt-6-astra',
   error:{codexErrorInfo:'usageLimitExceeded',message:'Usage limit reached'},nativeLimitErrorAt:${dueAt - 60},
   status:'failed',isLead:true,usageResume:resume,usageResumeEnabled:true};
-createRoot(document.getElementById('root')).render(<MantineProvider><NativeError agent={agent} limits={{
+const authAgent={...agent,id:'chat-auth',error:{codexErrorInfo:'unauthorized',message:'Sign in again'},usageResume:authResume};
+createRoot(document.getElementById('root')).render(<MantineProvider><><NativeError agent={agent} limits={{
   accountKey:'work',at:${dueAt - 30},data:{rateLimits:{primary:{usedPercent:100,resetsAt:${dueAt}}}}
-}}/></MantineProvider>);`;
+}}/><NativeError agent={authAgent}/></></MantineProvider>);`;
 const server = await createServer({
   configFile: false,
   cacheDir: cache,
@@ -70,7 +72,7 @@ try {
     writes.push(body);
     await route.fulfill({
       json: {
-        id: "resume-1",
+        id: body.resume_id,
         status: "cancelled",
         dueAt: null,
         reason: "Automatic resume is off for this chat.",
@@ -79,9 +81,25 @@ try {
     });
   });
   await page.goto(server.resolvedUrls.local[0]);
-  const notice = page.locator(".account-limit-recovery.inline");
-  await notice.waitFor();
+  const notices = page.locator(".account-limit-recovery.inline");
+  await notices.first().waitFor();
+  const notice = notices.filter({ hasText: "Usage limit reached" }).first();
+  const authNotice = notices.nth(1);
+  assert.equal(
+    await notices
+      .filter({ hasText: "Waiting for the account sign-in" })
+      .count(),
+    1,
+  );
   assert.match(await notice.textContent(), /Automatic resume planned for/);
+  assert.match(await authNotice.textContent(), /Next account check/);
+  await authNotice
+    .getByRole("button", { name: "Turn off automatic resume" })
+    .click();
+  await authNotice
+    .getByRole("button", { name: "Turn on automatic resume" })
+    .waitFor();
+  assert.match(await authNotice.textContent(), /Automatic resume is off/);
   assert.ok(
     (await notice
       .locator(`time[datetime="${new Date(dueAt * 1000).toISOString()}"]`)
@@ -94,6 +112,7 @@ try {
     .getByRole("button", { name: "Turn on automatic resume" })
     .waitFor();
   assert.deepEqual(writes, [
+    { id: "chat-auth", resume_id: "auth-resume-1", enabled: false },
     { id: "chat-1", resume_id: "resume-1", enabled: false },
   ]);
   console.log("Usage resume notice: planned time and opt-out toggle passed.");

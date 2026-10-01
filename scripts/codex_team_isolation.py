@@ -102,10 +102,12 @@ def assert_events(runtime, db, recipient, rows):
             raise ValueError(reason)
 
 
-def cancel_pending(runtime, db):
+def cancel_pending(runtime, db, agent_id=None):
     """Cancel only unsent forbidden events. Retain messages and delivery history."""
     rows = db.execute("SELECT id,agent,kind,text FROM runtime_events WHERE status='pending' "
-                      "AND kind IN ('agent_message','chat_review','complaint_response','followup','radio_turn')").fetchall()
+                      "AND kind IN ('agent_message','chat_review','complaint_response','followup','radio_turn')"
+                      + (" AND agent=?" if agent_id is not None else ""),
+                      ((agent_id,) if agent_id is not None else ())).fetchall()
     cancelled = 0
     for event in rows:
         reason = validate_event(runtime, db, {'id': event['agent']}, event)

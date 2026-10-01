@@ -31,6 +31,9 @@ try {
   });
   const origin = `http://127.0.0.1:${port}`;
   const snapshot = await (await fetch(origin + "/api/state")).json();
+  const diskApi = await (await fetch(origin + "/api/worktree-disk")).json();
+  assert.equal(typeof diskApi.limitBytes, "number");
+  assert.equal(typeof diskApi.totalBytes, "number");
   browser = await chromium.launch({
     headless: true,
     executablePath:
@@ -66,6 +69,7 @@ try {
   Object.assign(member, {
     name: "Подача уведомления",
     status: "failed",
+    worktree: true,
     inFlight: false,
     error: rawError,
     overview: {
@@ -73,9 +77,48 @@ try {
       result: "",
     },
   });
-  snapshot.threads = [lead, member];
-  snapshot.runtime.agents = [lead, member];
-  snapshot.runtime.requests = [];
+  const active = {
+    ...member,
+    id: "worker-active",
+    name: "Active worker",
+    status: "running",
+    inFlight: true,
+    worktree: false,
+    error: undefined,
+  };
+  const needsYou = {
+    ...member,
+    id: "worker-answer",
+    name: "Needs you",
+    status: "approval",
+    inFlight: false,
+    worktree: false,
+    error: undefined,
+  };
+  snapshot.threads = [lead, member, active, needsYou];
+  snapshot.runtime.agents = [lead, member, active, needsYou];
+  snapshot.runtime.requests = [
+    { id: "active-answer", agent: active.id, status: "pending" },
+    { id: "answer", agent: needsYou.id, status: "pending" },
+  ];
+  await page.route("**/api/worktree-disk**", (route) =>
+    route.fulfill({
+      json: {
+        workers: {
+          [member.id]: {
+            state: "ready",
+            bytes: 1024 ** 3,
+            measure: "private on APFS",
+          },
+        },
+        totalBytes: 1024 ** 3,
+        limitBytes: 1024 ** 3,
+        measure: "private on APFS",
+        warning: true,
+        scanning: false,
+      },
+    }),
+  );
   await page.route("**/api/sync/**", (route) =>
     route.fulfill({
       status: 503,
@@ -98,12 +141,26 @@ try {
           ?.getAttribute("aria-expanded") === "false",
       width,
     );
-    if (width === 320) {
+    const priorityRequest =
+      width === 1440
+        ? page.waitForResponse((response) => {
+            const url = new URL(response.url());
+            const requested = url.searchParams.get("workers")?.split(",") || [];
+            return (
+              url.pathname === "/api/worktree-disk" &&
+              [member.id, active.id, needsYou.id].every((id) =>
+                requested.includes(id),
+              )
+            );
+          })
+        : undefined;
+    if (width <= 760) {
       await page
         .getByRole("button", { name: "Chat actions", exact: true })
         .click();
       await page.getByRole("menuitem", { name: "Team", exact: true }).click();
     } else await page.locator("#team-toggle").click();
+    if (priorityRequest) await priorityRequest;
     await page.locator("#team").waitFor({ state: "visible" });
     const panel = page.locator("#team");
     await page.waitForFunction(() => {
@@ -161,13 +218,32 @@ try {
     }
     assert.match(
       await panel.locator(".team-heading").innerText(),
-      /1 subagent\b/,
+      /3 subagents\b/,
+    );
+    assert.deepEqual(
+      await panel.locator(".worker-entry strong").allInnerTexts(),
+      ["Active worker", "Needs you", "Подача уведомления"],
+      "compact panel puts Working first and keeps Need you visible",
+    );
+    assert.match(
+      await panel.locator(".worker-disk").innerText(),
+      /Disk: 1.0 GiB/,
+    );
+    assert.match(
+      await panel.locator(".worker-disk").getAttribute("title"),
+      /private on APFS/,
+    );
+    assert.match(
+      await panel.locator(".team-disk-total").innerText(),
+      /Disk limit reached/,
     );
     assert.equal(
       await panel.locator(".worker-error").innerText(),
       "Could not prepare the project folder.",
     );
-    const card = panel.locator(".worker-entry");
+    const card = panel
+      .locator(".worker-entry")
+      .filter({ has: page.locator(`[data-worker="${member.id}"]`) });
     assert.ok((await card.boundingBox()).height < 250, "compact error card");
     assert.equal(await card.locator("pre").isVisible(), false);
     await panel.screenshot({ path: join(evidence, `team-${width}.png`) });

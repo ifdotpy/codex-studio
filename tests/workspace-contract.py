@@ -26,6 +26,7 @@ spec.loader.exec_module(fixture)
 Runtime, eventually = fixture.Runtime, fixture.eventually
 from codex_native_errors import NativeRpcError
 from codex_shell import monitor_command
+from codex_agent_management import manage_agent
 
 
 class WorkspaceServer(fixture.FakeServer):
@@ -369,6 +370,74 @@ class WorkspaceContract(unittest.TestCase):
             self.assertEqual(len(global_state[field]), 102)
             self.assertEqual({item["agent"] for item in global_state[field] if item["status"] != "running"}, {other["id"]})
 
+    def test_workspace_task_feed_is_incremental_bounded_and_paged(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        other = self.lead("Other chat")
+        with self.runtime.lock, self.runtime.db() as db:
+            for number in range(105):
+                self.runtime.put(db, "tasks", {
+                    "id": f"history-{number:03}", "agent": worker["id"],
+                    "status": "completed", "created": 1000 + number,
+                    "tail": "private output", "arguments": "private arguments", "error": "private error",
+                })
+            self.runtime.put(db, "tasks", {
+                "id": "other-chat-task", "agent": other["id"],
+                "status": "completed", "created": 9999,
+            })
+        initial = self.runtime.workspace_task_feed(lead["id"])
+        self.assertEqual(len(initial["tasks"]), 100)
+        self.assertTrue(initial["hasMore"])
+        self.assertEqual(initial["tasks"][0]["id"], "history-104")
+        self.assertNotIn("tail", initial["tasks"][0])
+        self.assertNotIn("arguments", initial["tasks"][0])
+        self.assertNotIn("error", initial["tasks"][0])
+        older = self.runtime.workspace_task_feed(lead["id"], before=initial["nextBefore"])
+        self.assertEqual([item["id"] for item in older["tasks"]], [
+            "history-004", "history-003", "history-002", "history-001", "history-000",
+        ])
+        self.assertNotIn("other-chat-task", {item["id"] for item in initial["tasks"] + older["tasks"]})
+        with self.runtime.db() as db:
+            plan = [row[3] for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
+                "AND CASE WHEN COALESCE(json_extract(record,'$.finished'),0)>"
+                "COALESCE(json_extract(record,'$.created'),0) THEN json_extract(record,'$.finished') "
+                "ELSE json_extract(record,'$.created') END>? ORDER BY CASE WHEN "
+                "COALESCE(json_extract(record,'$.finished'),0)>COALESCE(json_extract(record,'$.created'),0) "
+                "THEN json_extract(record,'$.finished') ELSE json_extract(record,'$.created') END,id LIMIT 101",
+                (worker["id"], 2000))]
+        self.assertTrue(any("runtime_task_agent_updated_id" in step and ">" in step for step in plan), plan)
+
+        changed_at = time.time() + 2
+        new = {"id": "new-command", "agent": worker["id"], "status": "running",
+               "created": changed_at, "processId": "123"}
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "tasks", new)
+        changes = self.runtime.workspace_task_feed(lead["id"], cursor=initial["cursor"])
+        self.assertEqual([item["id"] for item in changes["tasks"]], ["new-command"])
+        self.assertEqual(changes["cursor"], {"updated": changed_at, "id": "new-command"})
+
+        new.update(status="completed", finished=changed_at + 1)
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "tasks", new)
+        completed = self.runtime.workspace_task_feed(lead["id"], cursor=changes["cursor"])
+        self.assertEqual([item["status"] for item in completed["tasks"]], ["completed"])
+        self.assertEqual(completed["cursor"]["updated"], changed_at + 1)
+
+        with self.runtime.lock, self.runtime.db() as db:
+            for number in range(101):
+                self.runtime.put(db, "tasks", {
+                    "id": f"bulk-{number:03}", "agent": worker["id"],
+                    "status": "running", "created": changed_at + 2 + number / 1000,
+                })
+        first_batch = self.runtime.workspace_task_feed(lead["id"], cursor=completed["cursor"])
+        self.assertEqual(len(first_batch["tasks"]), 100)
+        self.assertTrue(first_batch["hasMoreChanges"])
+        self.assertFalse(first_batch["hasMore"])
+        second_batch = self.runtime.workspace_task_feed(lead["id"], cursor=first_batch["cursor"])
+        self.assertEqual([item["id"] for item in second_batch["tasks"]], ["bulk-100"])
+        self.assertFalse(second_batch["hasMoreChanges"])
+
     def test_workspace_rejects_unknown_or_deleted_chat_scope(self):
         with self.assertRaises(ValueError):
             self.runtime.workspace_snapshot("unknown-chat")
@@ -382,10 +451,10 @@ class WorkspaceContract(unittest.TestCase):
         self.agent_update(lead, status="failed", error="Fixture failure")
         expected = self.runtime.workspace_snapshot(lead["id"])["inbox"]
         records = self.runtime.records
-        def guarded(db, table):
+        def guarded(db, table, **kwargs):
             if table in {"checkpoints", "annotations", "plans"}:
                 raise AssertionError("Inbox reads unrelated history: " + table)
-            return records(db, table)
+            return records(db, table, **kwargs)
         with patch.object(self.runtime, "records", side_effect=guarded), patch.object(
                 self.runtime, "recent_tasks", side_effect=AssertionError("Inbox reads task history")):
             self.assertEqual(self.runtime.workspace_snapshot(lead["id"], view="inbox"), {"inbox": expected})
@@ -403,14 +472,14 @@ class WorkspaceContract(unittest.TestCase):
     def test_slow_checkpoint_read_does_not_block_limits(self):
         lead = self.lead()
         entered, release = threading.Event(), threading.Event()
-        records = self.runtime.records
-        def delayed(db, table):
+        records = self.runtime._workspace_records
+        def delayed(db, table, ids, field):
             if table == "checkpoints":
                 entered.set()
                 if not release.wait(3):
                     raise AssertionError("Checkpoint reader was not released")
-            return records(db, table)
-        with patch.object(self.runtime, "records", side_effect=delayed), ThreadPoolExecutor(max_workers=2) as pool:
+            return records(db, table, ids, field)
+        with patch.object(self.runtime, "_workspace_records", side_effect=delayed), ThreadPoolExecutor(max_workers=2) as pool:
             snapshot = pool.submit(self.runtime.workspace_snapshot, lead["id"])
             try:
                 self.assertTrue(entered.wait(1))
@@ -423,24 +492,26 @@ class WorkspaceContract(unittest.TestCase):
     def test_workspace_read_uses_one_committed_snapshot(self):
         lead = self.lead()
         self.agent_update(lead, status="failed", error="Before concurrent write")
-        records = self.runtime.records
+        requests = self.runtime._workspace_requests
         changed = False
-        def change_after_read(db, table):
+        def change_after_agent_read(db, ids):
             nonlocal changed
-            rows = records(db, table)
-            if table == "agents" and not changed:
+            rows = requests(db, ids)
+            if not changed:
                 changed = True
                 self.agent_update(lead, status="completed", error=None)
                 with self.runtime.lock, self.runtime.db() as writer:
                     self.runtime.put(writer, "checkpoints", {"id": "later", "agent": lead["id"],
                         "rootId": lead["rootId"], "items": ["later-item"]})
             return rows
-        with patch.object(self.runtime, "records", side_effect=change_after_read):
+        with patch.object(self.runtime, "_workspace_requests", side_effect=change_after_agent_read):
             before = self.runtime.workspace_snapshot(lead["id"])
         self.assertTrue(any(row["text"] == "Before concurrent write" for row in before["inbox"]))
         self.assertEqual(before["checkpoints"], [])
         after = self.runtime.workspace_snapshot(lead["id"])
-        self.assertEqual(after["checkpoints"][0]["items"], ["later-item"])
+        self.assertEqual(after["checkpoints"][0]["id"], "later")
+        self.assertNotIn("items", after["checkpoints"][0])
+        self.assertNotIn("historyDelta", after["checkpoints"][0])
         self.assertFalse(any(row["kind"] == "agent" for row in after["inbox"]))
 
     def test_reported_changes_are_per_agent_and_restore_the_full_saved_diff(self):
@@ -492,7 +563,7 @@ class WorkspaceContract(unittest.TestCase):
         self.assertTrue(reported["truncated"])
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("DELETE FROM runtime_search WHERE id=?", (lead["id"] + ":turn/diff/updated",))
-            db.execute("DELETE FROM runtime_item_bodies WHERE id=?", (lead["id"] + ":turn/diff/updated",))
+            db.execute("DELETE FROM runtime_item_fulltext WHERE id=?", (lead["id"] + ":turn/diff/updated",))
         with self.assertRaisesRegex(ValueError, "complete reported changes are unavailable"):
             self.runtime.changes(lead["id"], scope="chat")
 
@@ -565,6 +636,66 @@ class WorkspaceContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "accepted work"):
             self.action(lead, first, "update", title="Rewrite history")
 
+    def test_cancel_unsubmitted_work_is_audited_idempotent_and_releases_owner(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        task = self.work(lead, "Superseded", owner=worker["id"])
+        with self.assertRaisesRegex(ValueError, "cancellation reason"):
+            self.action(lead, task, "cancel")
+        cancelled = self.action(lead, task, "cancel", reason="Superseded by a new assignment")
+        self.assertEqual((cancelled["status"], cancelled["owner"]), ("cancelled", None))
+        decision = cancelled["decisions"][-1]
+        self.assertEqual((decision["decision"], decision["by"], decision["reason"]),
+                         ("cancel", lead["id"], "Superseded by a new assignment"))
+        notices = self.events(worker, "work_decision")
+        self.assertEqual(len(notices), 1)
+        self.assertIn('"decision": "cancel"', notices[0]["text"])
+        replay = self.action(lead, cancelled, "cancel", reason="Already cancelled")
+        self.assertEqual(replay["version"], cancelled["version"])
+        self.assertEqual(len(self.events(worker, "work_decision")), 1)
+        inspection = manage_agent(self.runtime, lead["id"],
+                                  {"action": "inspect", "agent_id": worker["id"]}, lead["epoch"])
+        self.assertNotIn("assigned_work", {blocker["kind"] for blocker in inspection["blockers"]})
+        self.assertIn("input_delivery", {blocker["kind"] for blocker in inspection["blockers"]})
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?",
+                       ("work-decision:" + task["id"] + ":cancel",))
+            saved_worker = self.runtime.agent(worker["id"], db)
+            saved_worker.update(status="completed", inFlight=False, turnId=None)
+            self.runtime.put(db, "agents", saved_worker)
+        inspection = manage_agent(self.runtime, lead["id"],
+                                  {"action": "inspect", "agent_id": worker["id"]}, lead["epoch"])
+        self.assertTrue(inspection["canArchive"], inspection["blockers"])
+        with self.assertRaisesRegex(ValueError, "lead or task creator"):
+            self.action(worker, task, "cancel", reason="Not authorized")
+        self.assertEqual(self.runtime.work_action(lead["id"], {})["items"][0]["status"], "cancelled")
+
+        created_by_worker = self.work(lead, "Worker-created record")
+        with self.runtime.lock, self.runtime.db() as db:
+            saved = next(w for w in self.runtime.records(db, "work") if w["id"] == created_by_worker["id"])
+            saved["createdBy"] = worker["id"]
+            self.runtime.put(db, "work", saved)
+        creator_cancel = self.action(worker, created_by_worker, "cancel", reason="Creator closed it")
+        self.assertEqual(creator_cancel["status"], "cancelled")
+
+    def test_task_tool_schema_exposes_cancel_reason(self):
+        lead = self.runtime.prepare(self.lead())
+        definition = next(tool for tool in self.runtime.tool_definitions(lead)
+                          if tool["name"] == "orchestration_task")
+        schema = definition["inputSchema"]
+        self.assertIn("cancel", schema["properties"]["action"]["enum"])
+        self.assertIn("reason", schema["properties"])
+        self.assertIn("task creator can cancel", definition["description"])
+
+    def test_task_get_history_and_claim_use_keyed_work_reads(self):
+        lead = self.lead()
+        task = self.runtime.work_action(lead["id"], {"action": "create", "title": "Keyed task"})
+        with patch.object(self.runtime, "work_records", side_effect=AssertionError("global work read")):
+            self.runtime.model_work(lead["id"], {"action": "get", "task_id": task["id"]})
+            self.runtime.model_work(lead["id"], {"action": "history", "task_id": task["id"]})
+            claimed = self.runtime.work_action(lead["id"], {"action": "claim", "task_id": task["id"]})
+        self.assertEqual(claimed["status"], "running")
+
     def test_work_mutation_receipts_and_versions_prevent_duplicate_or_stale_writes(
         self,
     ):
@@ -627,31 +758,6 @@ class WorkspaceContract(unittest.TestCase):
         self.runtime = ControlledRuntime(self.state, WorkspaceServer)
         self.assertEqual(len(self.runtime.search_work("newneedle")["results"]), 1)
         self.assertEqual(self.runtime.search_work('" OR *')["results"], [])
-
-    def test_search_reports_pending_index_then_returns_complete_snapshot_on_retry(self):
-        lead = self.lead()
-        with self.runtime.lock, self.runtime.db() as db:
-            for index in range(40):
-                self.runtime.item(db, lead["id"], f"fresh-{index}", "assistant", f"freshneedle result {index}", streaming=True)
-        from transcript_storage.storage import drain as real_drain
-        with patch("transcript_storage.storage.drain", side_effect=lambda db, **kwargs: real_drain(db, limit=32, **kwargs)):
-            with self.assertRaisesRegex(ValueError, "Transcript search is indexing"):
-                self.runtime.search_work("freshneedle", lead["id"])
-        with self.runtime.db() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM runtime_search_pending").fetchone()[0], 8)
-            self.assertEqual(db.execute("SELECT count(*) FROM runtime_search WHERE runtime_search MATCH 'freshneedle'").fetchone()[0], 32)
-        results = self.runtime.search_work("freshneedle", lead["id"])["results"]
-        self.assertEqual(len(results), 40)
-
-    def test_search_fails_visibly_for_partial_legacy_text_in_scope_only(self):
-        lead, other = self.lead(), self.lead("Other")
-        with self.runtime.lock, self.runtime.db() as db:
-            db.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)",
-                       (other["id"] + ":legacy-partial", other["id"],
-                        json.dumps({"title": "assistant", "text": "legacy excerpt", "truncated": True}), 1))
-        self.assertEqual(self.runtime.search_work("nothing", lead["id"])["results"], [])
-        with self.assertRaisesRegex(ValueError, "legacy transcript text is unavailable"):
-            self.runtime.search_work("nothing")
 
     def test_upload_validation_receipts_and_image_inputs(self):
         lead = self.lead()
@@ -781,30 +887,31 @@ class WorkspaceContract(unittest.TestCase):
                 lead["id"], {"action": "cancel", "message_id": "queued-0"}
             )
 
-    def test_steer_uses_exact_turn_and_receipt_without_a_second_turn(self):
+    def test_busy_input_uses_native_start_with_exact_receipt(self):
         lead = self.start(self.lead())
         outcome = self.runtime.send(
             lead["id"], "Correction", "steer-id", delivery="steer"
         )
-        self.assertEqual(outcome["status"], "delivered")
+        self.assertEqual(outcome["status"], "queued")
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.delivery_receipt("steer-id")["status"] == "delivered")
         self.runtime.send(lead["id"], "Correction", "steer-id", delivery="steer")
-        steers = [p for m, p in self.runtime.server.calls if m == "turn/steer"]
-        self.assertEqual(len(steers), 1)
-        self.assertEqual(steers[0]["expectedTurnId"], lead["turnId"])
+        self.runtime.dispatch()
+        self.assertFalse(any(m == "turn/steer" for m, _ in self.runtime.server.calls))
         self.assertEqual(
-            sum(m == "turn/start" for m, _ in self.runtime.server.calls), 1
+            sum(m == "turn/start" for m, _ in self.runtime.server.calls), 2
         )
+        self.assertEqual(self.runtime.agent(lead["id"])["turnId"], lead["turnId"])
         self.assertEqual(self.runtime.queue_action(lead["id"])["items"], [])
 
-    def test_steer_timeout_remains_uncertain_and_never_falls_back_to_queue(self):
+    def test_busy_start_timeout_keeps_reserved_batch_uncertain(self):
         lead = self.start(self.lead())
-        self.runtime.server.steer_error = TimeoutError(
-            "Steer response timed out; outcome unknown"
+        self.runtime.server.fail_start = True
+        self.runtime.send(
+            lead["id"], "Correction", "uncertain-steer", delivery="steer"
         )
-        with self.assertRaises(TimeoutError):
-            self.runtime.send(
-                lead["id"], "Correction", "uncertain-steer", delivery="steer"
-            )
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.delivery_receipt("uncertain-steer")["status"] == "uncertain")
         retry = self.runtime.send(
             lead["id"], "Correction", "uncertain-steer", delivery="steer"
         )
@@ -813,10 +920,8 @@ class WorkspaceContract(unittest.TestCase):
         self.runtime.server.complete(lead["threadId"], lead["turnId"])
         self.runtime.dispatch()
         self.assertEqual(
-            sum(m == "turn/start" for m, _ in self.runtime.server.calls), 1
+            sum(m == "turn/start" for m, _ in self.runtime.server.calls), 2
         )
-        with self.assertRaisesRegex(ValueError, "no active turn"):
-            self.runtime.send(lead["id"], "Late correction", delivery="steer")
 
     def test_file_watch_does_not_infer_until_the_file_changes(self):
         lead = self.lead()
@@ -910,6 +1015,47 @@ class WorkspaceContract(unittest.TestCase):
                 },
             )
         self.assertEqual((self.project / "tracked.txt").read_text(), "unstaged\n")
+
+    def test_snapshot_from_the_real_index_matches_a_full_rehash(self):
+        lead = self.git_project()
+        (self.project / "gone.txt").write_text("gone\n")
+        self.git(self.project, "add", "gone.txt")
+        self.git(self.project, "commit", "-qm", "Second")
+        (self.project / "tracked.txt").write_text("staged\n")
+        self.git(self.project, "add", "tracked.txt")
+        (self.project / "tracked.txt").write_text("unstaged\n")
+        (self.project / "gone.txt").unlink()
+        (self.project / "new.txt").write_text("untracked\n")
+        index = self.git(self.project, "write-tree")
+        tree = self.runtime.snapshot_tree(self.runtime.agent(lead["id"]))
+        scratch = self.root / "full-index"
+        env = {**os.environ, "GIT_INDEX_FILE": str(scratch)}
+        subprocess.run(["git", "-C", str(self.project), "read-tree", "HEAD"], env=env, check=True)
+        subprocess.run(["git", "-C", str(self.project), "add", "-A", "--", "."], env=env, check=True)
+        full = subprocess.run(["git", "-C", str(self.project), "write-tree"], env=env,
+                              check=True, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(tree, full)
+        self.assertEqual(self.git(self.project, "write-tree"), index)
+
+    def test_first_checkpoint_uses_head_tree_without_snapshot(self):
+        worker, path = self.isolated_worker()
+        self.agent_update(worker, worktreeReady=False, threadId=None)
+        with patch.object(type(self.runtime), "snapshot_tree", side_effect=NameError("git add timed out")):
+            prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
+        self.assertTrue(prepared.get("threadId"))
+        with self.runtime.db() as db:
+            checkpoints = [record for record in self.runtime.records(db, "checkpoints")
+                           if record["agent"] == worker["id"]]
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(checkpoints[0]["tree"], self.git(prepared["cwd"], "rev-parse", "HEAD^{tree}"))
+
+    def test_failed_first_checkpoint_does_not_stop_the_worker(self):
+        worker, path = self.isolated_worker()
+        self.agent_update(worker, worktreeReady=False, threadId=None)
+        with patch.object(type(self.runtime), "capture_checkpoint", side_effect=NameError("capture timed out")):
+            prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
+        self.assertTrue(prepared.get("threadId"))
+        self.assertIn("capture timed out", self.runtime.agent(worker["id"])["checkpointError"])
 
     def test_checkpoint_restore_rejects_stale_preview_and_provider_failure_before_files(
         self,

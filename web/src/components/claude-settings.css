@@ -1,0 +1,93 @@
+.claude-settings {
+  gap: 10px;
+}
+
+.claude-settings > h2 {
+  margin-top: 2px;
+}
+
+.claude-settings .mantine-InputWrapper-root {
+  min-width: 0;
+}
+
+.claude-settings .mantine-InputWrapper-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.claude-settings .mantine-InputWrapper-description,
+.claude-setting-help {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.claude-save-status {
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.claude-advanced {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.claude-advanced > summary,
+.claude-advanced-content details > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  list-style-position: inside;
+  padding: 4px 0;
+}
+
+.claude-advanced-content {
+  display: grid;
+  gap: 12px;
+  padding: 10px 0 2px;
+}
+
+.claude-advanced-content details {
+  display: grid;
+  gap: 10px;
+}
+
+.claude-version,
+.claude-task {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.claude-task {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.claude-task > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.claude-setting-error {
+  margin: 0;
+  color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-5));
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 420px) {
+  .claude-settings .mantine-Switch-body {
+    align-items: flex-start;
+  }
+
+  .claude-settings .mantine-Switch-labelWrapper {
+    min-width: 0;
+  }
+}

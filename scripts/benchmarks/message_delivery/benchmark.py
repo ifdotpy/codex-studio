@@ -14,7 +14,6 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -133,7 +132,7 @@ class SSEClient(threading.Thread):
             with urllib.request.urlopen(request, timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
                 if response.status != 200:
                     raise RuntimeError(f"SSE returned HTTP {response.status}")
-                data_lines = []
+                data_lines, texts = [], {}
                 while not self.stop.is_set():
                     raw = response.readline()
                     if not raw:
@@ -148,11 +147,20 @@ class SSEClient(threading.Thread):
                         observed = time.monotonic_ns()
                         for item in event.get("items", []):
                             identity = item.get("id")
-                            if identity in self.expected:
+                            # The stream sends versioned deltas: a replacement record or
+                            # text appended to the item seen before.
+                            if "replace" in item:
+                                text = (item["replace"] or {}).get("text")
+                            elif "append" in item:
+                                text = texts.get(identity, "") + item["append"]
+                            else:
                                 text = item.get("text")
-                                if text != self.expected[identity]:
+                            texts[identity] = text
+                            if identity in self.expected:
+                                expected = self.expected[identity]
+                                if not isinstance(text, str) or not expected.startswith(text):
                                     raise RuntimeError(f"corrupt final text for {identity}: {text!r}")
-                                if identity not in self.receipt:
+                                if text == expected and identity not in self.receipt:
                                     self.receipt[identity] = observed
                                     self.receipt_changed.set()
         except (OSError, urllib.error.URLError, ValueError, RuntimeError) as error:
@@ -291,7 +299,7 @@ def _import_history(runtime, agent_id: str, work_started: threading.Event, gate:
                 return
         report["error"] = "analytics import exceeded bounded step count"
     except Exception as error:  # surfaced by scenario runner
-        report["error"] = f"{type(error).__name__}: {error}\n{traceback.format_exc()}"
+        report["error"] = f"{type(error).__name__}: {error}"
         work_started.set()
     report["completedNs"] = time.monotonic_ns()
 

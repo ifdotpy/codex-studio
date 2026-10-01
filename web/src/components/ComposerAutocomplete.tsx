@@ -5,6 +5,7 @@ import {
   useState,
   type KeyboardEvent,
   type ReactElement,
+  type TextareaHTMLAttributes,
 } from "react";
 
 interface Option {
@@ -30,9 +31,7 @@ export default function ComposerAutocomplete({
   onSelect,
   onDismiss,
 }: {
-  children: ReactElement<{
-    onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
-  }>;
+  children: ReactElement<TextareaHTMLAttributes<HTMLTextAreaElement>>;
   opened: boolean;
   options: Option[];
   loading: boolean;
@@ -117,14 +116,12 @@ export default function ComposerAutocomplete({
       >
         {cloneElement(children, {
           onKeyDown,
-          ...{
-            role: "combobox",
-            "aria-autocomplete": "list" as const,
-            "aria-controls": opened ? id : undefined,
-            "aria-expanded": opened,
-            "aria-haspopup": "listbox" as const,
-            "aria-activedescendant": opened ? activeId || undefined : undefined,
-          },
+          role: "combobox",
+          "aria-autocomplete": "list" as const,
+          "aria-controls": opened ? id : undefined,
+          "aria-expanded": opened,
+          "aria-haspopup": "listbox" as const,
+          "aria-activedescendant": opened ? activeId || undefined : undefined,
         })}
       </Combobox.Target>
       <Combobox.Dropdown>

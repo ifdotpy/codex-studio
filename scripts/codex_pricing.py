@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 
 URL = "https://models.dev/api.json"
 TTL = 24 * 60 * 60
+# A new model can appear before the daily refresh; retry sooner, but not per request.
+MISSING_TTL = 60 * 60
 
 
 def amount(value):
@@ -75,10 +77,10 @@ class PricingCatalog:
             pass
         return None
 
-    def snapshot(self):
+    def snapshot(self, *, ttl=None):
         with self.lock:
             artifact = self.artifact
-            stale = self.clock() - self.last_attempt >= TTL
+            stale = self.clock() - self.last_attempt >= (TTL if ttl is None else ttl)
             if stale and not self.refreshing:
                 self.refreshing = True
                 self.last_attempt = self.clock()
@@ -92,6 +94,10 @@ class PricingCatalog:
                     self._save(artifact)
                 threading.Thread(target=self._refresh, name="pricing-catalog", daemon=True).start()
             return artifact["catalog"] if artifact else None
+
+    def refresh_missing(self):
+        """Start an early refresh after a priced provider reports an unknown model."""
+        self.snapshot(ttl=MISSING_TTL)
 
     def wait_ready(self, timeout=8):
         catalog = self.snapshot()

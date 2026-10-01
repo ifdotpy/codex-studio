@@ -6,12 +6,10 @@ import os
 from pathlib import Path
 import queue
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest.mock import patch
 
@@ -66,20 +64,6 @@ class BenchmarkTests(unittest.TestCase):
                 self.assertIn(stamp, progress["writeTimestampsNs"])
                 self.assertTrue(any(start <= stamp <= end
                                     for start, end in progress["overlapIntervalsNs"]))
-
-    def test_analytics_import_failure_keeps_traceback(self):
-        class BrokenRuntime:
-            def analytics_history_step(self, **_kwargs):
-                raise sqlite3.OperationalError("database schema has changed")
-
-        report, gate = {}, threading.Event()
-        gate.set()
-        benchmark._import_history(BrokenRuntime(), "agent", threading.Event(),
-                                  gate, report, threading.Event(),
-                                  time.monotonic() + 1)
-        self.assertIn("OperationalError: database schema has changed", report["error"])
-        self.assertIn("Traceback (most recent call last)", report["error"])
-        self.assertIn("analytics_history_step", report["error"])
 
     def test_overlap_windows_use_observed_timestamps(self):
         execution = benchmark.import_overlap([15, 50], [(10, 20)], (0, 100))

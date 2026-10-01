@@ -47,10 +47,16 @@ class ProgressLayoutContract(unittest.TestCase):
         self.temporary.cleanup()
 
     def report(self, **changes):
-        return {"agent": "first", "revision": read_progress(self.root, "first")["revision"],
+        body = {"agent": "first", "revision": read_progress(self.root, "first")["revision"],
                 "client": "phone", "sequence": 1, "renderer": layout.RENDERER,
                 "width": 320, "height": 150, "contentWidth": 100, "contentHeight": 40,
                 "fits": True, "reason": None, **changes}
+        if body["renderer"] == layout.RENDERER:
+            body = {"overflowX": max(0, body["contentWidth"] - body["width"]),
+                    "overflowY": max(0, body["contentHeight"] - body["height"]),
+                    "totalLines": 1, "visibleLines": 1, "lastVisibleLine": "Ready.",
+                    "lastVisibleHeading": None, **body}
+        return body
 
     def record(self, **changes):
         return layout.record_layout(self.runtime, self.report(**changes))
@@ -104,10 +110,45 @@ class ProgressLayoutContract(unittest.TestCase):
     def test_wide_success_preserves_narrow_failure_and_client_can_recover(self):
         self.record(fits=False, reason="overflow", contentWidth=350)
         wide = self.record(client="desktop", width=900, contentWidth=350)
-        self.assertEqual(wide["status"], "does_not_fit")
+        self.assertEqual(wide["status"], "clipped")
         self.assertEqual({row["client"] for row in wide["reports"]}, {"phone", "desktop"})
-        self.assertEqual(layout.layout_status(self.root, "first")["status"], "does_not_fit")
+        self.assertEqual(layout.layout_status(self.root, "first")["status"], "clipped")
         self.assertEqual(self.record(sequence=2)["status"], "fits")
+
+    def test_clipped_cli_hint_uses_least_visible_client(self):
+        self.record(fits=False, reason="overflow", contentHeight=250,
+                    totalLines=8, visibleLines=5, lastVisibleLine="Run the checks.",
+                    lastVisibleHeading="Next step")
+        self.record(client="desktop", width=900, height=280, contentHeight=250,
+                    totalLines=8, visibleLines=8, lastVisibleLine="Last result")
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/codex_progress_layout.py"),
+                                 str(self.path)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value["status"], "clipped")
+        self.assertIn("Visible: first 5", value["hint"])
+        self.assertIn("Hidden: 3 lines/items below Next step.", value["hint"])
+        self.assertIn("100px down", value["hint"])
+        self.assertEqual(len(value["reports"]), 2)
+        self.assertEqual(value["revision"], read_progress(self.root, "first")["revision"])
+
+    def test_legacy_client_that_hides_overflow_still_fails(self):
+        self.record(renderer=layout.LEGACY_RENDERER, fits=False,
+                    reason="overflow", contentHeight=170)
+        self.assertEqual(self.record(client="desktop")["status"], "does_not_fit")
+        self.assertEqual(layout.layout_status(self.root, "first")["status"], "does_not_fit")
+
+    def test_visibility_metrics_are_validated(self):
+        for changes in ({"overflowY": -1}, {"overflowX": float("nan")},
+                        {"overflowY": 20}, {"visibleLines": 2}, {"visibleLines": True},
+                        {"visibleLines": 0}, {"totalLines": 2049},
+                        {"lastVisibleLine": 2}, {"lastVisibleHeading": "x" * 201}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.record(**changes)
+        body = self.report()
+        body.pop("visibleLines")
+        with self.assertRaises(ValueError):
+            layout.record_layout(self.runtime, body)
 
     def test_expiry_future_clock_and_wrong_renderer_are_unmeasured(self):
         now = time.time()
@@ -160,7 +201,7 @@ class ProgressLayoutContract(unittest.TestCase):
 
     def test_invalid_and_corrupt_reports_never_count_as_fit(self):
         for changes in ({"sequence": True}, {"sequence": -1}, {"width": float("nan")},
-                        {"height": 151}, {"contentHeight": 151}, {"client": "../other"},
+                        {"height": 281}, {"contentHeight": 151}, {"client": "../other"},
                         {"fits": 1}, {"reason": "overflow"}, {"renderer": "unknown"},
                         {"extra": 1}, {"fits": False}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
@@ -251,6 +292,8 @@ class ProgressLayoutContract(unittest.TestCase):
         self.assertEqual(run(), (0, "fits"))
         self.record(sequence=2, fits=False, reason="unsupported")
         self.assertEqual(run(), (1, "does_not_fit"))
+        self.path.write_bytes(b"\xffinvalid UTF-8")
+        self.assertEqual(run(), (1, "does_not_fit"))
         self.path.write_text("")
         self.assertEqual(run(), (0, "empty"))
         self.assertEqual(run(self.root / "wrong.md"), (2, "unmeasured"))
@@ -261,7 +304,7 @@ class ProgressLayoutContract(unittest.TestCase):
         source = (ROOT / "scripts/codex_canvas.py").read_text()
         values = {"canvas": SimpleNamespace(runtime=self.runtime),
                   "remote": RemoteAccess(self.root), "token": "fixture-token",
-                  "sync": lambda: SimpleNamespace(identity=lambda: {"workspaceId": "fixture-workspace"})}
+                  "sync": lambda: SimpleNamespace(entity_sequence=lambda: 0, identity=lambda: {"workspaceId": "fixture-workspace"})}
         def cell(value):
             return (lambda: value).__closure__[0]
         methods = {}
@@ -297,7 +340,7 @@ class ProgressLayoutContract(unittest.TestCase):
         self.assertFalse(self.feedback.exists())
         self.assertEqual(post()[0], 200)
         self.assertEqual(post(body=self.report(revision="stale"))[0], 409)
-        self.assertEqual(post(body=self.report(height=151))[0], 400)
+        self.assertEqual(post(body=self.report(height=281))[0], 400)
 
     def test_cli_wait_stops_on_measurement_or_deadline(self):
         for measured, expected in ((True, 0), (False, 2)):
@@ -306,14 +349,36 @@ class ProgressLayoutContract(unittest.TestCase):
             output = io.StringIO()
             with patch.object(sys, "argv", ["layout", str(self.path), "--wait", "0.2"]), \
                     patch.object(layout, "layout_status", side_effect=statuses), \
-                    patch.object(layout.time, "monotonic", side_effect=[0, 0, 0] if measured else [0, 0.2]), \
+                    patch.object(layout.time, "monotonic", side_effect=[0, 0, 0] if measured else [0, 0.2, 0.2]), \
                     patch.object(layout.time, "sleep") as sleeper, redirect_stdout(output):
                 self.assertEqual(layout.main(), expected)
             self.assertEqual(sleeper.call_count, int(measured))
+            if not measured:
+                self.assertEqual(json.loads(output.getvalue())['waitedSeconds'], 0.2)
         for wait in ("-1", "5.01", "nan", "inf"):
             result = subprocess.run([sys.executable, str(ROOT / "scripts/codex_progress_layout.py"),
                                      str(self.path), "--wait", wait], capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 2)
+
+    def test_cli_wait_reads_later_measurement_for_current_revision(self):
+        self.record()
+        self.path.write_text('A newer revision.\n')
+        command = [sys.executable, str(ROOT / 'scripts/codex_progress_layout.py'),
+                   str(self.path), '--wait', '1']
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(0.2)
+            self.assertIsNone(process.poll())
+            self.record(sequence=2)
+            output, errors = process.communicate(timeout=5)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+        self.assertEqual(process.returncode, 0, errors)
+        result = json.loads(output)
+        self.assertEqual(result['revision'], read_progress(self.root, 'first')['revision'])
+        self.assertEqual(result['status'], 'fits')
 
 
 if __name__ == "__main__":

@@ -97,6 +97,18 @@ class PortableHistoryContract(unittest.TestCase):
         self.assertIn(json.dumps(descriptor['path']), context)
         self.assertNotIn('never export', Path(descriptor['path']).read_text())
 
+    def test_large_native_page_can_finish_after_the_old_30_second_deadline(self):
+        class SlowNative(Native):
+            def call(self, method, params, timeout=30):
+                if method == 'thread/turns/list' and timeout <= 30:
+                    raise TimeoutError('Native page exceeds 30 seconds')
+                return super().call(method, params, timeout)
+        native = SlowNative([turn('large-source-turn', 'Full source history')])
+        descriptor = self.export(native)
+        pages = [r for r in self.records(descriptor) if r['kind'] == 'native_turn_page']
+        self.assertEqual(pages[0]['page']['data'], native.turns)
+        self.assertEqual(len([c for c in native.calls if c[0] == 'thread/turns/list']), 1)
+
     def test_partial_turn_items_are_fully_paged_and_scoped(self):
         entries = [{'turnId': 'turn-a', 'item': {'id': str(i), 'type': 'commandExecution',
                     'aggregatedOutput': 'full output\n' * 1000}} for i in range(5)]

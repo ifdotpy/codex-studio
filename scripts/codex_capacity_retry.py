@@ -4,9 +4,17 @@ import json
 import os
 import time
 
-from codex_native_errors import assert_native_thread_open
+from codex_native_errors import assert_native_thread_open, error_kind
 
 DELAYS = (10, 30, 120, 300)
+# A network outage (DNS, Wi-Fi, sleep) can last longer than a busy server.
+CONNECTION_DELAYS = (10, 30, 120, 300, 600, 1200, 1800)
+SERVER_KINDS = {'serverOverloaded', 'internalServerError'}
+# Recheck a retry that waits for local work (a command or monitor) at most this often.
+WAIT_MAX_SECONDS = 300
+CONNECTION_KINDS = {'httpConnectionFailed', 'responseStreamConnectionFailed',
+                    'responseStreamDisconnected', 'responseTooManyFailedAttempts'}
+
 
 
 class CapacityRetryMixin:
@@ -72,8 +80,9 @@ class CapacityRetryMixin:
             if turn.get('status') == 'completed':
                 a.pop('nativeFailureHold', None)
         error = turn.get('error') or {}
+        kind = error_kind(error)
         if (not known_turn or not turn.get('id') or turn.get('status') != 'failed'
-                or not isinstance(error, dict) or error.get('codexErrorInfo') != 'serverOverloaded'
+                or kind not in SERVER_KINDS | CONNECTION_KINDS
                 or not a.get('autoWake') or a.get('deletedAt')
                 or a.get('turnEpoch', a['epoch']) != a['epoch']):
             return
@@ -86,11 +95,12 @@ class CapacityRetryMixin:
         if db.execute('SELECT 1 FROM runtime_capacity_retries WHERE id=?', (retry_id,)).fetchone():
             return
         count = a.get('capacityRetryCount', 0)
+        delays = CONNECTION_DELAYS if kind in CONNECTION_KINDS else DELAYS
         retry = dict(id=retry_id, threadId=a['threadId'], turnId=turn['id'],
-                     accountKey=a.get('accountKey', 'default'), epoch=a['epoch'],
-                     status='scheduled' if count < len(DELAYS) else 'exhausted',
-                     dueAt=time.time() + DELAYS[count] if count < len(DELAYS) else None,
-                     attempt=count + 1, maxAttempts=len(DELAYS),
+                     accountKey=a.get('accountKey', 'default'), epoch=a['epoch'], cause=kind,
+                     status='scheduled' if count < len(delays) else 'exhausted',
+                     dueAt=time.time() + delays[count] if count < len(delays) else None,
+                     attempt=count + 1, maxAttempts=len(delays),
                      cwd=a['cwd'], settings=self.preparation_settings(a))
         a['capacityRetry'] = retry
         self.capacity_save(db, a, retry)
@@ -99,7 +109,19 @@ class CapacityRetryMixin:
         retry = a.get('capacityRetry') or {}
         if retry.get('id') != attempt.get('capacityRetryId') or not retry:
             return
+        if not unknown and isinstance(getattr(error, 'contextRepairWait', None), dict):
+            # A running command, monitor or receipt delays context repair. This
+            # is a wait, not a rejection: nothing was submitted. Check again later.
+            self.capacity_wait(db, a, retry, str(error))
+            return
         retry.update(status='unknown' if unknown else 'failed', dueAt=None, reason=str(error))
+        self.capacity_save(db, a, retry)
+
+    def capacity_wait(self, db, a, retry, reason):
+        waits = retry.get('waits', 0) + 1
+        retry.pop('claimedAt', None)
+        retry.update(status='scheduled', dueAt=time.time() + min(WAIT_MAX_SECONDS, 15 * waits),
+                     waits=waits, reason=reason)
         self.capacity_save(db, a, retry)
 
     def capacity_check(self, db, a, retry, *, claimed=False):
@@ -180,18 +202,39 @@ class CapacityRetryMixin:
 
     def capacity_tick(self):
         with self.lock, self.db() as db:
-            due = [(a['id'], a['capacityRetry']['id']) for a in self.records(db, 'agents')
+            # Read scheduled retries only when due, plus failed context waits that need retirement.
+            now = time.time()
+            retrying = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.capacityRetry.status')='scheduled' "
+                "AND json_extract(record,'$.capacityRetry.dueAt')<=? UNION ALL "
+                "SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.capacityRetry.status')='failed' "
+                "AND json_extract(record,'$.capacityRetry.acceptedTurnId') IS NULL "
+                "AND json_extract(record,'$.capacityRetry.reason') LIKE 'Context repair waits for %'", (now,))]
+            for a in retrying:
+                retry = a.get('capacityRetry') or {}
+                if (retry.get('status') == 'failed' and not retry.get('acceptedTurnId')
+                        and str(retry.get('reason', '')).startswith('Context repair waits for ')
+                        and not ((a.get('startAttempt') or {}).get('capacityRetryId') == retry.get('id')
+                                 and (a.get('startAttempt') or {}).get('submitted'))):
+                    self.capacity_wait(db, a, retry, retry['reason'])
+                    self.put(db, 'agents', a)
+            due = [(a['id'], a['capacityRetry']['id']) for a in retrying
                    if (a.get('capacityRetry') or {}).get('status') == 'scheduled'
-                   and a['capacityRetry']['dueAt'] <= time.time()]
+                   and a['capacityRetry']['dueAt'] <= now]
         for key, retry_id in due:
             try:
                 self.capacity_retry(key, retry_id, 'retry', _automatic=True)
             except ValueError as error:
-                # A guard failure cancels automatic dispatch; the exact source stays visible.
+                # Local guards can clear without changing the retry identity.
                 with self.lock, self.db() as db:
                     a = self.agent(key, db)
                     retry = a.get('capacityRetry') or {}
                     if retry.get('id') == retry_id and retry.get('status') == 'scheduled':
-                        retry.update(status='cancelled', dueAt=None, reason=str(error))
-                        self.capacity_save(db, a, retry)
+                        if str(error) == 'This retry belongs to an earlier agent state.':
+                            retry.update(status='cancelled', dueAt=None, reason=str(error))
+                            self.capacity_save(db, a, retry)
+                        else:
+                            self.capacity_wait(db, a, retry, str(error))
                         self.put(db, 'agents', a)

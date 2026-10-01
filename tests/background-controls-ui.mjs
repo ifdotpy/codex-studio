@@ -99,7 +99,7 @@ try {
     let body = {};
     if (req.method() === "POST") {
       body = req.postDataJSON();
-      assert.equal(req.headers()["x-canvas-token"], "fixture-token");
+      assert.equal(req.headers()["x-canvas-token"], "fixture-token", path);
       writes.push({ path, body });
     }
     let value = {};
@@ -108,7 +108,8 @@ try {
         status: 404,
         json: { error: "Fixture uses HTTP snapshots" },
       });
-    if (path === "/api/state") value = state;
+    if (path === "/api/session") value = { token: "fixture-token" };
+    else if (path === "/api/state") value = state;
     else if (path === "/api/accounts")
       value = { accounts: [], defaultAccountKey: "default" };
     else if (path === "/api/voice/records")
@@ -123,11 +124,15 @@ try {
     else if (path === "/api/monitor")
       return route.fulfill({ status: 404, json: { error: "Not found" } });
     else if (path === "/api/monitor/log")
-      value = {
-        name: "monitor.log",
-        mime: "text/plain",
-        base64: Buffer.from("full saved log\n").toString("base64"),
-      };
+      return route.fulfill({
+        status: 200,
+        body: Buffer.from("full saved log\n"),
+        headers: {
+          "Content-Type": "text/plain",
+          "Content-Disposition": 'attachment; filename="monitor.log"',
+          "X-Log-Truncated": "true",
+        },
+      });
     else if (path === "/api/monitor/cancel") {
       monitor.cancelRequested = true;
       monitor.error = "Stop requested; waiting for the command to exit";
@@ -196,6 +201,11 @@ try {
     await readFile(await download.path(), "utf8"),
     "full saved log\n",
   );
+  await page
+    .getByText("The download contains the retained part of the log.", {
+      exact: true,
+    })
+    .waitFor();
   await page.screenshot({ path: join(root, "interactive-desktop.png") });
   // The mobile client closes desktop drawers below 761px. Exercise this drawer
   // at a narrow desktop width; mobile has its own client tests.

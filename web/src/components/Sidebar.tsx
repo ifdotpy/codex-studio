@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ActionIcon,
   Button,
@@ -32,6 +32,7 @@ import { useSidebarOrder } from "./useSidebarOrder";
 import {
   ProjectNameForm,
   MoveChatForm,
+  ConvertChatForm,
   folderLabel,
   type Project,
   type ProjectFolder,
@@ -82,6 +83,42 @@ export default function Sidebar(p: Props) {
   );
   const [organizing, setOrganizing] = useState<string | null>(null);
   const organizationLock = useRef(false);
+  type Conversion = { source: Agent; target: Agent; project: Project };
+  const conversionKey = `studio-peer-conversion-dialog:${p.data.stateDir}`;
+  const [conversion, updateConversion] = useState<Conversion | null>(() =>
+    saved(conversionKey, null),
+  );
+  const setConversion = (value: Conversion | null) => {
+    try {
+      localStorage.setItem(conversionKey, JSON.stringify(value));
+      updateConversion(value);
+    } catch (error) {
+      p.notify?.(`Could not save the conversion request: ${String(error)}`);
+    }
+  };
+  const closeConversion = () => {
+    if (
+      conversion &&
+      localStorage.getItem(
+        `studio-peer-convert:${p.data.stateDir}:${conversion.source.id}:${conversion.target.id}`,
+      )
+    ) {
+      p.notify?.(
+        "Retry the saved request to confirm its result before closing.",
+      );
+      return;
+    }
+    setConversion(null);
+  };
+  const compactKey = `codex-project-compact:${p.data.stateDir}`;
+  const [compactProjects, setCompactProjects] = useState<
+    Record<string, boolean>
+  >(() => saved(compactKey, {}));
+  const setCompactProject = (path: string, value: boolean) => {
+    const next = { ...compactProjects, [path]: value };
+    save(compactKey, next);
+    setCompactProjects(next);
+  };
   const [teamDialog, setTeamDialog] = useState<{
     path: string;
     id?: string;
@@ -150,15 +187,36 @@ export default function Sidebar(p: Props) {
     setCollapsed(next);
     save(projectKey, next);
   };
+  // Pin and archive show at once; the next snapshot confirms them.
+  const [overrides, setOverrides] = useState<
+    Record<string, { pinned?: boolean; archived?: boolean }>
+  >({});
   const organize = async (id: string, data: Record<string, unknown>) => {
     if (organizationLock.current) return false;
     organizationLock.current = true;
     setOrganizing(id);
+    const optimistic = Object.fromEntries(
+      Object.entries(data).filter(
+        ([key, value]) =>
+          (key === "pinned" || key === "archived") &&
+          typeof value === "boolean",
+      ),
+    );
+    const hasOptimistic = Object.keys(optimistic).length > 0;
+    if (hasOptimistic)
+      setOverrides((old) => ({ ...old, [id]: { ...old[id], ...optimistic } }));
     try {
       await api("/api/organization", { id, ...data });
-      await p.refresh?.();
+      if (hasOptimistic) void p.refresh?.();
+      else await p.refresh?.();
       return true;
     } catch (error) {
+      if (hasOptimistic)
+        setOverrides((old) => {
+          const next = { ...old };
+          delete next[id];
+          return next;
+        });
       p.notify?.(errorText(error));
       return false;
     } finally {
@@ -166,10 +224,33 @@ export default function Sidebar(p: Props) {
       setOrganizing(null);
     }
   };
-  const agents = p.data.threads.filter(
-    (a) =>
-      a.source === "managed" && a.isLead && !a.deletedAt && !a.sharedRoomId,
-  );
+  useEffect(() => {
+    // Drop an override once the snapshot shows the same value.
+    setOverrides((old) => {
+      const next = { ...old };
+      let changed = false;
+      for (const [id, values] of Object.entries(old)) {
+        const thread = p.data.threads.find((a) => a.id === id);
+        if (
+          !thread ||
+          Object.entries(values).every(
+            ([key, value]) =>
+              !!(thread as Record<string, unknown>)[key] === value,
+          )
+        ) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : old;
+    });
+  }, [p.data.threads]);
+  const agents = p.data.threads
+    .filter(
+      (a) =>
+        a.source === "managed" && a.isLead && !a.deletedAt && !a.sharedRoomId,
+    )
+    .map((a) => (overrides[a.id] ? { ...a, ...overrides[a.id] } : a));
   const sharedRooms = p.data.runtime.rooms.filter(
     (r) => r.radio?.direct && !r.userHidden,
   );
@@ -212,7 +293,11 @@ export default function Sidebar(p: Props) {
       }
     }
   }, [p.opened, selectedFolder]);
-  const chatGroup = (a: Agent) =>
+  const itemGroup = (path: string, parent: string | null = null) =>
+    JSON.stringify(["items", path, parent]);
+  const teamKey = (path: string, id: string) =>
+    JSON.stringify([path, "team", id]);
+  const legacyChatGroup = (a: Agent) =>
     JSON.stringify([
       "chats",
       a.cwd,
@@ -221,6 +306,16 @@ export default function Sidebar(p: Props) {
       ...(teamFor(a.id) ? ["team", teamFor(a.id)!.id] : []),
       ...(a.projectFolder ? [a.projectFolder] : []),
     ]);
+  const chatGroup = (a: Agent) =>
+    !teamFor(a.id) && !a.pinned
+      ? itemGroup(a.cwd || "", a.projectFolder || null)
+      : legacyChatGroup(a);
+  const chatRank = (a: Agent) => {
+    const rank = sorting.rank(chatGroup(a), a.id);
+    return rank === Number.MAX_SAFE_INTEGER
+      ? sorting.rank(legacyChatGroup(a), a.id)
+      : rank;
+  };
   const folderDrop = (project: Project, folder: ProjectFolder | null = null) =>
     sorting.dropBindings(
       folder ? folderKey(project.path, folder.id) : project.path,
@@ -279,7 +374,7 @@ export default function Sidebar(p: Props) {
   const orderedAgents = [...agents].sort(
     (a, b) =>
       Number(!!b.pinned) - Number(!!a.pinned) ||
-      sorting.rank(chatGroup(a), a.id) - sorting.rank(chatGroup(b), b.id) ||
+      chatRank(a) - chatRank(b) ||
       (("updated" in b ? b.updated : b.created) || 0) -
         (("updated" in a ? a.updated : a.created) || 0),
   );
@@ -350,7 +445,47 @@ export default function Sidebar(p: Props) {
         hasChats: true,
       });
   }
-  for (const a of filtered) groupMap.get(a.cwd || "")!.chats.push(a);
+  const keptInCompact = (a: Agent) =>
+    !!(
+      teamFor(a.id) ||
+      a.pinned ||
+      a.inFlight ||
+      ["running", "starting", "approval"].includes(a.status || "") ||
+      a.hasUnread ||
+      a.unreadCount ||
+      p.indicators.get(a.id)?.kind === "unread" ||
+      (a.updated || a.created || 0) >= Date.now() / 1000 - 86400
+    );
+  for (const a of filtered) {
+    if (query || !compactProjects[a.cwd || ""] || keptInCompact(a))
+      groupMap.get(a.cwd || "")!.chats.push(a);
+  }
+  const itemIds = (group: Project, parent: string | null = null) =>
+    [
+      ...(!parent
+        ? peerTeams
+            .filter((t) => t.projectPath === group.path)
+            .map((t) => teamKey(group.path, t.id))
+        : []),
+      ...(group.folders || [])
+        .filter((f) => (f.parentId || null) === parent)
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((f) => folderKey(group.path, f.id)),
+      ...orderedAgents
+        .filter(
+          (a) =>
+            a.cwd === group.path &&
+            !!a.archived === archive &&
+            !grouped.has(a.id) &&
+            !a.pinned &&
+            (a.projectFolder || null) === parent,
+        )
+        .map((a) => a.id),
+    ].sort(
+      (a, b) =>
+        sorting.rank(itemGroup(group.path, parent), a) -
+        sorting.rank(itemGroup(group.path, parent), b),
+    );
   const allProjectGroups = [...groupMap.values()].sort(
     (a, b) =>
       sorting.rank("projects", a.path) - sorting.rank("projects", b.path) ||
@@ -369,17 +504,48 @@ export default function Sidebar(p: Props) {
       <div
         className={`sidebar-row lead-row ${p.opened === row.id ? "selected" : ""}`}
         key={row.id}
+        data-sidebar-item={row.id}
       >
         <UnstyledButton
-          {...sorting.bindings(
-            chatGroup(row),
-            row.id,
-            orderedAgents
-              .filter((a) => chatGroup(a) === chatGroup(row))
-              .map((a) => a.id),
+          {...sorting.dropBindings(
+            `convert:${row.id}`,
+            (source, event) => {
+              const chat = agents.find((a) => a.id === source.id);
+              const box = event.currentTarget.getBoundingClientRect();
+              return !!(
+                chat &&
+                chat.id !== row.id &&
+                teamFor(chat.id) &&
+                chat.cwd === row.cwd &&
+                source.group === chatGroup(chat) &&
+                !conversion &&
+                !organizationLock.current &&
+                !teamMove.blocked() &&
+                event.clientY > box.top + box.height * 0.25 &&
+                event.clientY < box.top + box.height * 0.75
+              );
+            },
+            ({ id }) =>
+              setConversion({
+                source: agents.find((a) => a.id === id)!,
+                target: row,
+                project: groupMap.get(row.cwd || "")!,
+              }),
+            sorting.bindings(
+              chatGroup(row),
+              row.id,
+              teamFor(row.id) || row.pinned
+                ? orderedAgents
+                    .filter((a) => chatGroup(a) === chatGroup(row))
+                    .map((a) => a.id)
+                : itemIds(
+                    groupMap.get(row.cwd || "")!,
+                    row.projectFolder || null,
+                  ),
+            ),
           )}
           title={row.name}
-          aria-description="Drag onto a team to join it, or onto the project name to leave. Drag within a group to reorder. Alt + Up or Down also works."
+          aria-description="Drag onto a team to join it, or onto the project name to leave. Drop a team chat in the center of another lead chat to make it a subagent. Drag to an edge to reorder. Alt + Up or Down also works."
           className="chat-row"
           data-chat={row.id}
           onClick={() => p.open(row.id)}
@@ -524,6 +690,89 @@ export default function Sidebar(p: Props) {
       </div>
     );
   };
+  const renderPeerTeam = (
+    group: Project & { chats: Agent[] },
+    team: (typeof peerTeams)[number],
+  ): ReactNode => {
+    const members = group.chats.filter((a) => team.members.includes(a.id));
+    const selected = agents.find(
+      (a) => a.id === p.opened && team.members.includes(a.id),
+    );
+    if (selected && !members.includes(selected)) members.push(selected);
+    if (!members.length && (query || archive)) return null;
+    const key = JSON.stringify([group.path, "team", team.id]);
+    const closed = !!collapsed[key] && !query;
+    return (
+      <PeerTeamGroup
+        key={team.id}
+        itemId={teamKey(group.path, team.id)}
+        team={team}
+        roomId={
+          p.data.runtime.rooms.find((r) => r.radio?.teamId === team.id)?.id
+        }
+        scope={p.data.stateDir}
+        openRoom={p.open}
+        refresh={p.refresh}
+        reorder={sorting.bindings(
+          itemGroup(group.path),
+          teamKey(group.path, team.id),
+          itemIds(group),
+        )}
+        drop={sorting.dropBindings(
+          `peer-team:${team.id}`,
+          (source) => {
+            const chat = agents.find((a) => a.id === source.id);
+            return !!(
+              chat &&
+              source.group === chatGroup(chat) &&
+              chat.cwd === group.path &&
+              !team.members.includes(chat.id) &&
+              !teamMove.blocked() &&
+              !organizationLock.current
+            );
+          },
+          ({ id }) => teamMove.move(group, id, team.id),
+        )}
+        closed={closed}
+        toggle={() => toggleProject(key)}
+        edit={() =>
+          setTeamDialog({
+            path: group.path,
+            id: team.id,
+            action: "save",
+          })
+        }
+        dissolve={() =>
+          setTeamDialog({
+            path: group.path,
+            id: team.id,
+            action: "delete",
+          })
+        }
+      >
+        <div className="peer-team-chats">
+          {p.data.runtime.rooms
+            .filter(
+              (r) =>
+                r.radio?.teamId === team.id && (!closed || r.id === p.opened),
+            )
+            .map((r) => (
+              <UnstyledButton
+                key={r.id}
+                className="peer-team-shared-chat"
+                aria-current={r.id === p.opened ? "page" : undefined}
+                onClick={() => p.open(r.id)}
+              >
+                Shared chat
+              </UnstyledButton>
+            ))}
+          {(closed ? members.filter((a) => a.id === p.opened) : members).map(
+            renderRow,
+          )}
+        </div>
+      </PeerTeamGroup>
+    );
+  };
   const renderProjectChats = (
     group: Project & { chats: Agent[] },
     parent: ProjectFolder | null = null,
@@ -537,104 +786,167 @@ export default function Sidebar(p: Props) {
           ? chat.projectFolder === parent.id
           : !folders.some((folder) => folder.id === chat.projectFolder),
       );
-    const shown = projectLimits[key] || 5;
+    const shown =
+      compactProjects[group.path] !== undefined
+        ? assigned.length
+        : projectLimits[key] || 5;
     const chats = assigned.slice(0, query ? assigned.length : shown);
     const selected = assigned.find((chat) => chat.id === p.opened);
     if (selected && !chats.includes(selected)) chats.push(selected);
     const children = folders
       .filter((folder) => (folder.parentId || null) === (parent?.id || null))
+      .filter((folder) => {
+        if (query || !compactProjects[group.path]) return true;
+        const contains = (id: string, seen = new Set<string>()): boolean => {
+          if (seen.has(id)) return false;
+          seen.add(id);
+          return (
+            group.chats.some(
+              (a) => a.projectFolder === id && !grouped.has(a.id),
+            ) || folders.some((f) => f.parentId === id && contains(f.id, seen))
+          );
+        };
+        return contains(folder.id);
+      })
       .sort((a, b) => a.name.localeCompare(b.name));
+    const siblingIds = itemIds(group, parent?.id || null);
     return (
       <>
-        {children.map((folder) => {
-          const id = folderKey(group.path, folder.id);
-          const closed = collapsed[id] && !query;
-          const occupied =
-            folders.some((item) => item.parentId === folder.id) ||
-            agents.some(
-              (chat) =>
-                chat.cwd === group.path && chat.projectFolder === folder.id,
-            );
-          return (
-            <section
-              className="project-folder"
-              data-folder-id={folder.id}
-              key={folder.id}
-            >
-              <div
-                className="project-tree-heading"
-                {...folderDrop(group, folder)}
-              >
-                <UnstyledButton
-                  className="project-tree-toggle"
-                  aria-expanded={!closed}
-                  onClick={() => toggleProject(id)}
+        {[
+          ...(!parent
+            ? peerTeams
+                .filter((t) => t.projectPath === group.path)
+                .map((t) => ({
+                  id: teamKey(group.path, t.id),
+                  pinned: false,
+                  node: renderPeerTeam(group, t),
+                }))
+            : []),
+          ...children.map((folder) => {
+            const id = folderKey(group.path, folder.id);
+            const closed = collapsed[id] && !query;
+            const occupied =
+              folders.some((item) => item.parentId === folder.id) ||
+              agents.some(
+                (chat) =>
+                  chat.cwd === group.path && chat.projectFolder === folder.id,
+              );
+            return {
+              id,
+              pinned: false,
+              node: (
+                <section
+                  className="project-folder"
+                  data-folder-id={folder.id}
+                  data-sidebar-item={id}
+                  key={folder.id}
                 >
-                  {closed ? <Folder size={16} /> : <FolderOpen size={16} />}
-                  <span>{folder.name}</span>
-                </UnstyledButton>
-                {!archive && (
-                  <ActionIcon
-                    className="project-tree-action"
-                    aria-label={`New chat in folder ${folder.name}`}
-                    disabled={p.creating}
-                    onClick={() => {
-                      if (requireProjectSupport())
-                        p.newChat(group.path, folder.id);
-                    }}
+                  <div
+                    className="project-tree-heading"
+                    {...folderDrop(group, folder)}
                   >
-                    <Plus size={15} />
-                  </ActionIcon>
-                )}
-                <Menu withinPortal position="bottom-end">
-                  <Menu.Target>
-                    <ActionIcon
-                      className="project-tree-action"
-                      aria-label={`Options for folder ${folder.name}`}
+                    <UnstyledButton
+                      {...sorting.bindings(
+                        itemGroup(group.path, parent?.id || null),
+                        id,
+                        siblingIds,
+                      )}
+                      aria-description="Drag to reorder. Alt + Up or Down also works."
+                      className="project-tree-toggle"
+                      aria-expanded={!closed}
+                      onClick={() => toggleProject(id)}
                     >
-                      <MoreHorizontal size={15} />
-                    </ActionIcon>
-                  </Menu.Target>
-                  <Menu.Dropdown>
-                    <Menu.Item
-                      onClick={() => editProject(group, "new", folder.id)}
-                    >
-                      New subfolder
-                    </Menu.Item>
-                    <Menu.Item onClick={() => editProject(group, folder)}>
-                      Rename folder
-                    </Menu.Item>
-                    <Menu.Item
-                      disabled={occupied}
-                      onClick={async () => {
-                        if (!requireProjectSupport()) return;
-                        try {
-                          await api("/api/projects", {
-                            action: "remove_folder",
-                            path: group.path,
-                            folder_id: folder.id,
-                            expected_revision: group.organizationRevision || 0,
-                          });
-                          await p.refresh?.();
-                        } catch (error) {
-                          p.notify?.(errorText(error));
-                        }
-                      }}
-                    >
-                      Remove empty folder
-                    </Menu.Item>
-                  </Menu.Dropdown>
-                </Menu>
-              </div>
-              {!closed && (
-                <div className="project-folder-chats">
-                  {renderProjectChats(group, folder)}
-                </div>
-              )}
-            </section>
-          );
-        })}
-        {chats.map(renderRow)}
+                      {closed ? <Folder size={16} /> : <FolderOpen size={16} />}
+                      <span>{folder.name}</span>
+                    </UnstyledButton>
+                    {!archive && (
+                      <ActionIcon
+                        className="project-tree-action"
+                        aria-label={`New chat in folder ${folder.name}`}
+                        disabled={p.creating}
+                        onClick={() => {
+                          if (requireProjectSupport())
+                            p.newChat(group.path, folder.id);
+                        }}
+                      >
+                        <Plus size={15} />
+                      </ActionIcon>
+                    )}
+                    <Menu withinPortal position="bottom-end">
+                      <Menu.Target>
+                        <ActionIcon
+                          className="project-tree-action"
+                          aria-label={`Options for folder ${folder.name}`}
+                        >
+                          <MoreHorizontal size={15} />
+                        </ActionIcon>
+                      </Menu.Target>
+                      <Menu.Dropdown>
+                        <Menu.Item
+                          onClick={() => editProject(group, "new", folder.id)}
+                        >
+                          New subfolder
+                        </Menu.Item>
+                        <Menu.Item onClick={() => editProject(group, folder)}>
+                          Rename folder
+                        </Menu.Item>
+                        <Menu.Item
+                          disabled={occupied}
+                          onClick={async () => {
+                            if (!requireProjectSupport()) return;
+                            try {
+                              await api("/api/projects", {
+                                action: "remove_folder",
+                                path: group.path,
+                                folder_id: folder.id,
+                                expected_revision:
+                                  group.organizationRevision || 0,
+                              });
+                              await p.refresh?.();
+                            } catch (error) {
+                              p.notify?.(errorText(error));
+                            }
+                          }}
+                        >
+                          Remove empty folder
+                        </Menu.Item>
+                      </Menu.Dropdown>
+                    </Menu>
+                  </div>
+                  {!closed && (
+                    <div className="project-folder-chats">
+                      {renderProjectChats(group, folder)}
+                    </div>
+                  )}
+                </section>
+              ),
+            };
+          }),
+          ...chats.map((chat) => ({
+            id: chat.id,
+            pinned: !!chat.pinned,
+            node: renderRow(chat),
+          })),
+        ]
+          .sort(
+            (a, b) =>
+              Number(b.pinned) - Number(a.pinned) ||
+              sorting.rank(
+                a.pinned
+                  ? chatGroup(chats.find((c) => c.id === a.id)!)
+                  : itemGroup(group.path, parent?.id || null),
+                a.id,
+              ) -
+                sorting.rank(
+                  b.pinned
+                    ? chatGroup(chats.find((c) => c.id === b.id)!)
+                    : itemGroup(group.path, parent?.id || null),
+                  b.id,
+                ),
+          )
+          .map((item) => (
+            <Fragment key={item.id}>{item.node}</Fragment>
+          ))}
         {!chats.length &&
           !children.length &&
           (parent ||
@@ -817,6 +1129,19 @@ export default function Sidebar(p: Props) {
                             New team
                           </Menu.Item>
                         )}
+                        <Menu.Item
+                          title="Keep peer team chats, pinned chats, running chats, unread chats, and chats active in the last 24 hours. Search finds all chats."
+                          onClick={() =>
+                            setCompactProject(
+                              group.path,
+                              !compactProjects[group.path],
+                            )
+                          }
+                        >
+                          {compactProjects[group.path]
+                            ? "Show all chats"
+                            : "Compact project"}
+                        </Menu.Item>
                         <Menu.Item onClick={() => editProject(group)}>
                           Rename project
                         </Menu.Item>
@@ -870,98 +1195,6 @@ export default function Sidebar(p: Props) {
                   ))}
                 {!isCollapsed && (
                   <div className="project-chats">
-                    {peerTeams
-                      .filter((team) => team.projectPath === group.path)
-                      .map((team) => {
-                        const members = group.chats.filter((a) =>
-                          team.members.includes(a.id),
-                        );
-                        const selected = agents.find(
-                          (a) =>
-                            a.id === p.opened && team.members.includes(a.id),
-                        );
-                        if (selected && !members.includes(selected))
-                          members.push(selected);
-                        if (!members.length && (query || archive)) return null;
-                        const key = JSON.stringify([
-                          group.path,
-                          "team",
-                          team.id,
-                        ]);
-                        const closed = !!collapsed[key] && !query;
-                        return (
-                          <PeerTeamGroup
-                            key={team.id}
-                            team={team}
-                            roomId={
-                              p.data.runtime.rooms.find(
-                                (r) => r.radio?.teamId === team.id,
-                              )?.id
-                            }
-                            scope={p.data.stateDir}
-                            openRoom={p.open}
-                            refresh={p.refresh}
-                            drop={sorting.dropBindings(
-                              `peer-team:${team.id}`,
-                              (source) => {
-                                const chat = agents.find(
-                                  (a) => a.id === source.id,
-                                );
-                                return !!(
-                                  chat &&
-                                  source.group === chatGroup(chat) &&
-                                  chat.cwd === group.path &&
-                                  !team.members.includes(chat.id) &&
-                                  !teamMove.blocked() &&
-                                  !organizationLock.current
-                                );
-                              },
-                              ({ id }) => teamMove.move(group, id, team.id),
-                            )}
-                            closed={closed}
-                            toggle={() => toggleProject(key)}
-                            edit={() =>
-                              setTeamDialog({
-                                path: group.path,
-                                id: team.id,
-                                action: "save",
-                              })
-                            }
-                            dissolve={() =>
-                              setTeamDialog({
-                                path: group.path,
-                                id: team.id,
-                                action: "delete",
-                              })
-                            }
-                          >
-                            <div className="peer-team-chats">
-                              {p.data.runtime.rooms
-                                .filter(
-                                  (r) =>
-                                    r.radio?.teamId === team.id &&
-                                    (!closed || r.id === p.opened),
-                                )
-                                .map((r) => (
-                                  <UnstyledButton
-                                    key={r.id}
-                                    className="peer-team-shared-chat"
-                                    aria-current={
-                                      r.id === p.opened ? "page" : undefined
-                                    }
-                                    onClick={() => p.open(r.id)}
-                                  >
-                                    Shared chat
-                                  </UnstyledButton>
-                                ))}
-                              {(closed
-                                ? members.filter((a) => a.id === p.opened)
-                                : members
-                              ).map(renderRow)}
-                            </div>
-                          </PeerTeamGroup>
-                        );
-                      })}
                     {visibleSharedRooms
                       .filter((r) => r.projectPath === group.path)
                       .map((room) => (
@@ -983,6 +1216,19 @@ export default function Sidebar(p: Props) {
                         </div>
                       ))}
                     {renderProjectChats(group)}
+                    {!query &&
+                      compactProjects[group.path] &&
+                      filtered.filter((a) => a.cwd === group.path).length >
+                        group.chats.length && (
+                        <UnstyledButton
+                          className="project-show-all"
+                          title="Keep peer team chats, pinned chats, running chats, unread chats, and chats active in the last 24 hours. Search finds all chats."
+                          onClick={() => setCompactProject(group.path, false)}
+                        >
+                          Show all{" "}
+                          {filtered.filter((a) => a.cwd === group.path).length}
+                        </UnstyledButton>
+                      )}
                   </div>
                 )}
               </section>
@@ -1024,6 +1270,27 @@ export default function Sidebar(p: Props) {
       ) : p.collapsed ? null : (
         content
       )}
+      <Modal
+        opened={!!conversion}
+        onClose={closeConversion}
+        title="Make chat a subagent"
+        closeOnClickOutside={false}
+      >
+        {conversion && (
+          <ConvertChatForm
+            key={`${conversion.source.id}:${conversion.target.id}`}
+            project={conversion.project}
+            source={conversion.source}
+            target={conversion.target}
+            scope={p.data.stateDir}
+            saved={async () => {
+              await p.refresh?.();
+              p.open(conversion.target.id);
+              setConversion(null);
+            }}
+          />
+        )}
+      </Modal>
       <Modal
         opened={!!dialog}
         onClose={() => setDialog(null)}

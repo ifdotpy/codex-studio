@@ -21,6 +21,16 @@ IDENTITY = ('id', 'accountKey', 'epoch', 'threadId')
 WAIT_SECONDS = 10
 
 
+def _held_restart_marker(agent):
+    marker = agent.get('restartRecovery') or {}
+    return (marker.get('stage') == 'held' and marker.get('autoWake')
+            and not agent.get('deletedAt') and agent.get('status') != 'paused'
+            and marker.get('epoch') == agent.get('epoch')
+            and marker.get('accountKey', 'default') == agent.get('accountKey', 'default')
+            and marker.get('threadId') == agent.get('threadId')
+            and bool(agent.get('threadId')))
+
+
 def blocked(agent):
     return bool(agent.get('contextRepairWait')) or (agent.get('contextRepair') or {}).get('phase') in ACTIVE
 
@@ -107,6 +117,244 @@ def _unsettled_inputs(db, a, attempt_id):
             continue
         raise _waiting('Context repair waits for a confirmed input receipt: ' + row['id'])
     return historical
+
+
+def recover_unconfirmed_inputs(rt, agent_id):
+    """Resolve only exact pending input identities from native thread history."""
+    with rt.lock, rt.db() as db:
+        a = rt.agent(agent_id, db)
+        if a.get('deletedAt') or not a.get('threadId'):
+            return {'status': 'waiting', 'reason': 'The native thread is unavailable', 'inputs': []}
+        wait = a.get('contextRepairWait') or {}
+        if not wait:
+            return {'status': 'not_needed', 'inputs': []}
+        error = wait.get('error') or ''
+        prefix = 'Context repair waits for a confirmed input receipt: '
+        restart = a.get('restartRecovery') or {}
+        restart_wait = _held_restart_marker(a)
+        if not restart_wait and wait.get('source') != _identity(a):
+            return {'status': 'waiting', 'reason': 'The worker changed since the input became uncertain', 'inputs': []}
+        if not error.startswith(prefix) and not restart_wait:
+            return {'status': 'not_needed', 'inputs': []}
+        marker_attempt = restart.get('startAttempt') or {}
+        attempt = a.get('startAttempt') or marker_attempt
+        wait_source = copy.deepcopy(wait.get('source'))
+        wait_events = copy.deepcopy(wait.get('events'))
+        current_attempt = copy.deepcopy(a.get('startAttempt'))
+        marker_attempt_snapshot = copy.deepcopy(restart.get('startAttempt'))
+        if restart_wait:
+            ids = marker_attempt.get('events')
+            if not isinstance(ids, list) or not ids:
+                rows = db.execute("SELECT id FROM runtime_events WHERE agent=? AND epoch=? AND kind='user' "
+                    "AND status IN ('reserved','dispatching','uncertain') ORDER BY created,id",
+                    (agent_id, a['epoch'])).fetchall()
+                ids = [row['id'] for row in rows]
+        else:
+            ids = [error[len(prefix):]]
+        if restart_wait and not ids:
+            # No input left the queue after the restart, so no native receipt can exist.
+            _finish_restart_wait(rt, db, a, error, queue=not a.get('inFlight'))
+            return {'status': 'resolved', 'reason': None, 'inputs': []}
+        if (not isinstance(ids, list) or not ids or
+                (not restart_wait and any(key not in attempt.get('events', []) for key in ids))):
+            return {'status': 'waiting', 'reason': 'The unconfirmed input is outside the current start attempt', 'inputs': []}
+        marks = ','.join('?' for _ in ids)
+        events = db.execute("SELECT id,status FROM runtime_events WHERE id IN (" + marks + ") AND agent=? AND epoch=? "
+            "AND status IN ('reserved','dispatching','uncertain') ORDER BY id", (*ids, agent_id, a['epoch'])).fetchall()
+        if not events:
+            if restart_wait:
+                _finish_restart_wait(rt, db, a, error, queue=not a.get('inFlight'))
+                return {'status': 'resolved', 'reason': None, 'inputs': []}
+            return {'status': 'not_needed', 'inputs': []}
+        identity = (a['epoch'], a.get('threadId'), a.get('accountKey', 'default'))
+        server = rt.servers.get(identity[2])
+        connection_id = rt.connection_ids.get(identity[2])
+    if server is None:
+        return {'status': 'waiting', 'reason': 'The owning native account is offline',
+                'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
+    try:
+        thread = server.call('thread/read', {'threadId': identity[1], 'includeTurns': False}, timeout=10).get('thread')
+        if not isinstance(thread, dict) or thread.get('id') != identity[1]:
+            raise ValueError('Native thread identity did not match')
+        state = (thread.get('status') or {}).get('type')
+        turns, cursor, seen = [], None, set()
+        for _ in range(100):
+            params = {'threadId': identity[1], 'limit': 100, 'sortDirection': 'asc', 'itemsView': 'full'}
+            if cursor:
+                params['cursor'] = cursor
+            page = server.call('thread/turns/list', params, timeout=10)
+            turns.extend(page.get('data', []))
+            cursor = page.get('nextCursor')
+            if not cursor:
+                break
+            if cursor in seen:
+                raise ValueError('Native history repeated its page cursor')
+            seen.add(cursor)
+        else:
+            raise ValueError('Native history has too many pages')
+    except Exception as error:
+        return {'status': 'waiting', 'reason': 'Native history read failed: ' + str(error),
+                'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
+    found = {}
+    supported_identity = False
+    unidentified_input = False
+    for turn in turns:
+        message_id = turn.get('clientUserMessageId')
+        if isinstance(message_id, str):
+            supported_identity = True
+            found[message_id] = turn.get('id')
+        for item in turn.get('items') or []:
+            if item.get('type') != 'userMessage':
+                continue
+            client_id = item.get('clientId')
+            if isinstance(client_id, str):
+                supported_identity = True
+                found[client_id] = turn.get('id')
+            elif not isinstance(message_id, str):
+                unidentified_input = True
+    decisions = []
+    for row in events:
+        if row['id'] in found and found[row['id']]:
+            decisions.append({'id': row['id'], 'decision': 'delivered', 'turnId': found[row['id']]})
+        elif row['id'] in found:
+            decisions.append({'id': row['id'], 'decision': 'waiting', 'reason': 'The matching native turn has no ID'})
+        elif supported_identity and not unidentified_input and state in {'idle', 'notLoaded'}:
+            decisions.append({'id': row['id'], 'decision': 'not_delivered'})
+        else:
+            decisions.append({'id': row['id'], 'decision': 'waiting'})
+    with rt.lock, rt.db() as db:
+        current = rt.agent(agent_id, db)
+        current_wait = current.get('contextRepairWait') or {}
+        if ((current['epoch'], current.get('threadId'), current.get('accountKey', 'default')) != identity
+                or rt.connection_ids.get(identity[2]) != connection_id
+                or current_wait.get('error') != error
+                or current_wait.get('source') != wait_source
+                or current_wait.get('events') != wait_events
+                or (restart_wait and (not _held_restart_marker(current)
+                    or (current.get('restartRecovery') or {}).get('startAttempt') != marker_attempt_snapshot
+                    or current.get('startAttempt') != current_attempt))
+                or (not restart_wait and current_wait.get('source') != _identity(current))
+                or not (current.get('autoWake') or restart_wait)):
+            return {'status': 'waiting', 'reason': 'The worker changed during native history recovery',
+                    'inputs': [{'id': item['id'], 'decision': 'waiting'} for item in decisions]}
+        for item in decisions:
+            row = db.execute("SELECT status FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
+                             (item['id'], agent_id, identity[0])).fetchone()
+            if not row or row['status'] not in {'reserved', 'dispatching', 'uncertain'}:
+                item['decision'] = 'waiting'
+                item['reason'] = 'The input changed during native history recovery'
+                continue
+            if item['decision'] == 'delivered':
+                delivered_row = db.execute("UPDATE runtime_events SET status='delivered',turn_id=?,error=NULL WHERE id=? AND agent=? "
+                           "AND epoch=? AND status IN ('reserved','dispatching','uncertain')",
+                           (item['turnId'], item['id'], agent_id, identity[0]))
+                if delivered_row.rowcount:
+                    from codex_efficiency import remember_context_manifest
+                    remember_context_manifest(db, agent_id, item['id'])
+            elif item['decision'] == 'not_delivered':
+                db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id=? AND agent=? "
+                           "AND epoch=? AND status IN ('reserved','dispatching','uncertain')",
+                           (item['id'], agent_id, identity[0]))
+        delivered = next((item for item in decisions if item['decision'] == 'delivered'), None)
+        if delivered:
+            current_attempt = current.get('startAttempt') or (current.get('restartRecovery') or {}).get('startAttempt') or {}
+            if delivered['id'] in current_attempt.get('events', []):
+                current_attempt.update(submitted=True, turnId=delivered['turnId'], observedTurnId=delivered['turnId'])
+                current['startAttempt'] = current_attempt
+                if restart_wait:
+                    current.update(autoWake=True, nativeFailureHold=None)
+                completed = db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                    (agent_id + ':' + delivered['turnId'],)).fetchone()
+                if not completed:
+                    current.update(status='running', inFlight=True, turnId=delivered['turnId'])
+        if all(item['decision'] != 'waiting' for item in decisions):
+            if restart_wait:
+                _finish_restart_wait(rt, db, current, error, queue=not delivered)
+            else:
+                current.pop('contextRepairWait', None)
+                if (current.get('error') or '').startswith('Context repair waits for a confirmed input receipt:'):
+                    current['error'] = None
+                if not delivered:
+                    current.update(status='queued', inFlight=False)
+                rt.put(db, 'agents', current)
+                rt.changed.set()
+    return {'status': 'resolved' if all(item['decision'] != 'waiting' for item in decisions) else 'waiting',
+            'reason': None if all(item['decision'] != 'waiting' for item in decisions) else 'Native thread is active; absent inputs remain uncertain',
+            'inputs': decisions}
+
+
+def _finish_restart_wait(rt, db, agent, error, *, queue=True):
+    agent.pop('contextRepairWait', None)
+    agent.update(autoWake=True, nativeFailureHold=None)
+    agent['restartRecovery'].update(stage='finished', reconciledAt=time.time())
+    if agent.get('error') == error or (agent.get('error') or '').startswith(
+            'Context repair waits for a confirmed input receipt:'):
+        agent['error'] = None
+    if queue:
+        agent.update(status='queued', inFlight=False)
+    rt.put(db, 'agents', agent)
+    rt.changed.set()
+
+
+def tick_restart_input_waits(rt, agents):
+    """Schedule exact native history checks for restart receipts with no turn ID."""
+    now = time.time()
+    jobs = []
+    with rt.lock, rt.db() as db:
+        owner = getattr(rt, '_restart_history_check_owner', None)
+        if owner is None:
+            owner = uuid.uuid4().hex
+            rt._restart_history_check_owner = owner
+        for snapshot in agents:
+            if not snapshot.get('contextRepairWait') or not _held_restart_marker(snapshot):
+                continue
+            a = rt.agent(snapshot['id'], db)
+            wait = a.get('contextRepairWait') or {}
+            check_active = wait.get('historyCheckId') and wait.get('historyCheckOwner') == owner
+            if (not wait or not _held_restart_marker(a)
+                    or wait.get('nextCheckAt', 0) > now
+                    or check_active):
+                continue
+            check_id = str(uuid.uuid4())
+            wait.update(historyCheckId=check_id, historyCheckOwner=owner,
+                        historyCheckAt=now, nextCheckAt=now + 2)
+            a['contextRepairWait'] = wait
+            rt.put(db, 'agents', a)
+            jobs.append((a['id'], check_id))
+    for agent_id, check_id in jobs:
+        rt.recovery_pool.submit(_run_restart_input_check, rt, agent_id, check_id)
+
+
+def _run_restart_input_check(rt, agent_id, check_id):
+    try:
+        result = recover_unconfirmed_inputs(rt, agent_id)
+    except Exception as error:
+        result = {'status':'waiting', 'reason':'Restart input history check failed: ' + str(error)}
+    if result.get('status') != 'waiting':
+        if result.get('status') == 'not_needed':
+            with rt.lock, rt.db() as db:
+                a = rt.agent(agent_id, db)
+                wait = a.get('contextRepairWait') or {}
+                if wait.get('historyCheckId') == check_id:
+                    checks = wait.get('checks', 0) + 1
+                    wait.update(checks=checks, historyCheckId=None, historyCheckOwner=None,
+                                historyCheckAt=None,
+                                nextCheckAt=time.time() + min(60, 2 ** min(checks, 6)),
+                                lastHistoryCheck=result.get('reason'))
+                    rt.put(db, 'agents', a)
+            rt.changed.set()
+        return
+    with rt.lock, rt.db() as db:
+        a = rt.agent(agent_id, db)
+        wait = a.get('contextRepairWait') or {}
+        if wait.get('historyCheckId') != check_id:
+            return
+        checks = wait.get('checks', 0) + 1
+        wait.update(checks=checks, historyCheckId=None, historyCheckOwner=None, historyCheckAt=None,
+                    nextCheckAt=time.time() + min(60, 2 ** min(checks, 6)),
+                    lastHistoryCheck=result.get('reason'))
+        rt.put(db, 'agents', a)
+    rt.changed.set()
 
 
 def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
@@ -219,14 +467,17 @@ def verified_events(db, a):
         repaired.update(receipt.get('checkedEventIds', []))
     repaired.update(_inherited_checked_events(db, a))
     events = [dict(r) for r in db.execute(
-        "SELECT e.* FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
+        "SELECT e.* FROM runtime_events e INDEXED BY runtime_event_repair_candidates_v2 "
+        "LEFT JOIN runtime_event_meta m ON m.id=e.id "
         "WHERE e.agent=? AND e.status='delivered' "
         "AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') "
         "AND length(e.text)>3000 AND coalesce(json_extract(m.record,'$.modelEventProjection'),0)!=1 "
         "ORDER BY e.created", (a['id'],)) if r['turn_id'] and r['id'] not in repaired]
     # Versioned role blocks are generated after the first event in a batch.
     # Their full text persists as user input across native remote compaction.
-    for row in db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
+    for row in db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e "
+                          "INDEXED BY runtime_event_repair_candidates_v2 "
+                          "JOIN runtime_event_meta m ON m.id=e.id "
                           "WHERE e.agent=? AND e.status='delivered' AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') "
                           "AND json_extract(m.record,'$.contextManifest.versions.roleSkill') IS NOT NULL", (a['id'],)):
         row = dict(row)
@@ -241,7 +492,9 @@ def verified_events(db, a):
     # synthetic prefix alone cannot authorize replacement inside that user text.
     users = {}
     for turn, text in db.execute("SELECT turn_id,text FROM runtime_events WHERE agent=? "
-                                 "AND kind IN ('user','followup') AND status='delivered'", (a['id'],)):
+        "AND kind IN ('user','followup') AND status='delivered' AND turn_id IN ("
+        "SELECT turn_id FROM runtime_events WHERE agent=? AND status='delivered' "
+        "AND kind IN ('monitor_exit','agent_message','work_review','work_decision'))", (a['id'], a['id'])):
         users.setdefault(turn, []).append(text)
     return [e for e in events if not (e['kind'] == 'studio_role' and users.get(e['turn_id']))
             and not any('[Orchestration event: ' + e['kind'] + ']\n' + e['text'] in text
@@ -614,14 +867,15 @@ def _unresolved_tool_receipts(rt, a):
         current_scope = (a.get('accountKey', 'default'), a.get('threadId'))
         history_scopes = {(h.get('accountKey', 'default'), h.get('threadId')) for h in a.get('accountHistory', [])}
         for row in rows:
-            record = json.loads(row[0])
+            from codex_payloads import resolve_record, resolve_result, state_root
+            record = resolve_record(state_root(rt), json.loads(row[0]))
             # A terminal response ends execution even when its side effects remain
             # unknown. Preserve that outcome and its full response unchanged.
             if (record.get('stage') in {'completed', 'failed'} and record.get('finished') is not None
                     and isinstance(record.get('result'), dict) and type(record['result'].get('success')) is bool):
                 continue
             cached = db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (record['id'],)).fetchone()
-            if cached and type(json.loads(cached[0]).get('success')) is bool:
+            if cached and type(resolve_result(state_root(rt), cached[0]).get('success')) is bool:
                 continue
             scope = (record.get('accountKey', 'default'), record.get('threadId'))
             if scope != current_scope:
@@ -783,6 +1037,9 @@ def _unsubmitted(a, attempt_id):
 def _defer_context(rt, db, a, error, *, historical=False):
     detail = getattr(error, 'contextRepairWait', None)
     attempt = a.get('startAttempt') or {}
+    existing_wait = a.get('contextRepairWait') or {}
+    if _held_restart_marker(a) and existing_wait:
+        return False
     if (not isinstance(detail, dict) or detail.get('source') != _identity(a)
             or not _unsubmitted(a, attempt.get('id'))
             or (a.get('contextRepair') or {}).get('phase') in ACTIVE):
@@ -837,14 +1094,24 @@ def recover_context_failures(rt, db, agents):
     errors = {'Context repair waits for commands, monitors, and tool receipts',
               'Context repair waits for complete native tool receipts'}
     for a in agents:
+        if _held_restart_marker(a):
+            continue
         attempt = a.get('startAttempt') or {}
         receipt = a.get('contextRepair') or {}
         # A server can die after the repair record is saved but before a turn
         # reservation exists. That record cannot have submitted a native fork.
         # Retire it after a grace period so it cannot block the normal queue.
+        # An unsubmitted start whose inputs all ended (for example a disk error
+        # failed them) has no live reservation left and can never submit.
+        dead_start = bool(attempt.get('events')) and _unsubmitted(a, attempt.get('id')) and not db.execute(
+            "SELECT 1 FROM runtime_events WHERE agent=? AND status IN ('pending','reserved','dispatching','uncertain') "
+            "AND id IN (" + ",".join("?" * len(attempt['events'])) + ")",
+            (a['id'], *attempt['events'])).fetchone()
         if (receipt.get('phase') == 'preparing' and not a.get('inFlight')
-                and not a.get('startAttempt')
+                and (not attempt or dead_start)
                 and time.time() - float(receipt.get('updated', receipt.get('created', 0))) >= 60):
+            if dead_start:
+                a.pop('startAttempt', None)
             retired = copy.deepcopy(receipt)
             retired.update(
                 status='superseded',
@@ -923,6 +1190,8 @@ def claim_context_wait(rt, db, agent):
     wait = agent.get('contextRepairWait')
     if not isinstance(wait, dict):
         return None
+    if _held_restart_marker(agent):
+        return {'waiting': True}
     attempt = agent.get('startAttempt') or {}
     valid = (not rt.closed and _unsubmitted(agent, wait.get('source', {}).get('attemptId'))
              and wait.get('source') == _identity(agent) and wait.get('events') == attempt.get('events')
@@ -973,6 +1242,60 @@ def claim_context_wait(rt, db, agent):
     rt.put(db, 'agents', agent)
     return {'kind':'action' if wait.get('action') else 'turn', 'agent':agent,
             'attempt':dict(attempt), 'rows':rows}
+
+
+def retire_unsent_wait_for_transfer(rt, db, agent):
+    """Release only a proven unsent input wait so its pending input can transfer."""
+    wait = agent.get('contextRepairWait') or {}
+    attempt = agent.get('startAttempt') or {}
+    source = wait.get('source') or {}
+    event_ids = wait.get('events')
+    # A pause advances the epoch, so the wait may name an older one.
+    source_epoch = source.get('epoch')
+    same_source = (all(source.get(key) == agent.get(key) for key in IDENTITY
+                       if key not in {'attemptId', 'epoch'})
+                   and isinstance(source_epoch, int) and source_epoch <= agent['epoch'])
+    # A user pause can cancel the exact queued events and remove startAttempt
+    # while leaving the wait behind. Retire that stale wait only when every
+    # referenced event is cancelled, belongs to the wait's epoch, and has no turn.
+    cancelled = (agent.get('accountTransferId') and not agent.get('inFlight')
+                 and not wait.get('action') and same_source and source.get('attemptId')
+                 and isinstance(event_ids, list) and event_ids)
+    if cancelled:
+        for event_id in event_ids:
+            row = db.execute("SELECT status,turn_id FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
+                             (event_id, agent['id'], source_epoch)).fetchone()
+            if not row or row['status'] != 'cancelled' or row['turn_id']:
+                cancelled = False
+                break
+    if cancelled and attempt.get('id') != source.get('attemptId'):
+        agent.pop('contextRepairWait', None)
+        agent['lastContextRepairWait'] = {**wait, 'status':'superseded',
+                                          'reason':'Cancelled before account transfer',
+                                          'finishedAt':time.time()}
+        if agent.get('error') == wait.get('error'):
+            agent['error'] = None
+        rt.put(db, 'agents', agent)
+        return True
+    if (not agent.get('accountTransferId') or not wait or wait.get('action')
+            or not _unsubmitted(agent, attempt.get('id'))
+            or wait.get('source') != _identity(agent)
+            or event_ids != attempt.get('events')
+            or not event_ids or agent.get('inFlight')):
+        return False
+    for event_id in event_ids:
+        row = db.execute("SELECT status,turn_id FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
+                         (event_id, agent['id'], agent['epoch'])).fetchone()
+        if not row or row['status'] != 'pending' or row['turn_id']:
+            return False
+    agent.pop('contextRepairWait', None)
+    agent.pop('startAttempt', None)
+    agent['lastContextRepairWait'] = {**wait, 'status':'superseded',
+                                      'reason':'Account transfer', 'finishedAt':time.time()}
+    if agent.get('error') == wait.get('error'):
+        agent['error'] = None
+    rt.put(db, 'agents', agent)
+    return True
 
 
 def repair_before_start(rt, agent):

@@ -219,12 +219,23 @@ class NativeRuntimeUpdates:
         from codex_runtime import AppServer
         root = self.rt.root if account == 'default' else self.rt.root / 'account-servers' / account
         root.mkdir(parents=True, exist_ok=True)
+        handle = 'account:' + account
         return AppServer(root, *callbacks, home=self.rt.accounts.home(account), isolated=account != 'default',
-                         executable=selected['path'])
+                         executable=selected['path'], supervisor_handle=handle,
+                         supervisor_commit=lambda message, sequence: self.rt.commit_supervisor_event(
+                             handle, message, sequence, account, None),
+                         supervisor_event_applied=lambda sequence: self.rt.supervisor_event_applied(
+                             handle, sequence))
 
     def _rotate(self, account, selected):
         from codex_native_tools import _local_idle, _native_idle, _same_source, account_reserved
         rt = self.rt
+        if os.environ.get('CODEX_AGENTS_SUPERVISOR_MODE') == '1':
+            server = rt.servers.get(account)
+            if server is not None:
+                self._account(account, 'waiting', server, selected,
+                              'Native runtime replacement is deferred while supervisor mode is enabled')
+            return
         replacement = None
         installed = False
         spawning = False

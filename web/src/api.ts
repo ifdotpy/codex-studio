@@ -15,6 +15,7 @@ if (typeof window !== "undefined")
 
 let token = "";
 let workspace = "";
+export type ApiReadMetadata = { etag?: string; notModified?: boolean };
 export function setWorkspace(value: string) {
   workspace = value;
 }
@@ -43,6 +44,8 @@ export async function api<T = any>(
     timeoutMs?: number;
     workspaceId?: string;
     signal?: AbortSignal;
+    etag?: string;
+    readMetadata?: ApiReadMetadata;
   } = {},
 ): Promise<T> {
   const timeoutMs =
@@ -66,7 +69,9 @@ export async function api<T = any>(
     const response = await fetch(path, {
       signal: controller?.signal,
       ...(body === undefined
-        ? {}
+        ? options.etag
+          ? { headers: { "If-None-Match": options.etag } }
+          : {}
         : {
             method: "POST",
             headers: {
@@ -79,6 +84,13 @@ export async function api<T = any>(
             body: JSON.stringify(body),
           }),
     });
+    if (response.status === 304 && options.readMetadata) {
+      options.readMetadata.etag = response.headers.get("ETag") || options.etag;
+      options.readMetadata.notModified = true;
+      return undefined as T;
+    }
+    if (options.readMetadata)
+      options.readMetadata.etag = response.headers.get("ETag") || undefined;
     let data;
     try {
       data = await response.json();
@@ -99,6 +111,20 @@ export async function api<T = any>(
         response.status,
         data,
       );
+    if (
+      body !== undefined &&
+      Array.isArray(data?._syncEntities) &&
+      data._syncEntities.length &&
+      typeof window !== "undefined"
+    )
+      window.dispatchEvent(
+        new CustomEvent("codex-sync-entities", {
+          detail: {
+            workspaceId: options.workspaceId ?? workspace,
+            documents: data._syncEntities,
+          },
+        }),
+      );
     return data;
   } catch (error) {
     if (timedOut) throw new NetworkTimeoutError();
@@ -108,6 +134,39 @@ export async function api<T = any>(
     options.signal?.removeEventListener("abort", cancel);
     if (controller) deadlines.delete(controller);
   }
+}
+
+export async function apiDownload(path: string): Promise<{
+  blob: Blob;
+  name: string;
+  truncated: boolean;
+}> {
+  const response = await fetch(path, {
+    headers: {
+      "X-Canvas-Token": token,
+      ...(workspace ? { "X-Canvas-Workspace": workspace } : {}),
+    },
+  });
+  if (!response.ok) {
+    let details: any;
+    try {
+      details = await response.json();
+    } catch {
+      details = `Request failed (${response.status})`;
+    }
+    throw new ApiError(
+      details?.error || details?.message || details,
+      response.status,
+      details,
+    );
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const name = disposition.match(/filename="([^"]+)"/)?.[1] || "download.log";
+  return {
+    blob: await response.blob(),
+    name,
+    truncated: response.headers.get("X-Log-Truncated") === "true",
+  };
 }
 // Only reads and operations with a durable request identity use this deadline.
 export const syncApi = <T = any>(

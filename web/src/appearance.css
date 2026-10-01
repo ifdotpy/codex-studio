@@ -254,3 +254,192 @@
   ) {
   background: transparent;
 }
+
+/* Phone controls must work with a finger, including menus and disclosures. */
+@media (max-width: 760px) {
+  html body :is(button, summary, [role="option"], [role="tab"]) {
+    /* Compact component sizes cannot reduce the phone's minimum target. */
+    min-width: 44px !important;
+    min-height: 44px !important;
+    touch-action: manipulation;
+  }
+  html body :is(input:not([type="checkbox"]):not([type="radio"]), select) {
+    min-height: 44px !important;
+  }
+  html body summary {
+    align-content: center;
+  }
+  html body :is(.mantine-Menu-dropdown, .mantine-Combobox-dropdown) {
+    max-width: calc(100vw - 24px);
+    max-height: calc(var(--mobile-viewport-height, 100dvh) - 32px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  html body .mantine-Menu-itemLabel {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  html body :is(.mantine-Modal-close, .mantine-Drawer-close) {
+    flex-shrink: 0;
+  }
+
+  /* The status keeps its space after the mode control moves to settings. */
+  .simple-workspace-header .conversation-meta {
+    gap: 0;
+  }
+  .simple-workspace-header #conversation-status {
+    flex: 1;
+  }
+  .simple-workspace-header #messages-toggle {
+    width: 44px;
+    padding: 0;
+    position: relative;
+  }
+  .simple-workspace-header #messages-toggle .mantine-Button-section {
+    margin: 0;
+  }
+  .simple-workspace-header #messages-toggle .attention-count {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 14px;
+    padding-inline: 3px;
+    font-size: 10px;
+  }
+  .simple-workspace-header #team-toggle {
+    width: 44px;
+  }
+  .workspace-header.simple-workspace-header:has(#back-lead) {
+    height: auto;
+    min-height: 100px;
+  }
+  .chat-settings-panel .agent-mode-control {
+    margin: 0;
+  }
+  .chat-settings-panel .agent-mode-switch {
+    font-size: 13px;
+    padding-inline: 10px;
+  }
+  /* Safari keeps layout media queries tall while the keyboard reduces visibility. */
+  html[data-mobile-keyboard="true"] #message {
+    max-height: 80px !important;
+    overflow-y: auto !important;
+  }
+  .chat-settings-panel :is(.mantine-Button-label, .account-picker-label) {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* Visible project actions need dedicated space instead of a hover overlay. */
+  #sidebar .projects-heading .mantine-ActionIcon-root,
+  #sidebar .project-tree-action,
+  #sidebar .project-chats .row-actions {
+    width: 44px;
+    height: 44px;
+  }
+  #sidebar .project-tree-action:has(+ .project-tree-action) {
+    right: 48px;
+  }
+  #sidebar .project-tree-toggle {
+    padding-right: 48px;
+  }
+  #sidebar
+    .project-tree-heading:has(.project-tree-action + .project-tree-action)
+    .project-tree-toggle {
+    padding-right: 92px;
+  }
+  #sidebar .project-chats .chat-row {
+    padding-right: 52px;
+  }
+  #sidebar .sidebar-nav-button {
+    height: 44px;
+  }
+
+  #team :is(.worker-heading, .team-filters) {
+    gap: 8px;
+  }
+  #team .worker-error-details summary {
+    width: 100%;
+  }
+  #team .team-filters button {
+    font-size: 12px;
+  }
+  #team .worker-text {
+    min-width: 0;
+  }
+  #team .worker-model-summary {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* Portals use the visible viewport, including the keyboard and safe areas. */
+  html body .mantine-Drawer-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    max-height: 100%;
+    padding-top: var(--mobile-safe-area-top, env(safe-area-inset-top));
+    padding-bottom: var(--mobile-safe-area-bottom, env(safe-area-inset-bottom));
+  }
+  html body .mantine-Drawer-header {
+    flex-shrink: 0;
+  }
+  html body .mantine-Drawer-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  html body .mantine-Drawer-content:has(:is(#sidebar, #team)) {
+    padding: 0;
+  }
+  html body :is(#sidebar, #team) {
+    height: 100%;
+  }
+  html body .mantine-Modal-inner {
+    padding-top: max(
+      16px,
+      var(--mobile-safe-area-top, env(safe-area-inset-top))
+    );
+    padding-bottom: max(
+      16px,
+      var(--mobile-safe-area-bottom, env(safe-area-inset-bottom))
+    );
+  }
+  html body .mantine-Modal-content {
+    max-height: calc(
+      var(--mobile-viewport-height, 100dvh) -
+        max(16px, var(--mobile-safe-area-top, env(safe-area-inset-top))) -
+        max(16px, var(--mobile-safe-area-bottom, env(safe-area-inset-bottom)))
+    );
+  }
+  .execution-dropdown,
+  .model-picker-options {
+    max-height: calc(var(--mobile-viewport-height, 100dvh) - 64px);
+    overscroll-behavior: contain;
+  }
+  .model-picker-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 10px;
+  }
+  .model-picker-value > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .model-picker-value .model-picker-tag {
+    flex-shrink: 0;
+  }
+  .analytics-scroll {
+    min-height: 0;
+    max-height: calc(var(--mobile-viewport-height, 100dvh) - 270px);
+  }
+  .workspace-shell:not(.workspace-focused-messages) {
+    min-height: 0;
+  }
+  .workspace-messages .workspace-heading {
+    padding-inline: 14px;
+  }
+}

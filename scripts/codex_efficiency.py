@@ -17,8 +17,52 @@ def clip(text, size):
     return str(text).encode('utf-8')[:size].decode('utf-8', errors='ignore')
 
 
+def remember_context_manifest(db, agent_id, event_id):
+    """Cache only a manifest whose event reached delivered state."""
+    row = db.execute("SELECT e.status,m.record FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
+                     "WHERE e.id=? AND e.agent=?", (event_id, agent_id)).fetchone()
+    if not row or row[0] != 'delivered':
+        return False
+    try:
+        manifest = json.loads(row[1]).get('contextManifest')
+        epoch = manifest.get('epoch')
+        if not isinstance(epoch, list) or len(epoch) != 2:
+            return False
+        thread_id, compactions = epoch
+        compactions = int(compactions or 0)
+        sequence = int(manifest.get('sequence', 0))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    db.execute("""INSERT INTO runtime_context_manifests(agent,thread_id,compactions,sequence,event_id,record)
+        VALUES(?,?,?,?,?,?) ON CONFLICT(agent,thread_id,compactions) DO UPDATE SET
+        sequence=excluded.sequence,event_id=excluded.event_id,record=excluded.record
+        WHERE excluded.sequence>=runtime_context_manifests.sequence""",
+        (agent_id, str(thread_id or ''), compactions, sequence, event_id, packed(manifest)))
+    versions = manifest.get('versions')
+    reminder = versions.get('worktreeReminder') if isinstance(versions, dict) else None
+    if reminder:
+        db.execute("INSERT OR IGNORE INTO runtime_context_reminders(agent,version,event_id) VALUES(?,?,?)",
+                   (agent_id, str(reminder), event_id))
+    return True
+
+
 def digest(value):
     return hashlib.sha256(packed(value).encode()).hexdigest()[:24]
+
+
+def finished_worktree_ids(db, root_id):
+    """Find the lead's finished workers without copying every agent record."""
+    return [row[0] for row in db.execute(
+        "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
+        "AND id!=? AND json_extract(record,'$.worktreeReady') IS NOT NULL "
+        "AND json_extract(record,'$.worktreeReady') NOT IN (0,'') "
+        "AND (json_extract(record,'$.deletedAt') IS NULL "
+        "OR json_extract(record,'$.deletedAt') IN (0,'')) "
+        "AND (json_extract(record,'$.status') IN ('completed','failed','interrupted') "
+        "OR (json_extract(record,'$.status')='paused' "
+        "AND (json_extract(record,'$.autoWake') IS NULL "
+        "OR json_extract(record,'$.autoWake') IN (0,'')))) ORDER BY id",
+        (root_id, root_id))]
 
 
 def model_text_bytes(value):
@@ -70,73 +114,123 @@ class EfficiencyMixin:
                     'detail': {'tool': 'orchestration_task', 'action': 'get', 'task_id': full['id']}}
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
-            works = [w for w in self.records(db, 'work') if w['rootId'] == actor['rootId']]
             if action == 'list':
-                rows = [self.task_brief(self.work_view(w, works)) for w in works
+                works = self.work_records(db, actor['rootId'])
+                statuses = {work['id']: work['status'] for work in works}
+                rows = [self.task_brief(self.work_view(w, statuses)) for w in works
                         if (not args.get('owner') or w.get('owner') == args['owner'])
                         and (not args.get('state') or w.get('status') == args['state'])]
                 rows.sort(key=lambda w: w['id'])
-                return self.model_page(rows, args, [actor['rootId'], args.get('owner'), args.get('state')])
-            task = next((w for w in works if w['id'] == args.get('task_id')), None)
+                return self.model_page(rows, args, [actor['rootId'], args.get('owner'), args.get('state')], byte_limit=13000)
+            task = self.work_by_id(db, args.get('task_id'), actor['rootId'])
             if task is None:
                 raise ValueError('Unknown task in this team')
             if action == 'history':
                 rows = sorted([{'kind': 'result', **r} for r in task['results']]
                               + [{'kind': 'decision', **r} for r in task['decisions']], key=lambda r: r.get('created', 0))
                 return self.model_page(rows, args, [actor['rootId'], task['id'], 'history'])
-            return {**self.task_brief(self.work_view(task, works)), 'description': task['description'],
+            statuses = {row[0]: row[1] for row in db.execute(
+                "SELECT json_extract(record,'$.id'),json_extract(record,'$.status') FROM runtime_work "
+                "WHERE id IN (" + ','.join('?' for _ in task['dependencies']) + ") "
+                "AND json_extract(record,'$.rootId')=?",
+                (*task['dependencies'], actor['rootId']))} if task['dependencies'] else {}
+            return {**self.task_brief(self.work_view(task, statuses)), 'description': task['description'],
                     'dependencies': task['dependencies'], 'latestResult': task['results'][-1] if task['results'] else None,
                     'latestDecision': task['decisions'][-1] if task['decisions'] else None,
                     'history': {'results': len(task['results']), 'decisions': len(task['decisions'])}}
 
     @staticmethod
     def task_brief(task):
-        return {k: task.get(k) for k in ('id', 'title', 'owner', 'status', 'version', 'blockedBy')}
+        brief = {k: task.get(k) for k in ('id', 'title', 'owner', 'status', 'version', 'blockedBy')}
+        if task.get('archive'):
+            brief['archive'] = {k: task['archive'].get(k) for k in ('status', 'reason')
+                                if task['archive'].get(k) is not None}
+        return brief
+
+    def model_peers_directory(self, db, actor_id, args, actor):
+        scope = args.get('scope', 'team')
+        if scope != 'team':
+            raise ValueError('Agent discovery is limited to your team')
+        from codex_peer_teams import peers_for
+        agents = [a for a in self.records(db, 'agents') if not a.get('deletedAt')]
+        peer_ids = {peer['id'] for peer in peers_for(self, db, actor)}
+        rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
+                for a in agents if a['rootId'] == actor['rootId'] or a['id'] in peer_ids]
+        rows.sort(key=lambda a: a['id'])
+        rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId', 'peerTeamId', 'peerTeamName')}
+                 for r in self.chat_rooms(db, actor_id)]
+        rooms.sort(key=lambda r: r['id'])
+        # One cursor covers both collections. Room discovery continues
+        # after the agents, without repeating rooms on each agent page.
+        entries = [{'entry': 'agent', 'value': r} for r in rows]
+        entries += [{'entry': 'room', 'value': r} for r in rooms]
+        result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000)
+        page = result.pop('items')
+        result.update(self=actor_id, lead=actor['rootId'],
+                      items=[r['value'] for r in page if r['entry'] == 'agent'],
+                      rooms=[r['value'] for r in page if r['entry'] == 'room'],
+                      total=len(rows), roomTotal=len(rooms), totalRecords=len(entries))
+        if actor.get('parentId'):
+            result['parent'] = actor['parentId']
+        return result
 
     def model_directory(self, actor_id, name, args):
+        if name == 'orchestration_status' and 'include_finished' in args and type(args['include_finished']) is not bool:
+            raise ValueError('include_finished must be a boolean')
+        if name == 'orchestration_peers':
+            with self.read_db() as db:
+                actor = self.checked_actor(db, actor_id, actor_id)
+                return self.model_peers_directory(db, actor_id, args, actor)
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
-            agents = [a for a in self.records(db, 'agents') if not a.get('deletedAt')]
-            if name == 'orchestration_peers':
-                scope = args.get('scope', 'team')
-                if scope != 'team':
-                    raise ValueError('Agent discovery is limited to your team')
-                from codex_peer_teams import peers_for
-                peer_ids = {peer['id'] for peer in peers_for(self, db, actor)}
-                rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
-                        for a in agents if a['rootId'] == actor['rootId'] or a['id'] in peer_ids]
-                rows.sort(key=lambda a: a['id'])
-                rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId', 'peerTeamId', 'peerTeamName')}
-                         for r in self.chat_rooms(db, actor_id)]
-                rooms.sort(key=lambda r: r['id'])
-                # One cursor covers both collections. Room discovery continues
-                # after the agents, without repeating rooms on each agent page.
-                entries = [{'entry': 'agent', 'value': r} for r in rows]
-                entries += [{'entry': 'room', 'value': r} for r in rooms]
-                result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000)
-                page = result.pop('items')
-                result.update(self=actor_id, lead=actor['rootId'], parent=actor.get('parentId'),
-                              items=[r['value'] for r in page if r['entry'] == 'agent'],
-                              rooms=[r['value'] for r in page if r['entry'] == 'room'],
-                              total=len(rows), roomTotal=len(rooms), totalRecords=len(entries),
-                              peerChatIds=sorted(peer_ids),
-                              peerChatPolicy='Peer chats are equal and independent. Send explicit private messages only. Do not assign work or forward results automatically.')
-                return result
-            team = [a for a in agents if a['rootId'] == actor['rootId']]
+            # The JSON root index selects this team's rows before decoding them.
+            team = self.team_agents(db, actor['rootId'])
             ids = {a['id'] for a in team}
-            records = [{**{k: a.get(k) for k in ('id', 'name', 'status', 'inFlight', 'parentId')}, 'kind': 'agent',
-                        'error': clip(a.get('error') or '', 600)} for a in team]
-            records += [{**{k: m.get(k) for k in ('id', 'agent', 'status', 'exitCode')}, 'kind': 'monitor',
-                         'error': clip(m.get('error') or '', 600)} for m in self.recent_monitors(db, actor["rootId"]) if m['agent'] in ids]
+            terminal_agents = {'completed', 'failed', 'interrupted'}
+            terminal_monitors = {'completed', 'failed', 'cancelled', 'lost'}
+            def agent_record(a):
+                return {**{k: a.get(k) for k in ('id', 'name', 'status', 'inFlight', 'parentId')}, 'kind': 'agent',
+                        'error': clip(a.get('error') or '', 600),
+                        **({'waitsForEvent': a['parkedEvent']}
+                           if a.get('status') == 'parked' and a.get('parkedEvent') else {})}
+            def monitor_record(m):
+                return {**{k: m.get(k) for k in ('id', 'agent', 'status', 'exitCode')}, 'kind': 'monitor',
+                        'error': clip(m.get('error') or '', 600)}
+            active_team = [a for a in team if a['status'] not in terminal_agents]
+            records = [agent_record(a) for a in active_team]
+            if ids:
+                records += [monitor_record(json.loads(row[0])) for row in db.execute(
+                    "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.agent') IN (" +
+                    ','.join('?' for _ in ids) + ") AND json_extract(record,'$.status') IN (?,?,?)",
+                    (*sorted(ids), 'running', 'starting', 'approval'))]
             records.sort(key=lambda r: (r['kind'], r['id']))
+            finished_counts = {'agents': sum(a['status'] in terminal_agents for a in team), 'monitors': 0}
+            marks = ','.join('?' for _ in terminal_monitors)
+            finished_counts['monitors'] = db.execute(
+                "SELECT COUNT(*) FROM runtime_monitors WHERE json_extract(record,'$.agent') IN (" +
+                ','.join('?' for _ in ids) + ") AND json_extract(record,'$.status') IN (" + marks + ")",
+                (*sorted(ids), *sorted(terminal_monitors))).fetchone()[0]
             defaults = self.worker_defaults(self.agent(actor['rootId'], db))
             from codex_native_errors import native_thread_block
             from codex_safety_buffering import active as safety_retry_active
             global_limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '32'))))
-            active = [a for a in agents if a.get('inFlight') or a['status'] in {'running', 'starting', 'approval'}]
-            team_active = sum(a['rootId'] == actor['rootId'] for a in active)
+            active_statuses = ('running', 'starting', 'approval')
+            live_agents = "(json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,''))"
+            active_by_status = db.execute(
+                "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_global_active WHERE " +
+                live_agents + " AND json_extract(record,'$.status') IN ('running','starting','approval')").fetchone()[0]
+            active_by_flight = db.execute(
+                "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_inflight WHERE " + live_agents +
+                " AND json_extract(record,'$.inFlight')=1 "
+                "AND json_extract(record,'$.status') NOT IN (?,?,?)", active_statuses).fetchone()[0]
+            global_active = active_by_status + active_by_flight
+            team_active = sum(bool(a.get('inFlight')) or a['status'] in active_statuses for a in team)
             root = self.agent(actor['rootId'], db)
-            reservations = {str(Path(a['cwd']).resolve()): a['id'] for a in agents if a.get('workspaceOperation')}
+            reservations = {str(Path(cwd).resolve()): key for key, cwd in db.execute(
+                "SELECT id,json_extract(record,'$.cwd') FROM runtime_agents INDEXED BY runtime_agent_reservation_cwd "
+                "WHERE json_type(record,'$.workspaceOperation')='text' "
+                "AND json_extract(record,'$.workspaceOperation')!='' AND "
+                "(json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,''))") if cwd}
             queued = []
             for a in team:
                 if a['status'] != 'queued':
@@ -156,19 +250,19 @@ class EfficiencyMixin:
                 blocker = reservations.get(str(Path(a['cwd']).resolve()))
                 if blocker:
                     reasons.append('workspace_operation')
-                if len(active) >= global_limit:
+                if global_active >= global_limit:
                     reasons.append('global_concurrency')
                 if team_active >= a['concurrency']:
                     reasons.append('team_concurrency')
                 queued.append({'id': a['id'], 'reasons': reasons or ['awaiting_dispatch'],
                                **({'blockingAgent': blocker} if blocker else {})})
             capacity = {'teamLimit': root['concurrency'], 'globalLimit': global_limit,
-                        'teamActive': team_active, 'globalActive': len(active),
+                        'teamActive': team_active, 'globalActive': global_active,
                         'maxAgents': root['maxAgents'], 'queued': queued,
                         'configure': {'command': 'codex-control configure ' + actor['rootId'] + ' --concurrency N',
-                                      'minimum': 1, 'maximum': 64,
-                                      'note': 'Change team capacity only within user authorization. The global server limit still applies.'}}
-            revision = digest([records, defaults, capacity])
+                                      'minimum': 1, 'maximum': 64}}
+            counts = {state: sum(a['status'] == state for a in team) for state in sorted({a['status'] for a in team})}
+            revision = digest([records, finished_counts, counts, defaults, capacity])
             db.execute('CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))')
             previous = db.execute('SELECT record FROM runtime_model_status WHERE agent=? AND revision=?',
                                   (actor_id, args.get('since_revision'))).fetchone()
@@ -177,12 +271,48 @@ class EfficiencyMixin:
             changes = [r for k, r in now.items() if old.get(k) != r]
             db.execute('INSERT OR REPLACE INTO runtime_model_status VALUES (?,?,?,?)', (actor_id, revision, time.time(), packed(records)))
             db.execute('DELETE FROM runtime_model_status WHERE agent=? AND revision NOT IN (SELECT revision FROM runtime_model_status WHERE agent=? ORDER BY at DESC LIMIT 8)', (actor_id, actor_id))
-            return {'apiVersion': 2, 'revision': revision, 'reset': previous is None, 'unchanged': previous is not None and args.get('since_revision') == revision,
-                    'counts': {state: sum(a['status'] == state for a in team) for state in sorted({a['status'] for a in team})},
+            result = {'apiVersion': 2, 'revision': revision, 'reset': previous is None, 'unchanged': previous is not None and args.get('since_revision') == revision,
+                    'counts': counts,
                     'changes': changes, 'removed': sorted(old.keys() - now.keys()),
+                    'finishedCounts': finished_counts,
                     'workerDefaults': defaults,
                     'capacity': capacity,
-                    'help': 'Use orchestration_context for tools, profiles or monitor details. Use orchestration_peers for rooms.'}
+                    }
+            if args.get('include_finished') is True:
+                finished_agents = [agent_record(a) for a in team if a['status'] in terminal_agents]
+                finished_agents.sort(key=lambda record: record['id'])
+                limit = args.get('limit', 20)
+                if type(limit) is not int or not 1 <= limit <= 50:
+                    raise ValueError('limit must be 1 to 50')
+                offset = 0
+                if args.get('cursor'):
+                    try:
+                        cursor = json.loads(base64.urlsafe_b64decode(args['cursor']))
+                        offset = cursor['offset']
+                        if type(offset) is not int or offset < 0 or cursor['revision'] != revision:
+                            raise ValueError()
+                    except (ValueError, TypeError, KeyError):
+                        raise ValueError('List changed or cursor is invalid. Read the first page again.') from None
+                total = finished_counts['agents'] + finished_counts['monitors']
+                if offset > total:
+                    raise ValueError('List changed or cursor is invalid. Read the first page again.')
+                agent_page = finished_agents[offset:offset + limit]
+                monitor_offset = max(0, offset - len(finished_agents))
+                remaining = limit - len(agent_page)
+                monitor_rows = []
+                if remaining and monitor_offset < finished_counts['monitors']:
+                    monitor_rows = db.execute(
+                        "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.agent') IN (" +
+                        ','.join('?' for _ in ids) + ") AND json_extract(record,'$.status') IN (" + marks +
+                        ") ORDER BY id LIMIT ? OFFSET ?",
+                        (*sorted(ids), *sorted(terminal_monitors), remaining, monitor_offset)).fetchall()
+                page_items = agent_page + [monitor_record(json.loads(row[0])) for row in monitor_rows]
+                next_offset = offset + len(page_items)
+                next_cursor = (base64.urlsafe_b64encode(packed({'offset': next_offset, 'revision': revision}).encode()).decode()
+                               if next_offset < total else None)
+                result['finished'] = {'apiVersion': 2, 'items': page_items, 'total': total,
+                                      'revision': revision, 'nextCursor': next_cursor}
+            return result
 
     def model_tool_result(self, actor, key, result):
         from codex_agent_modes import tool_mode_context
@@ -205,7 +335,7 @@ class EfficiencyMixin:
             value = json.loads(raw)
             if isinstance(value, dict):
                 preview['summary'] = {k: value[k] for k in
-                    ('id', 'requestId', 'stage', 'outcome', 'status', 'exitCode', 'version', 'nextCursor', 'nextBefore', 'revision', 'total', 'nextOffset', 'agentIds', 'agent_ids') if k in value}
+                    ('id', 'requestId', 'title', 'owner', 'stage', 'outcome', 'status', 'exitCode', 'version', 'blockedBy', 'nextCursor', 'nextBefore', 'revision', 'total', 'nextOffset', 'agentIds', 'agent_ids') if k in value}
                 if isinstance(value.get('agents'), list):
                     preview['summary']['agents'] = [{k: a[k] for k in ('id', 'status') if k in a}
                                                     for a in value['agents'] if isinstance(a, dict)]
@@ -248,18 +378,16 @@ class EfficiencyMixin:
             if native:
                 full = None
                 if native.get('truncated'):
-                    # Runtime.item indexes the original text in the same transaction
-                    # before it clips the transcript view. Reuse that durable body.
-                    from transcript_storage.storage import body as transcript_body
-                    full = transcript_body(db, key, agent=actor['id'])
+                    from codex_search_text import search_text
+                    full = search_text(db, key)
                 try:
-                    payload = json.loads(full if full is not None else native['text'])
+                    payload = json.loads(full if full else native['text'])
                 except (ValueError, TypeError, KeyError):
                     raise ValueError('Saved command output is truncated or unreadable. Do not repeat the command.') from None
                 text = payload.get('aggregatedOutput') if isinstance(payload, dict) else None
                 if not isinstance(text, str):
                     raise ValueError('Saved command output is unavailable. Do not repeat the command.')
-                native = {**native, 'truncated': bool(payload.get('outputTruncated')) or bool(native.get('truncated') and full is None)}
+                native = {**native, 'truncated': bool(payload.get('outputTruncated')) or bool(native.get('truncated') and not full)}
                 result = {'success': payload.get('status') == 'completed' and payload.get('exitCode') == 0}
                 receipt = {'outcome': 'unknown'}
             else:
@@ -269,7 +397,8 @@ class EfficiencyMixin:
                 row = db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (key,)).fetchone()
                 if row is None:
                     raise ValueError('Result is not available yet. Do not repeat the operation.')
-                result = json.loads(row[0])
+                from codex_payloads import resolve_result, state_root
+                result = resolve_result(state_root(self), row[0])
                 text = '\n'.join(c.get('text', '') for c in result.get('contentItems', []) if c.get('type') == 'inputText')
             offset = args.get('offset', 0)
             if type(offset) is not int or offset < 0 or offset > len(text):
@@ -381,8 +510,11 @@ class EfficiencyMixin:
 
     def model_known_context(self, db, actor):
         epoch = [actor.get('threadId'), actor.get('compactions', 0)]
-        row = db.execute("SELECT m.record FROM runtime_event_meta m JOIN runtime_events e ON e.id=m.id WHERE e.agent=? AND e.status='delivered' AND json_extract(m.record,'$.contextManifest') IS NOT NULL ORDER BY coalesce(json_extract(m.record,'$.contextManifest.sequence'),0) DESC, e.created DESC LIMIT 1", (actor['id'],)).fetchone()
-        old = json.loads(row[0]).get('contextManifest', {}) if row else {}
+        latest = db.execute("SELECT record FROM runtime_context_manifests WHERE agent=? "
+                            "ORDER BY sequence DESC LIMIT 1", (actor['id'],)).fetchone()
+        # Empty means unknown. A confirmed event will seed this cache; do not
+        # discover old manifests by scanning delivered history on a cold cache.
+        old = json.loads(latest[0]) if latest else {}
         known = dict(old.get('versions', {})) if old.get('epoch') == epoch else {}
         prepared = actor.get('preparedContext') or {}
         # Native compaction retains developer instructions on the same thread.
@@ -498,6 +630,16 @@ class EfficiencyMixin:
         if unchanged:
             blocks.append('[Complaints still requiring a response] ' + ', '.join(c['id'] for c in unchanged)
                           + '. The full text was delivered earlier. Read orchestration_context topic=complaints if needed.')
+        if actor.get('isLead'):
+            waiting = finished_worktree_ids(db, actor['id'])
+            if len(waiting) >= 3:
+                versions['worktreeReminder'] = digest(waiting)
+                delivered = db.execute(
+                    "SELECT 1 FROM runtime_context_reminders WHERE agent=? AND version=?",
+                    (actor['id'], versions['worktreeReminder'])).fetchone()
+                if known.get('worktreeReminder') != versions['worktreeReminder'] and not delivered:
+                    blocks.append(f'Studio: {len(waiting)} finished workers keep worktrees. '
+                                  'Run orchestration_agent_manage action=archive_finished.')
         meta = db.execute('SELECT record FROM runtime_event_meta WHERE id=?', (event_id,)).fetchone()
         metadata = json.loads(meta[0]) if meta else {}
         metadata['contextManifest'] = {'epoch': epoch, 'versions': versions, 'sequence': old.get('sequence', 0) + 1}
@@ -611,7 +753,7 @@ class EfficiencyMixin:
                                            'history': 'Read earlier progress with orchestration_chat_read in this room.'})
                 except (ValueError, KeyError, TypeError):
                     pass
-            if row['kind'] not in {'user', 'followup', 'radio_turn'}:
+            if row['kind'] not in {'user', 'followup', 'work_decision', 'radio_turn'}:
                 text = EfficiencyMixin.bounded_event(row, text, event_limit)
             parts.append(text if row['kind'] == 'user' else '[Orchestration event: ' + row['kind'] + ']\n' + text)
         return '\n\n'.join(parts)

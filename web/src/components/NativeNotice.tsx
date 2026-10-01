@@ -74,6 +74,10 @@ export function NativeError({
   }, [limits]);
   const recovered = useRecoveredLimit(agent, limits ?? null, now);
   const recovery = recovered ? null : limitRecovery(agent, limits ?? null, now);
+  const authResume =
+    agent.usageResume?.cause === "auth" &&
+    (agent.usageResume.status === "scheduled" ||
+      agent.usageResume.reason === "Automatic resume is off for this chat.");
   const retry = currentCapacityRetry(agent);
   const blocked = nativeThreadError(agent);
   const connectionCheck = matchingConnectionCheck(agent);
@@ -99,7 +103,7 @@ export function NativeError({
       className={`native-error ${recovery ? "usage-limit" : retry ? "warning" : error.severity}`}
       role="alert"
     >
-      {!recovery && (
+      {!recovery && !authResume && (
         <span>
           {(connectionCheck && "Previous turn needs review") ||
             error.title ||
@@ -113,13 +117,13 @@ export function NativeError({
             ? "Codex reported this thread as active. Its outcome is not confirmed."
             : "Codex answered the connection check. The previous outcome is unconfirmed. Review the history before continuing."}
         </small>
-      ) : !recovery && !retry ? (
+      ) : !recovery && !authResume && !retry ? (
         <Guidance error={error} />
       ) : null}
-      {recovery && (
+      {(recovery || authResume) && (
         <LimitRecoveryNotice
-          key={JSON.stringify(recovery)}
-          recovery={recovery}
+          key={JSON.stringify([recovery, agent.usageResume?.id])}
+          recovery={recovery ?? undefined}
           agentId={agent.id}
           usageResume={agent.usageResume}
           inline

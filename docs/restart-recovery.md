@@ -78,6 +78,83 @@ message delivery. Browser storage eviction or deletion removes local-only data.
 Fullscreen mode, minimized state, and the previous macOS Space are not restored
 automatically.
 
+## Opt-in process supervisor (v1)
+
+`CODEX_AGENTS_SUPERVISOR_MODE=1` enables the process supervisor. The default is
+off. The desktop copies this setting into its background-recovery configuration
+and passes it to replacement backends. When enabled, startup verifies the
+packaged supervisor protocol and state-directory identity before creating any
+AppServer. A missing or incompatible supervisor is a startup error; the backend
+does not fall back to in-process children.
+
+The supervisor owns Codex app-server and Claude bridge children, including turns,
+monitors and background tasks carried by those app-servers, plus the terminal
+app-server and its user PTYs. The backend reconnects using stable handles and
+sequence cursors. The supervisor accepts each RPC into its SQLite journal with
+`synchronous=FULL` before writing stdin. There is no fsync batching: acceptance
+latency measured 1 October 2026 on a private fake-model fixture was p50 6.655 ms
+and p95 18.854 ms over 80 RPCs. These figures are host- and storage-dependent.
+If the supervisor dies between the durable receipt and the child write, the
+operation outcome is uncertain; the receipt prevents an automatic retry.
+
+Unacknowledged output is limited to 256 MiB per handle. ACK removes event rows;
+the supervisor checkpoints and truncates its WAL after ACK, with an automatic
+checkpoint every 100 pages. The SQLite database also has a 256 MiB page limit.
+At the per-handle limit the supervisor stops reading that child's output pipe,
+which applies backpressure to the child. Status reports the handle as stalled;
+an RPC refused because the journal is full returns an explicit error to the
+backend request path. It never drops output to make room. ACK cleanup does not
+remove operation receipts, which remain necessary to prevent command replay.
+
+Version 1 does not replace supervisor code while handles are active. Install a
+new supervisor package only when all handles are idle; hot supervisor replacement
+is deferred to v2.
+
+### First cutover and restart
+
+1. Install the desktop build containing `scripts/codex_process_supervisor.py`.
+   Existing launchd recovery configuration remains off for supervisor mode by
+   default. The recovery LaunchAgent starts the supervisor as a detached child
+   and validates it before launching the backend. The child has its own session,
+   so backend SIGTERM does not stop it.
+2. Choose one idle boundary: stop admitting new work and wait for turns, monitors,
+   background tasks, and user terminals to finish. The first installation cannot
+   transfer existing in-process pipes, so this is the one planned interruption.
+3. Set `CODEX_AGENTS_SUPERVISOR_MODE=1` in the environment used by the desktop,
+   then restart the desktop recovery configuration. `desktop/recovery.cjs` writes
+   the mode into the existing launchd config and `desktop/recover_backend.py`
+   starts and preflights the supervisor before any backend. Verify that
+   `/api/desktop` reports protocol 1 and an empty supervisor handle list.
+4. At the planned idle boundary, run
+   `scripts/restart-backend-v2.sh --initial-cutover` with the same state directory
+   and mode. This one-time option requires an empty supervisor handle journal,
+   signals only the old backend, and waits for a supervisor-mode replacement.
+   For later backend-only restarts, omit `--initial-cutover`. Do not unload the
+   recovery LaunchAgent or terminate the supervisor.
+
+The supervisor survives backend restarts, not host reboots. It records its PID
+and start time, plus each native child's PID, process group, and start time.
+After supervisor death, recovery verifies these identities. It sends TERM, then
+KILL after 1.5 seconds, only to a process group whose PID and start time still
+match. A missing or reused PID is never signalled and blocks fallback. When
+ownership is proven, recovery retains all receipts, records the cleanup result,
+and starts one backend generation with supervisor mode off. Existing turn,
+monitor, and terminal recovery handles interrupted work; accepted or uncertain
+requests are not resubmitted. The UI and `/api/diagnostics` show one recovery
+notice. After that fallback backend exits, the next backend generation returns
+to supervisor mode. The v1 tests exercise process death using private state and
+fake children; they do not prove model-provider behavior under a host power
+failure.
+
+The supervisor checks that at least 272 MiB is free before creating its bounded
+journal and checks free space before durable writes. Low disk space stalls child
+output with pipe backpressure; diagnostics identify the affected handle and
+state. The UI shows that output has paused. The overall database page limit is
+256 MiB, including retained operation receipts. Native binary replacement is
+deferred while supervisor mode is on; v1 keeps the current child identity until
+fallback or a planned idle cutover. Active-handle supervisor code replacement
+is deferred to v2.
+
 No application can guarantee zero data loss after physical storage failure.
 Data not yet committed before power loss can be absent. A full or unwritable disk
 can prevent both database and journal persistence; Studio must report that failure.

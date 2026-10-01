@@ -145,7 +145,8 @@ def reconcile_start(runtime, db, agent, rows):
                    retiredEvents=list(obsolete))
     pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND status='pending' LIMIT 1",
                          (agent['id'], agent['epoch'])).fetchone()
-    agent.update(inFlight=False, status='queued' if pending else 'waiting')
+    if not attempt.get('activeAtReservation'):
+        agent.update(inFlight=False, status='queued' if pending else 'waiting')
     runtime.put(db, 'agents', agent)
     runtime.changed.set()
     return True

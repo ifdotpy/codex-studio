@@ -12,6 +12,7 @@ import shlex
 import sys
 import tempfile
 import threading
+import time
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -28,8 +29,10 @@ class ShellHandler(f.ResponsesHandler):
         if self.path != "/v1/responses":
             return self.reject()
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        self.server.requests.append(request)
-        number = len(self.server.requests)
+        with self.server.lock:
+            self.server.requests.append(request)
+            self.server.request_times.append(time.monotonic())
+            number = len(self.server.requests)
         item = ({"id": "fc_shell", "call_id": "call_shell", "status": "completed",
                  "type": "function_call", "name": "exec_command",
                  "arguments": json.dumps({"cmd": self.server.command, "max_output_tokens": 1000})}

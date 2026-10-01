@@ -1,3 +1,4 @@
+import { chatWaitState } from "./chatStatusModel";
 import { serviceTimeText } from "../local-time";
 import AgentAvatar from "./agents/AgentAvatar";
 import MessageQueue from "./MessageQueue";
@@ -48,6 +49,7 @@ import {
   mergeQueueOrder,
 } from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
+
 import { useConversationScroll } from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
@@ -62,6 +64,7 @@ import {
 } from "../types";
 import Usage from "./Usage";
 import ConversationWarnings from "./ConversationWarnings";
+import type { UsageAccount } from "./Usage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
 import PromptComposer, {
@@ -196,9 +199,9 @@ export default function Conversation(p: {
   dismissDraft?: (version: DraftVersion) => void;
   send: (options?: {
     assets?: string[];
-    delivery?: "queue" | "steer" | "after_tool";
     attachments?: Attachment[];
     onPersist?: () => void | Promise<void>;
+    delivery?: "after_tool" | "after_turn";
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
   onObserved?: (ids: string[]) => void;
@@ -212,6 +215,7 @@ export default function Conversation(p: {
   refresh: () => Promise<void>;
   notify: (s: string) => void;
   limits: Json | null;
+  limitsAccounts?: UsageAccount[];
   limitsLoading?: boolean;
   jumpTarget?: { messageId: string; requestId: string };
   onJumpHandled?: (requestId: string) => void;
@@ -305,6 +309,7 @@ export default function Conversation(p: {
     before,
     older,
     newer,
+    setPageAnchor,
     after,
     historical,
     pageLoading,
@@ -380,6 +385,7 @@ export default function Conversation(p: {
     setFollow,
     onScroll,
     remember,
+    getAnchorId,
   } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
   const input = useRef<HTMLTextAreaElement>(null);
   const navigationAttempt = useRef(0);
@@ -391,6 +397,7 @@ export default function Conversation(p: {
     const chat = p.id;
     const attempt = ++navigationAttempt.current;
     setFollow(false);
+    setPageAnchor(getAnchorId());
     const available = await ensureMessage(id);
     if (activeId.current !== chat || navigationAttempt.current !== attempt)
       return;
@@ -496,6 +503,10 @@ export default function Conversation(p: {
         : p.agent,
     [p.agent, liveAgent, p.id],
   );
+  const wait = useMemo(
+    () => (agent ? chatWaitState(p.data, agent) : undefined),
+    [p.data, agent],
+  );
   useVisibleChatResult(
     scroll,
     p.agent,
@@ -565,11 +576,14 @@ export default function Conversation(p: {
               displayError(agent?.nativeStatus?.message) ||
               (["starting", "running"].includes(agent?.status || "")
                 ? "Working"
-                : statusLabel(agent?.status || "idle")),
+                : ["waiting", "parked"].includes(agent?.status || "")
+                  ? wait?.label || "Turn ended"
+                  : statusLabel(agent?.status || "idle")),
     );
   }, [
     p.id,
     agent?.status,
+    wait?.label,
     agent?.activity?.phase,
     agent?.nativeStatus?.error?.message,
     agent?.nativeStatus?.message,
@@ -596,7 +610,7 @@ export default function Conversation(p: {
     edited: p.onOutgoingEdit,
     refresh: p.refresh,
   });
-  const queue = useMemo(
+  const queued = useMemo(
     () =>
       [
         ...messageQueue.items,
@@ -635,6 +649,18 @@ export default function Conversation(p: {
       ),
     [messageQueue.items, items, p.id],
   );
+  // The queue holds only after_turn messages (Tab). Other input is
+  // delivered at once and stays in the chat while it is sent.
+  const { queue, sending } = useMemo(() => {
+    const shown: typeof queued = [];
+    const held: typeof queued = [];
+    for (const entry of queued) {
+      const { requestedDelivery, delivery } = entry as Json;
+      const mode = requestedDelivery || delivery;
+      (mode === "after_turn" ? shown : held).push(entry);
+    }
+    return { queue: shown, sending: held };
+  }, [queued]);
   const addFiles = async (files: globalThis.File[]) => {
     if (!p.id || !managed)
       throw new Error("Select a managed chat before attaching files.");
@@ -656,7 +682,9 @@ export default function Conversation(p: {
       setUploading(false);
     }
   };
-  const submit = async (delivery: "queue" | "after_tool" = "after_tool") => {
+  const submit = async (
+    delivery: "after_tool" | "after_turn" = "after_tool",
+  ) => {
     const draft = p.getDraft(p.id || "new");
     const draftTooLong = draft.length > 12000;
     const modelCommand = /^\/model(?:\s|$)/i.test(draft.trim());
@@ -698,9 +726,9 @@ export default function Conversation(p: {
     const sent = new Set(assets.map((asset) => asset.id));
     try {
       await p.send({
+        delivery,
         assets: assets.map((asset) => asset.id),
         attachments: assets.map(({ preview: _preview, ...asset }) => asset),
-        delivery,
         onPersist: async () => {
           await setAttachments((current) => ({
             ...current,
@@ -904,9 +932,39 @@ export default function Conversation(p: {
             `${p.id}:${event.id}` === m.id,
         )
       : undefined;
+  const sendingEntry = (m: Message) =>
+    m.role === "user"
+      ? sending.find(
+          (event) =>
+            event.id === m.clientMessageId ||
+            event.id === m.id ||
+            `${p.id}:${event.id}` === m.id,
+        )
+      : undefined;
   const transcriptItems = useMemo(
-    () => items.filter((item) => !queueEntry(item)),
-    [items, queue, p.id],
+    () => [
+      ...items
+        .filter((item) => !queueEntry(item))
+        .map((item) =>
+          sendingEntry(item) ? { ...item, deliveryStatus: "sending" } : item,
+        ),
+      ...sending
+        .filter((entry) => !items.some((item) => sendingEntry(item) === entry))
+        .map(
+          (entry) =>
+            ({
+              id: entry.id,
+              clientMessageId: entry.id,
+              role: "user",
+              text: entry.text,
+              ...("assets" in entry ? { assets: entry.assets } : {}),
+              pending: true,
+              localDelivery: true,
+              deliveryStatus: "sending",
+            }) as Message,
+        ),
+    ],
+    [items, queue, sending, p.id],
   );
   const userText = (m: Message) => <div className="prose plain">{m.text}</div>;
   const editOutgoing = useMessageAction(async (entry: OutgoingMessage) => {
@@ -975,16 +1033,15 @@ export default function Conversation(p: {
           Sending…
         </span>
       )}
-      <span className="chat-message-author">
-        <AgentAvatar
-          id={
-            m.role === "user" && !p.room
-              ? "studio-user"
-              : m.sender || p.agent?.id || p.id || "agent"
-          }
-          size={24}
-        />
-      </span>
+      {/* The main chat has two speakers; only team rooms name each sender. */}
+      {p.room && (
+        <span className="chat-message-author">
+          <AgentAvatar
+            id={m.sender || p.agent?.id || p.id || "agent"}
+            size={24}
+          />
+        </span>
+      )}
       {deliveryLabel(m) &&
         !["sending", "reserved", "dispatching", "accepted"].includes(
           m.deliveryStatus || "",
@@ -1302,6 +1359,7 @@ export default function Conversation(p: {
                       before
                         ? () => {
                             setFollow(false);
+                            setPageAnchor(getAnchorId());
                             void older().catch((e) => p.notify(errorText(e)));
                           }
                         : undefined
@@ -1318,7 +1376,14 @@ export default function Conversation(p: {
           </details>,
           headerTools,
         )}
-      <div id="messages" ref={scroll} onScroll={onScroll}>
+      <div
+        id="messages"
+        ref={scroll}
+        onScroll={() => {
+          onScroll();
+          if (!getFollow()) setPageAnchor(getAnchorId());
+        }}
+      >
         <div ref={content} className="message-content">
           {notice && <p className="notice">{notice}</p>}
           {historical && (
@@ -1340,6 +1405,7 @@ export default function Conversation(p: {
               loading={pageLoading}
               onClick={() => {
                 setFollow(false);
+                setPageAnchor(getAnchorId());
                 void older().catch((e) => p.notify(errorText(e)));
               }}
             >
@@ -1395,11 +1461,12 @@ export default function Conversation(p: {
                     },
                   }}
                   connection={connection}
+                  wait={wait}
                 />
               )}
           </div>
           {!p.room && detailedActivity && (
-            <AgentPhase agent={agent} connection={connection} />
+            <AgentPhase agent={agent} connection={connection} wait={wait} />
           )}
           <Requests
             showDates={!!p.room}
@@ -1466,11 +1533,6 @@ export default function Conversation(p: {
                 scope={queueScope}
                 onEdit={messageQueue.edit}
                 onCancel={messageQueue.cancel}
-                onSteer={
-                  agent?.inFlight && agent?.turnId
-                    ? messageQueue.steer
-                    : undefined
-                }
                 onReorder={(ids) =>
                   messageQueue.reorder(
                     mergeQueueOrder(
@@ -1548,7 +1610,7 @@ export default function Conversation(p: {
                       )
                     }
                     onSend={() => void submit()}
-                    onQueue={() => void submit("queue")}
+                    onQueue={() => void submit("after_turn")}
                     onRecallKeyDown={promptRecall.onKeyDown}
                     skillCatalog={{
                       enabled:
@@ -1733,7 +1795,7 @@ export default function Conversation(p: {
                             draftTooLong ||
                             (!draft.trim() && !assets.length)
                           }
-                          onClick={() => void submit("queue")}
+                          onClick={() => void submit("after_turn")}
                         >
                           <ListEnd size={18} />
                         </ActionIcon>
@@ -1819,6 +1881,7 @@ export default function Conversation(p: {
               agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
               stateDir={p.data.stateDir}
               limits={p.limits}
+              accounts={p.limitsAccounts}
               limitsLoading={p.limitsLoading}
               accountLabel={p.limitsAccountLabel}
               reload={p.reloadLimits}

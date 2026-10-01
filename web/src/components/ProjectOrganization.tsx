@@ -1,6 +1,6 @@
 import { Button, NativeSelect, TextInput } from "@mantine/core";
 import { useRef, useState } from "react";
-import { api, errorText } from "../api";
+import { useProjectSave } from "./useProjectSave";
 import type { Agent, Snapshot } from "../types";
 
 export type Project = NonNullable<Snapshot["runtime"]["projects"]>[number];
@@ -32,21 +32,14 @@ export function ProjectNameForm({
   const [name, setName] = useState(
     folder === "new" ? "" : folder?.name || project.name,
   );
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
-  const lock = useRef(false);
+  const save = useProjectSave("/api/projects", saved);
   const id = useRef(folder === "new" ? crypto.randomUUID() : folder?.id);
-  const request = useRef<Record<string, unknown> | null>(null);
   const revision = useRef(project.organizationRevision || 0);
   return (
     <form
-      onSubmit={async (event) => {
+      onSubmit={(event) => {
         event.preventDefault();
-        if (lock.current) return;
-        lock.current = true;
-        setPending(true);
-        setError("");
-        request.current ||= {
+        void save.submit({
           action:
             folder === "new"
               ? "add_folder"
@@ -58,16 +51,7 @@ export function ProjectNameForm({
           folder_id: id.current,
           parent_id: parentId || null,
           expected_revision: revision.current,
-        };
-        try {
-          await api("/api/projects", request.current);
-          await saved();
-        } catch (error) {
-          setError(errorText(error));
-        } finally {
-          lock.current = false;
-          setPending(false);
-        }
+        });
       }}
     >
       <p className="project-directory">{project.path}</p>
@@ -78,15 +62,19 @@ export function ProjectNameForm({
         autoFocus
         maxLength={255}
         required
-        disabled={pending}
+        disabled={save.pending || save.frozen}
         onChange={(event) => {
           setName(event.currentTarget.value);
-          request.current = null;
         }}
       />
-      {error && <p role="alert">{error}</p>}
-      <Button type="submit" mt="md" loading={pending} disabled={!name.trim()}>
-        {folder === "new" ? "Create folder" : "Save name"}
+      {save.error && <p role="alert">{save.error}</p>}
+      <Button
+        type="submit"
+        mt="md"
+        loading={save.pending}
+        disabled={!name.trim()}
+      >
+        {save.retryLabel || (folder === "new" ? "Create folder" : "Save name")}
       </Button>
     </form>
   );
@@ -102,44 +90,31 @@ export function MoveChatForm({
   saved: () => Promise<void>;
 }) {
   const [folder, setFolder] = useState(agent.projectFolder || "");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
-  const lock = useRef(false);
+  const save = useProjectSave("/api/organization", saved, (result) => {
+    if ((result.projectFolder || "") !== folder)
+      throw new Error("Restart Studio to use project folders.");
+  });
   const expected = useRef({
     folder: agent.projectFolder || null,
     revision: agent.projectFolderRevision || 0,
   });
   return (
     <form
-      onSubmit={async (event) => {
+      onSubmit={(event) => {
         event.preventDefault();
-        if (lock.current) return;
-        lock.current = true;
-        setPending(true);
-        setError("");
-        try {
-          const result = await api("/api/organization", {
-            id: agent.id,
-            project_path: project.path,
-            project_folder: folder || null,
-            expected_folder: expected.current.folder,
-            expected_revision: expected.current.revision,
-          });
-          if ((result.projectFolder || "") !== folder)
-            throw new Error("Restart Studio to use project folders.");
-          await saved();
-        } catch (error) {
-          setError(errorText(error));
-        } finally {
-          lock.current = false;
-          setPending(false);
-        }
+        void save.submit({
+          id: agent.id,
+          project_path: project.path,
+          project_folder: folder || null,
+          expected_folder: expected.current.folder,
+          expected_revision: expected.current.revision,
+        });
       }}
     >
       <NativeSelect
         label="Move to folder"
         value={folder}
-        disabled={pending}
+        disabled={save.pending || save.frozen}
         onChange={(event) => setFolder(event.currentTarget.value)}
         data={[
           { value: "", label: project.name },
@@ -151,9 +126,74 @@ export function MoveChatForm({
             .sort((a, b) => a.label.localeCompare(b.label)),
         ]}
       />
-      {error && <p role="alert">{error}</p>}
-      <Button type="submit" mt="md" loading={pending}>
-        Move chat
+      {save.error && <p role="alert">{save.error}</p>}
+      <Button type="submit" mt="md" loading={save.pending}>
+        {save.retryLabel || "Move chat"}
+      </Button>
+    </form>
+  );
+}
+
+export function ConvertChatForm({
+  project,
+  source,
+  target,
+  scope,
+  saved,
+}: {
+  project: Project;
+  source: Agent;
+  target: Agent;
+  scope: string;
+  saved: () => Promise<void>;
+}) {
+  const requestId = useRef(crypto.randomUUID());
+  const save = useProjectSave(
+    "/api/peer-teams",
+    saved,
+    undefined,
+    `studio-peer-convert:${scope}:${source.id}:${target.id}`,
+  );
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save.submit({
+          action: "convert",
+          path: project.path,
+          member: source.id,
+          target: target.id,
+          expected_revision: project.peerTeamsRevision || 0,
+          request_id: requestId.current,
+        });
+      }}
+    >
+      <p>
+        Make <strong>{source.name}</strong> a subagent of{" "}
+        <strong>{target.name}</strong>?
+      </p>
+      <ul>
+        <li>
+          The chat keeps its history, thread, account, model, and directory.
+        </li>
+        <li>Its workers and task board move to {target.name}.</li>
+        <li>
+          It leaves its peer team. A team with fewer than two chats dissolves.
+        </li>
+        <li>
+          Saved peer messages stay available to you. Former peers lose agent
+          access.
+        </li>
+        <li>Its previous broadcast history stays with its original workers.</li>
+        <li>The chat pauses. {target.name} becomes its lead.</li>
+      </ul>
+      <p>
+        Both agent trees must be idle. Active commands, pending input, workspace
+        operations, and account transfers block the move.
+      </p>
+      {save.error && <p role="alert">{save.error}</p>}
+      <Button type="submit" loading={save.pending}>
+        {save.retryLabel || "Make subagent"}
       </Button>
     </form>
   );

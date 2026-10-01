@@ -35,7 +35,12 @@ export default function ProjectDirectoryPicker({
       "/api/directories" + (path ? "?path=" + encodeURIComponent(path) : ""),
     )
       .then((result) => {
-        if (active) setDirectory(result);
+        if (active) {
+          setDirectory(result);
+          setTypedPath((current) =>
+            current.trim() === (path || "") ? result.path : current,
+          );
+        }
       })
       .catch((failure) => {
         if (active) setError(errorText(failure));
@@ -59,6 +64,7 @@ export default function ProjectDirectoryPicker({
   const rows = directory?.directories.filter((row) =>
     row.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
   );
+  const pathChanged = !!directory && typedPath.trim() !== directory.path;
   return (
     <div className="directory-picker" aria-busy={loading || saving}>
       <form
@@ -151,10 +157,13 @@ export default function ProjectDirectoryPicker({
         </p>
       )}
       <div className="directory-footer">
+        {!loading && !error && pathChanged && (
+          <p role="status">Select Go to open the entered folder.</p>
+        )}
         <Button
           variant="filled"
           loading={saving}
-          disabled={loading || !!error || !directory}
+          disabled={loading || !!error || !directory || pathChanged}
           onClick={async () => {
             if (!directory || saving) return;
             setSaving(true);

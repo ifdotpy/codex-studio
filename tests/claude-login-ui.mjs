@@ -30,7 +30,7 @@ const server = await createServer({
       },
       load(id) {
         if (id === entry)
-          return `import React from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import Accounts from '/src/components/Accounts.tsx';import ClaudeSignInNotice from '/src/components/ClaudeSignInNotice.tsx';const account={id:'claude',label:'Personal',email:'me@example.com',provider:'claude',status:'changed',error:"This profile's account changed. Restore its original login or add a separate profile."};const state={scope:'fixture',data:{accounts:[account],defaultAccountKey:'claude'},setData:()=>{},refresh:async()=>{},error:''};createRoot(document.getElementById('root')).render(<MantineProvider><ClaudeSignInNotice account={account} errors={[{message:"An unrelated earlier error"}]} onSignIn={key=>window.signInAccount=key}/><Accounts state={state} accountKey='claude' changeAccount={async()=>{}} onError={()=>{}}/></MantineProvider>);`;
+          return `import React from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import Accounts from '/src/components/Accounts.tsx';import AccountSignInNotice from '/src/components/AccountSignInNotice.tsx';const account={id:'claude',label:'Personal',email:'me@example.com',provider:'claude',status:'changed',error:"This profile's account changed. Restore its original login or add a separate profile."};const state={scope:'fixture',data:{accounts:[account],defaultAccountKey:'claude'},setData:()=>{},refresh:async()=>{},error:''};createRoot(document.getElementById('root')).render(<MantineProvider><AccountSignInNotice account={account} errors={[{message:"An unrelated earlier error"}]} onSignIn={key=>window.signInAccount=key}/><Accounts state={state} accountKey='claude' changeAccount={async()=>{}} onError={()=>{}}/></MantineProvider>);`;
       },
     },
   ],
@@ -103,7 +103,9 @@ try {
       .click();
   };
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/check`);
-  await page.getByRole("button", {name:"Sign in to Claude", exact:true}).click();
+  await page
+    .getByRole("button", { name: "Sign in to Claude", exact: true })
+    .click();
   assert.equal(await page.evaluate(() => window.signInAccount), "claude");
   await open();
   await page

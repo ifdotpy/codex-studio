@@ -130,6 +130,18 @@ class ReaderContract(unittest.TestCase):
         self.assertTrue(done.wait(1))
         self.assertEqual(self.records, ["blocked", "tool/request", "completed"])
 
+    def test_tool_call_bypasses_blocked_notification_queue(self):
+        server, proc = self.start()
+        self.block(proc)
+        handled = threading.Event()
+        server.request = lambda message: handled.set()
+        proc.emit({"method": "item/tool/call", "id": "tool-urgent",
+                   "params": {"threadId": "worker", "tool": "orchestration_task"}})
+        self.assertTrue(handled.wait(0.5))
+        self.assertFalse(self.release.is_set())
+        self.assertEqual(self.records, [])
+        self.release.set()
+
     def test_timeout_retains_exact_future_and_late_callback_is_ordered(self):
         server, proc = self.start()
         self.block(proc)
@@ -242,7 +254,8 @@ class ReaderContract(unittest.TestCase):
             batches.append(message)
             order.append(message['params']['itemId'])
         server.notification = notification
-        server.request = lambda message: order.append('request')
+        handled = threading.Event()
+        server.request = lambda message: (order.append('request'), handled.set())
         samples = []
         for i in range(5000):
             params = {'threadId': 't', 'turnId': 'turn', 'itemId': 'command', 'delta': f'{i} Привет\n'}
@@ -257,6 +270,7 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(server.wait(marker, 2), {'ready': True})
         self.assertIsNone(proc.poll())
         self.assertLess(server.callbacks.qsize(), 64)
+        self.assertTrue(handled.wait(1))
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
@@ -264,7 +278,8 @@ class ReaderContract(unittest.TestCase):
         before = batches[:-2]
         self.assertEqual(''.join(m['params']['delta'] for m in before), ''.join(p['delta'] for p in samples))
         self.assertEqual([p for m in before for p in m.get('_studioNotificationSamples', [m['params']])], samples)
-        self.assertEqual(order[-3:], ['request', 'command', 'other'])
+        self.assertEqual(order[0], 'request')
+        self.assertEqual(order[-2:], ['command', 'other'])
         self.assertTrue(all(len(m['params']['delta']) <= 65536 for m in before))
         self.assertTrue(all(len(m.get('_studioNotificationSamples', [])) <= 128 for m in before))
         self.assertIsNone(server.transport_error)
@@ -345,6 +360,79 @@ class ReaderContract(unittest.TestCase):
         before = [m for m in seen if m['params'].get('threadId') == 't3'][:position]
         self.assertEqual(''.join(m['params']['delta'] for m in before), ''.join(p['delta'] for p in sent['t3'][:50]))
 
+    def test_latest_values_keep_keys_and_item_request_boundaries(self):
+        server, proc = self.start()
+        self.block(proc)
+        seen = []
+        server.notification = lambda message: seen.append((message['method'], message.get('params', {})))
+        server.request = lambda message: seen.append((message['method'], message.get('params', {})))
+        for value in range(50):
+            proc.emit({'method': 'account/rateLimits/updated', 'params': {'rateLimits': {'usedPercent': value}}})
+        proc.emit({'method': 'item/started', 'params': {'threadId': 'a', 'item': {'id': 'item'}}})
+        proc.emit({'method': 'account/rateLimits/updated', 'params': {'rateLimits': {'usedPercent': 50}}})
+        proc.emit({'method': 'item/tool/requestUserInput', 'id': 'tool', 'params': {'threadId': 'a'}})
+        proc.emit({'method': 'account/rateLimits/updated', 'params': {'rateLimits': {'usedPercent': 51}}})
+        proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'one', 'value': 1}})
+        proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'two', 'value': 2}})
+        proc.emit({'method': 'turn/diff/updated', 'params': {'threadId': 'a', 'turnId': 'one', 'value': 3}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)
+        self.assertLessEqual(server.callbacks.qsize(), 10)
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        values = [(method, p.get('threadId'), p.get('turnId'), p.get('value', (p.get('rateLimits') or {}).get('usedPercent')))
+                  for method, p in seen]
+        self.assertEqual(values, [
+            ('account/rateLimits/updated', None, None, 49),
+            ('item/started', 'a', None, None),
+            ('account/rateLimits/updated', None, None, 50),
+            ('item/tool/requestUserInput', 'a', None, None),
+            ('account/rateLimits/updated', None, None, 51),
+            ('turn/diff/updated', 'a', 'one', 1),
+            ('turn/diff/updated', 'a', 'two', 2),
+            ('turn/diff/updated', 'a', 'one', 3),
+        ])
+
+    def test_every_token_usage_notice_is_delivered(self):
+        # Each notice is one request's usage; the budget and analytics count all of them.
+        server, proc = self.start()
+        self.block(proc)
+        seen = []
+        server.notification = lambda message: seen.append(message['params']['value'])
+        for value in range(30):
+            proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': value}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        self.assertEqual(seen, list(range(30)))
+
+    def test_tool_bypass_closes_latest_slot_without_delaying_tool(self):
+        server, proc = self.start()
+        self.block(proc)
+        values, tool_done = [], threading.Event()
+        server.notification = lambda message: values.append(message['params']['value'])
+        server.request = lambda message: tool_done.set()
+        proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': 1}})
+        proc.emit({'method': 'item/tool/call', 'id': 'tool', 'params': {'threadId': 'a'}})
+        proc.emit({'method': 'thread/tokenUsage/updated', 'params': {'threadId': 'a', 'value': 2}})
+        marker = server.submit('marker', {})
+        proc.emit({'id': marker[0], 'result': {}})
+        server.wait(marker, 1)
+        self.assertTrue(tool_done.wait(1))
+        self.assertEqual(server.callbacks.qsize(), 2)
+        done = threading.Event()
+        server.after_events(done.set)
+        self.release.set()
+        self.assertTrue(done.wait(2))
+        self.assertEqual(values, [1, 2])
+
     def test_queue_saturation_is_explicit_and_preserves_accepted_order(self):
         server, proc = self.start(limit=2)
         self.block(proc)
@@ -385,7 +473,8 @@ class ReaderContract(unittest.TestCase):
             batches.append(message)
             order.append(message['params']['itemId'])
         server.notification = notification
-        server.request = lambda message: order.append('request')
+        handled = threading.Event()
+        server.request = lambda message: (order.append('request'), handled.set())
         samples = []
         for i in range(300):
             params = {'threadId': 't', 'turnId': 'turn', 'itemId': 'a', 'delta': f'{i} Привет\n'}
@@ -398,11 +487,12 @@ class ReaderContract(unittest.TestCase):
         marker = server.submit('marker', {})
         proc.emit({'id': marker[0], 'result': {}})
         server.wait(marker, 1)  # All preceding wire messages are now enqueued.
+        self.assertTrue(handled.wait(1))
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
         self.assertTrue(done.wait(2))
-        self.assertEqual(order, ['a', 'a', 'a', 'request', 'a', 'b'])
+        self.assertEqual(order, ['request', 'a', 'a', 'a', 'a', 'b'])
         self.assertEqual(''.join(m['params']['delta'] for m in batches[:3]),
                          ''.join(p['delta'] for p in samples))
         self.assertEqual([p for m in batches[:3] for p in m['_studioNotificationSamples']], samples)

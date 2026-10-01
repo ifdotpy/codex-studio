@@ -145,8 +145,15 @@ class PrepareSteerContract(unittest.TestCase):
         entry = self.pending_prepare(a)
         entry["future"].set_exception(RuntimeError("invalid project"))
         eventually(lambda: self.runtime.agent(a["id"])["status"] == "failed")
-        self.assertEqual(self.runtime.snapshot()["events"][0]["status"], "failed")
+        # Never sent, so the first prompt waits for the next start instead of being lost.
+        self.assertEqual(self.runtime.snapshot()["events"][0]["status"], "pending")
         self.assertEqual(self.count("turn/start"), 0)
+        self.server.hold.discard("thread/start")
+        self.runtime.send(a["id"], "Try again", "retry-after-prepare")
+        eventually(lambda: self.count("turn/start") == 1)
+        text = next(p for m, p in self.server.calls if m == "turn/start")["input"][0]["text"]
+        self.assertIn("First", text)
+        self.assertIn("Try again", text)
 
     def test_disconnect_finishes_shared_preparation_without_accepting_late_identity(self):
         self.server.hold.add("thread/start")
@@ -187,56 +194,49 @@ class PrepareSteerContract(unittest.TestCase):
         eventually(lambda: self.count("command/exec") == 1)
         self.assertEqual(next(v for v in self.runtime.snapshot()["monitors"] if v["id"] == m["id"])["status"], "running")
 
-    def steer(self, a, message_id="steer-1"):
-        self.server.hold.add("turn/steer")
-        result = self.runtime.send(a["id"], "Correction", message_id, delivery="steer")
-        entry = next(e for e in self.server.delayed if e["method"] == "turn/steer")
+    def delayed_busy_input(self, a, message_id='busy-1'):
+        self.server.hold.add('turn/start')
+        result = self.runtime.send(a['id'], 'Correction', message_id, delivery='steer')
+        eventually(lambda: len([e for e in self.server.delayed if e['method'] == 'turn/start']) == 1)
+        entry = next(e for e in self.server.delayed if e['method'] == 'turn/start')
+        eventually(lambda: self.runtime.delivery_receipt(message_id)['status'] == 'uncertain')
         return result, entry
 
-    def test_late_steer_ack_confirms_original_receipt_once(self):
+    def test_late_busy_ack_confirms_original_receipt_once(self):
         a = self.lead()
-        result, entry = self.steer(a)
-        self.assertEqual(result["status"], "uncertain")
-        self.assertEqual(self.runtime.send(a["id"], "Correction", "steer-1", delivery="steer")["status"], "uncertain")
-        entry["future"].set_result({"turnId": a["turnId"]})
-        eventually(lambda: self.runtime.delivery_receipt("steer-1")["status"] == "delivered")
-        self.assertEqual(self.count("turn/steer"), 1)
-        self.assertEqual(self.count("turn/start"), 1)
+        result, entry = self.delayed_busy_input(a)
+        self.assertEqual(result['status'], 'queued')
+        self.assertEqual(self.runtime.send(a['id'], 'Correction', 'busy-1')['status'], 'uncertain')
+        entry['future'].set_result({'turn': {'id': a['turnId'], 'status': 'inProgress'}})
+        eventually(lambda: self.runtime.delivery_receipt('busy-1')['status'] == 'delivered')
+        self.assertEqual(self.count('turn/start'), 2)
+        self.assertEqual(self.count('turn/steer'), 0)
 
-    def test_steer_client_proof_survives_late_error_after_completion(self):
+    def test_client_proof_survives_late_error_after_completion(self):
         a = self.lead()
-        _, entry = self.steer(a)
-        self.server.complete(a["threadId"], a["turnId"])
-        self.server.notify({"method": "item/completed", "params": {"threadId": a["threadId"], "turnId": a["turnId"],
-            "item": {"type": "userMessage", "id": "native-user", "clientId": "steer-1", "content": []}}})
-        self.assertEqual(self.runtime.delivery_receipt("steer-1")["status"], "delivered")
-        entry["future"].set_exception(RuntimeError("late conflicting error"))
-        self.runtime.steer_result("steer-1", self.native_receipt("steer-1"), entry["future"])
-        self.assertEqual(self.runtime.delivery_receipt("steer-1")["status"], "delivered")
-        self.assertEqual(self.runtime.agent(a["id"])["status"], "completed")
+        _, entry = self.delayed_busy_input(a)
+        self.server.notify({'method': 'item/completed', 'params': {'threadId': a['threadId'],
+            'turnId': a['turnId'], 'item': {'type': 'userMessage', 'id': 'native-user',
+                                           'clientId': 'busy-1', 'content': []}}})
+        self.assertEqual(self.runtime.delivery_receipt('busy-1')['status'], 'delivered')
+        self.server.complete(a['threadId'], a['turnId'])
+        entry['future'].set_exception(RuntimeError('late conflicting error'))
+        self.assertEqual(self.runtime.delivery_receipt('busy-1')['status'], 'delivered')
 
-    def native_receipt(self, key):
-        with self.runtime.db() as db:
-            return json.loads(db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (key,)).fetchone()[0])["native"]
-
-    def test_steer_wrong_turn_or_old_connection_cannot_confirm(self):
+    def test_late_new_turn_id_is_bound_without_start_steer_inference(self):
         a = self.lead()
-        _, entry = self.steer(a)
-        entry["future"].set_result({"turnId": "wrong-turn"})
-        self.runtime.steer_result("steer-1", self.native_receipt("steer-1"), entry["future"])
-        self.assertEqual(self.runtime.delivery_receipt("steer-1")["status"], "uncertain")
-        self.runtime.connection_ids["default"] = "replacement"
-        self.runtime.steer_accepted("steer-1", self.native_receipt("steer-1"), {"turnId": a["turnId"]})
-        self.assertEqual(self.runtime.delivery_receipt("steer-1")["status"], "uncertain")
+        _, entry = self.delayed_busy_input(a)
+        entry['future'].set_result({'turn': {'id': 'new-native-turn', 'status': 'inProgress'}})
+        eventually(lambda: self.runtime.delivery_receipt('busy-1')['status'] == 'delivered')
+        self.assertEqual(self.runtime.agent(a['id'])['turnId'], 'new-native-turn')
 
-    def test_steer_write_failure_keeps_exact_uncertain_receipt(self):
+    def test_write_failure_keeps_exact_uncertain_receipt(self):
         a = self.lead()
-        with patch.object(self.server, "submit", side_effect=OSError("write disconnected")):
-            with self.assertRaisesRegex(RuntimeError, "outcome unknown"):
-                self.runtime.send(a["id"], "Correction", "steer-write", delivery="steer")
-        self.assertEqual(self.runtime.delivery_receipt("steer-write")["status"], "uncertain")
-        self.runtime.send(a["id"], "Correction", "steer-write", delivery="steer")
-        self.assertEqual(self.count("turn/steer"), 0)
+        with patch.object(self.server, 'submit', side_effect=OSError('write disconnected')):
+            self.runtime.send(a['id'], 'Correction', 'busy-write')
+            eventually(lambda: self.runtime.delivery_receipt('busy-write')['status'] == 'uncertain')
+        self.runtime.send(a['id'], 'Correction', 'busy-write')
+        self.assertEqual(self.count('turn/start'), 1)
 
     def test_native_review_late_ack_preserves_completed_turn(self):
         a = self.lead()

@@ -19,7 +19,6 @@ import {
   ChevronRight,
   Clock3,
   FileDiff,
-  Files,
   GitBranch,
   Inbox,
   Layers3,
@@ -31,9 +30,11 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorText, save, saved } from "../../api";
+import { api, errorText } from "../../api";
 import type { Agent, Json, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
+import { ModelPicker, type ModelOption } from "../ModelPicker";
+import { useWorkerModels } from "../agents/WorkerModelPicker";
 import TeamChats from "./messages/TeamChats";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
 import "./Workspace.css";
@@ -376,7 +377,10 @@ function Changes(c: Context) {
       `${endpoint("changes", c.selected)}&scope=chat`,
       c.revision,
     ),
-    comments = useResource(endpoint("workspace", c.selected), c.revision);
+    comments = useResource(
+      `${endpoint("workspace", c.selected)}${c.selected ? "&" : "?"}view=annotations`,
+      c.revision,
+    );
   const [path, setPath] = useState(""),
     [comment, setComment] = useState<Json | null>(null),
     [saving, setSaving] = useState(false);
@@ -976,6 +980,16 @@ function Profiles(c: Context) {
   const lead = c.data.threads.find(
     (a) => a.id === (c.selected?.rootId || c.selected?.id) && a.isLead,
   );
+  // The profile model list comes from the selected lead's subagent catalog.
+  const catalog = useWorkerModels(lead?.accountKey || "default", !!draft, true);
+  const profileModels: ModelOption[] = catalog.models.map((row) => ({
+    value: row.model,
+    label: row.displayName || row.model,
+    description: row.description || undefined,
+    isDefault: !!row.isDefault,
+  }));
+  if (draft?.model && !profileModels.some((row) => row.value === draft.model))
+    profileModels.unshift({ value: draft.model, label: draft.model });
   return (
     <>
       <ResourceState state={state} />
@@ -1086,12 +1100,21 @@ function Profiles(c: Context) {
               onChange={(e) => setDraft({ ...draft, role: e.target.value })}
               data={["implementer", "reviewer"]}
             />
-            <TextInput
-              label="Model"
-              required
-              value={draft.model}
-              onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-            />
+            {catalog.models.length ? (
+              <ModelPicker
+                label="Model"
+                value={draft.model}
+                options={profileModels}
+                onChange={(model) => setDraft({ ...draft, model })}
+              />
+            ) : (
+              <TextInput
+                label="Model"
+                required
+                value={draft.model}
+                onChange={(e) => setDraft({ ...draft, model: e.target.value })}
+              />
+            )}
             <NativeSelect
               label="Reasoning effort"
               value={draft.effort}

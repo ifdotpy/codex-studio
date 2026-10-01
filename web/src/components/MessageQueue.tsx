@@ -7,7 +7,6 @@ import {
   ListOrdered,
   Paperclip,
   Pencil,
-  Send,
   Trash2,
 } from "lucide-react";
 import { errorText, saved } from "../api";
@@ -27,7 +26,6 @@ type Props = {
   items: QueueItem[];
   scope: string;
   onEdit: (item: QueueItem, text: string) => Promise<void>;
-  onSteer?: (item: QueueItem) => Promise<void>;
   onCancel: (item: QueueItem) => Promise<void>;
   onReorder: (ids: string[]) => Promise<void>;
   canReorder: boolean;
@@ -477,17 +475,6 @@ function ScopedMessageQueue(p: Props) {
                     {draft && editor(draft)}
                   </div>
                   <div className="message-queue-actions">
-                    {p.onSteer && !item.localDelivery && (
-                      <button
-                        type="button"
-                        disabled={disabled}
-                        aria-label={`Steer queued message ${index + 1}`}
-                        title="Send to the current turn"
-                        onClick={() => void mutate(() => p.onSteer!(item))}
-                      >
-                        <Send size={15} />
-                      </button>
-                    )}
                     {!draft && (
                       <button
                         type="button"

@@ -20,19 +20,27 @@ def review_tools(tool, text):
                          'required': ['type', *required], 'additionalProperties': False})
     return [tool('orchestration_review',
         'Request native Codex review in a separate read-only Studio child. Defaults to all uncommitted changes. '
-        'Choose a base branch, commit, or custom instructions through target. The reviewer uses your model and effort, '
-        'subject to the account review_model setting. It works in cwd, which must be inside a git repository. '
-        'cwd defaults to your folder; a relative path starts there, and a shell cd does not change it. '
+        'Choose a base branch, commit, or custom instructions through target. '
+        'When model is omitted, the reviewer uses the team review default if set, then the caller model. '
+        'Pass model and effort to override them. Another model without effort uses its native default. '
+        'The result reports the review model and effort. '
+        'cwd is the repository folder for the review; defaults to the agent cwd. It must be inside a git repository. '
+        'A relative path starts at the agent cwd, and a shell cd does not change it. '
         'The reviewer does not receive your chat history. '
         'The result wakes you automatically. Finish your turn while waiting. Use a stable request_id for retries; '
         'read orchestration_request after a lost response. Available in Multi agent mode.',
         {'target': {'anyOf': variants}, 'cwd': {'type': 'string', 'minLength': 1, 'maxLength': 4096},
+         'model': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+         'effort': {'type': 'string', 'minLength': 1, 'maxLength': 40},
          'request_id': {'type': 'string', 'minLength': 1, 'maxLength': 200}})]
 
 
 def validate(args):
-    if not isinstance(args, dict) or set(args) - {'target', 'cwd', 'request_id'}:
-        raise ValueError('Supply only target, cwd and optional request_id')
+    if not isinstance(args, dict) or set(args) - {'target', 'cwd', 'model', 'effort', 'request_id'}:
+        raise ValueError('Supply only target, cwd, model, effort and optional request_id')
+    for name in ('model', 'effort'):
+        if name in args and (not isinstance(args[name], str) or not args[name].strip() or len(args[name]) > 200):
+            raise ValueError('Supply ' + name + ' as a nonempty name')
     if 'request_id' in args:
         value = args['request_id']
         if (not isinstance(value, str) or not 1 <= len(value) <= 200
@@ -68,15 +76,22 @@ def require_repository(directory):
                          'Pass cwd with the repository folder')
 
 
-def _existing(rt, db, key, actor, target, directory):
+def _existing(rt, db, key, actor, target, directory, args):
     child_id = str(uuid.uuid5(uuid.NAMESPACE_URL, key))
     row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (child_id,)).fetchone()
     if not row:
         return None
     child = json.loads(row[0])
     review = child.get('nativeReview') or {}
+    stored_args = review.get('args')
+    if stored_args is None:
+        # Older reviewers did not save the raw model fields.
+        same_args = (('model' not in args or child.get('model') == args['model'])
+                     and ('effort' not in args or child.get('effort') == args['effort']))
+    else:
+        same_args = stored_args == args
     if (review.get('requestId') != key or review.get('actorId') != actor['id']
-            or review.get('target') != target
+            or review.get('target') != target or not same_args
             or child.get('cwd') != directory):
         raise ValueError('This review request id has different content')
     return review['response']
@@ -90,18 +105,33 @@ def request(rt, actor, args, key):
         raise ValueError('A native reviewer cannot create another review')
     from codex_runtime import spawn_directory
     directory = spawn_directory(actor['cwd'], args.get('cwd'))
+    requested = {name: copy.deepcopy(args[name]) for name in ('model', 'effort') if name in args}
     with rt.lock, rt.db() as db:
-        previous = _existing(rt, db, key, actor, target, directory)
+        previous = _existing(rt, db, key, actor, target, directory, requested)
+        if previous is not None:
+            return previous
+        root = rt.agent(actor['rootId'], db)
+        defaults = rt.review_defaults(root)
+    model = args.get('model') or defaults['model'] or actor['model']
+    # A specific model uses its own default unless the caller supplies effort.
+    if 'effort' in args:
+        effort = args['effort']
+    elif 'model' not in args and defaults['model']:
+        effort = defaults['effort']
+    else:
+        effort = actor.get('effort') if model == actor['model'] else None
+    with rt.lock, rt.db() as db:
+        previous = _existing(rt, db, key, actor, target, directory, requested)
         if previous is not None:
             return previous
         assert_delegation(rt.agent(actor['rootId'], db))
-    require_repository(directory)
     if actor.get('daybreakEnabled'):
         raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
+    require_repository(directory)
     from codex_worker_accounts import resolve
-    review_account, catalog = resolve(rt, actor, {'model': actor['model']})
+    review_account, catalog = resolve(rt, actor, {'model': model})
     with rt.lock, rt.db() as db:
-        previous = _existing(rt, db, key, actor, target, directory)
+        previous = _existing(rt, db, key, actor, target, directory, requested)
         if previous is not None:
             return previous
         receipt = rt.tool_request(key, db)
@@ -118,26 +148,34 @@ def request(rt, actor, args, key):
             raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
         spec = {'id': str(uuid.uuid5(uuid.NAMESPACE_URL, key)), 'name': 'Review', 'cwd': directory,
                 'role': 'reviewer', 'prompt': 'Run a native code review: ' + json.dumps(target, ensure_ascii=False),
-                'model': current['model'], 'effort': current.get('effort'),
+                'model': model, 'effort': effort,
                 'fast_mode': current.get('fastMode', False), 'daybreak_enabled': False}
         # The native target stores the complete instructions. This display field
         # must stay inside create()'s task size limit.
         spec['prompt'] = spec['prompt'][:32000]
         child = rt.create(spec, current['id'], parent_epoch=current['epoch'],
                           _catalog=(review_account, catalog), _validate_only=True)
-        child.update(yoloMode=False, worktree=False)
-        value = {'requestId': key, 'agentId': child['id'], 'status': 'queued',
-                 'agents': [{name: child[name] for name in ('id', 'name', 'status', 'model', 'effort', 'fastMode')}],
-                 'delivery': 'The review result wakes you automatically. Finish your turn while waiting.'}
-        child['nativeReview'] = {'target': target, 'requestId': key, 'actorId': current['id'],
-                                 'status': 'pending', 'response': copy.deepcopy(value)}
-        rt.put(db, 'agents', child)
-        result = stamp_tool_result({'success': True, 'contentItems': [
-            {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())
-        db.execute('INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)', (key, json.dumps(result)))
-        if receipt:
-            rt.finish_tool_request(key, result, outcome='applied', db=db)
-        return value
+        try:
+            child.update(yoloMode=False, worktree=False)
+            value = {'requestId': key, 'agentId': child['id'], 'status': 'queued',
+                     'reviewModel': child['model'], 'reviewEffort': child.get('nativeEffort', child.get('effort')),
+                     'agents': [{name: child[name] for name in ('id', 'name', 'status', 'model', 'effort', 'fastMode')}],
+                     'delivery': 'The review result wakes you automatically. Finish your turn while waiting.'}
+            child['nativeReview'] = {'target': target, 'requestId': key, 'actorId': current['id'],
+                                     'args': requested, 'status': 'pending', 'response': copy.deepcopy(value)}
+            rt.put(db, 'agents', child)
+            result = stamp_tool_result({'success': True, 'contentItems': [
+                {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())
+            from codex_payloads import externalize_result
+            db.execute('INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)',
+                       (key, json.dumps(externalize_result(rt.root, db, result))))
+            if receipt:
+                rt.finish_tool_request(key, result, outcome='applied', db=db)
+            return value
+        except Exception as error:
+            # rt.create is the uncertainty boundary even if a later write fails.
+            error.review_child_created = True
+            raise
 
 
 def claim(rt, db, agent):

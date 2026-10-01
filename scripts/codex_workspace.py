@@ -8,6 +8,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -16,6 +17,7 @@ import uuid
 from codex_native_errors import NativeRpcError
 from codex_safety_buffering import active as safety_retry_active
 from codex_work import text_field
+from codex_entity_contracts import (ACTIVE_MONITOR_STATUSES, monitor_records, task_records)
 
 
 def active_task_records(db, statuses=("running",), *, agent=None):
@@ -32,9 +34,6 @@ def active_task_records(db, statuses=("running",), *, agent=None):
     return [json.loads(row[0]) for row in rows]
 
 
-# Every status a monitor can end in. recent_monitors reads each one through its index.
-MONITOR_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "lost")
-ACTIVE_MONITOR_STATUSES = ("running", "starting", "approval")
 SKILL_CATALOG_TIMEOUT_SECONDS = 5
 
 
@@ -319,6 +318,9 @@ class WorkspaceMixin:
             connection.execute("BEGIN IMMEDIATE")
             if action == "remove":
                 removed = connection.execute("DELETE FROM runtime_projects WHERE id=?", (path,)).rowcount
+                if removed:
+                    from codex_sync_entities import put as sync_entity_put
+                    sync_entity_put(connection, "project", path, {}, deleted=True)
                 return {"id": path, "removed": bool(removed)}
             existing = connection.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
             project = json.loads(existing[0]) if existing else None
@@ -331,10 +333,7 @@ class WorkspaceMixin:
                     return project
                 if revision != current:
                     raise ValueError("Project account changed. Reload it before saving")
-                selected_account = self.accounts.get(desired)
-                if selected_account.get("deleted"):
-                    raise ValueError("This account was deleted. Select another account")
-                if selected_account.get("disconnected"):
+                if self.accounts.get(desired).get("disconnected"):
                     raise ValueError("Reconnect this account before selecting it")
             else:
                 current = 0
@@ -558,12 +557,12 @@ class WorkspaceMixin:
             }
             if record is None or record.get("afterRestore"):
                 return result
-            from transcript_storage.storage import body as transcript_body
-            full = transcript_body(db, record["id"], None if record.get("truncated") else record.get("text", ""), agent=agent_id)
-            if full is None and record.get("truncated"):
+            from codex_search_text import search_text
+            full = search_text(db, record["id"])
+            if record.get("truncated") and not full:
                 raise ValueError("The complete reported changes are unavailable")
             try:
-                payload = json.loads(full if full is not None else record["text"])
+                payload = json.loads(full if full else record["text"])
                 patch = payload["diff"]
                 if not isinstance(patch, str):
                     raise ValueError("Invalid diff")
@@ -616,8 +615,16 @@ class WorkspaceMixin:
         with tempfile.TemporaryDirectory(
             prefix="checkpoint-", dir=self.root
         ) as directory:
-            env = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
-            self.git(a, ["read-tree", "HEAD"], env)
+            index = Path(directory) / "index"
+            env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+            # Start from a copy of the real index: its file stat data lets `add -A`
+            # hash only changed files. A fresh read-tree index hashes every file,
+            # which takes minutes in a Chromium-size worktree.
+            source = Path(a["cwd"]) / self.git(a, ["rev-parse", "--git-path", "index"]).decode().strip()
+            if source.is_file():
+                shutil.copyfile(source, index)
+            else:
+                self.git(a, ["read-tree", "HEAD"], env)
             self.git(a, ["add", "-A", "--", "."], env)
             return self.git(a, ["write-tree"], env).decode().strip()
 
@@ -703,9 +710,9 @@ class WorkspaceMixin:
             operation_id = self._reserve_checkpoint(db, a, "capture", turn_id)
         return self._capture_reserved_checkpoint(agent_id, label, turn_id, operation_id)
 
-    def capture_checkpoint(self, agent_id, label="Checkpoint", turn_id=None):
+    def capture_checkpoint(self, agent_id, label="Checkpoint", turn_id=None, tree=None):
         a = self.checked_actor_in_own_db(agent_id)
-        tree = self.snapshot_tree(a)
+        tree = tree if tree is not None else self.snapshot_tree(a)
         key = str(uuid.uuid4())
         env = {
             **os.environ,
@@ -727,15 +734,34 @@ class WorkspaceMixin:
         ref = f"refs/codex-agents/checkpoints/{agent_id}/{key}"
         self.git(a, ["update-ref", ref, commit])
         with self.lock, self.db() as db:
-            visible = [
-                row[0]
-                for row in db.execute(
-                    "SELECT id FROM runtime_items WHERE agent=? AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created",
-                    (agent_id,),
-                )
-            ]
+            current = self.agent(agent_id, db)
+            parent_id = current.get("checkpointHistoryHead")
+            parent_boundary = None
+            if parent_id:
+                parent_row = db.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?", (parent_id,)
+                ).fetchone()
+                if parent_row:
+                    from codex_payloads import resolve_record
+                    parent_boundary = resolve_record(self.root, json.loads(parent_row[0])).get("historyBoundary")
+            boundary = db.execute(
+                "SELECT rowid,id FROM runtime_items WHERE agent=? "
+                "AND json_extract(record,'$.afterRestore') IS NULL "
+                "ORDER BY rowid DESC LIMIT 1",
+                (agent_id,),
+            ).fetchone()
+            query = (
+                "SELECT id FROM runtime_items WHERE agent=? "
+                "AND json_extract(record,'$.afterRestore') IS NULL"
+            )
+            params = [agent_id]
+            if parent_boundary:
+                query += " AND rowid>?"
+                params.append(parent_boundary)
             record = {
-                "items": visible,
+                "historyParent": parent_id,
+                "historyDelta": [row[0] for row in db.execute(query, params)],
+                "historyBoundary": boundary[0] if boundary else None,
                 "id": key,
                 "agent": agent_id,
                 "rootId": a["rootId"],
@@ -749,7 +775,47 @@ class WorkspaceMixin:
                 "cwd": a["cwd"],
             }
             self.put(db, "checkpoints", record)
+            current["checkpointHistoryHead"] = key
+            self.put(db, "agents", current)
             return record
+
+    def _checkpoint_history_ids(self, db, checkpoint):
+        ids = set()
+        seen = set()
+        current = checkpoint
+        while current:
+            checkpoint_id = current.get("id")
+            if checkpoint_id in seen:
+                raise ValueError("Checkpoint history lineage contains a cycle")
+            seen.add(checkpoint_id)
+            if "items" in current:
+                ids.update(current["items"])
+            elif "historyDelta" in current:
+                ids.update(current["historyDelta"])
+            else:
+                ids.update(
+                    row[0]
+                    for row in db.execute(
+                        "SELECT id FROM runtime_items WHERE agent=? AND created<=?",
+                        (checkpoint["agent"], checkpoint.get("created", 0)),
+                    )
+                )
+            parent_id = current.get("historyParent")
+            if not parent_id:
+                break
+            row = db.execute(
+                "SELECT record FROM runtime_checkpoints WHERE id=?", (parent_id,)
+            ).fetchone()
+            if not row:
+                raise ValueError("Checkpoint history parent is missing")
+            from codex_payloads import resolve_record
+            current = resolve_record(self.root, json.loads(row[0]))
+        return ids
+
+    @staticmethod
+    def checkpoint_summary(checkpoint):
+        return {k: v for k, v in checkpoint.items()
+                if k not in {"items", "historyDelta"}}
 
     def checkpoint_after_turn(self, key, turn_id, operation_id):
         try:
@@ -764,7 +830,8 @@ class WorkspaceMixin:
         recovery_expected = None
         with self.lock, self.db() as db:
             row = db.execute(
-                "SELECT record FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
+                "SELECT json_remove(record,'$.items','$.historyDelta','$._payloadBlobs') "
+                "FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
             ).fetchone()
             if not row:
                 raise ValueError("Unknown checkpoint")
@@ -787,7 +854,7 @@ class WorkspaceMixin:
         if recovery_expected is not None:
             can_restore = can_restore and tree in {recovery_expected, checkpoint["tree"]}
         return {
-            "checkpoint": checkpoint,
+            "checkpoint": self.checkpoint_summary(checkpoint),
             "expectedTree": expected_tree,
             "diff": patch[:300000],
             "patch": patch[:300000],
@@ -807,85 +874,102 @@ class WorkspaceMixin:
         operation_id = self._workspace_operation_id("restore", key, data)
         resume_operation = None
         files_already_restored = False
-        with self.lock:
-            a = self.checked_actor_in_own_db(key)
+        completed = None
+        signature = self._workspace_restore_signature(key, data)
+        checkpoint_id = data.get("checkpoint_id") or data.get("checkpoint")
+        with self.lock, self.db() as db:
+            a = self.checked_actor(db, key)
             if not a.get("worktreeReady"):
+                raise ValueError("Restore is available only in an isolated worker worktree")
+            active = self._workspace_operations(db, key)
+            existing = self._workspace_operation(db, operation_id)
+            if existing and existing.get("signature") != signature:
+                raise ValueError("This restore request has different content")
+            if existing and existing.get("phase") == "completed":
+                row = db.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?",
+                    (existing.get("checkpoint"),),
+                ).fetchone()
+                if not row:
+                    raise ValueError("Unknown checkpoint")
+                from codex_payloads import resolve_record
+                checkpoint = resolve_record(self.root, json.loads(row[0]))
+                completed = (existing, checkpoint, a)
+            elif active:
+                matches = [op for op in active if op.get("id") == operation_id
+                           and op.get("kind") == "restore"]
+                if not matches:
+                    raise ValueError("Workspace recovery is required before retrying this operation")
+                resume_operation = matches[0]
+                self._assert_workspace_source(resume_operation, a)
+                if resume_operation.get("signature") != signature:
+                    raise ValueError("This restore request has different content")
+                row = db.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?",
+                    (resume_operation.get("checkpoint"),),
+                ).fetchone()
+                if not row:
+                    raise ValueError("Unknown checkpoint")
+                from codex_payloads import resolve_record
+                checkpoint = resolve_record(self.root, json.loads(row[0]))
+                expected_tree = resume_operation.get("expectedTree")
+                if data.get("checkpoint_id") not in {None, checkpoint["id"]}:
+                    raise ValueError("This restore request has different content")
+                if data.get("expectedTree") != expected_tree:
+                    raise ValueError("This restore request has different content")
+                operation = resume_operation
+            else:
+                self.assert_workspace_idle(a)
+                row = db.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
+                ).fetchone()
+                if not row:
+                    raise ValueError("Unknown checkpoint")
+                from codex_payloads import resolve_record
+                checkpoint = resolve_record(self.root, json.loads(row[0]))
+                if checkpoint.get("agent") != key:
+                    raise ValueError("Checkpoint belongs to another agent")
+                expected_tree = data.get("expectedTree")
+                if not isinstance(expected_tree, str) or not expected_tree:
+                    raise ValueError("Preview this checkpoint before restore")
+                operation = {
+                    "id": operation_id, "kind": "restore", "agent": key,
+                    "checkpoint": checkpoint["id"], "expectedTree": expected_tree,
+                    "signature": signature, "source": self._workspace_source(a),
+                    "phase": "provider_pending", "created": time.time(),
+                }
+                self._put_workspace_operation(db, operation)
+                a["workspaceOperation"] = "restore"
+                self.put(db, "agents", a)
+            preview = {"checkpoint": checkpoint, "expectedTree": expected_tree if not completed else None}
+
+        # Git snapshots and diffs can take seconds. Never hold Runtime.lock here.
+        if completed:
+            completed_op, checkpoint, a = completed
+            if self.snapshot_tree(a) != checkpoint["tree"]:
+                raise ValueError("Files changed after the completed restore. Preview again")
+            with self.lock, self.db() as db:
+                current = self.agent(key, db)
+                latest = self._workspace_operation(db, operation_id)
+                if (not latest or latest.get("phase") != "completed"
+                        or current.get("restoredCheckpoint") != checkpoint["id"]):
+                    raise ValueError("Restore state changed. Inspect the operation before retrying")
+                return latest.get("result") or {"status": "restored", "checkpoint": checkpoint_id}
+        if resume_operation:
+            current_tree = self.snapshot_tree(a)
+            if current_tree == checkpoint["tree"]:
+                files_already_restored = True
+            elif current_tree != preview["expectedTree"]:
                 raise ValueError(
-                    "Restore is available only in an isolated worker worktree"
+                    "Workspace recovery is required. Restore files to the saved checkpoint or preview tree before retrying"
                 )
-            checkpoint_id = data.get("checkpoint_id") or data.get("checkpoint")
-            with self.db() as db:
-                active = self._workspace_operations(db, key)
-                existing = self._workspace_operation(db, operation_id)
-                if existing and existing.get("phase") == "completed":
-                    if existing.get("signature") != self._workspace_restore_signature(key, data):
-                        raise ValueError("This restore request has different content")
-                    row = db.execute(
-                        "SELECT record FROM runtime_checkpoints WHERE id=?",
-                        (existing.get("checkpoint"),),
-                    ).fetchone()
-                    if not row or self.snapshot_tree(a) != json.loads(row[0])["tree"]:
-                        raise ValueError("Files changed after the completed restore. Preview again")
-                    return existing.get("result") or {
-                        "status": "restored",
-                        "checkpoint": checkpoint_id,
-                    }
-                if active:
-                    restore_ops = [
-                        operation
-                        for operation in active
-                        if operation.get("kind") == "restore"
-                        and operation.get("id") == operation_id
-                    ]
-                    if not restore_ops:
-                        raise ValueError(
-                            "Workspace recovery is required before retrying this operation"
-                        )
-                    resume_operation = restore_ops[0]
-                    self._assert_workspace_source(resume_operation, a)
-                    if resume_operation.get("signature") != self._workspace_restore_signature(key, data):
-                        raise ValueError("This restore request has different content")
-                    row = db.execute(
-                        "SELECT record FROM runtime_checkpoints WHERE id=?",
-                        (resume_operation.get("checkpoint"),),
-                    ).fetchone()
-                    if not row:
-                        raise ValueError("Unknown checkpoint")
-                    checkpoint = json.loads(row[0])
-                    expected_tree = resume_operation.get("expectedTree")
-                    if data.get("checkpoint_id") not in {None, checkpoint["id"]}:
-                        raise ValueError("This restore request has different content")
-                    if data.get("expectedTree") != expected_tree:
-                        raise ValueError("This restore request has different content")
-                    current_tree = self.snapshot_tree(a)
-                    if current_tree == checkpoint["tree"]:
-                        files_already_restored = True
-                    elif current_tree != expected_tree:
-                        raise ValueError(
-                            "Workspace recovery is required. Restore files to the saved checkpoint or preview tree before retrying"
-                        )
-                    preview = {"checkpoint": checkpoint, "expectedTree": expected_tree}
-                    operation = resume_operation
-                else:
-                    self.assert_workspace_idle(a)
-                    preview = self.checkpoint_preview(key, checkpoint_id)
-                    if data.get("expectedTree") != preview["expectedTree"]:
-                        raise ValueError("Files changed after the preview. Preview again")
-                    checkpoint = preview["checkpoint"]
-                    operation = {
-                        "id": operation_id,
-                        "kind": "restore",
-                        "agent": key,
-                        "checkpoint": checkpoint["id"],
-                        "expectedTree": preview["expectedTree"],
-                        "signature": self._workspace_restore_signature(key, data),
-                        "source": self._workspace_source(a),
-                        "phase": "provider_pending",
-                        "created": time.time(),
-                    }
-                    self._put_workspace_operation(db, operation)
-                    a["workspaceOperation"] = "restore"
-                    self.put(db, "agents", a)
+        else:
+            try:
+                if self.snapshot_tree(a) != preview["expectedTree"]:
+                    raise ValueError("Files changed after the preview. Preview again")
+            except Exception as error:
+                self._finish_workspace_operation(operation_id, key, error=error)
+                raise
         try:
             # Create the matching conversation before changing files. A provider rejection leaves files intact.
             with self.lock, self.db() as db:
@@ -953,6 +1037,8 @@ class WorkspaceMixin:
                     raise ValueError(
                         "Workspace files changed before restore metadata was saved"
                     )
+                with self.db() as history_db:
+                    visible_ids = self._checkpoint_history_ids(history_db, checkpoint)
                 with self.lock, self.db() as db:
                     current = self.agent(key, db)
                     self._assert_workspace_source(operation, current)
@@ -978,20 +1064,26 @@ class WorkspaceMixin:
                         "UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'",
                         (key,),
                     )
+                    current["checkpointHistoryHead"] = checkpoint["id"]
+                    self.put(db, "agents", current)
                     for item_row in db.execute(
                         "SELECT id,record,created FROM runtime_items WHERE agent=?", (key,)
                     ).fetchall():
                         record = json.loads(item_row["record"])
-                        visible = (
-                            item_row["id"] in checkpoint["items"]
-                            if "items" in checkpoint
-                            else item_row["created"] <= checkpoint["created"]
-                        )
+                        visible = item_row["id"] in visible_ids
+                        was_visible = "afterRestore" not in record
+                        if visible == was_visible:
+                            continue
                         if visible:
                             record.pop("afterRestore", None)
-                            from transcript_storage.storage import body as transcript_body, ensure_indexed
-                            full = transcript_body(db, record["id"], record.get("text", ""), agent=key)
-                            ensure_indexed(db, record["id"], key, record.get("title", "message"), full)
+                            if not self.search_is_indexed(db, record["id"]):
+                                self.index_item(
+                                    db,
+                                    record["id"],
+                                    key,
+                                    record.get("title", "message"),
+                                    record.get("text", ""),
+                                )
                         else:
                             record["afterRestore"] = checkpoint["id"]
                         db.execute(
@@ -1068,6 +1160,8 @@ class WorkspaceMixin:
                         a["workspaceOperation"] = None
                         self.put(db, "agents", a)
                 return prior
+            if self.accounts.get(a.get("accountKey", "default")).get("disconnected"):
+                raise ValueError("Reconnect this account before creating a branch")
             operation = self._workspace_operation(db, operation_id)
             resume_local = False
             retry_failed = False
@@ -1081,27 +1175,20 @@ class WorkspaceMixin:
                     resume_local = True
                 elif operation.get("phase") == "failed":
                     retry_failed = True
+                    operation.update(
+                        phase="provider_pending",
+                        provider=None,
+                        result=None,
+                        error=None,
+                        updated=time.time(),
+                    )
+                    self._put_workspace_operation(db, operation)
+                    a["workspaceOperation"] = "branch"
+                    self.put(db, "agents", a)
                 elif operation.get("phase") in self.WORKSPACE_OPERATION_ACTIVE:
                     raise ValueError(
                         "Workspace recovery is required before retrying this operation"
                     )
-            if not resume_local:
-                current_account = self.accounts.get(a.get("accountKey", "default"))
-                if current_account.get("deleted"):
-                    raise ValueError("This account was deleted. Select another account before creating a branch")
-                if current_account.get("disconnected"):
-                    raise ValueError("Reconnect this account before creating a branch")
-            if retry_failed:
-                operation.update(
-                    phase="provider_pending",
-                    provider=None,
-                    result=None,
-                    error=None,
-                    updated=time.time(),
-                )
-                self._put_workspace_operation(db, operation)
-                a["workspaceOperation"] = "branch"
-                self.put(db, "agents", a)
             from codex_transcript_history import resolve_item
             row = resolve_item(db, key, data.get("message_id"))
             item = json.loads(row["record"])
@@ -1133,7 +1220,6 @@ class WorkspaceMixin:
                 self.put(db, "agents", a)
             lead_id = operation["leadId"]
         # A branch starts a new team, without the source team's exception.
-        provider_ready = resume_local
         try:
             with self.lock, self.db() as db:
                 self._assert_workspace_source(operation, self.agent(key, db))
@@ -1200,7 +1286,6 @@ class WorkspaceMixin:
                 except Exception as error:
                     self._require_workspace_recovery(operation_id, key, error)
                     raise
-                provider_ready = True
             with self.lock, self.db() as db:
                 self._assert_workspace_source(operation, self.agent(key, db))
             self.checked_actor_in_own_db(key)
@@ -1216,7 +1301,7 @@ class WorkspaceMixin:
                 defer=True,
                 draft=True,
                 _validate_only=True,
-                _accepted_provider_operation=provider_ready,
+                _accepted_provider_operation=True,
             )
             with self.lock, self.db() as db:
                 self._assert_workspace_source(operation, self.agent(key, db))
@@ -1290,8 +1375,8 @@ class WorkspaceMixin:
                         prompt = next((entry for index, entry in enumerate(item["inputs"])
                             if data.get("message_id") == (key + ":" + entry['id'] if entry.get('id') else item['id'] + ':' + str(index))), item["inputs"][0])
                     event = db.execute("SELECT text FROM runtime_events WHERE id=? AND agent=?", (prompt.get("id", "").removeprefix(key + ":"), key)).fetchone()
-                    from transcript_storage.storage import body as transcript_body
-                    full = transcript_body(db, item["id"], None if item.get("truncated") else item.get("text", ""), agent=key) if not item.get("inputs") else None
+                    from codex_search_text import search_text
+                    full = search_text(db, item["id"]) if not item.get("inputs") else None
                     preceding = []
                     prefix_assets = []
                     for entry in item.get("inputs", []):
@@ -1302,7 +1387,7 @@ class WorkspaceMixin:
                         prior_event = db.execute("SELECT text FROM runtime_events WHERE id=? AND agent=?", (entry.get("id"), key)).fetchone()
                         preceding.append(prior_event[0] if prior_event else entry.get("text", ""))
                         prefix_assets.extend(entry.get("assets", []))
-                    lead = {**lead, "draft": {"text": event[0] if event else full if full is not None else prompt.get("text", ""),
+                    lead = {**lead, "draft": {"text": event[0] if event else full if full else prompt.get("text", ""),
                         "prefixText": "\n\n".join(preceding),
                         "assets": copy_assets([*prefix_assets, *prompt.get("assets", [])])}}
                 result = self.save_receipt(db, data.get("id"), signature, lead)
@@ -1458,19 +1543,20 @@ class WorkspaceMixin:
     def workspace_snapshot(self, key=None, *, view="full"):
         if view not in {"full", "inbox"}:
             raise ValueError("Unknown workspace view")
-        with self.db() as db:
-            db.execute("PRAGMA query_only=ON")
-            db.execute("BEGIN")
+        with self.read_db() as db:
             root = self.checked_actor(db, key)["rootId"] if key else None
-            agents = [
-                a for a in self.records(db, "agents")
-                if not a.get("deletedAt") and (root is None or a["rootId"] == root)
-            ]
+            if root is None:
+                agents = [a for a in self.records(db, "agents", shared=True)
+                          if not a.get("deletedAt")]
+            else:
+                agents = [json.loads(row[0]) for row in db.execute(
+                    "SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
+                    "AND json_extract(record,'$.deletedAt') IS NULL", (root,))]
             ids = {a["id"] for a in agents}
             monitors = self.recent_monitors(db, root)
             inbox = []
-            for r in self.records(db, "requests"):
-                if r["status"] == "pending" and not r.get("deferred") and r["agent"] in ids:
+            for r in self._workspace_requests(db, ids):
+                if r["status"] == "pending" and not r.get("deferred"):
                     inbox.append(
                         {
                             "id": r["id"],
@@ -1481,8 +1567,8 @@ class WorkspaceMixin:
                             "request": r,
                         }
                     )
-            for c in self.complaint_summaries(db):
-                if c.get("needsResponse") and (root is None or c["leadId"] in ids):
+            for c in self._workspace_complaints(db, ids if root is not None else None):
+                if c.get("needsResponse"):
                     inbox.append(
                         {
                             "id": c["id"],
@@ -1493,9 +1579,9 @@ class WorkspaceMixin:
                             "complaint": c,
                         }
                     )
-            works = self.records(db, "work")
+            works = self._workspace_work(db, root)
             for w in works:
-                if w["rootId"] in ids and w["status"] == "review":
+                if w["status"] == "review":
                     inbox.append(
                         {
                             "id": w["id"],
@@ -1533,8 +1619,8 @@ class WorkspaceMixin:
                             "monitor": m,
                         }
                     )
-            for r in self.records(db, "rules"):
-                if r["agent"] in ids and r.get("error"):
+            for r in self._workspace_rules(db, ids):
+                if r.get("error"):
                     inbox.append(
                         {
                             "id": r["id"],
@@ -1552,31 +1638,82 @@ class WorkspaceMixin:
                     for w in works
                     if w["rootId"] in ids and (not root or w["rootId"] == root)
                 ],
-                "annotations": [
-                    v
-                    for v in self.records(db, "annotations")
-                    if v["agent"] in ids and (not root or v["rootId"] == root)
-                ],
-                "checkpoints": [
-                    v
-                    for v in self.records(db, "checkpoints")
-                    if v["agent"] in ids and (not key or v["agent"] == key)
-                ],
-                "plans": [
-                    v
-                    for v in self.records(db, "plans")
-                    if v["id"] in ids and (not root or v["rootId"] == root)
-                ],
-                "rules": [
-                    v
-                    for v in self.records(db, "rules")
-                    if v["agent"] in ids and (not root or v["rootId"] == root)
-                ],
+                "annotations": self._workspace_records(db, "annotations", ids, "agent"),
+                "checkpoints": self._workspace_records(db, "checkpoints", {key} if key else ids, "agent"),
+                "plans": [v for v in self._workspace_records(db, "plans", ids, "id")
+                          if not root or v["rootId"] == root],
+                "rules": self._workspace_rules(db, ids),
                 "inbox": inbox,
                 "tasks": self.recent_tasks(db, root),
                 "tasksHistoryLimit": 100,
                 "monitors": [m for m in monitors if m["agent"] in ids],
             }
+
+    def _workspace_records(self, db, table, ids, field):
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        if field == "id":
+            clause = "id IN (" + placeholders + ")"
+        else:
+            clause = f"json_extract(record,'$.{field}') IN ({placeholders})"
+        field_sql = ("json_remove(record,'$.items','$.historyDelta','$._payloadBlobs')"
+                     if table == "checkpoints" else "record")
+        return [json.loads(row[0]) for row in db.execute(
+            f"SELECT {field_sql} FROM runtime_{table} WHERE {clause}", tuple(ids))]
+
+    @staticmethod
+    def _workspace_requests(db, ids):
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_requests WHERE json_extract(record,'$.agent') IN (" + placeholders + ") "
+            "AND json_extract(record,'$.status')='pending' "
+            "AND (json_extract(record,'$.deferred') IS NULL OR json_extract(record,'$.deferred')=0 "
+            "OR json_extract(record,'$.deferred')='')", tuple(ids))]
+
+    @staticmethod
+    def _workspace_work(db, root):
+        if root is None:
+            return [json.loads(row[0]) for row in db.execute("SELECT record FROM runtime_work")]
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=?", (root,))]
+
+    @staticmethod
+    def _workspace_rules(db, ids):
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_rules WHERE json_extract(record,'$.agent') IN (" + placeholders + ")",
+            tuple(ids))]
+
+    def _workspace_complaints(self, db, lead_ids):
+        if lead_ids is None:
+            complaints = self.records(db, "complaints")
+        elif not lead_ids:
+            complaints = []
+        else:
+            placeholders = ",".join("?" for _ in lead_ids)
+            complaints = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_complaints WHERE json_extract(record,'$.leadId') IN (" + placeholders + ")",
+                tuple(lead_ids))]
+        ids = sorted({key for c in complaints for key in (c["author"], c["leadId"])})
+        agents = ({a["id"]: a for a in (json.loads(r[0]) for r in db.execute(
+            "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))}
+            if ids else {})
+        result = []
+        for c in complaints:
+            result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
+                           "title": c["text"][:140], "text": c["text"], "responses": c["responses"],
+                           "recipient": self.complaint_recipient(c), "version": c["version"],
+                           "needsResponse": self.complaint_needs_response(c),
+                           "authorName": agents.get(c["author"], {}).get("name", "You" if c["author"] == "user" else c["author"]),
+                           "leadName": agents.get(c["leadId"], {}).get("name", c["leadId"]),
+                           "leadStopped": not agents.get(c["leadId"], {}).get("autoWake", False),
+                           "leadDeleted": bool(agents.get(c["leadId"], {}).get("deletedAt"))})
+        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
 
     def monitor_log(self, key):
         with self.lock, self.db() as db:
@@ -1588,16 +1725,23 @@ class WorkspaceMixin:
             m = json.loads(row[0])
             self.checked_actor(db, m["agent"])
             path = Path(m["log"])
-            if not path.resolve().is_relative_to(
-                (self.root / "monitor-logs").resolve()
-            ):
+            root = (self.root / "monitor-logs").resolve()
+            path = path.resolve()
+            if not path.is_relative_to(root):
                 raise ValueError("Invalid log path")
-            content = path.read_bytes() if path.exists() else m.get("tail", "").encode()
+            try:
+                size = path.stat().st_size
+                fallback = None
+            except FileNotFoundError:
+                size = 0
+                fallback = m.get("tail", "").encode()
             return {
+                "path": path,
+                "fallback": fallback,
+                "size": size,
                 "name": key + ".log",
                 "mime": "text/plain",
-                "base64": base64.b64encode(content).decode(),
-                "truncated": m.get("bytes", 0) > len(content),
+                "truncated": m.get("bytes", 0) > (size if fallback is None else len(fallback)),
             }
 
     def native_command_action(self, data):
@@ -1634,16 +1778,16 @@ class WorkspaceMixin:
             f"Use your native write_stdin tool for session {task['processId']}. "
             f"Send exactly this JSON string as chars: {json.dumps(text)}."
         )
-        return self.send(
-            a["id"],
-            instruction,
-            delivery="steer" if a.get("turnId") and a.get("inFlight") else "queue",
-        )
+        return self.send(a["id"], instruction)
 
     def workspace_blockers(self, db, a):
         cwd = Path(a["cwd"]).resolve()
         blockers = []
-        for other in self.records(db, "agents"):
+        # Called under the runtime lock on every start. Decoding every agent
+        # record took about a second on a live workspace and stalled callbacks.
+        for (raw,) in db.execute("SELECT record FROM runtime_agents "
+                                 "WHERE json_extract(record,'$.workspaceOperation') IS NOT NULL"):
+            other = json.loads(raw)
             if not other.get("workspaceOperation") or Path(other["cwd"]).resolve() != cwd:
                 continue
             blocker = {"agentId": other["id"], "operation": other["workspaceOperation"]}
@@ -1673,39 +1817,9 @@ class WorkspaceMixin:
             raise WorkspaceBusyError(blockers)
 
     def recent_tasks(self, db, root=None):
-        scope = "" if root is None else " AND json_extract(a.record,'$.rootId')=?"
-        params = () if root is None else (root, root)
-        rows = db.execute(
-            f"""SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
-                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
-                {scope} AND json_extract(t.record,'$.status')='running'
-                UNION ALL SELECT record FROM (SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
-                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
-                {scope} AND json_extract(t.record,'$.status')!='running'
-                ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)""",
-            params,
-        ).fetchall()
-        return [
-            {k: v for k, v in json.loads(row[0]).items() if k not in {"tail", "arguments", "error"}}
-            for row in rows
-        ]
+        from codex_sync_entities import project
+        return [project("task", record) for record in task_records(db, root)]
 
     def recent_monitors(self, db, root=None):
-        scope = "" if root is None else """ AND json_extract(record,'$.agent') IN (
-            SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?
-            AND json_extract(record,'$.deletedAt') IS NULL)"""
-        params = () if root is None else (root, root)
-        # snapshot calls this under Runtime.lock. "NOT IN" cannot use the
-        # (status, created) index and scanned every monitor (26k rows, 2-4 s).
-        # Read the newest 100 of each terminal status through the index instead.
-        terminal = " UNION ALL ".join(
-            f"""SELECT * FROM (SELECT record, json_extract(record,'$.created') AS created FROM runtime_monitors
-            WHERE json_extract(record,'$.status')='{status}' {scope}
-            ORDER BY json_extract(record,'$.created') DESC LIMIT 100)"""
-            for status in MONITOR_TERMINAL_STATUSES)
-        rows = db.execute(
-            f"""SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') {scope}
-          UNION ALL SELECT record FROM (SELECT record, created FROM ({terminal}) ORDER BY created DESC LIMIT 100)""",
-            params[:1] * (1 + len(MONITOR_TERMINAL_STATUSES)),
-        ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        from codex_sync_entities import project
+        return [project("monitor", record) for record in monitor_records(db, root)]

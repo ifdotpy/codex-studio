@@ -25,6 +25,8 @@ from urllib.parse import parse_qs, urlparse
 
 from codex_backend_identity import BACKEND_BUILD
 from codex_state import state_dir, codex_home, read_threads, effective_status, process_is_alive
+from codex_startup_memory import mark as startup_memory_mark
+from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
 
 SCRIPTS = Path(__file__).resolve().parent
 WEB = SCRIPTS.parent / "web" / "dist"
@@ -124,20 +126,34 @@ class Canvas:
                   id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
                   kind TEXT NOT NULL, UNIQUE(source, target, kind));
             """)
+            from codex_sync_entities import ensure_tables as ensure_sync_entity_tables
+            ensure_sync_entity_tables(db)
         os.chmod(self.db, 0o600)
 
     @contextmanager
     def connect(self):
         db = (sqlite3.connect(self.db.absolute().as_uri() + '?mode=ro', uri=True, timeout=10)
-              if self.read_only else sqlite3.connect(self.db, timeout=10))
+              if self.read_only else sqlite_connect(self.db, timeout=10, site="Canvas.connect"))
         db.row_factory = sqlite3.Row
         try:
-            with db:
+            sqlite_assert_clean(db, "Canvas.connect reuse")
+            from codex_sync_entities import register_functions, ensure_tables
+            register_functions(db)
+            if not self.read_only and not db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
+                ensure_tables(db)
+            sqlite_assert_clean(db, "Canvas.connect setup")
+            with sqlite_scope(db, "Canvas.connect"):
                 yield db
         finally:
             db.close()
 
     def threads(self, runtime_agents=None, db=None):
+        if db is None:
+            with self.connect() as own:
+                own.execute("PRAGMA query_only=ON")
+                own.execute("BEGIN")
+                return self.threads(runtime_agents, db=own)
         rows = read_threads(self.root)
         for row in rows:
             row["id"] = identity(row["wave"], row.get("runId"), row["threadId"], row["name"])
@@ -150,31 +166,17 @@ class Canvas:
             row["source"] = "app-server"
         if self.runtime:
             rows.extend(dict(agent) for agent in (runtime_agents if runtime_agents is not None
-                                                else self.runtime.snapshot_agents(include_work=False)))
+                                                else self.runtime.snapshot(include_work=False)["agents"]))
         else:
-            if db is not None:
-                if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
-                    for item in db.execute("SELECT record FROM runtime_agents"):
-                        a = json.loads(item[0])
-                        if a.get("deletedAt"):
-                            continue
-                        rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
-                                     "launcherAlive": False, "wave": "Managed team"})
-            else:
-                with self.connect() as connection:
-                    if connection.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
-                        for item in connection.execute("SELECT record FROM runtime_agents"):
-                            a = json.loads(item[0])
-                            if a.get("deletedAt"):
-                                continue
-                            rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
-                                         "launcherAlive": False, "wave": "Managed team"})
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
+                for item in db.execute("SELECT record FROM runtime_agents"):
+                    a = json.loads(item[0])
+                    if a.get("deletedAt"):
+                        continue
+                    rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
+                                 "launcherAlive": False, "wave": "Managed team"})
         by_thread = {t['threadId']: t for t in rows if t.get('threadId')}
-        if db is not None:
-            registered = [json.loads(r['record']) for r in db.execute("SELECT record FROM graph_agents")]
-        else:
-            with self.connect() as connection:
-                registered = [json.loads(r['record']) for r in connection.execute("SELECT record FROM graph_agents")]
+        registered = [json.loads(r['record']) for r in db.execute("SELECT record FROM graph_agents")]
         for record in registered:
             existing = by_thread.get(record.get('threadId'))
             if existing:
@@ -201,27 +203,28 @@ class Canvas:
         return rows
 
     def chats(self, db=None):
-        def read(connection):
-            chats = []
-            for row in connection.execute("SELECT * FROM groups"):
-                members = [e['source'] for e in connection.execute("SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (row['id'],))]
-                last = connection.execute("SELECT text, at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (row['id'],)).fetchone()
-                count = connection.execute("SELECT count(*) FROM messages WHERE room=?", (row['id'],)).fetchone()[0]
-                chats.append({'id': row['id'], 'name': row['name'], 'members': members, 'kind': 'chat',
-                              'messageCount': count, 'tail': last['text'] if last else '', 'lastMessageAt': last['at'] if last else None})
-            return chats
-        if db is not None:
-            return read(db)
-        with self.connect() as connection:
-            return read(connection)
+        if db is None:
+            with self.connect() as own:
+                own.execute("PRAGMA query_only=ON")
+                own.execute("BEGIN")
+                return self.chats(db=own)
+        chats = []
+        for row in db.execute("SELECT * FROM groups"):
+            members = [e['source'] for e in db.execute("SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (row['id'],))]
+            last = db.execute("SELECT text, at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (row['id'],)).fetchone()
+            count = db.execute("SELECT count(*) FROM messages WHERE room=?", (row['id'],)).fetchone()[0]
+            chats.append({'id': row['id'], 'name': row['name'], 'members': members, 'kind': 'chat',
+                          'messageCount': count, 'tail': last['text'] if last else '', 'lastMessageAt': last['at'] if last else None})
+        return chats
 
     def edges(self, threads=None, db=None):
+        if db is None:
+            with self.connect() as own:
+                own.execute("PRAGMA query_only=ON")
+                own.execute("BEGIN")
+                return self.edges(threads, db=own)
         threads = threads if threads is not None else self.threads(db=db)
-        if db is not None:
-            edges = [dict(e) for e in db.execute('SELECT * FROM graph_edges')]
-        else:
-            with self.connect() as connection:
-                edges = [dict(e) for e in connection.execute('SELECT * FROM graph_edges')]
+        edges = [dict(e) for e in db.execute('SELECT * FROM graph_edges')]
         for row in threads:
             if row.get('parentId'):
                 edges.append({'id': identity('spawn', row['parentId'], row['id']), 'source': row['parentId'],
@@ -261,6 +264,10 @@ class Canvas:
                       'status': status, 'reportedAt': time.time(), 'role': 'agent' if parent else 'orchestrator'}
             db.execute('INSERT INTO graph_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
                        (key, json.dumps(record)))
+            from codex_sync_entities import put as sync_entity_put
+            sync_entity_put(db, "agent", key, {**record, "kind": "agent", "source": "registered",
+                                                "canSend": False, "launcherAlive": False,
+                                                "events": 0, "tokensUsed": 0})
         return record
 
     def _team_id(self, key, agents=None):
@@ -340,12 +347,22 @@ class Canvas:
                 db.execute('INSERT OR IGNORE INTO graph_edges VALUES (?,?,?,?)', (key, source, target, 'chat'))
             else:
                 db.execute('DELETE FROM graph_edges WHERE id=?', (key,))
+            from codex_sync_entities import put as sync_entity_put
+            sync_entity_put(db, "edge", key,
+                            {"id": key, "source": source, "target": target, "kind": "chat"},
+                            deleted=not connected)
         return {'id': key, 'connected': connected}
 
     def snapshot(self, runtime_snapshot=None, db=None):
+        if db is None:
+            with self.connect() as own:
+                own.execute("PRAGMA query_only=ON")
+                own.execute("BEGIN")
+                return self.snapshot(runtime_snapshot, db=own)
         threads = self.threads(runtime_snapshot["agents"] if runtime_snapshot is not None else None, db=db)
         chats = self.chats(db=db)
-        return {"threads": threads, "chats": chats, 'nodes': threads + chats, 'edges': self.edges(threads, db=db), "at": time.time(), "stateDir": str(self.root)}
+        return {"threads": threads, "chats": chats, 'nodes': threads + chats,
+                'edges': self.edges(threads, db=db), "at": time.time(), "stateDir": str(self.root)}
 
     def thread(self, key):
         matches = [t for t in self.threads() if t["id"] == key]
@@ -428,8 +445,28 @@ class Canvas:
             else:
                 db.execute("INSERT INTO groups VALUES (?,?,?)", (key, name.strip(), json.dumps(members)))
                 for member in members:
-                    db.execute('INSERT INTO graph_edges VALUES (?,?,?,?)', (identity('chat', member, key), member, key, 'chat'))
+                    edge_id = identity('chat', member, key)
+                    db.execute('INSERT INTO graph_edges VALUES (?,?,?,?)', (edge_id, member, key, 'chat'))
+                    from codex_sync_entities import put as sync_entity_put
+                    sync_entity_put(db, "edge", edge_id,
+                                    {"id": edge_id, "source": member, "target": key, "kind": "chat"})
+                self._sync_chat_entity(db, key)
         return {"id": key}
+
+    def _sync_chat_entity(self, db, key):
+        row = db.execute("SELECT id,name FROM groups WHERE id=?", (key,)).fetchone()
+        from codex_sync_entities import put as sync_entity_put
+        if not row:
+            sync_entity_put(db, "chat", key, {}, deleted=True)
+            return
+        members = [item[0] for item in db.execute(
+            "SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (key,))]
+        last = db.execute("SELECT text,at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (key,)).fetchone()
+        count = db.execute("SELECT count(*) FROM messages WHERE room=?", (key,)).fetchone()[0]
+        sync_entity_put(db, "chat", key, {"id": key, "name": row["name"], "members": members,
+                                           "kind": "chat", "messageCount": count,
+                                           "tail": last["text"] if last else "",
+                                           "lastMessageAt": last["at"] if last else None})
 
     def messages(self, room):
         with self.connect() as db:
@@ -509,6 +546,8 @@ class Canvas:
                 deliveries = {m: "pending" for m in members if notify and m != author}
                 row = {"id": key, "room": room, "author": author, "text": text.strip(), "at": time.time(), "deliveries": deliveries}
                 db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (key, room, author, row["text"], row["at"], json.dumps(deliveries)))
+                if group:
+                    self._sync_chat_entity(db, room)
                 db.commit()
                 # Persist before mailbox writes. A repeated HTTP request cannot resend work.
                 # A process death during dispatch leaves a visible 'pending' result for recovery.
@@ -577,22 +616,15 @@ def make_server(canvas, port=0, public_origin=None):
 
     def snapshot(include_work=True):
         if canvas.runtime:
-            # One pinned SQLite read transaction covers both runtime permissions
-            # and canvas chat membership; Runtime holds its lock only to anchor
-            # this view and copy its mutable in-memory fields.
-            with canvas.runtime.db() as db:
-                runtime = canvas.runtime.snapshot(include_work=include_work, _db=db)
+            with canvas.runtime.read_db() as db:
+                runtime = canvas.runtime.snapshot(include_work=include_work, db=db)
                 return {**canvas.snapshot(runtime_snapshot=runtime, db=db), "runtime": runtime}
-        with canvas.connect() as db:
-            db.execute("PRAGMA query_only=ON")
-            db.execute("BEGIN")
-            db.execute("SELECT id FROM groups LIMIT 1").fetchall()
-            return {**canvas.snapshot(db=db), "runtime": None}
+        return {**canvas.snapshot(), "runtime": None}
 
     def sync():
         with terminal_lock:
             if sync_store[0] is None:
-                from sync.sync_store import SyncStore
+                from codex_sync import SyncStore
 
                 def state_signature():
                     runtime = canvas.runtime
@@ -653,30 +685,149 @@ def make_server(canvas, port=0, public_origin=None):
         def log_message(self, *_args):
             pass
 
-        def send(self, value, status=200, content_type="application/json", cache_control="no-store", compressed=None):
+        def send(self, value, status=200, content_type="application/json", cache_control="no-store", compressed=None, etag=False, weak_etag_fields=(), server_timing=None):
+            serialize_started = time.perf_counter() if server_timing else None
+            baseline = getattr(self, "sync_entities_after", None)
+            if (baseline is not None and 200 <= status < 300 and isinstance(value, dict)
+                    and "_syncEntities" not in value):
+                with self.server.sync_store().connect() as db:
+                    changed = db.execute("""SELECT collection,id,seq,payload,deleted FROM sync_entities
+                                            WHERE seq>? AND collection NOT LIKE 'transcript:%'
+                                            ORDER BY seq""", (baseline,)).fetchall()
+                if changed:
+                    value = {**value, "_syncEntities": [
+                        {"id": "entity:" + row[0] + ":" + row[1], "seq": row[2],
+                         "payload": row[3], "_deleted": bool(row[4])} for row in changed]}
+
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
+            serialize_ms = (time.perf_counter() - serialize_started) * 1000 if server_timing else None
             compressible = content_type.startswith(("application/json", "application/manifest+json", "text/", "image/svg+xml"))
             encoded = False
+            compress_started = time.perf_counter() if server_timing else None
             if accepts_gzip(self.headers.get("Accept-Encoding")) and compressible and len(data) >= 1024:
                 candidate = compressed if compressed is not None else gzip.compress(data, compresslevel=3, mtime=0)
                 if len(candidate) < len(data):
                     data, encoded = candidate, True
+            compress_ms = (time.perf_counter() - compress_started) * 1000 if server_timing else None
+            validator_data = data
+            if weak_etag_fields and isinstance(value, dict):
+                validator_data = json.dumps(
+                    {key: entry for key, entry in value.items() if key not in weak_etag_fields},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode()
+            validator = (
+                ("W/" if weak_etag_fields else "")
+                + '"'
+                + hashlib.sha256(validator_data).hexdigest()
+                + '"'
+                if etag
+                else None
+            )
+            not_modified = bool(
+                validator
+                and any(
+                    tag.strip() == "*"
+                    or tag.strip().removeprefix("W/")
+                    == validator.removeprefix("W/")
+                    for tag in self.headers.get("If-None-Match", "").split(",")
+                )
+            )
+            if not_modified:
+                status = 304
+                data = b""
+                encoded = False
             self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
+            if not not_modified:
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", cache_control)
             if compressible:
                 self.send_header("Vary", "Accept-Encoding")
+            if validator:
+                self.send_header("ETag", validator)
             if encoded:
                 self.send_header("Content-Encoding", "gzip")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header(
-                "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
-            )
+            if server_timing:
+                metrics = [f"{name};dur={duration:.2f}" for name, duration in server_timing.items()]
+                metrics.extend((f"response-json;dur={serialize_ms:.2f}",
+                                f"response-gzip;dur={compress_ms:.2f}"))
+                self.send_header("Server-Timing", ", ".join(metrics))
+            if not not_modified:
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
+                )
             self.end_headers()
             self.wfile.write(data)
+
+        def send_monitor_log(self, download):
+            path = download["path"]
+            try:
+                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                stream = os.fdopen(descriptor, "rb")
+                size = os.fstat(stream.fileno()).st_size
+            except FileNotFoundError:
+                stream = None
+                content = download.get("fallback") or b""
+                size = len(content)
+            start, end, status = 0, size, 200
+            value = self.headers.get("Range")
+            if value:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
+                if not match or (not match.group(1) and not match.group(2)):
+                    if stream:
+                        stream.close()
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if match.group(1):
+                    start = int(match.group(1))
+                    end = min(size, int(match.group(2)) + 1) if match.group(2) else size
+                else:
+                    suffix = int(match.group(2))
+                    start, end = max(0, size - suffix), size
+                if start >= size or end <= start:
+                    if stream:
+                        stream.close()
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                status = 206
+            length = end - start
+            self.send_response(status)
+            self.send_header("Content-Type", download.get("mime", "text/plain"))
+            self.send_header("Content-Length", str(length))
+            name = re.sub(r"[^A-Za-z0-9._-]", "_", download["name"])
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Log-Truncated", "true" if download.get("truncated") else "false")
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end - 1}/{size}")
+            self.end_headers()
+            try:
+                if stream:
+                    stream.seek(start)
+                    remaining = length
+                    while remaining:
+                        chunk = stream.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                else:
+                    self.wfile.write(content[start:end])
+            finally:
+                if stream:
+                    stream.close()
 
         def trusted(self, write=False):
             origin = remote.request_origin(self.headers, self.client_address[0], self.server.server_port)
@@ -698,7 +849,7 @@ def make_server(canvas, port=0, public_origin=None):
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
-            revision, previous = -1, {}
+            revision, previous, version, previous_order = -1, {}, 0, None
             try:
                 while not runtime.closed:
                     if not self.trusted():
@@ -712,10 +863,27 @@ def make_server(canvas, port=0, public_origin=None):
                         self.wfile.write(b": heartbeat\n\n")
                     else:
                         records = {item["id"]: item for item in data.pop("items")}
-                        payload = {**data, "replace": revision == -1, "order": list(records),
-                                   "items": [item for key, item in records.items() if previous.get(key) != item]}
+                        order = list(records)
+                        changed = []
+                        for key, item in records.items():
+                            old = previous.get(key)
+                            if old == item:
+                                continue
+                            if (old and isinstance(old.get("text"), str) and
+                                    isinstance(item.get("text"), str) and
+                                    item["text"].startswith(old["text"]) and
+                                    {k: v for k, v in old.items() if k != "text"} ==
+                                    {k: v for k, v in item.items() if k != "text"}):
+                                changed.append({"id": key, "append": item["text"][len(old["text"]):]})
+                            else:
+                                changed.append({"id": key, "replace": item})
+                        version += 1
+                        payload = {**data, "version": version, "replace": revision == -1,
+                                   "items": changed}
+                        if revision == -1 or order != previous_order:
+                            payload["order"] = order
                         self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
-                        revision, previous = current, records
+                        revision, previous, previous_order = current, records, order
                     self.wfile.flush()
                     time.sleep(.08)  # Coalesce fast deltas without polling an idle model.
             except OSError:
@@ -730,7 +898,17 @@ def make_server(canvas, port=0, public_origin=None):
 
         def stream_sync(self):
             store = sync()
-            protocol = parse_qs(urlparse(self.path).query).get("protocol") == ["2"]
+            query = parse_qs(urlparse(self.path).query)
+            shared_stream = query.get("protocol") == ["2"]
+            entity_stream = query.get("scope") == ["state:entities:v1"]
+            draft_stream = query.get("scope") == ["drafts"]
+            transcript_scope = query.get("scope", [""])[0]
+            transcript_id = (
+                transcript_scope[len("transcript:"):]
+                if transcript_scope.startswith("transcript:")
+                and len(transcript_scope) < 300
+                else None
+            )
             self.connection.settimeout(20)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -742,16 +920,22 @@ def make_server(canvas, port=0, public_origin=None):
                 while not (canvas.runtime and canvas.runtime.closed):
                     if not self.trusted():
                         break
-                    if protocol:
-                        current = store.generation_state()
-                        if current != previous:
-                            body = json.dumps(current, separators=(",", ":"))
-                            self.wfile.write(("data: " + body + "\n\n").encode())
-                        else:
-                            self.wfile.write(b": heartbeat\n\n")
+                    current = (store.generation_state() if shared_stream else
+                               store.entity_sequence() if entity_stream else
+                               store.draft_sequence() if draft_stream else
+                               store.transcript_revision(transcript_id) if transcript_id is not None else
+                               store.generation())
+                    if current is None:
+                        current = store.generation()
+                    if current != previous:
+                        data = (
+                            json.dumps(current)
+                            if shared_stream or entity_stream or draft_stream or transcript_id is not None
+                            else '"RESYNC"'
+                        )
+                        self.wfile.write(("data: " + data + "\n\n").encode())
                     else:
-                        current = store.legacy_generation()
-                        self.wfile.write(b'data: "RESYNC"\n\n' if current != previous else b": heartbeat\n\n")
+                        self.wfile.write(b": heartbeat\n\n")
                     self.wfile.flush()
                     previous = current
                     time.sleep(1)
@@ -761,6 +945,7 @@ def make_server(canvas, port=0, public_origin=None):
 
         def do_GET(self):
             path = urlparse(self.path)
+            startup_memory_mark("first-renderer-request")
             if not self.trusted():
                 return self.send({"error": "Local origin required"}, 403)
             try:
@@ -768,16 +953,27 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send({"token": token})
                 if path.path == "/api/sync/identity":
                     return self.send(sync().identity())
-                if path.path == "/api/sync/generations":
-                    return self.send(sync().generation_state())
                 if path.path == "/api/sync/pull":
                     q = {k: v[0] for k, v in parse_qs(path.query).items()}
-                    return self.send(sync().pull(q.get("scope", "state"), q.get("after", 0), q.get("limit", 100)))
+                    store = sync()
+                    projection = store.pull(q.get("scope", "state"), q.get("after", 0),
+                                            q.get("limit", 100), q.get("fresh") == "1",
+                                            q.get("initialHigh", 0), q.get("reset") == "1", q.get("priorityId"))
+                    return self.send({**projection, "generation": store.generation()})
+                if path.path == "/api/sync/generations":
+                    return self.send(sync().generation_state())
                 if path.path == "/api/sync/stream":
                     return self.stream_sync()
                 if path.path == "/api/state":
                     return self.send({**snapshot(include_work=parse_qs(path.query).get("view") != ["chat"]),
                                       "token": token})
+                if path.path == "/api/worktree-disk" and canvas.runtime:
+                    from codex_worktree_disk import scanner
+                    query = parse_qs(path.query)
+                    requested = query.get("workers", [""])[0][:24000]
+                    worker_ids = [value for value in requested.split(",")
+                                  if value and len(value) <= 128][:500]
+                    return self.send(scanner(canvas.root).snapshot(worker_ids))
                 if path.path == "/api/costs":
                     with terminal_lock:
                         if cost_reader[0] is None:
@@ -809,8 +1005,15 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send(session_cost_reader[0].snapshot(agent_id))
                 if path.path == "/api/desktop":
                     from codex_native_runtime import status as native_runtime_status
-                    from codex_provider_versions import status as provider_version_status
                     from codex_browser import diagnostics as browser_diagnostics
+                    supervisor_status = None
+                    if (os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
+                            or (Path(canvas.root) / "supervisor.sock").exists()):
+                        from codex_process_supervisor import status as process_supervisor_status
+                        try:
+                            supervisor_status = process_supervisor_status(canvas.root)
+                        except (OSError, RuntimeError, ValueError) as error:
+                            supervisor_status = {"error": str(error)[:300]}
                     browser_account = parse_qs(path.query).get("account_key", ["default"])[0]
                     return self.send(
                         {
@@ -819,19 +1022,40 @@ def make_server(canvas, port=0, public_origin=None):
                             "mobileProtocol": 1,
                             "backendBuild": BACKEND_BUILD,
                             "nativeRuntime": native_runtime_status(canvas.runtime),
-                            "providerVersions": provider_version_status(canvas.runtime),
                             "browser": browser_diagnostics(canvas.runtime, browser_account),
                             "liveUpdate": (canvas.runtime.live_updates.status()
                                            if getattr(canvas.runtime, "live_updates", None) else None),
                             "restartEnvironment": {key: os.environ[key] for key in (
                                 "CODEX_HOME", "CODEX_CANVAS_CWD",
-                                "CODEX_CANVAS_CONCURRENCY", "CODEX_BIN", "SHELL", "LANG", "LC_ALL")
+                                "CODEX_CANVAS_CONCURRENCY", "CODEX_BIN", "SHELL", "LANG", "LC_ALL",
+                                "CODEX_AGENTS_SUPERVISOR_MODE")
                                 if key in os.environ},
                             "publicOrigin": remote.origin(),
                             "pid": os.getpid(),
+                            "supervisorMode": os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1",
+                            "supervisor": supervisor_status,
+                            "supervisorFallback": os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1",
+                            "supervisorNotice": ("The process supervisor stopped unexpectedly. Studio applied normal recovery to turns, monitors, and terminals with reduced restart protection; accepted or uncertain operations were not resubmitted."
+                                                 if os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1" else None),
                             "stateDir": str(Path(canvas.root).resolve()),
                         }
                     )
+                if path.path == "/api/diagnostics" and canvas.runtime:
+                    from codex_diagnostics import snapshot as diagnostics_snapshot
+                    diagnostics = diagnostics_snapshot(canvas.runtime)
+                    diagnostics["supervisor"] = {
+                        "mode": os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1",
+                        "fallback": os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1",
+                        "notice": ("The process supervisor stopped unexpectedly. Studio applied normal recovery to turns, monitors, and terminals with reduced restart protection; accepted or uncertain operations were not resubmitted."
+                                   if os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1" else None),
+                    }
+                    if diagnostics["supervisor"]["mode"]:
+                        try:
+                            from codex_process_supervisor import status as process_supervisor_status
+                            diagnostics["supervisor"]["health"] = process_supervisor_status(canvas.root)
+                        except (OSError, RuntimeError, ValueError) as error:
+                            diagnostics["supervisor"]["health"] = {"error": str(error)[:300]}
+                    return self.send(diagnostics)
                 if path.path == "/api/terminals":
                     return self.send(terminals().listing())
                 if path.path == "/api/terminals/output":
@@ -861,26 +1085,62 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.request_action(agent,
                             {"action": "get", "request_id": request_id} if request_id else {"action": "list"}))
                     if path.path == "/api/analytics":
-                        return self.send(runtime.analytics(**q))
+                        if q.get("export") == "1":
+                            chunks = runtime.analytics_export_chunks(**q)
+                            first = next(chunks)
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json; charset=utf-8")
+                            self.send_header("Content-Disposition", 'attachment; filename="codex-studio-analytics.json"')
+                            self.send_header("Cache-Control", "no-store")
+                            self.send_header("X-Content-Type-Options", "nosniff")
+                            self.end_headers()
+                            self.close_connection = True
+                            try:
+                                self.wfile.write(first)
+                                for chunk in chunks:
+                                    self.wfile.write(chunk)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                            except (sqlite3.Error, ValueError, RuntimeError) as error:
+                                print(f"Analytics export interrupted: {error}", file=sys.stderr)
+                            finally:
+                                chunks.close()
+                            return
+                        result = runtime.analytics(**q)
+                        timing = result.pop("__serverTiming", None)
+                        return self.send(result, server_timing=timing)
                     if path.path == "/api/accounts/claude/login":
                         from codex_claude_login import manager
                         return self.send(manager(runtime).status(q.get("request_id")))
                     if path.path == "/api/accounts":
-                        return self.send(runtime.accounts.snapshot())
+                        return self.send(runtime.accounts_snapshot())
                     if path.path == "/api/projects":
                         return self.send(runtime.projects())
                     if path.path == "/api/questions":
                         return self.send(runtime.question_history(agent))
                     if path.path == "/api/workspace":
-                        return self.send(runtime.workspace_snapshot(agent, view=q.get("view", "full")))
+                        view = q.get("view", "full")
+                        value = (runtime.workspace_part(agent, view) if view in {"work", "inbox", "annotations"}
+                                 else runtime.workspace_snapshot(agent, view=view))
+                        return self.send(value, etag=True)
+                    if path.path == "/api/workspace/tasks":
+                        cursor = json.loads(q["cursor"]) if q.get("cursor") else None
+                        before = json.loads(q["before"]) if q.get("before") else None
+                        started = time.perf_counter() if q.get("timing") == "1" else None
+                        result = runtime.workspace_task_feed(
+                            agent, cursor=cursor, before=before, limit=q.get("limit", 100)
+                        )
+                        timing = ({"task-feed": (time.perf_counter() - started) * 1000}
+                                  if started is not None else None)
+                        return self.send(result, etag=True, server_timing=timing)
                     if path.path == "/api/work":
                         return self.send(runtime.work_action(agent, {"action": "list"}))
                     if path.path == "/api/queue":
                         return self.send(runtime.queue_action(agent))
                     if path.path == "/api/changes":
-                        return self.send(runtime.changes(agent, scope=q.get("scope")))
+                        return self.send(runtime.changes(agent, scope=q.get("scope")), etag=True)
                     if path.path == "/api/plan":
-                        return self.send(runtime.plan_action(agent))
+                        return self.send(runtime.plan_action(agent), etag=True)
                     if path.path == "/api/transcript/page":
                         return self.send(runtime.transcript(q.get("id"), before=q.get("before"), around=q.get("around"), after=q.get("after"), limit=q.get("limit", 120)))
                     if path.path == "/api/transcript/item":
@@ -901,10 +1161,10 @@ def make_server(canvas, port=0, public_origin=None):
                                 "checkpoints": runtime.workspace_snapshot(agent)[
                                     "checkpoints"
                                 ]
-                            }
+                            }, etag=True
                         )
                     if path.path == "/api/capabilities":
-                        return self.send(runtime.capabilities(agent))
+                        return self.send(runtime.capabilities(agent), etag=True, weak_etag_fields=("at",))
                     if path.path == "/api/skills":
                         return self.send(runtime.skill_catalog(agent))
                     if path.path == "/api/panel":
@@ -912,9 +1172,9 @@ def make_server(canvas, port=0, public_origin=None):
                     if path.path == "/api/profiles":
                         return self.send(runtime.profiles())
                     if path.path == "/api/rules":
-                        return self.send(runtime.rules())
+                        return self.send(runtime.rules(), etag=True)
                     if path.path == "/api/monitor/log":
-                        return self.send(runtime.monitor_log(q.get("id")))
+                        return self.send_monitor_log(runtime.monitor_log(q.get("id")))
                     if path.path == "/api/file-info":
                         return self.send(runtime.file_info(agent, q.get("path"), q.get("asset")))
                     if path.path == "/api/file":
@@ -937,14 +1197,23 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/agent-chat" and canvas.runtime:
                     query = parse_qs(path.query)
                     before = int(query["before"][0]) if query.get("before") else None
-                    return self.send(canvas.runtime.chat_read(query.get("room", [""])[0], before=before))
+                    after = int(query["after"][0]) if query.get("after") else None
+                    limit = int(query["limit"][0]) if query.get("limit") else 100
+                    return self.send(canvas.runtime.chat_read(query.get("room", [""])[0],
+                                                             before=before, after=after, limit=limit))
                 if path.path == "/api/models" and canvas.runtime:
                     query = parse_qs(path.query)
                     account = query.get("account_key", ["default"])[0]
-                    if query.get("workers") == ["1"]:
-                        from codex_worker_accounts import catalog
-                        return self.send(catalog(canvas.runtime, account))
-                    return self.send(canvas.runtime.catalog(account))
+                    from codex_catalog import DISPLAY_READ
+                    # A settings list may show an expired catalog while it refreshes.
+                    display = DISPLAY_READ.set(True)
+                    try:
+                        if query.get("workers") == ["1"]:
+                            from codex_worker_accounts import catalog
+                            return self.send(catalog(canvas.runtime, account))
+                        return self.send(canvas.runtime.catalog(account))
+                    finally:
+                        DISPLAY_READ.reset(display)
                 if path.path == "/api/import" and canvas.runtime:
                     query = parse_qs(path.query)
                     return self.send(canvas.runtime.import_list(query.get("cursor", [None])[0], account_key=query.get("account_key", ["default"])[0]))
@@ -968,9 +1237,7 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/":
                     return self.send({"error": "Build the interface: cd web && npm ci && npm run build"}, 503)
                 return self.send({"error": "Not found"}, 404)
-            except RuntimeError as error:
-                return self.send({"error": str(error)}, 503 if getattr(error, "retryable_snapshot", False) else 400)
-            except (ValueError, OSError, sqlite3.Error) as error:
+            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
                 return self.send({"error": str(error)}, 400)
 
         def do_POST(self):
@@ -990,6 +1257,7 @@ def make_server(canvas, port=0, public_origin=None):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError("JSON object required")
+                self.sync_entities_after = sync().entity_sequence()
                 workspace = self.headers.get("X-Canvas-Workspace")
                 if (workspace is not None or self.path == "/api/sync/drafts") and workspace != sync().identity()["workspaceId"]:
                     return self.send({"error": "The server workspace changed. Reload before sending."}, 409)
@@ -1062,16 +1330,17 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/login/cancel":
                         return self.send(runtime.accounts.cancel_login(runtime, body.get("request_id")))
+                    if self.path == "/api/accounts/delete":
+                        runtime.accounts.delete(body.get("account_key"), body.get("request_id"))
+                        return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/disconnect":
                         runtime.accounts.disconnect(body.get("account_key"))
                         return self.send(runtime.accounts.snapshot())
-                    if self.path == "/api/accounts/delete":
-                        return self.send(runtime.accounts.delete(body.get("account_key"), body.get("request_id")))
                     if self.path == "/api/accounts/reconnect":
                         runtime.accounts.reconnect(body.get("account_key"))
                         return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/login":
-                        return self.send(runtime.accounts.start_login(runtime, body.get("request_id")))
+                        return self.send(runtime.accounts.start_login(runtime, body.get("request_id"), body.get("account_key")))
                     if self.path == "/api/claude/profiles":
                         from codex_claude_controls import profile
                         return self.send(profile(runtime, body))
@@ -1083,7 +1352,8 @@ def make_server(canvas, port=0, public_origin=None):
                         transfers = transfer_store(runtime)
                         if body.get("action"):
                             return self.send(transfers.action(body.get("request_id"), body["action"]))
-                        return self.send(transfers.request(body.get("id"), body.get("account_key"), body.get("request_id")))
+                        return self.send(transfers.request(body.get("id"), body.get("account_key"),
+                                                           body.get("request_id"), body.get("scope", "team")))
                     if self.path == "/api/agents/account":
                         selected = runtime.set_account(body.get("id"), body.get("account_key"), body.get("cwd"))
                         with runtime.lock, runtime.db() as db:
@@ -1109,11 +1379,11 @@ def make_server(canvas, port=0, public_origin=None):
                     if self.path == "/api/branch":
                         return self.send(runtime.branch_conversation(agent, body))
                     if self.path == "/api/checkpoint":
-                        return self.send(
+                        return self.send(runtime.checkpoint_summary(
                             runtime.checkpoint_capture(
                                 agent, body.get("label", "Checkpoint")
                             )
-                        )
+                        ))
                     if self.path == "/api/checkpoint/preview":
                         return self.send(
                             runtime.checkpoint_preview(agent, body.get("checkpoint"))
@@ -1257,6 +1527,12 @@ def make_server(canvas, port=0, public_origin=None):
 
     server = LocalServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
+    # Explicit patch points for an already-running server instance. A live
+    # patch can replace RequestHandlerClass.send/do_GET/do_POST/stream_sync and
+    # resolve these services without constructing a second backend.
+    server.canvas = canvas
+    server.sync_store = sync
+    server.snapshot_state = snapshot
     return server
 
 

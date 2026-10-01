@@ -52,6 +52,12 @@ try {
   await page.locator(`[data-chat="${lead.id}"]`).click();
   assert.equal(await page.locator("#sidebar .agent-avatar").count(), 0);
   assert.equal(await page.locator("#sidebar .sidebar-team-chats").count(), 0);
+  await page.locator("#conversation article.message").first().waitFor();
+  assert.equal(
+    await page.locator("#conversation article.message .agent-avatar").count(),
+    0,
+    "The main chat shows no avatars on user or agent messages",
+  );
   const title = await page.locator("#conversation-title").innerText();
   await page.locator("#messages-toggle").click();
   const chats = page.locator(".messages-chat-list");
@@ -85,10 +91,11 @@ try {
   const renderedIds = await chats
     .locator("[data-message]")
     .evaluateAll((nodes) => nodes.map((node) => node.dataset.message));
-  assert.deepEqual(
-    renderedIds,
-    roomData.messages.map((message) => message.id),
-  );
+  // Room history is virtualized: the mounted messages are the newest
+  // contiguous part of the page, in server order.
+  const pageIds = roomData.messages.map((message) => message.id);
+  assert.ok(renderedIds.length > 0);
+  assert.deepEqual(renderedIds, pageIds.slice(-renderedIds.length));
   await chats.getByRole("textbox", { name: "Search chats" }).fill("");
   await chats.locator('[data-room="you"]').click();
   assert.equal(await chats.locator(".team-message").count(), 0);

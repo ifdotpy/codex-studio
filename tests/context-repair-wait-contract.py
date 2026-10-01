@@ -5,15 +5,72 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('actions', Path(__file__).with_name('native-action-context-repair-contract.py'))
 f = importlib.util.module_from_spec(spec); spec.loader.exec_module(f)
 repair, eventually = f.f.repair, f.f.f.eventually
+from codex_account_transfer import transfer_store
 
 
 class ContextWait(f.NativeActionRepair):
+    def test_transfer_retires_cancelled_wait_after_user_pause_without_replay(self):
+        rt = self.runtime
+        transfer_store(rt)
+        rt.send(self.a['id'], 'Keep input cancelled by the pause', message_id='cancelled-transfer-wait')
+        with rt.lock, rt.db() as db:
+            agent = rt.agent(self.a['id'], db)
+            attempt = {'id':'paused-attempt','events':['cancelled-transfer-wait'],
+                       'epoch':agent['epoch'],'accountKey':'default','submitted':False}
+            identity = repair._identity({**agent, 'startAttempt':attempt})
+            agent.update(status='paused', autoWake=False, inFlight=False,
+                         accountTransferId='cancelled-transfer', contextRepairWait={
+                'source':identity, 'events':attempt['events'],
+                'error':'Context repair waits for native notification delivery'})
+            agent.pop('startAttempt', None)
+            # The live pause also advanced the epoch past the wait's events.
+            agent['epoch'] += 1
+            db.execute("UPDATE runtime_events SET status='cancelled' WHERE id='cancelled-transfer-wait'")
+            rt.put(db, 'agents', agent)
+            rt.put(db, 'account_transfers', {'id':'cancelled-transfer','leadId':agent['id'],
+                'targetAccountKey':'target','status':'pending',
+                'members':{agent['id']:{'phase':'waiting'}}})
+        with rt.lock, rt.db() as db:
+            self.assertIsNone(transfer_store(rt).local_blocker(db, agent))
+            current = rt.agent(agent['id'], db)
+            self.assertFalse(current.get('contextRepairWait'))
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('cancelled-transfer-wait',)).fetchone()[0], 'cancelled')
+
+    def test_transfer_retires_proven_unsent_repair_wait(self):
+        rt = self.runtime
+        transfer_store(rt)
+        rt.send(self.a['id'], 'Keep input', message_id='transfer-wait-input')
+        with rt.lock, rt.db() as db:
+            agent = rt.agent(self.a['id'], db)
+            agent['startAttempt'] = {'id':'transfer-wait-start','events':['transfer-wait-input'],
+                'epoch':agent['epoch'],'accountKey':'default','submitted':False}
+            agent.update(status='starting', inFlight=True, accountTransferId='transfer-wait')
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE id='transfer-wait-input'")
+            rt.put(db, 'agents', agent)
+            rt.put(db, 'account_transfers', {'id':'transfer-wait','leadId':agent['id'],
+                'targetAccountKey':'target','status':'pending',
+                'members':{agent['id']:{'phase':'waiting'}}})
+        with self.assertRaisesRegex(ValueError, 'current agent operation') as caught:
+            repair.repair_before_start(rt, agent)
+        self.assertTrue(repair.defer_context_start(rt, agent['id'], 'transfer-wait-start', caught.exception))
+        with rt.lock, rt.db() as db:
+            agent = rt.agent(self.a['id'], db)
+            self.assertIsNone(transfer_store(rt).local_blocker(db, agent))
+        current = rt.agent(self.a['id'])
+        self.assertFalse(current.get('contextRepairWait'))
+        with rt.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('transfer-wait-input',)).fetchone()[0], 'pending')
+
     def setUp(self):
         super().setUp()
         submit = self.server.submit
@@ -35,6 +92,26 @@ class ContextWait(f.NativeActionRepair):
 
     def clear_monitor(self):
         self.put('monitors', {'id':'exact-active-monitor','agent':self.a['id'],'status':'completed'})
+
+    def uncertain_input(self, message_id, turns=None, *, unreadable=False):
+        self.runtime.send(self.a['id'], 'Keep this accepted input.', message_id=message_id)
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='uncertain',error='Native response was lost' WHERE id=?", (message_id,))
+        attempt = {'id':'uncertain-attempt', 'epoch':self.a['epoch'], 'threadId':self.tid,
+                   'accountKey':'default', 'events':[message_id], 'submitted':False}
+        self.agent_update(self.a, status='queued', inFlight=False, startAttempt=attempt,
+            contextRepairWait={'source':repair._identity({**self.a,'startAttempt':attempt}), 'events':[message_id],
+                'error':'Context repair waits for a confirmed input receipt: ' + message_id})
+        original = self.server.call
+        def call(method, params, timeout=10):
+            if method == 'thread/read':
+                if unreadable:
+                    raise RuntimeError('history read is offline')
+                return {'thread':{'id':self.tid,'status':{'type':'idle'},'path':str(self.path)}}
+            if method == 'thread/turns/list':
+                return {'data':turns or [], 'nextCursor':None}
+            return original(method, params, timeout)
+        self.server.call = call
 
     def due(self):
         a = self.runtime.agent(self.a['id'])
@@ -86,6 +163,237 @@ class ContextWait(f.NativeActionRepair):
         starts = [p for m,p in self.server.calls if m == 'turn/start']
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['clientUserMessageId'], 'wait-user')
+
+    def test_recover_marks_native_message_delivered_with_exact_turn(self):
+        self.uncertain_input('recover-present', [{'id':'native-turn','clientUserMessageId':'recover-present'}])
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'], [{'id':'recover-present','decision':'delivered','turnId':'native-turn'}])
+        with self.runtime.db() as db:
+            row = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',('recover-present',)).fetchone()
+        self.assertEqual(tuple(row), ('delivered','native-turn'))
+
+    def test_restart_held_input_wait_rechecks_native_history_automatically(self):
+        self.uncertain_input('restart-input', [{'id':'native-turn','clientUserMessageId':'restart-input'}])
+        a = self.runtime.agent(self.a['id'])
+        attempt = copy.deepcopy(a['startAttempt'])
+        wait = copy.deepcopy(a['contextRepairWait'])
+        wait.update(error='Native input submission has no confirmed turn identity.', events=['restart-input'])
+        recovery = {'epoch':a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                    'turnId':None, 'stage':'held', 'autoWake':True, 'startAttempt':attempt}
+        a.update(status='interrupted', autoWake=False, inFlight=False, nativeFailureHold=True,
+                 contextRepairWait=wait, restartRecovery=recovery)
+        self.agent_update(a, status=a['status'], autoWake=False, inFlight=False,
+                          nativeFailureHold=True, contextRepairWait=wait, restartRecovery=recovery)
+        self.runtime.dispatch()
+        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        current = self.runtime.agent(self.a['id'])
+        self.assertTrue(current['autoWake'])
+        self.assertEqual(current['turnId'], 'native-turn')
+        with self.runtime.db() as db:
+            receipt = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                 ('restart-input',)).fetchone()
+        self.assertEqual(tuple(receipt), ('delivered', 'native-turn'))
+
+    def test_restart_held_absent_input_is_retried_once_with_original_identity(self):
+        self.uncertain_input('restart-absent', [{'id':'other-turn','status':'interrupted',
+            'items':[{'type':'userMessage','clientId':'another-input'}]}])
+        self.records.extend([
+            {'type':'turn_context','payload':{'turn_id':'other-turn'}},
+            {'type':'event_msg','payload':{'type':'turn_aborted','turn_id':'other-turn'}},
+        ])
+        self.write_records()
+        a = self.runtime.agent(self.a['id'])
+        attempt = copy.deepcopy(a['startAttempt'])
+        wait = copy.deepcopy(a['contextRepairWait'])
+        wait.update(error='Native input submission has no confirmed turn identity.', events=['restart-absent'])
+        recovery = {'epoch':a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                    'turnId':None, 'stage':'held', 'autoWake':True, 'startAttempt':attempt}
+        self.agent_update(a, status='interrupted', autoWake=False, inFlight=False,
+                          contextRepairWait=wait, restartRecovery=recovery)
+        self.runtime.dispatch()
+        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.assertEqual(self.runtime.agent(self.a['id'])['status'], 'queued')
+        self.assertTrue(self.runtime.agent(self.a['id'])['autoWake'])
+        self.runtime.dispatch()
+        try:
+            eventually(lambda: any(method == 'turn/start' for method, _ in self.server.calls))
+        except AssertionError:
+            with self.runtime.db() as db:
+                receipt = db.execute('SELECT status FROM runtime_events WHERE id=?', ('restart-absent',)).fetchone()
+            self.fail(f"retry did not submit original input: agent={self.runtime.agent(self.a['id'])!r} event={receipt[0]}")
+        for _ in range(2):
+            self.runtime.dispatch()
+        starts = [p for method, p in self.server.calls if method == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'restart-absent')
+
+    def test_held_restart_marker_resolves_old_input_and_dispatches_new_wait_once(self):
+        self.uncertain_input('restart-original', [
+            {'id':'original-native-turn','clientUserMessageId':'restart-original'}])
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET error='Codex disconnected' WHERE id='restart-original'")
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                ('newer-input', self.a['id'], 'user', 'Resume with this newer message.',
+                 'pending', time.time(), self.a['epoch'], None, None))
+        newer_attempt = {'id':'newer-attempt', 'epoch':self.a['epoch'], 'threadId':self.tid,
+                         'accountKey':'default', 'events':['newer-input'], 'submitted':False}
+        wait_source = {**repair._identity({**self.a, 'startAttempt':newer_attempt}),
+                       'attemptId':'older-wait-attempt'}
+        self.agent_update(self.a, status='queued', autoWake=True, inFlight=False,
+            startAttempt=newer_attempt, error='Context repair waits for the existing native recovery receipt',
+            contextRepairWait={'source':wait_source,
+                'events':['newer-input'], 'error':'Context repair waits for the existing native recovery receipt',
+                'checks':1},
+            restartRecovery={'epoch':self.a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                'turnId':None, 'stage':'held', 'reason':'Native input submission has no confirmed turn identity.',
+                'autoWake':True, 'startAttempt':None})
+
+        history_entered, allow_history = threading.Event(), threading.Event()
+        original_call = self.server.call
+        def blocked_history(method, params, timeout=10):
+            if method == 'thread/read':
+                history_entered.set()
+                if not allow_history.wait(5):
+                    raise TimeoutError('fixture history read was not released')
+            return original_call(method, params, timeout)
+        self.server.call = blocked_history
+        self.runtime.dispatch_all()
+        self.assertTrue(history_entered.wait(2), 'restart history check did not start')
+        with self.runtime.db() as db:
+            initial_wait = self.runtime.agent(self.a['id'], db)['contextRepairWait']
+        check_id = initial_wait['historyCheckId']
+        for _ in range(3):
+            with self.runtime.lock, self.runtime.db() as db:
+                current = self.runtime.agent(self.a['id'], db)
+                current['contextRepairWait']['nextCheckAt'] = 0
+                self.runtime.put(db, 'agents', current)
+            self.runtime.dispatch_all()
+            current_wait = self.runtime.agent(self.a['id'])['contextRepairWait']
+            self.assertEqual(current_wait.get('historyCheckId'), check_id)
+            self.assertEqual(current_wait.get('historyCheckAt'), initial_wait['historyCheckAt'])
+            self.assertEqual(current_wait.get('checks'), 1)
+            self.assertIsNone(current_wait.get('lastHistoryCheck'))
+        allow_history.set()
+        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        settled = self.runtime.agent(self.a['id'])
+        self.assertEqual(settled['restartRecovery']['stage'], 'finished')
+        self.assertEqual(settled['startAttempt']['id'], 'newer-attempt')
+        with self.runtime.db() as db:
+            old_receipt = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                     ('restart-original',)).fetchone()
+            newer_status = db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                      ('newer-input',)).fetchone()[0]
+        self.assertEqual(tuple(old_receipt), ('delivered', 'original-native-turn'))
+        self.assertEqual(newer_status, 'pending')
+
+        with patch.object(repair, 'repair_before_start', side_effect=lambda _rt, agent: agent):
+            self.runtime.dispatch()
+            try:
+                eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+            except AssertionError:
+                with self.runtime.db() as db:
+                    statuses = [tuple(row) for row in db.execute(
+                        'SELECT id,status,error FROM runtime_events WHERE agent=? ORDER BY created,id',
+                        (self.a['id'],)).fetchall()]
+                self.fail(f"newer input did not dispatch: agent={self.runtime.agent(self.a['id'])!r} "
+                          f"events={statuses!r} calls={self.server.calls!r}")
+        for _ in range(2):
+            self.runtime.dispatch()
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'newer-input')
+        with self.runtime.db() as db:
+            old_receipt = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                     ('restart-original',)).fetchone()
+            newer_receipt = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                       ('newer-input',)).fetchone()
+        self.assertEqual(tuple(old_receipt), ('delivered', 'original-native-turn'))
+        self.assertEqual(tuple(newer_receipt), ('delivered', 'resumed-turn'))
+
+    def test_held_restart_marker_without_unconfirmed_input_dispatches_pending_once(self):
+        with self.runtime.db() as db:
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                ('held-pending', self.a['id'], 'user', 'Continue after restart.',
+                 'pending', time.time(), self.a['epoch'], None, None))
+        attempt = {'id':'held-attempt', 'epoch':self.a['epoch'], 'accountKey':'default',
+                   'events':['held-pending'], 'submitted':False}
+        error = 'Context repair waits for the existing native recovery receipt'
+        self.agent_update(self.a, status='queued', autoWake=True, inFlight=False, startAttempt=attempt,
+            contextRepairWait={'source':{**repair._identity(self.a), 'attemptId':'held-attempt'},
+                'events':['held-pending'], 'error':error, 'checks':9,
+                'lastHistoryCheck':'The unconfirmed input is outside the current start attempt'},
+            restartRecovery={'epoch':self.a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                'turnId':None, 'stage':'held', 'reason':'Native input submission has no confirmed turn identity.',
+                'autoWake':True, 'startAttempt':None})
+        self.runtime.dispatch_all()
+        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        self.assertEqual(self.runtime.agent(self.a['id'])['restartRecovery']['stage'], 'finished')
+        with patch.object(repair, 'repair_before_start', side_effect=lambda _rt, agent: agent):
+            self.runtime.dispatch()
+            eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        for _ in range(2):
+            self.runtime.dispatch()
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual([p['clientUserMessageId'] for p in starts], ['held-pending'])
+
+    def test_recover_requeues_absent_idle_input_once(self):
+        self.uncertain_input('recover-absent', [{'id':'other-turn',
+            'items':[{'type':'userMessage','clientId':'other-input'}]}])
+        first = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        second = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(first['inputs'], [{'id':'recover-absent','decision':'not_delivered'}])
+        self.assertEqual(second['status'], 'not_needed')
+        with self.runtime.db() as db:
+            row = db.execute('SELECT status FROM runtime_events WHERE id=?',('recover-absent',)).fetchone()
+        self.assertEqual(row[0], 'pending')
+
+    def test_unreadable_history_keeps_input_uncertain_and_waiting(self):
+        self.uncertain_input('recover-offline', unreadable=True)
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['status'], 'waiting')
+        self.assertIn('offline', result['reason'])
+        with self.runtime.db() as db:
+            row = db.execute('SELECT status FROM runtime_events WHERE id=?',('recover-offline',)).fetchone()
+        self.assertEqual(row[0], 'uncertain')
+        self.assertTrue(self.runtime.agent(self.a['id']).get('contextRepairWait'))
+
+    def test_native_client_id_confirms_delivered_input(self):
+        self.uncertain_input('recover-client', [{'id':'native-turn','status':'completed',
+            'items':[{'id':'native-item','type':'userMessage','clientId':'recover-client','content':[]}]}])
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'][0]['decision'], 'delivered')
+        with self.runtime.db() as db:
+            row = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?', ('recover-client',)).fetchone()
+        self.assertEqual(tuple(row), ('delivered', 'native-turn'))
+
+    def test_missing_identity_keeps_input_uncertain(self):
+        self.uncertain_input('unsupported-id', [{'id':'native-turn','status':'completed',
+            'items':[{'id':'unsupported-id','type':'userMessage','content':[]}]}])
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'][0]['decision'], 'waiting')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('unsupported-id',)).fetchone()[0], 'uncertain')
+
+    def test_recovery_does_not_restore_completed_turn_activity(self):
+        self.uncertain_input('recover-completed',
+            [{'id':'native-turn','status':'completed','clientUserMessageId':'recover-completed'}])
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_completed_turns VALUES (?)', (self.a['id'] + ':native-turn',))
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'][0]['decision'], 'delivered')
+        current = self.runtime.agent(self.a['id'])
+        self.assertFalse(current['inFlight'])
+        self.assertNotEqual(current['status'], 'running')
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.a['id'], db)
+            current.update(status='running', inFlight=True, turnId='native-turn')
+            self.runtime.put(db, 'agents', current)
+        self.assertEqual(self.runtime.reconcile_turn(self.a['id'])['status'], 'reconciled')
+        current = self.runtime.agent(self.a['id'])
+        self.assertFalse(current['inFlight'])
+        self.assertIsNone(current['turnId'])
+        self.assertEqual(current['status'], 'completed')
 
     def command(self, **changes):
         record = {'id':'exact-command', 'agent':self.a['id'], 'kind':'command',

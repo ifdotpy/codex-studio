@@ -108,6 +108,8 @@ class ProgressRuntimeContract(unittest.TestCase):
                 value = self.runtime.model_turn_context(db, current, key)
                 if delivered:
                     db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?", (key,))
+                    from codex_efficiency import remember_context_manifest
+                    remember_context_manifest(db, actor['id'], key)
                 return value
         self.assertIn(str(path), context('uncertain'))
         self.assertIn(str(path), context('delivered', True))

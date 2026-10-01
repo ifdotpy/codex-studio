@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('spawn_task_fixture', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
@@ -55,6 +56,26 @@ class SpawnTask(unittest.TestCase):
         self.rt.work_action(worker['id'], {'action': 'submit', 'task_id': self.task['id'], 'result': '29 folders',
                                            'checks': 'ls', 'revision': 'HEAD'}, actor=worker['id'])
         self.rt.work_action(self.lead['id'], {'action': 'accept', 'task_id': self.task['id'], 'result': 'Verified'})
+
+    def test_spawn_batch_validates_one_scoped_roster(self):
+        calls = []
+        original = self.rt.team_agents
+        full_agent_reads = []
+        records = self.rt.records
+        def roster(db, root_id):
+            calls.append(root_id)
+            return original(db, root_id)
+        def read_records(db, table=None, **kwargs):
+            if table == 'agents':
+                full_agent_reads.append(table)
+            return records(db, table, **kwargs)
+        with patch.object(self.rt, 'team_agents', side_effect=roster), \
+                patch.object(self.rt, 'records', side_effect=read_records):
+            self.rt.spawn_agents(self.lead, {'agents': [
+                {'name': f'Worker {index}', 'prompt': 'Work', 'role': 'reviewer'}
+                for index in range(3)]}, 'spawn-batch-roster')
+        self.assertEqual(calls, [self.lead['id']])
+        self.assertEqual(full_agent_reads, [])
 
     def test_invalid_assignment_creates_no_worker(self):
         owned = self.rt.work_action(self.lead['id'], {'action': 'create', 'title': 'Owned', 'owner': self.lead['id']})
@@ -146,6 +167,33 @@ class SpawnTask(unittest.TestCase):
         self.assertEqual(events, ['work_released'])
         claimed = self.spawn('owner-c', task_id=self.task['id'])
         self.assertEqual(self.work()['owner'], claimed['id'])
+
+    def test_failure_releases_before_parent_event_and_allows_immediate_respawn(self):
+        worker = self.spawn('failed-owner', task_id=self.task['id'])
+        worker = self.rt.agent(worker['id'])
+        attempt = {'id': 'failed-attempt', 'epoch': worker['epoch'], 'accountKey': 'default',
+                   'threadId': worker.get('threadId'), 'events': [], 'submitted': False}
+        stored = self.rt.agent(worker['id'])
+        stored.update(startAttempt=attempt, status='starting', inFlight=True)
+        with self.rt.lock, self.rt.db() as db:
+            self.rt.put(db, 'agents', stored)
+        self.rt.start_error(worker['id'], attempt['id'], RuntimeError('native start failed'))
+        released = self.work()
+        self.assertIsNone(released['owner'])
+        self.assertEqual(released['status'], 'ready')
+        with self.rt.db() as db:
+            events = [row[0] for row in db.execute("SELECT kind FROM runtime_events WHERE agent=? "
+                "AND kind IN ('work_released','child_result') ORDER BY rowid", (self.lead['id'],))]
+        self.assertEqual(events, ['work_released', 'child_result'])
+        replacement = self.spawn('replacement', task_id=self.task['id'])
+        self.assertEqual(self.work()['owner'], replacement['id'])
+
+    def test_deleted_worker_releases_work_in_delete_transaction(self):
+        worker = self.spawn('deleted-owner', task_id=self.task['id'])
+        self.rt.delete_conversation(worker['id'])
+        released = self.work()
+        self.assertIsNone(released['owner'])
+        self.assertEqual(released['status'], 'ready')
 
 
     def test_prepare_works_in_place_when_the_folder_left_git(self):

@@ -85,9 +85,31 @@ try {
   page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
   const errors = [];
   const resourceRequests = [];
+  const annotationRequests = [];
+  const taskFeedResponses = [];
+  const planNotModified = [];
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/resources")
-      resourceRequests.push(request.url());
+    const url = new URL(request.url());
+    if (url.pathname === "/api/resources") resourceRequests.push(request.url());
+    if (
+      url.pathname === "/api/workspace" &&
+      url.searchParams.get("view") === "annotations"
+    )
+      annotationRequests.push(request.url());
+  });
+  page.on("response", (response) => {
+    if (
+      new URL(response.url()).pathname === "/api/workspace/tasks" &&
+      response.status() === 200
+    )
+      taskFeedResponses.push(response);
+  });
+  page.on("response", (response) => {
+    if (
+      new URL(response.url()).pathname === "/api/plan" &&
+      response.status() === 304
+    )
+      planNotModified.push(response);
   });
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(origin);
@@ -114,6 +136,12 @@ try {
   };
   let modal;
   await section("Plan");
+  await drawer.getByText("This agent has not reported a plan.").waitFor();
+  await poll(
+    async () => planNotModified.length > 0,
+    "unchanged workspace plan uses a conditional 304 refresh",
+  );
+  assert.ok(planNotModified.length > 0);
   await drawer.getByText("This agent has not reported a plan.").waitFor();
   assert.equal(await drawer.getByRole("textbox").count(), 0);
   assert.equal(
@@ -424,9 +452,11 @@ try {
     .click();
   await poll(
     async () =>
-      (await get("/api/workspace?agent=" + lead.id)).annotations.length === 1,
+      (await get("/api/workspace?agent=" + lead.id + "&view=annotations"))
+        .annotations.length === 1,
     "line comment stored",
   );
+  assert.ok(annotationRequests.length > 0, "Changes requests only annotations");
   await drawer
     .getByRole("textbox", { name: "Open a file" })
     .fill("preview.html");
@@ -519,6 +549,14 @@ try {
       name + " no mobile overflow",
     );
   }
+  await drawer.locator(".mantine-Drawer-close").click();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page.locator("#tasks-toggle").click();
+  await poll(
+    () => taskFeedResponses.length > 0,
+    "task drawer uses incremental feed",
+  );
+  await page.keyboard.press("Escape");
   assert.deepEqual(
     resourceRequests,
     [],

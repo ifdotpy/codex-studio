@@ -26,7 +26,7 @@ class WorkspaceRaces(unittest.TestCase):
     def tearDown(self):
         self.case.tearDown()
 
-    def test_worker_steer_delivers_output_before_acknowledgement(self):
+    def test_worker_native_input_preserves_output_before_acknowledgement(self):
         t = self.case
         lead = t.start(t.lead())
         worker = t.start(t.worker(lead))
@@ -36,7 +36,7 @@ class WorkspaceRaces(unittest.TestCase):
         output_delivered = threading.Event()
 
         def call(method, params, timeout=60):
-            if method == "turn/steer":
+            if method == "turn/start" and params.get("threadId") == worker["threadId"]:
                 # FakeServer.submit uses another thread, as the protocol reader does.
                 server.notify(
                     {
@@ -65,14 +65,14 @@ class WorkspaceRaces(unittest.TestCase):
                 {
                     "agent_id": worker["id"],
                     "text": "Correct the current task",
-                    "delivery": "steer",
                 },
             )
+            t.runtime.dispatch()
+            self.assertTrue(output_delivered.wait(1))
+            fixture.eventually(lambda: t.runtime.delivery_receipt(
+                json.loads(response["contentItems"][0]["text"])["id"])["status"] == "delivered")
         self.assertTrue(response["success"], response)
-        self.assertTrue(output_delivered.wait(1))
-        self.assertEqual(
-            json.loads(response["contentItems"][0]["text"])["status"], "delivered"
-        )
+        self.assertEqual(json.loads(response["contentItems"][0]["text"])["status"], "queued")
         self.assertTrue(
             any(
                 "Progress before acknowledgement" in item["text"]

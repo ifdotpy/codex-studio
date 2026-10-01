@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 import urllib.error
 import urllib.request
@@ -17,6 +18,7 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from codex_canvas import Canvas, make_server, READ_LIMIT
+import codex_canvas
 
 
 class CanvasContract(unittest.TestCase):
@@ -437,6 +439,30 @@ class CanvasContract(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.canvas.snapshot()
 
+    def test_worktree_disk_route_forwards_priority_ids(self):
+        class RecordingScanner:
+            def snapshot(self, priority_ids=()):
+                return {"priority": list(priority_ids)}
+
+        server = make_server(self.canvas)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        self.canvas.runtime = SimpleNamespace(root=self.root, lock=threading.RLock())
+        with patch("codex_worktree_disk.scanner", return_value=RecordingScanner()) as get_scanner:
+            try:
+                with urllib.request.urlopen(
+                    base + "/api/worktree-disk?workers=worker-one%2Cworker-two",
+                    timeout=5,
+                ) as response:
+                    payload = json.loads(response.read())
+                self.assertEqual(payload["priority"], ["worker-one", "worker-two"])
+                get_scanner.assert_called_once_with(self.canvas.root)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
     def test_http_local_origin_token_and_routes(self):
         server = make_server(self.canvas)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -462,8 +488,39 @@ class CanvasContract(unittest.TestCase):
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/../../scripts/codex_canvas.py")[0], 404)
-            self.assertEqual(request("/")[0], 200)
+            web = Path(self.temp.name) / "web"
+            web.mkdir()
+            (web / "index.html").write_text("fixture")
+            with patch.object(codex_canvas, "WEB", web):
+                self.assertEqual(request("/")[0], 200)
             self.assertEqual(request("/api/chats", [], headers)[0], 400)
+            log = self.root / "monitor-logs" / "large.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            payload = (b"large-monitor-output\n" * 500000)
+            log.write_bytes(payload)
+
+            class DownloadRuntime:
+                lock = threading.RLock()
+
+                def monitor_log(_self, key):
+                    if key != "fixture-monitor":
+                        raise ValueError("Unknown monitor")
+                    return {
+                        "path": log, "fallback": None, "size": len(payload),
+                        "name": "large.log", "mime": "text/plain", "truncated": True,
+                    }
+
+            self.canvas.runtime = DownloadRuntime()
+            status, data = request("/api/monitor/log?id=fixture-monitor", headers={"Origin": base})
+            self.assertEqual(status, 200)
+            self.assertEqual(data, payload)
+            req = urllib.request.Request(
+                base + "/api/monitor/log?id=fixture-monitor",
+                headers={"Origin": base, "Range": "bytes=100-109"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                self.assertEqual(response.status, 206)
+                self.assertEqual(response.read(), payload[100:110])
         finally:
             server.shutdown()
             server.server_close()

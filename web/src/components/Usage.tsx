@@ -1,7 +1,7 @@
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../accountUsage";
-import { useEffect, useRef, useState } from "react";
-import { Button, Popover, Progress } from "@mantine/core";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Button, Popover, Progress, Tabs } from "@mantine/core";
 import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
 import type { Agent, Json } from "../types";
 import { api, errorText } from "../api";
@@ -11,7 +11,18 @@ import { limitRecovery } from "../limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
 export { limitRecovery } from "../limitRecovery";
 import "./Usage.css";
-import Analytics from "./Analytics";
+const Analytics = lazy(() => import("./Analytics"));
+
+export type UsageAccount = {
+  key: string;
+  label: string;
+  email?: string | null;
+  provider?: string;
+  accountId?: string | null;
+  limits: Json | null;
+  loading: boolean;
+  reload: (force?: boolean) => void | Promise<void>;
+};
 
 type LimitWindow = {
   label: string;
@@ -114,23 +125,6 @@ function resetIn(reset: number, now: number) {
   if (hours < 24) return `in ${hours}h ${minutes % 60}m`;
   return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
-function selectedBucket(buckets: LimitBucket[], model: string) {
-  const matches = buckets.filter((bucket) =>
-    [bucket.id, bucket.data.limitId, bucket.data.limitName].some(
-      (name) =>
-        typeof name === "string" && name.toLowerCase() === model.toLowerCase(),
-    ),
-  );
-  return (
-    matches[0] ||
-    buckets.find(
-      (bucket) =>
-        ["codex", "claude"].includes(bucket.id) ||
-        ["codex", "claude"].includes(bucket.data.limitId),
-    ) ||
-    null
-  );
-}
 export default function Usage({
   agent,
   stateDir,
@@ -140,6 +134,7 @@ export default function Usage({
   opened,
   onChange,
   limitsLoading,
+  accounts = [],
 }: {
   agent: Agent;
   stateDir: string;
@@ -149,6 +144,7 @@ export default function Usage({
   opened?: boolean;
   onChange?: (opened: boolean) => void;
   limitsLoading?: boolean;
+  accounts?: UsageAccount[];
 }) {
   const [localOpened, setLocalOpened] = useState(false);
   const limitsOpened = opened ?? localOpened;
@@ -156,8 +152,31 @@ export default function Usage({
     setLocalOpened(value);
     onChange?.(value);
   };
-  const limits = accountLimits(reportedLimits, agent.accountKey || "default");
-  const loadingLimits = limitsLoading ?? !reportedLimits;
+  const fallbackKey = agent.accountKey || "default";
+  const usageAccounts = accounts.length
+    ? accounts
+    : [
+        {
+          key: fallbackKey,
+          label: accountLabel || "Allowance left",
+          limits: reportedLimits,
+          loading: limitsLoading ?? !reportedLimits,
+          reload: () => reload(),
+        },
+      ];
+  const [activeAccountKey, setActiveAccountKey] = useState(fallbackKey);
+  const activeAccount =
+    usageAccounts.find((item) => item.key === activeAccountKey) ||
+    usageAccounts[0];
+  const selectedAccountKey = activeAccount?.key || fallbackKey;
+  const limits = accountLimits(
+    activeAccount?.limits,
+    selectedAccountKey,
+    activeAccount?.accountId,
+  );
+  const loadingLimits =
+    activeAccount?.loading ?? limitsLoading ?? !reportedLimits;
+  const accountAgent = { ...agent, accountKey: selectedAccountKey };
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -165,7 +184,7 @@ export default function Usage({
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await reload();
+      await (activeAccount?.reload(true) ?? reload());
     } finally {
       setRefreshing(false);
     }
@@ -175,10 +194,18 @@ export default function Usage({
   const [resetError, setResetError] = useState("");
   const [resetNotice, setResetNotice] = useState("");
   const [resetApplied, setResetApplied] = useState<string[]>([]);
+  const resetAppliedKey = (creditId: string) =>
+    `${selectedAccountKey}:${creditId}`;
+  useEffect(() => {
+    setConfirmReset(null);
+    setResetError("");
+    setResetNotice("");
+  }, [selectedAccountKey]);
   const resetLock = useRef(false);
   const resetAttempts = useRef(new Map<string, string>());
   const applyReset = async (creditId: string) => {
-    if (resetLock.current || resetApplied.includes(creditId)) return;
+    if (resetLock.current || resetApplied.includes(resetAppliedKey(creditId)))
+      return;
     resetLock.current = true;
     setResetPending(true);
     setResetError("");
@@ -190,7 +217,7 @@ export default function Usage({
       const result = await api("/api/limits/reset", {
         credit_id: creditId,
         account_id: limits?.data?.accountId,
-        account_key: agent.accountKey || "default",
+        account_key: selectedAccountKey,
         request_id: requestId,
       });
       if (
@@ -200,7 +227,7 @@ export default function Usage({
       )
         resetAttempts.current.delete(key);
       if (result.outcome === "reset" || result.outcome === "alreadyRedeemed") {
-        setResetApplied((ids) => [...ids, creditId]);
+        setResetApplied((ids) => [...ids, resetAppliedKey(creditId)]);
         setConfirmReset(null);
         setResetNotice(
           result.outcome === "reset"
@@ -222,7 +249,7 @@ export default function Usage({
           "Reset result unavailable. Refresh limits before trying again.",
         );
       }
-      reload();
+      void (activeAccount?.reload(true) ?? reload());
     } catch (error) {
       setResetError(errorText(error));
     } finally {
@@ -230,7 +257,7 @@ export default function Usage({
       setResetPending(false);
     }
   };
-  const accountKey = agent.accountKey || "default";
+  const accountKey = selectedAccountKey;
   const [costs, setCosts] = useState<Json | null>(null);
   const rootId = agent.rootId || agent.id;
   const costScope = JSON.stringify([stateDir, rootId]);
@@ -373,10 +400,24 @@ export default function Usage({
   const known = c && number(c.tokens) && number(c.window) && c.window > 0;
   const percent = known ? Math.round((c.tokens! / c.window!) * 100) : null;
   const buckets = readBuckets(limits, now);
-  const selected = selectedBucket(buckets, agent.model || "");
-  const windows = selected?.windows.slice(0, 2) || [];
-  const recovered = useRecoveredLimit(agent, limits, now);
-  const recovery = recovered ? null : limitRecovery(agent, limits, now);
+  const recovered = useRecoveredLimit(accountAgent, limits, now);
+  const recovery = recovered ? null : limitRecovery(accountAgent, limits, now);
+  useEffect(() => {
+    if (!limitsOpened || !activeAccount || selectedAccountKey === fallbackKey)
+      return;
+    void activeAccount.reload(false);
+  }, [limitsOpened, selectedAccountKey, activeAccount?.reload, fallbackKey]);
+  const accountIsLow = (item: UsageAccount) =>
+    readBuckets(accountLimits(item.limits, item.key, item.accountId), now).some(
+      (bucket) =>
+        bucket.windows.some(
+          (window) =>
+            window.remaining !== null &&
+            window.remaining <= 15 &&
+            !window.expired,
+        ),
+    );
+  const lowAccount = usageAccounts.find(accountIsLow);
   return (
     <div
       className="usage-footer"
@@ -456,11 +497,13 @@ export default function Usage({
         </Popover.Dropdown>
       </Popover>
       {analyticsOpen && (
-        <Analytics
-          key={agent.id}
-          agent={agent}
-          onClose={() => setAnalyticsOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <Analytics
+            key={agent.id}
+            agent={agent}
+            onClose={() => setAnalyticsOpen(false)}
+          />
+        </Suspense>
       )}
       <Popover
         opened={limitsOpened}
@@ -477,18 +520,18 @@ export default function Usage({
             variant="subtle"
             size="compact-xs"
             aria-label="Account limits"
+            title={
+              lowAccount
+                ? `Low allowance: ${lowAccount.email || lowAccount.label}`
+                : undefined
+            }
             onClick={() => changeOpened(!limitsOpened)}
             leftSection={<Gauge size={13} />}
             rightSection={<ChevronUp size={12} />}
           >
             <span className="account-limits-summary">
               <span className="account-limits-label">Limits</span>
-              {windows.some(
-                (window) =>
-                  window.remaining !== null &&
-                  window.remaining <= 15 &&
-                  !window.expired,
-              ) && (
+              {lowAccount && (
                 <span className="account-limits-warning">Low allowance</span>
               )}
             </span>
@@ -502,25 +545,67 @@ export default function Usage({
             <header className="account-limits-heading">
               <div>
                 <h3>Account limits</h3>
-                <p>{accountLabel || "Allowance left"}</p>
+                <p>
+                  {activeAccount?.email ||
+                    activeAccount?.label ||
+                    accountLabel ||
+                    "Allowance left"}
+                </p>
               </div>
               <Button
                 size="compact-xs"
                 variant="subtle"
                 loading={refreshing || loadingLimits}
-                onClick={() => void refreshLimits()}
+                onClick={() =>
+                  void (activeAccount?.reload(true) ?? refreshLimits())
+                }
                 leftSection={<RefreshCw size={13} />}
               >
                 Refresh
               </Button>
             </header>
+            {usageAccounts.length > 1 && (
+              <Tabs
+                value={selectedAccountKey}
+                onChange={(value) => {
+                  if (value) setActiveAccountKey(value);
+                }}
+                keepMounted={false}
+                className="account-limits-tabs"
+              >
+                <Tabs.List aria-label="Accounts with limits">
+                  {usageAccounts.map((item, index) => (
+                    <Tabs.Tab
+                      key={item.key}
+                      value={item.key}
+                      id={`usage-account-tab-${index}`}
+                      aria-controls="usage-account-panel"
+                      aria-label={`${item.email || item.label}${item.provider ? `, ${item.provider}` : ""} account limits`}
+                    >
+                      <span>{item.email || item.label}</span>
+                      {item.provider && <small>{item.provider}</small>}
+                    </Tabs.Tab>
+                  ))}
+                </Tabs.List>
+              </Tabs>
+            )}
             {recovery && (
               <LimitRecoveryNotice
                 key={JSON.stringify(recovery)}
                 recovery={recovery}
               />
             )}
-            <div className="account-limits-groups">
+            <div
+              className="account-limits-groups"
+              {...(usageAccounts.length > 1
+                ? {
+                    role: "tabpanel" as const,
+                    id: "usage-account-panel",
+                    "aria-labelledby": `usage-account-tab-${usageAccounts.findIndex((item) => item.key === selectedAccountKey)}`,
+                    "aria-label": `${activeAccount?.email || activeAccount?.label || "Account"} limits`,
+                  }
+                : {})}
+            >
               {buckets.map((bucket) => (
                 <section
                   className="account-limit-group"
@@ -631,7 +716,7 @@ export default function Usage({
                 </p>
               )}
             </div>
-            {agent.provider === "claude" && (
+            {activeAccount?.provider === "claude" && (
               <section
                 className="account-reset-credits"
                 aria-label="Claude free limit resets"
@@ -717,7 +802,7 @@ export default function Usage({
                         variant="light"
                         disabled={
                           resetPending ||
-                          resetApplied.includes(credit.id) ||
+                          resetApplied.includes(resetAppliedKey(credit.id)) ||
                           credit.resetType !== "codexRateLimits" ||
                           !limits?.data?.accountId
                         }
@@ -726,7 +811,7 @@ export default function Usage({
                           setResetError("");
                         }}
                       >
-                        {resetApplied.includes(credit.id)
+                        {resetApplied.includes(resetAppliedKey(credit.id))
                           ? "Applied"
                           : "Apply reset"}
                       </Button>

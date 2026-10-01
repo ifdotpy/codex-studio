@@ -59,6 +59,21 @@ class ComplaintRouting(unittest.TestCase):
             'text':'Use the checked Python path while I report the defect.', 'status':'in_progress'}, 'lead-response')
         self.assertEqual(response['responses'][0]['author'], self.lead['id'])
         self.assertFalse(self.runtime.snapshot()['complaints'][0]['needsResponse'])
+        with self.assertRaisesRegex(ValueError, 'orchestrator'):
+            self.respond(response, key='user:reopen', status='in_progress')
+        closed = self.respond(response, key='user:close')
+        self.assertEqual((closed['status'], closed['responses'][-1]['author']), ('resolved', 'user'))
+
+    def test_user_closes_complaint_of_stopped_lead(self):
+        worker = self.runtime.create({'name':'Worker', 'prompt':'Check', 'role':'reviewer', 'model':'test-model', 'effort':'medium'}, parent=self.lead['id'])
+        c = self.submit(worker['id'])
+        with self.runtime.lock, self.runtime.db() as db:
+            lead = self.runtime.agent(self.lead['id'], db)
+            lead['autoWake'] = False
+            self.runtime.put(db, 'agents', lead)
+        closed = self.respond(c, status='declined', text='The orchestrator stopped; the defect is fixed in Studio.')
+        self.assertEqual(closed['status'], 'declined')
+        self.assertEqual(self.events('complaint_response')[0]['agent'], worker['id'])
 
     def test_user_response_wakes_finished_author_and_is_idempotent(self):
         c = self.submit()

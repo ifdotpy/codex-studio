@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { modelValue, openModelList, selectModel } from "./model-picker.mjs";
 const skill = dirname(dirname(fileURLToPath(import.meta.url)));
 const { chromium, _electron } = createRequire(join(skill, "web/package.json"))(
   "playwright-core",
@@ -16,21 +17,26 @@ const models = [
   {
     model: "gpt-6-astra",
     displayName: "Astra",
+    description: "Frontier intelligence for the most demanding work.",
     levels: ["low", "medium", "high", "ultra"],
   },
   {
     model: "gpt-5.6-sol",
     displayName: "Sol",
+    description: "Latest workhorse model for coding and everyday work.",
+    isDefault: true,
     levels: ["low", "medium", "high", "ultra"],
   },
   {
     model: "gpt-6-luna",
     displayName: "Luna",
+    description: "Fast and affordable model for easier tasks.",
     levels: ["low", "medium", "high"],
   },
   {
     model: "gpt-5.6-luna",
     displayName: "Luna 5.6",
+    description: "Previous generation fast model.",
     levels: ["low", "medium", "high"],
   },
   { model: "test-slow", displayName: "Standard only", levels: ["low"] },
@@ -112,7 +118,8 @@ try {
       if (result) return result;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw Error("Timed out: " + log);
+    await page.screenshot({ path: join(root, "timeout.png") }).catch(() => {});
+    throw Error("Timed out: " + predicate.toString() + " " + log);
   };
   const openSettings = async (name) => {
     if (!(await page.getByRole("button", { name, exact: true }).isVisible()))
@@ -124,6 +131,74 @@ try {
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   const lead = (await state()).find((a) => a.name === "Release lead");
   await openSettings("Main agent settings");
+  // The picker lists every model with its tags and catalog description.
+  const leadModel = page.getByLabel("Main agent model", { exact: true });
+  assert.equal(await modelValue(leadModel), lead.model);
+  const rows = await openModelList(leadModel);
+  assert.deepEqual(
+    await rows.evaluateAll((nodes) =>
+      nodes.map((node) => [
+        node.getAttribute("data-value"),
+        node.querySelector(".model-picker-name").textContent,
+        node.querySelector(".model-picker-description")?.textContent || "",
+      ]),
+    ),
+    [
+      [
+        "gpt-6-astra",
+        "Astra",
+        "Frontier intelligence for the most demanding work.",
+      ],
+      [
+        "gpt-5.6-sol",
+        "Sol (default)",
+        "Latest workhorse model for coding and everyday work.",
+      ],
+      ["gpt-6-luna", "Luna", "Fast and affordable model for easier tasks."],
+      ["gpt-5.6-luna", "Luna 5.6", "Previous generation fast model."],
+      ["test-slow", "Standard only", ""],
+    ].map((row) =>
+      row[0] === lead.model ? [row[0], row[1] + " (current)", row[2]] : row,
+    ),
+  );
+  await page.screenshot({ path: join(root, "model-picker-open.png") });
+  const listBox = page.locator('[role="listbox"]:visible');
+  assert.ok(
+    await listBox.evaluate(
+      (node) => node.getBoundingClientRect().right <= innerWidth,
+    ),
+    "the open list fits the window",
+  );
+  // Arrow keys move the highlight, Enter picks, Escape closes only the list.
+  await leadModel.press("ArrowDown");
+  await leadModel.press("ArrowDown");
+  await leadModel.press("Enter");
+  await listBox.waitFor({ state: "hidden" });
+  await waitFor(async () => {
+    const row = (await state()).find((a) => a.id === lead.id);
+    return (row.pendingSettings?.model || row.model) !== lead.model;
+  });
+  await leadModel.press("ArrowDown");
+  await listBox.waitFor();
+  await leadModel.press("Escape");
+  await listBox.waitFor({ state: "hidden" });
+  assert.ok(
+    await page
+      .getByRole("dialog", { name: "Main agent settings", exact: true })
+      .isVisible(),
+    "Escape on the open list keeps the settings popover",
+  );
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.id),
+    "model",
+    "focus stays on the picker",
+  );
+  await selectModel(leadModel, lead.model);
+  await waitFor(async () => {
+    const row = (await state()).find((a) => a.id === lead.id);
+    return (row.pendingSettings?.model || row.model) === lead.model;
+  });
+  assert.equal(await modelValue(leadModel), lead.model);
   await page
     .getByLabel("Main agent reasoning", { exact: true })
     .selectOption("high");
@@ -161,9 +236,14 @@ try {
     name: "Subagent defaults",
     exact: true,
   });
-  await dialog
-    .getByLabel("Default subagent model", { exact: true })
-    .selectOption("gpt-6-luna");
+  const defaultModel = dialog.getByLabel("Default subagent model", {
+    exact: true,
+  });
+  assert.match(
+    await (await openModelList(defaultModel)).first().innerText(),
+    /^Same as main agent \(/,
+  );
+  await selectModel(defaultModel, "gpt-6-luna");
   assert.equal(
     await dialog
       .getByLabel("Default subagent reasoning")
@@ -180,6 +260,16 @@ try {
       await dialog.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
     );
     await page.screenshot({ path: join(root, `defaults-${width}.png`) });
+    // The open model list stays inside the window at every width.
+    await openModelList(defaultModel);
+    const box = await listBox.boundingBox();
+    assert.ok(
+      box.x >= 0 && box.x + box.width <= width + 1,
+      `model list fits ${width}`,
+    );
+    await page.screenshot({ path: join(root, `model-picker-${width}.png`) });
+    await defaultModel.press("Escape");
+    await listBox.waitFor({ state: "hidden" });
   }
   await waitFor(
     async () =>
@@ -224,11 +314,8 @@ try {
   assert.equal(overridden.fastMode, false);
   await page.setViewportSize({ width: 1440, height: 960 });
   await openSettings("Subagent defaults");
-  assert.equal(
-    await dialog.getByLabel("Default subagent model").inputValue(),
-    "gpt-6-luna",
-  );
-  await dialog.getByLabel("Default subagent model").selectOption("test-slow");
+  assert.equal(await modelValue(defaultModel), "gpt-6-luna");
+  await selectModel(defaultModel, "test-slow");
   assert.ok(
     await dialog
       .getByRole("switch", { name: "Fast mode", exact: true })
@@ -253,7 +340,7 @@ try {
       (await state()).find((a) => a.id === lead.id).workerDefaults.model ===
       "test-slow",
   );
-  await dialog.getByLabel("Default subagent model").selectOption("gpt-5.6-sol");
+  await selectModel(defaultModel, "gpt-5.6-sol");
   await waitFor(
     async () =>
       (await state()).find((a) => a.id === lead.id).workerDefaults.model ===
@@ -411,7 +498,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS execution settings UI: main agent reasoning/Fast, model choices, saved defaults, child inheritance and overrides, dependent reset notice, immediate save, permission guards, nested Escape, next-turn settings, lost-response replay across reload, active worker unchanged, responsive layout. Evidence " +
+    "PASS execution settings UI: model picker rows with tags and descriptions, keyboard list, main agent reasoning/Fast, model choices, saved defaults, child inheritance and overrides, dependent reset notice, immediate save, permission guards, nested Escape, next-turn settings, lost-response replay across reload, active worker unchanged, responsive layout. Evidence " +
       root,
   );
 } finally {

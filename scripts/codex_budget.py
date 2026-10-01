@@ -6,6 +6,7 @@ Only responses after its cutoff add to that floor.
 """
 import hashlib
 import json
+import sqlite3
 import time
 from pathlib import Path
 
@@ -33,10 +34,21 @@ def _save(db, a, state):
     db.execute('INSERT INTO runtime_budget VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
                (a['id'], json.dumps(state)))
     # History captures use a historical agent copy. Update only budget fields.
-    db.execute("UPDATE runtime_agents SET record=json_set(record,'$.tokensUsed',?,'$.tokenUsageAccounting',?) WHERE id=?",
-               (state['spent'], _accounting(state), a['id']))
     a['tokensUsed'] = state['spent']
     a['tokenUsageAccounting'] = _accounting(state)
+    db.execute("UPDATE runtime_agents SET record=json_set(record,'$.tokensUsed',?,'$.tokenUsageAccounting',?) WHERE id=?",
+               (state['spent'], _accounting(state), a['id']))
+    try:
+        db.execute("SELECT sync_invalidate_agent(?)", (a["id"],))
+    except sqlite3.OperationalError:
+        # Only Runtime.db connections carry the agent-cache hook; a plain
+        # connection has no runtime cache to invalidate.
+        pass
+    # Update only the budget fields of the renderer view; the raw record lacks
+    # its presentation fields (source, kind, canSend) and would hide the chat.
+    from codex_sync_entities import patch as sync_entity_patch
+    sync_entity_patch(db, "agent", a["id"], {"tokensUsed": state['spent'],
+                                             "tokenUsageAccounting": _accounting(state)})
     return state
 
 
@@ -136,10 +148,18 @@ def _coverage(db, a, state):
         return None if not state['spent'] else 'Native usage history is unavailable'
     if not state['spent'] and not a.get('turnId') and not a.get('lastCompletedTurn'):
         return None
-    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_history'").fetchone():
+    schema = None
+    for candidate in ('main', 'analytics'):
+        try:
+            if db.execute(f"SELECT 1 FROM {candidate}.sqlite_master WHERE type='table' AND name='analytics_history'").fetchone():
+                schema = candidate
+                break
+        except sqlite3.OperationalError:
+            continue
+    if schema is None:
         return 'Native usage history is unavailable'
     key = a['id'] + ':' + a.get('accountKey', 'default') + ':' + a['threadId']
-    row = db.execute('SELECT record FROM analytics_history WHERE id=?', (key,)).fetchone()
+    row = db.execute(f'SELECT record FROM {schema}.analytics_history WHERE id=?', (key,)).fetchone()
     history = json.loads(row[0]) if row else {}
     if history.get('status') != 'current' or history.get('coverage') == 'partial':
         return 'Native usage history is incomplete'

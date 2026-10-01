@@ -1,0 +1,9 @@
+.supervisor-recovery-notice {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--mantine-color-yellow-6);
+  border-radius: var(--mantine-radius-sm);
+  color: var(--mantine-color-text);
+  background: var(--mantine-color-yellow-light);
+  font-size: var(--mantine-font-size-sm);
+}

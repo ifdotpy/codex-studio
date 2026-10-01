@@ -1,4 +1,5 @@
 """Copy managed names to native threads without model turns or scheduler waits."""
+import json
 import threading
 import time
 
@@ -28,7 +29,16 @@ class SessionNames:
                 return
             self.next_scan = time.monotonic() + 1
             with rt.db() as db:
-                for agent in sorted(rt.records(db, "agents"), key=lambda a: not bool(a.get("nativeNameSynced"))):
+                # Decode only agents whose native name may differ; this runs every second.
+                candidates = [json.loads(row[0]) for row in db.execute(
+                    "SELECT record FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL "
+                    "AND json_extract(record,'$.threadId') IS NOT NULL AND ("
+                    "json_extract(record,'$.nativeNameSynced') IS NULL "
+                    "OR json_extract(record,'$.nativeNameSynced.name') IS NOT json_extract(record,'$.name') "
+                    "OR json_extract(record,'$.nativeNameSynced.threadId') IS NOT json_extract(record,'$.threadId') "
+                    "OR json_extract(record,'$.nativeNameSynced.accountKey') IS NOT "
+                    "COALESCE(json_extract(record,'$.accountKey'),'default'))")]
+                for agent in sorted(candidates, key=lambda a: not bool(a.get("nativeNameSynced"))):
                     if len(self.pending) >= 2:
                         break
                     wanted = identity(agent)

@@ -263,6 +263,10 @@ class ProjectContracts(unittest.TestCase):
             headers["X-Canvas-Token"] = request("/api/state")["token"]
             self.assertEqual(request("/api/projects"), {"items": []})
             project = request("/api/projects", {"path": str(self.second)})
+            entities = project.pop("_syncEntities")
+            self.assertEqual(len(entities), 1)
+            self.assertEqual(entities[0]["id"], "entity:project:" + project["path"])
+            self.assertEqual(json.loads(entities[0]["payload"])["value"], project)
             self.assertEqual(request("/api/projects"), {"items": [project]})
             self.assertEqual(request("/api/state")["runtime"]["projects"], [project])
             lead = request("/api/leads", {"id": str(uuid.uuid4()), "cwd": project["path"]})

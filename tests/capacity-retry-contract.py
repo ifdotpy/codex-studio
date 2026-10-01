@@ -20,6 +20,34 @@ spec.loader.exec_module(fixture)
 
 
 class CapacityContract(unittest.TestCase):
+    def test_temporary_slot_wait_reschedules_retry(self):
+        retry = self.fail()
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['concurrency'] = 1
+            agent['capacityRetry']['dueAt'] = time.time()-1
+            self.runtime.capacity_save(db, agent, agent['capacityRetry'])
+            self.runtime.put(db, 'agents', agent)
+            sibling = dict(agent, id='busy-sibling', parentId=agent['id'],
+                inFlight=True, status='running', turnId='busy-turn')
+            sibling.pop('capacityRetry', None)
+            self.runtime.put(db, 'agents', sibling)
+        self.runtime.capacity_tick()
+        current = self.runtime.agent(self.key)['capacityRetry']
+        self.assertEqual(current['status'], 'scheduled')
+        self.assertGreater(current['dueAt'], time.time())
+        self.assertFalse(current.get('claimedAt'))
+        with self.runtime.lock, self.runtime.db() as db:
+            sibling = self.runtime.agent('busy-sibling', db)
+            sibling.update(inFlight=False, status='completed', turnId=None)
+            self.runtime.put(db, 'agents', sibling)
+            agent = self.runtime.agent(self.key, db)
+            agent['capacityRetry']['dueAt'] = time.time()-1
+            self.runtime.capacity_save(db, agent, agent['capacityRetry'])
+            self.runtime.put(db, 'agents', agent)
+        self.runtime.capacity_tick()
+        fixture.eventually(lambda: bool(self.runtime.agent(self.key)['capacityRetry'].get('acceptedTurnId')))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -37,6 +65,19 @@ class CapacityContract(unittest.TestCase):
 
     def agent(self):
         return self.runtime.agent(self.key)
+
+    def test_capacity_poll_uses_the_status_due_index(self):
+        with self.runtime.db() as db:
+            plan = [row[3] for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.capacityRetry.status')='scheduled' "
+                "AND json_extract(record,'$.capacityRetry.dueAt')<=? UNION ALL "
+                "SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.capacityRetry.status')='failed' "
+                "AND json_extract(record,'$.capacityRetry.acceptedTurnId') IS NULL "
+                "AND json_extract(record,'$.capacityRetry.reason') LIKE 'Context repair waits for %'",
+                (time.time(),))]
+        self.assertTrue(any("runtime_agent_capacity_retry_state_due_v2" in step for step in plan), plan)
 
     def starts(self):
         return [p for method, p in self.server.calls if method == 'turn/start']
@@ -85,6 +126,22 @@ class CapacityContract(unittest.TestCase):
         fixture.eventually(lambda: self.agent().get('turnId'))
         self.assertEqual(len(self.starts()), 6)
         self.assertEqual(self.fail()['status'], 'exhausted')
+
+    def test_connection_failures_retry_longer_with_the_same_continuation(self):
+        retry = self.fail({'httpConnectionFailed': {'httpStatusCode': None}})
+        self.assertEqual((retry['cause'], retry['maxAttempts'], retry['status']), ('httpConnectionFailed', 7, 'scheduled'))
+        self.assertAlmostEqual(retry['dueAt'] - time.time(), 10, delta=1)
+        self.expire()
+        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.assertEqual(self.starts()[-1]['input'], [])
+        retry = self.fail('responseStreamDisconnected')
+        self.assertEqual((retry['cause'], retry['attempt']), ('responseStreamDisconnected', 2))
+        self.assertAlmostEqual(retry['dueAt'] - time.time(), 30, delta=1)
+
+    def test_request_and_context_errors_are_not_retried(self):
+        for info in ('badRequest', 'contextWindowExceeded', {'other': {}}):
+            self.assertIsNone(self.fail(info))
+            self.assertEqual(len(self.starts()), 1)
 
     def test_cancel_and_stale_timer_do_not_claim_but_manual_retry_can(self):
         retry = self.fail()
@@ -172,6 +229,42 @@ class CapacityContract(unittest.TestCase):
         self.retry(retry)
         self.assertEqual(len(self.starts()), 1)
 
+    def test_context_repair_wait_reschedules_without_using_an_attempt(self):
+        import codex_context_repair
+        retry = self.fail()
+        original = codex_context_repair.repair_before_start
+        def busy(rt, a):
+            raise codex_context_repair._waiting('Context repair waits for tasks: busy-command')
+        codex_context_repair.repair_before_start = busy
+        try:
+            self.retry(retry)
+            fixture.eventually(lambda: self.agent()['capacityRetry'].get('waits') == 1)
+        finally:
+            codex_context_repair.repair_before_start = original
+        waiting = self.agent()['capacityRetry']
+        self.assertEqual(waiting['status'], 'scheduled')
+        self.assertNotIn('claimedAt', waiting)
+        self.assertAlmostEqual(waiting['dueAt'] - time.time(), 15, delta=2)
+        self.assertEqual(self.agent().get('capacityRetryCount', 0), 0)
+        self.assertEqual(len(self.starts()), 1)
+        self.expire()
+        fixture.eventually(lambda: len(self.starts()) == 2)
+        self.assertEqual(self.starts()[-1]['input'], [])
+
+    def test_old_failed_context_wait_is_scheduled_again(self):
+        retry = self.fail()
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.agent()
+            a['capacityRetry'].update(status='failed', dueAt=None, claimedAt=time.time(),
+                                      reason='Context repair waits for tasks: old-command')
+            a['startAttempt'] = {'id': 'capacity:' + retry['id'], 'epoch': a['epoch'], 'events': [],
+                                 'action': 'capacity', 'submitted': False, 'capacityRetryId': retry['id']}
+            self.runtime.capacity_save(db, a, a['capacityRetry'])
+            self.runtime.put(db, 'agents', a)
+        self.runtime.capacity_tick()
+        again = self.agent()['capacityRetry']
+        self.assertEqual((again['id'], again['status'], again['waits']), (retry['id'], 'scheduled', 1))
+
     def test_error_notification_and_stale_terminal_do_not_schedule(self):
         a = self.agent()
         self.server.notify({'method': 'error', 'params': {'threadId': a['threadId'],
@@ -189,7 +282,7 @@ class CapacityContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'budget'):
             self.retry(retry)
         self.expire()
-        self.assertEqual(self.agent()['capacityRetry']['status'], 'cancelled')
+        self.assertEqual(self.agent()['capacityRetry']['status'], 'scheduled')
         self.mutate(tokenBudget=None, epoch=self.agent()['epoch'] + 1)
         with self.assertRaisesRegex(ValueError, 'earlier'):
             self.retry(retry)
@@ -376,18 +469,21 @@ class CapacityContract(unittest.TestCase):
         finally:
             release.set()
 
-    def test_new_message_keeps_submitted_unknown_retry_reserved(self):
+    def test_new_message_uses_its_own_reservation_after_unknown_retry(self):
         retry = self.fail()
         self.server.fail_start = True
         self.retry(retry)
         fixture.eventually(lambda: self.agent()['capacityRetry']['status'] == 'unknown')
         self.runtime.send(self.key, 'Follow-up task')
         self.runtime.dispatch()
-        self.assertEqual(len(self.starts()), 2)
+        fixture.eventually(lambda: len(self.starts()) == 3)
         self.assertTrue(self.agent()['inFlight'])
-        with self.runtime.db() as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND status='pending'",
-                                        (self.key,)).fetchone()[0], 1)
+        def one_uncertain():
+            with self.runtime.db() as db:
+                return db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND status='uncertain'",
+                                  (self.key,)).fetchone()[0] == 1
+        fixture.eventually(one_uncertain)
+        self.assertEqual(sum('Follow-up task' in str(p['input']) for p in self.starts()), 1)
 
     def test_stop_and_new_user_instruction_replace_timer(self):
         retry = self.fail()

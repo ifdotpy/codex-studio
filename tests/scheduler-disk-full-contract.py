@@ -40,11 +40,14 @@ class SchedulerDiskContract(unittest.TestCase):
             seen.append("dispatch"); rt.closed = True
         rt.rules_tick = rules
         rt.capacity_tick = lambda: seen.append("capacity")
+        rt.usage_resume_tick = lambda: seen.append("usage")
         rt.dispatch = dispatch
         scope["schedule"](rt)
         expected = ["wait", "rules", "wait", "rules"]
         if "capacity_tick" in scope["schedule"].__code__.co_names:
             expected.append("capacity")
+        if "usage_resume_tick" in scope["schedule"].__code__.co_names:
+            expected.append("usage")
         self.assertEqual(seen, expected + ["dispatch"])
         self.assertIsNone(rt.scheduler_error)
     def test_log_open_failure_recovers(self): self.exercise("open")

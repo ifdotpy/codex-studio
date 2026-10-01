@@ -48,8 +48,23 @@ try {
   const original = await (await fetch(origin + "/api/state")).json();
   const identity = await (await fetch(origin + "/api/sync/identity")).json();
   let workspaceId = identity.workspaceId;
+  const entityDocuments = new Map();
+  let entityMaxSeq = 0;
+  let entityCursor = 0;
+  do {
+    const result = await (
+      await fetch(
+        `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityCursor}&limit=100`,
+      )
+    ).json();
+    for (const document of result.documents || [])
+      entityDocuments.set(document.id, document);
+    entityMaxSeq = result.maxSeq || entityMaxSeq;
+    entityCursor = result.checkpoint?.seq || entityCursor;
+  } while (entityCursor < entityMaxSeq);
   const a = original.threads.find((agent) => agent.name === "Other project");
   const b = original.threads.find((agent) => agent.name === "Release lead");
+  let currentBName = b.name;
   const agents = [a, b].map((agent) => ({
     ...agent,
     status: "completed",
@@ -76,7 +91,6 @@ try {
       work: [],
     },
   };
-  let stateSeq = 100;
   const payload = (agent, tag) => ({
     agent: { ...agent, status: "completed", inFlight: false, turnId: null },
     items: Array.from({ length: 40 }, (_, index) => ({
@@ -96,6 +110,7 @@ try {
   ]);
   const reads = [],
     streams = [],
+    entityStreams = [],
     held = [];
   let holdNetwork = false,
     holdWorkspaceB = false,
@@ -146,6 +161,13 @@ try {
     if (url.pathname === "/api/transcript/stream") {
       streams.push(url.searchParams.get("id"));
       return route.fulfill({ status: 204, body: "" });
+    }
+    if (
+      url.pathname === "/api/sync/stream" &&
+      url.searchParams.get("scope") === "state:entities:v1"
+    ) {
+      entityStreams.push(route);
+      return;
     }
     if (url.pathname === "/api/search")
       return route.fulfill({
@@ -201,13 +223,27 @@ try {
     if (url.pathname !== "/api/sync/pull") return route.fallback();
     const scope = url.searchParams.get("scope");
     const after = Number(url.searchParams.get("after") || 0);
+    if (scope === "state:entities:v1") {
+      const limit = Number(url.searchParams.get("limit") || 100);
+      const documents = [...entityDocuments.values()]
+        .filter((document) => document.seq > after)
+        .sort((left, right) => left.seq - right.seq)
+        .slice(0, limit);
+      return route.fulfill({
+        json: {
+          workspaceId,
+          documents,
+          checkpoint: { seq: documents.at(-1)?.seq ?? after },
+          maxSeq: entityMaxSeq,
+        },
+      });
+    }
     if (scope === "drafts")
       return route.fulfill({
         json: { workspaceId, documents: [], checkpoint: { seq: after } },
       });
-    const isState = scope === "state" || scope === "state:chat";
-    if (!isState && !scope?.startsWith("transcript:")) return route.fallback();
-    const id = isState ? null : scope.slice(11);
+    if (!scope?.startsWith("transcript:")) return route.fallback();
+    const id = scope.slice(11);
     if (holdWorkspaceB && id === b.id) {
       held.push(route);
       return;
@@ -218,7 +254,7 @@ try {
         releaseA = resolve;
       });
     }
-    let value = isState ? { seq: stateSeq, data: state } : values.get(id);
+    let value = values.get(id);
     if (!value)
       return route.fulfill({
         status: 400,
@@ -260,9 +296,32 @@ try {
       body: JSON.stringify({ id: b.id, name }),
     });
     assert.ok(response.ok, await response.text());
+    currentBName = name;
+    let after = entityMaxSeq;
+    let maxSeq = entityMaxSeq;
+    do {
+      const result = await (
+        await fetch(
+          `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${after}&limit=100`,
+        )
+      ).json();
+      for (const document of result.documents || [])
+        entityDocuments.set(document.id, document);
+      maxSeq = result.maxSeq || maxSeq;
+      after = result.checkpoint?.seq || after;
+    } while (after < maxSeq);
+    entityMaxSeq = maxSeq;
+    for (const stream of entityStreams.splice(0))
+      await stream
+        .fulfill({
+          status: 200,
+          contentType: "text/event-stream",
+          body: `data: ${entityMaxSeq}\n\n`,
+        })
+        .catch(() => {});
   };
   const selected = () => page.locator("#conversation-title").innerText();
-  const marker = (tag) => page.locator(`[data-message="${tag}-39"]`);
+  const marker = (tag) => page.locator(`[data-message="${tag}-39"]:visible`);
   await page.goto(origin);
   await until(() => !!releaseA, "The first foreground request must start");
   await page.waitForTimeout(1250);
@@ -299,7 +358,6 @@ try {
   // A real shared SSE invalidation announces a newer B while the reader stays in A.
   values.set(b.id, { seq: 301, data: payload(b, "B-newest") });
   agents.find((agent) => agent.id === b.id).updated = Date.now();
-  stateSeq++;
   await invalidate("Prefetch background update");
   await until(
     () => reads.some((read) => read.id === b.id && read.seq === 301),
@@ -369,7 +427,9 @@ try {
           ) {
             const ids = [
               ...document.querySelectorAll("#messages [data-message]"),
-            ].map((node) => node.getAttribute("data-message"));
+            ]
+              .filter((node) => node.getClientRects().length > 0)
+              .map((node) => node.getAttribute("data-message"));
             window.switchFrames.push({
               time: performance.now(),
               fresh: ids.includes(`${tag}-39`),
@@ -416,7 +476,7 @@ try {
       );
     return elapsed;
   };
-  const coldCached = await switchCached(b.id, b.name, "B-newest", "A-");
+  const coldCached = await switchCached(b.id, currentBName, "B-newest", "A-");
   assert.equal(await marker("B-first").count(), 0);
   await page.locator("#messages").evaluate((element) => {
     element.scrollTop = 1100;
@@ -433,7 +493,7 @@ try {
         .evaluate((element) => element.scrollTop)) - savedA,
     ) < 2,
   );
-  const revisitB = await switchCached(b.id, b.name, "B-newest", "A-");
+  const revisitB = await switchCached(b.id, currentBName, "B-newest", "A-");
   assert.ok(
     Math.abs(
       (await page
@@ -481,7 +541,7 @@ try {
       "The historical page has a measurable scroll position",
     );
     holdNetwork = true;
-    await switchCached(b.id, b.name, "B-newest", "A-");
+    await switchCached(b.id, currentBName, "B-newest", "A-");
     const elapsed = await switchCached(a.id, a.name, tag, "B-", saved);
     holdNetwork = false;
     for (const route of held.splice(0)) await handle(route).catch(() => {});
@@ -520,7 +580,6 @@ try {
 
   // A different workspace at the same origin reuses chat IDs but must use another database.
   workspaceId = "f".repeat(32);
-  stateSeq = 10;
   values.set(a.id, { seq: 20, data: payload(a, "Workspace2-A") });
   values.set(b.id, { seq: 30, data: payload(b, "Workspace2-B") });
   holdWorkspaceB = true;

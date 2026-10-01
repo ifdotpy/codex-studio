@@ -12,7 +12,7 @@ export default function LimitRecoveryNotice({
   usageResume,
   inline = false,
 }: {
-  recovery: LimitRecovery;
+  recovery?: LimitRecovery;
   agentId?: string;
   usageResume?: Json;
   inline?: boolean;
@@ -28,6 +28,7 @@ export default function LimitRecoveryNotice({
   const scheduled = resume?.status === "scheduled";
   const plannedAt = resume?.plannedAt;
   const nextCheckAt = resume?.dueAt;
+  const auth = resume?.cause === "auth";
   const canToggle =
     !!agentId &&
     !!resume?.id &&
@@ -56,8 +57,20 @@ export default function LimitRecoveryNotice({
       className={`account-limit-recovery${inline ? " inline" : ""}`}
       role="status"
     >
-      <strong>{recovery.title}</strong>
-      <p>{recovery.message}</p>
+      <strong>
+        {auth
+          ? scheduled
+            ? "Waiting for the account sign-in"
+            : "Automatic resume is off"
+          : recovery?.title}
+      </strong>
+      <p>
+        {auth
+          ? scheduled
+            ? "Studio will continue this chat when the account works again."
+            : "Turn on automatic resume to continue this chat after sign-in works."
+          : recovery?.message}
+      </p>
       {scheduled &&
         (typeof plannedAt === "number" || typeof nextCheckAt === "number") && (
           <p>
@@ -86,7 +99,7 @@ export default function LimitRecoveryNotice({
         </Button>
       )}
       {resumeError && <p role="alert">{resumeError}</p>}
-      {recovery.resetAt && (
+      {recovery?.resetAt && (
         <p>
           Reported reset:{" "}
           <time dateTime={new Date(recovery.resetAt * 1000).toISOString()}>
@@ -94,7 +107,7 @@ export default function LimitRecoveryNotice({
           </time>
         </p>
       )}
-      {recovery.action && (
+      {recovery?.action && (
         <>
           <Button
             component="a"
@@ -108,18 +121,18 @@ export default function LimitRecoveryNotice({
           <small>Use this chat's account in ChatGPT.</small>
         </>
       )}
-      {recovery.ownerRequest && (
+      {recovery?.ownerRequest && (
         <>
           <Button
             size="compact-xs"
             onClick={async () => {
               try {
-                await copyText(recovery.ownerRequest!);
+                await copyText(recovery!.ownerRequest!);
                 setCopyStatus(
                   "Request copied. Send it to your workspace owner.",
                 );
               } catch {
-                setCopyStatus(recovery.ownerRequest!);
+                setCopyStatus(recovery!.ownerRequest!);
               }
             }}
           >

@@ -105,6 +105,30 @@ class TurnStartContract(unittest.TestCase):
         entry["future"].set_exception(RuntimeError(message))
         self.assertTrue(entry["handled"].wait(3))
 
+    def test_late_busy_rejection_restores_exact_uncertain_input(self):
+        key = self.start()
+        self.accept()
+        self.assertTrue(self.server.deferred[0]['handled'].wait(3))
+        self.server.mode = 'silent'
+        self.runtime.send(key, 'Keep this input', 'late-busy')
+        self.wait_start(1)
+        self.assertEqual(self.runtime.delivery_receipt('late-busy')['status'], 'uncertain')
+        turn = self.runtime.agent(key)['turnId']
+        self.reject(1, 'Cannot steer review')
+        self.assertEqual(self.runtime.delivery_receipt('late-busy')['status'], 'pending')
+        self.assertEqual(self.runtime.agent(key)['steerRejectedTurnId'], turn)
+
+    def test_late_ack_schedules_usage_resume_after_quota_completion(self):
+        key = self.start('silent')
+        entry = self.server.deferred[0]
+        self.server.notify({'method':'turn/completed','params':{
+            'threadId':entry['params']['threadId'],
+            'turn':{'id':entry['turn']['id'],'status':'failed',
+                    'error':{'message':'quota','codexErrorInfo':'usageLimitExceeded'}}}})
+        self.accept()
+        self.assertTrue(entry['handled'].wait(3))
+        self.assertEqual(self.runtime.agent(key)['usageResume']['cause'], 'usage_limit')
+
     def notify_input(self, index=0, client_id=None):
         e = self.server.deferred[index]
         self.server.notify({"method": "item/started", "params": {
@@ -122,7 +146,8 @@ class TurnStartContract(unittest.TestCase):
         self.assertEqual(len(self.server.deferred), 1)
         self.accept()
         eventually(lambda: any(e["status"] == "delivered" for e in self.events()))
-        self.assertEqual(self.runtime.agent(key)["turnId"], "deferred-0")
+        self.wait_start(1)
+        self.assertEqual(self.runtime.agent(key)["turnId"], "deferred-1")
 
     def test_client_id_confirms_only_its_exact_batch(self):
         key = self.start()
@@ -159,8 +184,9 @@ class TurnStartContract(unittest.TestCase):
         key = self.start("completed")
         self.server.mode = "started"
         self.runtime.send(key, "Second input")
-        self.wait_start(1)
+        self.assertEqual(len(self.server.deferred), 1)
         self.accept(0)
+        self.wait_start(1)
         first_id = self.server.deferred[0]["params"]["clientUserMessageId"]
         eventually(lambda: any(e["id"] == first_id and e["status"] == "delivered" for e in self.events()))
         self.assertEqual(self.runtime.agent(key)["turnId"], "deferred-1")
@@ -173,8 +199,11 @@ class TurnStartContract(unittest.TestCase):
         key = self.start("completed")
         self.server.mode = "started"
         self.runtime.send(key, "Second input")
+        self.assertEqual(len(self.server.deferred), 1)
+        old_attempt = self.runtime.agent(key)["startAttempt"]["id"]
+        self.accept(0)
         self.wait_start(1)
-        self.reject(message="late rejection")
+        self.runtime.start_error(key, old_attempt, RuntimeError("late rejection"))
         self.assertEqual(self.runtime.agent(key)["status"], "running")
         self.assertEqual(self.runtime.agent(key)["turnId"], "deferred-1")
 
@@ -285,6 +314,9 @@ class RpcWaitContract(unittest.TestCase):
         server.clock_replies = queue.Queue(maxsize=AppServer.CLOCK_QUEUE_LIMIT)
         server.clock_writer = threading.Thread(target=server.write_clocks, daemon=True)
         server.clock_writer.start()
+        server.tool_requests = queue.Queue(maxsize=AppServer.TOOL_REQUEST_QUEUE_LIMIT)
+        server.tool_dispatcher = threading.Thread(target=server.dispatch_tools, daemon=True)
+        server.tool_dispatcher.start()
         def cleanup():
             server.reader_done.set()
             self.assertTrue(server.join_callbacks(2))

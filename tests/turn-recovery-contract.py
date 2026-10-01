@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -41,6 +42,15 @@ class RecoveryServer(fixture.FakeServer):
             if self.read_error:
                 raise self.read_error
             result = dict(self.native)
+            # Model the native server's state transition too: authoritative
+            # history says the active turn has already reached a terminal state.
+            active = self.active_turns.get(params['threadId'])
+            terminal = next((turn for turn in result.get('turns', [])
+                             if active and turn.get('id') == active.get('id')),
+                            None)
+            if (result.get('status', {}).get('type') != 'active'
+                    and terminal and terminal.get('status') in {'completed', 'failed', 'interrupted'}):
+                self.active_turns.pop(params['threadId'], None)
             if not params['includeTurns']:
                 result.pop('turns', None)
             return {'thread': result}
@@ -88,11 +98,32 @@ class TurnRecoveryContract(unittest.TestCase):
             self.assertFalse(row['streaming'])
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_completed_turns').fetchone()[0], 1)
 
+    def test_scheduler_roster_reaches_orphan_busy_turn_recovery(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            a.update(status='running', inFlight=True, turnId=None, startAttempt=None,
+                     threadId='orphan-thread', activity={'at': time.time() - 180}, lastEvent=None)
+            self.runtime.put(db, 'agents', a)
+            agents = self.runtime.scheduler_agents(db)
+        self.assertIn(self.key, {agent['id'] for agent in agents})
+        submitted = []
+        with patch.object(self.runtime.recovery_pool, 'submit',
+                          side_effect=lambda *args: submitted.append(args)):
+            self.runtime.queue_turn_recovery(agents)
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0][1], self.key)
+
     def test_completed_turn_on_later_page_recovers_once(self):
         self.server.native['turns'] = [
             {'id': 'newer-' + str(i), 'status': 'completed', 'items': []} for i in range(31)
         ] + self.server.native['turns']
-        self.assertEqual(self.runtime.reconcile_turn(self.key)['outcome'], 'completed')
+        result = self.runtime.reconcile_turn(self.key)
+        if result.get('status') == 'skipped':
+            # The background scheduler may have applied this exact recovery first.
+            fixture.eventually(lambda: (self.runtime.agent(self.key).get('turnRecovery') or {}).get('turnId') == self.turn)
+        else:
+            self.assertEqual((result.get('status'), result.get('outcome')), ('reconciled', 'completed'))
+        self.assertEqual((self.runtime.agent(self.key).get('turnRecovery') or {}).get('outcome'), 'completed')
         self.assertEqual(self.runtime.agent(self.key)['lastAnswer'], 'Full final answer')
         pages = [p for m, p in self.server.calls if m == 'thread/turns/list']
         self.assertEqual([p.get('cursor') for p in pages], [None, '10', '20', '30'])
@@ -181,6 +212,7 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.reconcile_turn(self.key)  # Native evidence only names the old turn.
         starts = [p for n, p in self.server.calls if n == 'turn/start']
         self.assertEqual(len(starts), 2)
+        self.assertEqual([p.get('clientUserMessageId') for p in starts].count('next-task'), 1)
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE id='next-task'").fetchone()[0], 1)
 
@@ -213,8 +245,47 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.changed.set()
         fixture.eventually(lambda: not self.runtime.agent(self.key)['inFlight'])
         self.assertEqual(self.runtime.agent(self.key)['status'], 'completed')
+        self.assertEqual(len([1 for method, _ in self.server.calls if method == 'turn/start']), 1)
 
 
+
+    def orphan(self):
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['outcome'], 'completed')
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            a.update(status='running', inFlight=True, turnId=None, steerRejectedTurnId='',
+                     activity={'phase': 'thinking', 'at': time.time() - 130},
+                     lastEvent='2020-01-01T00:00:00Z')
+            a.pop('startAttempt', None)
+            self.runtime.put(db, 'agents', a)
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                       ('orphan-input', self.key, 'user', 'Continue.', 'pending', time.time(), a['epoch'], None, None))
+
+    def test_orphan_busy_flag_clears_when_native_idle_and_input_starts_once(self):
+        self.orphan()
+        starts = len([1 for method, _ in self.server.calls if method == 'turn/start'])
+        self.runtime.changed.set()
+        fixture.eventually(lambda: self.runtime.agent(self.key).get('turnRecovery', {}).get('outcome') == 'idle')
+        fixture.eventually(lambda: len([1 for method, _ in self.server.calls if method == 'turn/start']) == starts + 1)
+        a = self.runtime.agent(self.key)
+        self.assertNotIn('steerRejectedTurnId', a)
+        for _ in range(3):
+            self.runtime.dispatch()
+        self.assertEqual(len([1 for method, _ in self.server.calls if method == 'turn/start']), starts + 1)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='orphan-input'").fetchone()[0],
+                             'delivered')
+
+    def test_orphan_busy_flag_waits_for_active_or_unprocessed_native_turn(self):
+        self.orphan()
+        self.server.native['status']['type'] = 'active'
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'active_or_unknown')
+        self.server.native['status']['type'] = 'idle'
+        self.server.native['turns'].insert(0, {'id': 'unprocessed-turn', 'status': 'completed', 'items': []})
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        a = self.runtime.agent(self.key)
+        self.assertTrue(a['inFlight'])
+        self.assertEqual(a['steerRejectedTurnId'], '')
 
     def test_scheduler_probes_one_at_a_time_without_holding_runtime_lock(self):
         self.server.native['status']['type'] = 'active'

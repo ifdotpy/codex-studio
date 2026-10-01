@@ -10,7 +10,6 @@ import {
   NumberInput,
   Text,
   TextInput,
-  Textarea,
   UnstyledButton,
 } from "@mantine/core";
 import {
@@ -29,15 +28,14 @@ import {
   Wrench,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText } from "../../api";
+import { api, apiDownload, errorText } from "../../api";
 import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../../types";
+import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
 import { copyText } from "../../clipboard";
+import { activeTask } from "../backgroundTaskModel";
 
-export const activeTask = (task: BackgroundTask) =>
-  ["running", "starting", "approval", "pending", "stopping"].includes(
-    task.status,
-  );
+export { activeTask, backgroundTasks } from "../backgroundTaskModel";
 const labels: Record<string, string> = {
   running: "Running",
   starting: "Starting",
@@ -114,15 +112,6 @@ const taskKindLabel = (task: BackgroundTask, owner?: Agent) => {
         owner.turnId !== task.turnId));
   return outsideTurn ? "Background command" : "Command";
 };
-export function backgroundTasks(data: Snapshot | null): BackgroundTask[] {
-  return [
-    ...(data?.runtime.monitors || []).map(
-      (m) => ({ ...m, kind: "monitor" as const }) as BackgroundTask,
-    ),
-    ...(data?.runtime.tasks || []),
-  ];
-}
-
 export default function BackgroundTasks({
   opened,
   close,
@@ -153,6 +142,7 @@ export default function BackgroundTasks({
     } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
+  const taskFeed = useWorkspaceTaskFeed(opened, leadId);
   const appliedFocus = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!opened) return;
@@ -160,7 +150,12 @@ export default function BackgroundTasks({
     return () => clearInterval(timer);
   }, [opened]);
   const agents = data.threads,
-    tasks = backgroundTasks(data).filter(activeTask),
+    tasks = [
+      ...(data.runtime.monitors || []).map(
+        (m) => ({ ...m, kind: "monitor" as const }) as BackgroundTask,
+      ),
+      ...(taskFeed ?? data.runtime.tasks ?? []),
+    ].filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
     (t) =>
@@ -817,16 +812,10 @@ async function downloadLog(task: BackgroundTask, notify: (s: string) => void) {
   try {
     let blob: Blob, name: string;
     if (task.kind === "monitor") {
-      const result = await api<{
-        name: string;
-        mime: string;
-        base64: string;
-        truncated?: boolean;
-      }>("/api/monitor/log?id=" + encodeURIComponent(task.id));
-      blob = new Blob(
-        [Uint8Array.from(atob(result.base64), (c) => c.charCodeAt(0))],
-        { type: result.mime || "text/plain" },
+      const result = await apiDownload(
+        "/api/monitor/log?id=" + encodeURIComponent(task.id),
       );
+      blob = result.blob;
       name = result.name;
       if (result.truncated)
         notify("The download contains the retained part of the log.");

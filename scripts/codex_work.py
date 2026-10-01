@@ -2,10 +2,17 @@
 
 import hashlib
 import json
+import re
+import sqlite3
+import subprocess
+import threading
 import time
+import unicodedata
 import uuid
+import shutil
+from pathlib import Path
 
-from codex_agent_management import management_tools
+from codex_agent_management import management_tools, manage_agent, _worktree_check
 
 
 def text_field(value, name, maximum=32000, empty=False):
@@ -28,6 +35,8 @@ def work_tools(tool, text):
             "claim reserves ready work atomically. submit saves evidence, sets review, and notifies the lead. "
             "Only the lead reviews results. accept records approval and releases dependent work. "
             "reject takes the reason and required corrections in result, sets ready, and delivers those instructions to the owner as work_decision. "
+            "cancel closes a task without requiring a submit; give a reason. Only the lead or task creator can cancel. "
+            "Cancellation releases the assignment and sends work_decision to a live owner. "
             "The owner continues from that event when automatic continuation is enabled. Explicit stops and native failure holds remain in effect. "
             "Mutations return brief receipts; the server owns state changes and event delivery.",
             {
@@ -43,6 +52,7 @@ def work_tools(tool, text):
                         "submit",
                         "accept",
                         "reject",
+                        "cancel",
                     ],
                 },
                 "task_id": text,
@@ -55,6 +65,7 @@ def work_tools(tool, text):
                 "dependencies": {"type": "array", "items": text},
                 "status": {"type": "string", "enum": ["ready", "blocked"]},
                 "result": text,
+                "reason": {"type": "string", "minLength": 1, "maxLength": 32000},
                 "checks": text,
                 "revision": text,
                 "files": {"type": "array", "items": text},
@@ -72,17 +83,404 @@ def work_tools(tool, text):
 
 
 class WorkMixin:
+    def work_action(self, agent_id, data, key=None, actor=None, epoch=None):
+        result = self._work_action(agent_id, data, key, actor, epoch)
+        if data.get('action') != 'accept' or result.get('status') != 'accepted':
+            return result
+        if 'archive' in result:
+            return result
+        lock = self.__dict__.setdefault('_accepted_archive_lock', threading.RLock())
+        with lock:
+            return self._finish_accepted_action(agent_id, result, key, epoch)
+
+    def _finish_accepted_action(self, agent_id, result, key, epoch):
+        with self.lock, self.db() as db:
+            stored = db.execute('SELECT record FROM runtime_work WHERE id=?', (result['id'],)).fetchone()
+            prior = json.loads(stored[0]).get('archive') if stored else None
+        try:
+            archive = prior or self._archive_accepted_owner(agent_id, result, epoch)
+        except Exception as error:
+            archive = {'status': 'kept', 'reason': 'The archive check failed: ' + str(error)[:180]}
+        with self.lock, self.db() as db:
+            row = db.execute('SELECT record FROM runtime_work WHERE id=?', (result['id'],)).fetchone()
+            if not row:
+                raise ValueError('Accepted work item disappeared during archive check')
+            work = json.loads(row[0])
+            if work['status'] != 'accepted':
+                raise ValueError('Accepted work item changed during archive check')
+            if not work.get('archive'):
+                work['archive'] = archive
+                self.put(db, 'work', work)
+            result['archive'] = work['archive']
+            if key:
+                db.execute('UPDATE runtime_operation_receipts SET result=? WHERE id=?',
+                           (json.dumps(result), key))
+            if (result['archive']['status'] != 'archived' and work.get('owner')
+                    and work['owner'] != work['rootId']):
+                owner = self.agent(work['owner'], db)
+                if not owner.get('deletedAt'):
+                    decision = work['decisions'][-1]
+                    self.enqueue(db, owner, 'work_decision', json.dumps({
+                        'task': work['id'], 'decision': 'accept', 'reason': decision['reason']}),
+                        'work-decision:' + work['id'] + ':' + str(work['version'] - 1))
+        return result
+
+    def _archive_accepted_owner(self, agent_id, result, epoch):
+        owner_id = result.get('owner')
+        if not owner_id or owner_id == result['rootId']:
+            return {'status': 'skipped', 'reason': 'The task owner is the lead or is unassigned'}
+        with self.lock, self.db() as db:
+            owner = self.agent(owner_id, db)
+            work = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?',
+                                         (result['id'],)).fetchone()[0])
+            open_tasks = [row[0] for row in db.execute(
+                "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+                "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled')",
+                (owner_id,))]
+        if open_tasks:
+            return {'status': 'kept', 'reason': 'The owner has another open task', 'tasks': open_tasks[:20]}
+        if owner.get('agentArchive'):
+            if owner['agentArchive'].get('reason') == 'Accepted task result is on main':
+                cleaned = owner.get('cleanedWorktree')
+                return {'status': 'archived', 'worktree': {'state': 'removed',
+                        'bytes': cleaned.get('bytes')} if cleaned else {'state': 'none', 'bytes': 0}}
+            return {'status': 'kept', 'reason': 'The owner was archived for another reason'}
+        if owner.get('deletedAt'):
+            return {'status': 'kept', 'reason': 'The owner is already removed'}
+        revision = work['results'][-1].get('revision', '')
+        if not re.fullmatch(r'[0-9a-fA-F]{7,64}', revision):
+            return {'status': 'kept', 'reason': 'The submitted revision is not a commit ID'}
+        try:
+            cwd = Path(owner['cwd']).resolve()
+            repo = subprocess.run(['git', '-C', str(cwd), 'rev-parse', '--show-toplevel'],
+                                  check=True, capture_output=True, timeout=30).stdout.decode().strip()
+            submitted = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
+                                        revision + '^{commit}'], check=True, capture_output=True,
+                                       timeout=30).stdout.decode().strip()
+            main = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
+                                   'refs/heads/main^{commit}'], check=True, capture_output=True,
+                                  timeout=30).stdout.decode().strip()
+            reached = subprocess.run(['git', '-C', repo, 'merge-base', '--is-ancestor', submitted, main],
+                                     capture_output=True, timeout=30)
+        except (KeyError, OSError, subprocess.SubprocessError, UnicodeError):
+            return {'status': 'kept', 'reason': 'The result commit or main branch cannot be checked'}
+        if reached.returncode != 0:
+            return {'status': 'kept', 'reason': 'The result commit is not reachable from main'}
+        if owner.get('worktreeReady'):
+            _, reason = _worktree_check(self, agent_id, owner_id, epoch)
+            if reason:
+                return {'status': 'kept', 'reason': reason}
+        try:
+            archived = manage_agent(self, agent_id, {'action': 'archive', 'agent_id': owner_id,
+                                                      'reason': 'Accepted task result is on main'}, epoch)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            return {'status': 'kept', 'reason': str(error)[:180]}
+        if archived['status'] != 'archived':
+            blockers = archived.get('blockers') or []
+            return {'status': 'kept', 'reason': ', '.join(item['kind'] for item in blockers) or archived['status']}
+        cleanup = archived.get('worktree') or {}
+        if cleanup.get('state') == 'kept':
+            return {'status': 'archived', 'worktree': cleanup,
+                    'reason': cleanup.get('reason', 'The worktree was kept')}
+        return {'status': 'archived', 'worktree': cleanup}
+
     def setup_work(self, db):
-        from transcript_storage.storage import initialize
-        initialize(db)
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS runtime_work_root_status
+                ON runtime_work(json_extract(record,'$.rootId'),json_extract(record,'$.status'));
+            CREATE INDEX IF NOT EXISTS runtime_work_owner_status
+                ON runtime_work(json_extract(record,'$.owner'),json_extract(record,'$.status'));
             CREATE TABLE IF NOT EXISTS runtime_plans (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_annotations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_event_meta (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_item_fulltext (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_search_next_meta (
+                id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,
+                search_rowid INTEGER NOT NULL UNIQUE);
+            CREATE TABLE IF NOT EXISTS runtime_search_rollout (
+                id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,
+                cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL);
         """)
+        state = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()
+        if not state:
+            db.execute("INSERT INTO runtime_search_rollout VALUES (1,'building',0,?)", (time.time(),))
+            state = ("building",)
+        phase = state[0]
+        old_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'").fetchone()
+        if phase not in {"dropping", "complete"} and not old_exists:
+            db.execute("CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61')")
+        if phase not in {"dropping", "complete"}:
+            db.execute("CREATE TABLE IF NOT EXISTS runtime_search_indexed (id TEXT PRIMARY KEY)")
+        if phase not in {"dropping", "complete"} and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'").fetchone():
+            self.setup_search_rows(db)
 
+    def setup_search_rows(self, db):
+        # FTS UNINDEXED columns cannot support an equality lookup. Keep the
+        # document address in an ordinary indexed table, including legacy rows.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
+            return
+        db.execute("CREATE TABLE runtime_search_rows (id TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL UNIQUE)")
+        db.execute("CREATE TABLE IF NOT EXISTS runtime_search_rows_rollout (id INTEGER PRIMARY KEY CHECK(id=1),cursor INTEGER NOT NULL DEFAULT 0)")
+        db.execute("INSERT OR IGNORE INTO runtime_search_rows_rollout(id,cursor) VALUES(1,0)")
+
+    @staticmethod
+    def work_records(db, root_id):
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=?", (root_id,))]
+
+    @staticmethod
+    def work_by_id(db, task_id, root_id):
+        row = db.execute("SELECT record FROM runtime_work WHERE id=?", (task_id,)).fetchone()
+        task = json.loads(row[0]) if row else None
+        return task if task and task.get('rootId') == root_id else None
+
+    @staticmethod
+    def work_dependency_statuses(db, root_id, dependencies):
+        if not dependencies:
+            return {}
+        marks = ",".join("?" for _ in dependencies)
+        return {row[0]: row[1] for row in db.execute(
+            "SELECT json_extract(record,'$.id'),json_extract(record,'$.status') FROM runtime_work "
+            "WHERE id IN (" + marks + ") AND json_extract(record,'$.rootId')=?",
+            (*dependencies, root_id))}
+
+    @staticmethod
+    def work_dependent_records(db, root_id, dependency_id):
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=? "
+            "AND json_extract(record,'$.owner') IS NOT NULL AND EXISTS "
+            "(SELECT 1 FROM json_each(runtime_work.record,'$.dependencies') WHERE value=?)",
+            (root_id, dependency_id))]
+
+    def _search_phase(self, db):
+        row = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()
+        return row[0] if row else "legacy"
+
+    def search_is_indexed(self, db, key):
+        if self._search_phase(db) in {"active", "dropping", "complete"}:
+            return db.execute("SELECT 1 FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone() is not None
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
+            return db.execute("SELECT 1 FROM runtime_search_rows WHERE id=?", (key,)).fetchone() is not None
+        return False
+
+    def _index_search_next(self, db, key, agent, kind, body):
+        previous = db.execute("SELECT search_rowid FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone()
+        if previous:
+            db.execute("DELETE FROM runtime_search_next WHERE rowid=?", (previous[0],))
+            rowid = previous[0]
+            db.execute("UPDATE runtime_search_next_meta SET agent=?,kind=? WHERE id=?", (agent, kind, key))
+        else:
+            rowid = db.execute("SELECT coalesce(max(search_rowid),0)+1 FROM runtime_search_next_meta").fetchone()[0]
+            db.execute("INSERT INTO runtime_search_next_meta VALUES (?,?,?,?)", (key, agent, kind, rowid))
+        db.execute("INSERT INTO runtime_search_next(rowid,body) VALUES (?,?)", (rowid, body))
+
+    def _delete_search_next(self, db, key):
+        previous = db.execute("SELECT search_rowid FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone()
+        if previous:
+            db.execute("DELETE FROM runtime_search_next WHERE rowid=?", (previous[0],))
+            db.execute("DELETE FROM runtime_search_next_meta WHERE id=?", (key,))
+
+    def index_item(self, db, key, agent, kind, body=None):
+        from codex_search_text import search_text
+        body = search_text(db, key)
+        phase = self._search_phase(db)
+        if phase not in {"active", "dropping", "complete"}:
+            row = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
+            if row:
+                db.execute("DELETE FROM runtime_search WHERE rowid=?", (row[0],))
+            cursor = db.execute(
+                "INSERT INTO runtime_search(id,agent,kind,body) VALUES (?,?,?,?)",
+                (key, agent, kind, body),
+            )
+            db.execute("INSERT INTO runtime_search_rows VALUES (?,?) ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
+                       (key, cursor.lastrowid))
+            db.execute("INSERT OR IGNORE INTO runtime_search_indexed VALUES (?)", (key,))
+        if phase in {"building", "active", "dropping", "complete"} and db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search_next'"
+        ).fetchone():
+            self._index_search_next(db, key, agent, kind, body)
+
+    def delete_search_item(self, db, key):
+        phase = self._search_phase(db)
+        if phase not in {"active", "dropping", "complete"}:
+            row = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
+            if row:
+                db.execute("DELETE FROM runtime_search WHERE rowid=?", (row[0],))
+                db.execute("DELETE FROM runtime_search_rows WHERE id=?", (key,))
+                db.execute("DELETE FROM runtime_search_indexed WHERE id=?", (key,))
+        if phase in {"building", "active", "dropping", "complete"}:
+            self._delete_search_next(db, key)
+
+    def search_migration_start(self):
+        if getattr(self, "search_migration_thread", None) and self.search_migration_thread.is_alive():
+            return False
+        phase = None
+        with self.db() as db:
+            phase = self._search_phase(db)
+        if phase == "complete":
+            return False
+        worker = threading.Thread(target=self._search_migration_run, daemon=True,
+                                  name="runtime-search-migration")
+        self.search_migration_thread = worker
+        worker.start()
+        return True
+
+    def _search_migration_run(self):
+        while not self.closed:
+            delay = 0.001
+            try:
+                blocked_for_space = False
+                with self.lock, self.db() as db:
+                    phase = self._search_phase(db)
+                    if phase == "active":
+                        db.execute("UPDATE runtime_search_rollout SET phase='dropping',updated=? WHERE id=1", (time.time(),))
+                        phase = "dropping"
+                    elif phase in {"building", "waiting_for_space"}:
+                        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search_next'").fetchone():
+                            free = shutil.disk_usage(self.db_path.parent).free
+                            # Free pages inside the database are reused before the file grows.
+                            free += (db.execute("PRAGMA freelist_count").fetchone()[0]
+                                     * db.execute("PRAGMA page_size").fetchone()[0])
+                            db_bytes = self.db_path.stat().st_size
+                            reserve = max(16 * 1024**3, db_bytes // 2)
+                            if free < reserve:
+                                db.execute("UPDATE runtime_search_rollout SET phase='waiting_for_space',updated=? WHERE id=1", (time.time(),))
+                                blocked_for_space = True
+                            else:
+                                self._check_search_rows_batch(db)
+                                if sqlite3.sqlite_version_info < (3, 43, 0):
+                                    raise RuntimeError("SQLite 3.43 or later is required for contentless FTS deletes")
+                                db.execute("CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')")
+                                db.execute("UPDATE runtime_search_rollout SET phase='building',updated=? WHERE id=1", (time.time(),))
+                        if not blocked_for_space:
+                            reusable = (db.execute("PRAGMA freelist_count").fetchone()[0]
+                                        * db.execute("PRAGMA page_size").fetchone()[0])
+                            if shutil.disk_usage(self.db_path.parent).free + reusable < 8 * 1024**3:
+                                db.execute("UPDATE runtime_search_rollout SET phase='waiting_for_space',updated=? WHERE id=1", (time.time(),))
+                                blocked_for_space = True
+                            else:
+                                if phase == "waiting_for_space":
+                                    db.execute("UPDATE runtime_search_rollout SET phase='building',updated=? WHERE id=1", (time.time(),))
+                                if self._check_search_rows_batch(db):
+                                    pass
+                                elif not self._search_migration_batch(db):
+                                    self._search_migration_verify_and_switch(db)
+                    elif phase == "dropping":
+                        self._search_cleanup_batch(db)
+                    else:
+                        return
+                if blocked_for_space:
+                    delay = 30
+                time.sleep(delay)
+            except Exception as error:
+                self.search_migration_error = str(error)[:500]
+                time.sleep(5)
+
+    def _search_migration_batch(self, db, batch_size=5, max_bytes=64 * 1024):
+        state = db.execute("SELECT cursor FROM runtime_search_rollout WHERE id=1").fetchone()
+        cursor = int(state[0])
+        rows = db.execute(
+            "SELECT search_rowid,id FROM runtime_search_rows WHERE search_rowid>? ORDER BY search_rowid LIMIT ?",
+            (cursor, batch_size),
+        ).fetchall()
+        if not rows:
+            return False
+        from codex_search_text import search_texts
+        refs = [row["id"] for row in rows]
+        bodies = search_texts(db, refs)
+        total_bytes = 0
+        processed = 0
+        for row in rows:
+            ref = row["id"]
+            body = bodies.get(ref, "")
+            body_bytes = len(body.encode("utf-8"))
+            if processed and total_bytes + body_bytes > max_bytes:
+                break
+            total_bytes += body_bytes
+            item = db.execute("SELECT agent,record FROM runtime_items WHERE id=?", (ref,)).fetchone()
+            if item:
+                record = json.loads(item["record"])
+                if record.get("truncated"):
+                    # Transfer the legacy full body before the old FTS row can be removed.
+                    db.execute("INSERT INTO runtime_item_fulltext VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body", (ref, body))
+                    from codex_search_text import search_text
+                    if search_text(db, ref) != body:
+                        raise RuntimeError("Full-text transfer verification failed for " + ref)
+            legacy = db.execute("SELECT agent,kind FROM runtime_search WHERE rowid=?", (row["search_rowid"],)).fetchone()
+            kind, agent = legacy["kind"], legacy["agent"]
+            self._index_search_next(db, ref, agent, kind, body)
+            processed += 1
+        if not processed:
+            return False
+        db.execute("UPDATE runtime_search_rollout SET cursor=?,updated=? WHERE id=1",
+                   (rows[processed - 1]["search_rowid"], time.time()))
+        self.search_migration_last_batch_bytes = total_bytes
+        return True
+
+    def _check_search_rows_batch(self, db, batch_size=500):
+        # The check table is dropped when the check completes.
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name='runtime_search_rows_rollout'").fetchone():
+            return False
+        state = db.execute("SELECT cursor FROM runtime_search_rows_rollout WHERE id=1").fetchone()
+        if not state:
+            return False
+        cursor = int(state[0])
+        rows = db.execute("SELECT rowid,id FROM runtime_search WHERE rowid>? ORDER BY rowid LIMIT ?",
+                          (cursor, batch_size)).fetchall()
+        if not rows:
+            db.execute("DROP TABLE runtime_search_rows_rollout")
+            return False
+        db.executemany("INSERT OR IGNORE INTO runtime_search_rows VALUES (?,?)",
+                       ((row["id"], row["rowid"]) for row in rows))
+        db.execute("UPDATE runtime_search_rows_rollout SET cursor=? WHERE id=1", (rows[-1]["rowid"],))
+        return True
+
+    def _search_migration_verify_and_switch(self, db):
+        missing = db.execute("SELECT r.id FROM runtime_search_rows r LEFT JOIN runtime_search_next_meta n ON n.id=r.id WHERE n.id IS NULL LIMIT 1").fetchone()
+        mismatch = db.execute("SELECT n.id FROM runtime_search_next_meta n LEFT JOIN runtime_search_rows r ON r.id=n.id WHERE r.id IS NULL LIMIT 1").fetchone()
+        if missing or mismatch:
+            db.execute("UPDATE runtime_search_rollout SET phase='building',cursor=0,updated=? WHERE id=1", (time.time(),))
+            return
+        truncated_count = db.execute(
+            "SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.truncated')=1"
+        ).fetchone()[0]
+        copied_count = db.execute("""SELECT count(*) FROM runtime_item_fulltext f
+            JOIN runtime_items i ON i.id=f.id
+            WHERE json_extract(i.record,'$.truncated')=1""").fetchone()[0]
+        if truncated_count != copied_count:
+            db.execute("UPDATE runtime_search_rollout SET phase='building',cursor=0,updated=? WHERE id=1", (time.time(),))
+            return
+        sample = db.execute("""SELECT i.id,r.search_rowid FROM runtime_items i
+            JOIN runtime_search_rows r ON r.id=i.id
+            WHERE json_extract(i.record,'$.truncated')=1 ORDER BY i.id LIMIT 20""").fetchall()
+        for item in sample:
+            old_body = db.execute(
+                "SELECT body FROM runtime_search WHERE rowid=?", (item["search_rowid"],)
+            ).fetchone()
+            new_body = db.execute(
+                "SELECT body FROM runtime_item_fulltext WHERE id=?", (item["id"],)
+            ).fetchone()
+            if (old_body is None or new_body is None or
+                    hashlib.sha256((old_body[0] or "").encode("utf-8")).digest() !=
+                    hashlib.sha256((new_body[0] or "").encode("utf-8")).digest()):
+                raise RuntimeError("Full-text transfer hash verification failed for " + item["id"])
+        db.execute("UPDATE runtime_search_rollout SET phase='dropping',updated=? WHERE id=1", (time.time(),))
+
+    def _search_cleanup_batch(self, db, batch_size=5):
+        rows = db.execute("SELECT search_rowid,id FROM runtime_search_rows ORDER BY search_rowid LIMIT ?", (batch_size,)).fetchall()
+        if rows:
+            for row in rows:
+                db.execute("DELETE FROM runtime_search WHERE rowid=?", (row["search_rowid"],))
+                db.execute("DELETE FROM runtime_search_rows WHERE id=?", (row["id"],))
+                db.execute("DELETE FROM runtime_search_indexed WHERE id=?", (row["id"],))
+            return
+        db.execute("DROP TABLE IF EXISTS runtime_search")
+        db.execute("DROP TABLE IF EXISTS runtime_search_rows")
+        db.execute("DROP TABLE IF EXISTS runtime_search_indexed")
+        db.execute("UPDATE runtime_search_rollout SET phase='complete',updated=? WHERE id=1", (time.time(),))
     def checked_actor(self, db, agent_id, actor=None):
         a = self.agent(agent_id, db)
         if a.get("deletedAt"):
@@ -119,7 +517,7 @@ class WorkMixin:
             )
         return result
 
-    def work_action(self, agent_id, data, key=None, actor=None, epoch=None):
+    def _work_action(self, agent_id, data, key=None, actor=None, epoch=None):
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id, actor)
             if epoch is not None and self.agent(actor, db)["epoch"] != epoch:
@@ -130,11 +528,12 @@ class WorkMixin:
             if previous is not None:
                 return previous
             action = data.get("action", "list")
-            works = [w for w in self.records(db, "work") if w["rootId"] == a["rootId"]]
             if action == "list":
+                works = self.work_records(db, a["rootId"])
+                statuses = {work["id"]: work["status"] for work in works}
                 return {
-                    "items": [self.work_view(w, works) for w in works],
-                    "tasks": [self.work_view(w, works) for w in works],
+                    "items": [self.work_view(w, statuses) for w in works],
+                    "tasks": [self.work_view(w, statuses) for w in works],
                 }
             if action == "create":
                 if actor and a["id"] != a["rootId"]:
@@ -154,9 +553,10 @@ class WorkMixin:
                     "version": 0,
                     "results": [],
                     "decisions": [],
+                    "createdBy": actor or a["id"],
                 }
             else:
-                w = next((w for w in works if w["id"] == data.get("task_id")), None)
+                w = self.work_by_id(db, data.get("task_id"), a["rootId"])
                 if not w:
                     raise ValueError("Unknown work item")
                 if data.get("version") is not None and data["version"] != w["version"]:
@@ -196,6 +596,7 @@ class WorkMixin:
                     ):
                         raise ValueError("Supply up to 100 dependency ids")
                     w["dependencies"] = list(dict.fromkeys(deps))
+                    works = self.work_records(db, a["rootId"])
                     graph = {t["id"]: t["dependencies"] for t in works}
                     graph[w["id"]] = w["dependencies"]
                     visited = set()
@@ -222,7 +623,8 @@ class WorkMixin:
                     raise ValueError("Claimant belongs to another team")
                 if (
                     w["status"] not in {"ready", "running"}
-                    or self.work_view(w, works)["blockedBy"]
+                    or self.work_view(w, self.work_dependency_statuses(
+                        db, a["rootId"], w["dependencies"]))["blockedBy"]
                 ):
                     raise ValueError("This work item is not ready")
                 if w["owner"] and w["owner"] != claimant:
@@ -233,7 +635,8 @@ class WorkMixin:
                     raise ValueError("This result is already accepted")
                 if actor and w["owner"] != actor:
                     raise ValueError("Only the assigned worker can submit its result")
-                if self.work_view(w, works)["blockedBy"]:
+                if self.work_view(w, self.work_dependency_statuses(
+                        db, a["rootId"], w["dependencies"]))["blockedBy"]:
                     raise ValueError("Dependencies have not been accepted")
                 files = data.get("files", [])
                 if (
@@ -268,6 +671,30 @@ class WorkMixin:
                         ),
                         "work-result:" + result["id"],
                     )
+            elif action == "cancel":
+                if not leader and actor != w.get("createdBy"):
+                    raise ValueError("Only the lead or task creator can cancel this task")
+                reason = text_field(data.get("reason"), "a cancellation reason")
+                if w["status"] == "cancelled":
+                    return self.save_receipt(db, key, signature, self.work_view(
+                        w, self.work_dependency_statuses(db, a["rootId"], w["dependencies"])))
+                if w["status"] == "accepted":
+                    raise ValueError("Cannot cancel accepted work")
+                owner_id = w.get("owner")
+                w["decisions"].append({
+                    "decision": "cancel", "reason": reason,
+                    "by": actor or a["id"], "owner": owner_id,
+                    "created": time.time(),
+                })
+                w.update(status="cancelled", owner=None)
+                owner_row = (db.execute("SELECT record FROM runtime_agents WHERE id=?", (owner_id,)).fetchone()
+                             if owner_id else None)
+                owner = json.loads(owner_row[0]) if owner_row else None
+                if (owner and not owner.get("deletedAt")
+                        and owner.get("status") not in {"completed", "failed"}):
+                    self.enqueue(db, owner, "work_decision", json.dumps(
+                        {"task": w["id"], "decision": "cancel", "reason": reason}),
+                        "work-decision:" + w["id"] + ":cancel")
             elif action in {"accept", "reject"}:
                 if not leader:
                     raise ValueError("Only the lead can accept or reject a result")
@@ -293,7 +720,8 @@ class WorkMixin:
                            "WHERE id=? AND kind='work_review' AND status='pending' AND agent=?",
                            ('The exact result already has a decision',
                             "work-result:" + w["results"][-1]["id"], a["rootId"]))
-                if w.get("owner") and w["owner"] != actor:
+                if (w.get('owner') and w['owner'] != actor
+                        and (action == 'reject' or w['owner'] == a['rootId'])):
                     self.enqueue(
                         db,
                         self.agent(w["owner"], db),
@@ -302,21 +730,20 @@ class WorkMixin:
                             {"task": w["id"], "decision": action, "reason": reason}
                         ),
                         "work-decision:" + w["id"] + ":" + str(w["version"]),
-                    )
+                )
                 if action == "accept":
-                    for other in works:
-                        if w["id"] in other["dependencies"] and other.get("owner"):
-                            updated = [w if v["id"] == w["id"] else v for v in works]
-                            if not self.work_view(other, updated)["blockedBy"]:
-                                self.enqueue(
-                                    db,
-                                    self.agent(other["owner"], db),
-                                    "work_ready",
-                                    json.dumps(
-                                        {"task": other["id"], "title": other["title"]}
-                                    ),
-                                    "work-ready:" + other["id"] + ":" + w["id"],
-                                )
+                    for other in self.work_dependent_records(db, a["rootId"], w["id"]):
+                        statuses = self.work_dependency_statuses(
+                            db, a["rootId"], other["dependencies"])
+                        statuses[w["id"]] = "accepted"
+                        if not self.work_view(other, statuses)["blockedBy"]:
+                            self.enqueue(
+                                db,
+                                self.agent(other["owner"], db),
+                                "work_ready",
+                                json.dumps({"task": other["id"], "title": other["title"]}),
+                                "work-ready:" + other["id"] + ":" + w["id"],
+                            )
             else:
                 raise ValueError("Unknown work action")
             w.update(version=w["version"] + 1, updated=time.time())
@@ -325,7 +752,8 @@ class WorkMixin:
                 db,
                 key,
                 signature,
-                self.work_view(w, [t for t in works if t["id"] != w["id"]] + [w]),
+                self.work_view(w, self.work_dependency_statuses(
+                    db, a["rootId"], w["dependencies"])),
             )
 
     def release_failed_work(self, db, agents, force=False):
@@ -373,7 +801,7 @@ class WorkMixin:
 
     @staticmethod
     def work_view(w, works):
-        statuses = {t["id"]: t["status"] for t in works}
+        statuses = works if isinstance(works, dict) else {t["id"]: t["status"] for t in works}
         blocked = [d for d in w["dependencies"] if statuses.get(d) != "accepted"]
         return {
             **w,
@@ -392,7 +820,7 @@ class WorkMixin:
         match = " AND ".join(
             '"' + word.replace('"', '""') + '"' for word in query.split()
         )
-        with self.lock, self.db() as db:
+        with self.read_db() as db:
             caller = self.checked_actor(db, agent_id) if agent_id else None
             allowed = {
                 a["id"]
@@ -400,21 +828,24 @@ class WorkMixin:
                 if not a.get("deletedAt")
                 and (not caller or a["rootId"] == caller["rootId"])
             }
-            from transcript_storage.storage import backfill_addresses, backfill_items, drain, has_partial, has_pending
-            backfill_addresses(db)
-            backfill_items(db)
-            drain(db, force=True)
-            db.commit()
-            if has_pending(db, allowed):
-                raise ValueError("Transcript search is indexing. Retry shortly.")
-            transcript_scope = [caller["id"]] if caller else allowed
-            if has_partial(db, transcript_scope):
-                raise ValueError("Some legacy transcript text is unavailable; search may be incomplete.")
             found = []
-            for row in db.execute(
-                "SELECT runtime_search.id,runtime_search.agent,runtime_search.kind,snippet(runtime_search,3,'','',' … ',30) AS excerpt FROM runtime_search JOIN runtime_items i ON i.id=runtime_search.id WHERE runtime_search MATCH ? AND json_extract(i.record,'$.afterRestore') IS NULL ORDER BY rank LIMIT 1000",
-                (match,),
-            ):
+            next_index = self._search_phase(db) in {"active", "dropping", "complete"}
+            if next_index:
+                query_rows = db.execute(
+                    "SELECT m.id,m.agent,m.kind FROM runtime_search_next "
+                    "JOIN runtime_search_next_meta m ON m.search_rowid=runtime_search_next.rowid "
+                    "JOIN runtime_items i ON i.id=m.id "
+                    "WHERE runtime_search_next MATCH ? AND json_extract(i.record,'$.afterRestore') IS NULL "
+                    "ORDER BY rank LIMIT 1000", (match,)
+                )
+            else:
+                query_rows = db.execute(
+                    "SELECT runtime_search.id,runtime_search.agent,runtime_search.kind "
+                    "FROM runtime_search JOIN runtime_items i ON i.id=runtime_search.id "
+                    "WHERE runtime_search MATCH ? AND json_extract(i.record,'$.afterRestore') IS NULL "
+                    "ORDER BY rank LIMIT 1000", (match,)
+                )
+            for row in query_rows:
                 if row["agent"] in allowed and (
                     not caller or row["agent"] == caller["id"]
                 ):
@@ -423,6 +854,11 @@ class WorkMixin:
                     )
                 if len(found) >= limit:
                     break
+            if found:
+                from codex_search_text import search_texts
+                bodies = search_texts(db, (row["id"] for row in found))
+                for row in found:
+                    row["excerpt"] = self._search_excerpt(bodies.get(row["id"], ""), query)
             needle = query.casefold()
             for table, kind, field in [
                 ("work", "work", "title"),
@@ -472,6 +908,28 @@ class WorkMixin:
                 "query": query,
                 "limit": limit,
             }
+
+    @staticmethod
+    def _search_excerpt(body, query, token_limit=30):
+        """Make a plain-text result window for the contentless index."""
+        tokens = list(re.finditer(r"[^\W_]+", body, flags=re.UNICODE))
+        if len(tokens) <= token_limit:
+            return body
+        normalize = lambda value: "".join(
+            char for char in unicodedata.normalize("NFD", value.casefold())
+            if unicodedata.category(char) != "Mn"
+        )
+        terms = {normalize(word) for word in re.findall(r"[^\W_]+", query, flags=re.UNICODE)}
+        hits = [index for index, token in enumerate(tokens) if normalize(token.group()) in terms]
+        center = hits[0] if hits else 0
+        start = max(0, min(center - (token_limit // 2 - 1), len(tokens) - token_limit))
+        end = min(len(tokens), start + token_limit)
+        excerpt = body[tokens[start].start():tokens[end - 1].end()]
+        if start:
+            excerpt = " … " + excerpt
+        if end < len(tokens):
+            excerpt += " … "
+        return excerpt
 
     def chat_organization(self, key, data):
         from codex_workspace import active_monitors
@@ -599,7 +1057,7 @@ class WorkMixin:
             request_id = data.get("request_id")
             if request_id is not None:
                 request_id = text_field(request_id, "a request ID", 200)
-            if action in {"reorder", "steer"} and not request_id:
+            if action == "reorder" and not request_id:
                 raise ValueError("Supply a request ID to change queue delivery")
             receipt_key = "queue:" + agent_id + ":" + request_id if request_id else None
             signature, previous = self.operation_receipt(
@@ -607,23 +1065,6 @@ class WorkMixin:
             )
             if previous is not None:
                 return previous
-            if action == "steer":
-                message_id = data.get("id")
-                row = db.execute("SELECT * FROM runtime_events WHERE id=? AND agent=?",
-                                 (message_id, agent_id)).fetchone()
-                if not row or row["epoch"] != a["epoch"] or row["kind"] not in {"user", "followup"}:
-                    raise ValueError("This queued message is unavailable")
-                if data.get("expectedText") != row["text"]:
-                    raise ValueError("This queued message changed")
-                saved = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)).fetchone()
-                metadata = json.loads(saved[0]) if saved else {}
-                if row["status"] == "pending" and data.get("expected_revision") != snapshot()["revision"]:
-                    raise ValueError("This queue changed. Reload before steering")
-                db.commit()
-                result = self.send(agent_id, row["text"], message_id, manual=False,
-                                 delivery=metadata.get("requestedDelivery", metadata.get("delivery", "queue")),
-                                 assets=metadata.get("assets", []), promote=True)
-                return self.save_receipt(db, receipt_key, signature, result)
             current = snapshot()
             if (("expected_revision" in data or action == "reorder")
                     and data.get("expected_revision") != current["revision"]):
@@ -751,13 +1192,11 @@ class WorkMixin:
                 item = json.loads(row["record"])
                 if item.get("afterRestore"):
                     raise ValueError("This item belongs to history before restore")
-                from transcript_storage.storage import body as transcript_body
-                full = transcript_body(db, key, None if item.get("truncated") else item.get("text", ""), agent=a["id"])
-                if full is None:
-                    raise ValueError("The complete transcript item is unavailable")
+                from codex_search_text import search_text
+                full = search_text(db, key)
                 return {
                     **item,
-                    "text": full,
+                    "text": full or item["text"],
                     "agent": a["id"],
                     "kind": "message",
                 }

@@ -128,12 +128,34 @@ try {
     }),
   );
   const deliveries = [];
+  let pageRequests = 0;
+  const pageRequestUrls = [];
   await page.route("**/api/transcript?*", async (r) => {
     const selected =
       new URL(r.request().url()).searchParams.get("id") === lead.id;
     if (selected) deliveries.push(Date.now());
     await r.fulfill({
       json: { agent: selected ? lead : null, items: selected ? items : [] },
+    });
+  });
+  await page.route("**/api/transcript/page?*", async (r) => {
+    pageRequests++;
+    pageRequestUrls.push(r.request().url());
+    const url = new URL(r.request().url());
+    const cursor = url.searchParams.get("before");
+    const end = Math.max(
+      0,
+      items.findIndex((item) => item.id === cursor),
+    );
+    const start = Math.max(0, end - 120);
+    const selected = items.slice(start, end);
+    await r.fulfill({
+      json: {
+        items: selected,
+        nextCursor: start > 0 ? items[start - 1].id : null,
+        nextAfterCursor:
+          end < items.length ? selected.at(-1)?.id || null : null,
+      },
     });
   });
   await page.goto(origin);
@@ -169,16 +191,43 @@ try {
       0,
       "Closed tool groups do not mount tool bodies",
     );
+    const initialWindow = items.slice(-240);
     assert.equal(
       await page.locator('[data-message^="text-"]').count(),
-      turns * steps,
-      "All commentary remains in the conversation",
+      initialWindow.filter((item) => item.id.startsWith("text-")).length,
+      "The current page stays within its retained window",
     );
     assert.equal(
       await page.locator('.turn-work [data-message^="text-"]').count(),
       0,
       "No commentary is hidden inside tools",
     );
+    const loadEarlier = page.locator("#earlier-messages");
+    while (await loadEarlier.count()) {
+      const response = page
+        .waitForResponse((r) => r.url().includes("/api/transcript/page?"))
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+      await page.locator("#messages").evaluate((root) => {
+        root.scrollTop = 0;
+        root.dispatchEvent(new Event("scroll"));
+      });
+      await loadEarlier.click({ timeout: 5000 });
+      const result = await response;
+      if ("error" in result) {
+        throw Error(
+          `Earlier page request missing: count=${pageRequests}, button=${await loadEarlier.isVisible()}, disabled=${await loadEarlier.isDisabled()}, errors=${JSON.stringify(errors)}, urls=${JSON.stringify(pageRequestUrls)}. ${result.error}`,
+        );
+      }
+    }
+    assert.equal(
+      pageRequests > 0,
+      true,
+      "older transcript pages reload on demand",
+    );
+    await page.locator('[data-message="text-0-0"]').waitFor();
     assert.ok(
       measurement.responseToContent < 1800,
       "Large history becomes readable without a multi-second render",
@@ -187,7 +236,7 @@ try {
     // active to check its saved disclosure and selected tool details.
     items = items.map((item) => {
       if (item.turnId !== `turn-${turns - 1}`) return item;
-      const { turnStatus, ...activeItem } = item;
+      const { turnStatus: _turnStatus, ...activeItem } = item;
       return activeItem;
     });
     await page.reload();

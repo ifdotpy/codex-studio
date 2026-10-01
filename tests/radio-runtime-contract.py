@@ -16,6 +16,12 @@ class RadioRuntime(unittest.TestCase):
     lead = f.WorkspaceContract.lead
     agent_update = f.WorkspaceContract.agent_update
 
+    def eventually_radio(self, status):
+        def ready():
+            self.runtime.dispatch()
+            return self.runtime.chat_read(self.room['id'])['room']['radio']['status']==status
+        f.eventually(ready)
+
     def setup_room(self):
         self.left = self.agent_update(self.lead('Left'), draft=False, status='idle', autoWake=True)
         self.right = self.agent_update(self.lead('Right'), draft=False, status='idle', autoWake=True)
@@ -45,6 +51,7 @@ class RadioRuntime(unittest.TestCase):
         second=self.active(self.right)
         self.finish(second,'Second view.')
         self.runtime.dispatch()
+        self.eventually_radio('idle')
         page=self.runtime.chat_read(self.room['id'])
         self.assertEqual([m['text'] for m in page['messages']],['Compare options.','First view.','Second view.'])
         self.assertEqual(page['room']['radio']['status'],'idle')
@@ -55,8 +62,10 @@ class RadioRuntime(unittest.TestCase):
         return self.room
 
     def active(self, agent):
-        self.runtime.dispatch()
-        f.eventually(lambda: bool(self.runtime.agent(agent['id']).get('turnId')))
+        def ready():
+            self.runtime.dispatch()
+            return bool(self.runtime.agent(agent['id']).get('turnId'))
+        f.eventually(ready)
         return self.runtime.agent(agent['id'])
 
     def finish(self, active, text):
@@ -108,6 +117,7 @@ class RadioRuntime(unittest.TestCase):
         for chunk in chunks:
             self.runtime.server.notify({'method':'item/agentMessage/delta','params':{
                 'threadId':first['threadId'],'turnId':first['turnId'],'itemId':'long-stream','delta':chunk}})
+        f.eventually(lambda: self.runtime.chat_read(self.room['id'])['messages'][-1]['text'] == ''.join(chunks))
         page=self.runtime.chat_read(self.room['id'])
         self.assertEqual(page['messages'][-1]['text'], ''.join(chunks))
         self.finish(first,'Done.')
@@ -115,21 +125,31 @@ class RadioRuntime(unittest.TestCase):
         page=self.runtime.chat_read(self.room['id'])
         self.assertEqual(page['messages'][-2]['text'], ''.join(chunks))
 
-    def test_private_steer_is_rejected_but_shared_question_can_be_answered(self):
+    def test_private_input_waits_while_shared_question_can_be_answered(self):
         self.setup_room()
         self.command('send',text='Shared question.',target='both',rounds=1)
         first=self.active(self.left)
-        for delivery in ('steer','after_tool'):
-            with self.assertRaisesRegex(ValueError, 'shared chat'):
-                self.runtime.send(first['id'],'Private unrelated task',str(uuid.uuid4()),delivery=delivery)
+        private_id=str(uuid.uuid4())
+        self.runtime.send(first['id'],'Private unrelated task',private_id,delivery='steer')
+        self.runtime.dispatch()
+        self.assertEqual(len([1 for method,_ in self.runtime.server.calls if method=='turn/start']),1)
+        self.assertEqual(self.runtime.delivery_receipt(private_id)['status'],'pending')
         self.runtime.server.notify({'method':'item/completed','params':{'threadId':first['threadId'],
             'turnId':first['turnId'],'item':{'type':'agentMessage','id':'question','text':'Choose one.',
                 'questions':[{'title':'Which option?', 'options':['One','Two']}]}}})
         key=first['id']+':question:question'
         self.assertEqual(self.runtime.answer(key,{'answers':{'0':{'answers':['One']}}})['status'],'answered')
-        steers=[params for method,params in self.runtime.server.calls if method=='turn/steer']
-        self.assertEqual(len(steers),1)
-        self.assertIn('One',steers[0]['input'][0]['text'])
+        self.runtime.dispatch()
+        f.eventually(lambda: len([1 for method,_ in self.runtime.server.calls if method=='turn/start'])==2)
+        starts=[params for method,params in self.runtime.server.calls if method=='turn/start']
+        self.assertIn('One',starts[-1]['input'][0]['text'])
+        self.assertNotIn('Private unrelated task',starts[-1]['input'][0]['text'])
+        self.assertEqual(self.runtime.delivery_receipt(private_id)['status'],'pending')
+        self.finish(first,'Shared answer complete.')
+        self.runtime.dispatch()
+        f.eventually(lambda: self.runtime.delivery_receipt(private_id)['status']=='delivered')
+        starts=[params for method,params in self.runtime.server.calls if method=='turn/start']
+        self.assertEqual(sum('Private unrelated task' in p['input'][0]['text'] for p in starts),1)
 
     def test_completed_question_holds_floor_and_resumes_in_shared_chat(self):
         self.setup_room()
@@ -140,6 +160,7 @@ class RadioRuntime(unittest.TestCase):
                 'questions':[{'title':'Which option?', 'options':['One','Two']}]}}})
         self.finish(first,'I need your choice.')
         self.runtime.dispatch()
+        self.eventually_radio('waiting')
         self.assertFalse(self.runtime.agent(self.right['id']).get('inFlight'))
         key=first['id']+':question:question'
         self.runtime.answer(key,{'answers':{'0':{'answers':['One']}}})
@@ -152,6 +173,7 @@ class RadioRuntime(unittest.TestCase):
         self.assertIn('Which option?\\nOne',prompt)
         self.finish(second,'Agreed.')
         self.runtime.dispatch()
+        self.eventually_radio('idle')
         self.assertEqual(self.runtime.chat_read(self.room['id'])['room']['radio']['status'],'idle')
 
     def test_question_keeps_ordinary_queue_out_of_held_turn(self):
@@ -165,6 +187,7 @@ class RadioRuntime(unittest.TestCase):
         self.finish(first,'Waiting for your choice.')
         self.runtime.dispatch()
         self.runtime.dispatch()
+        self.eventually_radio('waiting')
         self.assertFalse(self.runtime.agent(first['id']).get('inFlight'))
         self.assertEqual(len([1 for m,_ in self.runtime.server.calls if m=='turn/start']),1)
         page=self.runtime.chat_read(self.room['id'])
@@ -179,6 +202,7 @@ class RadioRuntime(unittest.TestCase):
         second=self.active(self.right)
         self.finish(second,'Agreed.')
         self.runtime.dispatch()
+        self.eventually_radio('idle')
         page=self.runtime.chat_read(self.room['id'])
         self.assertNotIn('Private result.',[m['text'] for m in page['messages']])
         self.assertEqual(page['room']['radio']['status'],'idle')

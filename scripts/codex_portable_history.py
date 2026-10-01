@@ -54,7 +54,9 @@ def _pages(server, method, params):
     cursor, seen = None, set()
     while True:
         request = {**params, **({'cursor': cursor} if cursor is not None else {})}
-        page = server.call(method, request, timeout=30)
+        # A history page can rebuild a large inherited native transcript.
+        # Transfers run outside the HTTP request, so allow that read to finish.
+        page = server.call(method, request, timeout=120)
         if not isinstance(page, dict) or not isinstance(page.get('data'), list):
             raise ValueError('Native history returned an invalid page: ' + method)
         next_cursor = page.get('nextCursor')
@@ -142,15 +144,15 @@ def _studio_records(rt, agent_id):
     with rt.db() as db:
         db.execute('BEGIN')
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master")}
-        from transcript_storage.storage import body as transcript_body
         for row in db.execute('SELECT id,created,record FROM runtime_items WHERE agent=? ORDER BY created,id', (agent_id,)):
             item = json.loads(row['record'])
             if not isinstance(item, dict) or item.get('id') != row['id']:
                 raise ValueError('Studio history has an invalid item identity')
             record = {'kind': 'studio_item', 'id': row['id'], 'created': row['created'], 'item': item}
-            full_text = transcript_body(db, row['id'], None if item.get('truncated') else item.get('text', ''), agent=agent_id)
-            if full_text is not None:
-                record['fullText'] = full_text
+            from codex_search_text import search_text
+            body = search_text(db, row['id'])
+            if body:
+                record['fullText'] = body
             inputs = item.get('inputs', [])
             if not isinstance(inputs, list) or any(not isinstance(i, dict) for i in inputs):
                 raise ValueError('Studio history has invalid input metadata')

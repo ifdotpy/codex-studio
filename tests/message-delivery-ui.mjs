@@ -33,174 +33,6 @@ async function until(check, label) {
   }
   throw new Error(label);
 }
-function assertNoCommandWrites(
-  writes,
-  mode,
-  action,
-  allowedTransitions,
-  device,
-) {
-  const expectedTransitions = new Set(
-    allowedTransitions.map(
-      ({ session, before, after }) =>
-        `${session}\0${before ?? "<new>"}\0${after}`,
-    ),
-  );
-  const draftSyncWrites = writes.filter(
-    (write) => write.method === "POST" && write.url === "/api/sync/drafts",
-  );
-  for (const write of draftSyncWrites) {
-    const body = JSON.parse(write.body || "null");
-    assert.ok(
-      body && Array.isArray(body.rows) && body.rows.length > 0,
-      `${mode}: draft sync POST contains nonempty replication rows`,
-    );
-    assert.deepEqual(
-      Object.keys(body).sort(),
-      ["rows"],
-      `${mode}: draft sync contains no message or command request fields`,
-    );
-    for (const row of body.rows) {
-      const rowFields = new Set(["newDocumentState", "assumedMasterState"]);
-      assert.ok(
-        row &&
-          Object.keys(row).every((key) => rowFields.has(key)) &&
-          row.newDocumentState,
-        `${mode}: draft sync row contains no other request data`,
-      );
-      const draftFields = new Set([
-        "id",
-        "session",
-        "device",
-        "text",
-        "updated",
-        "seen",
-        "alternatives",
-      ]);
-      const documents = [row.newDocumentState, row.assumedMasterState].filter(
-        Boolean,
-      );
-      const states = documents.map((document) => {
-        assert.ok(
-          typeof document.id === "string" &&
-            typeof document.payload === "string" &&
-            Number.isFinite(document.seq) &&
-            Object.keys(document).every((key) =>
-              ["id", "payload", "seq", "_deleted"].includes(key),
-            ),
-          `${mode}: draft sync row contains a sync document`,
-        );
-        const draft = JSON.parse(document.payload);
-        assert.ok(
-          typeof draft.id === "string" &&
-            typeof draft.session === "string" &&
-            typeof draft.device === "string" &&
-            typeof draft.text === "string" &&
-            Number.isFinite(draft.updated),
-          `${mode}: draft sync payload contains only persisted draft data`,
-        );
-        assert.ok(
-          Object.keys(draft).every((key) => draftFields.has(key)),
-          `${mode}: draft sync row contains no delivery identity or command data`,
-        );
-        assert.ok(
-          draft.device === device &&
-            document.id.startsWith(`${device}:`) &&
-            document.id.endsWith(`:${draft.session}`) &&
-            new RegExp(`^${device}:[0-9a-f-]{36}:${draft.session}$`).test(
-              document.id,
-            ),
-          `${mode}: draft identity belongs to the expected fixture device and chat`,
-        );
-        assert.equal(
-          draft.id,
-          document.id,
-          `${mode}: draft sync row identity matches its draft payload`,
-        );
-        return draft;
-      });
-      const before = row.assumedMasterState
-        ? states.find((draft) => draft.id === row.assumedMasterState.id)
-        : null;
-      const after = states.find(
-        (draft) => draft.id === row.newDocumentState.id,
-      );
-      if (row.assumedMasterState)
-        assert.ok(before, `${mode}: expected draft master payload is present`);
-      assert.ok(after, `${mode}: new draft payload is present`);
-      assert.ok(
-        !before || (before.id === after.id && before.session === after.session),
-        `${mode}: assumed master and new draft preserve the same ID and session`,
-      );
-      assert.ok(
-        expectedTransitions.has(
-          `${after.session}\0${before?.text ?? "<new>"}\0${after.text}`,
-        ),
-        `${mode}: draft sync transition matches an expected before/after fixture payload`,
-      );
-    }
-  }
-  assert.deepEqual(
-    writes.filter(
-      (write) => write.method !== "POST" || write.url !== "/api/sync/drafts",
-    ),
-    [],
-    `${mode}: ${action} cannot send, cancel, edit, or issue an unknown mutation`,
-  );
-}
-const validatorDevice = "a".repeat(36);
-const fixtureDraftDoc = (writer, session, text) => {
-  const id = `${validatorDevice}:${writer}:${session}`;
-  return {
-    id,
-    seq: 1,
-    payload: JSON.stringify({
-      id,
-      session,
-      device: validatorDevice,
-      text,
-      updated: 1,
-      seen: {},
-      alternatives: [],
-    }),
-  };
-};
-const expectedDraftTransition = [
-  { session: "session-a", before: "before", after: "after" },
-];
-for (const mismatchedMaster of [
-  fixtureDraftDoc("c".repeat(36), "session-a", "before"),
-  fixtureDraftDoc("b".repeat(36), "session-b", "before"),
-]) {
-  assert.throws(
-    () =>
-      assertNoCommandWrites(
-        [
-          {
-            method: "POST",
-            url: "/api/sync/drafts",
-            body: JSON.stringify({
-              rows: [
-                {
-                  newDocumentState: fixtureDraftDoc(
-                    "b".repeat(36),
-                    "session-a",
-                    "after",
-                  ),
-                  assumedMasterState: mismatchedMaster,
-                },
-              ],
-            }),
-          },
-        ],
-        "fixture",
-        "rejecting mismatched replication identities",
-        expectedDraftTransition,
-        validatorDevice,
-      ),
-    /assumed master and new draft preserve the same ID and session/,
-  );
-}
 try {
   const port = await new Promise((resolve, reject) => {
     fixture.stdout.once("data", (chunk) =>
@@ -244,20 +76,21 @@ try {
     page.setDefaultTimeout(12000);
     const mutations = [];
     page.on("request", (request) => {
-      // The voice transcript uses POST for a read on every chat mount.
+      // Voice reads and background draft migration are independent of receipt dismissal.
       if (
         !["GET", "HEAD", "OPTIONS"].includes(request.method()) &&
-        new URL(request.url()).pathname !== "/api/voice/records"
+        !["/api/voice/records", "/api/sync/drafts"].includes(
+          new URL(request.url()).pathname,
+        )
       )
         mutations.push({
           method: request.method(),
           url: new URL(request.url()).pathname,
-          body: request.method() === "POST" ? request.postData() : null,
         });
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.addInitScript(() => {
+    await page.addInitScript((workspaceId) => {
       window.deliveryStreams = [];
       window.EventSource = class extends EventTarget {
         constructor(url) {
@@ -271,17 +104,26 @@ try {
           );
         }
       };
-      window.publishDelivery = (id, payload) => {
+      let generation = Date.now();
+      window.publishDelivery = (_id, _revision) => {
+        const revision = ++generation;
         for (const stream of window.deliveryStreams) {
           const url = new URL(stream.url, location.href);
-          if (
-            url.pathname === "/api/sync/stream" ||
-            url.searchParams.get("id") === id
-          )
-            stream.onmessage?.({ data: JSON.stringify(payload) });
+          if (url.pathname === "/api/sync/stream")
+            stream.onmessage?.({
+              data: JSON.stringify({
+                protocol: 2,
+                workspaceId,
+                generations: {
+                  state: revision,
+                  transcripts: revision,
+                  drafts: 0,
+                },
+              }),
+            });
         }
       };
-    });
+    }, identity.workspaceId);
     const history = new Map(
       [a, b].map((agent) => [
         agent.id,
@@ -359,8 +201,8 @@ try {
       history.set(id, payload);
       revisions.set(id, revisions.get(id) + 1);
       await page.evaluate(
-        ({ id, payload }) => window.publishDelivery(id, payload),
-        { id, payload },
+        ({ id, revision }) => window.publishDelivery(id, revision),
+        { id, revision: revisions.get(id) },
       );
     };
     const row = (text) =>
@@ -375,14 +217,10 @@ try {
           (element) =>
             element.scrollHeight - element.scrollTop - element.clientHeight < 4,
         );
-    const start = async (text, queue = false) => {
+    const start = async (text) => {
       const count = posts.length;
       await input.fill(text);
-      if (queue)
-        await page
-          .getByRole("button", { name: "Queue after turn", exact: true })
-          .click();
-      else await page.locator("#send").click();
+      await page.locator("#send").click();
       await until(
         () => posts.length === count + 1,
         `${mode}: exactly one POST starts`,
@@ -393,30 +231,18 @@ try {
         "",
         `${mode}: draft clears only after the local outbox owns it`,
       );
-      if (queue) {
-        await page
-          .getByTestId("message-queue")
-          .getByText(text, { exact: true })
-          .waitFor();
-        assert.equal(
-          await row(text).count(),
-          0,
-          `${mode}: queued send never flashes in the transcript`,
-        );
-      } else {
-        await row(text).waitFor();
-        assert.equal(
-          await row(text).count(),
-          1,
-          `${mode}: one immediate local message`,
-        );
-      }
+      await row(text).waitFor();
+      assert.equal(
+        await row(text).count(),
+        1,
+        `${mode}: one immediate local message`,
+      );
       assert.equal(
         await input.evaluate((element) => document.activeElement === element),
         true,
         `${mode}: submit retains composer focus`,
       );
-      assert.equal(sent.body.delivery, queue ? "queue" : "after_tool");
+      assert.equal(sent.body.delivery, "after_tool");
       return sent;
     };
     const accept = async (sent, status = "accepted", expectedDraft = "") => {
@@ -567,12 +393,13 @@ try {
 
     // A delayed projection cannot remove a receipt before materialization.
     const queuedText = `${mode} queued message survives dispatch`;
-    const queued = await start(queuedText, true);
+    const queued = await start(queuedText);
     const queueRow = () =>
       page.getByTestId("message-queue").getByText(queuedText, { exact: true });
     const assertQueueGeometry = async () => {
-      await queueRow().waitFor();
-      assert.equal(await row(queuedText).count(), 0);
+      // After-tool input waits in the chat, never in the after-turn queue.
+      await row(queuedText).waitFor();
+      assert.equal(await queueRow().count(), 0);
       assert.ok(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -592,16 +419,16 @@ try {
     await publish(a.id, [...queueBase, queuedEcho]);
     await until(
       async () =>
-        (await queueRow().count()) === 1 &&
-        (await row(queuedText).count()) === 0,
-      `${mode}: one queued row`,
+        (await queueRow().count()) === 0 &&
+        (await row(queuedText).count()) === 1,
+      `${mode}: one waiting row in the chat`,
     );
     await assertQueueGeometry("queued transcript");
     await page.screenshot({
       path: join(evidence, `${mode}-queued-desktop.png`),
     });
     await page.setViewportSize({ width: 390, height: 844 });
-    await queueRow().scrollIntoViewIfNeeded();
+    await row(queuedText).scrollIntoViewIfNeeded();
     await page.waitForTimeout(100);
 
     assert.ok(
@@ -616,10 +443,11 @@ try {
     await publish(a.id, [...queueBase]);
     await page.waitForTimeout(200);
     assert.equal(
-      await queueRow().count(),
+      await row(queuedText).count(),
       1,
-      `${mode}: dispatch gap retains local queued receipt`,
+      `${mode}: dispatch gap retains the local waiting message`,
     );
+    assert.equal(await queueRow().count(), 0);
     await publish(a.id, [...queueBase, { ...queuedEcho, pending: false }]);
     await until(
       async () =>
@@ -761,42 +589,22 @@ try {
       expectedPosts,
       `${mode}: no automatic duplicate delivery`,
     );
-    // A saved queue receipt can outlive the server transcript and queue row.
+    // A waiting after-tool receipt stays in the chat until native dispatch,
+    // also after a reload. It never enters the after-turn queue.
     const staleText = `${mode} stale queue receipt`;
     const stale = await start(staleText);
     await accept(stale, "queued");
-    await row(staleText)
-      .getByRole("status")
-      .filter({ hasText: /^Sending…$/ })
-      .waitFor();
-    const mutationsBeforeStaleRemoval = mutations.length;
-    await row(staleText)
-      .getByRole("button", { name: "Remove message", exact: true })
-      .click();
-    await row(staleText).waitFor({ state: "hidden" });
+    await row(staleText).waitFor();
     await page.reload();
     await page.locator(`[data-chat="${a.id}"]`).click();
     await page.locator(`[data-message="${a.id}-history-35"]`).waitFor();
+    await row(staleText).waitFor();
     assert.equal(
-      await row(staleText).count(),
+      await page.getByTestId("message-queue").getByText(staleText).count(),
       0,
-      `${mode}: stale receipt stays removed after reload`,
+      `${mode}: waiting receipt has one visible location`,
     );
-    const removalWrites = mutations.slice(mutationsBeforeStaleRemoval);
-    const draftDevice = await page.evaluate(() =>
-      JSON.parse(localStorage.getItem("codex-draft-device")),
-    );
-    assertNoCommandWrites(
-      removalWrites,
-      mode,
-      "removing a stale receipt",
-      [
-        { session: a.id, before: null, after: "" },
-        { session: a.id, before: null, after: uncertainText },
-        { session: b.id, before: null, after: otherDraft },
-      ],
-      draftDevice,
-    );
+    assert.equal(await row(staleText).count(), 1);
     await publish(a.id, [
       ...history.get(a.id).items,
       {
@@ -806,11 +614,7 @@ try {
         text: staleText,
       },
     ]);
-    assert.equal(
-      await row(staleText).count(),
-      0,
-      `${mode}: delayed history does not restore the receipt`,
-    );
+    await row(staleText).waitFor();
     // Dismissal hides one receipt on this device without cancelling delivery.
     const dismissedText = `${mode} uncertain message removed from this device`;
     const dismissed = await start(dismissedText);
@@ -960,9 +764,21 @@ try {
       ...removable[0],
       text: `${mode} same ID in another chat`,
     };
+    const refreshedOtherChat =
+      mode === "rxdb"
+        ? page.waitForResponse(async (response) => {
+            const url = new URL(response.url());
+            return (
+              url.pathname === "/api/sync/pull" &&
+              url.searchParams.get("scope") === `transcript:${b.id}` &&
+              (await response.text()).includes(otherChatReceipt.id)
+            );
+          })
+        : Promise.resolve();
     await publish(b.id, [...history.get(b.id).items, otherChatReceipt]);
     await page.locator(`[data-chat="${b.id}"]`).click();
-    await page.locator(`[data-message="${otherChatReceipt.id}"]`).waitFor();
+    await refreshedOtherChat;
+    await row(otherChatReceipt.text).waitFor();
     assert.equal(
       await row(otherChatReceipt.text).count(),
       1,
@@ -974,17 +790,10 @@ try {
       await page.locator(`[data-message="${otherChatReceipt.id}"]`).count(),
       0,
     );
-    assertNoCommandWrites(
+    assert.deepEqual(
       mutations.slice(mutationsBeforeRemoval),
-      mode,
-      "dismissing a receipt",
-      [
-        { session: a.id, before: null, after: "" },
-        { session: a.id, before: null, after: uncertainText },
-        { session: a.id, before: null, after: dismissedText },
-        { session: b.id, before: null, after: otherDraft },
-      ],
-      draftDevice,
+      [],
+      `${mode}: dismissal does not mutate server state or cancel delivery`,
     );
     assert.deepEqual(errors, [], `${mode}: no renderer exceptions`);
     await page.screenshot({ path: join(evidence, `${mode}.png`) });

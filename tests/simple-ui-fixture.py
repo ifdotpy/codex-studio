@@ -68,7 +68,9 @@ with c.runtime.lock, c.runtime.db() as db:
 # Commit the root before create() opens another database connection.
 worker_count = 1 if os.environ.get('RICH_PREVIEW_UI_FIXTURE') else 40
 for i in range(worker_count):
-    child = c.runtime.create({'name': f'Worker {i:02}', 'prompt': 'Review one component', 'role': 'reviewer'}, parent=lead['id'], defer=True)
+    child = c.runtime.create({'name': f'Worker {i:02}', 'prompt': 'Review one component', 'role': 'reviewer',
+        **({'model': 'gpt-5.6-luna'} if os.environ.get('EXECUTION_SETTINGS_CATALOG') else {})},
+        parent=lead['id'], defer=True)
     with c.runtime.lock, c.runtime.db() as db:
         child['status'] = 'failed' if i == 7 else 'running' if i < 8 else 'queued' if i < 25 else 'completed'
         c.runtime.put(db, 'agents', child)
@@ -170,6 +172,9 @@ def fixture_events():
                 agent.update(status=params['status'], inFlight=active,
                              turnId='fixture-turn' if active else None)
                 c.runtime.put(db, 'agents', agent)
+        elif message.get('method') == 'fixture/task':
+            with c.runtime.lock, c.runtime.db() as db:
+                c.runtime.put(db, 'tasks', message['params'])
         elif message.get('method') == 'fixture/panel-action':
             try:
                 result = c.runtime.panel_action(message['agent'], message['params'], key=message['id'])
@@ -180,7 +185,12 @@ def fixture_events():
         elif 'id' in message:
             c.runtime.request(message)
         else:
-            c.runtime.notification(message, 'default', c.runtime.connection_ids.get('default'))
+            account_key = message.get('accountKey', 'default')
+            server = c.runtime.servers.get(account_key)
+            if server is not None:
+                server.notify(message)
+            else:
+                c.runtime.notification(message, account_key, c.runtime.connection_ids.get(account_key))
 threading.Thread(target=fixture_events, daemon=True).start()
 print(server.server_port, flush=True)
 try:

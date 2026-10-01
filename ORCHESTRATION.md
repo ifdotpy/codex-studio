@@ -107,7 +107,9 @@ turn. `cwd` defaults to the caller's folder and must be inside a git repository;
 otherwise the call fails and no reviewer is created. It runs `review/start` on that reviewer's native thread.
 The caller's active turn continues. The reviewer uses read-only permissions and
 the caller's model, unless native `review_model` selects another model.
-Team concurrency, agent limits, and budget admission apply. Completion sends one
+Team concurrency, active agent limits, and budget admission apply. Completed,
+failed, interrupted, and stopped paused agents do not use active agent slots.
+Completion sends one
 child result to the caller. The reviewer transcript retains the complete output.
 Receipt recovery does not create another reviewer or repeat a native review.
 Older threads can invoke the tool through the existing workspace tool bridge.
@@ -134,7 +136,7 @@ Paused chats and native recovery holds remain stopped.
 
 The reviewer keeps its own model, permissions, and conversation history.
 Review instructions ask it to check evidence and discuss findings, without changing the target's files or task scope.
-The agents use their existing message tools. A busy recipient reads queued feedback on a later turn.
+The agents use their existing message tools. Native delivery steers feedback into a busy recipient's turn.
 Pausing or removing an assignment cancels its pending review event. An already submitted turn can finish.
 Timer events are the only automatic review trigger.
 
@@ -268,31 +270,30 @@ The tested protocol version is Codex CLI 0.153.4.
 
 The lead receives these additional tools:
 
-| Tool | Behavior |
-|---|---|
-| `orchestration_complaint` | Submit a complaint, read the team book, or record the responsible lead's response. |
-| `orchestration_peers` | Discover the caller's team agents and readable team chat rooms. |
-| `orchestration_message` | Send to a team agent id, `parent`, `lead`, or `broadcast` (team). |
-| `orchestration_chat_read` | Read a participant chat within the same team, with a cursor for older messages. |
-| `orchestration_title` | Set the conversation title from the task. Only a lead can call this tool. |
-| `orchestration_interrupt` | Stop a descendant and its descendants. A follow-up can resume them. |
-| `orchestration_spawn` | Create up to 64 workers in one request. Each worker has a task, role, and optional model, effort, and `fast_mode` overrides. |
-| `orchestration_send` | Queue a follow-up for a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery. |
-| `orchestration_status` | Read team status and command watches for a decision. |
-| `orchestration_monitor` | Start a command watch. Deliver one result when the command exits. |
-| `orchestration_cancel_monitor` | Cancel a command watch. |
-| `orchestration_request` | List, recover, or cancel your own durable tool requests. |
+| Tool                           | Behavior                                                                                                                     |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `orchestration_complaint`      | Submit a complaint, read the team book, or record the responsible lead's response.                                           |
+| `orchestration_peers`          | Discover the caller's team agents and readable team chat rooms.                                                              |
+| `orchestration_message`        | Send to a team agent id, `parent`, `lead`, or `broadcast` (team).                                                            |
+| `orchestration_chat_read`      | Read a participant chat within the same team, with a cursor for older messages.                                              |
+| `orchestration_title`          | Set the conversation title from the task. Only a lead can call this tool.                                                    |
+| `orchestration_interrupt`      | Stop a descendant and its descendants. A follow-up can resume them.                                                          |
+| `orchestration_spawn`          | Create up to 64 workers in one request. Each worker has a task, role, and optional model, effort, and `fast_mode` overrides. |
+| `orchestration_send`           | Send a follow-up to a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery.    |
+| `orchestration_status`         | Read team status and command watches for a decision.                                                                         |
+| `orchestration_monitor`        | Start a command watch. Deliver one result when the command exits.                                                            |
+| `orchestration_cancel_monitor` | Cancel a command watch.                                                                                                      |
+| `orchestration_request`        | List, recover, or cancel your own durable tool requests.                                                                     |
 
-After delegation, the lead can finish its turn. The runtime queues each child
-result and starts the next lead turn, including after a final answer.
-Events that arrive during a turn wait for that turn to finish. Up to 32 events
-are combined in one input. Repeated completion notifications share an event id.
+After delegation, the lead can finish its turn. The runtime sends each child
+result into an active lead turn or starts a turn when idle, including after a final answer.
+Up to 32 pending events are combined in one input. Repeated completion notifications share an event id.
 A worker with pending children or command watches stays in the waiting state.
 Its parent receives a result after that work settles. A reported result still needs review.
 
 A `turn/start` timeout does not prove that the turn failed to start.
 The runtime retains its reservation until native events or the response establish the outcome.
-New input cannot start another turn while that outcome is unknown.
+The exact reserved batch stays uncertain and is never submitted again.
 Delivery requires the start response or a user-message event with the matching client ID.
 A late response can acknowledge its original input batch but cannot replace a newer turn's state.
 Unknown input is never replayed automatically.
@@ -312,12 +313,12 @@ Use `orchestration_request` with `action=get` and `request_id` after a lost repl
 It accepts the stable spawn ID, native call ID, or returned request ID. `list`
 returns at most 50 recent request summaries. Outcomes have these meanings:
 
-| Outcome | Evidence |
-|---|---|
-| `pending` | The request is queued or executing. |
-| `applied` | The operation has a successful receipt. This does not prove worker completion. |
-| `not_applied` | Queued cancellation or atomic spawn failure proves no mutation. |
-| `unknown` | Evidence cannot yet determine whether the operation applied. |
+| Outcome       | Evidence                                                                       |
+| ------------- | ------------------------------------------------------------------------------ |
+| `pending`     | The request is queued or executing.                                            |
+| `applied`     | The operation has a successful receipt. This does not prove worker completion. |
+| `not_applied` | Queued cancellation or atomic spawn failure proves no mutation.                |
+| `unknown`     | Evidence cannot yet determine whether the operation applied.                   |
 
 `action=cancel` prevents queued requests from executing. For running requests it
 records cancellation intent and returns promptly. It does not kill an operation
@@ -383,8 +384,8 @@ include the lead and its descendants. The `all` target includes other teams.
 Agents created later can read earlier broadcasts but do not receive their old wake events.
 
 The message and each recipient event commit in one SQLite transaction. Repeating
-one tool call does not duplicate delivery. Messages wait behind an active turn and
-wake a finished recipient. Stopped agents and unused blank leads receive stored
+one tool call does not duplicate delivery. Native delivery steers an active turn and
+wakes a finished recipient. Stopped agents and unused blank leads receive stored
 history only. Peer messages never resume a stopped agent. Agent messages carry
 agent provenance; they do not add user authority. Instructions prohibit acknowledgement loops.
 
@@ -517,7 +518,8 @@ It starts from committed HEAD. Parent changes that are not committed are absent.
 Outside a Git repository the implementer works directly in `cwd`, and Studio shows a warning.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
 Reviewers use the chosen folder. They have a read-only sandbox when YOLO is off.
-The lead owns review and integration. The runtime never merges or deletes worktrees.
+The lead owns review and integration. The runtime never merges worker changes.
+The archive action can remove a clean worker worktree after it saves the HEAD.
 
 An optional team token budget sums Codex's reported thread usage. This includes
 input tokens, including cached input. It is not a billing estimate or a strict
@@ -551,12 +553,9 @@ The underlying Codex configuration supplies model access, skills, tools, MCP ser
 context management and permissions. Agent transcripts include answers, tool results,
 plans and changes. Internal reasoning records are not displayed.
 
-The composer offers **After tool call** (native steer at the next model step) and
-**After turn** (a queued message starts the next turn). Parallel tools must finish
-before steer input is consumed; compaction can delay it.
-
-Tab queues a nonempty composer draft after the current turn. Shift+Tab and Tab
-in an empty composer retain focus navigation. The `/model` command uses Enter.
+Enter sends the composer draft. Native delivery starts an idle turn or steers an active turn.
+Parallel tools must finish before the active turn consumes the input. Compaction can delay it.
+Tab and Shift+Tab move focus. The `/model` command uses Enter.
 The queue appears once, above the composer. Its numbered rows support edit,
 delete, drag reorder, and up/down controls. Edits preserve attachments and the
 composer draft. Queue revisions reject stale changes. Durable operation receipts
@@ -612,10 +611,13 @@ The browser never converts a native transcript into a second Studio message.
 The old REST voice and TTS paths are removed. Legacy transcripts remain readable.
 See [voice lifecycle checks](tests/native-voice-contract.py).
 
-Codex 0.153.4's native user queue persists across app-server restarts. However,
-two `thread/queue/add` calls with the same `clientUserMessageId` create two entries.
-Its idle hook starts queued turns without consulting Studio's workspace or team scheduler.
-Retain the Studio queue and receipts until a replacement preserves these controls.
+The installed Codex 0.155.1 accepts `turn/start` into an active or idle turn.
+Repeating an active `turn/start` with the same `clientUserMessageId` adds duplicate model input.
+Studio reserves each batch once and never resubmits an uncertain batch.
+The `delivery` request field accepts legacy values and has no effect.
+The outbox holds input for a stopped agent, account move, context repair,
+native Review or Compact action, new turn slot wait, or active shared radio turn.
+Private input held during a radio turn enters the native delivery path after that turn ends.
 See [native integration checks](tests/native-primitives-integration.py).
 
 Import copies visible user and assistant messages from at most the last 20 turns,
@@ -766,16 +768,55 @@ account admission, or permission settings change as part of these budgets.
 ## Worker archive and recovery
 
 `orchestration_agent_manage` belongs to the lead. It manages only descendants in
-that lead's team. Actions are `inspect`, `recover`, `archive`, `restore`, and
-`list_archived`. Inspection returns bounded blocker IDs. Recovery reads the exact
+that lead's team. Actions are `inspect`, `recover`, `reset_tools`, `archive`, `archive_finished`,
+`restore`, `list_archived`, and `maintenance_report`. Inspection returns bounded blocker IDs. Recovery reads the exact
 native turn through the existing reconciler; a failed read leaves its outcome unknown.
 
+Studio releases an idle Codex thread subscription after 15 minutes. It first
+checks Studio input and request receipts, tasks, monitors, the native thread,
+the native input queue, and native background terminals. Release removes the
+thread from Studio's loaded cache. The next turn resumes and subscribes to it.
+Codex waits for its configured idle window, 60 seconds by default. On successful
+native shutdown, its MCP servers and code-mode cells end. A lost unsubscribe response
+remains unknown until Studio retries that idempotent request. It never replays input.
+
+Studio also reads each connected Codex account's loaded thread list every 30 seconds.
+It checks idle threads that no active Studio agent needs, including old archived
+chats and repair forks. It releases at most two such threads per scan. Active turns,
+background terminals, queued input, recent agent activity, and pending Studio
+work block release. Studio records unsubscribe receipts and checks later loaded
+lists for native closure. A thread with another subscriber can remain loaded.
+Codex can also leave a thread loaded when native shutdown fails or times out.
+
+`reset_tools` requires a lead reason and an idle worker. It releases the worker's
+subscription now. Studio waits for native closure before it starts later queued
+work, so the next turn gets fresh tool processes. Open code-mode cells and their
+JavaScript state end when Codex closes the session. MCP process memory ends too.
+Codex terminates any unified-exec process missed by the native terminal check;
+its result stays unknown. Native background commands and unknown receipts block
+reset. The worker transcript and Studio receipts remain.
+
 Archive requires a reason. It hides a worker through the existing tombstone filter
-and stores a separate archive receipt with its actor, time, and epoch. No history,
-worktree, file, or native thread is deleted. Active work and uncertain
-receipts block archive. Archive children before their parent. Restore checks the
-receipt, parent, and team limit; it leaves automatic continuation disabled. A later
-user deletion or stop invalidates that archive receipt. Repeated calls are safe.
+and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.
+Active work blocks archive. A finished worker can keep unknown tool outcomes when
+no operation can still run. A command with a completed turn and a missing process
+is marked lost; its outcome stays unknown. A clean, registered Studio worktree is
+removed after an archive ref saves its HEAD. Branch changes and detached HEAD are
+allowed. Dirty and nested worktrees stay with an exact reason. Restore recreates
+the saved HEAD and uses the saved branch when it still points to that commit.
+Otherwise restore uses detached HEAD. History and native threads remain.
+Archive children before their parent. A later user deletion or stop invalidates
+the archive receipt. Repeated calls keep the same request result.
+
+`archive_finished` checks completed, failed, interrupted, and stopped paused
+descendants. It archives workers with safe worktrees or no worktree. The result reports
+the archive count, measured freed bytes, and a reason for each worker kept.
+The lead sees one reminder when three or more finished workers hold worktrees.
+`maintenance_report` lists worktrees of deleted or archived agents without
+removing them.
+
+Agent tools accept a unique ID prefix of at least eight characters among agents
+visible to the caller. Ambiguous and unknown IDs return candidate full IDs.
 
 The shared Studio skill documents the workspace bridge for existing native threads.
 Tests: `tests/agent-management-contract.py`.

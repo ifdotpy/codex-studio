@@ -1,0 +1,78 @@
+{
+  "input": 320,
+  "callbacks": 320,
+  "queuedBeforeRelease": 320,
+  "queueDelayMs": {
+    "p50": 1489.236,
+    "p95": 2592.102,
+    "max": 2666.964
+  },
+  "callbackDurationMs": {
+    "p50": 2.429,
+    "p95": 35.906
+  },
+  "lockWaitTotalMs": 919.254,
+  "lockHoldTotalMs": 2599.146,
+  "lock": [
+    {
+      "path": "codex_runtime.py:notification",
+      "count": 320,
+      "waitMs": 213.525,
+      "holdMs": 2438.626
+    },
+    {
+      "path": "codex_runtime.py:snapshot",
+      "count": 12,
+      "waitMs": 138.578,
+      "holdMs": 48.13
+    },
+    {
+      "path": "codex_tool_requests.py:reserve_tool_request",
+      "count": 12,
+      "waitMs": 134.331,
+      "holdMs": 41.363
+    },
+    {
+      "path": "codex_runtime.py:dispatch",
+      "count": 4,
+      "waitMs": 31.641,
+      "holdMs": 32.544
+    },
+    {
+      "path": "codex_capacity_retry.py:capacity_tick",
+      "count": 4,
+      "waitMs": 92.875,
+      "holdMs": 17.774
+    },
+    {
+      "path": "codex_rules.py:rules_tick",
+      "count": 4,
+      "waitMs": 30.496,
+      "holdMs": 5.072
+    },
+    {
+      "path": "codex_usage_resume.py:usage_resume_tick",
+      "count": 4,
+      "waitMs": 26.384,
+      "holdMs": 4.814
+    },
+    {
+      "path": "codex_session_names.py:complete",
+      "count": 2,
+      "waitMs": 23.777,
+      "holdMs": 3.16
+    },
+    {
+      "path": "codex_native_release.py:tick",
+      "count": 1,
+      "waitMs": 25.908,
+      "holdMs": 2.937
+    },
+    {
+      "path": "codex_session_names.py:submit",
+      "count": 2,
+      "waitMs": 47.283,
+      "holdMs": 2.708
+    }
+  ]
+}

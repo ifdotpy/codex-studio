@@ -106,7 +106,19 @@ try {
     await page.getByRole("menu").waitFor({ state: "visible" });
   };
   await openActions();
+  // The pin shows at once, before a slow snapshot arrives.
+  const slowState = async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await route.continue().catch(() => {});
+  };
+  await page.route("**/api/state*", slowState);
+  const pinnedAt = Date.now();
   await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
+  await page
+    .locator(`[data-chat="${lead.id}"] .chat-pin`)
+    .waitFor({ state: "visible", timeout: 1000 });
+  assert.ok(Date.now() - pinnedAt < 1000, "pin shows before the snapshot");
+  await page.unroute("**/api/state*", slowState);
   await poll(
     async () =>
       (await state()).threads.find((agent) => agent.id === lead.id).pinned,
@@ -321,71 +333,18 @@ try {
     fetch(`${origin}/api/queue?agent=${lead.id}`).then((response) =>
       response.json(),
     );
-  for (const text of [
-    "First queued instruction",
-    "Second queued instruction",
-  ]) {
-    await page.locator("#message").fill(text);
+  assert.equal(
     await page
       .getByRole("button", { name: "Queue after turn", exact: true })
-      .click();
-    await poll(
-      async () => (await queue()).items.some((item) => item.text === text),
-      "message enters durable queue",
-    );
-  }
-  const queuePanel = page.getByTestId("message-queue");
-  await queuePanel.waitFor();
-  const queueList = queuePanel.getByRole("list", {
-    name: "Queued messages",
-    exact: true,
-  });
-  await queueList
-    .getByText("First queued instruction", { exact: true })
+      .count(),
+    0,
+  );
+  await page.locator("#message").fill("Immediate instruction");
+  await page.locator("#message").press("Enter");
+  await page
+    .locator("#messages .message.user")
+    .filter({ hasText: "Immediate instruction" })
     .waitFor();
-  for (const text of ["First queued instruction", "Second queued instruction"])
-    assert.equal(
-      await page
-        .locator("#messages .message.user")
-        .filter({ hasText: text })
-        .count(),
-      0,
-      "Queued messages appear only in the queue panel",
-    );
-  await queuePanel
-    .getByRole("button", { name: "Edit queued message 1", exact: true })
-    .click();
-  await queuePanel
-    .getByRole("textbox", { name: "Edit queued message", exact: true })
-    .fill("Revised first instruction");
-  await queuePanel
-    .getByRole("button", { name: "Save queued message", exact: true })
-    .click();
-  await poll(
-    async () => (await queue()).items[0].text === "Revised first instruction",
-    "queue edit is persisted",
-  );
-  await queuePanel
-    .getByRole("button", { name: "Move queued message 2 up", exact: true })
-    .click();
-  await poll(
-    async () => (await queue()).items[0].text === "Second queued instruction",
-    "queue order is persisted",
-  );
-  await poll(
-    async () =>
-      (await queueList.locator("li").first().textContent()).includes(
-        "Second queued instruction",
-      ),
-    "queue UI applies server order",
-  );
-  await queuePanel
-    .getByRole("button", { name: "Delete queued message 1", exact: true })
-    .click();
-  await poll(
-    async () => (await queue()).items.length === 1,
-    "queue cancellation is persisted",
-  );
   assert.equal(
     await page
       .getByRole("group", { name: "Message delivery", exact: true })
@@ -402,16 +361,12 @@ try {
     "empty Tab retains keyboard navigation",
   );
   await page.locator("#message").fill("Keyboard check");
-  const priorQueueLength = (await queue()).items.length;
   await page.locator("#message").press("Tab");
-  await poll(
-    async () => (await queue()).items.length === priorQueueLength + 1,
-    "Tab queues a nonempty draft once",
+  assert.equal(
+    (await queue()).items.some((item) => item.text === "Keyboard check"),
+    false,
   );
-  await poll(
-    async () => (await page.locator("#message").inputValue()) === "",
-    "Tab clears the accepted draft",
-  );
+  assert.equal(await page.locator("#message").inputValue(), "Keyboard check");
   await page.locator("#message").fill("Keyboard navigation draft");
   await page.locator("#message").press("Shift+Tab");
   assert.equal(
@@ -466,9 +421,9 @@ try {
     "The durable outbox retains the failed steer outside the composer",
   );
   assert.equal(
-    (await queue()).items.length,
-    priorQueueLength + 1,
-    "steer failure does not silently queue",
+    (await queue()).items.some((item) => item.text === failedSteerText),
+    false,
+    "failed transport does not create a server queue row",
   );
   await page.unroute("**/api/messages", failSteerRequests);
 
@@ -486,7 +441,7 @@ try {
   assert.equal(
     (await entered).postDataJSON().delivery,
     "after_tool",
-    "Enter uses after-tool-call delivery",
+    "Enter sends after-tool input",
   );
   await page
     .locator("#messages .message.user")
@@ -514,10 +469,6 @@ try {
     .locator("#messages")
     .getByRole("button", { name: "evidence.txt", exact: true })
     .waitFor();
-  await page
-    .getByTestId("message-queue")
-    .getByText("Revised first instruction", { exact: true })
-    .waitFor();
   await page.locator("#toast").waitFor({ state: "hidden" });
   await page.screenshot({ path: join(root, "chat-controls-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -530,7 +481,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Chat controls UI: PASS (attachment-only retry, draft reload, paste/drop, file preview, queue edit/order/cancel, steer failure, quote, pin/archive/project, mobile)",
+    "Chat controls UI: PASS (attachment retry, draft reload, paste/drop, file preview, native send failure, quote, pin/archive/project, mobile)",
   );
   console.log(`Browser evidence: ${root}`);
 } finally {

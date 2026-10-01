@@ -52,6 +52,12 @@ class NativeLookup(unittest.TestCase):
         self.runtime.notification({'method': method, 'params': {
             'threadId': 'shared-thread', 'turnId': 'current-turn', 'itemId': 'message',
             'delta': 'Exact output ✓\n', **params}}, account, 'connection')
+        if method in {'item/agentMessage/delta', 'item/commandExecution/outputDelta'}:
+            stream = getattr(self.runtime, '_stream_buffer', None)
+            if stream:
+                with self.runtime.lock, self.runtime.db() as db:
+                    stream.flush_locked(db, account=account, thread_id=params.get('threadId', 'shared-thread'),
+                                        force=True)
 
     def item(self, key='target:message'):
         with self.runtime.db() as db:

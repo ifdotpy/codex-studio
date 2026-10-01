@@ -27,15 +27,89 @@ import path from "node:path";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
 import { thinkingFlag } from "./thinking.mjs";
+import { createSessionStore } from "./session-store.mjs";
+import { claudeImage } from "./images.mjs";
+import { listSkills } from "./skills.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
+const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
+function nativeUserMessageId(id) {
+  if (
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(
+      id,
+    )
+  )
+    return id;
+  const namespace = Buffer.from(
+    STUDIO_INPUT_NAMESPACE.replaceAll("-", ""),
+    "hex",
+  );
+  const bytes = createHash("sha1")
+    .update(namespace)
+    .update(String(id))
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+function assistantBlockState(active, messageId, kind) {
+  const key = messageId + ":" + kind;
+  if (!active.assistantBlocks.has(key))
+    active.assistantBlocks.set(key, {
+      blocks: [],
+      streams: new Map(),
+      frames: new Set(),
+    });
+  return active.assistantBlocks.get(key);
+}
+function assistantText(state) {
+  return state.blocks
+    .map((block) => block.text)
+    .filter(Boolean)
+    .join("\n");
+}
 let lastLimits;
 const root = process.argv[2];
 if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
-const sessions = new Map(),
-  queries = new Map(),
+const queries = new Map(),
   pending = new Map();
+const sessionStore = createSessionStore(root, {
+  isPinned: (id) => queries.has(id),
+});
+const sessions = sessionStore.sessions;
+const configuredIdle = Number(process.env.STUDIO_CLAUDE_IDLE_SECONDS);
+const idleSeconds =
+  Number.isFinite(configuredIdle) && configuredIdle > 0
+    ? Math.max(1, configuredIdle)
+    : 15 * 60;
+const querySweep = setInterval(
+  () => {
+    const now = Date.now();
+    for (const [id, active] of queries) {
+      if (
+        active.turn ||
+        active.tasks.size ||
+        active.pendingSteers.size ||
+        active.reservingInput ||
+        active.idleSince == null ||
+        operations.get(id) ||
+        now - active.idleSince < idleSeconds * 1000
+      )
+        continue;
+      active.input.close();
+      active.q?.close();
+      if (queries.get(id) === active) {
+        queries.delete(id);
+        void sessionStore.evict(id);
+      }
+    }
+  },
+  Math.min(30000, idleSeconds * 500),
+);
+querySweep.unref();
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const emit = (method, params) => send({ method, params });
 const commands = createCommandTransport({ root, emit });
@@ -61,38 +135,9 @@ const request = (method, params, signal) =>
     signal?.addEventListener("abort", abort, { once: true });
     send({ id, method, params });
   });
-const sessionPath = (id) => {
-  if (!/^[a-f0-9-]{36}$/.test(id))
-    throw new Error("Invalid Claude session identity");
-  return path.join(root, "sessions", id + ".json");
-};
-const writes = new Map();
-const persist = (session) => {
-  const previous = writes.get(session.id) || Promise.resolve();
-  const next = previous.catch(() => {}).then(() => save(session));
-  writes.set(session.id, next);
-  return next;
-};
-const save = async (session) => {
-  const file = sessionPath(session.id),
-    tmp = file + "." + randomUUID() + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(session), { mode: 0o600 });
-  await fs.rename(tmp, file);
-};
+const persist = sessionStore.persist;
 async function session(id) {
-  if (!sessions.has(id)) {
-    const saved = JSON.parse(await fs.readFile(sessionPath(id), "utf8"));
-    for (const turn of saved.turns)
-      if (turn.status === "inProgress") {
-        turn.status = "interrupted";
-        turn.error = {
-          message:
-            "Claude connection ended. Review the saved transcript before continuing.",
-        };
-      }
-    sessions.set(id, saved);
-  }
-  return sessions.get(id);
+  return sessionStore.get(id);
 }
 const settings = (s) => ({
   cwd: s.cwd,
@@ -118,6 +163,8 @@ function checkAccount(account) {
 async function probe(cwd, read) {
   let release;
   const hold = new Promise((r) => (release = r));
+  // Keep an idle async iterable open until the account probe completes.
+  // oxlint-disable-next-line require-yield
   async function* prompt() {
     await hold;
   }
@@ -165,19 +212,20 @@ async function catalog() {
     throw error;
   }
 }
-function wireThread(s) {
+function wireThread(s, metadata, includeTurns = true) {
+  const id = s?.id || metadata.id;
   return {
+    id,
+    cwd: metadata.cwd,
+    createdAt: metadata.createdAt,
+    updatedAt: metadata.updatedAt,
+    preview: metadata.preview,
+    name: metadata.name,
     historyVersion: createHash("sha256")
-      .update(JSON.stringify([s.nativeId || s.id, s.turns]))
+      .update(metadata.revision)
       .digest("hex"),
-    id: s.id,
-    cwd: s.cwd,
-    createdAt: s.createdAt,
-    updatedAt: s.updatedAt || s.createdAt,
-    preview: s.preview || "",
-    name: s.name ?? null,
-    turns: s.turns,
-    status: { type: queries.get(s.id)?.turn ? "active" : "idle" },
+    ...(includeTurns ? { turns: s.turns } : { turns: [] }),
+    status: { type: queries.get(id)?.turn ? "active" : "idle" },
     modelProvider: "claude",
   };
 }
@@ -266,12 +314,30 @@ function studioTools(s, getTurn) {
     }),
   });
 }
+// Codex continues a thread on turn/start without input; Claude needs text.
+const CONTINUE_TEXT =
+  "Continue the previous turn from where it stopped. Check the current state first and do not repeat completed work.";
+// Claude API error types that Studio can retry, in Codex error names.
+function claudeErrorInfo(error, text) {
+  if (error === "overloaded") return "serverOverloaded";
+  if (error === "server_error") return "internalServerError";
+  if (error === "authentication_failed") return "unauthorized";
+  if (
+    error === "unknown" &&
+    /can't reach the api server|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection error|socket hang up|fetch failed/i.test(
+      text || "",
+    )
+  )
+    return "httpConnectionFailed";
+  return null;
+}
 async function content(input) {
+  if (Array.isArray(input) && !input.length)
+    return [{ type: "text", text: CONTINUE_TEXT }];
   const result = [];
   for (const item of input || []) {
     if (item.type === "text") result.push({ type: "text", text: item.text });
     else if (item.type === "localImage") {
-      const bytes = await fs.readFile(item.path);
       const ext = path.extname(item.path).toLowerCase();
       const media_type = {
         ".png": "image/png",
@@ -281,9 +347,15 @@ async function content(input) {
         ".webp": "image/webp",
       }[ext];
       if (!media_type) throw new Error("Unsupported image format for Claude");
+      // Large screenshots are scaled down; the API removes oversized images.
+      const image = await claudeImage(item.path, media_type);
       result.push({
         type: "image",
-        source: { type: "base64", media_type, data: bytes.toString("base64") },
+        source: {
+          type: "base64",
+          media_type: image.mediaType,
+          data: image.bytes.toString("base64"),
+        },
       });
     } else throw new Error("Unsupported Claude input: " + item.type);
   }
@@ -314,7 +386,12 @@ async function flags(s, p = {}, live = false) {
   return {
     fastMode: p.serviceTier === "priority",
     ...(p.effort !== undefined ? { effortLevel: p.effort } : {}),
-    ...thinkingFlag(p.model || s.model, native.models, s.claude?.thinking, live),
+    ...thinkingFlag(
+      p.model || s.model,
+      native.models,
+      s.claude?.thinking,
+      live,
+    ),
     ...(s.claude?.autoCompactWindow || providerOptions.autoCompactWindow
       ? {
           autoCompactWindow:
@@ -338,7 +415,10 @@ async function finishTurn(s, active, result, error) {
         result?.errors?.join("\n") ||
         result?.result ||
         "Claude turn failed",
-      ...(turn.limitError || {}),
+      ...(turn.apiErrorInfo && !turn.limitError
+        ? { codexErrorInfo: turn.apiErrorInfo }
+        : {}),
+      ...turn.limitError,
     };
   const answer = turn.items
     .filter(
@@ -382,7 +462,9 @@ async function finishTurn(s, active, result, error) {
   s.updatedAt = Math.floor(Date.now() / 1000);
   await persist(s);
   active.turn = null;
+  if (!active.tasks.size) active.idleSince = Date.now();
   active.pendingSteers.clear();
+  active.assistantBlocks.clear();
   emit("turn/completed", {
     threadId: s.id,
     turn: { id: turn.id, status: turn.status, error: turn.error },
@@ -393,6 +475,8 @@ async function startSession(s, active, p) {
   let admit;
   const admitted = new Promise((r) => (admit = r));
   let allowed = false;
+  // Keep an idle async iterable open until the account probe completes.
+  // oxlint-disable-next-line require-yield
   async function* prompt() {
     await admitted;
     if (!allowed) return;
@@ -506,17 +590,23 @@ async function startSession(s, active, p) {
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
         active.tasks = new Map(m.tasks.map((t) => [t.task_id, t]));
+        if (!active.turn)
+          active.idleSince = active.tasks.size ? null : Date.now();
         continue;
       }
       if (m.type === "user" && m.isReplay) {
-        active.pendingSteers.delete(m.uuid);
-        active.deferredResult = null;
         const item = active.turn?.items.find(
           (i) =>
-            i.id === m.uuid ||
-            (i.type === "userMessage" && active.turn.id === m.uuid),
+            i.type === "userMessage" &&
+            (i.nativeId === m.uuid ||
+              (i.nativeId == null &&
+                (i.id === m.uuid || active.turn.id === m.uuid))),
         );
-        if (item) item.nativeId = m.uuid;
+        if (item) {
+          item.nativeId = m.uuid;
+          active.pendingSteers.delete(item.id);
+          active.deferredResult = null;
+        }
         continue;
       }
       if (
@@ -555,7 +645,9 @@ async function startSession(s, active, p) {
         ) {
           turn.limitError = {
             codexErrorInfo: "rateLimitExceeded",
-            ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
+            ...(Number.isFinite(info.resetsAt)
+              ? { resetsAt: info.resetsAt }
+              : {}),
           };
           notice(
             s,
@@ -612,6 +704,8 @@ async function startSession(s, active, p) {
           )
             active.tasks.delete(id);
           else active.tasks.set(id, task);
+          if (!active.turn)
+            active.idleSince = active.tasks.size ? null : Date.now();
           const taskTurn = turn || s.turns.at(-1);
           if (taskTurn)
             finishItem(s, taskTurn, {
@@ -701,6 +795,21 @@ async function startSession(s, active, p) {
           const thinking = e.delta.type === "thinking_delta";
           const id = active.messageId + (thinking ? ":thinking" : "");
           const delta = e.delta.text || e.delta.thinking || "";
+          const state = assistantBlockState(
+            active,
+            active.messageId,
+            thinking ? "thinking" : "text",
+          );
+          const index = Number.isInteger(e.index) ? e.index : 0;
+          let block = state.streams.get(index);
+          if (!block) {
+            block = { text: "", complete: false };
+            state.streams.set(index, block);
+            state.blocks.push(block);
+          }
+          const separator =
+            block.text === "" && state.blocks.indexOf(block) > 0 ? "\n" : "";
+          if (!block.complete) block.text += delta;
           let item = turn.items.find((i) => i.id === id);
           if (!item) {
             item = {
@@ -712,22 +821,43 @@ async function startSession(s, active, p) {
             };
             turn.items.push(item);
           }
-          item.text += delta;
-          emit("item/agentMessage/delta", {
-            threadId: s.id,
-            turnId: turn.id,
-            itemId: id,
-            delta,
-          });
+          if (!block.complete) {
+            item.text = assistantText(state);
+            emit("item/agentMessage/delta", {
+              threadId: s.id,
+              turnId: turn.id,
+              itemId: id,
+              delta: separator + delta,
+            });
+          }
         }
       } else if (m.type === "assistant") {
+        if (m.error) {
+          const errorText = (m.message.content || [])
+            .filter((b) => b.type === "text")
+            .map((b) => b.text)
+            .join("\n");
+          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
+        }
         active.lastModel = m.message.model || active.lastModel;
         active.lastMessageId = m.message.id || active.lastMessageId;
         active.lastUsage = usageTokens(m.message.usage) || active.lastUsage;
-        const text = m.message.content
-          .filter((b) => b.type === "text")
-          .map((b) => b.text)
-          .join("\n");
+        const mergeBlocks = (kind, field) => {
+          const state = assistantBlockState(active, m.message.id, kind);
+          for (const [index, block] of m.message.content.entries()) {
+            if (block.type !== kind || !block[field]) continue;
+            const frame = (m.uuid || JSON.stringify(m.message)) + ":" + index;
+            if (state.frames.has(frame)) continue;
+            state.frames.add(frame);
+            const pending = state.blocks.find(
+              (old) => !old.complete && old.text === block[field],
+            );
+            if (pending) pending.complete = true;
+            else state.blocks.push({ text: block[field], complete: true });
+          }
+          return assistantText(state);
+        };
+        const text = mergeBlocks("text", "text");
         if (text)
           finishItem(s, turn, {
             id: m.message.id,
@@ -736,10 +866,7 @@ async function startSession(s, active, p) {
             text,
             phase: "commentary",
           });
-        const thinking = m.message.content
-          .filter((b) => b.type === "thinking" && b.thinking)
-          .map((b) => b.thinking)
-          .join("\n");
+        const thinking = mergeBlocks("thinking", "thinking");
         if (thinking)
           finishItem(s, turn, {
             id: m.message.id + ":thinking",
@@ -808,8 +935,22 @@ async function startSession(s, active, p) {
     admit();
     active.input.close();
     active.q?.close();
-    if (queries.get(s.id) === active) queries.delete(s.id);
+    if (queries.get(s.id) === active) {
+      queries.delete(s.id);
+      void sessionStore.evict(s.id);
+    }
   }
+}
+// The SDK reports a closed or aborted Claude process with these messages.
+function deadQuery(error) {
+  return /process aborted by user|operation aborted|process exited|process terminated|transport is not ready|query (is )?closed/i.test(
+    String(error?.message || error),
+  );
+}
+function discardQuery(s, active) {
+  active.input.close();
+  active.q?.close();
+  if (queries.get(s.id) === active) queries.delete(s.id);
 }
 function newActive(turn) {
   const active = {
@@ -819,7 +960,9 @@ function newActive(turn) {
     tasks: new Map(),
     tools: new Map(),
     pendingSteers: new Set(),
+    assistantBlocks: new Map(),
     reportedUsage: 0,
+    idleSince: null,
     lastUsage: null,
   };
   active.ready = new Promise((resolve, reject) => {
@@ -832,7 +975,7 @@ function newActive(turn) {
 function userMessage(s, turn, blocks, id) {
   return {
     type: "user",
-    uuid: id || turn.id,
+    uuid: nativeUserMessageId(id || turn.id),
     session_id: s.nativeId || s.id,
     parent_tool_use_id: null,
     message: { role: "user", content: blocks },
@@ -865,7 +1008,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 7 },
+      capabilities: { claudeVersion: 14 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -886,6 +1029,8 @@ async function handle(method, p) {
       data: models.map((model) => ({
         id: model.value,
         model: model.value,
+        // Aliases such as "sonnet" name a dated model; spawn accepts either id.
+        resolvedModel: model.resolvedModel || null,
         displayName: "Claude · " + model.displayName,
         description: model.description,
         isDefault: model.value === "default",
@@ -952,6 +1097,18 @@ async function handle(method, p) {
       totalTokens: s.totalTokens,
     };
   }
+  if (method === "claude/diagnostics") {
+    const values = [...queries.values()];
+    return {
+      liveQueries: values.length,
+      activeTurns: values.filter((active) => active.turn).length,
+      backgroundQueries: values.filter((active) => active.tasks.size).length,
+      idleQueries: values.filter((active) => !active.turn && !active.tasks.size)
+        .length,
+      idleLimitSeconds: idleSeconds,
+      sessionCache: sessionStore.stats(),
+    };
+  }
   if (method === "claude/settings") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
@@ -985,7 +1142,12 @@ async function handle(method, p) {
     };
     sessions.set(s.id, s);
     await persist(s);
-    return { ...p, thread: wireThread(s), model: s.model, sandbox: null };
+    return {
+      ...p,
+      thread: wireThread(s, await sessionStore.metadata(s.id)),
+      model: s.model,
+      sandbox: null,
+    };
   }
   if (method === "thread/turns/list" || method === "thread/turns/items/list") {
     const s = await session(p.threadId);
@@ -1009,15 +1171,38 @@ async function handle(method, p) {
     };
   }
   if (method === "thread/list") {
-    const data = [];
-    for (const file of await fs.readdir(path.join(root, "sessions")))
-      if (file.endsWith(".json"))
-        data.push(wireThread(await session(file.slice(0, -5))));
-    return { data, nextCursor: null };
+    const page = await sessionStore.listMetadata(p.cursor, p.limit);
+    return {
+      data: page.data.map((metadata) => ({
+        id: metadata.id,
+        cwd: metadata.cwd,
+        createdAt: metadata.createdAt,
+        updatedAt: metadata.updatedAt,
+        preview: metadata.preview,
+        name: metadata.name,
+        historyVersion: createHash("sha256")
+          .update(metadata.revision)
+          .digest("hex"),
+        turns: [],
+        status: { type: queries.get(metadata.id)?.turn ? "active" : "idle" },
+        modelProvider: "claude",
+      })),
+      nextCursor: page.nextCursor,
+    };
   }
   if (method === "skills/extraRoots/set")
     throw new Error("Claude uses its native skills and MCP configuration");
   if (method === "thread/resume" || method === "thread/read") {
+    if (method === "thread/read" && p.includeTurns !== true) {
+      const metadata = await sessionStore.metadata(p.threadId);
+      return {
+        thread: wireThread(null, metadata, false),
+        model: metadata.model,
+        sandbox: null,
+        approvalPolicy: metadata.approvalPolicy,
+        activePermissionProfile: metadata.activePermissionProfile,
+      };
+    }
     const s = await session(p.threadId);
     if (method === "thread/resume") {
       const active = queries.get(s.id);
@@ -1029,13 +1214,16 @@ async function handle(method, p) {
       Object.assign(s, p);
       await persist(s);
     }
+    const includeTurns =
+      method === "thread/read"
+        ? p.includeTurns === true
+        : p.excludeTurns !== true;
     return {
-      ...s,
+      thread: wireThread(s, await sessionStore.metadata(s.id), includeTurns),
+      model: s.model,
       sandbox: null,
-      thread: {
-        ...wireThread(s),
-        ...(!p.includeTurns && method === "thread/read" ? { turns: [] } : {}),
-      },
+      approvalPolicy: s.approvalPolicy ?? null,
+      activePermissionProfile: s.activePermissionProfile ?? null,
     };
   }
   if (method === "thread/unsubscribe") {
@@ -1045,6 +1233,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.threadId);
+    await sessionStore.evict(p.threadId);
     return {};
   }
   if (method === "thread/fork") {
@@ -1057,7 +1246,17 @@ async function handle(method, p) {
       persist,
     });
     sessions.set(s.id, s);
-    return { ...s, sandbox: null, thread: wireThread(s) };
+    return {
+      thread: wireThread(
+        s,
+        await sessionStore.metadata(s.id),
+        p.excludeTurns !== true,
+      ),
+      model: s.model,
+      sandbox: null,
+      approvalPolicy: s.approvalPolicy ?? null,
+      activePermissionProfile: s.activePermissionProfile ?? null,
+    };
   }
   if (method === "thread/compact/start") {
     const s = await session(p.threadId);
@@ -1080,8 +1279,19 @@ async function handle(method, p) {
         throw new Error("This message identity has different content");
       return { turn: { id: prior.id, status: prior.status } };
     }
-    if (queries.get(s.id)?.turn)
-      throw new Error("Claude already has an active turn");
+    const running = queries.get(s.id)?.turn;
+    if (running) {
+      await handle("turn/steer", {
+        threadId: s.id,
+        expectedTurnId: running.id,
+        clientUserMessageId: p.clientUserMessageId,
+        input: p.input,
+      });
+      return {
+        turn: { id: running.id, status: running.status },
+        steered: true,
+      };
+    }
     let nativeCommand;
     if (p.claudeCommand) {
       const commands = await handle("claude/commands", { cwd: s.cwd });
@@ -1091,8 +1301,9 @@ async function handle(method, p) {
     const blocks = await content(
       nativeCommand ? [{ type: "text", text: nativeCommand }] : p.input,
     );
+    const turnId = randomUUID();
     const turn = {
-      id: randomUUID(),
+      id: turnId,
       clientUserMessageId: p.clientUserMessageId,
       status: "inProgress",
       items: [
@@ -1100,6 +1311,7 @@ async function handle(method, p) {
           id: p.clientUserMessageId || randomUUID(),
           type: "userMessage",
           content: p.input,
+          nativeId: nativeUserMessageId(p.clientUserMessageId || turnId),
         },
       ],
     };
@@ -1108,11 +1320,25 @@ async function handle(method, p) {
       Array.isArray(p.dynamicTools) &&
       JSON.stringify(p.dynamicTools) !== JSON.stringify(s.dynamicTools || []);
     if (toolsChanged) s.dynamicTools = p.dynamicTools;
+    if (active && !active.turn && !active.tasks.size) {
+      // A persistent query can die between turns (its Claude process ends).
+      // Nothing is running in it, so start this turn in a fresh query.
+      try {
+        await active.ready;
+      } catch (error) {
+        if (!deadQuery(error)) throw error;
+        discardQuery(s, active);
+        active = null;
+      }
+    }
     if (active) {
       await active.ready;
       if (toolsChanged) {
         // Replace only the Studio MCP server; background tasks keep running.
         try {
+          // The SDK keeps an already registered in-process server even when its
+          // tools change. Remove it first so the new schema replaces it.
+          await active.q.setMcpServers({});
           await active.q.setMcpServers({
             studio: studioTools(s, () => active.turn),
           });
@@ -1122,9 +1348,17 @@ async function handle(method, p) {
           );
         }
       }
-      await active.q.setModel(p.model || s.model);
-      await active.q.setPermissionMode(permissionMode(s, p));
-      await active.q.applyFlagSettings(await flags(s, p, true));
+      try {
+        await active.q.setModel(p.model || s.model);
+        await active.q.setPermissionMode(permissionMode(s, p));
+        await active.q.applyFlagSettings(await flags(s, p, true));
+      } catch (error) {
+        if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
+        discardQuery(s, active);
+        active = null;
+      }
+    }
+    if (active) {
       if (queries.get(s.id) !== active || active.input.closed)
         throw new Error("Claude closed before this turn could start");
       if (active.turn)
@@ -1132,6 +1366,7 @@ async function handle(method, p) {
           "Claude background work started a turn; wait or steer that turn",
         );
       active.turn = turn;
+      active.idleSince = null;
       active.reservingInput = true;
     }
     s.model = p.model || s.model;
@@ -1162,7 +1397,9 @@ async function handle(method, p) {
       threadId: s.id,
       turn: { id: turn.id, status: "inProgress" },
     });
-    active.input.push(userMessage(s, turn, blocks, turn.id));
+    active.input.push(
+      userMessage(s, turn, blocks, p.clientUserMessageId || turn.id),
+    );
     return { turn: { id: turn.id, status: turn.status } };
   }
   if (method === "turn/steer") {
@@ -1195,6 +1432,7 @@ async function handle(method, p) {
         id,
         type: "userMessage",
         content: p.input,
+        nativeId: nativeUserMessageId(id),
         delivery: "steer",
         deliveryStatus: "preparing",
       };
@@ -1265,6 +1503,7 @@ async function handle(method, p) {
     await active.q.stopTask(p.taskId);
     return {};
   }
+  if (method === "skills/list") return listSkills(p?.cwds);
   throw new Error("Claude does not support " + method);
 }
 const operations = new Map();
@@ -1280,9 +1519,8 @@ lines.on("line", (line) => {
     const waiting = pending.get(message.id);
     if (waiting) {
       pending.delete(message.id);
-      message.error
-        ? waiting.reject(new Error(message.error.message))
-        : waiting.resolve(message.result);
+      if (message.error) waiting.reject(new Error(message.error.message));
+      else waiting.resolve(message.result);
     }
     return;
   }
@@ -1346,7 +1584,7 @@ function shutdown() {
       }
     }
     await commands.close();
-    await Promise.allSettled(writes.values());
+    await sessionStore.drain();
     process.exit(0);
   })();
   return closing;

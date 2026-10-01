@@ -10,6 +10,8 @@ import sys
 import tempfile
 import threading
 import unittest
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -43,6 +45,17 @@ class AnalyticsContract(unittest.TestCase):
 
     def data(self, **options):
         return self.runtime.analytics(self.agent['id'], **options)
+
+    def test_unchanged_rate_limit_snapshot_is_not_stored_again(self):
+        snapshot = {'rateLimits': {'primary': {'usedPercent': 10, 'resetsAt': 5}}, 'at': 1.0}
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.analytics_limit(db, 'fixture-account', snapshot)
+            self.runtime.analytics_limit(db, 'fixture-account', {**snapshot, 'at': 2.0})
+            self.runtime.analytics_limit(db, 'fixture-account', {**snapshot, 'rateLimits': {'primary': {'usedPercent': 11, 'resetsAt': 5}}})
+            self.runtime.analytics_limit(db, 'other-account', snapshot)
+            rows = db.execute("SELECT account, json_extract(record,'$.rateLimits.primary.usedPercent') FROM analytics_limits "
+                              "WHERE account IN ('fixture-account','other-account') ORDER BY id").fetchall()
+        self.assertEqual([tuple(row) for row in rows], [("fixture-account", 10), ("fixture-account", 11), ("other-account", 10)])
 
     def test_compact_turn_errors_keep_exact_agent_thread_and_turn(self):
         turn = self.agent['turnId']
@@ -311,6 +324,129 @@ class AnalyticsContract(unittest.TestCase):
         self.runtime.close()
         self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
         self.assertEqual(self.data()['pagination']['total'], 3)
+
+    def test_sql_call_page_matches_legacy_filter_and_totals(self):
+        with self.runtime.db() as db:
+            for index, name in enumerate(("one", "two", "one", "three")):
+                record = {"id": f"page-{index}", "agentId": self.agent["id"],
+                          "threadId": self.agent["threadId"], "turnId": "page-turn",
+                          "type": "modelToolCall", "isTool": True, "name": name,
+                          "payloadBoundary": "model", "status": "completed",
+                          "at": 100 + index, "output": {"bytes": index + 1}}
+                db.execute("INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (record["id"], self.agent["id"], self.agent["rootId"],
+                            self.agent["threadId"], "page-turn", record["at"],
+                            record["type"], name, 1, json.dumps(record)))
+        with self.runtime.db() as db:
+            legacy = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM analytics_items WHERE agent=? ORDER BY at DESC,id",
+                (self.agent["id"],))]
+        legacy = [row for row in legacy if row["isTool"] and row["name"] == "one"]
+        result = self.data(tool="one", limit=1, offset=1)
+        self.assertEqual(result["calls"], legacy[1:2])
+        self.assertEqual(result["pagination"]["total"], len(legacy))
+        self.assertEqual(result["summary"]["observedToolRows"], len(legacy))
+        self.assertEqual(result["summary"]["outputBytes"], sum(r["output"]["bytes"] for r in legacy))
+        self.assertEqual(self.data(tool="one", export=1)["calls"], legacy)
+
+    def test_rate_limit_and_turn_pages_keep_sql_totals_and_export_all_rows(self):
+        account = self.agent.get('accountKey', 'default')
+        root = self.agent['rootId']
+        with self.runtime.db() as db:
+            previous_turns = db.execute('SELECT COUNT(*) FROM analytics_turns WHERE agent=?',
+                                        (self.agent['id'],)).fetchone()[0]
+            for i in range(125):
+                at = 10_000 + i
+                db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)',
+                           (account, at, json.dumps({'primary': {'usedPercent': i}})))
+                turn_id = f'page-turn-{i:03d}'
+                record = {'agentId': self.agent['id'], 'agentName': self.agent['name'],
+                          'threadId': self.agent['threadId'], 'turnId': turn_id,
+                          'startedAt': at, 'status': 'completed'}
+                db.execute('INSERT INTO analytics_turns(id,agent,root,at,record) VALUES (?,?,?,?,?)',
+                           (turn_id, self.agent['id'], root, at, json.dumps(record)))
+
+        result = self.data()
+        self.assertEqual(len(result['rateLimits']), 100)
+        self.assertEqual(result['rateLimits'][0]['at'], 10_124)
+        self.assertEqual(result['detailPagination']['rateLimits'],
+                         {'limit': 100, 'offset': 0, 'total': 125, 'hasMore': True})
+        self.assertEqual(len(result['turns']), 100)
+        expected_turns = previous_turns + 125
+        self.assertEqual(result['detailPagination']['turns']['total'], expected_turns)
+
+        limits = self.data(view='detail', detail='rateLimits', offset=100)
+        turns = self.data(view='detail', detail='turns', offset=100)
+        self.assertEqual(len(limits['rateLimits']), 25)
+        self.assertEqual(limits['pagination']['total'], 125)
+        self.assertFalse(limits['pagination']['hasMore'])
+        self.assertEqual(len(turns['turns']), expected_turns - 100)
+        self.assertEqual(turns['pagination']['total'], expected_turns)
+        self.assertFalse(turns['pagination']['hasMore'])
+        self.assertEqual(len(self.data(export=1)['rateLimits']), 125)
+        self.assertEqual(len(self.data(export=1)['turns']), expected_turns)
+
+    def test_streamed_export_matches_full_json_across_pages(self):
+        agent = self.agent
+        with self.runtime.db() as db:
+            for index in range(105):
+                at = 1000 + index
+                tool = index % 2 == 0
+                kind = 'modelToolCall' if tool else 'modelMessage'
+                item = {'id': f'export-item-{index}', 'agentId': agent['id'],
+                        'turnId': f'export-turn-{index}', 'type': kind,
+                        'name': 'fixture-tool' if tool else kind, 'isTool': tool,
+                        'status': 'completed', 'at': at, 'output': {'bytes': index}}
+                db.execute('INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?)',
+                           (item['id'], agent['id'], agent['rootId'], agent['threadId'],
+                            item['turnId'], at, kind, item['name'], int(tool), json.dumps(item)))
+                turn = {'agentId': agent['id'], 'turnId': item['turnId'], 'at': at}
+                db.execute('INSERT INTO analytics_turns VALUES (?,?,?,?,?)',
+                           (item['turnId'], agent['id'], agent['rootId'], at, json.dumps(turn)))
+                db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)',
+                           (agent.get('accountKey', 'default'), at, json.dumps({'sample': index})))
+            for index, response in enumerate((None, 'response-1', 'response-2')):
+                usage = {'agentId': agent['id'], 'threadId': agent['threadId'],
+                         'turnId': 'export-turn-0', 'at': 1000 + index,
+                         'responseId': response, 'accountKey': 'default',
+                         'model': 'fixture', 'baselineMissing': False,
+                         'modelContextWindow': 1000,
+                         'last': {'totalTokens': 100},
+                         'delta': {'inputTokens': 80, 'cachedInputTokens': 40,
+                                   'cacheWriteInputTokens': 0, 'outputTokens': 20,
+                                   'reasoningOutputTokens': 0, 'totalTokens': 100}}
+                db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
+                           (f'export-usage-{index}', agent['id'], agent['rootId'],
+                            agent['threadId'], usage['turnId'], usage['at'], json.dumps(usage)))
+        self.runtime.close()
+        for options in ({'limit': 1}, {'tool': 'fixture-tool', 'from': 1020, 'to': 1080}):
+            with patch('time.time', return_value=123456789):
+                eager = self.data(export=1, **options)
+                streamed = json.loads(b''.join(
+                    self.runtime.analytics_export_chunks(agent['id'], **options)))
+            self.assertEqual(streamed, eager)
+            self.assertEqual(len(streamed['rateLimits']), 105 if 'from' not in options else 61)
+            self.assertEqual(len(streamed['provisionalUsage']), 1 if 'from' not in options else 0)
+
+    def test_streamed_export_http_attachment(self):
+        from codex_canvas import Canvas, make_server
+        canvas = Canvas(Path(self.temp.name))
+        canvas.runtime = self.runtime
+        server = make_server(canvas, 0)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            query = urlencode({'agent': self.agent['id'], 'scope': 'agent', 'export': '1'})
+            with urlopen(f'http://127.0.0.1:{server.server_port}/api/analytics?{query}', timeout=15) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn('attachment', response.headers['Content-Disposition'])
+                data = json.load(response)
+            self.assertEqual(data['filters']['agent'], self.agent['id'])
+            self.assertFalse(data['pagination']['hasMore'])
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
 
     def test_turn_wall_time_and_unknown_measurements(self):
         self.event('turn/started', {'turnId': 'measured', 'turn': {'id': 'measured'}}, at=100)

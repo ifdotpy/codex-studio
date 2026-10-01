@@ -18,7 +18,7 @@ class LoginContract(fixture.AccountsContract):
     def runtime(self, call):
         store = self.store
         class Runtime:
-            def connect(self, key):
+            def connect(self, key, **options):
                 class Server:
                     def call(self, method, params, timeout):
                         return call(key, method, params)
@@ -122,6 +122,64 @@ class LoginContract(fixture.AccountsContract):
         result = self.store.start_login(self.runtime(lambda key, *_: self.response(key)), str(uuid.uuid4()))
         self.store.login_completed(result["accountKey"], {"success": False, "loginId": "another-login"})
         self.assertEqual(self.store.snapshot()["logins"][0]["status"], "pending")
+
+    def test_reauth_keeps_profile_and_requires_native_completion(self):
+        calls = []
+        def call(key, method, params):
+            calls.append((key, method, params))
+            return self.response(key)
+        runtime = self.runtime(call)
+        rid = str(uuid.uuid4())
+        result = self.store.start_login(runtime, rid, "default")
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(self.store.snapshot()["logins"][0]["status"], "pending")
+        self.assertEqual(result, self.store.start_login(runtime, rid, "default"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.store.data["accounts"]), 1)
+        with self.assertRaisesRegex(ValueError, "different account"):
+            self.store.start_login(runtime, rid)
+        with self.assertRaisesRegex(ValueError, "already active"):
+            self.store.start_login(runtime, str(uuid.uuid4()), "default")
+        self.store.login_completed("default", {"success": True, "loginId": result["loginId"]})
+        result = self.store.login_receipts()[0]
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["resolvedAccountKey"], "default")
+        self.assertEqual(self.store.default(), "default")
+        self.assertEqual(len(calls), 1, "Sign-in cannot replay a model request")
+
+    def test_reauth_unknown_reply_and_restart_do_not_accept_old_credentials(self):
+        calls = []
+        def call(key, *_):
+            calls.append(key)
+            raise TimeoutError("SECRET")
+        rid = str(uuid.uuid4()); runtime = self.runtime(call)
+        result = self.store.start_login(runtime, rid, "default")
+        self.assertEqual(result["status"], "uncertain")
+        restarted = fixture.AccountStore(self.root / "state")
+        self.assertEqual(restarted.start_login(runtime, rid, "default")["status"], "uncertain")
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("SECRET", json.dumps(result))
+
+    def test_reauth_wrong_account_remains_blocked(self):
+        result = self.store.start_login(self.runtime(lambda key, *_: self.response(key)), str(uuid.uuid4()), "default")
+        fixture.auth(self.primary, "wrong-account", "wrong@example.invalid")
+        self.store.login_completed("default", {"success": True, "loginId": result["loginId"]})
+        self.assertEqual(self.store.login_receipts()[0]["status"], "error")
+        self.assertEqual(self.store.get("default")["status"], "changed")
+        self.assertEqual(self.store.get("default")["accountId"], "account-one")
+        with self.assertRaises(ValueError): self.store.home("default")
+        self.assertEqual(self.store.home("default", for_login=True), self.primary.resolve())
+
+    def test_reauth_cancel_keeps_account_and_next_completion_ignores_old_receipt(self):
+        def call(key, method, params):
+            return {"status": "canceled"} if method.endswith("cancel") else self.response(key)
+        runtime = self.runtime(call); rid = str(uuid.uuid4())
+        self.store.start_login(runtime, rid, "default")
+        self.store.cancel_login(runtime, rid)
+        self.assertEqual(self.store.get("default")["status"], "ready")
+        second = self.store.start_login(runtime, str(uuid.uuid4()), "default")
+        self.store.login_completed("default", {"success": True, "loginId": second["loginId"]})
+        self.assertEqual(self.store.login_receipts()[-1]["status"], "ready")
 
 if __name__ == "__main__":
     unittest.main()

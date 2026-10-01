@@ -69,6 +69,22 @@ class CatalogCacheContract(unittest.TestCase):
         self.assertEqual(self.read(), CATALOG)
         self.assertEqual(len(self.server.requests), 1)
 
+    def test_expired_catalog_serves_display_at_once_but_not_admission(self):
+        self.warm()
+        self.now += 301
+        # A display read gets the expired list at once and starts one refresh.
+        shown = self.cache.read("a", self.server, "one", lambda: self.current, stale_ok=True)
+        self.assertEqual(shown, CATALOG)
+        self.assertEqual(len(self.server.requests), 2)
+        self.cache.read("a", self.server, "one", lambda: self.current, stale_ok=True)
+        self.assertEqual(len(self.server.requests), 2, "one refresh in flight")
+        # Admission never uses expired metadata.
+        with self.assertRaises(CatalogPending):
+            self.read()
+        self.server.requests[1].set_result(CATALOG)
+        self.assertEqual(self.read(), CATALOG)
+        self.assertEqual(len(self.server.requests), 2, "the refresh completed and filled the cache")
+
     def test_complete_catalog_waits_for_all_pages_and_reuses_late_page(self):
         with self.assertRaises(CatalogPending):
             self.read()

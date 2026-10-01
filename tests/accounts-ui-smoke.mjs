@@ -8,6 +8,7 @@ import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const webDist = process.env.STUDIO_WEB_DIST || join(root, "web/dist");
 const { chromium } = createRequire(join(root, "web/package.json"))(
   "playwright-core",
 );
@@ -72,13 +73,25 @@ let delayCostWork = false;
 let delayedCosts;
 let snapshotLimits = {};
 let claudeQueue = [];
+let stateReads = 0;
+let failClaudeSettings = false;
 const claudeSession = {
   version: "2.1.fixture",
   settings: { permissionMode: "default", thinking: true },
-  turns: [
-    { id: "claude-turn-one", text: "Original request", status: "completed" },
-    { id: "claude-turn-two", text: "Later request", status: "completed" },
-  ],
+  turns: process.env.SETTINGS_BENCHMARK
+    ? Array.from({ length: 301 }, (_, i) => ({
+        id: `claude-turn-${i}`,
+        text: `Earlier request ${i}: ${"Review the change and report useful findings. ".repeat(18)}`,
+        status: "completed",
+      }))
+    : [
+        {
+          id: "claude-turn-one",
+          text: "Original request",
+          status: "completed",
+        },
+        { id: "claude-turn-two", text: "Later request", status: "completed" },
+      ],
 };
 let failClaudeRollback = true;
 let failClaudeCommand = true;
@@ -173,7 +186,8 @@ const server = createServer(async (req, res) => {
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(data));
   };
-  if (url.pathname === "/api/state")
+  if (url.pathname === "/api/state") {
+    stateReads++;
     return json({
       token: "fixture",
       stateDir: evidence,
@@ -191,6 +205,7 @@ const server = createServer(async (req, res) => {
         rateLimitsByAccount: snapshotLimits,
       },
     });
+  }
   if (
     url.pathname === "/api/accounts" ||
     url.pathname === "/api/accounts/discover" ||
@@ -200,6 +215,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname.endsWith("/discover")) discoverCount++;
     for (const receipt of logins) {
       if (
+        (!receipt.reauthAccountKey || receipt.nativeCompleted) &&
         accounts.find((a) => a.id === receipt.accountKey)?.status === "ready"
       ) {
         receipt.status = "ready";
@@ -247,11 +263,18 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/api/accounts/login") {
     const previous = logins.find((r) => r.requestId === body.request_id);
     if (previous) return json(previous);
-    const id = `signed-in-${logins.length}`;
-    accounts.push({ id, email: null, label: "New account", status: "pending" });
+    const id = body.account_key || `signed-in-${logins.length}`;
+    if (!body.account_key)
+      accounts.push({
+        id,
+        email: null,
+        label: "New account",
+        status: "pending",
+      });
     const receipt = {
       requestId: body.request_id,
       accountKey: id,
+      ...(body.account_key ? { reauthAccountKey: id } : {}),
       loginId: id,
       verificationUrl: "https://auth.openai.com/codex/device",
       userCode: "ABCD-1234",
@@ -263,10 +286,11 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/api/accounts/login/cancel") {
     const receipt = logins.find((r) => r.requestId === body.request_id);
     receipt.status = "cancelled";
-    accounts.splice(
-      accounts.findIndex((a) => a.id === receipt.accountKey),
-      1,
-    );
+    if (!receipt.reauthAccountKey)
+      accounts.splice(
+        accounts.findIndex((a) => a.id === receipt.accountKey),
+        1,
+      );
     return json(receipt);
   }
   if (url.pathname === "/api/transcript/stream") {
@@ -274,7 +298,7 @@ const server = createServer(async (req, res) => {
     return res.end();
   }
   if (url.pathname === "/api/queue") {
-    if (req.method === "POST" && body.action === "steer")
+    if (req.method === "POST" && body.action === "cancel")
       claudeQueue = claudeQueue.filter((item) => item.id !== body.id);
     return json({
       items: claudeQueue,
@@ -310,6 +334,11 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/api/claude/session") {
     if (body.action === "state") return json(claudeSession);
     if (body.action === "settings") {
+      if (failClaudeSettings) {
+        failClaudeSettings = false;
+        res.statusCode = 400;
+        return json({ error: "The settings were rejected." });
+      }
       claudeSession.settings = body.settings;
       return json({ ok: true });
     }
@@ -378,8 +407,7 @@ const server = createServer(async (req, res) => {
     return json({ items: [], sessions: [] });
   try {
     const path = join(
-      root,
-      "web/dist",
+      webDist,
       url.pathname === "/" ? "index.html" : url.pathname,
     );
     const file = await readFile(path);
@@ -416,7 +444,341 @@ try {
     errors.push(error.message);
     console.error(error.stack);
   });
+  if (process.env.SETTINGS_BENCHMARK) {
+    accounts.push({
+      id: "claude",
+      email: "claude@example.com",
+      label: "Claude Code",
+      provider: "claude",
+      status: "ready",
+      accountId: "native-claude",
+    });
+    const benchAgent = {
+      ...makeLead("claude-chat", "Claude conversation", "claude", false),
+      provider: "claude",
+      model: "default",
+    };
+    for (let i = 0; i < 260; i++)
+      agents.push(
+        makeLead(`perf-${i}`, `Performance chat ${i}`, "default", false),
+      );
+    agents.push(benchAgent);
+  }
+  if (process.env.REAUTH_ONLY) {
+    accounts[0].accountId = "saved-default";
+    accounts.push({
+      id: "claude",
+      email: "claude@example.com",
+      label: "Claude",
+      provider: "claude",
+      status: "ready",
+      accountId: "native-claude",
+    });
+    agents[0].accountKey = "claude";
+    agents[0].provider = "claude";
+    agents.push({
+      ...makeLead("auth-worker", "Failed worker", "default", false),
+      isLead: false,
+      parentId: "started",
+      rootId: "started",
+      status: "failed",
+      error: {
+        message:
+          "Your refresh token was revoked. Please log out and sign in again.",
+        codexErrorInfo: "unauthorized",
+      },
+    });
+  }
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  if (process.env.REAUTH_ONLY) {
+    await page
+      .getByRole("button", { name: "Started conversation", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Sign in to Codex", exact: true })
+      .click();
+    let login = page.getByRole("dialog", {
+      name: "Sign in to personal@example.com",
+      exact: true,
+    });
+    await page.route(
+      "**/api/accounts/login",
+      async (route) => {
+        await route.fetch();
+        await route.abort();
+      },
+      { times: 1 },
+    );
+    await login
+      .getByRole("button", { name: "Start sign-in", exact: true })
+      .click();
+    await login.getByRole("alert").waitFor();
+    const id = logins[0].requestId;
+    assert.equal(
+      logins[0].reauthAccountKey,
+      "default",
+      "A Claude lead must restore its Codex worker account",
+    );
+    await login
+      .getByRole("button", { name: "Start sign-in", exact: true })
+      .click();
+    await login.getByText("ABCD-1234", { exact: true }).waitFor();
+    assert.equal(logins.length, 1, "A lost reply must reuse the same sign-in");
+    assert.equal(
+      bodies.filter((r) => r.path === "/api/accounts/login").at(-1).body
+        .request_id,
+      id,
+    );
+    await page.reload();
+    await page
+      .getByRole("button", { name: "Sign in to Codex", exact: true })
+      .click();
+    login = page.getByRole("dialog", {
+      name: "Sign in to personal@example.com",
+      exact: true,
+    });
+    await login.getByText("ABCD-1234", { exact: true }).waitFor();
+    assert.equal(logins.length, 1);
+    assert.equal(
+      await login
+        .getByText("Sign-in restored. Send a new instruction to continue.")
+        .count(),
+      0,
+      "Cached ready credentials do not confirm sign-in",
+    );
+    logins[0].nativeCompleted = true;
+    await login
+      .getByRole("button", { name: "Check status", exact: true })
+      .click();
+    await login
+      .getByText("Sign-in restored. Send a new instruction to continue.", {
+        exact: false,
+      })
+      .waitFor();
+    assert.equal(accounts.filter((a) => a.id === "default").length, 1);
+    assert.equal(
+      agents.find((a) => a.id === "auth-worker").accountKey,
+      "default",
+    );
+    assert.equal(
+      bodies.filter((r) => /send|input|resume|turn/.test(r.path)).length,
+      0,
+      "Sign-in must not send a task",
+    );
+    await page.keyboard.press("Escape");
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .locator(".account-picker")
+      .first()
+      .click();
+    await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
+    await page
+      .getByRole("dialog", { name: "Accounts", exact: true })
+      .locator("[data-account=default]")
+      .getByRole("button", { name: "Sign in again", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", {
+        name: "Sign in to personal@example.com",
+        exact: true,
+      })
+      .getByText("Sign-in restored. Send a new instruction to continue.", {
+        exact: false,
+      })
+      .waitFor();
+    assert.equal(logins.length, 1, "Accounts opens the same sign-in receipt");
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    );
+    await page.screenshot({ path: join(evidence, "codex-sign-in-mobile.png") });
+    assert.deepEqual(errors, []);
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    console.log(
+      "PASS Codex worker sign-in from Claude lead, exact retry, reload, native confirmation, no task replay, mobile",
+    );
+    console.log(`REAUTH evidence=${evidence}`);
+    process.exit(0);
+  }
+
+  if (process.env.SETTINGS_BENCHMARK) {
+    const benchAgent = agents.find((agent) => agent.id === "claude-chat");
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .waitFor();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const openedAt = performance.now();
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    const settings = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    const claude = settings.getByRole("region", {
+      name: "Claude settings",
+      exact: true,
+    });
+    await claude.getByLabel("Permission mode", { exact: true }).waitFor();
+    await settings.getByLabel("Appearance", { exact: true }).waitFor();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('[aria-label="Claude settings"]')
+          ?.getAttribute("aria-busy") === "false",
+    );
+    const openMs = Number((performance.now() - openedAt).toFixed(1));
+    console.log(`PERF settings-open-ms=${openMs}`);
+    await page.screenshot({
+      path: join(evidence, "chat-settings-1440.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({
+      path: join(evidence, "chat-settings-390.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 320, height: 760 });
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+      "Chat settings must fit a 320px viewport",
+    );
+    assert.ok(
+      await settings.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth + 1,
+      ),
+      "The settings dialog must not scroll horizontally at 320px",
+    );
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const snapshotsBefore = stateReads;
+    const savedAt = performance.now();
+    await claude
+      .getByLabel("Permission mode", { exact: true })
+      .selectOption("plan");
+    await claude.getByText("Saved", { exact: true }).waitFor();
+    const saveMs = Number((performance.now() - savedAt).toFixed(1));
+    assert.equal(
+      stateReads,
+      snapshotsBefore,
+      "Setting changes must not refresh the full state snapshot",
+    );
+    const saveRequest = bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1);
+    assert.equal(saveRequest.body.id, benchAgent.id);
+    assert.match(saveRequest.body.request_id, /^[0-9a-f-]{36}$/);
+    await page.screenshot({
+      path: join(evidence, "chat-settings-saved-1440.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({
+      path: join(evidence, "chat-settings-saved-390.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const settingsSavedResponse = () =>
+      page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/claude/session") &&
+          response.request().postDataJSON()?.action === "settings",
+      );
+    let saveResponse = settingsSavedResponse();
+    await claude.getByRole("switch", { name: /^Extended thinking/ }).uncheck();
+    assert.ok((await saveResponse).ok());
+    await claude.getByText("Saved", { exact: true }).waitFor();
+    await claude.getByText("Advanced", { exact: true }).click();
+    saveResponse = settingsSavedResponse();
+    await claude
+      .getByLabel("Auto-compact token limit", { exact: true })
+      .fill("250000");
+    await settings.getByLabel("Appearance", { exact: true }).focus();
+    assert.ok((await saveResponse).ok());
+    await claude.getByText("Saved", { exact: true }).waitFor();
+    const finalSettings = bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1);
+    assert.deepEqual(finalSettings.body.settings, {
+      permissionMode: "plan",
+      thinking: false,
+      autoCompactWindow: 250000,
+    });
+    assert.equal(stateReads, snapshotsBefore);
+    failClaudeSettings = true;
+    await claude
+      .getByLabel("Permission mode", { exact: true })
+      .selectOption("default");
+    await claude.getByRole("alert").waitFor();
+    assert.equal(
+      await claude.getByLabel("Permission mode", { exact: true }).inputValue(),
+      "plan",
+    );
+    const failedSettingsRequest = bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1).body;
+    const failedRequestId = failedSettingsRequest.request_id;
+    const failedStorageKey = `claude-control:claude:${benchAgent.id}:settings:${JSON.stringify({ settings: failedSettingsRequest.settings })}`;
+    assert.equal(
+      await page.evaluate(
+        (key) => JSON.parse(localStorage.getItem(key) || "null"),
+        failedStorageKey,
+      ),
+      failedRequestId,
+      "An unconfirmed setting keeps its exact request identity in localStorage",
+    );
+    await claude
+      .getByLabel("Permission mode", { exact: true })
+      .selectOption("default");
+    await claude.getByText("Saved", { exact: true }).waitFor();
+    const retriedRequestId = bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1).body.request_id;
+    assert.equal(
+      retriedRequestId,
+      failedRequestId,
+      "A rejected setting must retry with its saved request identity",
+    );
+    assert.ok(
+      openMs < 150,
+      `Panel open was ${openMs} ms, expected under 150 ms`,
+    );
+    assert.ok(
+      saveMs < 300,
+      `Setting save was ${saveMs} ms, expected under 300 ms`,
+    );
+    console.log(`PERF settings-change-to-saved-ms=${saveMs}`);
+    console.log(
+      `PERF state-refreshes-after-save=${stateReads - snapshotsBefore}`,
+    );
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+    console.log(`PERF evidence=${evidence}`);
+    process.exit(0);
+  }
   const picker = page.locator(".account-picker");
   const quota = page.getByRole("button", {
     name: "Account limits",
@@ -878,6 +1240,7 @@ try {
       agentId: claude.id,
       text: "Change the Claude task",
       status: "queued",
+      requestedDelivery: "after_turn",
       created: Date.now() / 1000,
     },
   ];
@@ -910,18 +1273,18 @@ try {
   });
   await quota.click();
   await page
-    .getByRole("button", { name: "Steer queued message 1", exact: true })
+    .getByRole("button", { name: "Delete queued message 1", exact: true })
     .click();
   await page.waitForFunction(
-    () => !document.querySelector('[aria-label="Steer queued message 1"]'),
+    () => !document.querySelector('[aria-label="Delete queued message 1"]'),
   );
-  const steer = bodies.find(
+  const cancellation = bodies.find(
     (request) =>
-      request.path === "/api/queue" && request.body.action === "steer",
+      request.path === "/api/queue" && request.body.action === "cancel",
   );
-  assert.equal(steer?.body.id, "claude-queued");
-  assert.equal(steer?.body.expectedText, "Change the Claude task");
-  assert.ok(steer?.body.request_id);
+  assert.equal(cancellation?.body.id, "claude-queued");
+  assert.equal(cancellation?.body.expectedText, "Change the Claude task");
+  assert.ok(cancellation?.body.request_id);
   await openSettings();
   await picker.click();
   await page
@@ -994,25 +1357,20 @@ try {
     exact: true,
   });
   await claudeSettings
-    .getByRole("heading", { name: "Claude Code 2.1.fixture", exact: true })
-    .waitFor();
-  await claudeSettings
     .getByLabel("Permission mode", { exact: true })
     .selectOption("plan");
+  await claudeSettings.getByText("Saved", { exact: true }).waitFor();
   await claudeSettings
     .getByRole("switch", { name: /^Extended thinking/ })
     .uncheck();
+  await claudeSettings.getByText("Saved", { exact: true }).waitFor();
+  await claudeSettings.getByText("Advanced", { exact: true }).click();
   await claudeSettings
     .getByLabel("Auto-compact token limit", { exact: true })
     .fill("250000");
-  await claudeSettings
-    .getByRole("button", { name: "Save Claude settings", exact: true })
-    .click();
-  await page.waitForFunction(
-    () =>
-      !document.querySelector('[aria-label="Claude settings"] button')
-        ?.disabled,
-  );
+  await claudeSettings.locator(".claude-advanced > summary").click();
+  await claudeSettings.getByText("Saved", { exact: true }).waitFor();
+  await claudeSettings.getByText("Advanced", { exact: true }).click();
   const sessionSettings = bodies
     .filter(
       (request) =>
@@ -1026,6 +1384,16 @@ try {
     thinking: false,
     autoCompactWindow: 250000,
   });
+  assert.ok(
+    bodies
+      .filter(
+        (request) =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .every((request) => /^[0-9a-f-]{36}$/.test(request.body.request_id)),
+    "Each autosave retains an exact request identity",
+  );
   await claudeSettings
     .getByText("Commands and skills", { exact: true })
     .click();
@@ -1058,8 +1426,9 @@ try {
   await page.reload();
   await page.locator(`[data-chat="${claude.id}"]`).click();
   await openSettings();
+  await claudeSettings.getByText("Advanced", { exact: true }).click();
   await claudeSettings
-    .getByRole("heading", { name: "Claude Code 2.1.fixture", exact: true })
+    .getByText("Claude Code 2.1.fixture", { exact: true })
     .waitFor();
   assert.equal(
     await claudeSettings
@@ -1171,7 +1540,7 @@ try {
     .waitFor();
   assert.match(
     await transferDialog.innerText(),
-    /Subagents keep their accounts/,
+    /Same provider subagents move too; other providers stay on their accounts/,
   );
   await transferDialog
     .getByRole("button", { name: "Transfer chat", exact: true })
@@ -1293,7 +1662,7 @@ try {
         "Codex and Spark dual-window quotas",
         "820px and 780px desktop layouts",
         "Claude native quotas and weekly picker",
-        "Claude queue Steer request identity",
+        "Claude queue cancel request identity",
         "Claude profile create and update",
         "Claude session settings and native commands",
         "Claude rollback error and exact retry receipt",

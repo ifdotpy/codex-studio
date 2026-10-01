@@ -10,7 +10,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('efficiency_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from codex_efficiency import EfficiencyMixin, packed
+from codex_efficiency import EfficiencyMixin, packed, remember_context_manifest
 
 
 class EfficiencyContract(unittest.TestCase):
@@ -91,15 +91,28 @@ class EfficiencyContract(unittest.TestCase):
         self.assertNotIn('SECRET', packed(status))
         self.assertNotIn('Private evidence', packed(status))
         self.assertEqual(len(status['changes']), 3)
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'monitors', {'id': 'done', 'agent': worker['id'], 'status': 'completed', 'created': time.time()})
+        status = self.runtime.model_directory(lead['id'], 'orchestration_status', {})
+        self.assertNotIn('monitor:done', [item['kind'] + ':' + item['id'] for item in status['changes']])
+        self.assertEqual(status['finishedCounts']['monitors'], 1)
+        page = self.runtime.model_directory(lead['id'], 'orchestration_status', {'include_finished': True, 'limit': 1})['finished']
+        self.assertEqual(page['total'], 1)
+        self.assertEqual(page['items'][0]['id'], 'done')
         same = self.runtime.model_directory(lead['id'], 'orchestration_status', {'since_revision': status['revision']})
         self.assertTrue(same['unchanged']); self.assertEqual(same['changes'], [])
         self.agent_update(worker, status='failed', error='Specific cause')
         changed = self.runtime.model_directory(lead['id'], 'orchestration_status', {'since_revision': status['revision']})
-        self.assertEqual(len(changed['changes']), 1)
-        self.assertEqual(changed['changes'][0]['error'], 'Specific cause')
+        self.assertEqual(changed['changes'], [])
+        self.assertIn('agent:' + worker['id'], changed['removed'])
+        finished = self.runtime.model_directory(lead['id'], 'orchestration_status', {'include_finished': True, 'limit': 1})['finished']
+        self.assertTrue(finished['nextCursor'])
+        next_page = self.runtime.model_directory(lead['id'], 'orchestration_status',
+            {'include_finished': True, 'limit': 1, 'cursor': finished['nextCursor']})['finished']
+        self.assertEqual(next_page['items'][0]['id'], 'done')
         self.agent_update(worker, deletedAt=time.time())
         removed = self.runtime.model_directory(lead['id'], 'orchestration_status', {'since_revision': changed['revision']})
-        self.assertIn('agent:' + worker['id'], removed['removed'])
+        self.assertNotIn('agent:' + worker['id'], [item['kind'] + ':' + item['id'] for item in removed['changes']])
         peers = self.runtime.model_directory(other['id'], 'orchestration_peers', {})
         self.assertEqual([a['id'] for a in peers['items']], [other['id']])
         self.assertNotIn('private:', packed(peers))
@@ -107,6 +120,64 @@ class EfficiencyContract(unittest.TestCase):
             self.runtime.model_directory(other['id'], 'orchestration_peers', {'scope': 'all'})
         with self.assertRaisesRegex(ValueError, 'Unknown monitor'):
             self.runtime.model_context(other['id'], {'topic': 'monitor', 'id': 'm'})
+
+    def test_status_reads_only_team_agents_and_monitors(self):
+        lead = self.lead(); self.worker(lead)
+        with patch.object(self.runtime, 'records', side_effect=AssertionError('global records decoded')):
+            status = self.runtime.model_directory(lead['id'], 'orchestration_status', {})
+        self.assertEqual(len(status['changes']), 2)
+        with self.runtime.db() as db:
+            plan = ' '.join(str(tuple(row)) for row in db.execute("EXPLAIN QUERY PLAN SELECT record FROM runtime_monitors "
+                "WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status') IN (?,?,?)",
+                (lead['id'], 'running', 'starting', 'approval')))
+            self.assertIn('runtime_monitor_agent_status', plan)
+            capacity_plan = ' '.join(str(tuple(row)) for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_global_active WHERE "
+                "(json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,'')) "
+                "AND json_extract(record,'$.status') IN ('running','starting','approval')"))
+            self.assertIn('runtime_agent_global_active', capacity_plan)
+            flight_plan = ' '.join(str(tuple(row)) for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_inflight WHERE "
+                "(json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,'')) "
+                "AND json_extract(record,'$.inFlight')=1 AND json_extract(record,'$.status') NOT IN (?,?,?)",
+                ('running','starting','approval')))
+            self.assertIn('runtime_agent_inflight', flight_plan)
+            reservation_plan = ' '.join(str(tuple(row)) for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT id,json_extract(record,'$.cwd') FROM runtime_agents "
+                "INDEXED BY runtime_agent_reservation_cwd WHERE json_type(record,'$.workspaceOperation')='text' "
+                "AND json_extract(record,'$.workspaceOperation')!=''"))
+            self.assertIn('runtime_agent_reservation_cwd', reservation_plan)
+
+    def test_last_delivered_context_manifest_uses_persisted_agent_epoch_row(self):
+        lead = self.lead()
+        event = {'id':'manifest-event','agent':lead['id'],'kind':'user','text':'hello',
+                 'status':'delivered','created':1,'epoch':lead['epoch'],'turn_id':'turn', 'error':None}
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)', tuple(event.values()))
+            db.execute('INSERT INTO runtime_event_meta VALUES (?,?)', ('manifest-event', packed({
+                'contextManifest':{'epoch':[lead['threadId'],lead.get('compactions',0)],
+                                   'versions':{'roleSkill':'v1','worktreeReminder':'workers-v1'},'sequence':8}})))
+            self.assertTrue(remember_context_manifest(db, lead['id'], 'manifest-event'))
+            self.assertTrue(db.execute('SELECT 1 FROM runtime_context_reminders WHERE agent=? AND version=?',
+                                       (lead['id'], 'workers-v1')).fetchone())
+            query = []
+            db.set_trace_callback(query.append)
+            known = self.runtime.model_known_context(db, lead)[2]
+            db.set_trace_callback(None)
+        self.assertEqual(known['roleSkill'], 'v1')
+        self.assertFalse(any('JOIN runtime_events' in statement for statement in query))
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_context_manifests WHERE agent=?', (lead['id'],))
+            query = []
+            db.set_trace_callback(query.append)
+            cold_known = self.runtime.model_known_context(db, lead)[2]
+            db.set_trace_callback(None)
+        self.assertEqual(cold_known, {})
+        self.assertFalse(any('runtime_events' in statement for statement in query))
+        with self.runtime.db() as db:
+            db.execute('UPDATE runtime_event_meta SET record=? WHERE id=?',
+                       (packed({'contextManifest':{'epoch':[lead['threadId'],'invalid']}}), 'manifest-event'))
+            self.assertFalse(remember_context_manifest(db, lead['id'], 'manifest-event'))
 
     def test_large_dynamic_result_is_readable_without_reexecution(self):
         lead = self.runtime.prepare(self.lead())
@@ -228,6 +299,7 @@ class EfficiencyContract(unittest.TestCase):
                 text = self.runtime.model_turn_context(db, actor, event)
                 if delivered:
                     db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?", (event,))
+                    remember_context_manifest(db, actor['id'], event)
                 return text
         initial = context('first')
         self.assertIn('Exact plan content', initial); self.assertIn('Exact complaint content', initial)
@@ -245,7 +317,7 @@ class EfficiencyContract(unittest.TestCase):
         params = self.runtime.new_thread_params(self.runtime.agent(lead['id']))
         self.assertNotIn('[Studio panel guidance:', params['developerInstructions'])
         self.assertIn(str(self.runtime.progress_file(lead)), params['developerInstructions'])
-        self.assertIn('150px', self.runtime.model_context(lead['id'], {'topic': 'panel'})['content'])
+        self.assertIn('clipped', self.runtime.model_context(lead['id'], {'topic': 'panel'})['content'])
 
     def test_context_uses_delivery_order_when_urgent_events_overtake_progress(self):
         lead = self.lead(); worker = self.worker(lead)
@@ -258,6 +330,7 @@ class EfficiencyContract(unittest.TestCase):
                 text = self.runtime.model_turn_context(db, actor, event)
                 self.assertIn(expected, text)
                 db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?", (event,))
+                remember_context_manifest(db, worker['id'], event)
         delivered('urgent', 200, 'Plan A', 'Plan A')
         delivered('older-progress', 100, 'Plan B', 'Plan B')
         delivered('next', 300, 'Plan A', 'Plan A')
@@ -291,6 +364,7 @@ class EfficiencyContract(unittest.TestCase):
                     self.assertNotIn('Old editable plan', context)
                     self.assertNotIn('Other team plan', context)
                     db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?", (event,))
+                    remember_context_manifest(db, worker['id'], event)
                 else:
                     self.assertNotIn('Current step', context)
 

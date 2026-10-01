@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -93,6 +94,8 @@ class DaybreakRuntime(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='daybreak-contract-')
         self.root = Path(self.tmp.name)
+        # Native review requires a git repository.
+        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
         self.runtime = ControlledRuntime(self.root, DaybreakServer)
         self.server = self.runtime.connect()
         self.a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': ''}, draft=True)
@@ -466,7 +469,7 @@ class DaybreakTransfer(unittest.TestCase):
         self.assertNotIn('pendingSettings', self.runtime.agent(self.key))
         self.assertEqual(self.member(operation)['phase'], 'completed')
 
-    def test_provider_change_clears_lead_mode_and_preserves_worker_defaults(self):
+    def test_provider_change_clears_lead_and_worker_daybreak_defaults(self):
         self.runtime.conversation_settings(self.key, {'worker_defaults': {
             'model': 'gpt-5.6-luna', 'effort': 'high', 'fast_mode': False, 'daybreak_enabled': True}})
         self.runtime.conversation_settings(self.key, {'daybreak_enabled': True, 'next_turn': True, 'request_id': 'queued'})
@@ -481,9 +484,10 @@ class DaybreakTransfer(unittest.TestCase):
         with patch.object(self.runtime.accounts, 'get', side_effect=get):
             result = self.t.store.destination_settings(self.runtime.agent(self.key), self.t.other_key, catalog)
         self.assertFalse(result['daybreakEnabled'])
-        self.assertTrue(result['workerDefaults']['daybreakEnabled'])
-        self.assertEqual(result['workerDefaults']['model'], 'gpt-5.6-luna')
-        self.assertEqual(result['workerDefaults']['cyberAccessProgram'], 'daybreakBlue')
+        self.assertFalse(result['workerDefaults']['daybreakEnabled'])
+        self.assertIsNone(result['workerDefaults']['model'])
+        self.assertEqual(result['workerDefaults']['accountKey'], self.t.other_key)
+        self.assertEqual(result['workerDefaults']['cyberAccessProgram'], 'standard')
         self.assertEqual(result.get('cyberAccessProgram'), 'standard')
         self.assertIsNone(result['pendingSettings'])
 

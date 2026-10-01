@@ -222,6 +222,28 @@ try {
   });
   await page.addInitScript(
     ({ stateDir, id }) => {
+      const NativeEventSource = window.EventSource;
+      window.EventSource = class extends EventTarget {
+        constructor(url, options) {
+          super();
+          if (!String(url).includes("/api/transcript/stream"))
+            return new NativeEventSource(url, options);
+          this.closed = false;
+          fetch(
+            String(url).replace("/api/transcript/stream", "/api/transcript"),
+          )
+            .then((response) => response.json())
+            .then((data) => {
+              if (!this.closed)
+                this.onmessage?.({
+                  data: JSON.stringify({ ...data, replace: true }),
+                });
+            });
+        }
+        close() {
+          this.closed = true;
+        }
+      };
       localStorage.setItem(
         `codex-desktop-opened:${stateDir}`,
         JSON.stringify(id),
@@ -232,6 +254,10 @@ try {
   );
   await page.goto(origin);
   const row = (agent) => page.locator(`[data-chat="${agent.id}"]`);
+  const indicatorLabel = (label, agent) =>
+    agent.model
+      ? `${label} · ${agent.provider === "claude" ? "Claude" : "Codex"} · ${agent.model}`
+      : label;
   const status = (locator, kind) =>
     locator.locator(`[data-chat-status="${kind}"]`).waitFor();
   await row(lead).click();
@@ -249,7 +275,8 @@ try {
   await status(card(worker(1)), "unread");
   await status(card(worker(2)), "working");
   await status(card(worker(3)), "error");
-  await status(card(worker(4)), "paused");
+  await card(worker(4)).getByText("Stopped", { exact: true }).waitFor();
+  assert.equal(await card(worker(4)).locator("[data-chat-status]").count(), 0);
   assert.notEqual(
     await card(worker(3))
       .locator(".chat-status-error")
@@ -263,7 +290,7 @@ try {
     await card(worker(2))
       .locator('[data-chat-status="working"]')
       .getAttribute("aria-label"),
-    "Waiting for a monitor",
+    indicatorLabel("Waiting for 1 monitor", worker(2)),
   );
   assert.equal(
     await card(worker(2))
@@ -354,6 +381,92 @@ try {
     animations: "disabled",
   });
   console.log("PASS 390px layout without horizontal overflow");
+  // The real Conversation caller, header, and sidebar share the wake rule.
+  for (const agent of state.threads)
+    Object.assign(agent, { status: "idle", inFlight: false });
+  Object.assign(lead, { status: "waiting", parkedEvent: null });
+  Object.assign(worker(0), {
+    status: "running",
+    parentId: lead.id,
+    inFlight: true,
+  });
+  Object.assign(worker(1), { status: "queued", parentId: lead.id });
+  state.runtime.requests = [];
+  state.runtime.tasks = [
+    {
+      id: "wait-command",
+      agent: lead.id,
+      kind: "command",
+      status: "running",
+      command: "npm run check",
+      epoch: lead.epoch,
+    },
+  ];
+  state.runtime.monitors = [
+    {
+      id: "wait-monitor",
+      agent: lead.id,
+      status: "running",
+      command: "watch build",
+      epoch: lead.epoch,
+    },
+  ];
+  await page.evaluate(
+    ({ stateDir, id }) => {
+      localStorage.setItem(
+        `codex-desktop-opened:${stateDir}`,
+        JSON.stringify(id),
+      );
+      localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
+    },
+    { stateDir: state.stateDir, id: lead.id },
+  );
+  await page.reload();
+  const waitLabel = "Waiting for 2 agents, 1 command and 1 monitor";
+  const waitSummary = page.locator(
+    '.agent-phase[data-wait-state="live"] summary',
+  );
+  await waitSummary.getByText(waitLabel, { exact: true }).waitFor();
+  assert.equal(
+    (await page.locator("#conversation-status").innerText()).split(" · ")[0],
+    waitLabel,
+  );
+  assert.equal(
+    await page
+      .locator("#conversation-title .chat-status")
+      .getAttribute("aria-label"),
+    indicatorLabel(waitLabel, lead),
+  );
+  await waitSummary.click();
+  await page.getByText("Command: npm run check", { exact: true }).waitFor();
+  await waitSummary.click();
+  await page.locator("#sidebar-toggle").click();
+  assert.equal(
+    await row(lead).locator(".chat-status").getAttribute("aria-label"),
+    indicatorLabel(waitLabel, lead),
+  );
+  await row(lead).click();
+  Object.assign(worker(0), { status: "completed", inFlight: false });
+  Object.assign(worker(1), { status: "completed", inFlight: false });
+  state.runtime.tasks = [];
+  state.runtime.monitors = [];
+  await page.reload();
+  const ended = page.locator('.agent-phase[data-wait-state="ended"]');
+  await ended
+    .getByText("Turn ended. Send a message to continue.", { exact: true })
+    .waitFor();
+  assert.equal(await ended.locator(".phase-dots").count(), 0);
+  assert.equal(
+    await page.locator("#conversation-title .chat-status-working").count(),
+    0,
+  );
+  assert.equal(
+    (await page.locator("#conversation-status").innerText()).split(" · ")[0],
+    "Turn ended. Send a message to continue.",
+  );
+  console.log(
+    "PASS production Conversation, header, and sidebar: exact wake kinds and counts, static end without a spinner",
+  );
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({

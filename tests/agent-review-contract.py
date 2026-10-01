@@ -82,6 +82,8 @@ class AgentReviewContract(unittest.TestCase):
         prepared = [params for method, params in server.calls if method == 'thread/start'][-1]
         self.assertEqual(prepared['dynamicTools'], [])
         self.assertEqual(prepared['sandbox'], 'read-only')
+        self.assertEqual(prepared['config']['review_model'], child['model'])
+        self.assertEqual(prepared['config']['model_reasoning_effort'], child['nativeEffort'])
         child = self.runtime.agent(child['id'])
         server.complete(child['threadId'], child['turnId'], 'Native review findings')
         fixture.eventually(lambda: self.runtime.agent(child['id'])['status'] == 'completed')
@@ -101,6 +103,65 @@ class AgentReviewContract(unittest.TestCase):
         with self.runtime.db() as db:
             result = json.loads(db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (self.key,)).fetchone()[0])
         self.assertEqual(json.loads(result['contentItems'][0]['text']), first)
+
+    def test_review_can_select_another_model(self):
+        import copy
+        from unittest.mock import patch as mock_patch
+        import codex_worker_accounts
+        seen = []
+        other = 'gpt-6-sol' if self.actor['model'] == 'gpt-6-astra' else 'gpt-6-astra'
+        real = codex_worker_accounts.resolve
+        def resolve(rt, parent, data, **kwargs):
+            seen.append(data['model'])
+            key, catalog = real(rt, parent, {**data, 'model': self.actor['model']}, **kwargs)
+            catalog = copy.deepcopy(catalog)
+            row = copy.deepcopy(next(r for r in catalog['data'] if r['model'] == self.actor['model']))
+            row.update(model=other, id=other, isDefault=False)
+            catalog['data'].append(row)
+            return key, catalog
+        with mock_patch.object(codex_worker_accounts, 'resolve', side_effect=resolve):
+            value = self.make({'model': other})
+            with self.assertRaisesRegex(ValueError, 'different content'):
+                self.make({'model': self.actor['model']})
+        child = self.runtime.agent(value['agentId'])
+        self.assertEqual(child['model'], other)
+        self.assertEqual(seen, [other])
+        with self.assertRaisesRegex(ValueError, 'Supply model'):
+            validate({'model': ' '})
+
+    def test_team_review_defaults_and_explicit_override_reach_native_config(self):
+        self.runtime.conversation_settings(self.actor['id'], {'id': self.actor['id'],
+            'review_defaults': {'model': 'gpt-6-sol', 'effort': 'low'}})
+        default = self.make()
+        child = self.runtime.agent(default['agentId'])
+        self.assertEqual((default['reviewModel'], default['reviewEffort']), ('gpt-6-sol', 'low'))
+        self.assertEqual((child['model'], child['effort']), ('gpt-6-sol', 'low'))
+        self.assertEqual(self.runtime.new_thread_params(child)['config']['review_model'], 'gpt-6-sol')
+        self.assertEqual(self.runtime.new_thread_params(child)['config']['model_reasoning_effort'], 'low')
+        self.runtime.conversation_settings(self.actor['id'], {'id': self.actor['id'],
+            'review_defaults': {'model': 'gpt-6-luna', 'effort': 'high'}})
+        self.assertEqual(self.make(), default)
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.make({'model': 'gpt-6-astra'})
+        explicit = request(self.runtime, self.actor, {'model': 'gpt-6-astra', 'effort': 'medium'}, self.key + ':explicit')
+        explicit_child = self.runtime.agent(explicit['agentId'])
+        self.assertEqual((explicit['reviewModel'], explicit['reviewEffort']), ('gpt-6-astra', 'medium'))
+        self.assertEqual(self.runtime.new_thread_params(explicit_child)['config']['review_model'], 'gpt-6-astra')
+        model_only = request(self.runtime, self.actor, {'model': 'gpt-6-sol'}, self.key + ':model-only')
+        self.assertEqual(model_only['reviewEffort'], 'medium')
+        with self.assertRaisesRegex(ValueError, 'not supported'):
+            self.runtime.conversation_settings(self.actor['id'], {'id': self.actor['id'],
+                'review_defaults': {'model': 'gpt-6-sol', 'effort': 'invalid'}})
+
+    def test_older_review_receipt_replays_after_team_default_changes(self):
+        first = self.make()
+        with self.runtime.lock, self.runtime.db() as db:
+            child = self.runtime.agent(first['agentId'], db)
+            child['nativeReview'].pop('args')
+            self.runtime.put(db, 'agents', child)
+        self.runtime.conversation_settings(self.actor['id'], {'id': self.actor['id'],
+            'review_defaults': {'model': 'gpt-6-sol', 'effort': 'low'}})
+        self.assertEqual(self.make(), first)
 
     def test_folder_outside_git_is_rejected_before_a_reviewer_exists(self):
         import shutil

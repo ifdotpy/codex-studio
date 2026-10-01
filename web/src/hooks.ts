@@ -1,7 +1,15 @@
 import { retainTranscriptItems } from "./transcriptIdentity";
+import {
+  boundTranscriptItems,
+  trimTranscriptPageCache,
+} from "./transcriptPageBounds";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { syncApi as api, errorText, setToken, saved, save } from "./api";
-import { subscribeProjection, syncDatabase } from "./sync/client";
+import {
+  refreshProjection,
+  subscribeProjection,
+  syncDatabase,
+} from "./sync/client";
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import type { Snapshot, Message, Agent, Json } from "./types";
@@ -92,35 +100,31 @@ export function useSnapshot() {
   const generation = useRef(0);
   const replicated = useRef(false);
   const sessionToken = useRef("");
+  const legacyFallback = useRef(false);
   const refresh = useCallback(async (credentialsOnly = replicated.current) => {
     const request = ++generation.current;
     try {
-      if (credentialsOnly) {
-        const session = await api<{ token: string }>("/api/session");
-        if (request !== generation.current) return;
-        sessionToken.current = session.token;
-        setToken(session.token);
-        setData((old) =>
-          old && old.token !== session.token
-            ? { ...old, token: session.token }
-            : old,
-        );
-        setError("");
-        return;
-      }
-      const next = await api<Snapshot>("/api/state?view=chat");
+      const session = await api<{ token: string }>("/api/session");
       if (request !== generation.current) return;
-      sessionToken.current = next.token;
-      setToken(next.token);
-      // Cached projections can arrive before HTTP after a reload. Credentials
-      // stay in memory and must reach callers that use explicit request headers.
+      sessionToken.current = session.token;
+      setToken(session.token);
       setData((old) =>
-        replicated.current && old
-          ? old.token === next.token
-            ? old
-            : { ...old, token: next.token }
-          : next,
+        old && old.token !== session.token
+          ? { ...old, token: session.token }
+          : old,
       );
+      if (!credentialsOnly) {
+        try {
+          await refreshProjection("state");
+        } catch (projectionError) {
+          // A renderer can update before the server patch. Keep the previous
+          // snapshot route as a first-load fallback until entity sync exists.
+          if (replicated.current) throw projectionError;
+          const legacy = await api<Snapshot>("/api/state?view=chat");
+          if (request !== generation.current) return;
+          setData({ ...legacy, token: session.token });
+        }
+      }
       setError("");
     } catch (e) {
       if (request !== generation.current) return;
@@ -150,7 +154,7 @@ export function useSnapshot() {
         if (!replicated.current) await refresh(false);
       }
       polling = false;
-      if (!stopped) timer = setTimeout(poll, replicated.current ? 30000 : 1600);
+      if (!stopped) timer = setTimeout(poll, replicated.current ? 30000 : 5000);
     };
     const offline = () =>
       setError("Offline. Your chats and drafts are saved here.");
@@ -176,7 +180,22 @@ export function useSnapshot() {
             setData({ ...next, token: sessionToken.current });
           }
         },
-        (error) => setSyncError(error === null ? "" : errorText(error)),
+        (error) => {
+          setSyncError(error === null ? "" : errorText(error));
+          if (
+            error !== null &&
+            !replicated.current &&
+            !legacyFallback.current
+          ) {
+            legacyFallback.current = true;
+            void api<Snapshot>("/api/state?view=chat")
+              .then((legacy) => {
+                sessionToken.current = legacy.token || sessionToken.current;
+                setData({ ...legacy, token: sessionToken.current });
+              })
+              .catch((fallbackError) => setError(errorText(fallbackError)));
+          }
+        },
       ),
     [],
   );
@@ -254,11 +273,22 @@ export function transcriptMessages(
 
 type TranscriptPage = {
   items: Message[];
+  size: number;
+  anchorId?: string;
   before: string | null;
   after: string | null;
   focused: boolean;
   version?: string;
   latest?: Json;
+};
+
+type RoomPage = {
+  items: Message[];
+  size: number;
+  before: number | null;
+  after: number | null;
+  pollAfter: number | null;
+  anchorId?: string;
 };
 
 function mergeTranscript(earlier: Message[], later: Message[]): Message[] {
@@ -285,6 +315,15 @@ export function useMessages(
   );
   const messageSizes = useRef(new WeakMap<Message, number>());
   const pages = useRef(new Map<string, TranscriptPage>());
+  const roomPages = useRef(new Map<string, RoomPage>());
+  const sizeOfMessage = (item: Message) => {
+    let size = messageSizes.current.get(item);
+    if (size === undefined) {
+      size = JSON.stringify(item).length * 2;
+      messageSizes.current.set(item, size);
+    }
+    return size;
+  };
   const retained =
     managed && kind === "agent" ? history.current.get(scope) : undefined;
   const prefetched =
@@ -336,6 +375,7 @@ export function useMessages(
   const latest = useRef<{ scope: string; data: Json } | null>(null);
   const pageAttempt = useRef(0);
   const pageBusy = useRef(false);
+  const pageAnchor = useRef<{ scope: string; id: string } | null>(null);
   const displayed = useRef<{ scope: string; items: Message[] }>({
     scope,
     items,
@@ -346,11 +386,6 @@ export function useMessages(
   };
   const revision = useRef(0);
   const syncActive = useRef<string | null>(null);
-  const initialProjection = useRef({
-    scope,
-    ready: false,
-    getStarted: false,
-  });
   const active = useRef(scope),
     expanded = useRef(false);
   active.current = scope;
@@ -406,21 +441,54 @@ export function useMessages(
             liveItems,
           );
         }
+        const bounded = boundTranscriptItems(
+          page.items,
+          (item) => {
+            let size = messageSizes.current.get(item);
+            if (size === undefined) {
+              size = JSON.stringify(item).length * 2;
+              messageSizes.current.set(item, size);
+            }
+            return size;
+          },
+          page.focused ? "oldest" : "newest",
+          page.anchorId,
+        );
+        page.items = bounded.items;
+        page.size = bounded.bytes;
+        if (bounded.droppedOldest)
+          page.before = bounded.items[0]?.id || page.before;
+        if (bounded.droppedNewest)
+          page.after = page.items.at(-1)?.id || page.after;
       }
       if (!page && !d.unavailable && managed && kind === "agent") {
         // Retain the loaded range from the first snapshot. Otherwise each live
         // update evicts messages as tool activity moves the server's page.
+        const bounded = boundTranscriptItems(liveItems, (item) => {
+          let size = messageSizes.current.get(item);
+          if (size === undefined) {
+            size = JSON.stringify(item).length * 2;
+            messageSizes.current.set(item, size);
+          }
+          return size;
+        });
         page = {
-          items: liveItems,
-          before: d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
+          items: bounded.items,
+          size: bounded.bytes,
+          before: bounded.droppedOldest
+            ? bounded.items[0]?.id || null
+            : d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
           after: null,
           focused: false,
           version: d.historyVersion,
           latest: d,
         };
         pages.current.set(scope, page);
-        while (pages.current.size > 12)
-          pages.current.delete(pages.current.keys().next().value!);
+      }
+      if (page) {
+        pages.current.delete(scope);
+        pages.current.set(scope, page);
+        trimTranscriptPageCache(pages.current, scope);
       }
       const nextItems = page?.items || liveItems;
       if (managed && kind === "agent") {
@@ -429,7 +497,7 @@ export function useMessages(
             ? page.before
             : d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
         );
-        setAfter(page?.focused ? page.after : null);
+        setAfter(page?.after || null);
       }
       latest.current = { scope, data: d };
       const nextNotice =
@@ -494,24 +562,57 @@ export function useMessages(
         allowed();
       try {
         if (kind === "room") {
-          const d = await api(`/api/agent-chat?room=${encodeURIComponent(id)}`);
+          const page = roomPages.current.get(scope);
+          const cursor = page?.pollAfter ?? null;
+          const params = new URLSearchParams({ room: id, limit: "100" });
+          if (cursor != null) params.set("after", String(cursor));
+          const d = await api(`/api/agent-chat?${params}`);
           if (!current()) return;
           setNotice("");
           setLoadedId(scope);
-          setItems((old) =>
-            [
-              ...new Map(
-                [
-                  ...old,
-                  ...d.messages.map((m: Message) => ({
-                    ...m,
-                    role: "assistant",
-                  })),
-                ].map((m) => [m.id, m]),
-              ).values(),
-            ].sort((a, b) => (a.seq || 0) - (b.seq || 0)),
-          );
-          if (!expanded.current) setBefore(d.nextBefore);
+          const received = (d.messages || []).map((m: Message) => ({
+            ...m,
+            role: "assistant",
+          }));
+          if (!page || cursor == null) {
+            const bounded = boundTranscriptItems(received, sizeOfMessage);
+            const next: RoomPage = {
+              items: bounded.items,
+              size: bounded.bytes,
+              before: d.nextBefore ?? null,
+              after: null,
+              pollAfter: received.at(-1)?.seq ?? null,
+            };
+            roomPages.current.set(scope, next);
+            trimTranscriptPageCache(roomPages.current, scope);
+            setBefore(next.before);
+            setAfter(null);
+            setItems(next.items);
+          } else if (received.length) {
+            const bounded = boundTranscriptItems(
+              [...page.items, ...received],
+              sizeOfMessage,
+              "newest",
+              page.anchorId,
+            );
+            const next: RoomPage = {
+              items: bounded.items,
+              size: bounded.bytes,
+              before: bounded.droppedOldest
+                ? (bounded.items[0]?.seq ?? page.before)
+                : page.before,
+              after: bounded.droppedNewest
+                ? (bounded.items.at(-1)?.seq ?? page.after)
+                : page.after,
+              pollAfter: received.at(-1)?.seq ?? page.pollAfter,
+              anchorId: page.anchorId,
+            };
+            roomPages.current.set(scope, next);
+            trimTranscriptPageCache(roomPages.current, scope);
+            setBefore(next.before);
+            setAfter(next.after == null ? null : String(next.after));
+            setItems(next.items);
+          }
         } else if (kind === "legacy") {
           const d = await api(`/api/messages?room=${encodeURIComponent(id)}`);
           if (!current()) return;
@@ -553,25 +654,23 @@ export function useMessages(
     const retained =
       managed && kind === "agent" ? history.current.get(scope) : undefined;
     const page = pages.current.get(scope);
-    setLoadedId(retained || page ? scope : null);
-    setItems(page?.items || retained?.items || []);
+    const roomPage = kind === "room" ? roomPages.current.get(scope) : undefined;
+    setLoadedId(retained || page || roomPage ? scope : null);
+    setItems(page?.items || retained?.items || roomPage?.items || []);
     setHistorical(!!page?.focused);
-    setAfter(page?.focused ? page.after : null);
+    setAfter(page?.after || roomPage?.after?.toString() || null);
     pageAttempt.current++;
     pageBusy.current = false;
     setPageLoading(false);
-    if (initialProjection.current.scope !== scope)
-      initialProjection.current = { scope, ready: false, getStarted: false };
     syncActive.current = null;
     setLiveAgent(null);
     setConnection("");
     setNotice(retained?.notice || "");
-    setBefore(page?.before || null);
+    setBefore(page?.before || roomPage?.before || null);
     expanded.current = false;
     if (seed) {
       syncActive.current = scope;
       setSyncId(scope);
-      if (seed.payload === null) initialProjection.current.ready = true;
       accept(
         seed.payload || {
           items: [],
@@ -591,32 +690,11 @@ export function useMessages(
       await load(() => !stopped && !streamLive);
       polling = false;
       if (!stopped && !streamLive)
-        timer = setTimeout(poll, managed ? 2000 : 900);
+        timer = setTimeout(poll, managed || kind === "room" ? 2000 : 900);
     };
-    if (!id || !managed || kind !== "agent") {
-      void poll();
-      return () => {
-        stopped = true;
-        clearTimeout(timer);
-      };
-    }
-    // The workspace shared stream invalidates this persisted transcript scope.
-    // Keep a single first-open read for missing/empty projections; later changes
-    // come through the scoped RxDB pull and the existing in-memory cache.
-    timer = setTimeout(() => {
-      const initial = initialProjection.current;
-      if (
-        !stopped &&
-        initial.scope === scope &&
-        !initial.ready &&
-        !initial.getStarted
-      ) {
-        initial.getStarted = true;
-        syncActive.current = null;
-        setSyncId(null);
-        void load(() => !stopped);
-      }
-    }, 200);
+    // Managed sessions use the shared sync transport. Until its first page is
+    // available, bounded HTTP reads keep the selected conversation visible.
+    void poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
@@ -629,21 +707,7 @@ export function useMessages(
       `transcript:${id}`,
       (next) => {
         if (active.current !== scope) return;
-        if (next === undefined) {
-          initialProjection.current.ready = true;
-          initialProjection.current.getStarted = true;
-          seen = true;
-          syncActive.current = null;
-          setSyncId(null);
-          history.current.delete(scope);
-          setItems([]);
-          setLoadedId(null);
-          setNotice("");
-          void load();
-          return;
-        }
         if (next) {
-          initialProjection.current.ready = true;
           seen = true;
           syncActive.current = scope;
           setSyncId(scope);
@@ -666,7 +730,6 @@ export function useMessages(
     if (!id || !managed || kind !== "agent" || !syncWorkspaceId) return;
     return subscribeTranscript(syncWorkspaceId, id, (entry) => {
       if (active.current !== scope) return;
-      if (entry.payload === null) initialProjection.current.ready = true;
       syncActive.current = scope;
       setSyncId(scope);
       accept(
@@ -682,6 +745,7 @@ export function useMessages(
     before?: string;
     after?: string;
     around?: string;
+    anchor?: string;
   }) => {
     if (
       !id ||
@@ -694,7 +758,10 @@ export function useMessages(
     pageBusy.current = true;
     setPageLoading(true);
     try {
-      const params = new URLSearchParams({ id, ...query });
+      const params = new URLSearchParams({ id });
+      if (query.before) params.set("before", query.before);
+      if (query.after) params.set("after", query.after);
+      if (query.around) params.set("around", query.around);
       const result = await api(`/api/transcript/page?${params}`);
       if (active.current !== scope || attempt !== pageAttempt.current)
         return false;
@@ -719,20 +786,38 @@ export function useMessages(
           : query.after
             ? mergeTranscript(existing, source)
             : mergeTranscript(source, existing),
+        size: 0,
         before: query.after ? prior?.before || null : result.nextCursor || null,
-        after: focused
-          ? query.before
-            ? prior?.after || null
-            : result.nextAfterCursor || null
-          : null,
+        after: query.before
+          ? result.nextAfterCursor || prior?.after || null
+          : result.nextAfterCursor || null,
         focused,
+        anchorId: query.anchor || prior?.anchorId || query.around,
         version: result.historyVersion,
         latest: live,
       };
+      const bounded = boundTranscriptItems(
+        next.items,
+        (item) => {
+          let size = messageSizes.current.get(item);
+          if (size === undefined) {
+            size = JSON.stringify(item).length * 2;
+            messageSizes.current.set(item, size);
+          }
+          return size;
+        },
+        query.before ? "oldest" : "newest",
+        next.anchorId,
+      );
+      next.items = bounded.items;
+      next.size = bounded.bytes;
+      if (bounded.droppedOldest)
+        next.before = bounded.items[0]?.id || next.before;
+      if (bounded.droppedNewest && result.nextAfterCursor)
+        next.after = result.nextAfterCursor;
       pages.current.delete(scope);
       pages.current.set(scope, next);
-      while (pages.current.size > 12)
-        pages.current.delete(pages.current.keys().next().value!);
+      trimTranscriptPageCache(pages.current, scope);
       setItems(next.items);
       setBefore(next.before);
       setAfter(next.after);
@@ -747,6 +832,15 @@ export function useMessages(
     }
   };
   const showLatest = () => {
+    if (kind === "room") {
+      roomPages.current.delete(scope);
+      setItems([]);
+      setBefore(null);
+      setAfter(null);
+      setLoadedId(null);
+      void load();
+      return;
+    }
     pageAttempt.current++;
     pageBusy.current = false;
     setPageLoading(false);
@@ -767,15 +861,113 @@ export function useMessages(
       );
     if (present) return true;
     if (!managed || kind !== "agent") return false;
-    return fetchPage({ around: messageId });
+    return fetchPage({ around: messageId, anchor: messageId });
+  };
+  const setPageAnchor = (anchorId: string | null) => {
+    pageAnchor.current = anchorId ? { scope, id: anchorId } : null;
+    const page = pages.current.get(scope);
+    if (page) page.anchorId = anchorId || undefined;
+    const roomPage = roomPages.current.get(scope);
+    if (roomPage) roomPage.anchorId = anchorId || undefined;
   };
   const newer = async () => {
-    if (after) await fetchPage({ after });
+    if (kind === "room" && id) {
+      const page = roomPages.current.get(scope);
+      if (!page?.after) return;
+      const params = new URLSearchParams({
+        room: id,
+        after: String(page.after),
+        limit: "100",
+      });
+      const d = await api(`/api/agent-chat?${params}`);
+      if (active.current !== scope) return;
+      const later = (d.messages || []).map((m: Message) => ({
+        ...m,
+        role: "assistant",
+      }));
+      const bounded = boundTranscriptItems(
+        [...page.items, ...later],
+        sizeOfMessage,
+        "newest",
+        page.anchorId,
+      );
+      const next: RoomPage = {
+        items: bounded.items,
+        size: bounded.bytes,
+        before: bounded.droppedOldest
+          ? (bounded.items[0]?.seq ?? page.before)
+          : page.before,
+        after: bounded.droppedNewest
+          ? (bounded.items.at(-1)?.seq ?? page.after)
+          : (d.nextAfter ?? null),
+        pollAfter: later.at(-1)?.seq ?? page.pollAfter,
+        anchorId: page.anchorId,
+      };
+      roomPages.current.set(scope, next);
+      setItems(next.items);
+      setBefore(next.before);
+      setAfter(next.after == null ? null : String(next.after));
+      return;
+    }
+    if (after)
+      await fetchPage({
+        after,
+        anchor:
+          pageAnchor.current?.scope === scope
+            ? pageAnchor.current.id
+            : undefined,
+      });
   };
   const older = async () => {
     if (!id || !before) return;
+    if (kind === "room") {
+      const page = roomPages.current.get(scope);
+      if (!page) return;
+      const params = new URLSearchParams({
+        room: id,
+        before: String(page.before ?? before),
+        limit: "100",
+      });
+      const d = await api(`/api/agent-chat?${params}`);
+      if (active.current !== scope) return;
+      const olderItems = (d.messages || []).map((m: Message) => ({
+        ...m,
+        role: "assistant",
+      }));
+      const bounded = boundTranscriptItems(
+        [...olderItems, ...page.items],
+        sizeOfMessage,
+        "oldest",
+        page.anchorId,
+      );
+      const next: RoomPage = {
+        items: bounded.items,
+        size: bounded.bytes,
+        before: bounded.droppedOldest
+          ? (bounded.items[0]?.seq ?? d.nextBefore ?? null)
+          : (d.nextBefore ?? null),
+        after: bounded.droppedNewest
+          ? (bounded.items.at(-1)?.seq ?? page.after)
+          : null,
+        pollAfter: page.pollAfter,
+        anchorId: page.anchorId,
+      };
+      roomPages.current.set(scope, next);
+      trimTranscriptPageCache(roomPages.current, scope);
+      expanded.current = true;
+      setBefore(next.before);
+      setAfter(next.after == null ? null : String(next.after));
+      setItems(next.items);
+      return;
+    }
     if (managed && kind === "agent") {
-      await fetchPage({ before: String(before) });
+      await fetchPage({
+        before: String(before),
+        anchor:
+          pageAnchor.current?.scope === scope
+            ? pageAnchor.current.id
+            : undefined,
+      });
       return;
     }
     const d = await api(
@@ -811,12 +1003,8 @@ export function useMessages(
       "",
     older,
     newer,
-    after:
-      loadedId === scope
-        ? after
-        : keepPage && retainedPage!.focused
-          ? retainedPage!.after
-          : null,
+    setPageAnchor,
+    after: loadedId === scope ? after : keepPage ? retainedPage!.after : null,
     historical:
       loadedId === scope ? historical : !!(keepPage && retainedPage!.focused),
     pageLoading,

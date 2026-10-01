@@ -31,6 +31,7 @@ with tempfile.TemporaryDirectory(prefix="codex-workspace-protocol-") as director
                 "approvalPolicy": "never",
                 "sandbox": "read-only",
             }
+            assert params['config']['auto_review.circuit_break_action'] == 'strict'
             result = server.call("thread/start", params)
             tid = result["thread"]["id"]
             assert tid and result["sandbox"]

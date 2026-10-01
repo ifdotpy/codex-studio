@@ -47,8 +47,10 @@ Managed workers can use a different provider from their parent. The default is
 and reasoning level through `orchestration_spawn`. Studio selects an available
 account for that model, preferring the parent's account, then the application
 default. `account_key` selects a specific account. Model and account validation
-finish before any worker in the batch is created. Existing worker settings stay
-unchanged when the parent chat moves to another account or provider.
+finish before any worker in the batch is created. A team transfer moves existing
+workers whose provider matches the destination. Workers on another provider stay
+on their current account. New workers use the team's destination account and
+provider-compatible defaults.
 
 ## Setup
 
@@ -88,7 +90,10 @@ the remaining weekly allowance.
 
 Chat settings includes Claude permission modes, extended thinking, automatic
 compaction, native commands and skills, and context rollback. Model, effort, and
-fast-mode controls use the native model catalog. A proposed plan waits for a
+fast-mode controls use the native model catalog. The model picker lists one row
+per model with its display name, a **(default)** tag for the catalog default, a
+**(current)** tag for the model the chat uses now, and the catalog description
+in a second column. Hidden catalog models stay hidden. A proposed plan waits for a
 separate implementation request. Rollback preserves the original saved history.
 Commands and rollback retain their request identities after a lost response.
 
@@ -102,12 +107,24 @@ then paste the confirmation code in Studio. Use the displayed account email.
 Studio checks the account identity before it reports success. It does not resend
 failed chat messages.
 
+For an expired Codex session, select **Sign in to Codex** in the chat notice
+or **Sign in again** in Accounts. The notice also identifies failed workers
+on a different account from their lead. Use the displayed account email.
+Studio uses the same profile and waits for native sign-in completion. A saved
+token alone does not confirm success. Existing chats and worker assignments
+keep their account. Sign-in does not resend tasks or restart active agents.
+
 Codex model settings include a separate **Daybreak** switch. Studio checks the
 selected account's native model grants before it enables the mode. A change
 during an active turn applies to the next turn. Subagent defaults have their
 own switch. Account transfers preserve the mode only when the destination
 supports it; a provider change clears it. Native `review/start` cannot select
 Daybreak, so use a review task in the chat when this mode is required.
+
+Subagent defaults also has a review model and reasoning setting. A native review
+uses the call's model and effort first, then the team review default, then the
+caller's model and effort. Studio sets the reviewer thread's `review_model`, so
+an account `review_model` does not override the selected model.
 
 Studio checks installed Codex executables every minute, including `CODEX_BIN`,
 PATH, and the copy bundled with ChatGPT. It checks the protocol schema and runs
@@ -138,13 +155,22 @@ This executor does not start model sessions or use account credentials. Monitors
 support output, terminal input, resize, cancellation, and timeouts. Voice remains
 unavailable for Claude. Files remain native attachments or file references.
 
-Existing chats can move between Codex and Claude accounts. The chat keeps its
-identity and displayed history. Subagents stay on their current accounts. A
-transfer involving Claude creates a destination session with recent text and a
-path to the complete saved history. It preserves the original native session and
-does not replay old commands. A provider change selects the destination model
-and clears queued settings for the previous provider. Codex account transfers
-continue to use native history copies.
+Existing chats can move between Codex and Claude accounts. Selecting an account
+for a lead starts a team transfer. The chat keeps its identity and displayed
+history. Idle members rebind immediately, including worker defaults.
+Their native history transfers automatically in the background after account
+selection, without sending a message or starting a model reply. The transfer keeps its
+original identity when the action is repeated or the page reloads. Active turns are
+interrupted with the destination account named, then move as soon as they stop.
+Workers on another provider stay on their current accounts with the reason shown
+in transfer progress. Queued events keep their receipts and deliver once after
+the native history move. A transfer involving Claude creates a destination session
+with recent text and a path to the complete saved history. It preserves the
+original native session and does not replay old commands. A provider change
+selects the destination model and clears queued settings for the previous
+provider. Codex account transfers continue to use native history copies.
+Changing the Subagents account starts a subagent-only transfer and updates the
+account used by future workers while the lead stays on its current account.
 See [the parity checks](docs/verification/2026-09-22-claude-parity.md) for evidence
 and the tested reference revision.
 
@@ -175,10 +201,30 @@ For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.
 Run `npm --prefix desktop run package` to build the desktop application.
 
+For a shareable process snapshot, run `python3 scripts/codex-diagnostics` while
+Studio runs. The command calls the read-only `/api/diagnostics` endpoint. It
+reports the Studio process tree, resident memory and CPU by process kind,
+loaded Codex threads per connected account, live Claude queries, queue sizes,
+short runtime lock samples, and host memory. Account names and process command
+lines stay out of the output. The snapshot reads process and native state only
+when requested. Resident memory totals can count shared pages more than once.
+Idle Codex subscriptions release after 15 minutes and native threads can take
+about one more minute to unload. Idle Claude queries close after 15 minutes.
+Native background tasks and unresolved input keep their sessions open. New work
+resumes the saved thread.
+
 Closing the window preserves the server and its active work. Backend source
 identity remains available to diagnostics without a persistent notice in chats.
 Reviewed live patches apply in the background without a backend restart.
 See [live updates](docs/live-updates.md) for publication and verification.
+
+The team view measures worker worktree disk use in the background. It shows each
+worker and the team total. The default warning limit is 100 GiB across all
+worker worktrees. Set `CODEX_WORKTREE_DISK_LIMIT_BYTES` before Studio starts to
+change the limit. Set it to `0` to disable the warning. On Apple File System
+(APFS), the measure counts bytes that are private to each file. Other file
+systems use allocated blocks. The UI shows the measure for each worktree and
+the total. On other file systems, the sum can exceed physical disk use.
 
 The packaged macOS application restores its backend after login or a process
 failure. Saved input and verified interrupted work recover automatically.
@@ -219,7 +265,8 @@ Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
 The chat snapshot excludes work result histories. The work view loads those
-histories through its existing API. Mobile sync uses one shared event stream.
+histories through its existing API. Mobile sync uses separate event streams for
+entity state, drafts, and open transcripts.
 While Studio is visible, it prepares unarchived chats and the selected team's
 agent chats in the background. It updates these saved histories before selection.
 The current chat loads first. At most two background histories load at once.
@@ -228,13 +275,17 @@ After a network change or a return to Studio, sync replaces the old connection.
 A cached workspace cannot send drafts to a different workspace before verification.
 
 Run `npm --prefix web run test:mobile` for the mobile regression suite.
-Set `BROWSER=webkit` for the WebKit lifecycle and delivery checks.
-The performance fixture uses Chromium network and CPU controls in either run.
+Run `BROWSER=webkit npm --prefix web run test:mobile` for the WebKit suite, where supported.
+The performance fixture emulates a 390-pixel phone. Chromium uses Fast 4G and
+four-times CPU slowdown. WebKit throttles asset responses only. Its local fixture
+API and CPU are not throttled.
 These checks do not replace a test on a physical iPhone.
 
 Run `npm --prefix web run test:responsiveness` for the draft and transcript checks.
-The final fixture measures the production UI with 301 messages and a CPU slowdown of four.
-See [the measurement report](docs/verification/2026-09-12-ui-responsiveness.md) for results and limits.
+The mobile fixture measures 1,500 agents, 2,700 entity rows, and 1,500-message
+transcripts. See [the measurement report](docs/verification/2026-09-12-ui-responsiveness.md)
+for earlier results and limits. See [the mobile performance report](docs/verification/2026-10-01-mobile-performance.md)
+for current startup, sync, transcript, and memory measurements.
 
 Start voice inside the selected chat. Native Codex voice uses that chat's
 ChatGPT account through its app-server. No separate API key is required.
@@ -404,3 +455,33 @@ npm --prefix desktop test
 Browser checks use the installed Chrome, or `CHROME_BIN`. Desktop checks use hidden
 Electron windows. Native protocol fixtures can run without paid model requests.
 Read each test before running a check that uses the live Codex service.
+
+Inside a project, drag teams, folders, and loose chats to set their order.
+Drop near a row edge to change the order. Alt + Up or Down also works.
+Project order and item order stay saved in this browser.
+Select **Compact project** from the project menu to show peer team chats,
+pinned chats, active chats, unread chats, and chats active in the last 24 hours.
+The rule uses the chat's last update time. **Show all N** restores all chats.
+The compact setting stays saved per project. Search includes hidden chats.
+
+Drop a peer team chat in the center of another lead chat to make it a subagent.
+The confirmation names both chats and lists the effects. Both agent trees must
+be idle. Active turns, queued input, permission requests, commands, monitors,
+workspace operations, account transfers, and shared exchanges block the move.
+Unresolved tool requests also block the move.
+The chat keeps its native thread, history, account, model, execution settings,
+and directory. Its workers keep their parent links and use the destination root.
+The complete source task board moves, with its owners, dependencies, and results.
+Plans and annotations keep their chat identities. Requests for the user move to
+the destination lead. The destination's plan and worker defaults stay in use.
+The destination's concurrency, agent limit, and token limit apply to the moved tree.
+The converted chat pauses. Its watches pause and require an explicit resume.
+Worker watches and saved command and monitor records keep their agent identities.
+Progress files keep their paths and contents. The next turn receives the new role.
+
+The source leaves its peer team. A team with fewer than two members dissolves.
+Saved peer rooms remain available to the user. Former peers lose agent access.
+The old broadcast becomes a private room for the original tree and keeps its
+messages. New broadcasts use the destination's broadcast room.
+The action saves one receipt with the exact request body. A retry with the same
+request ID returns that receipt. A different body with that ID is refused.

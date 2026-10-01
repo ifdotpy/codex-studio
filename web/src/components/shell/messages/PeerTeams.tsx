@@ -27,11 +27,14 @@ export function PeerTeamGroup({
   dissolve,
   children,
   drop,
+  reorder,
+  itemId,
   roomId,
   openRoom,
   refresh,
   scope,
 }: {
+  itemId?: string;
   roomId?: string;
   openRoom: (id: string) => void;
   refresh?: () => Promise<void>;
@@ -42,6 +45,7 @@ export function PeerTeamGroup({
   edit: () => void;
   dissolve: () => void;
   children: ReactNode;
+  reorder?: HTMLAttributes<HTMLElement>;
   drop?: HTMLAttributes<HTMLElement> & { "data-folder-drop"?: string };
 }) {
   const requestKey = `studio-radio-open:${scope}:${team.id}`;
@@ -110,9 +114,16 @@ export function PeerTeamGroup({
     }
   };
   return (
-    <section className="peer-team" data-peer-team={team.id} {...drop}>
+    <section
+      className="peer-team"
+      data-peer-team={team.id}
+      data-sidebar-item={itemId}
+      {...drop}
+    >
       <div className="project-tree-heading">
         <UnstyledButton
+          {...reorder}
+          aria-description="Drag to reorder. Alt + Up or Down also works."
           className="project-tree-toggle peer-team-toggle"
           aria-expanded={!closed}
           onClick={toggle}

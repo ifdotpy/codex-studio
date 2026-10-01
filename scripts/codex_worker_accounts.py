@@ -52,9 +52,20 @@ def resolve(runtime, parent, data, *, catalogs=None):
         if key not in catalogs:
             catalogs[key] = runtime.catalog(key)
         catalog = catalogs[key]
-        if any(row.get('model') == model and not row.get('hidden') for row in catalog.get('data', [])):
+        if any(model in (row.get('model'), row.get('resolvedModel')) and not row.get('hidden')
+               for row in catalog.get('data', [])):
             return key, catalog
-    raise ValueError('This model is not available for the selected worker accounts')
+    # Agents have no catalog tool; name the valid choices so the next call can succeed.
+    names = []
+    for key in candidates:
+        for row in (catalogs.get(key) or {}).get('data', []):
+            label = row.get('model')
+            if row.get('resolvedModel') and row['resolvedModel'] != label:
+                label = f"{label} ({row['resolvedModel']})"
+            if label and not row.get('hidden') and label not in names:
+                names.append(label)
+    raise ValueError('This model is not available for the selected worker accounts'
+                     + ('. Available: ' + ', '.join(names[:40]) if names else ''))
 
 
 def catalog(runtime, parent_account):

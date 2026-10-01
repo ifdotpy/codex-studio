@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const BASELINE_REVISION = "2470fb5ac877559c70a74a8c76b3617db66cf141";
+const BASELINE_REVISION = "e681bcc618d9ea4f4a0799de3fa81d01eee92687";
 const repo = dirname(
   dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))),
 );
@@ -77,7 +77,8 @@ async function prepareBaseline() {
       "/tests/simple-ui-fixture.py",
       "/tests/runtime-contract.py",
       "/scripts/claude_bridge/**",
-      "/scripts/**",
+      "/scripts/codex_canvas.py",
+      "/scripts/codex_runtime.py",
     ],
     repo,
   );
@@ -158,21 +159,19 @@ try {
   await prepareBaseline();
   await runPair(1);
   await runPair(2);
-  if (process.env.DRAFT_HOOK_ONLY !== "1") {
-    process.stdout.write("\nBaseline production UI fixture\n");
-    command(
-      process.execPath,
-      [join(baseline, "tests/ui-responsiveness-browser.mjs")],
-      baseline,
-      { RENDER_ISOLATION: "baseline" },
-    );
-    process.stdout.write("Current production UI fixture\n");
-    command(
-      process.execPath,
-      [join(tests, "ui-responsiveness-browser.mjs")],
-      repo,
-    );
-  }
+  process.stdout.write("\nBaseline production UI fixture\n");
+  command(
+    process.execPath,
+    [join(baseline, "tests/ui-responsiveness-browser.mjs")],
+    baseline,
+    { RENDER_ISOLATION: "baseline" },
+  );
+  process.stdout.write("Current production UI fixture\n");
+  command(
+    process.execPath,
+    [join(tests, "ui-responsiveness-browser.mjs")],
+    repo,
+  );
 } finally {
   if (baselineWorktreeAdded)
     command("git", ["worktree", "remove", "--force", baseline], repo);

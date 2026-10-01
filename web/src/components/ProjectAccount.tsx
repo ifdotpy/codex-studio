@@ -1,6 +1,6 @@
 import { Button, Checkbox, NativeSelect } from "@mantine/core";
 import { useRef, useState } from "react";
-import { api, errorText } from "../api";
+import { useProjectSave } from "./useProjectSave";
 import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 
@@ -21,42 +21,31 @@ export default function ProjectAccount({
   const [keys, setKeys] = useState(
     project?.accountKeys || [project?.accountKey || defaultAccountKey],
   );
+  const selectableKeys = keys.filter((accountKey) => {
+    const account = accounts.accounts.find((item) => item.id === accountKey);
+    return account?.status === "ready" && !account.disconnected;
+  });
+  const displayedKey = selectableKeys.includes(key) ? key : "";
+  const save = useProjectSave("/api/projects", saved);
   const activeAccounts = accounts.accounts;
   const archivedMemberships = (accounts.archivedAccounts || []).filter(
     (account) => keys.includes(account.id),
   );
-  const selectableKeys = keys.filter((accountKey) => {
-    const account = activeAccounts.find((item) => item.id === accountKey);
-    return account?.status === "ready" && !account.disconnected;
-  });
-  const displayedKey = selectableKeys.includes(key) ? key : "";
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
-  const lock = useRef(false);
+  const selected = accounts.accounts.find((account) => account.id === key);
+  const ready = selected?.status === "ready" && !selected.disconnected;
   const revision = useRef(project?.accountRevision || 0);
   return (
     <form
-      onSubmit={async (event) => {
+      onSubmit={(event) => {
         event.preventDefault();
-        if (lock.current) return;
-        lock.current = true;
-        setPending(true);
-        setError("");
-        try {
-          await api("/api/projects", {
-            action: "set_accounts",
-            account_keys: keys,
-            path,
-            account_key: key,
-            expected_revision: revision.current,
-          });
-          await saved();
-        } catch (error) {
-          setError(errorText(error));
-        } finally {
-          lock.current = false;
-          setPending(false);
-        }
+        if (!save.frozen && !ready) return;
+        void save.submit({
+          action: "set_accounts",
+          account_keys: keys,
+          path,
+          account_key: key,
+          expected_revision: revision.current,
+        });
       }}
     >
       <p style={{ overflowWrap: "anywhere" }}>{path}</p>
@@ -79,7 +68,8 @@ export default function ProjectAccount({
                 value={account.id}
                 label={`${account.email || account.label || account.id}${account.disconnected ? " (disconnected)" : ""}`}
                 disabled={
-                  pending ||
+                  save.pending ||
+                  save.frozen ||
                   (account.status !== "ready" && !keys.includes(account.id))
                 }
               />
@@ -89,7 +79,7 @@ export default function ProjectAccount({
               key={account.id}
               value={account.id}
               label={`${account.email || account.label || account.id} (deleted, remove from project)`}
-              disabled={pending}
+              disabled={save.pending || save.frozen}
             />
           ))}
         </div>
@@ -98,7 +88,7 @@ export default function ProjectAccount({
       <NativeSelect
         label="Default account for new chats"
         value={displayedKey}
-        disabled={pending}
+        disabled={save.pending || save.frozen}
         onChange={(event) => setKey(event.currentTarget.value)}
         data={[
           {
@@ -115,22 +105,21 @@ export default function ProjectAccount({
             })),
         ]}
       />
-      <p className="notice">
-        {displayedKey
-          ? "New chats in this project use this account."
-          : "Choose a connected account to replace the unavailable saved default."}
-      </p>
-      {error && (
+      <p className="notice">New chats in this project use this account.</p>
+      {!ready && !save.frozen && (
+        <p role="status">Choose an account that is ready before you save.</p>
+      )}
+      {save.error && (
         <p role="alert" className="account-action-error">
-          {error}
+          {save.error}
         </p>
       )}
       <Button
         type="submit"
-        loading={pending}
-        disabled={!keys.length || !displayedKey}
+        loading={save.pending}
+        disabled={!save.frozen && (!keys.length || !key || !ready)}
       >
-        Save accounts
+        {save.retryLabel || "Save accounts"}
       </Button>
     </form>
   );

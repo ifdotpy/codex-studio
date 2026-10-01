@@ -11,9 +11,19 @@ class TurnHistoryContract(unittest.TestCase):
     setUp = f.WorkspaceContract.setUp
     tearDown = f.WorkspaceContract.tearDown
     lead = f.WorkspaceContract.lead
-    start = f.WorkspaceContract.start
+    def start(self, agent, text="Start work", assets=None):
+        message = self.runtime.send(agent["id"], text, assets=assets)
+        # Match the current per-agent delivery path while this fixture keeps
+        # its background scheduler disabled for explicit test control.
+        self.runtime.dispatch(agent["id"])
+        f.eventually(lambda: self.runtime.agent(agent["id"]).get("turnId")
+                     and self.runtime.delivery_receipt(message["id"]).get("status") == "delivered")
+        return self.runtime.agent(agent["id"])
     def notify(self, actor, method, **params):
-        self.runtime.notification({"method": method, "params": {"threadId": actor["threadId"], "turnId": actor["turnId"], **params}})
+        self.runtime.server.notify({"method": method, "params": {"threadId": actor["threadId"], "turnId": actor["turnId"], **params}})
+        if method == "turn/completed":
+            turn = params["turn"]
+            f.eventually(lambda: self.runtime.agent(actor["id"]).get("lastCompletedTurn") == turn.get("id"))
     def test_final_phase_and_failed_outcome_are_preserved(self):
         actor = self.start(self.lead())
         self.notify(actor, "item/started", item={"id": "answer", "type": "agentMessage", "phase": "final_answer", "text": ""})

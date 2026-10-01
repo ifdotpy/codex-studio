@@ -2,6 +2,8 @@
 """Serve the local Codex agent canvas."""
 import sys
 sys.dont_write_bytecode = True
+from codex_startup_memory import mark as startup_memory_mark
+startup_memory_mark("backend-entry")
 from codex_canvas import main
 
 if __name__ == "__main__":

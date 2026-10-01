@@ -27,6 +27,81 @@ export interface ChatActivity {
   command?: string;
   created?: number;
   status: string;
+  // Monitors and commands that outlive their turn. Only these appear above the chat.
+  background?: boolean;
+  commandTask?: boolean;
+}
+
+export const endedWaitLabel = "Turn ended. Send a message to continue.";
+
+export interface ChatWaitState {
+  live: boolean;
+  label: string;
+  agents: Agent[];
+  commands: ChatActivity[];
+  monitors: ChatActivity[];
+  event?: string;
+  inputs: number;
+}
+
+// A saved waiting status alone cannot promise another turn.
+export function chatWaitState(
+  data: Snapshot,
+  agent: Agent,
+  activities = chatActivities(data),
+): ChatWaitState {
+  const agents = data.threads.filter(
+    (child) =>
+      child.source === "managed" &&
+      child.parentId === agent.id &&
+      (child.inFlight ||
+        ["queued", "starting", "running", "approval"].includes(child.status)),
+  );
+  const owned = (activities.get(agent.id) || []).filter(
+    (activity) => activity.agentId === agent.id,
+  );
+  const commands = owned.filter(
+    (activity) =>
+      activity.kind === "task" &&
+      activity.commandTask &&
+      (activity.background || !agent.inFlight),
+  );
+  const monitors = owned.filter((activity) => activity.kind === "monitor");
+  const inputs = (data.runtime.requests || []).filter(
+    (request) =>
+      request.agent === agent.id &&
+      (!request.status || request.status === "pending") &&
+      !request.deferred &&
+      (request.epoch == null ||
+        agent.epoch == null ||
+        request.epoch === agent.epoch),
+  ).length;
+  const event = agent.parkedEvent || undefined;
+  const count = (value: number, name: string) =>
+    value ? `${value} ${name}${value === 1 ? "" : "s"}` : "";
+  const reasons = [
+    count(agents.length, "agent"),
+    count(commands.length, "command"),
+    count(monitors.length, "monitor"),
+    event ? `event ${event}` : "",
+    count(inputs, "input"),
+  ].filter(Boolean);
+  const label = reasons.length
+    ? `Waiting for ${reasons.slice(0, -1).join(", ")}${reasons.length > 1 ? " and " : ""}${reasons.at(-1)}`
+    : endedWaitLabel;
+  return {
+    live: reasons.length > 0,
+    label,
+    agents,
+    commands,
+    monitors,
+    event,
+    inputs,
+  };
+}
+
+export function backgroundActivities(activities: ChatActivity[]) {
+  return activities.filter((activity) => activity.background);
 }
 
 // The visible reasons and the spinner use the same activity records.
@@ -49,6 +124,7 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
       const entry = record as typeof record & {
         epoch?: number;
         type?: string;
+        turnId?: string;
       };
       const agent = byId.get(entry.agent);
       if (
@@ -60,13 +136,17 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
       )
         continue;
       concrete.add(agent.id);
+      const background =
+        kind === "monitor" ||
+        agent.inFlight === false ||
+        !!(entry.turnId && agent.turnId && agent.turnId !== entry.turnId);
       add(agent, {
         id: entry.id,
         kind,
         agentId: agent.id,
         agentName: agent.name,
         label:
-          kind === "monitor"
+          kind === "monitor" || (background && entry.command)
             ? "Background command"
             : entry.command
               ? "Command"
@@ -74,6 +154,9 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
         command: entry.command || entry.query || entry.name || entry.type,
         created: entry.created,
         status: entry.status,
+        background,
+        commandTask:
+          kind === "task" && (!!entry.command || entry.kind === "command"),
       });
     }
   }
@@ -82,7 +165,7 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
     if (
       agent.inFlight ||
       (agent.autoWake !== false &&
-        ["queued", "starting", "running", "waiting"].includes(agent.status))
+        ["queued", "starting", "running"].includes(agent.status))
     )
       add(agent, {
         id: agent.id,
@@ -90,13 +173,11 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
         agentId: agent.id,
         agentName: agent.name,
         label:
-          agent.status === "waiting"
-            ? "Waiting for results"
-            : agent.status === "queued"
-              ? "Waiting to start"
-              : agent.status === "starting"
-                ? "Starting"
-                : "Working",
+          agent.status === "queued"
+            ? "Waiting to start"
+            : agent.status === "starting"
+              ? "Starting"
+              : "Working",
         status: agent.status,
       });
   }
@@ -168,17 +249,26 @@ export function chatIndicators(
   return new Map(
     agents.map((agent) => {
       let indicator: ChatIndicator;
+      const waiting = ["waiting", "parked"].includes(agent.status);
+      const wait =
+        waiting ||
+        (!agent.inFlight && (tasks.has(agent.id) || monitoring.has(agent.id)))
+          ? chatWaitState(data, agent, activities)
+          : undefined;
       if (answers.has(agent.id))
-        indicator = { kind: "answer", label: "Needs your answer" };
+        indicator = {
+          kind: "answer",
+          label: waiting && wait?.live ? wait.label : "Needs your answer",
+        };
+      else if (waiting)
+        indicator = {
+          kind: wait?.live ? "working" : "none",
+          label: wait?.label || endedWaitLabel,
+        };
       else if (tasks.has(agent.id) || monitoring.has(agent.id))
         indicator = {
           kind: "working",
-          label:
-            monitoring.has(agent.id) && !agent.inFlight
-              ? "Waiting for a monitor"
-              : agent.status === "waiting"
-                ? "Waiting for results"
-                : "Working",
+          label: !agent.inFlight && wait?.live ? wait.label : "Working",
         };
       else if (agent.status === "failed")
         indicator = { kind: "error", label: "Failed" };

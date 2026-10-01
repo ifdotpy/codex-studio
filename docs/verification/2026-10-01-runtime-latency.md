@@ -244,3 +244,24 @@ no CPU ranking or performance conclusion is accepted from it. Earlier attempts
 failed in diagnostic setup. These artifacts remain under
 `runtime-load-cpu-profile-772e3b0-selected-dispatcher/` and the related failure
 directories. This fixture success is not 256-worker/eight-tab acceptance.
+
+## PR #5 conflict resolution against remote main
+
+The merge with `7a33c1a3dce7bb984271310cdb741e07788927b8` keeps main's
+separate analytics database, guarded SQLite contexts, callback connection reuse,
+contentless full-text search migration, entity projections, and paged transcript
+storage. The earlier storage, pooling, and lock observations above describe their
+recorded revisions, not this merged architecture. The shared cross-tab transport
+now invalidates main's projections; per-agent transcript revisions still skip
+unchanged content. Same-callback analytics aggregation uses the separate analytics
+connection and preserves rollback before per-sample fallback.
+
+Merge validation passed the 63-test Runtime suite, 51 critical workspace tests,
+28 workload-helper tests, three analytics differential tests (including separate
+storage and failure fallback), SQLite transaction/payload contracts, sync entity
+and HTTP contracts, and the renderer build. Browser checks covered account and
+project selection, team controls, message delivery/dismissal, durable-draft
+migration, and eight-tab stream ownership. The eight-tab check retained one SSE
+and measured 3458 ms owner failover. Staged lint and format checks passed.
+No capacity workload or live backend deployment was performed for this merge;
+the previous 144/s acceptance limitation remains unresolved.

@@ -19,6 +19,28 @@ TURN_NOTICE_METHODS = frozenset({
 })
 
 
+def matching_agents(runtime, db, account_key, thread_id):
+    """Decode only agents in the indexed native scope when a thread is known."""
+    if thread_id:
+        account_expression = ("CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
+                              "ELSE json_extract(record,'$.accountKey') END")
+        account_predicate = (account_expression + " IS NULL" if account_key is None
+                             else account_expression + "=?")
+        query = ("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
+                 "AND " + account_predicate)
+        parameters = (thread_id,) if account_key is None else (thread_id, account_key)
+        rows = db.execute(query, parameters)
+        candidates = (mode_fields(json.loads(row[0])) for row in rows)
+    else:
+        # Account-level notices are handled before this path. Retain the legacy
+        # active-agent routing for rare notifications that omit threadId.
+        candidates = runtime.records(db, 'agents')
+    return [agent for agent in candidates
+            if not agent.get('deletedAt')
+            and agent.get('accountKey', 'default') == account_key
+            and (agent.get('threadId') == thread_id if thread_id else agent.get('inFlight'))]
+
+
 def notice(runtime, db, agent, key, text, kind='warning', **metadata):
     runtime.item(db, agent['id'], 'native-notice:' + key, 'system', text,
                  'Codex', nativeNotice=kind, **metadata)
@@ -61,28 +83,6 @@ def account_notices(runtime, db):
         return []
     return [r for r in runtime.records(db, 'native_notices')
             if runtime.connection_ids.get(r['accountKey']) == r.get('connectionId')]
-
-
-def matching_agents(runtime, db, account_key, thread_id):
-    """Decode only agents in the indexed native scope when a thread is known."""
-    if thread_id:
-        account_expression = ("CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
-                              "ELSE json_extract(record,'$.accountKey') END")
-        account_predicate = (account_expression + " IS NULL" if account_key is None
-                             else account_expression + "=?")
-        query = ("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
-                 "AND " + account_predicate)
-        parameters = (thread_id,) if account_key is None else (thread_id, account_key)
-        rows = db.execute(query, parameters)
-        candidates = (mode_fields(json.loads(row[0])) for row in rows)
-    else:
-        # Account-level notices are handled before this path. Retain the legacy
-        # active-agent routing for rare notifications that omit threadId.
-        candidates = runtime.records(db, 'agents')
-    return [agent for agent in candidates
-            if not agent.get('deletedAt')
-            and agent.get('accountKey', 'default') == account_key
-            and (agent.get('threadId') == thread_id if thread_id else agent.get('inFlight'))]
 
 
 def hook_notice(runtime, db, agent, method, params):

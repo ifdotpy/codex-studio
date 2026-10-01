@@ -340,6 +340,11 @@ try {
     assets: [],
     delivery: "queue",
   };
+  const snapshotBeforeRetry = await (await fetch(target + "/api/state")).json();
+  const failedChatName = snapshotBeforeRetry.runtime.agents.find(
+    (agent) => agent.id === failedBody.room,
+  )?.name;
+  assert.ok(failedChatName, "The stored failure belongs to a fixture chat");
   const pendingKey = `studio-pending-sends:${stateDir}`;
   await page.evaluate(
     async ({ body, pendingKey }) => {
@@ -356,11 +361,18 @@ try {
         }),
       });
       localStorage.setItem(pendingKey, JSON.stringify({ [body.room]: body }));
+      localStorage.setItem("codex-mobile-opened", JSON.stringify(body.room));
     },
     { body: failedBody, pendingKey },
   );
   await page.reload();
   await input.waitFor();
+  await page.waitForFunction(
+    (name) =>
+      document.querySelector("#conversation-title")?.textContent?.trim() ===
+      name,
+    failedChatName,
+  );
   await input.fill(failedBody.text);
   const beforeExplicitRetry = posts.length;
   await send.click();
@@ -369,12 +381,6 @@ try {
       !JSON.parse(localStorage.getItem(pendingKey) || "{}")[room],
     { pendingKey, room: failedBody.room },
   );
-  assert.equal(posts.length, beforeExplicitRetry);
-  await page.waitForFunction(
-    (text) => document.querySelector("#message").value === text,
-    failedBody.text,
-  );
-  await send.click();
   await until(() => posts.length === beforeExplicitRetry + 1);
   assert.notEqual(posts.at(-1).id, failedBody.id);
   assert.equal(posts.at(-1).text, failedBody.text);

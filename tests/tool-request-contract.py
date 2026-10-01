@@ -113,6 +113,12 @@ class RequestContract(unittest.TestCase):
         self.assertEqual(record['admissionDelayMs'], 50000)
         self.assertEqual(record['executionQueueDelayMs'], 1000)
         self.assertEqual(record['queueDelayMs'], 51000)
+        self.runtime.finish_tool_request(record['id'], self.result())
+        marks = self.runtime.tool_request(record['id'])['timing']
+        self.assertLessEqual(marks['reservationBeganAt'], marks['reservationLockedAt'])
+        self.assertLessEqual(marks['reservationLockedAt'], marks['reservationEndedAt'])
+        self.assertLessEqual(marks['reservationEndedAt'], marks['handlerStartedAt'])
+        self.assertLessEqual(marks['handlerStartedAt'], marks['handlerEndedAt'])
 
     def test_queued_cancel_proves_nonexecution_and_prevents_begin(self):
         record = self.reserve()

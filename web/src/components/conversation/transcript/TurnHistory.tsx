@@ -26,7 +26,7 @@ import { toolLimitNotice } from "../../toolLimitNotice";
 import { turnFailureReason } from "../../turnFailureReason";
 import ConversationResults from "./ConversationResults";
 import {
-  historyGroups,
+  incrementalHistoryGroups,
   isEmptyAssistantMessage,
   type HistoryGroup,
 } from "../../turnHistoryModel";
@@ -300,22 +300,18 @@ export default function TurnHistory({
     enabled ? agent : undefined,
     storageKey,
   );
-  const previousGroups = useRef<HistoryGroup[]>([]);
+  const previousGroups = useRef<{
+    items: Message[];
+    currentTurn?: string;
+    groups: HistoryGroup[];
+  } | null>(null);
   const groups = useMemo(() => {
-    const previous = new Map(
-      previousGroups.current.map((group) => [group.id, group]),
+    const next = incrementalHistoryGroups(
+      items,
+      currentTurn,
+      previousGroups.current,
     );
-    const next = historyGroups(items, currentTurn).map((group) => {
-      const prior = previous.get(group.id);
-      return prior &&
-        prior.outcome === group.outcome &&
-        prior.result === group.result &&
-        prior.items.length === group.items.length &&
-        prior.items.every((item, index) => item === group.items[index])
-        ? prior
-        : group;
-    });
-    previousGroups.current = next;
+    previousGroups.current = { items, currentTurn, groups: next };
     return next;
   }, [items, currentTurn]);
   const failureReasons = useMemo(() => {

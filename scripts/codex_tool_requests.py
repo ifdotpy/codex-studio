@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import time
+import uuid
 
 
 def request_tools(tool, text):
@@ -142,6 +143,18 @@ def operation_receipt_evidence(db, key):
 
 
 class RequestMixin:
+    def tool_request_actor(self, db, thread_id, account_key):
+        if not thread_id:
+            return None
+        row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
+                         "AND CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
+                         "ELSE json_extract(record,'$.accountKey') END=? LIMIT 1",
+                         (thread_id, account_key)).fetchone()
+        if row is None:
+            return None
+        from codex_agent_modes import mode_fields
+        return mode_fields(json.loads(row[0]))
+
     def setup_tool_requests(self, db):
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -153,10 +166,11 @@ class RequestMixin:
         # This setup runs once at server startup, before requests can execute.
         rows = db.execute("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.stage') IN ('queued','running')").fetchall()
         for row in rows:
-            record = json.loads(row[0])
-            cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (record["id"],)).fetchone()
+            from codex_payloads import resolve_record, state_root
+            record = resolve_record(state_root(self), json.loads(row[0]))
+            cached = self.tool_result(db, record["id"])
             if cached:
-                self.finish_tool_request(record["id"], json.loads(cached[0]), db=db)
+                self.finish_tool_request(record["id"], cached, db=db)
                 continue
             record["updated"] = time.time()
             if record["stage"] == "queued":
@@ -184,7 +198,17 @@ class RequestMixin:
             with self.lock, self.db() as own:
                 return self.tool_request(key, own)
         row = db.execute("SELECT record FROM runtime_tool_requests WHERE id=?", (key,)).fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        from codex_payloads import resolve_record, state_root
+        return resolve_record(state_root(self), json.loads(row[0]))
+
+    def tool_result(self, db, key):
+        row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
+        if row is None:
+            return None
+        from codex_payloads import resolve_result, state_root
+        return resolve_result(state_root(self), row[0])
 
     def transcript_tool_result(self, db, actor, item):
         """Recover a missing native completion from the exact durable receipt."""
@@ -217,10 +241,9 @@ class RequestMixin:
             return
         receipt_id = aliases[0][0] if aliases else (
             _prefix(actor.get("accountKey", "default"), actor.get("threadId")) + payload["id"])
-        row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (receipt_id,)).fetchone()
-        if row is None:
+        result = self.tool_result(db, receipt_id)
+        if result is None:
             return
-        result = json.loads(row[0])
         if type(result.get("success")) is not bool:
             return
         # Tool completion does not prove that a mutation was applied. Preserve
@@ -238,6 +261,7 @@ class RequestMixin:
         item["text"] = json.dumps(payload, ensure_ascii=False)
 
     def reserve_tool_request(self, message, account_key="default", connection_id=None):
+        reservation_started = time.monotonic_ns()
         params, args = _arguments(message)
         key = self.tool_request_key(message, account_key)
         identity_tool, identity_args = params.get("tool"), args
@@ -246,11 +270,10 @@ class RequestMixin:
             separators=(",", ":"), ensure_ascii=False, allow_nan=False,
         ).encode()).hexdigest()
         with self.lock, self.db() as db:
+            reservation_locked = time.monotonic_ns()
             if self.closed or not self.connection_current(account_key, connection_id):
                 raise ValueError("The caller connection changed before request reservation")
-            actor = next((a for a in self.records(db, "agents")
-                          if params.get("threadId") and a.get("threadId") == params["threadId"]
-                          and a.get("accountKey", "default") == account_key), None)
+            actor = self.tool_request_actor(db, params.get("threadId"), account_key)
             if actor is None or actor.get("deletedAt"):
                 raise ValueError("Unknown managed agent")
             record = self.tool_request(key, db)
@@ -264,7 +287,9 @@ class RequestMixin:
                           "rpcId": message.get("id"), "turnId": params.get("turnId"), "epoch": actor.get("epoch"),
                           "accountKey": account_key, "connectionId": connection_id,
                           "created": now, "updated": now, "stage": "queued", "outcome": "pending",
-                          "cancelRequested": False, "readOnly": request_read_only(params.get("tool"), args)}
+                          "cancelRequested": False, "readOnly": request_read_only(params.get("tool"), args),
+                          "timing": {"reservationBeganAt": reservation_started,
+                                     "reservationLockedAt": reservation_locked}}
                 received = message.get("_studioReceivedAt")
                 if type(received) in (int, float) and math.isfinite(received):
                     record["wireReceivedAt"] = received
@@ -278,9 +303,9 @@ class RequestMixin:
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
                 self.put(db, "tool_requests", record)
-                cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
+                cached = self.tool_result(db, key)
                 if cached:
-                    record = self.finish_tool_request(key, json.loads(cached[0]), db=db)
+                    record = self.finish_tool_request(key, cached, db=db)
             aliases = [call_id, _prefix(account_key, params["threadId"]) + call_id]
             if record.get("request_id"):
                 aliases.append(record["request_id"])
@@ -289,6 +314,9 @@ class RequestMixin:
                 # requires the canonical key instead of selecting another operation.
                 db.execute("INSERT OR IGNORE INTO runtime_tool_request_aliases VALUES (?,?,?)",
                            (actor["id"], alias, key))
+            if record.setdefault("timing", {}).get("reservationEndedAt") is None:
+                record["timing"]["reservationEndedAt"] = time.monotonic_ns()
+                self.put(db, "tool_requests", record)
             return record
 
     def begin_tool_request(self, key):
@@ -298,6 +326,7 @@ class RequestMixin:
                 return False
             now = time.time()
             record.update(stage="running", updated=now, started=now)
+            record.setdefault("timing", {})["handlerStartedAt"] = time.monotonic_ns()
             record["executionQueueDelayMs"] = max(0, now - record["created"]) * 1000
             if "wireReceivedAt" in record:
                 record["queueDelayMs"] = max(0, now - record["wireReceivedAt"]) * 1000
@@ -327,6 +356,7 @@ class RequestMixin:
         now = time.time()
         record.update(stage="completed" if outcome == "applied" else "failed",
                       outcome=outcome, result=result, updated=now, finished=record.get("finished", now))
+        record.setdefault("timing", {})["handlerEndedAt"] = time.monotonic_ns()
         record.pop("error", None)
         if record.get("tool") in {"orchestration_spawn", "orchestration_review"}:
             ids = _spawned_ids(result)
@@ -336,9 +366,10 @@ class RequestMixin:
         return record
 
     def _refresh_tool_request(self, db, record):
+        from codex_payloads import resolve_record, state_root
+        record = resolve_record(state_root(self), record)
         if record["outcome"] not in {"applied", "not_applied"}:
-            cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (record["id"],)).fetchone()
-            result = json.loads(cached[0]) if cached else record.get("result")
+            result = self.tool_result(db, record["id"]) or record.get("result")
             if isinstance(result, dict):
                 return self.finish_tool_request(record["id"], result, db=db)
         return record
@@ -348,8 +379,19 @@ class RequestMixin:
                           "AND json_extract(record,'$.outcome') NOT IN ('applied','not_applied')", (agent_id,)).fetchall()
         reconciled, unknown = [], []
         for row in rows:
-            before = json.loads(row[0])
+            from codex_payloads import resolve_record, state_root
+            before = resolve_record(state_root(self), json.loads(row[0]))
             after = self._refresh_tool_request(db, before)
+            if (after.get("tool") == "orchestration_review"
+                    and after.get("stage") == "failed"
+                    and after.get("outcome") == "unknown"):
+                child_id = str(uuid.uuid5(uuid.NAMESPACE_URL, after["id"]))
+                child = db.execute("SELECT 1 FROM runtime_agents WHERE id=?", (child_id,)).fetchone()
+                if child is None:
+                    # Keep the original failure payload; only settle the
+                    # execution outcome now that absence of the child is proven.
+                    after = self.finish_tool_request(after["id"], after.get("result"),
+                                                     outcome="not_applied", db=db)
             if after["outcome"] in {"applied", "not_applied"}:
                 reconciled.append(after["id"])
             elif after["outcome"] == "unknown":

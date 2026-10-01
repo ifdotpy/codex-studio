@@ -85,6 +85,9 @@ def peers_for(runtime, db, viewer):
 
 def manage(runtime, data):
     action = data.get('action')
+    if action == 'convert':
+        from codex_peer_conversion import convert
+        return convert(runtime, data)
     if action == 'radio':
         from codex_radio import manage as manage_radio
         return manage_radio(runtime, data)

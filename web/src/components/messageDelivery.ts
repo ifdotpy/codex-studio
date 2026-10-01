@@ -2,8 +2,12 @@ import type { Message } from "../types";
 import type { OutgoingMessage } from "../sync/send";
 
 export function explicitQueue(item: Record<string, unknown>) {
-  const intent = item.requestedDelivery ?? item.delivery;
-  return intent === undefined || intent === "queue";
+  if (item.localDelivery && item.deliveryStatus === "queued") return false;
+  return (
+    ["pending", "queued"].includes(
+      String(item.deliveryStatus || item.status || ""),
+    ) || item.pending === true
+  );
 }
 
 export function dispatchedMessage(item: Message) {
@@ -114,7 +118,6 @@ export function outgoingTranscript(
 
 export function deliveryLabel(item: Message) {
   const status = item.deliveryStatus || (item.pending ? "pending" : "");
-  if (status === "pending" && !explicitQueue(item)) return "Sending…";
   return (
     (
       {

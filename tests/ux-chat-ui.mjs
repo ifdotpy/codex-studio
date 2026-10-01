@@ -222,49 +222,38 @@ try {
         }),
     );
   await composer.fill("Draft must remain unsent");
-  const tabSettled = sendSettled();
-  const tabSend = page.waitForResponse(
+  const firstSettled = sendSettled();
+  const firstSend = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/fixture-send",
   );
   await composer.press("Tab");
-  await tabSend;
-  await tabSettled;
+  await firstSend;
+  await firstSettled;
   await page.waitForFunction(
     () => document.querySelector("#message").value === "",
+  );
+  assert.equal(
+    await composer.evaluate((element) => element === document.activeElement),
+    true,
   );
   assert.equal(writes.length, 1);
   assert.equal(writes[0].path, "/api/fixture-send");
   assert.equal(writes[0].body.text, "Draft must remain unsent");
-  assert.equal(writes[0].body.delivery, "queue");
-  assert.equal(
-    await page
-      .locator("#message")
-      .evaluate((element) => element === document.activeElement),
-    true,
-    "Tab queues the draft without moving focus out of the composer",
-  );
-  await composer.fill("Queue from button");
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Queue after turn", exact: true })
-      .isEnabled(),
-    true,
-  );
+  assert.equal(writes[0].body.delivery, "after_turn");
+  await composer.fill("Send from button");
   const buttonSend = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/fixture-send",
   );
   const buttonSettled = sendSettled();
-  await page
-    .getByRole("button", { name: "Queue after turn", exact: true })
-    .click();
+  await page.locator("#send").click();
   await buttonSend;
   await buttonSettled;
   await page.waitForFunction(
     () => document.querySelector("#message").value === "",
   );
   assert.equal(writes.length, 2);
-  assert.equal(writes[1].body.delivery, "queue");
-  assert.equal(writes[1].body.text, "Queue from button");
+  assert.equal(writes[1].body.delivery, "after_tool");
+  assert.equal(writes[1].body.text, "Send from button");
   const longDraft = "L".repeat(12050);
   await composer.fill(longDraft);
   assert.equal(await composer.inputValue(), longDraft);
@@ -463,7 +452,7 @@ try {
       .map((write) => write.body.text),
     [
       "Draft must remain unsent",
-      "Queue from button",
+      "Send from button",
       "Send while history loads",
     ],
     "branch creation never sends the reviewed draft",
@@ -494,7 +483,7 @@ try {
       .map((write) => write.body.text),
     [
       "Draft must remain unsent",
-      "Queue from button",
+      "Send from button",
       "Send while history loads",
     ],
   );
@@ -526,7 +515,7 @@ try {
   assert.ok(pageRequests.some((query) => query.includes("around=item-3")));
   assert.deepEqual(errors, []);
   console.log(
-    `PASS: chat queue, long draft, complete history, exact search, branch draft and restore boundaries. ${temporary}`,
+    `PASS: chat send, Tab navigation, long draft, complete history, exact search, branch draft and restore boundaries. ${temporary}`,
   );
 } finally {
   await browser?.close();

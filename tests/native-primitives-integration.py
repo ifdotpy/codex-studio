@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +79,71 @@ stream_max_retries = 0
 
 
 class NativePrimitives(unittest.TestCase):
+    def test_busy_input_model_visibility_before_and_after_delivery_change(self):
+        def measure(active_delivery):
+            with native_server(s.ShellHandler) as (server, tid, provider, notifications, _):
+                provider.command = 'sleep 0.35'
+                first = server.call('turn/start', {'threadId': tid,
+                    'input': [{'type': 'text', 'text': 'Run the local sleep command.'}]})['turn']['id']
+                n.until(lambda: next((e for e in notifications if e.get('method') == 'item/started'
+                    and e['params'].get('item', {}).get('type') == 'commandExecution'), None),
+                    'shell command start')
+                sent_at = time.monotonic()
+                if not active_delivery:
+                    n.until(lambda: next((e for e in notifications if e.get('method') == 'turn/completed'
+                        and e['params']['turn']['id'] == first), None), 'queued first turn')
+                answer = server.call('turn/start', {'threadId': tid,
+                    'clientUserMessageId': 'latency-input',
+                    'input': [{'type': 'text', 'text': 'Latency probe input.'}]})
+                def visible():
+                    with provider.lock:
+                        return next(((index, provider.request_times[index])
+                            for index, request in enumerate(provider.requests)
+                            if 'Latency probe input.' in json.dumps(request)), None)
+                index, seen_at = n.until(visible, 'latency input in model request')
+                self.assertEqual(answer['turn']['id'] == first, active_delivery)
+                return round((seen_at - sent_at) * 1000, 1), index + 1
+
+        queued_ms, queued_request = measure(False)
+        native_ms, native_request = measure(True)
+        self.assertGreaterEqual(queued_request, 3)
+        self.assertEqual(native_request, 2)
+        print(json.dumps({'legacyQueuedVisibleMs': queued_ms,
+            'nativeStartOrSteerVisibleMs': native_ms,
+            'legacyRequestIndex': queued_request, 'nativeRequestIndex': native_request}))
+
+    def test_start_or_steer_active_idle_and_repeated_identity(self):
+        with native_server() as (server, tid, provider, notifications, _):
+            first = server.call('turn/start', {'threadId': tid,
+                'clientUserMessageId': 'native-first',
+                'input': [{'type': 'text', 'text': 'Native first input.'}]})
+            self.assertTrue(provider.started.wait(10))
+            request = {'threadId': tid, 'clientUserMessageId': 'native-second',
+                'input': [{'type': 'text', 'text': 'Native second input.'}]}
+            sent_at = time.monotonic()
+            active = server.call('turn/start', request)
+            accepted_ms = round((time.monotonic() - sent_at) * 1000, 1)
+            repeated = server.call('turn/start', request)
+            provider.release.set()
+            turn_id = first['turn']['id']
+            n.until(lambda: any(e.get('method') == 'turn/completed'
+                and e['params']['turn']['id'] == turn_id for e in notifications), 'first turn')
+            idle = server.call('turn/start', {'threadId': tid,
+                'clientUserMessageId': 'native-third',
+                'input': [{'type': 'text', 'text': 'Native third input.'}]})
+            n.until(lambda: any(e.get('method') == 'turn/completed'
+                and e['params']['turn']['id'] == idle['turn']['id'] for e in notifications), 'idle turn')
+            second_count = json.dumps(provider.requests[-1]).count('Native second input.')
+            self.assertEqual(active['turn']['id'], turn_id)
+            self.assertEqual(repeated['turn']['id'], turn_id)
+            self.assertNotEqual(idle['turn']['id'], turn_id)
+            self.assertEqual(second_count, 2)
+            print(json.dumps({'activeTurnIdMatches': True, 'idleTurnIdDiffers': True,
+                'repeatedClientIdVisibleCount': second_count, 'activeAcceptedMs': accepted_ms,
+                'modelVisibleMs': round((provider.request_times[1] - sent_at) * 1000, 1),
+                'modelRequests': len(provider.requests)}))
+            self.assertEqual(provider.unexpected, [])
+
     def test_recovery_reads_exact_turn_beyond_first_native_page(self):
         from codex_turn_recovery import read_native_turn
         with native_server() as (server, tid, provider, notifications, _):

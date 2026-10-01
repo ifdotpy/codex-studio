@@ -35,6 +35,8 @@ try {
     identityRoute,
     pullCount = 0,
     pushCount = 0;
+  const pullLog = [];
+  let streamCalls = 0;
   await page.route("**/check", (route) =>
     route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
   );
@@ -48,28 +50,44 @@ try {
       json: { workspaceId: currentWorkspace, chatState: true },
     });
   });
-  await page.route("**/api/sync/stream*", (route) =>
-    route.fulfill({ contentType: "text/event-stream", body: "" }),
-  );
+  await page.route("**/api/sync/stream*", (route) => {
+    streamCalls++;
+    return route.fulfill({
+      contentType: "text/event-stream",
+      body: "data: 2\n\n",
+    });
+  });
   await page.route("**/api/sync/pull?*", (route) => {
     pullCount++;
     const url = new URL(route.request().url());
     const scope = url.searchParams.get("scope");
     const after = Number(url.searchParams.get("after"));
+    pullLog.push({ scope, after, currentWorkspace });
     return route.fulfill({
       json: {
         workspaceId,
         documents:
-          scope === "state:chat" && after < 2
+          scope === "state:entities:v1" && after < 2
             ? [
                 {
-                  id: scope,
+                  id: "entity:agent:lead",
                   seq: 2,
-                  payload: JSON.stringify({ marker: "fresh" }),
+                  payload: JSON.stringify({
+                    collection: "agent",
+                    id: "lead",
+                    value: {
+                      id: "lead",
+                      name: "Fresh",
+                      status: "running",
+                      source: "managed",
+                    },
+                  }),
                 },
               ]
             : [],
         checkpoint: { seq: 2 },
+        initialHigh: 2,
+        maxSeq: 2,
       },
     });
   });
@@ -81,9 +99,23 @@ try {
   await page.evaluate(async () => {
     const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
     await db.projections.insert({
-      id: "state",
+      id: "entity:agent:lead",
       seq: 1,
-      payload: JSON.stringify({ marker: "cached" }),
+      payload: JSON.stringify({
+        collection: "agent",
+        id: "lead",
+        value: {
+          id: "lead",
+          name: "Cached",
+          status: "running",
+          source: "managed",
+        },
+      }),
+    });
+    await db.projections.insert({
+      id: "state:entities:ready",
+      seq: 1,
+      payload: "ready",
     });
     await db.drafts.insert({
       id: "phone:lead",
@@ -114,7 +146,9 @@ try {
       if (error) window.syncErrors.push(String(error));
     });
   });
-  await page.waitForFunction(() => window.state?.marker === "cached");
+  await page.waitForFunction(
+    () => window.state?.runtime?.agents?.[0]?.name === "Cached",
+  );
   const cachedMs = Date.now() - started;
   assert.ok(cachedMs < 1500, `Cached state waits for the Mac: ${cachedMs} ms`);
   assert.ok(
@@ -146,26 +180,51 @@ try {
     "A different server cannot enter the cached database",
   );
   assert.equal(pushCount, 0, "A different server cannot receive cached drafts");
-  assert.equal(await page.evaluate(() => window.state.marker), "cached");
+  assert.equal(
+    await page.evaluate(() => window.state.runtime.agents[0].name),
+    "Cached",
+  );
 
   // A failed check is not cached forever. Reconnecting to the saved workspace recovers.
   currentWorkspace = workspaceId;
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await page
-    .waitForFunction(() => window.state?.marker === "fresh", null, {
-      timeout: 10000,
-    })
+    .waitForFunction(
+      () => window.state?.runtime?.agents?.[0]?.name === "Fresh",
+      null,
+      {
+        timeout: 10000,
+      },
+    )
     .catch(async (error) => {
       console.error({
         identityCalls,
         pullCount,
         pushCount,
-        state: await page.evaluate(() => ({
-          value: window.state,
-          errors: window.syncErrors,
-          hidden: document.hidden,
-          online: navigator.onLine,
-        })),
+        streamCalls,
+        pullLog,
+        currentWorkspace,
+        state: await page.evaluate(async () => {
+          const { db } = await (
+            await import("/src/sync/client.ts")
+          ).syncDatabase();
+          const rows = await db.projections.find().exec();
+          return {
+            value: window.state,
+            errors: window.syncErrors,
+            hidden: document.hidden,
+            online: navigator.onLine,
+            entities: rows
+              .filter((row) => row.id.startsWith("entity:"))
+              .map((row) => [
+                row.id,
+                row.seq,
+                JSON.parse(row.payload).value?.name,
+              ]),
+            ready: (await db.projections.findOne("state:entities:ready").exec())
+              ?.payload,
+          };
+        }),
       });
       throw error;
     });
