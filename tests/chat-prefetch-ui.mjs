@@ -222,10 +222,11 @@ try {
     const scope = url.searchParams.get("scope");
     const after = Number(url.searchParams.get("after") || 0);
     if (scope === "state:entities:v1") {
+      const limit = Number(url.searchParams.get("limit") || 100);
       const documents = [...entityDocuments.values()]
         .filter((document) => document.seq > after)
         .sort((left, right) => left.seq - right.seq)
-        .slice(0, 100);
+        .slice(0, limit);
       return route.fulfill({
         json: {
           workspaceId,
