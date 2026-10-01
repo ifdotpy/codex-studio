@@ -403,6 +403,50 @@ try {
     );
     await value("low", true);
   });
+  await check("review-defaults", async () => {
+    await reset({ defaults: true });
+    const reviewModel = page.locator("#review-model");
+    await page.evaluate(() => {
+      window.reply = {
+        ...window.agent,
+        reviewDefaults: { model: "gpt-5.6-luna", effort: null },
+      };
+    });
+    await reviewModel.click();
+    await page
+      .locator('[role="option"][data-value="gpt-5.6-luna"]:visible')
+      .click();
+    await page.waitForFunction(() => window.calls.length === 1);
+    assert.deepEqual(
+      await page.evaluate(() => window.calls[0].review_defaults),
+      {
+        model: "gpt-5.6-luna",
+        effort: null,
+      },
+    );
+    assert.equal(await modelValue(reviewModel), "gpt-5.6-luna");
+    await page.evaluate(() => {
+      window.setAgent({
+        ...window.agent,
+        reviewDefaults: { model: "gpt-5.6-luna", effort: null },
+      });
+      window.reply = {
+        ...window.agent,
+        reviewDefaults: { model: "gpt-5.6-luna", effort: "high" },
+      };
+    });
+    await page
+      .getByLabel("Default review reasoning", { exact: true })
+      .selectOption("high");
+    await page.waitForFunction(() => window.calls.length === 2);
+    assert.deepEqual(
+      await page.evaluate(() => window.calls[1].review_defaults),
+      {
+        model: "gpt-5.6-luna",
+        effort: "high",
+      },
+    );
+  });
   await check("rejected-does-not-pin-old-snapshot", async () => {
     await reset();
     await page.evaluate(() => {

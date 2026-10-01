@@ -181,6 +181,10 @@ function ScopedExecutionSettings({
     values: Json;
     baseline: Json;
   } | null>(null);
+  const [reviewPending, setReviewPending] = useState<{
+    values: Json;
+    baseline: Json;
+  } | null>(null);
   const [accountPending, setAccountPending] = useState<{
     target: string;
     baseline: string | null;
@@ -204,6 +208,11 @@ function ScopedExecutionSettings({
       : "Subagent";
   const queued = queuedFor(agent);
   const stored = settingsFor(agent, teamDefaults);
+  const reviewStored = {
+    model: agent.reviewDefaults?.model ?? null,
+    effort: agent.reviewDefaults?.effort ?? null,
+  };
+  const reviewCurrent = reviewPending?.values || reviewStored;
   const settled = unconfirmed || pending?.values || stored;
   const current = accountPending
     ? { ...settled, account_key: accountPending.target }
@@ -261,6 +270,15 @@ function ScopedExecutionSettings({
     stored.fast_mode,
     stored.daybreak_enabled,
   ]);
+  useEffect(() => {
+    if (
+      !saving &&
+      reviewPending &&
+      (JSON.stringify(reviewPending.values) === JSON.stringify(reviewStored) ||
+        JSON.stringify(reviewPending.baseline) !== JSON.stringify(reviewStored))
+    )
+      setReviewPending(null);
+  }, [saving, reviewPending, reviewStored.model, reviewStored.effort]);
   const selectedModel = current.model || agent.model;
   const info = infoFor(catalog, selectedModel);
   const selectedProvider = teamDefaults ? info?.provider : agent.provider;
@@ -310,6 +328,46 @@ function ScopedExecutionSettings({
   const options = effortOptions(info);
   if (current.effort && !options.some((row) => row.value === current.effort))
     options.push({ value: current.effort, label: title(current.effort) });
+  const reviewModels = catalog.models.filter(
+    (row) =>
+      row.model.startsWith("gpt-") &&
+      !isDaybreakAlias(row.model) &&
+      supportsDaybreakMode(row, false),
+  );
+  const reviewInfo = reviewModels.find(
+    (row) => row.model === reviewCurrent.model,
+  );
+  const reviewOptions: ModelOption[] = [
+    {
+      value: DEFAULT,
+      label: "Same as caller",
+      description: "Use the caller model and reasoning level.",
+    },
+    ...reviewModels.map((row) => ({
+      value: row.model as string,
+      label: row.displayName || shortModel(row.model),
+      description: row.description || undefined,
+      isDefault: !!row.isDefault,
+    })),
+  ];
+  if (
+    reviewCurrent.model &&
+    !reviewOptions.some((row) => row.value === reviewCurrent.model)
+  )
+    reviewOptions.push({
+      value: reviewCurrent.model,
+      label: shortModel(reviewCurrent.model),
+      disabled: true,
+    });
+  const reviewEfforts = effortOptions(reviewInfo);
+  if (
+    reviewCurrent.effort &&
+    !reviewEfforts.some((row) => row.value === reviewCurrent.effort)
+  )
+    reviewEfforts.push({
+      value: reviewCurrent.effort,
+      label: title(reviewCurrent.effort),
+    });
   const submit = async (request: Json, next: Json, notice = "") => {
     if (saveLock.current) return;
     saveLock.current = true;
@@ -586,6 +644,53 @@ function ScopedExecutionSettings({
     };
     await submit(request, next, adjustments.join(" "));
   };
+  const changeReview = async (patch: Json) => {
+    if (disabled || saveLock.current) return;
+    const next = { ...reviewCurrent, ...patch };
+    if ("model" in patch) next.effort = null;
+    saveLock.current = true;
+    setReviewPending({ values: next, baseline: reviewStored });
+    setSaving(true);
+    setError("");
+    setStatus({ kind: "saving", text: "" });
+    try {
+      const canonical = await api<Agent>(
+        "/api/conversation",
+        {
+          id: agent.id,
+          expected_account_key: accountOf(agent),
+          review_defaults: next,
+        },
+        { timeoutMs: 15000 },
+      );
+      if (
+        !canonical ||
+        canonical.id !== agent.id ||
+        accountOf(canonical) !== accountOf(agent)
+      )
+        throw new Error(
+          "The settings account changed. Check the current settings.",
+        );
+      if (!mounted.current) return;
+      setReviewPending({
+        values: {
+          model: canonical.reviewDefaults?.model ?? null,
+          effort: canonical.reviewDefaults?.effort ?? null,
+        },
+        baseline: reviewStored,
+      });
+      setStatus({ kind: "saved", text: "" });
+      await refresh();
+    } catch (failure) {
+      if (!mounted.current) return;
+      setReviewPending(null);
+      setStatus(null);
+      setError(errorText(failure));
+    } finally {
+      saveLock.current = false;
+      if (mounted.current) setSaving(false);
+    }
+  };
   const changeYolo = async (enabled: boolean) => {
     if (saveLock.current) return;
     saveLock.current = true;
@@ -768,6 +873,34 @@ function ScopedExecutionSettings({
             })
           }
         />
+        {teamDefaults && agent.provider !== "claude" && (
+          <>
+            <ModelPicker
+              id="review-model"
+              label="Default review model"
+              options={reviewOptions}
+              value={reviewCurrent.model || DEFAULT}
+              disabled={disabled}
+              onChange={(value) =>
+                void changeReview({ model: value === DEFAULT ? null : value })
+              }
+            />
+            <NativeSelect
+              label="Default review reasoning"
+              data={reviewEfforts}
+              value={reviewCurrent.effort || DEFAULT}
+              disabled={disabled || !reviewCurrent.model || !reviewInfo}
+              onChange={(event) =>
+                void changeReview({
+                  effort:
+                    event.currentTarget.value === DEFAULT
+                      ? null
+                      : event.currentTarget.value,
+                })
+              }
+            />
+          </>
+        )}
         <Switch
           label="Fast mode"
           aria-label="Fast mode"
