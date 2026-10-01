@@ -4705,11 +4705,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if (a["status"] != "waiting" and not retrying_after_input
                         and a.get("turnEpoch", a["epoch"]) == a["epoch"]
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
-                    if turn.get("status") == "completed":
+                    stopped = (turn.get("status") != "completed"
+                               and a.get("status") in {"failed", "interrupted", "paused"})
+                    if not stopped:
                         self.parent_event(db, a, turn.get("id", "unknown"),
-                                          a.get("lastAnswer", "No final text returned"))
-                    elif (a.get("status") in {"failed", "interrupted", "paused"}
-                          and not self.worker_continuation_pending(a)):
+                                          json.dumps(a["error"]) if a.get("error")
+                                          else a.get("lastAnswer", "No final text returned"))
+                    elif not self.worker_continuation_pending(a):
                         self.child_stopped_event(db, a, a["status"],
                             a.get("error") or "The turn ended without a final result.",
                             "turn:" + str(turn.get("id") or "unknown"))
