@@ -244,6 +244,7 @@ try {
     .filter({ hasText: "finish the active or queued turn" })
     .waitFor();
   await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
   // Lose the success response, then retry the exact body. The move applies once.
   const conversionBodies = [];
   let lost = true;

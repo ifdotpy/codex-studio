@@ -104,6 +104,7 @@ class Conversion(unittest.TestCase):
             manage(self.rt, self.body)
         self.change(worker['id'], inFlight=False)
         rows = [
+            ('tasks', {'id': 'busy', 'agent': worker['id'], 'status': 'running', 'created': 1}, 'commands'),
             ('monitors', {'id': 'busy', 'agent': worker['id'], 'status': 'running', 'created': 1}, 'monitors'),
             ('requests', {'id': 'busy', 'agent': self.c['id'], 'status': 'pending'}, 'permissions'),
             ('rules', {'id': 'busy', 'agent': worker['id'], 'inFlight': True}, 'watch'),
@@ -160,6 +161,19 @@ class Conversion(unittest.TestCase):
         with self.rt.db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'peer-convert:%'").fetchone()[0], 1)
             self.assertEqual(self.rt.agent(self.a['id'], db)['epoch'], self.a['epoch'] + 1)
+
+    def test_saved_room_with_source_in_third_position_is_refreshed(self):
+        with self.rt.db() as db:
+            self.rt.put(db, 'rooms', {'id': 'long-room', 'kind': 'private', 'updated': 1,
+                'members': [self.b['id'], self.c['id'], self.a['id']], 'radio': {'active': True}})
+        with self.assertRaisesRegex(ValueError, 'shared chat exchange'):
+            manage(self.rt, self.body)
+        with self.rt.db() as db:
+            db.execute("UPDATE runtime_rooms SET record=json_remove(record,'$.radio') WHERE id='long-room'")
+        manage(self.rt, self.body)
+        with self.rt.db() as db:
+            payload = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='room' AND id='long-room'").fetchone()[0])['value']
+            self.assertEqual(payload['members'], [self.b['id'], self.c['id'], self.a['id']])
 
     def test_permission_and_membership_refusals(self):
         for body in (self.body | {'member': self.c['id'], 'target': self.a['id']},

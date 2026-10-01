@@ -1080,6 +1080,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.setup_workspace(db)
             startup_memory_mark("workspace-setup")
             self.setup_rules(db)
+            from codex_peer_conversion import setup_indexes as setup_conversion_indexes
+            setup_conversion_indexes(db)
             startup_memory_mark("rules-setup")
             from codex_monitor_recovery import recover_monitor_results, acknowledge_monitor_result
             monitor_recovery = recover_monitor_results(self, db)
@@ -1361,7 +1363,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         return view
 
-    def put(self, db, table, record):
+    def put(self, db, table, record, *, sync_rooms=True):
         previous = None
         if table == "agents":
             previous_row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record["id"],)).fetchone()
@@ -1403,7 +1405,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_task_agent_change(db, record["id"], bool(record.get("deletedAt")))
                 from codex_sync_entities import sync_monitor_agent_change
                 sync_monitor_agent_change(db)
-        if (table == "agents" and previous and
+        if (sync_rooms and table == "agents" and previous and
                 any(previous.get(key) != record.get(key)
                     for key in ("name", "rootId", "deletedAt", "sharedRoomId", "cwd"))):
             for room in self.chat_rooms(db):

@@ -36,6 +36,7 @@ class AccountTransfers:
         self.copy_lock = threading.Lock()
         with rt.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+            db.execute("CREATE INDEX IF NOT EXISTS runtime_account_transfer_status ON runtime_account_transfers(json_extract(record,'$.status'))")
             for op in rt.records(db, 'account_transfers'):
                 if op.get('status') in TERMINAL:
                     continue
