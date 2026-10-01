@@ -36,6 +36,11 @@ for line in sys.stdin:
         result={'userAgent':'fake-model/1.0.0'}
     elif method == 'model/list':
         result={'data':[{'model':'fake'}]}
+    elif method == 'burst':
+        for delta in ['a', 'b', 'c', 'd', 'e', 'f']:
+            print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'burst-turn','itemId':request['params']['itemId'],'delta':delta}}),flush=True)
+        print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'burst-turn','itemId':request['params']['itemId']}}),flush=True)
+        result={'ok':True}
     elif method == 'turn/start':
         print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'turn','itemId':'item','delta':'retained-output'}}),flush=True)
         print('stderr-between-output',file=sys.stderr,flush=True)
@@ -179,6 +184,54 @@ class ProcessSupervisorContract(unittest.TestCase):
                       (self.root/'native-ops.jsonl').read_text().splitlines()]
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
+
+    def test_adjacent_deltas_keep_each_journal_receipt(self):
+        server = self.server()
+        gate, started = threading.Event(), threading.Event()
+        server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
+        self.assertTrue(started.wait(3))
+        submitted = server.submit('burst', {'itemId': 'burst-item'})
+        server.wait(submitted, timeout=3)
+        wait_for(lambda: server.callbacks.qsize() >= 7)
+        gate.set()
+        wait_for(lambda: server.proc.cursor == server.proc.read_cursor)
+        fragments = [m['params']['delta'] for m in self.delivered
+                     if m.get('method') == 'item/agentMessage/delta']
+        self.assertEqual(fragments, list('abcdef'))
+        self.assertFalse(server.proc.ack_pending)
+
+    def test_legacy_delta_gaps_require_durable_proof_and_preserve_requests(self):
+        server = self.server()
+        applied = {'sequence': 0}
+        server.supervisor_commit = lambda message, sequence: applied.update(sequence=sequence)
+        server.supervisor_event_applied = lambda sequence: sequence <= applied['sequence']
+        with patch.object(server, 'release_slot', return_value=False):
+            gate, started = threading.Event(), threading.Event()
+            server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
+            self.assertTrue(started.wait(3))
+            submitted = server.submit('burst', {'itemId': 'old-burst'})
+            server.wait(submitted, timeout=3)
+            wait_for(lambda: server.callbacks.qsize() >= 7)
+            gate.set()
+            wait_for(lambda: server.callbacks.unfinished_tasks == 0)
+        self.assertLess(server.proc.cursor, server.proc.read_cursor)
+        before = server.proc.cursor
+        self.assertEqual(server.proc.ack_applied_deltas(lambda sequence: False), 0)
+        self.assertEqual(server.proc.cursor, before)
+        self.assertGreater(server.proc.ack_applied_deltas(server.supervisor_event_applied), 0)
+        self.assertEqual(server.proc.cursor, server.proc.read_cursor)
+        self.assertEqual(''.join(m['params']['delta'] for m in self.delivered
+                                if m.get('method') == 'item/agentMessage/delta'), 'abcdef')
+        # A missing tool request must not become permission to ACK its outcome.
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            seq = server.proc.cursor + 1
+            payload = json.dumps({'id': 'unsettled', 'method': 'item/tool/call', 'params': {}})
+            db.execute('INSERT INTO events VALUES (?,?,?,?,?)',
+                       (server.proc.handle, seq, 'stdout', payload, len(payload)))
+        server.proc.read_cursor = seq + 1
+        server.proc.ack_pending.add(seq + 1)
+        self.assertEqual(server.proc.ack_applied_deltas(lambda sequence: True), 0)
+        self.assertEqual(server.proc.cursor, seq - 1)
 
     def test_legacy_launch_reattaches_without_restarting_or_resending(self):
         with patch.object(process_supervisor, 'native_launch_environment',

@@ -39,6 +39,7 @@ class CriticalRuntimeContract(unittest.TestCase):
     def test_pipe_backpressure_has_a_deadline(self):
         read_fd, write_fd = os.pipe()
         server = AppServer.__new__(AppServer)
+        server.supervisor_mode = False
         server.lock = threading.RLock()
         server.write_lock = threading.RLock()
         server.closed = False
@@ -69,6 +70,7 @@ class CriticalRuntimeContract(unittest.TestCase):
     def test_busy_writer_rejects_unsent_request_without_leaking_future(self):
         from codex_runtime import SubmissionRejected
         server = AppServer.__new__(AppServer)
+        server.supervisor_mode = False
         server.lock = threading.RLock()
         server.write_lock = threading.RLock()
         server.sequence, server.pending = 0, {}
@@ -92,6 +94,7 @@ class CriticalRuntimeContract(unittest.TestCase):
     def test_real_pipe_preserves_large_utf8_json_frame(self):
         read_fd, write_fd = os.pipe()
         server = AppServer.__new__(AppServer)
+        server.supervisor_mode = False
         server.lock = threading.RLock()
         server.write_lock = threading.RLock()
         server.closed, server.transport_error = False, None

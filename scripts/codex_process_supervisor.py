@@ -745,19 +745,53 @@ class ProcessProxy:
         return hashlib.sha256((self.handle + "\0" + method + "\0" + str(stable)).encode()).hexdigest()
 
     def ack(self, sequence):
-        if sequence <= self.cursor:
-            return
-        if type(sequence) is not int or sequence > self.read_cursor:
-            raise RuntimeError("Cannot ACK a supervisor event that has not been read")
-        self.ack_pending.add(sequence)
-        contiguous = self.cursor
-        while contiguous + 1 in self.ack_pending:
-            contiguous += 1
-        if contiguous > self.cursor:
-            self.call("ack", sequence=contiguous)
-            for acknowledged in range(self.cursor + 1, contiguous + 1):
-                self.ack_pending.discard(acknowledged)
-            self.cursor = contiguous
+        with self.__dict__.setdefault("_ack_lock", threading.RLock()):
+            if sequence <= self.cursor:
+                return
+            if type(sequence) is not int or sequence > self.read_cursor:
+                raise RuntimeError("Cannot ACK a supervisor event that has not been read")
+            self.ack_pending.add(sequence)
+            contiguous = self.cursor
+            while contiguous + 1 in self.ack_pending:
+                contiguous += 1
+            if contiguous > self.cursor:
+                self.call("ack", sequence=contiguous)
+                for acknowledged in range(self.cursor + 1, contiguous + 1):
+                    self.ack_pending.discard(acknowledged)
+                self.cursor = contiguous
+
+    def ack_applied_deltas(self, applied):
+        """Repair only read delta gaps covered by the runtime's durable cursor."""
+        with self.__dict__.setdefault("_ack_lock", threading.RLock()):
+            if not self.ack_pending or self.cursor + 1 in self.ack_pending:
+                return 0
+            uri = (self.root / "supervisor.sqlite3").as_uri() + "?mode=ro"
+            db = sqlite3.connect(uri, uri=True)
+            try:
+                rows = db.execute(
+                    "SELECT sequence,kind,payload FROM events WHERE handle=? "
+                    "AND sequence>? AND sequence<=? ORDER BY sequence LIMIT 128",
+                    (self.handle, self.cursor, self.read_cursor)).fetchall()
+            finally:
+                db.close()
+            missing = []
+            contiguous = self.cursor
+            for sequence, kind, payload in rows:
+                if sequence != contiguous + 1:
+                    break
+                if sequence not in self.ack_pending:
+                    message = json.loads(payload)
+                    if (kind != "stdout" or not isinstance(message, dict)
+                            or "id" in message
+                            or message.get("method") != "item/agentMessage/delta"):
+                        break
+                    missing.append(sequence)
+                contiguous = sequence
+            if not missing or not applied(missing[-1]):
+                return 0
+            self.ack_pending.update(missing)
+            self.ack(contiguous)
+            return len(missing)
 
     def poll(self):
         return self._returncode

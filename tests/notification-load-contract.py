@@ -89,10 +89,12 @@ def measure(count=320, agents=24):
             traced = TracedLock(runtime.lock)
             runtime.lock = traced
             server = AppServer.__new__(AppServer)
+            server.supervisor_mode = False
             server.callbacks = queue.Queue(maxsize=AppServer.CALLBACK_QUEUE_LIMIT)
             server.callback_lock = threading.RLock()
             server.dispatch_stopped = False
             server.reader_done = threading.Event()
+            server.dispatcher_done = threading.Event()
             server.log = io.BytesIO()
             server.closed = True
             server.died = lambda: None

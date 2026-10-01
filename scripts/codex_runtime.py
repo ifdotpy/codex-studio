@@ -708,7 +708,14 @@ class AppServer:
     def release_slot(self, message):
         """The consumer took this entry; close its slot before reading it.
 
-        Returns True for an entry that the producer already coalesced."""
+        Returns True when the consumer must preserve this entry."""
+        if (self.supervisor_mode and isinstance(message, dict)
+                and message.get("_studioSupervisorSequence") is not None):
+            # Each journal event needs its own durable receipt. Older consumers
+            # merged deltas but acknowledged only the first sequence.
+            if self.supervisor_event_applied:
+                self.proc.ack_applied_deltas(self.supervisor_event_applied)
+            return True
         if isinstance(message, dict) and "_studioSlot" in message:
             with self.callback_lock:
                 slot = message.pop("_studioSlot")
