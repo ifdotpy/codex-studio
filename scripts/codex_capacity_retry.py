@@ -202,11 +202,16 @@ class CapacityRetryMixin:
 
     def capacity_tick(self):
         with self.lock, self.db() as db:
-            # Runs every scheduler pass under the lock: decode only agents with a retry.
+            # Read scheduled retries only when due, plus failed context waits that need retirement.
+            now = time.time()
             retrying = [json.loads(row[0]) for row in db.execute(
-                "SELECT record FROM runtime_agents WHERE json_extract(record,'$.capacityRetry') IS NOT NULL")]
-            # Older code failed a retry that only waited for context repair. Nothing was
-            # submitted, so the wait rule applies to those records too.
+                "SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.capacityRetry.status')='scheduled' "
+                "AND json_extract(record,'$.capacityRetry.dueAt')<=? UNION ALL "
+                "SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.capacityRetry.status')='failed' "
+                "AND json_extract(record,'$.capacityRetry.acceptedTurnId') IS NULL "
+                "AND json_extract(record,'$.capacityRetry.reason') LIKE 'Context repair waits for %'", (now,))]
             for a in retrying:
                 retry = a.get('capacityRetry') or {}
                 if (retry.get('status') == 'failed' and not retry.get('acceptedTurnId')
@@ -217,7 +222,7 @@ class CapacityRetryMixin:
                     self.put(db, 'agents', a)
             due = [(a['id'], a['capacityRetry']['id']) for a in retrying
                    if (a.get('capacityRetry') or {}).get('status') == 'scheduled'
-                   and a['capacityRetry']['dueAt'] <= time.time()]
+                   and a['capacityRetry']['dueAt'] <= now]
         for key, retry_id in due:
             try:
                 self.capacity_retry(key, retry_id, 'retry', _automatic=True)

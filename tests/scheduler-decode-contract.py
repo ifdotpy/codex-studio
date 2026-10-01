@@ -63,11 +63,10 @@ class SchedulerDecode(unittest.TestCase):
             self.runtime.dispatch_all()
         return calls, full_reads
 
-    def test_reuses_roster_within_each_lock_session(self):
+    def test_reuses_one_roster_across_unchanged_database_sessions(self):
         calls, full_reads = self.dispatch_with_roster()
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
         self.assertTrue(all(locked for _, locked, _ in calls))
-        self.assertIsNot(calls[0][0], calls[1][0])
         self.assertEqual(full_reads, [])
 
     def test_direct_agent_update_refreshes_within_lock_session(self):

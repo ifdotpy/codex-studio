@@ -66,6 +66,19 @@ class CapacityContract(unittest.TestCase):
     def agent(self):
         return self.runtime.agent(self.key)
 
+    def test_capacity_poll_uses_the_status_due_index(self):
+        with self.runtime.db() as db:
+            plan = [row[3] for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.capacityRetry.status')='scheduled' "
+                "AND json_extract(record,'$.capacityRetry.dueAt')<=? UNION ALL "
+                "SELECT record FROM runtime_agents WHERE "
+                "json_extract(record,'$.capacityRetry.status')='failed' "
+                "AND json_extract(record,'$.capacityRetry.acceptedTurnId') IS NULL "
+                "AND json_extract(record,'$.capacityRetry.reason') LIKE 'Context repair waits for %'",
+                (time.time(),))]
+        self.assertTrue(any("runtime_agent_capacity_retry_state_due_v2" in step for step in plan), plan)
+
     def starts(self):
         return [p for method, p in self.server.calls if method == 'turn/start']
 

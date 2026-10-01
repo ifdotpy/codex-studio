@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('spawn_task_fixture', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
@@ -55,6 +56,26 @@ class SpawnTask(unittest.TestCase):
         self.rt.work_action(worker['id'], {'action': 'submit', 'task_id': self.task['id'], 'result': '29 folders',
                                            'checks': 'ls', 'revision': 'HEAD'}, actor=worker['id'])
         self.rt.work_action(self.lead['id'], {'action': 'accept', 'task_id': self.task['id'], 'result': 'Verified'})
+
+    def test_spawn_batch_validates_one_scoped_roster(self):
+        calls = []
+        original = self.rt.team_agents
+        full_agent_reads = []
+        records = self.rt.records
+        def roster(db, root_id):
+            calls.append(root_id)
+            return original(db, root_id)
+        def read_records(db, table=None, **kwargs):
+            if table == 'agents':
+                full_agent_reads.append(table)
+            return records(db, table, **kwargs)
+        with patch.object(self.rt, 'team_agents', side_effect=roster), \
+                patch.object(self.rt, 'records', side_effect=read_records):
+            self.rt.spawn_agents(self.lead, {'agents': [
+                {'name': f'Worker {index}', 'prompt': 'Work', 'role': 'reviewer'}
+                for index in range(3)]}, 'spawn-batch-roster')
+        self.assertEqual(calls, [self.lead['id']])
+        self.assertEqual(full_agent_reads, [])
 
     def test_invalid_assignment_creates_no_worker(self):
         owned = self.rt.work_action(self.lead['id'], {'action': 'create', 'title': 'Owned', 'owner': self.lead['id']})

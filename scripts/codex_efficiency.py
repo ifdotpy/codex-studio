@@ -114,21 +114,27 @@ class EfficiencyMixin:
                     'detail': {'tool': 'orchestration_task', 'action': 'get', 'task_id': full['id']}}
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
-            works = [w for w in self.records(db, 'work') if w['rootId'] == actor['rootId']]
             if action == 'list':
-                rows = [self.task_brief(self.work_view(w, works)) for w in works
+                works = self.work_records(db, actor['rootId'])
+                statuses = {work['id']: work['status'] for work in works}
+                rows = [self.task_brief(self.work_view(w, statuses)) for w in works
                         if (not args.get('owner') or w.get('owner') == args['owner'])
                         and (not args.get('state') or w.get('status') == args['state'])]
                 rows.sort(key=lambda w: w['id'])
                 return self.model_page(rows, args, [actor['rootId'], args.get('owner'), args.get('state')], byte_limit=13000)
-            task = next((w for w in works if w['id'] == args.get('task_id')), None)
+            task = self.work_by_id(db, args.get('task_id'), actor['rootId'])
             if task is None:
                 raise ValueError('Unknown task in this team')
             if action == 'history':
                 rows = sorted([{'kind': 'result', **r} for r in task['results']]
                               + [{'kind': 'decision', **r} for r in task['decisions']], key=lambda r: r.get('created', 0))
                 return self.model_page(rows, args, [actor['rootId'], task['id'], 'history'])
-            return {**self.task_brief(self.work_view(task, works)), 'description': task['description'],
+            statuses = {row[0]: row[1] for row in db.execute(
+                "SELECT json_extract(record,'$.id'),json_extract(record,'$.status') FROM runtime_work "
+                "WHERE id IN (" + ','.join('?' for _ in task['dependencies']) + ") "
+                "AND json_extract(record,'$.rootId')=?",
+                (*task['dependencies'], actor['rootId']))} if task['dependencies'] else {}
+            return {**self.task_brief(self.work_view(task, statuses)), 'description': task['description'],
                     'dependencies': task['dependencies'], 'latestResult': task['results'][-1] if task['results'] else None,
                     'latestDecision': task['decisions'][-1] if task['decisions'] else None,
                     'history': {'results': len(task['results']), 'decisions': len(task['decisions'])}}

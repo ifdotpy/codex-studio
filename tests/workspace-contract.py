@@ -379,7 +379,7 @@ class WorkspaceContract(unittest.TestCase):
                 self.runtime.put(db, "tasks", {
                     "id": f"history-{number:03}", "agent": worker["id"],
                     "status": "completed", "created": 1000 + number,
-                    "tail": "private output", "arguments": "private arguments",
+                    "tail": "private output", "arguments": "private arguments", "error": "private error",
                 })
             self.runtime.put(db, "tasks", {
                 "id": "other-chat-task", "agent": other["id"],
@@ -391,11 +391,22 @@ class WorkspaceContract(unittest.TestCase):
         self.assertEqual(initial["tasks"][0]["id"], "history-104")
         self.assertNotIn("tail", initial["tasks"][0])
         self.assertNotIn("arguments", initial["tasks"][0])
+        self.assertNotIn("error", initial["tasks"][0])
         older = self.runtime.workspace_task_feed(lead["id"], before=initial["nextBefore"])
         self.assertEqual([item["id"] for item in older["tasks"]], [
             "history-004", "history-003", "history-002", "history-001", "history-000",
         ])
         self.assertNotIn("other-chat-task", {item["id"] for item in initial["tasks"] + older["tasks"]})
+        with self.runtime.db() as db:
+            plan = [row[3] for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
+                "AND CASE WHEN COALESCE(json_extract(record,'$.finished'),0)>"
+                "COALESCE(json_extract(record,'$.created'),0) THEN json_extract(record,'$.finished') "
+                "ELSE json_extract(record,'$.created') END>? ORDER BY CASE WHEN "
+                "COALESCE(json_extract(record,'$.finished'),0)>COALESCE(json_extract(record,'$.created'),0) "
+                "THEN json_extract(record,'$.finished') ELSE json_extract(record,'$.created') END,id LIMIT 101",
+                (worker["id"], 2000))]
+        self.assertTrue(any("runtime_task_agent_updated_id" in step and ">" in step for step in plan), plan)
 
         changed_at = time.time() + 2
         new = {"id": "new-command", "agent": worker["id"], "status": "running",
@@ -674,6 +685,15 @@ class WorkspaceContract(unittest.TestCase):
         self.assertIn("cancel", schema["properties"]["action"]["enum"])
         self.assertIn("reason", schema["properties"])
         self.assertIn("task creator can cancel", definition["description"])
+
+    def test_task_get_history_and_claim_use_keyed_work_reads(self):
+        lead = self.lead()
+        task = self.runtime.work_action(lead["id"], {"action": "create", "title": "Keyed task"})
+        with patch.object(self.runtime, "work_records", side_effect=AssertionError("global work read")):
+            self.runtime.model_work(lead["id"], {"action": "get", "task_id": task["id"]})
+            self.runtime.model_work(lead["id"], {"action": "history", "task_id": task["id"]})
+            claimed = self.runtime.work_action(lead["id"], {"action": "claim", "task_id": task["id"]})
+        self.assertEqual(claimed["status"], "running")
 
     def test_work_mutation_receipts_and_versions_prevent_duplicate_or_stale_writes(
         self,
