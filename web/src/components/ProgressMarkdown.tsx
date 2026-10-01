@@ -19,6 +19,7 @@ interface ProgressToken {
 export function progressMarkdown(source: string): {
   nodes: ReactNode;
   supported: boolean;
+  firstLine: string;
 } {
   let count = 0;
   const decoder = document.createElement("textarea");
@@ -93,12 +94,29 @@ export function progressMarkdown(source: string): {
     });
   };
   try {
+    const tokens = marked.lexer(source) as ProgressToken[];
+    const nodes = render(tokens);
+    const text = (token: ProgressToken): string => {
+      if (token.type === "br") return "\n";
+      if (token.type === "codespan") return token.text || "";
+      if (token.items) return token.items[0] ? text(token.items[0]) : "";
+      return token.tokens
+        ? token.tokens.map(text).join(token.type === "list_item" ? "\n" : "")
+        : decode(token.text);
+    };
+    // Prefer the status text below a section heading, then the heading itself.
+    const first =
+      tokens.find((token) => ["paragraph", "list"].includes(token.type)) ||
+      tokens.find((token) => token.type === "heading");
     return {
-      nodes: render(marked.lexer(source) as ProgressToken[]),
+      nodes,
       supported: true,
+      firstLine: first
+        ? text(first).split("\n")[0].replace(/\s+/g, " ").trim()
+        : "",
     };
   } catch {
     // The whole file is rejected. No unsupported node is silently removed.
-    return { nodes: null, supported: false };
+    return { nodes: null, supported: false, firstLine: "" };
   }
 }

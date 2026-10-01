@@ -150,6 +150,7 @@ try {
   );
   const panel = page.getByRole("region", { name: "Agent progress" });
   const current = panel.locator(".agent-panel-current");
+  await panel.getByRole("button", { name: "Show", exact: true }).click();
   await current.getByText("Initial", { exact: false }).waitFor();
   await page.locator("#history").evaluate((el) => (el.scrollTop = 321));
   await page.locator("#composer").fill("Keep my draft and focus");
@@ -214,6 +215,31 @@ try {
     await dialog.waitFor({ state: "hidden" });
   };
   await page.evaluate(() => window.panelMode("offline"));
+  await panel.getByRole("button", { name: "Hide", exact: true }).click();
+  await panel
+    .getByRole("button", {
+      name: "Cannot read PROGRESS.md. Error details",
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await panel.getAttribute("data-hidden"), "yes");
+  await panel
+    .locator(".agent-panel-compact-saved")
+    .getByText("Saved copy", { exact: true })
+    .waitFor();
+  await panel
+    .getByRole("button", {
+      name: "Cannot read PROGRESS.md. Error details",
+      exact: true,
+    })
+    .click();
+  const compactError = page.getByRole("dialog", { name: "Progress error" });
+  await compactError
+    .getByText("Connection interrupted", { exact: true })
+    .waitFor();
+  await page.keyboard.press("Escape");
+  await compactError.waitFor({ state: "hidden" });
+  await panel.getByRole("button", { name: "Show", exact: true }).click();
   await closeError(await readError("Connection interrupted"));
   const diagnostic = {
     message: "Read denied",
@@ -283,7 +309,8 @@ try {
   );
   await current
     .getByText("Other workspace content.", { exact: true })
-    .waitFor();
+    .waitFor({ state: "attached" });
+  await panel.getByRole("button", { name: "Show", exact: true }).click();
   await page.evaluate(() => window.resolvePanel());
   await page.waitForTimeout(50);
   assert.equal(

@@ -325,6 +325,7 @@ try {
   );
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await panel().getByRole("button", { name: "Show", exact: true }).click();
   await currentText().getByText(texts.update, { exact: true }).waitFor();
   assert.equal(await panel().getAttribute("data-fit"), "yes");
   const phoneGeometry = await panel().evaluate((node) => ({
@@ -364,6 +365,42 @@ try {
   assert.ok((await panel().boundingBox()).height <= 237);
   assert.ok((await page.locator("#messages").boundingBox()).height > 100);
   assert.ok((await page.locator("#composer").boundingBox()).height > 80);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await panel().getByRole("button", { name: "Hide", exact: true }).click();
+    assert.ok(
+      (await panel().boundingBox()).height <= (width === 390 ? 45 : 33),
+    );
+    await page.screenshot({
+      path: join(root, `progress-hidden-${width}.png`),
+      animations: "disabled",
+    });
+    await panel().getByRole("button", { name: "Show", exact: true }).click();
+    const header = await panel().locator(".agent-panel-heading").boundingBox();
+    const hide = await panel()
+      .getByRole("button", { name: "Hide", exact: true })
+      .boundingBox();
+    const expand = await panel()
+      .getByRole("button", { name: "Expand", exact: true })
+      .boundingBox();
+    assert.ok(
+      Math.abs(expand.x + expand.width - (header.x + header.width - 10)) <= 0.5,
+      "Expand aligns with the right header padding",
+    );
+    assert.ok(
+      Math.abs(expand.x - (hide.x + hide.width) - 8) <= 0.5 &&
+        hide.y === expand.y,
+      "Hide and Expand are adjacent on the right, in that order",
+    );
+    if (width === 390) {
+      for (const control of [hide, expand])
+        assert.ok(control.width >= 44 && control.height >= 44);
+    }
+    await page.screenshot({
+      path: join(root, `progress-preview-${width}.png`),
+      animations: "disabled",
+    });
+  }
   if (process.env.PROGRESS_SCREENSHOTS) {
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });
