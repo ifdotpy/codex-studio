@@ -40,14 +40,15 @@ class Runtime:
 
 
 class SnapshotLock:
-    """Reentrant runtime lock that exposes the publisher's acquisition point."""
-    def __init__(self, publisher_waiting):
+    """Reentrant runtime lock that exposes selected workers' wait points."""
+    def __init__(self, waiting):
         self.lock = threading.RLock()
-        self.publisher_waiting = publisher_waiting
+        self.waiting = waiting
 
     def __enter__(self):
-        if threading.current_thread().name == "provider-publisher":
-            self.publisher_waiting.set()
+        event = self.waiting.get(threading.current_thread().name)
+        if event:
+            event.set()
         self.lock.acquire()
         return self
 
@@ -129,7 +130,7 @@ class ProviderVersionContract(unittest.TestCase):
         runtime.servers = {}
         runtime.connection_ids = {}
         publisher_waiting = threading.Event()
-        runtime.lock = SnapshotLock(publisher_waiting)
+        runtime.lock = SnapshotLock({"provider-publisher": publisher_waiting})
         monitor = ProviderVersionMonitor()
         monitor.signature = ()
         monitor.next_check = time.monotonic() + 60
@@ -160,6 +161,74 @@ class ProviderVersionContract(unittest.TestCase):
         self.assertTrue(monitor_lock_was_available)
         self.assertEqual(status["providers"], [])
         self.assertTrue(runtime.changed.is_set())
+
+    def test_send_connect_lock_order_defers_validation_and_publication_then_retries(self):
+        runtime = Runtime()
+        old_server, new_server = Server(), Server()
+        runtime.servers = {"default": old_server}
+        runtime.connection_ids = {"default": "old-connection"}
+        validator_waiting = threading.Event()
+        publisher_waiting = threading.Event()
+        runtime.lock = SnapshotLock({
+            "provider-validator": validator_waiting,
+            "provider-publisher": publisher_waiting,
+        })
+        old_signature = (("default", id(old_server), "old-connection"),)
+        monitor = ProviderVersionMonitor(read_version=lambda *_args: {
+            "runningVersion": "0.153.4", "installedVersion": "0.153.4",
+        })
+        monitor.signature = old_signature
+        monitor.connections = {"default": (old_server, "old-connection")}
+        monitor.providers = [{
+            "id": "provider-version:default", "accountKey": "default", "provider": "codex",
+            "status": "outdated", "runningVersion": "0.153.3", "installedVersion": "0.153.3",
+            "configuredVersion": None, "baseline": "0.153.4", "error": None,
+            "message": "Old connection warning", "at": time.time(),
+        }]
+        runtime.provider_version_monitor = monitor
+        validation = []
+        publication = []
+        validator = threading.Thread(
+            name="provider-validator",
+            target=lambda: validation.append(monitor._is_current(runtime, old_signature, monitor.generation)),
+        )
+        publisher = threading.Thread(
+            name="provider-publisher",
+            target=lambda: publication.append(monitor._publish(
+                runtime, old_signature, monitor.generation, monitor.providers,
+            )),
+        )
+
+        # Runtime.send owns runtime.lock and then calls connect(), which takes
+        # start_lock. Both provider workers must wait for runtime.lock without
+        # holding start_lock, so connect remains free to finish its change.
+        with runtime.lock:
+            validator.start()
+            publisher.start()
+            self.assertTrue(validator_waiting.wait(1))
+            self.assertTrue(publisher_waiting.wait(1))
+            self.assertTrue(runtime.start_lock.acquire(blocking=False))
+            try:
+                runtime.servers["default"] = new_server
+                runtime.connection_ids["default"] = "new-connection"
+            finally:
+                runtime.start_lock.release()
+
+        validator.join(2)
+        publisher.join(2)
+        self.assertFalse(validator.is_alive())
+        self.assertFalse(publisher.is_alive())
+        self.assertEqual(validation, [False])
+        self.assertEqual(publication, [False])
+        self.assertEqual(monitor.next_check, 0.0)
+
+        monitor.tick(runtime)
+        self.assertEqual(monitor.status()["warnings"], [])
+        monitor.worker.join(2)
+        self.assertFalse(monitor.worker.is_alive())
+        status = monitor.status()
+        self.assertEqual(status["providers"][0]["status"], "current")
+        self.assertEqual(status["providers"][0]["runningVersion"], "0.153.4")
 
     def test_version_detection_runs_off_thread_and_returns_scoped_advisories(self):
         runtime = Runtime()

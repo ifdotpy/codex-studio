@@ -211,28 +211,41 @@ class ProviderVersionMonitor:
             )
             self.worker.start()
 
-    @staticmethod
-    def _is_current(runtime, signature):
+    def _defer(self, runtime, generation):
+        with self.lock:
+            if generation == self.generation:
+                self.next_check = 0.0
+        runtime.changed.set()
+
+    def _is_current(self, runtime, signature, generation=None):
         start_lock = getattr(runtime, "start_lock", None)
-        if start_lock:
-            start_lock.acquire()
-        try:
-            with runtime.lock:
+        with runtime.lock:
+            # Runtime.send may hold runtime.lock and call connect(), which
+            # takes start_lock. Match the native updater: never wait for the
+            # opposite lock while holding runtime.lock.
+            if start_lock and not start_lock.acquire(blocking=False):
+                if generation is not None:
+                    self._defer(runtime, generation)
+                return False
+            try:
                 offline = getattr(runtime, "offline_accounts", set())
                 current = tuple(
                     (key, id(server), runtime.connection_ids.get(key))
                     for key, server in runtime.servers.items()
                     if key not in offline
                 )
-        finally:
-            if start_lock:
-                start_lock.release()
-        return current == signature
+            finally:
+                if start_lock:
+                    start_lock.release()
+        matches = current == signature
+        if not matches and generation is not None:
+            self._defer(runtime, generation)
+        return matches
 
     def _check(self, runtime, connected, signature, generation):
         providers = []
         for account_key, server, connection_id in connected:
-            if not self._is_current(runtime, signature):
+            if not self._is_current(runtime, signature, generation):
                 return
             try:
                 account = runtime.accounts.get(account_key)
@@ -245,11 +258,11 @@ class ProviderVersionMonitor:
                 if not isinstance(versions, dict):
                     raise ValueError("Provider version reader returned no status object")
                 diagnostic = _diagnostic(account_key, provider, versions)
-                if not self._is_current(runtime, signature):
+                if not self._is_current(runtime, signature, generation):
                     return
                 providers.append(diagnostic)
             except (KeyError, OSError, ValueError, TypeError, subprocess.SubprocessError):
-                if self._is_current(runtime, signature):
+                if self._is_current(runtime, signature, generation):
                     provider = getattr(server, "provider", "codex")
                     if provider in TESTED_BASELINES:
                         providers.append(_diagnostic(account_key, provider, {
@@ -258,14 +271,16 @@ class ProviderVersionMonitor:
         self._publish(runtime, signature, generation, providers)
 
     def _publish(self, runtime, signature, generation, providers):
-        # Runtime snapshots hold runtime.lock before reading our status. Keep
-        # publication in the same order so a snapshot cannot wait on self.lock
-        # while this worker waits on runtime.lock.
+        # Runtime snapshots and Runtime.send hold runtime.lock before consulting
+        # status/connecting. Match the native updater's nonblocking start-lock
+        # acquisition so publication never blocks those callers.
         start_lock = getattr(runtime, "start_lock", None)
-        if start_lock:
-            start_lock.acquire()
-        try:
-            with runtime.lock:
+        published = False
+        with runtime.lock:
+            if start_lock and not start_lock.acquire(blocking=False):
+                self._defer(runtime, generation)
+                return False
+            try:
                 offline = getattr(runtime, "offline_accounts", set())
                 current = tuple(
                     (key, id(server), runtime.connection_ids.get(key))
@@ -273,14 +288,18 @@ class ProviderVersionMonitor:
                     if key not in offline
                 )
                 with self.lock:
-                    if generation != self.generation or current != signature:
-                        return
-                    self.providers = providers
-                    self.checked_at = time.time()
-        finally:
-            if start_lock:
-                start_lock.release()
+                    if generation == self.generation and current == signature:
+                        self.providers = providers
+                        self.checked_at = time.time()
+                        published = True
+            finally:
+                if start_lock:
+                    start_lock.release()
+        if not published:
+            self._defer(runtime, generation)
+            return False
         runtime.changed.set()
+        return True
 
     def status(self):
         with self.lock:
