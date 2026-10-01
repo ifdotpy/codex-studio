@@ -348,6 +348,12 @@ type ProjectionState = {
 };
 const scopes = new Map<string, ProjectionState>();
 const closingScopes = new Map<string, Promise<unknown>>();
+// Projection refresh retries only read-only pulls, never send or draft writes.
+const syncReadRetryBaseMs = 250;
+const syncReadRetryMaxMs = 8000;
+const syncReadRetryMaxExponent = 5;
+const isTransientSyncReadFailure = (error: unknown) =>
+  error instanceof ApiError && error.status >= 500 && error.status < 600;
 async function acquireProjection(
   scope: string,
   expectedWorkspace?: string,
@@ -361,13 +367,51 @@ async function acquireProjection(
   let state = scopes.get(scope);
   if (!state) {
     const listeners = new Set<(error: unknown | null) => void>();
-    const report = (error: unknown | null) =>
-      listeners.forEach((listener) => listener(error));
     let stopped = false;
     let pending: Promise<void> | undefined;
     let invalidated = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryAttempt = 0;
+    let retryableError: unknown;
     let mappedCheckpoint: number | undefined =
       remoteScope !== scope ? 0 : undefined;
+    const retryAvailable = () => !document.hidden && navigator.onLine !== false;
+    const clearRetry = () => {
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      retryTimer = undefined;
+    };
+    const retry = () => {
+      if (
+        stopped ||
+        retryTimer !== undefined ||
+        retryableError === undefined ||
+        !retryAvailable()
+      )
+        return;
+      const exponent = Math.min(retryAttempt, syncReadRetryMaxExponent);
+      const delay = Math.min(
+        syncReadRetryBaseMs * 2 ** exponent,
+        syncReadRetryMaxMs,
+      );
+      retryAttempt++;
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        if (retryAvailable()) void refresh().catch(() => {});
+      }, delay);
+    };
+    const retryWhenAvailable = () => {
+      if (retryableError !== undefined && retryAvailable()) retry();
+    };
+    window.addEventListener("online", retryWhenAvailable);
+    document.addEventListener("visibilitychange", retryWhenAvailable);
+    const report = (error: unknown | null) => {
+      if (error === null) {
+        retryableError = undefined;
+        retryAttempt = 0;
+        clearRetry();
+      }
+      listeners.forEach((listener) => listener(error));
+    };
     const refresh = (): Promise<void> => {
       if (stopped) return Promise.resolve();
       if (pending) return pending;
@@ -406,6 +450,14 @@ async function acquireProjection(
       })()
         .catch((error) => {
           report(error);
+          if (isTransientSyncReadFailure(error)) {
+            retryableError = error;
+            retry();
+          } else {
+            retryableError = undefined;
+            retryAttempt = 0;
+            clearRetry();
+          }
           throw error;
         })
         .finally(() => {
@@ -415,6 +467,10 @@ async function acquireProjection(
     };
     const stopInvalidation = watchSyncInvalidations(remoteScope, () => {
       invalidated = true;
+      if (retryableError !== undefined) {
+        retry();
+        return;
+      }
       void refresh().catch(() => {});
     });
     state = {
@@ -424,6 +480,10 @@ async function acquireProjection(
       refresh,
       stop: async () => {
         stopped = true;
+        clearRetry();
+        retryableError = undefined;
+        window.removeEventListener("online", retryWhenAvailable);
+        document.removeEventListener("visibilitychange", retryWhenAvailable);
         stopInvalidation();
         await pending?.catch(() => {});
       },

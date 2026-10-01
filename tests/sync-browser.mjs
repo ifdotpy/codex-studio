@@ -328,6 +328,221 @@ try {
   );
   assert.equal(scopedCallbacks.streams, 2);
   await debouncePage.close();
+
+  const retryPage = await browser.newPage();
+  const retryMutationMethods = [];
+  retryPage.on("request", (request) => {
+    if (
+      request.url().includes("/api/sync/") &&
+      !["GET", "HEAD"].includes(request.method())
+    )
+      retryMutationMethods.push(request.method());
+  });
+  await retryPage.route("**/sync-check", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
+  );
+  await retryPage.route("**/api/sync/identity", (route) =>
+    route.fulfill({ json: { workspaceId: "d".repeat(32) } }),
+  );
+  await retryPage.route("**/api/sync/stream*", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "retry: 3600000\n\n",
+    }),
+  );
+  let retryGenerationReads = 0;
+  await retryPage.route("**/api/sync/generations", (route) => {
+    retryGenerationReads++;
+    return route.fulfill({
+      json: {
+        protocol: 2,
+        workspaceId: "d".repeat(32),
+        generations: { drafts: 0, state: 7, transcripts: 0 },
+      },
+    });
+  });
+  let releaseFirstFailure;
+  const firstFailureGate = new Promise((resolve) => {
+    releaseFirstFailure = resolve;
+  });
+  let attachedPulls = 0;
+  await retryPage.route("**/api/sync/pull?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("scope") === "drafts")
+      return route.fulfill({
+        json: {
+          workspaceId: "d".repeat(32),
+          documents: [],
+          checkpoint: { seq: 0 },
+        },
+      });
+    attachedPulls++;
+    if (attachedPulls === 1) {
+      await firstFailureGate;
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Temporary snapshot failure" }),
+      });
+    }
+    return route.fulfill({
+      json: {
+        workspaceId: "d".repeat(32),
+        documents: [
+          {
+            id: "state:chat",
+            payload: JSON.stringify({ text: "recovered" }),
+            seq: 7,
+            _deleted: false,
+          },
+        ],
+        checkpoint: { seq: 7 },
+      },
+    });
+  });
+  await retryPage.goto(origin + "/sync-check");
+  await retryPage.evaluate(async () => {
+    const client = await import("/src/sync/client.ts");
+    window.retryValues = [];
+    window.retryErrors = [];
+    window.stopRetry = await client.watchProjection(
+      "state",
+      (value) => value && window.retryValues.push(value.text),
+      (error) => window.retryErrors.push(error ? String(error) : null),
+    );
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const generationBeforeRetry = await retryPage.evaluate(
+    async () =>
+      (await (await fetch("/api/sync/generations")).json()).generations.state,
+  );
+  releaseFirstFailure();
+  await retryPage.waitForFunction(
+    () =>
+      window.retryValues.includes("recovered") &&
+      window.retryErrors.includes(null),
+    null,
+    { timeout: 10000 },
+  );
+  assert.equal(
+    attachedPulls,
+    2,
+    "A 503 on an attached projection retries without a generation change",
+  );
+  assert.equal(
+    await retryPage.evaluate(
+      async () =>
+        (await (await fetch("/api/sync/generations")).json()).generations.state,
+    ),
+    generationBeforeRetry,
+    "The generation remains unchanged across the automatic retry",
+  );
+  assert.equal(retryGenerationReads, 2);
+  assert.deepEqual(
+    retryMutationMethods,
+    [],
+    "Projection retries must not replay mutations",
+  );
+  assert.ok(
+    await retryPage.evaluate(() =>
+      window.retryErrors.some((error) =>
+        error?.includes("Temporary snapshot failure"),
+      ),
+    ),
+    "The attached projection reports the temporary failure before recovery",
+  );
+  await retryPage.evaluate(() => window.stopRetry());
+  await retryPage.close();
+
+  const persistentPage = await browser.newPage();
+  await persistentPage.route("**/sync-check", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
+  );
+  await persistentPage.route("**/api/sync/identity", (route) =>
+    route.fulfill({ json: { workspaceId: "e".repeat(32) } }),
+  );
+  await persistentPage.route("**/api/sync/stream*", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "retry: 3600000\n\n",
+    }),
+  );
+  await persistentPage.route("**/api/sync/generations", (route) =>
+    route.fulfill({
+      json: {
+        protocol: 2,
+        workspaceId: "e".repeat(32),
+        generations: { drafts: 0, state: 9, transcripts: 0 },
+      },
+    }),
+  );
+  let releasePersistentFailure;
+  const persistentFailureGate = new Promise((resolve) => {
+    releasePersistentFailure = resolve;
+  });
+  const persistentPullTimes = [];
+  await persistentPage.route("**/api/sync/pull?**", async (route) => {
+    persistentPullTimes.push(Date.now());
+    if (persistentPullTimes.length === 1) await persistentFailureGate;
+    return route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Still unavailable" }),
+    });
+  });
+  await persistentPage.goto(origin + "/sync-check");
+  await persistentPage.evaluate(async () => {
+    const client = await import("/src/sync/client.ts");
+    window.persistentErrors = [];
+    window.stopPersistent = await client.watchProjection(
+      "state",
+      () => {},
+      (error) => window.persistentErrors.push(String(error)),
+    );
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  releasePersistentFailure();
+  await persistentPage.waitForFunction(
+    () => window.persistentErrors.length >= 1,
+    null,
+    { timeout: 10000 },
+  );
+  // Let the catch handler arm the first backoff before simulating a loss of
+  // connectivity, so the next retry delay is measured from a known attempt.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await persistentPage.evaluate(() => {
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: false,
+    });
+  });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(persistentPullTimes.length, 1, "Retries pause while offline");
+  await persistentPage.evaluate(() => {
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: true,
+    });
+    window.dispatchEvent(new Event("online"));
+  });
+  await persistentPage.waitForFunction(
+    () => window.persistentErrors.length >= 3,
+    null,
+    { timeout: 10000 },
+  );
+  assert.ok(persistentPullTimes[1] - persistentPullTimes[0] >= 300);
+  assert.ok(
+    persistentPullTimes[2] - persistentPullTimes[1] >= 400,
+    `The second capped-backoff interval was ${persistentPullTimes[2] - persistentPullTimes[1]}ms`,
+  );
+  await persistentPage.evaluate(() => window.stopPersistent());
+  const pullsAtUnsubscribe = persistentPullTimes.length;
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  assert.equal(
+    persistentPullTimes.length,
+    pullsAtUnsubscribe,
+    "Unsubscribing cancels pending retry timers",
+  );
+  await persistentPage.close();
   console.log("sync browser contract passed");
 } finally {
   await browser.close();
