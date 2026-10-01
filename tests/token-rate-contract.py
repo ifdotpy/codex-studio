@@ -100,6 +100,29 @@ class RateContract(unittest.TestCase):
         rates.stream('item/commandExecution/outputDelta', params, 'a', 'c')
         self.assertEqual(rates.snapshot('worker')['outputTokens'], 10)
 
+    def test_team_batch_keeps_each_worker_scoped_and_omits_idle_and_old_connections(self):
+        now = [0]
+        rates = TokenRates(lambda: now[0])
+        agents = [
+            {'id': 'lead', 'rootId': 'lead', 'threadId': 'lead-thread'},
+            {'id': 'one', 'rootId': 'lead', 'threadId': 'one-thread'},
+            {'id': 'two', 'rootId': 'lead', 'threadId': 'two-thread'},
+            {'id': 'other', 'rootId': 'other-team', 'threadId': 'other-thread'},
+        ]
+        for index, agent in enumerate(agents):
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c')
+            rates.stream('item/agentMessage/delta', {'threadId': agent['threadId'], 'turnId': 'turn', 'delta': 'x' * (index + 1) * 40}, 'a', 'c')
+        now[0] = 2
+        batch = rates.team_snapshot('lead')
+        self.assertEqual(set(batch), {'one', 'two'})
+        self.assertEqual(batch['one']['outputTokens'], 20)
+        self.assertEqual(batch['two']['outputTokens'], 30)
+        rates.observe(agents[1], 'turn/completed', {'turn': {'id': 'turn'}}, 'a', 'c')
+        self.assertEqual(set(rates.team_snapshot('lead')), {'two'})
+        rates.observe(agents[2], 'turn/started', {'turn': {'id': 'new-turn'}}, 'a', 'new-connection')
+        self.assertEqual(rates.team_snapshot('lead')['two']['outputTokens'], 0)
+        self.assertEqual(rates.team_snapshot('other-team')['other']['outputTokens'], 40)
+
     def test_claude_message_counts_are_deduplicated_and_final_total_corrects(self):
         now = [0]
         rates = TokenRates(lambda: now[0])
@@ -130,7 +153,11 @@ class WriteContract(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 runtime = NoScheduleRuntime(Path(directory), fixture.FakeServer)
                 try:
-                    agent = runtime.create({'name': 'Fixture', 'cwd': directory, 'prompt': 'Wait'}, defer=True)
+                    lead = runtime.create({'name': 'Lead', 'cwd': directory, 'prompt': 'Wait'}, defer=True)
+                    with runtime.lock, runtime.db() as db:
+                        lead.update(autoWake=True, status='waiting')
+                        runtime.put(db, 'agents', lead)
+                    agent = runtime.create({'name': 'Fixture', 'prompt': 'Wait'}, parent=lead['id'], defer=True)
                     with runtime.lock, runtime.db() as db:
                         agent.update(threadId='fixture-thread', autoWake=True, inFlight=True, status='running')
                         runtime.put(db, 'agents', agent)
@@ -161,9 +188,11 @@ class WriteContract(unittest.TestCase):
                         before = len(writes)
                         for _ in range(2000):
                             rates.snapshot(agent['id'])
+                            rates.team_snapshot(agent['rootId'])
                         self.assertEqual(len(writes), before, 'Meter reads write nothing')
                         if enabled:
                             self.assertEqual(rates.snapshot(agent['id'])['outputTokens'], 10000)
+                            self.assertEqual(rates.team_snapshot(lead['id'])[agent['id']]['outputTokens'], 10000)
                         measurements.append(len(writes))
                 finally:
                     runtime.close()

@@ -95,6 +95,7 @@ class TokenRates:
         now = self.clock()
         with self.lock:
             entry = self.entries.setdefault(key, {'agent': agent['id'], 'rate': None, 'lifetime': None})
+            entry['root'] = agent.get('rootId') or agent['id']
             self.agents[agent['id']] = key
             self.entries.move_to_end(key)
             while len(self.entries) > 1024:
@@ -153,6 +154,15 @@ class TokenRates:
                 elif output is not None and isinstance(response, str):
                     rate.messages[response] = max(output, rate.messages.get(response, 0))
                     rate.correct(sum(rate.messages.values()), now)
+
+    def team_snapshot(self, root_id):
+        with self.lock:
+            now = self.clock()
+            return {entry['agent']: entry['rate'].snapshot(now)
+                    for key, entry in self.entries.items()
+                    if entry.get('root') == root_id and entry['agent'] != root_id
+                    and self.agents.get(entry['agent']) == key
+                    and entry['rate'] is not None and entry['rate'].active}
 
     def snapshot(self, agent_id):
         with self.lock:

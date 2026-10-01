@@ -911,6 +911,34 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                     pass
             self.close_connection = True
 
+        def stream_token_rates(self, root_id):
+            runtime = canvas.runtime
+            root = runtime.agent(root_id)
+            if root.get('rootId') != root_id or not root.get('isLead'):
+                raise ValueError("Select a lead chat")
+            self.connection.settimeout(20)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            from codex_token_rate import token_rates
+            previous = None
+            try:
+                while not runtime.closed and self.trusted():
+                    rates = token_rates(runtime).team_snapshot(root_id)
+                    if rates != previous:
+                        payload = {'teamId': root_id, 'rates': rates}
+                        self.wfile.write(("event: token-rates\ndata: " + json.dumps(payload) + "\n\n").encode())
+                        previous = rates
+                    else:
+                        self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+                    time.sleep(1)  # One batch per second, independent of worker count.
+            except OSError:
+                pass
+            self.close_connection = True
+
         def stream_sync(self):
             store = sync()
             query = parse_qs(urlparse(self.path).query)
@@ -1069,6 +1097,11 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                         return self.send({"error": "Unsupported sync protocol version",
                                           "supportedVersions": [1, 2]}, 426)
                     return self.stream_sync()
+                if path.path == "/api/token-rates/stream" and canvas.runtime:
+                    root_id = parse_qs(path.query).get('team', [''])[0]
+                    if not AGENT_ID.fullmatch(root_id):
+                        raise ValueError("Select a lead chat")
+                    return self.stream_token_rates(root_id)
                 if path.path == "/api/state":
                     return self.send({**snapshot(include_work=parse_qs(path.query).get("view") != ["chat"]),
                                       "token": token})

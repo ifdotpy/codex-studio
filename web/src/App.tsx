@@ -3,6 +3,7 @@ import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
+import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import { accountLimits } from "./accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
@@ -477,6 +478,10 @@ export default function App() {
         ),
     team = lead ? agents.filter((a) => a.rootId === lead.id) : [],
     workers = team.filter((a) => !a.isLead);
+  useTeamTokenRateStream(
+    lead?.id,
+    Boolean(workers.length && (narrowTeam ? teamOpen : wideTeamOpen)),
+  );
   const worktreeDisk = useWorktreeDisk(
     Boolean(data?.stateDir),
     workers.map((a) => a.id),

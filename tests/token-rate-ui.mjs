@@ -207,6 +207,7 @@ try {
       params: {
         agent: worker.id,
         status: "running",
+        autoWake: true,
         threadId: "rate-worker-thread",
       },
     }) + "\n",
@@ -230,10 +231,18 @@ try {
     document.querySelector(".token-rate")?.textContent.includes("tok/s"),
   );
   assert.equal(await meter.getAttribute("data-agent"), worker.id);
+  assert.equal(await meter.getAttribute("data-active"), "true");
+  await page.waitForFunction(
+    (id) =>
+      document
+        .querySelector(`#team .token-rate[data-agent="${id}"]`)
+        ?.textContent.includes("tok/s"),
+    worker.id,
+  );
   assert.equal(
-    await team.locator(".token-rate").count(),
-    0,
-    "Team cards have no rate meter",
+    await team.locator(`.token-rate[data-agent="${worker.id}"]`).count(),
+    1,
+    "The open worker also has a Team card meter",
   );
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await page.waitForFunction(
@@ -247,7 +256,7 @@ try {
   );
   assert.deepEqual(errors, []);
   console.log(
-    "PASS lead and open worker footer, Team exclusion, estimate correction, reset, tween, reduced motion, 390px stable width",
+    "PASS lead and open worker footer, Team card, estimate correction, reset, tween, reduced motion, 390px stable width",
   );
 } finally {
   await browser?.close();

@@ -5,6 +5,9 @@ import {
   receiveTokenRate,
   subscribeTokenRate,
   tweenTokenRate,
+  workerRateKey,
+  receiveTeamTokenRates,
+  clearTeamTokenRates,
 } from "../web/src/tokenRate.ts";
 
 test("rate tween has a bounded duration and no overshoot", () => {
@@ -39,4 +42,44 @@ test("volatile events stay scoped to each chat and reject malformed data", () =>
   assert.deepEqual(worker, [null]);
   stopLead();
   stopWorker();
+});
+
+test("team batches isolate teams and footers and clear absent workers", () => {
+  const worker = [],
+    otherTeam = [],
+    footer = [];
+  const stop = subscribeTokenRate(workerRateKey("team", "worker"), (value) =>
+    worker.push(value),
+  );
+  const stopOther = subscribeTokenRate(
+    workerRateKey("other", "worker"),
+    (value) => otherTeam.push(value),
+  );
+  const stopFooter = subscribeTokenRate("worker", (value) =>
+    footer.push(value),
+  );
+  const value = {
+    turnId: "turn",
+    active: true,
+    estimated: true,
+    rate: 42,
+    outputTokens: 84,
+  };
+  receiveTeamTokenRates("team", {
+    data: JSON.stringify({ teamId: "other", rates: { worker: value } }),
+  });
+  receiveTeamTokenRates("team", {
+    data: JSON.stringify({ teamId: "team", rates: { worker: value } }),
+  });
+  assert.deepEqual(worker, [null, value]);
+  assert.deepEqual(otherTeam, [null]);
+  assert.deepEqual(footer, [null]);
+  receiveTeamTokenRates("team", {
+    data: JSON.stringify({ teamId: "team", rates: {} }),
+  });
+  assert.deepEqual(worker, [null, value, null]);
+  clearTeamTokenRates("team");
+  stop();
+  stopOther();
+  stopFooter();
 });

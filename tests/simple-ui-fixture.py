@@ -51,12 +51,12 @@ class BackgroundServer(LimitsServer):
 
 class SettingsRuntime(Runtime):
     def schedule(self):
-        # Execution settings tests control turns and worker creation explicitly.
+        # Execution settings and token rate tests control turns explicitly.
         while not self.closed:
             self.changed.wait(0.1)
             self.changed.clear()
 
-runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') else Runtime
+runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') or os.environ.get('TOKEN_RATE_WORKER_COUNT') else Runtime
 c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else LimitsServer)
 if os.environ.get('EXECUTION_SETTINGS_CATALOG'):
     fixture_catalog = __import__('json').loads(os.environ['EXECUTION_SETTINGS_CATALOG'])
@@ -66,7 +66,7 @@ with c.runtime.lock, c.runtime.db() as db:
     lead.update(autoWake=True, status='waiting')
     c.runtime.put(db, 'agents', lead)
 # Commit the root before create() opens another database connection.
-worker_count = 1 if os.environ.get('RICH_PREVIEW_UI_FIXTURE') else 40
+worker_count = int(os.environ['TOKEN_RATE_WORKER_COUNT']) if os.environ.get('TOKEN_RATE_WORKER_COUNT') else 1 if os.environ.get('RICH_PREVIEW_UI_FIXTURE') else 40
 for i in range(worker_count):
     child = c.runtime.create({'name': f'Worker {i:02}', 'prompt': 'Review one component', 'role': 'reviewer',
         **({'model': 'gpt-5.6-luna'} if os.environ.get('EXECUTION_SETTINGS_CATALOG') else {})},
@@ -171,6 +171,8 @@ def fixture_events():
                 active = params['status'] in {'starting', 'running', 'approval'}
                 if params.get('threadId'):
                     agent['threadId'] = params['threadId']
+                if type(params.get('autoWake')) is bool:
+                    agent['autoWake'] = params['autoWake']
                 agent.update(status=params['status'], inFlight=active,
                              turnId='fixture-turn' if active else None)
                 c.runtime.put(db, 'agents', agent)

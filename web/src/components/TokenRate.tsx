@@ -4,10 +4,23 @@ import {
   formatTokenRate,
   subscribeTokenRate,
   tweenTokenRate,
+  workerRateKey,
 } from "../tokenRate";
 import type { TokenRate as Rate } from "../tokenRate";
 
-export default function TokenRate({ agent }: { agent: Agent }) {
+import "./TokenRate.css";
+
+export default function TokenRate({
+  agent,
+  variant = "footer",
+}: {
+  agent: Agent;
+  variant?: "footer" | "worker";
+}) {
+  const scope =
+    variant === "worker"
+      ? workerRateKey(agent.rootId || "", agent.id)
+      : agent.id;
   const [sample, setSample] = useState<{
     id: string;
     value: Rate | null;
@@ -19,11 +32,8 @@ export default function TokenRate({ agent }: { agent: Agent }) {
   const current = useRef(0);
   const previousTurn = useRef("");
   useEffect(
-    () =>
-      subscribeTokenRate(agent.id, (value) =>
-        setSample({ id: agent.id, value }),
-      ),
-    [agent.id],
+    () => subscribeTokenRate(scope, (value) => setSample({ id: scope, value })),
+    [scope],
   );
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -31,9 +41,18 @@ export default function TokenRate({ agent }: { agent: Agent }) {
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
-  const rate = sample?.id === agent.id ? sample.value : null;
+  const rate = sample?.id === scope ? sample.value : null;
   const matchesTurn = !agent.turnId || rate?.turnId === agent.turnId;
-  const visible = matchesTurn && rate !== null && rate.outputTokens > 0;
+  const active = Boolean(
+    rate?.active &&
+      agent.inFlight &&
+      ["starting", "running"].includes(agent.status),
+  );
+  const visible =
+    matchesTurn &&
+    rate !== null &&
+    rate.outputTokens > 0 &&
+    (variant === "footer" || (active && rate.rate > 0));
   const target = visible ? rate.rate : 0;
   const turn = `${agent.id}:${agent.turnId || rate?.turnId || ""}`;
   useEffect(() => {
@@ -56,11 +75,11 @@ export default function TokenRate({ agent }: { agent: Agent }) {
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
   }, [target, turn, motionReduced, visible]);
-  const active = Boolean(rate?.active && agent.inFlight);
   return (
     <span
       className="token-rate"
       data-testid="token-rate"
+      data-variant={variant}
       data-agent={agent.id}
       data-active={active}
       data-estimated={rate?.estimated || false}
