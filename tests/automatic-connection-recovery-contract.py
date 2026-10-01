@@ -85,6 +85,95 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(actor['status'], 'queued')
         self.assertEqual(self.server.calls, [])
 
+    def queued_restart_wait(self):
+        self.authorize()
+        self.a = self.update(autoWake=True, status='queued')
+        with self.runtime.db() as db:
+            self.runtime.enqueue(db, self.runtime.agent(self.key, db), 'user', 'New authorized input', 'queued-input')
+        attempt = {'id': 'new-unsent-attempt', 'epoch': self.a['epoch'],
+                   'accountKey': self.a['accountKey'], 'events': ['queued-input'],
+                   'submitted': False, 'activeAtReservation': False}
+        error = 'Context repair waits for the existing native recovery receipt'
+        source = {k: self.a.get(k) for k in ('id', 'accountKey', 'epoch', 'threadId')}
+        source['attemptId'] = attempt['id']
+        marker = {**self.a['disconnectRecovery'], 'stage': 'pending', 'startAttempt': None}
+        self.a = self.update(status='queued', autoWake=True, inFlight=False, error=error,
+            startAttempt=attempt, restartRecovery=marker,
+            contextRepairWait={'source': source, 'events': ['queued-input'], 'error': error,
+                               'scope': 'local', 'nextCheckAt': 0})
+
+    def test_queued_input_wait_recovers_old_receipt_and_keeps_normal_checks(self):
+        from codex_context_repair import claim_context_wait
+        self.queued_restart_wait()
+        attempt = dict(self.a['startAttempt'])
+        result = recover(self.runtime, self.key, automatic=True)
+        self.assertEqual(result['status'], 'reconciled')
+        actor = self.runtime.agent(self.key)
+        self.assertIsNone(actor['turnId'])
+        self.assertEqual(actor['restartRecovery']['stage'], 'finished')
+        self.assertEqual(actor['startAttempt'], attempt)
+        self.assertTrue(actor['autoWake'])
+        self.assertEqual(actor['lastAnswer'], 'Full final answer')
+        with self.runtime.lock, self.runtime.db() as db:
+            event = db.execute("SELECT status,turn_id FROM runtime_events WHERE id='queued-input'").fetchone()
+            self.assertEqual(tuple(event), ('pending', None))
+            # Unknown work retains its original barrier after the old turn settles.
+            self.runtime.put(db, 'tasks', {'id': 'unsettled', 'agent': self.key, 'status': 'unknown'})
+            waiting = claim_context_wait(self.runtime, db, self.runtime.agent(self.key, db))
+            self.assertTrue(waiting['waiting'])
+            db.execute("DELETE FROM runtime_tasks WHERE id='unsettled'")
+            actor = self.runtime.agent(self.key, db)
+            actor['contextRepairWait']['nextCheckAt'] = 0
+            self.runtime.put(db, 'agents', actor)
+            ready = claim_context_wait(self.runtime, db, actor)
+            self.assertEqual(ready['kind'], 'turn')
+            self.assertEqual(ready['attempt'], attempt)
+            self.assertEqual([row['id'] for row in ready['rows']], ['queued-input'])
+        self.read_calls_only()
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+
+    def test_queued_restart_wait_retains_unknown_input_and_active_turn(self):
+        self.queued_restart_wait()
+        self.server.native['status']['type'] = 'active'
+        result = recover(self.runtime, self.key, automatic=True)
+        self.assertEqual(result['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key)['startAttempt'], self.a['startAttempt'])
+        self.server.native['status']['type'] = 'idle'
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='queued-input'")
+        before = self.runtime.agent(self.key)
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key), before)
+        self.read_calls_only()
+
+    def test_queued_restart_wait_rejects_stale_scope_and_preserves_pause(self):
+        self.queued_restart_wait()
+        original = self.a
+        for change in ({'epoch': -1}, {'accountKey': 'other'}, {'turnId': 'other'}, {'autoWake': False}):
+            with self.subTest(change=change):
+                self.update(restartRecovery={**original['restartRecovery'], **change})
+                self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+        self.assertEqual(self.server.calls, [])
+        self.update(restartRecovery=original['restartRecovery'])
+        def after(callback):
+            self.update(status='paused', autoWake=False, epoch=original['epoch'] + 1)
+            callback()
+        self.server.after_events = after
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'paused')
+
+    def test_failed_old_turn_does_not_resume_queued_input(self):
+        self.queued_restart_wait()
+        self.server.native['turns'][0].update(status='failed', error={'message': 'Native failure'})
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['outcome'], 'failed')
+        actor = self.runtime.agent(self.key)
+        self.assertTrue(actor['nativeFailureHold'])
+        self.assertFalse(actor['autoWake'])
+        self.assertEqual(actor['error'], {'message': 'Native failure'})
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='queued-input'").fetchone()[0], 'pending')
+        self.read_calls_only()
+
     def test_pause_during_reconnect_and_unrelated_failures_remain_stopped(self):
         self.unsent_transport_failure()
         server = self.server

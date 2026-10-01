@@ -32,12 +32,39 @@ def preparation_eligible(agent):
 
 
 def eligible(agent):
-    return preparation_eligible(agent) or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
+    return preparation_eligible(agent) or queued_restart_eligible(agent) or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
             and not agent.get('autoWake') and not agent.get('startAttempt')
             and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
             and not agent.get('deletedAt') and agent.get('threadId') and agent.get('turnId')
             and isinstance(agent.get('error'), str) and agent['error'] in DISCONNECT_ERRORS
             and not native_thread_block(agent))
+
+
+def queued_restart_eligible(agent):
+    """A new unsent input can wait behind an older restart turn receipt."""
+    wait = agent.get('contextRepairWait') or {}
+    attempt = agent.get('startAttempt') or {}
+    marker = agent.get('restartRecovery') or {}
+    error = 'Context repair waits for the existing native recovery receipt'
+    source = {field: agent.get(field) for field in ('id', 'accountKey', 'epoch', 'threadId')}
+    source['attemptId'] = attempt.get('id')
+    return bool(agent.get('status') == 'queued' and agent.get('autoWake')
+                and not agent.get('inFlight') and not agent.get('deletedAt')
+                and not agent.get('nativeFailureHold') and not native_thread_block(agent)
+                and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
+                and agent.get('threadId') and agent.get('turnId')
+                and agent.get('error') == error and wait.get('error') == error
+                and wait.get('scope') == 'local' and wait.get('source') == source
+                and attempt.get('id') and attempt.get('submitted') is False
+                and attempt.get('epoch') == agent.get('epoch')
+                and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
+                and attempt.get('events') and wait.get('events') == attempt.get('events')
+                and not attempt.get('action') and not wait.get('action')
+                and not attempt.get('activeAtReservation')
+                and not attempt.get('turnId') and not attempt.get('observedTurnId')
+                and marker.get('stage') == 'pending' and marker.get('autoWake')
+                and all(marker.get(k) == agent.get(k) for k in ('epoch', 'accountKey', 'threadId', 'turnId'))
+                and (agent.get('contextRepair') or {}).get('phase') not in {'preparing', 'submitted', 'unknown', 'ready'})
 
 
 def recover(runtime, key, *, automatic=False):
@@ -74,13 +101,60 @@ def recover(runtime, key, *, automatic=False):
         result = Future()
         def apply():
             try:
-                result.set_result(apply_result(runtime, expected, connection, server, turn, automatic=automatic))
+                if queued_restart_eligible(agent):
+                    value = restore_queued_restart(runtime, expected, connection, server, turn)
+                else:
+                    value = apply_result(runtime, expected, connection, server, turn, automatic=automatic)
+                result.set_result(value)
             except Exception as error:
                 result.set_exception(error)
         server.after_events(apply)
         return result.result(timeout=10)
     except Exception as error:
         return {'status': 'unconfirmed', 'error': str(error)}
+
+
+def restore_queued_restart(runtime, expected, connection, server, turn):
+    """Settle the exact old turn; preserve the new input and its normal checks."""
+    with runtime.lock, runtime.db() as db:
+        if not current(runtime, db, expected, connection, server):
+            return {'status': 'superseded'}
+        agent = runtime.agent(expected['id'], db)
+        if (not queued_restart_eligible(agent) or turn.get('id') != agent.get('turnId')
+                or turn.get('status') not in {'completed', 'failed', 'interrupted'}
+                or runtime.accounts.get(agent.get('accountKey', 'default')).get('disconnected')):
+            return {'status': 'unconfirmed'}
+        for event_id in agent['startAttempt']['events']:
+            row = db.execute('SELECT agent,epoch,status,turn_id FROM runtime_events WHERE id=?', (event_id,)).fetchone()
+            if not row or tuple(row) != (agent['id'], agent['epoch'], 'pending', None):
+                return {'status': 'unconfirmed'}
+        if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                      "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                      (agent['id'], agent['epoch'])).fetchone():
+            return {'status': 'unconfirmed'}
+        outcome = turn['status']
+        for item in turn.get('items', []):
+            if item.get('type') == 'agentMessage':
+                runtime.item(db, agent['id'], item['id'], 'assistant', item.get('text', ''),
+                             turnId=turn['id'], turnStatus=outcome, streaming=False, phase=item.get('phase'))
+                if item.get('phase') != 'commentary':
+                    agent['lastAnswer'] = item.get('text', '')[-16000:]
+                    agent['tail'] = item.get('text', '')[-300:]
+        db.execute('INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)', (agent['id'] + ':' + turn['id'],))
+        agent.update(turnId=None, lastCompletedTurn=turn['id'], lastCompletedTurnStatus=outcome)
+        agent['restartRecovery'].update(stage='finished', reconciledAt=time.time())
+        agent['connectionRecovery'] = {'source': 'native_thread_read', 'at': time.time(),
+            'turnId': turn['id'], 'outcome': outcome, 'queuedInputPreserved': True,
+            'previousError': agent['error']}
+        if outcome == 'failed':
+            agent.update(status='failed', error=turn.get('error') or {'message': 'Codex ended this turn with an error.'},
+                         autoWake=False, nativeFailureHold=True)
+        # claim_context_wait retains ownership of the original input reservation,
+        # tool receipts, monitors, native context checks, and action permissions.
+        runtime.loaded.discard(agent['id'])
+        runtime.put(db, 'agents', agent)
+    runtime.changed.set()
+    return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': outcome, 'queuedInputPreserved': True}
 
 
 def restore_preparation(runtime, expected, connection, server):
