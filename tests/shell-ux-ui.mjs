@@ -682,7 +682,11 @@ try {
       const workspace = JSON.parse(
         localStorage.getItem("codex-sync-workspace") || '"unassigned"',
       );
-      return JSON.parse(localStorage.getItem(`codex-drafts:${workspace}`))[id];
+      return JSON.parse(
+        localStorage.getItem(
+          `codex-chat-draft:${workspace}:${encodeURIComponent(id)}`,
+        ),
+      ).text;
     }, sourceAgent.id),
     "Preserve source draft",
   );

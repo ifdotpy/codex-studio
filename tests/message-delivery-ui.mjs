@@ -33,6 +33,174 @@ async function until(check, label) {
   }
   throw new Error(label);
 }
+function assertNoCommandWrites(
+  writes,
+  mode,
+  action,
+  allowedTransitions,
+  device,
+) {
+  const expectedTransitions = new Set(
+    allowedTransitions.map(
+      ({ session, before, after }) =>
+        `${session}\0${before ?? "<new>"}\0${after}`,
+    ),
+  );
+  const draftSyncWrites = writes.filter(
+    (write) => write.method === "POST" && write.url === "/api/sync/drafts",
+  );
+  for (const write of draftSyncWrites) {
+    const body = JSON.parse(write.body || "null");
+    assert.ok(
+      body && Array.isArray(body.rows) && body.rows.length > 0,
+      `${mode}: draft sync POST contains nonempty replication rows`,
+    );
+    assert.deepEqual(
+      Object.keys(body).sort(),
+      ["rows"],
+      `${mode}: draft sync contains no message or command request fields`,
+    );
+    for (const row of body.rows) {
+      const rowFields = new Set(["newDocumentState", "assumedMasterState"]);
+      assert.ok(
+        row &&
+          Object.keys(row).every((key) => rowFields.has(key)) &&
+          row.newDocumentState,
+        `${mode}: draft sync row contains no other request data`,
+      );
+      const draftFields = new Set([
+        "id",
+        "session",
+        "device",
+        "text",
+        "updated",
+        "seen",
+        "alternatives",
+      ]);
+      const documents = [row.newDocumentState, row.assumedMasterState].filter(
+        Boolean,
+      );
+      const states = documents.map((document) => {
+        assert.ok(
+          typeof document.id === "string" &&
+            typeof document.payload === "string" &&
+            Number.isFinite(document.seq) &&
+            Object.keys(document).every((key) =>
+              ["id", "payload", "seq", "_deleted"].includes(key),
+            ),
+          `${mode}: draft sync row contains a sync document`,
+        );
+        const draft = JSON.parse(document.payload);
+        assert.ok(
+          typeof draft.id === "string" &&
+            typeof draft.session === "string" &&
+            typeof draft.device === "string" &&
+            typeof draft.text === "string" &&
+            Number.isFinite(draft.updated),
+          `${mode}: draft sync payload contains only persisted draft data`,
+        );
+        assert.ok(
+          Object.keys(draft).every((key) => draftFields.has(key)),
+          `${mode}: draft sync row contains no delivery identity or command data`,
+        );
+        assert.ok(
+          draft.device === device &&
+            document.id.startsWith(`${device}:`) &&
+            document.id.endsWith(`:${draft.session}`) &&
+            new RegExp(`^${device}:[0-9a-f-]{36}:${draft.session}$`).test(
+              document.id,
+            ),
+          `${mode}: draft identity belongs to the expected fixture device and chat`,
+        );
+        assert.equal(
+          draft.id,
+          document.id,
+          `${mode}: draft sync row identity matches its draft payload`,
+        );
+        return draft;
+      });
+      const before = row.assumedMasterState
+        ? states.find((draft) => draft.id === row.assumedMasterState.id)
+        : null;
+      const after = states.find(
+        (draft) => draft.id === row.newDocumentState.id,
+      );
+      if (row.assumedMasterState)
+        assert.ok(before, `${mode}: expected draft master payload is present`);
+      assert.ok(after, `${mode}: new draft payload is present`);
+      assert.ok(
+        !before || (before.id === after.id && before.session === after.session),
+        `${mode}: assumed master and new draft preserve the same ID and session`,
+      );
+      assert.ok(
+        expectedTransitions.has(
+          `${after.session}\0${before?.text ?? "<new>"}\0${after.text}`,
+        ),
+        `${mode}: draft sync transition matches an expected before/after fixture payload`,
+      );
+    }
+  }
+  assert.deepEqual(
+    writes.filter(
+      (write) => write.method !== "POST" || write.url !== "/api/sync/drafts",
+    ),
+    [],
+    `${mode}: ${action} cannot send, cancel, edit, or issue an unknown mutation`,
+  );
+}
+const validatorDevice = "a".repeat(36);
+const fixtureDraftDoc = (writer, session, text) => {
+  const id = `${validatorDevice}:${writer}:${session}`;
+  return {
+    id,
+    seq: 1,
+    payload: JSON.stringify({
+      id,
+      session,
+      device: validatorDevice,
+      text,
+      updated: 1,
+      seen: {},
+      alternatives: [],
+    }),
+  };
+};
+const expectedDraftTransition = [
+  { session: "session-a", before: "before", after: "after" },
+];
+for (const mismatchedMaster of [
+  fixtureDraftDoc("c".repeat(36), "session-a", "before"),
+  fixtureDraftDoc("b".repeat(36), "session-b", "before"),
+]) {
+  assert.throws(
+    () =>
+      assertNoCommandWrites(
+        [
+          {
+            method: "POST",
+            url: "/api/sync/drafts",
+            body: JSON.stringify({
+              rows: [
+                {
+                  newDocumentState: fixtureDraftDoc(
+                    "b".repeat(36),
+                    "session-a",
+                    "after",
+                  ),
+                  assumedMasterState: mismatchedMaster,
+                },
+              ],
+            }),
+          },
+        ],
+        "fixture",
+        "rejecting mismatched replication identities",
+        expectedDraftTransition,
+        validatorDevice,
+      ),
+    /assumed master and new draft preserve the same ID and session/,
+  );
+}
 try {
   const port = await new Promise((resolve, reject) => {
     fixture.stdout.once("data", (chunk) =>
@@ -84,6 +252,7 @@ try {
         mutations.push({
           method: request.method(),
           url: new URL(request.url()).pathname,
+          body: request.method() === "POST" ? request.postData() : null,
         });
     });
     const errors = [];
@@ -613,10 +782,20 @@ try {
       0,
       `${mode}: stale receipt stays removed after reload`,
     );
-    assert.equal(
-      mutations.length,
-      mutationsBeforeStaleRemoval,
-      `${mode}: removal does not cancel or resend`,
+    const removalWrites = mutations.slice(mutationsBeforeStaleRemoval);
+    const draftDevice = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("codex-draft-device")),
+    );
+    assertNoCommandWrites(
+      removalWrites,
+      mode,
+      "removing a stale receipt",
+      [
+        { session: a.id, before: null, after: "" },
+        { session: a.id, before: null, after: uncertainText },
+        { session: b.id, before: null, after: otherDraft },
+      ],
+      draftDevice,
     );
     await publish(a.id, [
       ...history.get(a.id).items,
@@ -755,7 +934,11 @@ try {
     await publish(a.id, [
       ...serverBase,
       ...removable.map(
-        ({ deliveryStatus, deliveryError, ...message }) => message,
+        ({
+          deliveryStatus: _deliveryStatus,
+          deliveryError: _deliveryError,
+          ...message
+        }) => message,
       ),
       ...retained,
     ]);
@@ -791,10 +974,17 @@ try {
       await page.locator(`[data-message="${otherChatReceipt.id}"]`).count(),
       0,
     );
-    assert.deepEqual(
+    assertNoCommandWrites(
       mutations.slice(mutationsBeforeRemoval),
-      [],
-      `${mode}: dismissal does not mutate server state or cancel delivery`,
+      mode,
+      "dismissing a receipt",
+      [
+        { session: a.id, before: null, after: "" },
+        { session: a.id, before: null, after: uncertainText },
+        { session: a.id, before: null, after: dismissedText },
+        { session: b.id, before: null, after: otherDraft },
+      ],
+      draftDevice,
     );
     assert.deepEqual(errors, [], `${mode}: no renderer exceptions`);
     await page.screenshot({ path: join(evidence, `${mode}.png`) });

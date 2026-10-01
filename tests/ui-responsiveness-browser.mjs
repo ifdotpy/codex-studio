@@ -542,27 +542,20 @@ try {
     );
     for (const phase of ["idle-input", "scrolled-input"]) {
       const counts = summary.renderCounts[phase];
-      if (process.env.RENDER_ISOLATION === "baseline") {
-        assert.ok(
-          counts.app > 0 && counts.sidebar > 0 && counts.conversation > 0,
-          `${name}/${phase}: legacy draft owner should rerender its caller tree`,
-        );
-      } else {
-        assert.equal(
-          counts.app,
-          0,
-          `${name}/${phase}: typing must not rerender App`,
-        );
-        assert.equal(
-          counts.sidebar,
-          0,
-          `${name}/${phase}: typing must not rerender the sidebar`,
-        );
-        assert.ok(
-          counts.conversation <= 1,
-          `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
-        );
-      }
+      assert.equal(
+        counts.app,
+        0,
+        `${name}/${phase}: typing must not rerender App`,
+      );
+      assert.equal(
+        counts.sidebar,
+        0,
+        `${name}/${phase}: typing must not rerender the sidebar`,
+      );
+      assert.ok(
+        counts.conversation <= 1,
+        `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
+      );
     }
     results.push(summary);
     await writeFile(

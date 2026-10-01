@@ -158,7 +158,7 @@ try {
   assert.equal(
     requests.filter(
       (request) =>
-        /^\/api\/sync\/pull\?/.test(request.path) &&
+        request.path.startsWith("/api/sync/pull?") &&
         new URL(request.path, origin).searchParams.get("scope") === "state",
     ).length,
     0,
@@ -172,7 +172,7 @@ try {
     for (let index = 0; index < localStorage.length; index++) {
       const key = localStorage.key(index);
       if (
-        key.startsWith("codex-drafts:") &&
+        key.startsWith("codex-chat-draft:") &&
         localStorage.getItem(key).includes(text)
       )
         return true;
