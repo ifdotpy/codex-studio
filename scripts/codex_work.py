@@ -184,6 +184,10 @@ class WorkMixin:
     def setup_work(self, db):
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS runtime_work_root_status
+                ON runtime_work(json_extract(record,'$.rootId'),json_extract(record,'$.status'));
+            CREATE INDEX IF NOT EXISTS runtime_work_owner_status
+                ON runtime_work(json_extract(record,'$.owner'),json_extract(record,'$.status'));
             CREATE TABLE IF NOT EXISTS runtime_plans (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_annotations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL);
@@ -215,6 +219,35 @@ class WorkMixin:
             db.execute("ROLLBACK TO search_rows_migration")
             db.execute("RELEASE search_rows_migration")
             raise
+
+    @staticmethod
+    def work_records(db, root_id):
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=?", (root_id,))]
+
+    @staticmethod
+    def work_by_id(db, task_id, root_id):
+        row = db.execute("SELECT record FROM runtime_work WHERE id=?", (task_id,)).fetchone()
+        task = json.loads(row[0]) if row else None
+        return task if task and task.get('rootId') == root_id else None
+
+    @staticmethod
+    def work_dependency_statuses(db, root_id, dependencies):
+        if not dependencies:
+            return {}
+        marks = ",".join("?" for _ in dependencies)
+        return {row[0]: row[1] for row in db.execute(
+            "SELECT json_extract(record,'$.id'),json_extract(record,'$.status') FROM runtime_work "
+            "WHERE id IN (" + marks + ") AND json_extract(record,'$.rootId')=?",
+            (*dependencies, root_id))}
+
+    @staticmethod
+    def work_dependent_records(db, root_id, dependency_id):
+        return [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=? "
+            "AND json_extract(record,'$.owner') IS NOT NULL AND EXISTS "
+            "(SELECT 1 FROM json_each(runtime_work.record,'$.dependencies') WHERE value=?)",
+            (root_id, dependency_id))]
 
     def index_item(self, db, key, agent, kind, body):
         row = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
@@ -275,11 +308,12 @@ class WorkMixin:
             if previous is not None:
                 return previous
             action = data.get("action", "list")
-            works = [w for w in self.records(db, "work") if w["rootId"] == a["rootId"]]
             if action == "list":
+                works = self.work_records(db, a["rootId"])
+                statuses = {work["id"]: work["status"] for work in works}
                 return {
-                    "items": [self.work_view(w, works) for w in works],
-                    "tasks": [self.work_view(w, works) for w in works],
+                    "items": [self.work_view(w, statuses) for w in works],
+                    "tasks": [self.work_view(w, statuses) for w in works],
                 }
             if action == "create":
                 if actor and a["id"] != a["rootId"]:
@@ -302,7 +336,7 @@ class WorkMixin:
                     "createdBy": actor or a["id"],
                 }
             else:
-                w = next((w for w in works if w["id"] == data.get("task_id")), None)
+                w = self.work_by_id(db, data.get("task_id"), a["rootId"])
                 if not w:
                     raise ValueError("Unknown work item")
                 if data.get("version") is not None and data["version"] != w["version"]:
@@ -342,6 +376,7 @@ class WorkMixin:
                     ):
                         raise ValueError("Supply up to 100 dependency ids")
                     w["dependencies"] = list(dict.fromkeys(deps))
+                    works = self.work_records(db, a["rootId"])
                     graph = {t["id"]: t["dependencies"] for t in works}
                     graph[w["id"]] = w["dependencies"]
                     visited = set()
@@ -368,7 +403,8 @@ class WorkMixin:
                     raise ValueError("Claimant belongs to another team")
                 if (
                     w["status"] not in {"ready", "running"}
-                    or self.work_view(w, works)["blockedBy"]
+                    or self.work_view(w, self.work_dependency_statuses(
+                        db, a["rootId"], w["dependencies"]))["blockedBy"]
                 ):
                     raise ValueError("This work item is not ready")
                 if w["owner"] and w["owner"] != claimant:
@@ -379,7 +415,8 @@ class WorkMixin:
                     raise ValueError("This result is already accepted")
                 if actor and w["owner"] != actor:
                     raise ValueError("Only the assigned worker can submit its result")
-                if self.work_view(w, works)["blockedBy"]:
+                if self.work_view(w, self.work_dependency_statuses(
+                        db, a["rootId"], w["dependencies"]))["blockedBy"]:
                     raise ValueError("Dependencies have not been accepted")
                 files = data.get("files", [])
                 if (
@@ -419,7 +456,8 @@ class WorkMixin:
                     raise ValueError("Only the lead or task creator can cancel this task")
                 reason = text_field(data.get("reason"), "a cancellation reason")
                 if w["status"] == "cancelled":
-                    return self.save_receipt(db, key, signature, self.work_view(w, works))
+                    return self.save_receipt(db, key, signature, self.work_view(
+                        w, self.work_dependency_statuses(db, a["rootId"], w["dependencies"])))
                 if w["status"] == "accepted":
                     raise ValueError("Cannot cancel accepted work")
                 owner_id = w.get("owner")
@@ -472,21 +510,20 @@ class WorkMixin:
                             {"task": w["id"], "decision": action, "reason": reason}
                         ),
                         "work-decision:" + w["id"] + ":" + str(w["version"]),
-                    )
+                )
                 if action == "accept":
-                    for other in works:
-                        if w["id"] in other["dependencies"] and other.get("owner"):
-                            updated = [w if v["id"] == w["id"] else v for v in works]
-                            if not self.work_view(other, updated)["blockedBy"]:
-                                self.enqueue(
-                                    db,
-                                    self.agent(other["owner"], db),
-                                    "work_ready",
-                                    json.dumps(
-                                        {"task": other["id"], "title": other["title"]}
-                                    ),
-                                    "work-ready:" + other["id"] + ":" + w["id"],
-                                )
+                    for other in self.work_dependent_records(db, a["rootId"], w["id"]):
+                        statuses = self.work_dependency_statuses(
+                            db, a["rootId"], other["dependencies"])
+                        statuses[w["id"]] = "accepted"
+                        if not self.work_view(other, statuses)["blockedBy"]:
+                            self.enqueue(
+                                db,
+                                self.agent(other["owner"], db),
+                                "work_ready",
+                                json.dumps({"task": other["id"], "title": other["title"]}),
+                                "work-ready:" + other["id"] + ":" + w["id"],
+                            )
             else:
                 raise ValueError("Unknown work action")
             w.update(version=w["version"] + 1, updated=time.time())
@@ -495,7 +532,8 @@ class WorkMixin:
                 db,
                 key,
                 signature,
-                self.work_view(w, [t for t in works if t["id"] != w["id"]] + [w]),
+                self.work_view(w, self.work_dependency_statuses(
+                    db, a["rootId"], w["dependencies"])),
             )
 
     def release_failed_work(self, db, agents, force=False):
@@ -543,7 +581,7 @@ class WorkMixin:
 
     @staticmethod
     def work_view(w, works):
-        statuses = {t["id"]: t["status"] for t in works}
+        statuses = works if isinstance(works, dict) else {t["id"]: t["status"] for t in works}
         blocked = [d for d in w["dependencies"] if statuses.get(d) != "accepted"]
         return {
             **w,

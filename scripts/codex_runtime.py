@@ -961,6 +961,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     json_extract(record,'$.cwd'))
                     WHERE json_type(record,'$.workspaceOperation')='text'
                       AND json_extract(record,'$.workspaceOperation')!='';
+                CREATE INDEX IF NOT EXISTS runtime_agent_capacity_retry_state_due_v2 ON runtime_agents(
+                    json_extract(record,'$.capacityRetry.status'),
+                    json_extract(record,'$.capacityRetry.dueAt'));
                 CREATE TABLE IF NOT EXISTS runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_usage_resumes (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_usage_resume_agent ON runtime_usage_resumes(agent);
@@ -989,6 +992,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
                 CREATE INDEX IF NOT EXISTS runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running';
+                CREATE INDEX IF NOT EXISTS runtime_task_agent_created_id ON runtime_tasks(
+                    json_extract(record,'$.agent'), json_extract(record,'$.created') DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS runtime_task_agent_updated_id ON runtime_tasks(
+                    json_extract(record,'$.agent'),
+                    CASE WHEN COALESCE(json_extract(record,'$.finished'),0) > COALESCE(json_extract(record,'$.created'),0)
+                         THEN json_extract(record,'$.finished') ELSE json_extract(record,'$.created') END,
+                    id);
                 CREATE TABLE IF NOT EXISTS runtime_monitors (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_monitor_status ON runtime_monitors(json_extract(record,'$.status'),json_extract(record,'$.created'));
                 CREATE INDEX IF NOT EXISTS runtime_monitor_agent_status ON runtime_monitors(
@@ -1209,6 +1219,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def scheduler_agents(self, db):
         """Load the rows consumed by dispatch and recovery hooks, not archived history."""
         from codex_agent_modes import mode_fields
+        guard = self.__dict__.setdefault("_scheduler_agent_cache_lock", threading.RLock())
+        write_mark = write_generation(db)
+        revision = self.__dict__.get("_agent_record_revision", 0)
+        with guard:
+            roster_cache = self.__dict__.get("_scheduler_agent_roster")
+            if roster_cache:
+                cached_db, cached_revision, cached_write_mark, cached_changes, cached_rows = roster_cache
+                if (cached_revision == revision and cached_write_mark == write_mark
+                        and (cached_db is not db or cached_changes == db.total_changes)):
+                    return copy.deepcopy(cached_rows)
         transfer_roots = ""
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                       "AND name='runtime_account_transfers'").fetchone():
@@ -1262,11 +1282,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # records and cancel_pending reads its event tables; capacity_tick and
         # usage_resume_tick use durable retry tables in schedule(). Those hooks do
         # not consume this list.
-        rows = db.execute("SELECT id,record FROM runtime_agents WHERE " + filters).fetchall()
+        deleted_cleanup = (
+            "json_extract(record,'$.workspaceOperation') IS NOT NULL OR "
+            "json_extract(record,'$.accountTransferId') IS NOT NULL OR "
+            "json_extract(record,'$.nativeRelease.resetPending')=1 OR "
+            "json_extract(record,'$.contextRepairWait') IS NOT NULL OR "
+            "json_extract(record,'$.contextRepair.sourceCleanup.phase') IN ('planned','submitted') OR "
+            "EXISTS (SELECT 1 FROM runtime_work WHERE "
+            "json_extract(runtime_work.record,'$.owner')=json_extract(runtime_agents.record,'$.id') "
+            "AND json_extract(runtime_work.record,'$.status') IN ('ready','running','blocked'))")
+        rows = db.execute("SELECT id,record FROM runtime_agents WHERE (" + filters + ") AND (" +
+                          LIVE_AGENT_SQL + " OR (json_extract(record,'$.deletedAt') IS NOT NULL AND (" +
+                          deleted_cleanup + ")))" ).fetchall()
         cache = self.__dict__.setdefault("_scheduler_agent_cache", {})
-        guard = self.__dict__.setdefault("_scheduler_agent_cache_lock", threading.RLock())
         agents = []
         with guard:
+            selected = {agent_id for agent_id, _ in rows}
+            for agent_id in tuple(cache):
+                if agent_id not in selected:
+                    cache.pop(agent_id, None)
             for agent_id, raw in rows:
                 cached = cache.get(agent_id)
                 if cached is None or cached[0] != raw:
@@ -1275,6 +1309,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agents.append(copy.deepcopy(cached[1]))
             while len(cache) > 4096:
                 cache.pop(next(iter(cache)))
+            self._scheduler_agent_roster = (
+                db, self.__dict__.get("_agent_record_revision", 0), write_generation(db),
+                db.total_changes, tuple(cache[agent_id][1] for agent_id, _ in rows))
         return agents
 
     def broadcast_room(self, db, room):
@@ -1374,6 +1411,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if table == "agents":
             self.mark_agent_records_changed(record["id"])
             self.touch_ui(record["id"])
+        elif table == "work":
+            # Work ownership and status retain deleted owners in the scheduler roster.
+            self.__dict__.pop("_scheduler_agent_roster", None)
 
     def invalidate_agent_records(self, _key=None):
         with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):
@@ -1816,7 +1856,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "daybreakEnabled": enabled, "cyberAccessProgram": program,
                 **({"accountKey": account} if account is not None else {})}
 
-    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False):
+    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None,
+               _validate_only=False, _capacity_validated_root=None):
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         if parent and "yolo_mode" in data:
@@ -1923,7 +1964,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("This team is stopped")
             if p and parent_epoch is not None and p["epoch"] != parent_epoch:
                 raise ValueError("The parent turn was stopped")
-            if root:
+            if root and _capacity_validated_root != root["id"]:
                 active, finished = team_capacity_counts(self.records(db, "agents"), root["id"])
                 if active >= root["maxAgents"]:
                     raise ValueError(f"Team active agent limit reached; {finished} finished agents. Use archive_finished to free stored records.")
@@ -2909,10 +2950,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         def current_agents(db):
             # Reuse the roster within this database session. The revision and
-            # connection write count catch both put() and direct SQL updates.
+            # connection write count catch put() and direct SQL updates. Across
+            # sessions, retain the same snapshot when the agent watch is unchanged.
             generation = (self._agent_record_revision, db.total_changes,
                           write_generation(db))
-            if not decoded or decoded[0] is not db or decoded[1] != generation:
+            same_session = decoded and decoded[0] is db
+            unchanged = (decoded and decoded[1][0] == generation[0]
+                         and decoded[1][2] == generation[2]
+                         and (not same_session or decoded[1][1] == generation[1]))
+            if not unchanged:
                 decoded[:] = [db, generation, self.scheduler_agents(db)]
             return decoded[2]
 
@@ -2923,7 +2969,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             from codex_context_repair import recover_context_failures
             recover_context_failures(self, db, current_agents(db))
             from codex_context_repair import _held_restart_marker
-            restart_wait_agents = [copy.deepcopy(a) for a in current_agents(db)
+            restart_wait_agents = [a for a in current_agents(db)
                                    if a.get("contextRepairWait") and _held_restart_marker(a)]
         from codex_context_repair import tick_restart_input_waits
         tick_restart_input_waits(self, restart_wait_agents)
@@ -4349,14 +4395,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("The parent or its account connection changed before worker creation")
             from codex_agent_modes import assert_delegation
             assert_delegation(self.agent(current["rootId"], db))
-            roster = [a for a in self.records(db, "agents") if a["rootId"] == current["rootId"] and not a.get("deletedAt")]
+            roster = self.team_agents(db, current["rootId"])
             existing = {a["id"] for a in roster}
             planned = [{**spec, "id": str(uuid.uuid5(uuid.NAMESPACE_URL, key + ":" + str(index)))} for index, spec in enumerate(specs)]
             active, finished = team_capacity_counts(roster, current['rootId'])
             if active + sum(s["id"] not in existing for s in planned) > self.agent(current["rootId"], db)["maxAgents"]:
                 raise ValueError(f"This batch exceeds the active agent limit; {finished} finished agents. Use archive_finished to free stored records. No workers were created")
             children = [self.create({k: v for k, v in spec.items() if k != "task_id"}, current["id"],
-                                    parent_epoch=current["epoch"], _catalog=selection, _validate_only=True)
+                                    parent_epoch=current["epoch"], _catalog=selection, _validate_only=True,
+                                    _capacity_validated_root=current["rootId"])
                         for spec, selection in zip(planned, selections)]
             works = {w["id"]: w for w in self.records(db, "work") if w["rootId"] == current["rootId"]}
             for spec in planned:
@@ -5860,6 +5907,51 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return {key: value for key, value in task.items()
                 if key not in {"tail", "arguments", "error"}}
 
+    @staticmethod
+    def _workspace_task_rows(db, agent_ids, *, order, cursor=None, before=None, limit=100):
+        """Seek one bounded range per agent, then merge only those summaries."""
+        if not agent_ids:
+            return []
+        created = "json_extract(record,'$.created')"
+        updated = ("CASE WHEN COALESCE(json_extract(record,'$.finished'),0) > "
+                   "COALESCE(json_extract(record,'$.created'),0) "
+                   "THEN json_extract(record,'$.finished') ELSE json_extract(record,'$.created') END")
+        seek = updated if cursor is not None else created
+        direction = "ASC" if cursor is not None else "DESC"
+        arms, args = [], []
+        for agent_id in agent_ids:
+            if cursor is not None:
+                ranges = [
+                    ("json_extract(record,'$.agent')=? AND " + seek + ">?",
+                     [agent_id, cursor["updated"]], f"{seek} ASC,id ASC"),
+                    ("json_extract(record,'$.agent')=? AND " + seek + "=? AND id>?",
+                     [agent_id, cursor["updated"], cursor["id"]], "id ASC"),
+                ]
+            elif before is not None:
+                ranges = [
+                    ("json_extract(record,'$.agent')=? AND " + created + "<?",
+                     [agent_id, before["created"]], f"{created} DESC,id DESC"),
+                    ("json_extract(record,'$.agent')=? AND " + created + "=? AND id<?",
+                     [agent_id, before["created"], before["id"]], "id DESC"),
+                ]
+            else:
+                ranges = [("json_extract(record,'$.agent')=?", [agent_id],
+                           f"{created} DESC,id DESC")]
+            # Each range contributes at most one page plus one has-more row.
+            for where, arm_args, arm_order in ranges:
+                arms.append(
+                    "SELECT id,sort_value,summary FROM (SELECT id," + seek +
+                    " AS sort_value,json_remove(record,'$.tail','$.arguments','$.error') AS summary "
+                    "FROM runtime_tasks WHERE " + where +
+                    f" ORDER BY {arm_order} LIMIT ?)"
+                )
+                args.extend((*arm_args, limit + 1))
+        order_direction = "ASC" if cursor is not None else "DESC"
+        sql = ("SELECT id,sort_value,summary FROM (" + " UNION ALL ".join(arms) + ") "
+               f"ORDER BY sort_value {order_direction},id {order_direction} LIMIT ?")
+        args.append(limit + 1)
+        return db.execute(sql, args).fetchall()
+
     def workspace_task_feed(self, key=None, *, cursor=None, before=None, limit=100):
         limit = max(1, min(100, int(limit)))
         if cursor is not None:
@@ -5874,8 +5966,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             before_id = before["id"]
         with self.read_db() as db:
             root = self.checked_actor(db, key)["rootId"] if key else None
-            scope = ""
-            params = ()
             if root is not None:
                 agent_ids = [row[0] for row in db.execute(
                     "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
@@ -5883,31 +5973,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not agent_ids:
                     return {"tasks": [], "cursor": cursor, "hasMore": False,
                             "hasMoreChanges": False, "nextBefore": None, "reset": False}
-                scope = " AND json_extract(t.record,'$.agent') IN (" \
-                        + ','.join('?' for _ in agent_ids) + ")"
-                params = tuple(agent_ids)
-            scoped = scope
+            else:
+                agent_ids = [row[0] for row in db.execute(
+                    "SELECT id FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL")]
             if before is not None:
-                rows = db.execute(
-                    "SELECT t.record FROM runtime_tasks t WHERE 1=1" + scoped +
-                    " AND (json_extract(t.record,'$.created') < ? OR "
-                    "(json_extract(t.record,'$.created') = ? AND t.id < ?)) "
-                    "ORDER BY json_extract(t.record,'$.created') DESC,t.id DESC LIMIT ?",
-                    (*params, before_created, before_created, before_id, limit + 1),
-                ).fetchall()
-                tasks = [self._workspace_task_summary(row[0]) for row in rows[:limit]]
+                rows = self._workspace_task_rows(db, agent_ids, order="created",
+                                                before={"created": before_created, "id": before_id}, limit=limit)
+                tasks = [self._workspace_task_summary(row[2]) for row in rows[:limit]]
                 has_more = len(rows) > limit
                 next_before = ({"created": tasks[-1].get("created", 0), "id": tasks[-1]["id"]}
                                if has_more and tasks else None)
                 return {"tasks": tasks, "hasMore": has_more, "nextBefore": next_before}
 
             if cursor is None:
-                rows = db.execute(
-                    "SELECT t.record FROM runtime_tasks t WHERE 1=1" + scoped +
-                    " ORDER BY json_extract(t.record,'$.created') DESC,t.id DESC LIMIT ?",
-                    (*params, limit + 1),
-                ).fetchall()
-                tasks = [self._workspace_task_summary(row[0]) for row in rows[:limit]]
+                rows = self._workspace_task_rows(db, agent_ids, order="created", limit=limit)
+                tasks = [self._workspace_task_summary(row[2]) for row in rows[:limit]]
                 has_more = len(rows) > limit
                 next_before = ({"created": tasks[-1].get("created", 0), "id": tasks[-1]["id"]}
                                if has_more and tasks else None)
@@ -5917,20 +5997,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return {"tasks": tasks, "cursor": {"updated": latest[0], "id": latest[1]}, "hasMore": has_more,
                         "nextBefore": next_before, "reset": False}
 
-            effective = "CASE WHEN COALESCE(json_extract(t.record,'$.finished'),0) > " \
-                        "COALESCE(json_extract(t.record,'$.created'),0) " \
-                        "THEN json_extract(t.record,'$.finished') ELSE json_extract(t.record,'$.created') END"
-            rows = db.execute(
-                "SELECT t.record," + effective + " AS updated,t.id FROM runtime_tasks t WHERE 1=1" + scoped +
-                " AND (" + effective + " > ? OR (" + effective + " = ? AND t.id > ?)) "
-                "ORDER BY updated,t.id LIMIT ?",
-                (*params, cursor_time, cursor_time, cursor_id, limit + 1),
-            ).fetchall()
-            tasks = [self._workspace_task_summary(row[0]) for row in rows[:limit]]
+            rows = self._workspace_task_rows(db, agent_ids, order="updated",
+                                            cursor={"updated": cursor_time, "id": cursor_id}, limit=limit)
+            tasks = [self._workspace_task_summary(row[2]) for row in rows[:limit]]
             has_more = len(rows) > limit
             if tasks:
                 last = rows[limit - 1] if has_more else rows[-1]
-                next_cursor = {"updated": float(last[1]), "id": last[2]}
+                next_cursor = {"updated": float(last[1]), "id": last[0]}
             else:
                 next_cursor = cursor
             return {"tasks": tasks, "cursor": next_cursor, "hasMore": False,

@@ -41,8 +41,10 @@ class SchedulerAgentScope(unittest.TestCase):
         owner.update(id="archived-work-owner", name="Work owner")
         repair = dict(archived)
         repair.update(id="archived-repair-owner", name="Repair owner", contextRepairWait={"stage": "pending"})
+        stale = dict(archived)
+        stale.update(id="archived-stale", name="Archived stale", restartRecovery={"stage": "finished"})
         with self.runtime.lock, self.runtime.db() as db:
-            for agent in (live, archived, owner, repair):
+            for agent in (live, archived, owner, repair, stale):
                 self.runtime.put(db, "agents", agent)
             db.execute("INSERT INTO runtime_work(id,record) VALUES (?,?)", (
                 "archived-work", '{"id":"archived-work","owner":"archived-work-owner","status":"ready"}'))
@@ -51,19 +53,34 @@ class SchedulerAgentScope(unittest.TestCase):
         self.assertIn("archived-work-owner", selected)
         self.assertIn("archived-repair-owner", selected)
         self.assertNotIn("archived-worker", selected)
+        self.assertNotIn("archived-stale", selected)
+        self.assertEqual(set(self.runtime._scheduler_agent_cache), selected)
 
     def test_every_recovery_and_wait_marker_is_retained(self):
         root = self.runtime.create({"name": "Root", "cwd": self.tmp.name, "prompt": "Coordinate"}, defer=True)
         markers = {
             "interrupted-connection": {"status": "interrupted", "threadId": "thread", "turnId": "turn"},
-            "disconnect-marker": {"disconnectRecovery": {"stage": "pending"}},
-            "restart-marker": {"restartRecovery": {"stage": "pending"}},
+            "codex-disconnect-error": {"status": "interrupted", "threadId": "thread", "turnId": "turn",
+                "error": "Codex disconnected. Review the transcript before resuming."},
+            "claude-disconnect-error": {"status": "interrupted", "threadId": "claude-thread",
+                "turnId": "claude-turn", "provider": "claude", "error": "Connection lost"},
+            "server-restart-error": {"status": "interrupted", "threadId": "server-thread",
+                "turnId": "server-turn", "error": "Server restarted during a turn"},
+            "restart-pending": {"restartRecovery": {"stage": "pending", "autoWake": False}},
+            "restart-other-stage": {"restartRecovery": {"stage": "reconciling", "autoWake": False}},
+            "disconnect-marker": {"disconnectRecovery": {"stage": "reconciling"}},
+            "context-repair": {"contextRepair": {"phase": "unknown-provider-phase"}},
+            "browser-recovery": {"browserRecovery": {"stage": "failed"}},
+            "capacity-retry": {"capacityRetry": {"status": "failed", "attempt": 7}},
+            "usage-resume": {"usageResume": {"status": "waiting", "attempt": 4}},
+            "old-safety-retry": {"nativeSafetyRetry": {"stage": "unknown-provider-stage",
+                "epoch": -1, "accountKey": "old-account"}},
+            "last-context-wait": {"lastContextRepairWait": {"stage": "retired"}},
             "failure-hold": {"nativeFailureHold": True},
             "budget-action-wait": {"budgetActionWait": {"action": "capacity"}},
             "budget-start-wait": {"budgetStartWait": {"stage": "waiting"}},
-            "capacity-retry": {"capacityRetry": {"status": "scheduled"}},
-            "usage-resume": {"usageResume": {"status": "scheduled"}},
-            "safety-retry": {"nativeSafetyRetry": {"stage": "verify_turns"}},
+            "safety-retry": {"nativeSafetyRetry": {"stage": "verify_turns", "epoch": root["epoch"],
+                "accountKey": "default"}},
         }
         with self.runtime.lock, self.runtime.db() as db:
             for key, fields in markers.items():
@@ -72,7 +89,25 @@ class SchedulerAgentScope(unittest.TestCase):
                 agent.update(fields)
                 self.runtime.put(db, "agents", agent)
             selected = {agent["id"] for agent in self.runtime.scheduler_agents(db)}
-        self.assertTrue(set(markers) <= selected)
+        self.assertEqual(set(markers) - selected, set())
+
+    def test_work_changes_invalidate_deleted_owner_roster(self):
+        root = self.runtime.create({"name": "Root", "cwd": self.tmp.name, "prompt": "Coordinate"}, defer=True)
+        owner = dict(root, id="archived-work-owner", rootId=root["id"], parentId=root["id"],
+                     isLead=False, name="Work owner", status="completed", autoWake=False,
+                     deletedAt=time.time())
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, "agents", owner)
+            self.assertNotIn(owner["id"], {a["id"] for a in self.runtime.scheduler_agents(db)})
+        with self.runtime.lock, self.runtime.db() as db:
+            work = {"id": "owner-work", "rootId": root["id"], "owner": owner["id"],
+                    "status": "ready", "dependencies": []}
+            self.runtime.put(db, "work", work)
+            self.assertIn(owner["id"], {a["id"] for a in self.runtime.scheduler_agents(db)})
+            work["status"] = "accepted"
+            self.runtime.put(db, "work", work)
+        with self.runtime.db() as db:
+            self.assertNotIn(owner["id"], {a["id"] for a in self.runtime.scheduler_agents(db)})
 
 
 if __name__ == "__main__":
