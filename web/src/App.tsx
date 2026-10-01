@@ -1383,6 +1383,7 @@ export default function App() {
               <span id="conversation-status">
                 {agent
                   ? indicators.get(agent.id)?.kind === "answer" ||
+                    ["waiting", "parked"].includes(agent.status) ||
                     (indicators.get(agent.id)?.kind === "working" &&
                       !agent.inFlight)
                     ? indicators.get(agent.id)?.label

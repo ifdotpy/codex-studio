@@ -84,6 +84,7 @@ import OutboxControls from "./OutboxControls";
 import StreamingText from "./StreamingText";
 import SelectionQuote, { selectedExcerpt } from "./SelectionQuote";
 import AgentPhase from "./AgentPhase";
+import { chatWaitState } from "./chatStatusModel";
 import AgentPanel from "./AgentPanel";
 import { ExecutionSettings } from "./ExecutionSettings";
 import { useWorkerModels } from "./WorkerModelPicker";
@@ -377,6 +378,10 @@ export default function Conversation(p: {
         : p.agent,
     [p.agent, liveAgent, p.id],
   );
+  const wait = useMemo(
+    () => (agent ? chatWaitState(p.data, agent) : undefined),
+    [p.data, agent],
+  );
   useVisibleChatResult(
     scroll,
     p.agent,
@@ -446,11 +451,14 @@ export default function Conversation(p: {
               displayError(agent?.nativeStatus?.message) ||
               (["starting", "running"].includes(agent?.status || "")
                 ? "Working"
-                : statusLabel(agent?.status || "idle")),
+                : ["waiting", "parked"].includes(agent?.status || "")
+                  ? wait?.label || "Turn ended"
+                  : statusLabel(agent?.status || "idle")),
     );
   }, [
     p.id,
     agent?.status,
+    wait?.label,
     agent?.activity?.phase,
     agent?.nativeStatus?.error?.message,
     agent?.nativeStatus?.message,
@@ -1303,11 +1311,12 @@ export default function Conversation(p: {
                     },
                   }}
                   connection={connection}
+                  wait={wait}
                 />
               )}
           </div>
           {!p.room && detailedActivity && (
-            <AgentPhase agent={agent} connection={connection} />
+            <AgentPhase agent={agent} connection={connection} wait={wait} />
           )}
           <Requests
             showDates={!!p.room}

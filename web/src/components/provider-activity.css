@@ -10,3 +10,60 @@
 .agent-phase.active[data-agent-provider] > .phase-dots {
   color: var(--agent-activity-color, var(--muted));
 }
+
+.agent-phase[data-wait-state] {
+  height: 30px;
+  flex-wrap: nowrap;
+}
+.agent-phase[data-wait-state] > svg,
+.agent-phase .wait-dots {
+  flex: 0 0 15px;
+}
+.agent-phase .wait-dots {
+  margin: 0;
+  align-items: center;
+  justify-content: center;
+}
+.agent-phase-wait {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.agent-phase-wait > summary {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  padding-right: 16px;
+}
+.agent-phase-wait > summary::-webkit-details-marker {
+  display: none;
+}
+.agent-phase-wait > summary::after {
+  content: "⌄";
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+.agent-phase-wait-details {
+  position: absolute;
+  z-index: 5;
+  bottom: 100%;
+  width: 100%;
+  max-height: min(240px, 40vh);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.agent-phase-wait-details p {
+  margin: 0 0 6px;
+}
+.agent-phase-wait-details ul {
+  margin: 0;
+  padding-left: 18px;
+}

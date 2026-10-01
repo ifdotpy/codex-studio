@@ -203,8 +203,9 @@ export default function WorkerCard({
             <span className="worker-meta">
               <small>
                 {indicator?.kind === "answer" ||
-                indicator?.label === "Waiting for a monitor"
-                  ? indicator.label
+                ["waiting", "parked"].includes(agent.status) ||
+                (indicator?.kind === "working" && !agent.inFlight)
+                  ? indicator?.label || statusLabel(agent.status)
                   : awaitingAnswer
                     ? "Needs your answer"
                     : deferred && agent.status === "approval"

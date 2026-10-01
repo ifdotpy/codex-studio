@@ -165,7 +165,7 @@ export const nativeReleaseLabel = (agent: Agent) => {
     : "Native thread released";
 };
 export const statusLabel = (status: string, phase?: string, parkedEvent?: string) =>
-  (status === "parked" && parkedEvent ? `Waits for event ${parkedEvent}` : null) ||
+  (status === "parked" && parkedEvent ? `Waiting for event ${parkedEvent}` : null) ||
   (status === "running" &&
     phase &&
     (
@@ -183,11 +183,11 @@ export const statusLabel = (status: string, phase?: string, parkedEvent?: string
     running: "Working",
     starting: "Starting",
     queued: "Queued",
-    waiting: "Waiting for results",
+    waiting: "Turn ended",
     completed: "Complete",
     failed: "Failed",
     paused: "Stopped",
-    parked: "Waits for event",
+    parked: "Turn ended",
     approval: "Needs an answer",
     interrupted: "Interrupted",
   }[status] ||
