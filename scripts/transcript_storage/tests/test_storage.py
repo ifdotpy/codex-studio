@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from transcript_storage.storage import backfill_addresses, backfill_items, body, drain, ensure_indexed, has_pending, index_item, initialize, persist, remove
+from transcript_storage.storage import backfill_addresses, backfill_items, body, drain, ensure_indexed, has_partial, has_pending, index_item, initialize, persist, remove
 
 
 class TranscriptStorageTests(unittest.TestCase):
@@ -174,6 +174,22 @@ class TranscriptStorageTests(unittest.TestCase):
         backfill_addresses(self.db)
         backfill_items(self.db)
         self.assertIsNone(body(self.db, "old:partial", agent="agent"))
+        self.assertTrue(has_partial(self.db, ["agent"]))
+        self.assertFalse(has_partial(self.db, ["other-agent"]))
+        self.db.execute("UPDATE runtime_items SET record=? WHERE id=?",
+                        (json.dumps({"title": "assistant", "text": "complete"}), "old:partial"))
+        persist(self.db, "old:partial", "agent", "assistant", "recovered complete body")
+        self.assertFalse(has_partial(self.db, ["agent"]))
+
+    def test_remove_clears_partial_provenance(self):
+        self.db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
+                        ("old:partial", "agent", json.dumps({"text": "excerpt", "truncated": True}), 1))
+        backfill_addresses(self.db)
+        backfill_items(self.db)
+        self.assertTrue(has_partial(self.db, ["agent"]))
+        remove(self.db, "old:partial")
+        self.db.execute("DELETE FROM runtime_items WHERE id='old:partial'")
+        self.assertFalse(has_partial(self.db, ["agent"]))
 
     def test_failed_index_does_not_erase_committed_body_or_pending_row(self):
         self.item("a:3", "durable body", streaming=True, now=30)

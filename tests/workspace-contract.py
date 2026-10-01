@@ -643,6 +643,16 @@ class WorkspaceContract(unittest.TestCase):
         results = self.runtime.search_work("freshneedle", lead["id"])["results"]
         self.assertEqual(len(results), 40)
 
+    def test_search_fails_visibly_for_partial_legacy_text_in_scope_only(self):
+        lead, other = self.lead(), self.lead("Other")
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)",
+                       (other["id"] + ":legacy-partial", other["id"],
+                        json.dumps({"title": "assistant", "text": "legacy excerpt", "truncated": True}), 1))
+        self.assertEqual(self.runtime.search_work("nothing", lead["id"])["results"], [])
+        with self.assertRaisesRegex(ValueError, "legacy transcript text is unavailable"):
+            self.runtime.search_work("nothing")
+
     def test_upload_validation_receipts_and_image_inputs(self):
         lead = self.lead()
         body = {

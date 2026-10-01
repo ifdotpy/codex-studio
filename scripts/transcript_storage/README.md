@@ -23,7 +23,9 @@ The scheduler drains due markers, maps legacy FTS row addresses, and repairs
 legacy items that have no search row in small rowid batches. Startup only
 creates tables and cursors; it does not scan old conversations. A truncated
 legacy excerpt without a recoverable full body is marked partial and full-body
-readers report that it is unavailable. A failed index write leaves
+readers report that it is unavailable; scoped work search also reports an
+explicit unavailable-text error if one of its visible legacy rows is partial.
+A complete replacement clears the partial marker. A failed index write leaves
 the saved body and marker intact. Restart resumes the same queues. Old items
 still read their full text from the legacy FTS row when present, then fall back
 to the item excerpt. While either migration cursor remains, search advances a

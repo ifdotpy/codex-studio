@@ -400,13 +400,15 @@ class WorkMixin:
                 if not a.get("deletedAt")
                 and (not caller or a["rootId"] == caller["rootId"])
             }
-            from transcript_storage.storage import backfill_addresses, backfill_items, drain, has_pending
+            from transcript_storage.storage import backfill_addresses, backfill_items, drain, has_partial, has_pending
             backfill_addresses(db)
             backfill_items(db)
             drain(db, force=True)
             db.commit()
             if has_pending(db, allowed):
                 raise ValueError("Transcript search is indexing. Retry shortly.")
+            if has_partial(db, allowed):
+                raise ValueError("Some legacy transcript text is unavailable; search may be incomplete.")
             found = []
             for row in db.execute(
                 "SELECT runtime_search.id,runtime_search.agent,runtime_search.kind,snippet(runtime_search,3,'','',' … ',30) AS excerpt FROM runtime_search JOIN runtime_items i ON i.id=runtime_search.id WHERE runtime_search MATCH ? AND json_extract(i.record,'$.afterRestore') IS NULL ORDER BY rank LIMIT 1000",

@@ -135,6 +135,7 @@ def index_item(db, key, agent, kind, text):
     db.execute("INSERT INTO runtime_search_rows VALUES (?,?) ON CONFLICT(id) DO UPDATE "
                "SET search_rowid=excluded.search_rowid", (key, cursor.lastrowid))
     db.execute("INSERT OR IGNORE INTO runtime_search_indexed VALUES (?)", (key,))
+    db.execute("DELETE FROM runtime_search_partial WHERE id=?", (key,))
     db.execute("DELETE FROM runtime_search_deletions WHERE id=?", (key,))
 
 
@@ -186,6 +187,22 @@ def has_pending(db, agents=None):
     return db.execute(
         "SELECT 1 FROM runtime_search_pending p JOIN runtime_items i ON i.id=p.id WHERE " + where + " LIMIT 1",
         params,
+    ).fetchone() is not None
+
+
+def has_partial(db, agents=None):
+    """Whether visible transcript rows have only excerpt text available."""
+    where = "json_extract(i.record,'$.afterRestore') IS NULL"
+    params = []
+    if agents is not None:
+        agents = list(agents)
+        if not agents:
+            return False
+        where += " AND i.agent IN (" + ",".join("?" for _ in agents) + ")"
+        params.extend(agents)
+    return db.execute(
+        "SELECT 1 FROM runtime_search_partial p JOIN runtime_items i ON i.id=p.id WHERE "
+        + where + " LIMIT 1", params,
     ).fetchone() is not None
 
 
@@ -263,6 +280,7 @@ def remove(db, key):
     """Remove item-owned bodies and derived search state after item deletion."""
     db.execute("DELETE FROM runtime_item_bodies WHERE id=?", (key,))
     db.execute("DELETE FROM runtime_search_pending WHERE id=?", (key,))
+    db.execute("DELETE FROM runtime_search_partial WHERE id=?", (key,))
     address = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
     if address:
         db.execute("DELETE FROM runtime_search WHERE rowid=?", (address[0],))
