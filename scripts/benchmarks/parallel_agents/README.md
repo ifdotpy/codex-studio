@@ -12,7 +12,8 @@ state directory and a queued fake app-server. The production `Runtime` handles
 all notifications, stream flushes, analytics, monitor completions, and dispatch passes.
 The fixture creates 1,000 agent records. Five or 15 independent leads have an
 active turn. The archived records belong to the first lead's team.
-The rest have archived work records. No native provider or user database is used.
+The rest have archived work records with saved native names. No native provider
+or user database is used.
 
 The fixture uses the normal scheduler to start each fake-native turn. It then
 stops that scheduler and calls the production dispatch pass once per second

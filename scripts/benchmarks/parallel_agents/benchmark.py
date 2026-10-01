@@ -90,6 +90,7 @@ class FakeServer(fixture.FakeServer):
         self.wake_starts = 0
         self.wake_turns = {}
         self.wake_existing = []
+        self.wake_lock = threading.Lock()
         self.callback_methods = {}
         self.closed = False
         self.worker = threading.Thread(target=self.dispatch, name="fake-app-server", daemon=True)
@@ -108,14 +109,18 @@ class FakeServer(fixture.FakeServer):
         self.offer(message)
 
     def call(self, method, params, timeout=60):
+        if method == "thread/name/set":
+            return {}
+        if method == "turn/start" and self.measuring:
+            with self.wake_lock:
+                if self.wake_starts >= self.wake_cap:
+                    raise RuntimeError("fake app-server exceeded the wake cap")
+                self.wake_starts += 1
         existing = self.active_turns.get(params.get("threadId")) if method == "turn/start" else None
         result = super().call(method, params, timeout)
         if method == "turn/start" and self.measuring:
             if existing:
                 self.wake_existing.append((params["threadId"], existing["id"]))
-            if self.wake_starts >= self.wake_cap:
-                raise RuntimeError("fake app-server exceeded the wake cap")
-            self.wake_starts += 1
             thread = params["threadId"]
             turn = result["turn"]["id"]
             self.wake_turns[thread] = turn
@@ -175,8 +180,11 @@ def seed(runtime, root, active_count):
                     rootId=active[0]["id"], prompt="Synthetic archived work " + "x" * 4000)
     with runtime.lock, runtime.db() as db:
         for index in range(AGENT_ROWS - active_count):
+            thread = f"bench-archive-thread-{index}"
+            name = f"Archived {index}"
             record = {**template, "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"bench-archive-{index}")),
-                      "threadId": f"bench-archive-thread-{index}", "name": f"Archived {index}"}
+                      "threadId": thread, "name": name,
+                      "nativeNameSynced": {"accountKey": "default", "threadId": thread, "name": name}}
             runtime.put(db, "agents", record)
     with runtime.db() as db:
         count = db.execute("SELECT COUNT(*) FROM runtime_agents").fetchone()[0]
