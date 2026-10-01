@@ -196,7 +196,7 @@ export function AccountTransferStatus({
   targetLabel?: string;
   pending?: boolean;
   showCompleted?: boolean;
-  onAction: (action: "retry" | "cancel" | "finish_history") => void;
+  onAction: (action: "retry" | "cancel") => void;
 }) {
   if (!transfer) return null;
   const waiting = Number(transfer.waitingCount || 0);
@@ -226,9 +226,7 @@ export function AccountTransferStatus({
         </div>
         {!!transfer.nativeHistoryPending && (
           <small>
-            {transfer.finishHistory
-              ? `${transfer.nativeHistoryPending} histories requested for transfer now.`
-              : `${transfer.nativeHistoryPending} histories will transfer before the next reply.`}
+            History transfer in progress: {transfer.nativeHistoryPending} remaining.
           </small>
         )}
         {!!transfer.movingNow && <small>{transfer.movingNow} moving now</small>}
@@ -250,16 +248,6 @@ export function AccountTransferStatus({
           </small>
         ))}
         <div className="account-transfer-actions">
-          {transfer.status === "pending" && transfer.canFinishHistory && (
-            <Button
-              size="compact-xs"
-              variant="subtle"
-              disabled={pending}
-              onClick={() => onAction("finish_history")}
-            >
-              Move history now
-            </Button>
-          )}
           {transfer.canRetry && (
             <Button
               size="compact-xs"

@@ -88,8 +88,8 @@ class AccountTransfers:
             moved=sum(m.get('lazy') or m['phase'] == 'completed' for m in members),
             nativeHistoryPending=sum(bool(m.get('lazy') and m['phase'] != 'completed') for m in members),
             movingNow=sum(m['phase'] in {'reading', 'submitted', 'lazy_submitted', 'interrupting'} for m in members),
-            canFinishHistory=any(m.get('lazy') and m['phase'] == 'lazy' for m in members)
-                             and not op.get('finishHistory'),
+            # Old clients also show automatic progress without a new button.
+            canFinishHistory=False, finishHistory=True,
             interrupted=[{'id': aid, 'name': m.get('name'), 'reason': m.get('interruptReason')}
                          for aid, m in op['members'].items() if m.get('interruptReason')],
             leftOnSource=[{'id': aid, 'name': m.get('name'), 'provider': m.get('provider'),
@@ -507,8 +507,9 @@ class AccountTransfers:
                 op = self.get(db, key)
                 before = len(op['members'])
                 self.adopt(db, op, agents)
-                dirty = (before != len(op['members']) or 'canFinishHistory' not in
-                         (rt.agent(op['leadId'], db).get('accountTransfer') or {}))
+                summary = rt.agent(op['leadId'], db).get('accountTransfer') or {}
+                dirty = (before != len(op['members']) or summary.get('canFinishHistory') is not False
+                         or not summary.get('finishHistory'))
                 for aid, member in list(op['members'].items()):
                     a = rt.agent(aid, db)
                     if member['phase'] in MEMBER_TERMINAL:
@@ -533,7 +534,7 @@ class AccountTransfers:
                         else:
                             member['waiting'] = 'Waiting for the active turn to stop'
                             continue
-                    finish_lazy = member['phase'] == 'lazy' and op.get('finishHistory')
+                    finish_lazy = member['phase'] == 'lazy'
                     if (member['phase'] not in {'waiting', 'ready'} and not finish_lazy) or aid in self.running:
                         continue
                     if member['phase'] == 'waiting' and (a.get('inFlight') or a['status'] in ACTIVE):
@@ -726,7 +727,7 @@ class AccountTransfers:
                         else:
                             reusable_settings = True
                 if reusable_settings:
-                    return self.commit_lazy(key, aid, saved_result)
+                    return self.commit_lazy(key, aid, saved_result, background=background)
                 catalog = rt.catalog(op['targetAccountKey'])
                 resolved = self.destination_settings(snapshot, op['targetAccountKey'], catalog)
                 with rt.lock, rt.db() as db:
@@ -740,7 +741,7 @@ class AccountTransfers:
                                   pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'))
                     self.save(db, op)
                     db.commit()
-                return self.commit_lazy(key, aid, saved_result)
+                return self.commit_lazy(key, aid, saved_result, background=background)
             except Exception as error:
                 with rt.lock, rt.db() as db:
                     op = self.get(db, key)
@@ -839,7 +840,7 @@ class AccountTransfers:
                     self.save(db, op)
             if not self.archive_source_current(key, aid):
                 raise RuntimeError('The source changed after history export; the saved fork will not be repeated')
-            return self.commit_lazy(key, aid, result)
+            return self.commit_lazy(key, aid, result, background=background)
         except Exception as error:
             if self.retry_preparation(key, aid, error):
                 with rt.db() as db:
@@ -880,7 +881,7 @@ class AccountTransfers:
             rt.changed.set()
             raise RuntimeError('Native history move blocked: ' + str(error)) from error
 
-    def commit_lazy(self, key, aid, result):
+    def commit_lazy(self, key, aid, result, *, background=False):
         rt = self.rt
         with rt.lock, rt.db() as db:
             op = self.get(db, key)
@@ -956,7 +957,7 @@ class AccountTransfers:
             a['executionSettingsAccountKey'] = op['targetAccountKey']
             source_state = lazy.get('sourceState') or {}
             resume_failed = bool(a.get('autoWake') and source_state.get('status') in {'failed', 'interrupted'}
-                                 and not op.get('finishHistory'))
+                                 and not op.get('finishHistory') and not background)
             pending_input = db.execute(
                 "SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
                 "AND status IN ('pending','reserved','dispatching','uncertain') LIMIT 1",

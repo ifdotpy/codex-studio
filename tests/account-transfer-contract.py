@@ -152,13 +152,15 @@ class TransferContract(f.AccountContracts):
         """Waiting for a fork receipt models the member's first native start."""
         if not self.drive_lazy_for_tests or any(not future.done() for _, _, future in self.pending):
             return
+        if self.store.running:
+            return
         if any(worker.is_alive() for worker in self.lazy_test_threads):
             return
         with self.runtime.db() as db:
             agents = self.runtime.records(db, 'agents')
         live_ids = {getattr(w, 'agent_id', None) for w in self.lazy_test_threads if w.is_alive()}
         agent = next((a for a in agents if a.get('lazyAccountTransfer') and
-                      a['id'] not in live_ids), None)
+                      a['id'] not in live_ids and a['id'] not in self.store.running), None)
         if not agent:
             return
         worker = threading.Thread(target=self._test_first_start, args=(agent['id'],), daemon=True)
@@ -179,6 +181,8 @@ class TransferContract(f.AccountContracts):
     def complete_fork(self, index=0):
         self.pending[index][2].set_result({'thread': {'id': 'target-thread-'+str(index)}, 'model':'gpt-6-astra'})
         for worker in self.lazy_test_threads:
+            worker.join(3)
+        for worker in list(self.store.workers):
             worker.join(3)
 
     def test_fork_preserves_only_a_verified_current_tool_catalog(self):
@@ -857,10 +861,11 @@ class TransferContract(f.AccountContracts):
         receipt = self.receipt(op['id'])
         self.assertNotIn(worker['id'], receipt['members'])
         self.assertNotIn('accountTransferId', self.runtime.agent(worker['id']))
+        self.until(lambda: len(self.pending) == 1)
+        self.complete_fork()
 
     def test_restart_retains_unknown_receipt_and_never_replays_it(self):
         op=self.start_transfer();self.tick();self.until(lambda:len(self.pending)==1)
-        self.until(lambda:not self.store.running)
         from codex_account_transfer import AccountTransfers
         restarted=AccountTransfers(self.runtime)
         with self.runtime.db() as db:
@@ -892,9 +897,10 @@ class TransferContract(f.AccountContracts):
         self.assertEqual((starts[0]['model'], starts[0]['effort']), ('gpt-5.6-sol', 'low'))
         self.assertEqual(self.runtime.delivery_receipt('queued-input')['status'], 'delivered')
 
-    def test_failed_turn_continues_once_after_transfer(self):
+    def test_first_native_start_of_failed_turn_continues_once_after_transfer(self):
         aid=self.lead_agent['id'];self.set_agent(aid,status='failed',nativeFailureHold=True,autoWake=True)
-        op=self.start_transfer();self.tick();self.until(lambda:len(self.pending)==1);self.complete_fork()
+        # This models an explicit native start, not a background history copy.
+        op=self.start_transfer();self.until(lambda:len(self.pending)==1);self.complete_fork()
         a=self.runtime.agent(aid);self.assertEqual(a['status'],'queued');self.assertNotIn('nativeFailureHold',a)
         with self.runtime.db() as db:
             rows=db.execute("SELECT * FROM runtime_events WHERE id=?",('account-transfer:'+op['id']+':'+aid,)).fetchall()

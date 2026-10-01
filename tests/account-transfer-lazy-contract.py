@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Instant account rebinding and per-agent lazy native history migration."""
+"""Instant account rebinding and automatic native history transfer."""
 import copy
 import importlib.util
 from pathlib import Path
@@ -28,7 +28,7 @@ class LazyTransferContract(unittest.TestCase):
 
     def test_finish_history_now_completes_without_input_and_duplicate_calls(self):
         op = self.t.start_transfer()
-        self.assertTrue(self.rt.agent(self.aid)['accountTransfer']['canFinishHistory'])
+        self.assertFalse(self.rt.agent(self.aid)['accountTransfer']['canFinishHistory'])
         self.store.action(op['id'], 'finish_history')
         self.store.action(op['id'], 'finish_history')
         self.t.tick()
@@ -77,10 +77,9 @@ class LazyTransferContract(unittest.TestCase):
             self.assertEqual([tuple(row) for row in db.execute('SELECT id,status FROM runtime_events WHERE agent=?', (self.aid,))],
                              [('finish-input', 'pending')])
 
-    def test_finish_history_does_not_resume_failed_agent(self):
+    def test_automatic_history_does_not_resume_failed_agent(self):
         self.t.set_agent(self.aid, status='failed', autoWake=True)
         op = self.t.start_transfer()
-        self.store.action(op['id'], 'finish_history')
         self.t.tick()
         self.t.until(lambda: len(self.t.pending) == 1)
         self.t.complete_fork()
@@ -115,7 +114,7 @@ class LazyTransferContract(unittest.TestCase):
         self.assertEqual(self.t.native_calls, [])
         self.assertEqual(self.t.receipt(op['id'])['members'][self.aid]['phase'], 'unknown')
 
-    def test_finish_history_waits_for_pending_model_list_without_manual_retry(self):
+    def test_automatic_history_waits_for_pending_model_list_without_manual_retry(self):
         from codex_catalog import CatalogPending
         op = self.t.start_transfer()
         original = self.rt.catalog
@@ -125,7 +124,6 @@ class LazyTransferContract(unittest.TestCase):
                 raise CatalogPending('Existing metadata request is pending')
             return original(key)
         self.rt.catalog = catalog
-        self.store.action(op['id'], 'finish_history')
         self.t.tick()
         self.t.until(lambda: not self.store.running)
         member = self.t.receipt(op['id'])['members'][self.aid]
@@ -136,6 +134,33 @@ class LazyTransferContract(unittest.TestCase):
         pending = False
         time.sleep(1.05)
         self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+
+    def test_account_choice_alone_completes_history_once_without_model_input(self):
+        op = self.t.start_transfer()
+        self.assertNotIn('finishHistory', op)
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        repeated = self.store.request(self.aid, self.t.other_key, op['id'])
+        self.assertEqual(repeated['id'], op['id'])
+        self.t.tick()
+        self.assertEqual(len(self.t.pending), 1)
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+        with self.rt.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_events WHERE agent=?', (self.aid,)).fetchone()[0], 0)
+
+    def test_restart_finishes_existing_deferred_history_without_an_extra_action(self):
+        op = self.t.start_transfer()
+        self.assertNotIn('finishHistory', op)
+        self.store = AccountTransfers(self.rt)
+        self.store.copy_history = lambda *args: Path('/fixture/import.jsonl')
+        with self.rt.lock, self.rt.db() as db:
+            self.store.tick(self.rt.records(db, 'agents'))
         self.t.until(lambda: len(self.t.pending) == 1)
         self.t.complete_fork()
         self.t.until(lambda: not self.store.running)

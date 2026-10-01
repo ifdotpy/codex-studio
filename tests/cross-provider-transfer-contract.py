@@ -107,11 +107,9 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(self.member(op)['sourcePendingSettings'], source['pendingSettings'])
         self.export.assert_called_once()
 
-    def test_finish_portable_history_now_uses_original_transfer_without_model_turn(self):
+    def test_automatic_portable_history_uses_original_transfer_without_model_turn(self):
         self.t.drive_lazy_for_tests = False
         op = self.t.start_transfer()
-        self.store.action(op['id'], 'finish_history')
-        self.store.action(op['id'], 'finish_history')
         self.t.tick()
         self.t.until(lambda: len(self.t.pending) == 1)
         self.assertEqual(self.t.pending[0][0], 'thread/start')
@@ -262,6 +260,9 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(len(self.t.pending), 1)
         self.assertEqual(self.member(op)['portableHistory'], self.descriptor)
         self.assertEqual(self.member(op)['nativeParams'], self.t.pending[0][1])
+        # Settle the original fixture worker through its exact receipt.
+        self.t.complete_fork()
+        self.assertEqual(len(self.t.pending), 1)
         restarted.close()
 
     def test_settings_race_reuses_receipt_archive_and_native_parameters(self):
@@ -401,9 +402,10 @@ class PortableTransfers(unittest.TestCase):
         with self.rt.db() as db:
             self.assertFalse(db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending'", (self.aid,)).fetchone())
 
-    def test_failed_auto_resume_enqueues_one_continuation_without_replay(self):
+    def test_first_native_start_of_failed_agent_enqueues_one_continuation_without_replay(self):
         self.t.set_agent(self.aid, status='failed', autoWake=True)
-        op = self.submit()
+        op = self.t.start_transfer()
+        self.t.until(lambda: len(self.t.pending) == 1)
         self.finish(op)
         self.t.tick()
         with self.rt.db() as db:

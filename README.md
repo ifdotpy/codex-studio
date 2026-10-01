@@ -133,10 +133,9 @@ unavailable for Claude. Files remain native attachments or file references.
 
 Existing chats can move between Codex and Claude accounts. Selecting an account
 for a lead starts a team transfer. The chat keeps its identity and displayed
-history. Same-provider idle members rebind immediately, including worker defaults;
-their native history moves the next time they need a native turn.
-For an idle chat, **Move history now** completes the native history transfer
-without sending a message or starting a model reply. The transfer keeps its
+history. Idle members rebind immediately, including worker defaults.
+Their native history transfers automatically in the background after account
+selection, without sending a message or starting a model reply. The transfer keeps its
 original identity when the action is repeated or the page reloads. Active turns are
 interrupted with the destination account named, then move as soon as they stop.
 Workers on another provider stay on their current accounts with the reason shown

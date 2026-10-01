@@ -556,9 +556,7 @@ function ScopedExecutionSettings({
     agent.accountTransfer?.scope === "subagents" ? agent.accountTransfer : null;
   // The snapshot summary is newer than the local response once it arrives.
   const shownTransfer = snapshotTransfer || transfer;
-  const runTeamTransferAction = async (
-    action: "retry" | "cancel" | "finish_history",
-  ) => {
+  const runTeamTransferAction = async (action: "retry" | "cancel") => {
     if (saveLock.current || !shownTransfer?.id) return;
     saveLock.current = true;
     setSaving(true);
