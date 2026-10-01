@@ -33,7 +33,8 @@ try {
       },
     );
     let log = "",
-      timer, follower;
+      timer,
+      follower;
     proc.stderr.on("data", (data) => (log += data));
     const context = await browser.newContext({
       viewport: { width: 1200, height: 900 },
@@ -90,12 +91,35 @@ try {
           }
         };
       });
-      await page.addInitScript(id => { window.__rateTeamId = id; }, lead.id);
+      await page.addInitScript((id) => {
+        window.__rateTeamId = id;
+      }, lead.id);
       await page.goto(origin);
       await page.locator(`[data-chat="${lead.id}"]`).click();
+      await page.waitForFunction(
+        () =>
+          window.__allSources.some(
+            (source) =>
+              source.readyState === 1 && source.url.includes("protocol=2"),
+          ) &&
+          window.__allSources.filter(
+            (source) =>
+              source.readyState === 1 && source.url.includes("protocol=1"),
+          ).length >= 3,
+      );
+      const connections = (view) =>
+        view.evaluate(() =>
+          window.__allSources
+            .filter((source) => source.readyState !== 2)
+            .map((source) => source.url)
+            .sort(),
+        );
+      const cardsOffConnections = await connections(page);
       await page.setViewportSize({ width, height: 900 });
       if (width <= 760) {
-        await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+        await page
+          .getByRole("button", { name: "Chat actions", exact: true })
+          .click();
         await page.getByRole("menuitem", { name: "Team", exact: true }).click();
       } else await page.locator("#team-toggle").click();
       const team = page.locator("#team");
@@ -163,6 +187,11 @@ try {
             ?.textContent.includes("Turn ended"),
         idle.id,
       );
+      assert.deepEqual(
+        await connections(page),
+        cardsOffConnections,
+        "Team cards without values add zero connections",
+      );
       const before = await card(running[0].id).boundingBox();
       const beforeMeter = await meter(running[0].id).boundingBox();
       assert.equal(await meter(running[0].id).innerText(), "");
@@ -185,6 +214,11 @@ try {
               ?.textContent.includes("tok/s"),
           agent.id,
         );
+      assert.deepEqual(
+        await connections(page),
+        cardsOffConnections,
+        "Team cards with values add zero connections",
+      );
       const after = await card(running[0].id).boundingBox();
       const afterMeter = await meter(running[0].id).boundingBox();
       assert.deepEqual(
@@ -233,7 +267,11 @@ try {
         "one batch contains all active workers and excludes idle workers",
       );
       assert.equal(
-        await page.evaluate(() => window.__teamRateSources.length),
+        await page.evaluate(
+          () =>
+            window.__teamRateSources.filter((source) => source.readyState !== 2)
+              .length,
+        ),
         1,
         "one shared workspace connection for all cards",
       );
@@ -251,21 +289,64 @@ try {
         const Native = window.EventSource;
         window.__allSources = [];
         window.EventSource = class extends Native {
-          constructor(...args) { super(...args); window.__allSources.push(this); }
+          constructor(...args) {
+            super(...args);
+            window.__allSources.push(this);
+          }
         };
       });
       await follower.goto(origin);
       await follower.locator(`[data-chat="${lead.id}"]`).click();
-      if (await follower.locator("#team-toggle").getAttribute("aria-expanded") !== "true")
+      if (
+        (await follower
+          .locator("#team-toggle")
+          .getAttribute("aria-expanded")) !== "true"
+      )
         await follower.locator("#team-toggle").click();
       for (const agent of running)
-        await follower.waitForFunction(id => document.querySelector(`#team .token-rate[data-agent="${id}"]`)?.textContent.includes("tok/s"), agent.id);
-      const connections = async view => view.evaluate(() => window.__allSources.filter(source => source.readyState !== 2).length);
-      assert.equal(await connections(page) + await connections(follower), 1, "two tabs share one workspace stream, including rate updates");
-      assert.equal(await follower.locator(`#team .token-rate[data-agent="${idle.id}"]`).innerText(), "");
+        await follower.waitForFunction(
+          (id) =>
+            document
+              .querySelector(`#team .token-rate[data-agent="${id}"]`)
+              ?.textContent.includes("tok/s"),
+          agent.id,
+        );
+      assert.equal(
+        (await page.evaluate(
+          () =>
+            window.__allSources.filter(
+              (source) =>
+                source.readyState !== 2 && source.url.includes("protocol=2"),
+            ).length,
+        )) +
+          (await follower.evaluate(
+            () =>
+              window.__allSources.filter(
+                (source) =>
+                  source.readyState !== 2 && source.url.includes("protocol=2"),
+              ).length,
+          )),
+        1,
+        "two tabs share the existing workspace coordinator for token rates",
+      );
+      assert.equal(
+        await follower
+          .locator(`#team .token-rate[data-agent="${idle.id}"]`)
+          .innerText(),
+        "",
+      );
+      const followerMetersOnConnections = await connections(follower);
+      await follower.locator("#team-close").click();
+      assert.deepEqual(
+        await connections(follower),
+        followerMetersOnConnections,
+        "the follower cards add zero connections",
+      );
       await follower.close();
       follower = undefined;
-      await page.waitForFunction(() => window.__teamRateSources.some(source => source.readyState === 1));
+      await page.waitForFunction(() =>
+        window.__teamRateSources.some((source) => source.readyState === 1),
+      );
       const injectOnBatch = async (rate) =>
         page.evaluate(
           async ({ teamId, ids, rate }) => {
@@ -275,7 +356,18 @@ try {
                 "token-rates",
                 (event) => {
                   const batch = JSON.parse(event.data);
-                  const rates = Object.fromEntries(ids.map((id, index) => [id, { turnId: "fixture-turn", active: true, estimated: false, rate: rate * (index + 1), outputTokens: 1000 }]));
+                  const rates = Object.fromEntries(
+                    ids.map((id, index) => [
+                      id,
+                      {
+                        turnId: "fixture-turn",
+                        active: true,
+                        estimated: false,
+                        rate: rate * (index + 1),
+                        outputTokens: 1000,
+                      },
+                    ]),
+                  );
                   source.dispatchEvent(
                     new MessageEvent("token-rates", {
                       data: JSON.stringify({
@@ -352,10 +444,18 @@ try {
         running[0].id,
       );
       await page.locator("#team-close").click();
-      assert.equal(await page.evaluate(() => window.__teamRateSources.filter(source => source.readyState === 1).length), 1, "closing Team retains the existing shared sync stream");
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.__teamRateSources.filter((source) => source.readyState === 1)
+              .length,
+        ),
+        1,
+        "closing Team retains the existing shared sync stream",
+      );
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${size === 3 ? "compact" : "grouped"} Team cards, ${running.length} active workers, idle hidden, 1 batch/s, 1 shared connection across 2 tabs, tween, reduced motion, stable ${width}px`,
+        `PASS ${size === 3 ? "compact" : "grouped"} Team cards, ${running.length} active workers, idle hidden, 1 batch/s, 0 added connections, 1 coordinator across 2 tabs, tween, reduced motion, stable ${width}px`,
       );
     } catch (error) {
       console.error(

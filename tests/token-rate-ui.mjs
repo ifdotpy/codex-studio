@@ -54,11 +54,25 @@ try {
   await page.addInitScript(() => {
     const Native = window.EventSource;
     window.__rateSources = [];
+    window.__rateDelivery = false;
     window.EventSource = class extends Native {
       constructor(...args) {
         super(...args);
         window.__rateSources.push(this);
-        this.addEventListener("token-rates", event => { window.__lastRateBatch = JSON.parse(event.data); });
+        Native.prototype.addEventListener.call(this, "token-rates", (event) => {
+          window.__lastRateBatch = JSON.parse(event.data);
+        });
+      }
+      addEventListener(name, listener, options) {
+        if (name === "token-rates")
+          return super.addEventListener(
+            name,
+            (event) => {
+              if (window.__rateDelivery) listener.call(this, event);
+            },
+            options,
+          );
+        return super.addEventListener(name, listener, options);
       }
     };
   });
@@ -84,6 +98,28 @@ try {
   await page.locator(`[data-chat="${other.id}"]`).click();
   await meter.waitFor({ state: "attached" });
   assert.equal(await meter.innerText(), "", "no output before the turn");
+  await page.waitForFunction(
+    () =>
+      window.__rateSources.some(
+        (source) =>
+          source.readyState === 1 && source.url.includes("protocol=2"),
+      ) &&
+      window.__rateSources.filter(
+        (source) =>
+          source.readyState === 1 && source.url.includes("protocol=1"),
+      ).length >= 3,
+  );
+  const connections = () =>
+    page.evaluate(() =>
+      window.__rateSources
+        .filter((source) => source.readyState !== 2)
+        .map((source) => source.url)
+        .sort(),
+    );
+  const meterOffConnections = await connections();
+  await page.evaluate(() => {
+    window.__rateDelivery = true;
+  });
   const actor = await start(other.id);
   notify(actor, "item/started", {
     item: { id: "rate-answer", type: "agentMessage", text: "" },
@@ -97,6 +133,11 @@ try {
   );
   assert.match(await meter.innerText(), /≈.*tok\/s/);
   assert.equal(await meter.getAttribute("data-agent"), other.id);
+  assert.deepEqual(
+    await connections(),
+    meterOffConnections,
+    "the footer meter adds zero connections",
+  );
   notify(actor, "thread/tokenUsage/updated", {
     tokenUsage: {
       total: { totalTokens: 120, outputTokens: 80 },
@@ -113,7 +154,10 @@ try {
   await page.waitForFunction(
     () => document.querySelector(".token-rate")?.dataset.active === "false",
   );
-  await page.waitForFunction(id => window.__lastRateBatch?.rates[id]?.active === false, other.id);
+  await page.waitForFunction(
+    (id) => window.__lastRateBatch?.rates[id]?.active === false,
+    other.id,
+  );
   const inject = async (rate) =>
     page.evaluate(
       ({ id, turnId, rate }) => {
@@ -127,9 +171,16 @@ try {
           new MessageEvent("token-rates", {
             data: JSON.stringify({
               ...window.__lastRateBatch,
-              rates: { ...window.__lastRateBatch.rates, [id]: {
-                turnId, active: false, estimated: false, rate, outputTokens: 100,
-              } },
+              rates: {
+                ...window.__lastRateBatch.rates,
+                [id]: {
+                  turnId,
+                  active: false,
+                  estimated: false,
+                  rate,
+                  outputTokens: 100,
+                },
+              },
             }),
           }),
         );
@@ -146,14 +197,29 @@ try {
     () =>
       document.querySelector(".token-rate")?.dataset.reducedMotion === "false",
   );
-  await meter.evaluate(node => {
+  await meter.evaluate((node) => {
     window.__footerTweenValues = [];
-    window.__footerTweenObserver = new MutationObserver(() => window.__footerTweenValues.push(Number(node.textContent.split(" ")[0])));
-    window.__footerTweenObserver.observe(node, { childList: true, subtree: true, characterData: true });
+    window.__footerTweenObserver = new MutationObserver(() =>
+      window.__footerTweenValues.push(Number(node.textContent.split(" ")[0])),
+    );
+    window.__footerTweenObserver.observe(node, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
   });
   await inject(80);
-  await page.waitForFunction(() => document.querySelector("#conversation .token-rate")?.textContent === "80 tok/s");
-  assert.ok(await page.evaluate(() => window.__footerTweenValues.some(value => value > 20 && value < 80)), "the footer renders intermediate tween values");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#conversation .token-rate")?.textContent ===
+      "80 tok/s",
+  );
+  assert.ok(
+    await page.evaluate(() =>
+      window.__footerTweenValues.some((value) => value > 20 && value < 80),
+    ),
+    "the footer renders intermediate tween values",
+  );
   await page.evaluate(() => window.__footerTweenObserver.disconnect());
   await page.emulateMedia({ reducedMotion: "reduce" });
   await inject(140);
@@ -193,7 +259,20 @@ try {
   );
   await page.setViewportSize({ width: 1200, height: 900 });
   await page.locator(`[data-chat="${lead.id}"]`).click();
+  await page.waitForFunction(
+    () =>
+      window.__rateSources.filter(
+        (source) =>
+          source.readyState === 1 && source.url.includes("protocol=1"),
+      ).length >= 3,
+  );
+  const cardsOffConnections = await connections();
   await page.locator("#team-toggle").click();
+  assert.deepEqual(
+    await connections(),
+    cardsOffConnections,
+    "Team cards add zero connections",
+  );
   const team = page.getByRole("complementary", { name: "Team", exact: true });
   await team.locator(`[data-worker="${worker.id}"]`).click();
   await page.waitForFunction(
@@ -253,7 +332,22 @@ try {
     "",
     "the worker rate stays outside the lead chat",
   );
-  assert.equal(await page.evaluate(() => window.__rateSources.filter(source => source.readyState !== 2).length), 1, "footer and Team use only the shared workspace stream");
+  assert.deepEqual(
+    await connections(),
+    cardsOffConnections,
+    "open worker and Team cards add zero connections after return to the lead",
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.__rateSources.filter(
+          (source) =>
+            source.readyState !== 2 && source.url.includes("protocol=2"),
+        ).length,
+    ),
+    1,
+    "token rates use the existing workspace coordinator",
+  );
   assert.deepEqual(errors, []);
   console.log(
     "PASS lead and open worker footer, Team card, estimate correction, reset, tween, reduced motion, 390px stable width",
