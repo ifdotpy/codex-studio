@@ -132,9 +132,6 @@
   #conversation #requests {
     padding: 0;
   }
-  #conversation .agent-panel {
-    margin-block: 0;
-  }
   #conversation .message {
     margin-bottom: 20px;
   }
@@ -186,6 +183,10 @@
   #conversation #requests {
     padding: 0;
   }
+}
+
+#conversation .agent-panel {
+  margin-top: 8px;
 }
 
 /* Questions belong to the transcript, so they cannot shrink its viewport. */
