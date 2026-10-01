@@ -414,11 +414,13 @@ async function acquireProjection(
           )
             throw new TypeError("The device is offline or the page is hidden.");
           let more = true;
-          const [ready] = remoteScope === "state:entities:v1"
+          const markers = remoteScope === "state:entities:v1"
             ? await db.projections.storageInstance.findDocumentsById(
-                ["state:entities:ready"], true)
-            : [undefined];
-          let initialHigh: number | undefined = ready ? undefined : 0;
+                ["state:entities:ready", "state:entities:initial"], true)
+            : [];
+          const ready = markers.find((row) => row.id === "state:entities:ready" && !row._deleted);
+          const initialMarker = markers.find((row) => row.id === "state:entities:initial" && !row._deleted);
+          let initialHigh: number | undefined = ready ? undefined : initialMarker?.seq ?? 0;
           while (more && !stopped) {
             const [previous] =
               await db.projections.storageInstance.findDocumentsById(
@@ -428,7 +430,7 @@ async function acquireProjection(
             const after = previous?.seq ?? 0;
             if (initialHigh !== undefined && previous?.payload) {
               try {
-                initialHigh = JSON.parse(previous.payload).initialHigh || 0;
+                initialHigh = initialMarker?.seq ?? (JSON.parse(previous.payload).initialHigh || 0);
               } catch { /* An old checkpoint continues with delta semantics. */
                 initialHigh = undefined;
               }
@@ -442,6 +444,12 @@ async function acquireProjection(
               initialHigh,
             );
             if (stopped) return;
+            if (remoteScope === "state:entities:v1" && initialHigh !== undefined)
+              await persistProjection(db.projections, {
+                id: "state:entities:initial",
+                payload: "{}",
+                seq: result.initialHigh,
+              });
             for (const document of result.documents as SyncDocument[]) {
               if (
                 remoteScope === "state:entities:v1"

@@ -244,7 +244,8 @@ class SyncStore:
                     sync_event_window(db)
                     sync_monitor_window(db)
                     high = max_seq(db)
-                    initial_high = min(high, max(0, int(initial_high))) if fresh and after else high
+                    initial_high = (min(high, max(0, int(initial_high)))
+                                    if fresh and int(initial_high) > 0 else high)
                     # A new browser has no rows to remove. Existing checkpoints
                     # still receive tombstones through the ordinary delta path.
                     rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities

@@ -230,10 +230,19 @@ with tempfile.TemporaryDirectory() as directory:
     assert all(not row["_deleted"] for row in fresh["documents"])
     assert fresh["checkpoint"]["seq"] == fresh["maxSeq"]
     with connect() as db:
+        assert put(db, "agent", "in-flight", {"id": "in-flight", "name": "Pending"})
+    first_attempt = store.pull("state:entities:v1", fresh=True, limit=500)
+    with connect() as db:
+        assert put(db, "agent", "in-flight", {}, deleted=True)
+    retried = store.pull("state:entities:v1", fresh=True, limit=500,
+                         initial_high=first_attempt["initialHigh"])
+    assert any(row["id"] == "entity:agent:in-flight" and row["_deleted"]
+               for row in retried["documents"])
+    with connect() as db:
         assert put(db, "agent", "later", {"id": "later", "name": "Later"})
         assert put(db, "agent", "later", {}, deleted=True)
-    delta = store.pull("state:entities:v1", after=fresh["checkpoint"]["seq"],
-                       fresh=True, initial_high=fresh["initialHigh"])
+    delta = store.pull("state:entities:v1", after=retried["checkpoint"]["seq"],
+                       fresh=True, initial_high=retried["initialHigh"])
     assert [row["id"] for row in delta["documents"]] == ["entity:agent:later"]
     assert delta["documents"][0]["_deleted"]
     restarted = SyncStore(connect, lambda: snapshot, lambda _key: {})
