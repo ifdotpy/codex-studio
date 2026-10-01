@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Monitor outcomes retain their workspace lease until the native command exits."""
 import concurrent.futures
+import base64
 import fcntl
 import importlib.util
 import json
@@ -8,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -48,6 +50,9 @@ class MonitorServer(fixture.FakeServer):
             return super().submit(method, params)
         future = concurrent.futures.Future()
         self.calls.append((method, params))
+        if params.get("processId", "").startswith("liveness:"):
+            future.set_result({"exitCode": 0, "stdout": "INSTANCE_TERMINATED", "stderr": ""})
+            return future
         self.commands[params["processId"]] = future
         if self.command_submit_error:
             raise OSError(self.command_submit_error)
@@ -105,8 +110,8 @@ class MonitorLifecycleContract(unittest.TestCase):
             self.assertFalse(thread.is_alive(), "The fixture monitor worker did not stop")
         self.temp.cleanup()
 
-    def monitor(self, interactive=False):
-        result = self.runtime.monitor(self.agent["id"], {"command": "fixture-command", "timeout_ms": 1000, "interactive": interactive}, approved=True)
+    def monitor(self, interactive=False, **options):
+        result = self.runtime.monitor(self.agent["id"], {"command": "fixture-command", "timeout_ms": 1000, "interactive": interactive, **options}, approved=True)
         self.assertTrue(self.server.command_wait_entered.wait(3))
         return result["id"]
 
@@ -150,6 +155,57 @@ class MonitorLifecycleContract(unittest.TestCase):
         fixture.eventually(lambda: self.record(key)["status"] == "cancelled")
         self.assertEqual(self.record(key)["exitCode"], 130)
         self.assertEqual(len(self.exits(key)), 1)
+
+    def test_errors_only_filter_still_wakes_for_wrapper_success(self):
+        result = self.monitor(wake_on="failure", command="disk-guard-wrapper build")
+        key = result
+        self.server.finish(key, 0)
+        fixture.eventually(lambda: self.record(key)["status"] == "completed")
+        self.assertEqual(len(self.exits(key)), 1)
+
+    def test_monitor_stall_wakes_once_per_quiet_period_and_after_restart(self):
+        key = self.monitor(stall_timeout_seconds=1800)
+        with self.runtime.lock, self.runtime.db() as db:
+            monitor = self.record(key)
+            monitor.update(activityAt=time.time() - 1860, activityGeneration=1)
+            self.runtime.put(db, "monitors", monitor)
+        self.runtime.monitors_tick()
+        self.runtime.monitors_tick()
+        def stalls():
+            with self.runtime.db() as db:
+                return [dict(row) for row in db.execute(
+                    "SELECT * FROM runtime_events WHERE id LIKE ?", ("monitor-stall:" + key + ":%",))]
+        fixture.eventually(lambda: len(stalls()) == 1)
+        chunk = base64.b64encode(b"new output").decode()
+        self.runtime.output({"processId": key, "deltaBase64": chunk})
+        with self.runtime.lock, self.runtime.db() as db:
+            monitor = self.record(key)
+            monitor["activityAt"] = time.time() - 1860
+            self.runtime.put(db, "monitors", monitor)
+        self.runtime.monitors_tick()
+        fixture.eventually(lambda: len(stalls()) == 2)
+        self.assertEqual(len(stalls()), 2)
+        old_runtime = self.runtime
+        old_runtime.close()
+        self.runtime = Runtime(Path(self.temp.name), MonitorServer)
+        self.assertEqual(len(stalls()), 2)
+
+    def test_monitor_stall_event_includes_liveness_result(self):
+        key = self.monitor(stall_timeout_seconds=1800, liveness_command="describe-instance")
+        with self.runtime.lock, self.runtime.db() as db:
+            monitor = self.record(key)
+            monitor.update(activityAt=time.time() - 1860, activityGeneration=1)
+            self.runtime.put(db, "monitors", monitor)
+        self.runtime.monitors_tick()
+        self.runtime.monitors_tick()
+        def stall():
+            with self.runtime.db() as db:
+                row = db.execute("SELECT text FROM runtime_events WHERE id=?",
+                    (f"monitor-stall:{key}:1",)).fetchone()
+                return json.loads(row[0]) if row else None
+        fixture.eventually(lambda: stall() is not None)
+        self.assertEqual(stall()["livenessResult"],
+            {"exitCode": 0, "output": "INSTANCE_TERMINATED"})
 
     def test_cancelled_exit_is_delivered_after_owner_epoch_stops(self):
         key = self.monitor()
@@ -200,7 +256,7 @@ class MonitorLifecycleContract(unittest.TestCase):
         self.assertEqual(self.record(key)["exitCode"], 9)
         self.assertEqual(len(self.exits(key)), 1)
 
-    def test_late_result_after_disconnect_does_not_claim_success_or_wake(self):
+    def test_lost_process_after_disconnect_wakes_once_without_inferred_exit_code(self):
         self.server.timeout_commands = True
         key = self.monitor()
         fixture.eventually(lambda: bool(self.record(key).get("error")))
@@ -211,7 +267,12 @@ class MonitorLifecycleContract(unittest.TestCase):
         for thread in self.monitor_threads:
             thread.join(3)
         self.assertEqual(self.record(key)["status"], "lost")
-        self.assertEqual(self.exits(key), [])
+        exits = self.exits(key)
+        self.assertEqual(len(exits), 1)
+        payload = json.loads(exits[0]["text"])
+        self.assertEqual(payload["status"], "lost")
+        self.assertIsNone(payload["exitCode"])
+        self.assertEqual(exits[0]["status"], "pending")
 
     def test_replayed_monitor_cannot_change_terminal_interactivity(self):
         body = {"command": "fixture-command", "timeout_ms": 1000, "interactive": False}

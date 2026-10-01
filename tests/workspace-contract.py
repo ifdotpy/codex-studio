@@ -943,6 +943,61 @@ class WorkspaceContract(unittest.TestCase):
             "A watch should queue the event without calling a model",
         )
 
+    def test_file_watch_stall_wakes_once_per_quiet_period(self):
+        lead = self.lead()
+        watched = self.project / "quiet.txt"
+        watched.write_text("initial")
+        rule = self.runtime.rules({"agent": lead["id"], "name": "Quiet file",
+            "kind": "file", "path": "quiet.txt", "stallTimeoutSeconds": 30})
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.rule_record(rule["id"])
+            current["fileActivityAt"] = time.time() - 31
+            self.runtime.put(db, "rules", current)
+        self.runtime.rules_tick()
+        self.runtime.rules_tick()
+        def stalls():
+            return [e for e in self.events(lead, "rule_stall") if e["id"].startswith("rule-stall:" + rule["id"] + ":")]
+        eventually(lambda: len(stalls()) == 1)
+        self.assertEqual(self.runtime.agent(lead["id"])["status"], "queued")
+        self.assertIn("file unchanged", stalls()[0]["text"])
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.rule_record(rule["id"])
+            current.update(fileActivityAt=time.time() - 31, nextAt=time.time() - 1)
+            self.runtime.put(db, "rules", current)
+        watched.write_text("new content")
+        self.runtime.rules_tick()
+        self.assertEqual(len(stalls()), 1)
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.rule_record(rule["id"])
+            current["fileActivityAt"] = time.time() - 31
+            self.runtime.put(db, "rules", current)
+        self.runtime.rules_tick()
+        eventually(lambda: len(stalls()) == 2)
+
+    def test_file_watch_liveness_result_is_in_stall_event(self):
+        lead = self.lead()
+        watched = self.project / "probe.txt"
+        watched.write_text("initial")
+        rule = self.runtime.rules({"agent": lead["id"], "name": "Probe file",
+            "kind": "file", "path": "probe.txt", "stallTimeoutSeconds": 30,
+            "livenessCommand": "describe-instance"})
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.rule_record(rule["id"])
+            current["fileActivityAt"] = time.time() - 31
+            self.runtime.put(db, "rules", current)
+        original_monitor = self.runtime.monitor
+        def fake_monitor(agent_id, data, key=None, approved=False, epoch=None, rule=None):
+            self.assertEqual(data["command"], "describe-instance")
+            self.runtime.rule_finished(rule["id"], 7, None, "INSTANCE_TERMINATED")
+        self.runtime.monitor = fake_monitor
+        self.runtime.rules_tick()
+        eventually(lambda: bool(self.events(lead, "rule_stall")))
+        payload = json.loads(self.events(lead, "rule_stall")[0]["text"])
+        self.assertEqual(self.runtime.agent(lead["id"])["status"], "queued")
+        self.assertEqual(payload["livenessExitCode"], 7)
+        self.assertEqual(payload["livenessResult"], "INSTANCE_TERMINATED")
+        self.runtime.monitor = original_monitor
+
     def test_script_rule_suppresses_false_output_and_nonzero_exit(self):
         lead = self.runtime.prepare(self.lead())
         self.agent_update(lead, approvalPolicy="never")

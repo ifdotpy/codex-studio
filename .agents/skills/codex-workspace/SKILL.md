@@ -87,10 +87,17 @@ another process. Inspect worker results and diffs before acceptance or integrati
 ## Monitors and messages
 
 Use `orchestration_monitor` for long commands. The server waits without model
-calls and delivers an exit event. Read the exit code, status, and output before
-claiming success. Inspect an uncertain command result before attempting a rerun.
-Use `wake_on=failure` only when a successful exit needs no agent follow-up.
-Set `success_exit_codes` when a nonzero code means success, for example `[0, 1]` for `grep` or `diff`.
+calls and delivers an event for every command exit, including success, failure,
+signal, or a lost process. `wake_on` cannot suppress an exit event. Read the exit
+code, status, and output before claiming success. Inspect an uncertain command
+result before attempting a rerun. Set `success_exit_codes` when a nonzero code
+means success, for example `[0, 1]` for `grep` or `diff`.
+Monitors wake after no output for `stall_timeout_seconds` (default 1800 seconds).
+Set it to `0` to disable stall wakes. `orchestration_watch` file rules wake
+after no file change for `stallTimeoutSeconds` (default 1800 seconds); set it
+to `0` to disable them. Set `liveness_command` on a monitor or
+`livenessCommand` on a file rule to run a sandboxed check at the stall point.
+The stall event includes its result. One stall event is sent per quiet period.
 Leads record verified status in their PROGRESS.md file. Workers do not use this file.
 
 For an optional low-worker alert, the orchestrator saves an `orchestration_watch`

@@ -140,8 +140,9 @@ TOOLS = [
           "limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": TEXT}),
     tool("orchestration_monitor", "Run a command under this thread's sandbox and wait "
          "outside the model. Returns a watch id immediately. At process exit you receive "
-         "one event with exit code, bounded output and log path. Finish your turn while waiting. "
-         "wake_on=failure skips successful exit notifications; failures still wake you. Use this only when success requires no further agent work. "
+         "one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. "
+         "wake_on cannot suppress exit events. A quiet process wakes you after stall_timeout_seconds (default 1800, 0 disables stall wakes). "
+         "Finish your turn while waiting. "
          "success_exit_codes lists the exit codes that mean success (default [0]); use [0, 1] for grep or diff. "
          "The thread's approval policy applies; a required approval appears in the canvas.",
          {"command": TEXT, "wake_on": {"type": "string", "enum": ["exit", "failure"]},
@@ -176,6 +177,8 @@ for definition in TOOLS:
         definition["description"] += " Supply a stable request_id for an instruction. Reuse it only for the exact same target and text. Recover the receipt before retrying."
     if definition["name"] == "orchestration_monitor":
         definition["inputSchema"]["properties"]["interactive"] = {"type": "boolean"}
+        definition["inputSchema"]["properties"]["stall_timeout_seconds"] = {"type": "integer", "minimum": 0, "maximum": 31536000}
+        definition["inputSchema"]["properties"]["liveness_command"] = {"type": "string", "maxLength": 12000}
     if definition["name"] == "orchestration_spawn":
         definition["inputSchema"]["properties"]["request_id"] = {"type": "string", "maxLength": 200}
         definition["description"] += " Supply a stable request_id for recovery across turns. Reuse it only for the exact same batch; query orchestration_request before any retry."
@@ -1245,6 +1248,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if m["status"] in {"running", "approval", "starting"}:
                     m.update(status="lost", error="Server restarted. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", m)
+                    self._monitor_exit_event(db, self.agent(m["agent"], db), m)
             for r in self.records(db, "requests"):
                 if r["status"] == "answering":
                     r.update(status="uncertain", answerError="Server restarted before answer delivery completed")
@@ -1929,6 +1933,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if monitor.get("agent") in ids and monitor["status"] in {"running", "starting", "approval"}:
                     monitor.update(status="lost", finished=time.time(), error="Codex disconnected. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", monitor)
+                    self._monitor_exit_event(db, self.agent(monitor["agent"], db), monitor)
             for r in self.records(db, "requests"):
                 if (r.get("agent") in ids or r.get("accountKey", "default") == account_key) and r["status"] == "pending":
                     # Local requests without account metadata are owned by their agent.
@@ -3271,6 +3276,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.closed:
                 break
             try:
+                self.monitors_tick()
                 self.rules_tick()
                 self.capacity_tick()
                 self.usage_resume_tick()
@@ -5682,6 +5688,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("success_exit_codes must list 1 to 16 exit codes from 0 to 255")
         success = sorted(set(success))
         timeout = data.get("timeout_ms", 3600000)
+        stall_timeout = data.get("stall_timeout_seconds", 1800)
+        if type(stall_timeout) is not int or not 0 <= stall_timeout <= 31536000:
+            raise ValueError("stall_timeout_seconds must be 0 to 31536000")
+        liveness_command = data.get("liveness_command", "")
+        if not isinstance(liveness_command, str) or len(liveness_command) > 12000:
+            raise ValueError("liveness_command must be 0 to 12000 characters")
+        liveness_command = liveness_command.strip()
         if not isinstance(command, str) or not 1 <= len(command.strip()) <= 12000:
             raise ValueError("Supply a command with 1 to 12000 characters")
         if not isinstance(timeout, int) or not 1000 <= timeout <= 86400000:
@@ -5691,7 +5704,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if row:
                 previous = json.loads(row[0])
-                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("wakeOn", "exit"), previous.get("successExitCodes", [0])) != (agent_id, command, timeout, bool(data.get("interactive")), wake_on, success):
+                if (previous["agent"], previous["command"], previous["timeout_ms"], bool(previous.get("interactive")), previous.get("wakeOn", "exit"), previous.get("successExitCodes", [0]), previous.get("stallTimeoutSeconds", 1800), previous.get("livenessCommand", "")) != (agent_id, command, timeout, bool(data.get("interactive")), wake_on, success, stall_timeout, liveness_command):
                     raise ValueError("This monitor request id has different content")
                 return previous
             a = self.agent(agent_id, db)
@@ -5725,6 +5738,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "command": command,
                 "cwd": a["cwd"],
                 "timeout_ms": timeout,
+                "stallTimeoutSeconds": stall_timeout,
+                "livenessCommand": liveness_command,
+                "activityAt": time.time(),
+                "activityGeneration": 0,
+                "stallWakeGeneration": -1,
                 "wakeOn": wake_on,
                 "successExitCodes": success,
                 "status": "starting" if approved else "approval",
@@ -5822,7 +5840,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # Stop cannot overtake command submission on the same connection.
                 operation = {"agent": a["id"], "epoch": m["epoch"], "accountKey": a.get("accountKey", "default"),
                              "connectionId": self.connection_ids[a.get("accountKey", "default")]}
-                current_monitor.update(status="running", cwd=a["cwd"], error=None, operation=operation, configurationPending=False)
+                current_monitor.update(status="running", cwd=a["cwd"], error=None, operation=operation,
+                    configurationPending=False, activityAt=time.time(), activityGeneration=0,
+                    stallWakeGeneration=-1)
                 self.put(db, "monitors", current_monitor)
                 db.commit()
                 submitted = self.submit_reserved(server, "command/exec", params,
@@ -5915,6 +5935,97 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             path.chmod(0o600)
             m["bytes"] += len(chunk)
             m["tail"] = (m["tail"] + chunk.decode("utf-8", errors="replace"))[-12000:]
+            if chunk:
+                m["activityAt"] = time.time()
+                m["activityGeneration"] = m.get("activityGeneration", 0) + 1
+            self.put(db, "monitors", m)
+
+    def monitors_tick(self):
+        now = time.time()
+        probes = []
+        with self.lock, self.db() as db:
+            for row in db.execute("SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='running'"):
+                m = json.loads(row[0])
+                timeout = m.get("stallTimeoutSeconds", 1800)
+                generation = m.get("activityGeneration", 0)
+                if (m.get("stallProbeGeneration") == generation
+                        and now - m.get("stallProbeStarted", now) >= 90):
+                    m.pop("stallProbeGeneration", None)
+                if (not timeout or generation <= m.get("stallWakeGeneration", -1)
+                        or m.get("stallProbeGeneration") == generation
+                        or now - m.get("activityAt", m.get("created", now)) < timeout):
+                    continue
+                a = self.agent(m["agent"], db)
+                if a.get("deletedAt") or not a.get("autoWake") or a["epoch"] != m["epoch"]:
+                    continue
+                quiet = max(0, int(now - m.get("activityAt", m.get("created", now))))
+                m["lastStallAt"] = now
+                if m.get("livenessCommand"):
+                    m["stallProbeGeneration"] = generation
+                    m["stallProbeStarted"] = now
+                    probes.append((m["id"], generation, quiet, m["livenessCommand"], m["agent"], m["epoch"]))
+                else:
+                    text = json.dumps({"id": m["id"], "status": "running",
+                        "message": f"no output for {quiet // 60} min; process still running",
+                        "quietSeconds": quiet})
+                    self.enqueue_recovery_event(db, a, "monitor_stall", text,
+                                                f"monitor-stall:{m['id']}:{generation}")
+                    m["stallWakeGeneration"] = generation
+                self.put(db, "monitors", m)
+        for args in probes:
+            self.pool.submit(self.monitor_stall_probe, *args)
+
+    def monitor_stall_probe(self, key, generation, quiet, command, agent_id, epoch):
+        result = {}
+        try:
+            a = self.agent(agent_id)
+            a = self.prepare(a)
+            if not self.monitor_auto_approved(a):
+                raise PermissionError("Liveness command not run because monitor approval is required.")
+            server = self.connect(a.get("accountKey", "default"))
+            config = server.wait(self.submit_reserved(server, "config/read",
+                {"cwd": a["cwd"], "includeLayers": False}))
+            native_command = monitor_command(server, command, a["cwd"], config=config["config"])
+            params = {"command": native_command, "cwd": a["cwd"],
+                "processId": f"liveness:{key}:{generation}", "streamStdoutStderr": True,
+                "timeoutMs": 60000}
+            policy = self.turn_permissions(a).get("sandboxPolicy")
+            if policy is not None:
+                params["sandboxPolicy"] = policy
+            elif not a.get("sandbox"):
+                raise ValueError("Thread sandbox is unknown; refusing liveness command")
+            elif (a.get("profile") or {}).get("id"):
+                params["permissionProfile"] = a["profile"]["id"]
+            else:
+                params["sandboxPolicy"] = a["sandbox"]
+            submitted = self.submit_reserved(server, "command/exec", params,
+                operation_id=f"liveness:{key}:{generation}")
+            response = server.wait(submitted, timeout=65)
+            result = {"exitCode": response.get("exitCode"),
+                "output": (response.get("stdout", "") + response.get("stderr", ""))[-12000:]}
+        except Exception as error:
+            result = {"error": str(error)}
+        with self.lock, self.db() as db:
+            if self.closed:
+                return
+            row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
+            if not row:
+                return
+            m = json.loads(row[0])
+            a = self.agent(agent_id, db)
+            if (m.get("status") != "running" or m.get("stallProbeGeneration") != generation
+                    or m.get("activityGeneration", 0) != generation
+                    or a.get("deletedAt") or a["epoch"] != epoch):
+                return
+            quiet = int(time.time() - m.get("activityAt", time.time()))
+            payload = {"id": key, "status": "running",
+                "message": f"no output for {quiet // 60} min; process still running",
+                "quietSeconds": quiet, "livenessResult": result}
+            self.enqueue_recovery_event(db, a, "monitor_stall", json.dumps(payload),
+                f"monitor-stall:{key}:{generation}")
+            m["stallWakeGeneration"] = generation
+            m.pop("stallProbeGeneration", None)
+            m["lastLivenessResult"] = result
             self.put(db, "monitors", m)
 
     def finish_monitor(self, key, code, error, *, operation=None):
@@ -6003,9 +6114,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def enqueue_recovery_event(self, db, a, kind, text, key):
         restart = a.get("restartRecovery") or {}
+        disconnect = a.get("disconnectRecovery") or {}
         pending_recovery = (not a.get("autoWake") and a.get("status") != "paused"
             and not a.get("deletedAt") and restart.get("stage") == "pending" and restart.get("autoWake")
             and all(restart.get(field) == a.get(field) for field in ("epoch", "accountKey", "threadId")))
+        pending_recovery = pending_recovery or (not a.get("autoWake") and a.get("status") != "paused"
+            and not a.get("deletedAt") and disconnect.get("autoWake")
+            and all(disconnect.get(source) == a.get(target) for source, target in
+                    (("epoch", "epoch"), ("accountKey", "accountKey"), ("threadId", "threadId"))))
         if not pending_recovery:
             return self.enqueue(db, a, kind, text, key)
         # Save the event now; only native reconciliation can reopen dispatch.
@@ -6016,8 +6132,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def _monitor_exit_event(self, db, a, m, *, wake=True):
         if m.get("ruleId"):
-            return
-        if m.get("wakeOn", "exit") != "exit" and m["status"] == "completed":
             return
         text = json.dumps({k: m.get(k) for k in
             ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")})
@@ -6041,8 +6155,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.db() as db:
             m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
             if m["status"] in {"cancelled", "lost", "completed", "failed"}:
-                if m["status"] != "lost":
-                    self._monitor_exit_event(db, self.agent(m["agent"], db), m, wake=False)
+                self._monitor_exit_event(db, self.agent(m["agent"], db), m)
                 return
             cancelled = bool(m.get("cancelRequested"))
             status = ("cancelled" if cancelled else "failed"
