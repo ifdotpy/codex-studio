@@ -97,6 +97,15 @@
   gap: 22px;
 }
 
+.studio-settings-tabs > .mantine-Tabs-list {
+  margin-bottom: 4px;
+}
+
+.studio-appearance-groups {
+  display: grid;
+  gap: 22px;
+}
+
 .studio-settings-panel .settings-group {
   gap: 12px;
 }
@@ -114,6 +123,24 @@
 
 .studio-settings-panel .settings-field > .mantine-NativeSelect-root {
   width: 100%;
+}
+
+.studio-preference-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.studio-preference-toggle input {
+  accent-color: var(--mantine-primary-color-filled);
+}
+
+[data-show-message-avatars="false"] .chat-message-author .agent-avatar {
+  display: none;
+}
+
+[data-show-message-avatars="false"] .chat-message-author:not(:has(strong)) {
+  display: none;
 }
 
 .studio-range-field {

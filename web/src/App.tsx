@@ -15,6 +15,7 @@ import {
   Menu,
   NativeSelect,
   Slider,
+  Tabs,
   useMantineColorScheme,
   TextInput,
   UnstyledButton,
@@ -1366,7 +1367,10 @@ export default function App() {
           }
         }}
       />
-      <main className="workspace">
+      <main
+        className="workspace"
+        data-show-message-avatars={studioPreferences.showMessageAvatars}
+      >
         <header className="workspace-header simple-workspace-header">
           <ActionIcon
             id="sidebar-toggle"
@@ -1824,172 +1828,215 @@ export default function App() {
         title="Studio settings"
       >
         <div className="studio-settings-panel" data-testid="studio-settings">
-          <section className="settings-group" aria-label="Studio account">
-            <h2>Default account</h2>
-            <p className="settings-help">
-              Used for new chats. Changing this setting does not change the
-              account on the current chat.
-            </p>
-            <Accounts
-              onModalOpenChange={setAccountModalOpen}
-              state={accounts}
-              accountKey={accounts.data.defaultAccountKey}
-              onError={notify}
-              changeAccount={async (key) => {
-                accounts.setData(
-                  await api("/api/accounts/default", { account_key: key }),
-                );
-              }}
-            />
-          </section>
-          <section className="settings-group" aria-label="Studio appearance">
-            <h2>Appearance</h2>
-            <div className="settings-field">
-              <span className="settings-label">Theme</span>
-              <NativeSelect
-                aria-label="Studio theme"
-                value={studioPreferences.theme}
-                data={[
-                  { value: "auto", label: "System" },
-                  { value: "light", label: "Light" },
-                  { value: "dark", label: "Dark" },
-                ]}
-                onChange={(event) =>
-                  updateStudioPreferences({
-                    ...studioPreferences,
-                    theme: event.currentTarget
-                      .value as StudioPreferences["theme"],
-                  })
-                }
-              />
-            </div>
-            <div className="settings-field">
-              <span className="settings-label">Font family</span>
-              <NativeSelect
-                aria-label="Studio font family"
-                value={studioPreferences.fontFamily}
-                data={Object.entries(fontFamilies).map(([value, font]) => ({
-                  value,
-                  label: font.label,
-                }))}
-                onChange={(event) =>
-                  updateStudioPreferences({
-                    ...studioPreferences,
-                    fontFamily: event.currentTarget
-                      .value as StudioPreferences["fontFamily"],
-                  })
-                }
-              />
-            </div>
-            <label className="studio-range-field">
-              <span>
-                Sidebar text{" "}
-                <output>{studioPreferences.sidebarFontSize}px</output>
-              </span>
-              <Slider
-                thumbLabel="Sidebar font size"
-                min={12}
-                max={24}
-                step={1}
-                value={studioPreferences.sidebarFontSize}
-                onChange={(value) =>
-                  updateStudioPreferences({
-                    ...studioPreferences,
-                    sidebarFontSize: value,
-                  })
-                }
-              />
-            </label>
-            <label className="studio-range-field">
-              <span>
-                Main text <output>{studioPreferences.mainFontSize}px</output>
-              </span>
-              <Slider
-                thumbLabel="Main font size"
-                min={12}
-                max={24}
-                step={1}
-                value={studioPreferences.mainFontSize}
-                onChange={(value) =>
-                  updateStudioPreferences({
-                    ...studioPreferences,
-                    mainFontSize: value,
-                  })
-                }
-              />
-            </label>
-            <label className="studio-range-field">
-              <span>
-                Transcript width{" "}
-                <output>{studioPreferences.contentWidth}%</output>
-              </span>
-              <Slider
-                thumbLabel="Transcript width"
-                min={60}
-                max={100}
-                step={1}
-                value={studioPreferences.contentWidth}
-                onChange={(value) =>
-                  updateStudioPreferences({
-                    ...studioPreferences,
-                    contentWidth: value,
-                  })
-                }
-              />
-              <small>
-                Applies to messages, progress, and composer. Narrow screens use
-                the full available width.
-              </small>
-            </label>
-          </section>
-          <section className="settings-group" aria-label="Sidebar shortcut">
-            <h2>Keyboard shortcut</h2>
-            <div className="settings-field">
-              <span className="settings-label">Toggle sidebar</span>
-              <TextInput
-                aria-label="Toggle sidebar shortcut"
-                readOnly
-                value={formatSidebarShortcut(studioPreferences.sidebarShortcut)}
-                onKeyDown={(event) => {
-                  if (event.key === "Tab" || event.key === "Escape") {
-                    setSidebarShortcutError("");
-                    return;
-                  }
-                  if (["Control", "Meta", "Alt", "Shift"].includes(event.key))
-                    return;
-                  if (event.ctrlKey || event.metaKey) event.stopPropagation();
-                  event.preventDefault();
-                  const mods = [
-                    event.metaKey ? "Meta" : "",
-                    event.ctrlKey ? "Control" : "",
-                    event.altKey ? "Alt" : "",
-                    event.shiftKey ? "Shift" : "",
-                  ].filter(Boolean);
-                  const candidate = [...mods, event.key].join("+");
-                  if (!parseSidebarShortcut(candidate)) {
-                    setSidebarShortcutError(
-                      "Choose a letter or number with Ctrl or ⌘. Browser-reserved shortcuts cannot be used.",
+          <Tabs defaultValue="accounts" className="studio-settings-tabs">
+            <Tabs.List aria-label="Studio settings">
+              <Tabs.Tab value="accounts">Accounts</Tabs.Tab>
+              <Tabs.Tab value="appearance">Appearance</Tabs.Tab>
+              <Tabs.Tab value="hotkeys">Hotkeys</Tabs.Tab>
+            </Tabs.List>
+            <Tabs.Panel value="accounts" pt="md">
+              <section className="settings-group" aria-label="Studio account">
+                <h2>Default account</h2>
+                <p className="settings-help">
+                  Used for new chats. Changing this setting does not change the
+                  account on the current chat.
+                </p>
+                <Accounts
+                  onModalOpenChange={setAccountModalOpen}
+                  state={accounts}
+                  accountKey={accounts.data.defaultAccountKey}
+                  onError={notify}
+                  changeAccount={async (key) => {
+                    accounts.setData(
+                      await api("/api/accounts/default", { account_key: key }),
                     );
-                    return;
-                  }
-                  setSidebarShortcutError("");
-                  updateStudioPreferences({
-                    ...studioPreferences,
-                    sidebarShortcut: candidate,
-                  });
-                }}
-                onFocus={() =>
-                  setSidebarShortcutError(
-                    "Press a modifier and a letter or number to set the shortcut.",
-                  )
-                }
-                onBlur={() => setSidebarShortcutError("")}
-              />
-              {sidebarShortcutError && (
-                <small role="status">{sidebarShortcutError}</small>
-              )}
-            </div>
-          </section>
+                  }}
+                />
+              </section>
+            </Tabs.Panel>
+            <Tabs.Panel value="appearance" pt="md">
+              <div className="studio-appearance-groups">
+                <section className="settings-group" aria-label="Theme">
+                  <h2>Theme</h2>
+                  <div className="settings-field">
+                    <span className="settings-label">Color scheme</span>
+                    <NativeSelect
+                      aria-label="Studio theme"
+                      value={studioPreferences.theme}
+                      data={[
+                        { value: "auto", label: "System" },
+                        { value: "light", label: "Light" },
+                        { value: "dark", label: "Dark" },
+                      ]}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          theme: event.currentTarget
+                            .value as StudioPreferences["theme"],
+                        })
+                      }
+                    />
+                  </div>
+                </section>
+                <section className="settings-group" aria-label="Fonts">
+                  <h2>Fonts</h2>
+                  <div className="settings-field">
+                    <span className="settings-label">Font family</span>
+                    <NativeSelect
+                      aria-label="Studio font family"
+                      value={studioPreferences.fontFamily}
+                      data={Object.entries(fontFamilies).map(
+                        ([value, font]) => ({ value, label: font.label }),
+                      )}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          fontFamily: event.currentTarget
+                            .value as StudioPreferences["fontFamily"],
+                        })
+                      }
+                    />
+                  </div>
+                  <label className="studio-range-field">
+                    <span>
+                      Sidebar text{" "}
+                      <output>{studioPreferences.sidebarFontSize}px</output>
+                    </span>
+                    <Slider
+                      thumbLabel="Sidebar font size"
+                      min={12}
+                      max={24}
+                      step={1}
+                      value={studioPreferences.sidebarFontSize}
+                      onChange={(value) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          sidebarFontSize: value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="studio-range-field">
+                    <span>
+                      Main text{" "}
+                      <output>{studioPreferences.mainFontSize}px</output>
+                    </span>
+                    <Slider
+                      thumbLabel="Main font size"
+                      min={12}
+                      max={24}
+                      step={1}
+                      value={studioPreferences.mainFontSize}
+                      onChange={(value) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          mainFontSize: value,
+                        })
+                      }
+                    />
+                  </label>
+                </section>
+                <section className="settings-group" aria-label="Column">
+                  <h2>Column</h2>
+                  <label className="studio-range-field">
+                    <span>
+                      Transcript width{" "}
+                      <output>{studioPreferences.contentWidth}%</output>
+                    </span>
+                    <Slider
+                      thumbLabel="Transcript width"
+                      min={60}
+                      max={100}
+                      step={1}
+                      value={studioPreferences.contentWidth}
+                      onChange={(value) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          contentWidth: value,
+                        })
+                      }
+                    />
+                    <small>
+                      Applies to messages, progress, and composer. Narrow
+                      screens use the full available width.
+                    </small>
+                  </label>
+                </section>
+                <section className="settings-group" aria-label="Messages">
+                  <h2>Messages</h2>
+                  <label className="settings-field studio-preference-toggle">
+                    <span className="settings-label">Show message avatars</span>
+                    <input
+                      aria-label="Show message avatars"
+                      type="checkbox"
+                      checked={studioPreferences.showMessageAvatars}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          showMessageAvatars: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                  </label>
+                </section>
+              </div>
+            </Tabs.Panel>
+            <Tabs.Panel value="hotkeys" pt="md">
+              <section className="settings-group" aria-label="Sidebar shortcut">
+                <h2>Keyboard shortcut</h2>
+                <div className="settings-field">
+                  <span className="settings-label">Toggle sidebar</span>
+                  <TextInput
+                    aria-label="Toggle sidebar shortcut"
+                    readOnly
+                    value={formatSidebarShortcut(
+                      studioPreferences.sidebarShortcut,
+                    )}
+                    onKeyDown={(event) => {
+                      if (event.key === "Tab" || event.key === "Escape") {
+                        setSidebarShortcutError("");
+                        return;
+                      }
+                      if (
+                        ["Control", "Meta", "Alt", "Shift"].includes(event.key)
+                      )
+                        return;
+                      if (event.ctrlKey || event.metaKey)
+                        event.stopPropagation();
+                      event.preventDefault();
+                      const mods = [
+                        event.metaKey ? "Meta" : "",
+                        event.ctrlKey ? "Control" : "",
+                        event.altKey ? "Alt" : "",
+                        event.shiftKey ? "Shift" : "",
+                      ].filter(Boolean);
+                      const candidate = [...mods, event.key].join("+");
+                      if (!parseSidebarShortcut(candidate)) {
+                        setSidebarShortcutError(
+                          "Choose a letter or number with Ctrl or ⌘. Browser-reserved shortcuts cannot be used.",
+                        );
+                        return;
+                      }
+                      setSidebarShortcutError("");
+                      updateStudioPreferences({
+                        ...studioPreferences,
+                        sidebarShortcut: candidate,
+                      });
+                    }}
+                    onFocus={() =>
+                      setSidebarShortcutError(
+                        "Press a modifier and a letter or number to set the shortcut.",
+                      )
+                    }
+                    onBlur={() => setSidebarShortcutError("")}
+                  />
+                  {sidebarShortcutError && (
+                    <small role="status">{sidebarShortcutError}</small>
+                  )}
+                </div>
+              </section>
+            </Tabs.Panel>
+          </Tabs>
           {studioPreferencesError && (
             <p className="studio-preferences-error" role="alert">
               {studioPreferencesError}

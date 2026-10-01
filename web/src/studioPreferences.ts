@@ -19,6 +19,7 @@ export interface StudioPreferences {
   fontFamily: StudioFontFamily;
   contentWidth: number;
   sidebarShortcut: string;
+  showMessageAvatars: boolean;
 }
 
 export const defaultStudioPreferences: StudioPreferences = {
@@ -28,6 +29,7 @@ export const defaultStudioPreferences: StudioPreferences = {
   fontFamily: "system",
   contentWidth: 100,
   sidebarShortcut: `${navigator.platform.toLowerCase().includes("mac") ? "Meta" : "Control"}+b`,
+  showMessageAvatars: false,
 };
 
 const validThemes = new Set(["auto", "light", "dark"]);
@@ -50,11 +52,21 @@ export function parseStudioPreferences(value: string): StudioPreferences {
     !Number.isInteger(candidate.contentWidth) ||
     Number(candidate.contentWidth) < 60 ||
     Number(candidate.contentWidth) > 100 ||
+    (candidate.showMessageAvatars !== undefined &&
+      typeof candidate.showMessageAvatars !== "boolean") ||
     typeof candidate.sidebarShortcut !== "string" ||
     !parseSidebarShortcut(candidate.sidebarShortcut)
   )
     throw new Error("Invalid preferences");
-  return candidate as unknown as StudioPreferences;
+  return {
+    theme: candidate.theme as StudioPreferences["theme"],
+    sidebarFontSize: candidate.sidebarFontSize as number,
+    mainFontSize: candidate.mainFontSize as number,
+    fontFamily: candidate.fontFamily as StudioPreferences["fontFamily"],
+    contentWidth: candidate.contentWidth as number,
+    sidebarShortcut: candidate.sidebarShortcut,
+    showMessageAvatars: candidate.showMessageAvatars === true,
+  };
 }
 
 export function parseSidebarShortcut(value: string): {
