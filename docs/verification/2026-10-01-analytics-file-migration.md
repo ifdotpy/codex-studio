@@ -61,3 +61,18 @@ after measuring the actual rollout corpus and required output coverage.
    `canvas.sqlite3`. It needs additional temporary free space; verify the
    available-space requirement for the installed SQLite build before starting.
    Do not run VACUUM while the server is using that file.
+
+## Code and contract checks
+
+The implementation is rebased onto Opt2 commit `f2d1545` and uses its
+`codex_sqlite.connect()` and `scope()` for runtime analytics connections. The
+analytics migration and session-cost read connections also use `connect()`.
+Commits: `0b68fed` (analytics split) and `516f25d` (Opt2 connection API).
+
+Passed: analytics contract (32), analytics storage contract (2), analytics
+history worker (10), session-cost contract (16), workspace contract (45), and
+sync-entities contract. Earlier task checks also passed analytics history (18),
+analytics transaction (4), reasoning history (8), budget (22), and the 12
+streaming/memory checks. Python compilation and `git diff --check` passed.
+Browser tests remain unverified because `playwright-core` is absent in this
+worktree.
