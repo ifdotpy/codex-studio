@@ -54,6 +54,9 @@ const rateAt = args.indexOf("--offered-rate");
 const offeredRate = rateAt >= 0 ? Number(args[rateAt + 1]) : 160;
 const transportsAt = args.indexOf("--transports");
 const transportCount = transportsAt >= 0 ? Number(args[transportsAt + 1]) : 2;
+const producerPoolAt = args.indexOf("--producer-pool-size");
+const producerPoolSize =
+  producerPoolAt >= 0 ? Number(args[producerPoolAt + 1]) : 1;
 const outputAt = args.indexOf("--output");
 const outputPath =
   outputAt >= 0
@@ -137,6 +140,12 @@ assert(
   "--transports must be 1..8",
 );
 assert(
+  Number.isInteger(producerPoolSize) &&
+    producerPoolSize >= 1 &&
+    producerPoolSize <= 16,
+  "--producer-pool-size must be 1..16; 1 preserves serial mode",
+);
+assert(
   Number.isInteger(teams) && teams >= 1 && teams <= 8,
   "--teams must be 1..8",
 );
@@ -168,6 +177,7 @@ const fixture = spawn(
       BENCH_TEAMS: String(teams),
       BENCH_WORKERS_PER_TEAM: String(workersPerTeam),
       BENCH_STEADY_SECONDS: String(steadySeconds),
+      BENCH_PRODUCER_POOL_SIZE: String(producerPoolSize),
       BENCH_SOURCE_REVISION: execFileSync(
         "git",
         ["-C", sourceRoot, "rev-parse", "HEAD"],
@@ -989,7 +999,11 @@ try {
   if (!check) {
     assert(
       result.phaseAchievedOfferedTurnsPerSecond.steady >= offeredRate * 0.9,
-      `steady actual offered rate must be at least90% of configured ${offeredRate}/s`,
+      `steady turn/started notification offers must be at least90% of configured ${offeredRate}/s`,
+    );
+    assert(
+      result.phaseAchievedCompletedTurnsPerSecond.steady >= offeredRate * 0.9,
+      `steady completed turns (chat writes and exact receipts) must be at least90% of configured ${offeredRate}/s`,
     );
     assert(
       result.burstDrainMs != null && result.burstDrainMs <= 30_000,
@@ -1159,7 +1173,13 @@ try {
       steadyConfiguredTurnsPerSecond: offeredRate,
       steadyActualTurnsPerSecond:
         result.phaseAchievedOfferedTurnsPerSecond.steady,
+      steadyActualCompletedTurnsPerSecond:
+        result.phaseAchievedCompletedTurnsPerSecond.steady,
       steadyMinimumActualTurnsPerSecond: check ? null : offeredRate * 0.9,
+      scheduledIntentSkewMs: result.phaseScheduledIntentSkewMs,
+      actualNotificationOfferLatenessMs:
+        result.phaseActualNotificationOfferLatenessMs,
+      completedTurnLatenessMs: result.phaseCompletedTurnLatenessMs,
       steadyFinalOfferToDOM,
       burstDrainMs: result.burstDrainMs,
       burstDrainDeadlineMs: check ? null : 30_000,
@@ -1293,9 +1313,19 @@ try {
                   latencyMs: result.latencyMs,
                   phaseTurnCounts: result.phaseTurnCounts,
                   phaseElapsedSeconds: result.phaseElapsedSeconds,
+                  phaseActualNotificationOfferElapsedSeconds:
+                    result.phaseActualNotificationOfferElapsedSeconds,
+                  phaseActualNotificationOfferCounts:
+                    result.phaseActualNotificationOfferCounts,
                   phaseAchievedOfferedTurnsPerSecond:
                     result.phaseAchievedOfferedTurnsPerSecond,
-                  phaseOfferedTurnLatenessMs: result.phaseOfferedTurnLatenessMs,
+                  phaseAchievedCompletedTurnsPerSecond:
+                    result.phaseAchievedCompletedTurnsPerSecond,
+                  phaseScheduledIntentSkewMs: result.phaseScheduledIntentSkewMs,
+                  phaseActualNotificationOfferLatenessMs:
+                    result.phaseActualNotificationOfferLatenessMs,
+                  phaseCompletedTurnLatenessMs:
+                    result.phaseCompletedTurnLatenessMs,
                   burstDrainMs: result.burstDrainMs,
                   queue: result.queue,
                 }

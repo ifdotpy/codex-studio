@@ -97,6 +97,15 @@ def stats(values):
             "max": max(values) if values else None}
 
 
+def invoke_with_duration(callback, record_duration):
+    """Record elapsed callback time in a finally block without changing errors."""
+    started = time.monotonic()
+    try:
+        return callback()
+    finally:
+        record_duration((time.monotonic() - started) * 1000)
+
+
 def delta_identity(params):
     """Return the production stream key, excluding benchmark-only metadata."""
     return (params.get("threadId"), params.get("turnId"), params.get("itemId"),
@@ -243,6 +252,8 @@ class MeasuredRLock:
         if explicit:
             return explicit
         name = threading.current_thread().name
+        if name.startswith("bench-producer_"):
+            return "producer"
         if name.startswith("Thread-") and "process_request_thread" in name:
             return "HTTP request"
         if name == "MainThread":
@@ -406,6 +417,7 @@ class MeasuredLock:
 
 
 def main():
+    from concurrent.futures import ThreadPoolExecutor
     from codex_canvas import Canvas, make_server
     import codex_canvas
     from codex_runtime import AppServer, Runtime, SnapshotDeferred
@@ -524,6 +536,10 @@ def main():
     queue_limit = AppServer.CALLBACK_QUEUE_LIMIT
     offered_rate = int(os.environ.get("BENCH_OFFERED_TURNS_PER_SECOND", "160"))
     quick_check = os.environ.get("BENCH_QUICK_CHECK") == "1"
+    producer_pool_size = int(os.environ.get("BENCH_PRODUCER_POOL_SIZE", "1"))
+    if not 1 <= producer_pool_size <= 16:
+        raise ValueError("BENCH_PRODUCER_POOL_SIZE must be 1..16")
+    producer_max_inflight = producer_pool_size
     workers_per_team = 2 if quick_check else int(os.environ.get("BENCH_WORKERS_PER_TEAM", "32"))
     team_count = 1 if quick_check else int(os.environ.get("BENCH_TEAMS", "8"))
     steady_seconds = 0 if quick_check else float(os.environ.get("BENCH_STEADY_SECONDS", "30"))
@@ -542,13 +558,33 @@ def main():
     callback_invocations_by_method = {}
     callback_samples = 0
     callback_count = 0
-    callback_timing_totals = {"productionMs": 0.0, "wrapperMs": 0.0,
+    callback_timing_totals = {"callbacks": 0, "productionSamples": 0,
+                              "productionMs": 0.0, "wrapperMs": 0.0,
                               "productionMaxMs": 0.0, "wrapperMaxMs": 0.0}
     callback_timing_by_method = {}
+    producer_metrics_lock = threading.Lock()
+    phase_names = ("warmup", "steady", "burst", "drain")
+    turn_offer_lateness_ms = {name: [] for name in phase_names}
+    turn_start_offer_ns = {name: [] for name in phase_names}
+    turn_completion_lateness_ms = {name: [] for name in phase_names}
+    turn_completed_ns = {name: [] for name in phase_names}
+    intent_schedule_skew_ms = {name: [] for name in phase_names}
+    producer_metrics = {"scheduledIntents": 0, "completedChatWrites": 0,
+                        "completedReceiptCallbacks": 0, "acceptedTurns": 0,
+                        "inflight": 0, "active": 0, "peakInflight": 0,
+                        "peakQueueDepth": 0, "maxQueueAgeMs": 0.0}
+    producer_queue_wait_ms = deque(maxlen=100_000)
+    producer_queue_age_ms = deque(maxlen=100_000)
+    producer_errors = []
+    producer_receipt_events = {}
+    producer_receipt_lock = threading.Lock()
+    producer_previous_turn = {}
+    producer_offer_lock = threading.Lock()
     callback_done = threading.Condition()
     progress_lock = threading.Lock()
     progress_phase = ["ready"]
     progress_phase_turns = {name: 0 for name in ("warmup", "steady", "burst", "drain")}
+    scheduled_by_phase = {name: 0 for name in progress_phase_turns}
     progress_phase_started = [None]
     progress_started = [None]
     progress_stop = threading.Event()
@@ -584,11 +620,19 @@ def main():
                 errors.append(f"notification account mismatch for {thread_id}: callback={account_key}, record={actual_account_key}")
         sample_state = len(notification_samples) < 20
         events_before = runtime.agent(matched_agent).get("events") if matched_agent and sample_state else None
-        production_started = time.monotonic()
+        production_duration_ms = None
         production_ended = None
-        try:
-            original_runtime_notification(message, account_key, connection_id)
+        def record_production_duration(duration_ms):
+            nonlocal production_duration_ms, production_ended
+            production_duration_ms = duration_ms
             production_ended = time.monotonic()
+        try:
+            # Include failed production callbacks in the timing denominator;
+            # callback errors remain separately visible.
+            invoke_with_duration(
+                lambda: original_runtime_notification(message, account_key, connection_id),
+                record_production_duration,
+            )
             samples = message.get("_studioNotificationSamples") or [params]
             for sample in samples:
                 if method == "item/agentMessage/delta":
@@ -606,6 +650,13 @@ def main():
                             errors.append(f"duplicate callback identity: {key}")
                         dispatched[key] = time.monotonic_ns()
                         category_dispatched[kind] = category_dispatched.get(kind, 0) + 1
+                    if kind == "durableMessage":
+                        with producer_receipt_lock:
+                            receipt_event = producer_receipt_events.get(key)
+                        if receipt_event is not None:
+                            receipt_event.set()
+                        with producer_metrics_lock:
+                            producer_metrics["completedReceiptCallbacks"] += 1
         except BaseException as exc:
             errors.append(f"{message.get('method')}: {type(exc).__name__}: {exc}")
             raise
@@ -621,8 +672,8 @@ def main():
             if type(received_at) in (int, float) and type(dispatched_at) in (int, float):
                 receive_to_callback_ms.append(max(0, dispatched_at - received_at) * 1000)
             callback_wrapper_duration_ms.append((ended - started) * 1000)
-            if production_ended is not None:
-                callback_duration_ms.append((production_ended - production_started) * 1000)
+            production_ms = production_duration_ms
+            callback_duration_ms.append(production_ms)
             coverage = notification_coverage.setdefault(method, {"callbacks": 0, "matchedThread": 0})
             coverage["callbacks"] += 1
             callback_invocations_by_method[method] = callback_invocations_by_method.get(method, 0) + 1
@@ -639,10 +690,11 @@ def main():
                 callback_samples += len(message.get("_studioNotificationSamples") or [params])
                 wrapper_ms = (ended - started) * 1000
                 callback_timing_totals["wrapperMs"] += wrapper_ms
+                callback_timing_totals["callbacks"] += 1
                 callback_timing_totals["wrapperMaxMs"] = max(
                     callback_timing_totals["wrapperMaxMs"], wrapper_ms)
                 if production_ended is not None:
-                    production_ms = (production_ended - production_started) * 1000
+                    callback_timing_totals["productionSamples"] += 1
                     callback_timing_totals["productionMs"] += production_ms
                     callback_timing_totals["productionMaxMs"] = max(
                         callback_timing_totals["productionMaxMs"], production_ms)
@@ -654,6 +706,7 @@ def main():
                 method_timing["wrapperMs"] += wrapper_ms
                 method_timing["wrapperMaxMs"] = max(method_timing["wrapperMaxMs"], wrapper_ms)
                 if production_ended is not None:
+                    method_timing["productionSamples"] = method_timing.get("productionSamples", 0) + 1
                     method_timing["productionMs"] += production_ms
                     method_timing["productionMaxMs"] = max(
                         method_timing["productionMaxMs"], production_ms)
@@ -755,30 +808,52 @@ def main():
             phase = progress_phase[0]
             phase_turns = dict(progress_phase_turns)
             offered = dict(category_offered)
+        with producer_metrics_lock:
+            scheduled_phases = dict(scheduled_by_phase)
         with callback_done:
             callbacks = {"samples": callback_samples, "invocations": callback_count}
             callback_timings = dict(callback_timing_totals)
             callback_timings["meanProductionMs"] = (
-                callback_timings["productionMs"] / callback_count if callback_count else 0)
+                callback_timings["productionMs"] / callback_timings["productionSamples"]
+                if callback_timings["productionSamples"] else 0)
             callback_timings["meanWrapperMs"] = (
-                callback_timings["wrapperMs"] / callback_count if callback_count else 0)
+                callback_timings["wrapperMs"] / callback_timings["callbacks"]
+                if callback_timings["callbacks"] else 0)
             callback_methods = {
                 name: {**values,
-                       "meanProductionMs": values["productionMs"] / values["count"],
+                       "meanProductionMs": (
+                           values["productionMs"] / values["productionSamples"]
+                           if values.get("productionSamples") else 0),
                        "meanWrapperMs": values["wrapperMs"] / values["count"]}
                 for name, values in callback_timing_by_method.items()}
         with lock:
             dispatched_count = len(dispatched)
             dispatched_categories = dict(category_dispatched)
+        with producer_metrics_lock:
+            producer_state = dict(producer_metrics)
+            producer_state["queueDepth"] = max(0, producer_state["inflight"] - producer_state["active"])
+            producer_state["poolSize"] = producer_pool_size
+            producer_state["maxInflight"] = producer_max_inflight
+            producer_state["queueWaitSamples"] = len(producer_queue_wait_ms)
+            producer_state["queueWaitMaxMs"] = max(producer_queue_wait_ms, default=0.0)
+            producer_state["queueAgeSamples"] = len(producer_queue_age_ms)
         elapsed = (time.monotonic() - progress_started[0]) if progress_started[0] else 0
         phase_elapsed = ((time.monotonic() - progress_phase_started[0])
                          if progress_phase_started[0] and phase in progress_phase_turns else None)
         snapshot = {
             "kind": "progress", "reason": reason, "elapsedSeconds": round(elapsed, 3),
-            "phase": phase, "phaseTurnsOffered": phase_turns,
+            "phase": phase,
+            "phaseTurnsCompleted": phase_turns,
+            "phaseTurnsStartedOffered": {
+                name: len(turn_start_offer_ns[name]) for name in phase_names},
+            "scheduledIntentsByPhase": scheduled_phases,
+            "producer": producer_state,
             "currentPhaseElapsedSeconds": round(phase_elapsed, 3) if phase_elapsed is not None else None,
-            "currentPhaseAchievedOfferedTurnsPerSecond": (
+            "currentPhaseAchievedCompletedTurnsPerSecond": (
                 round(phase_turns[phase] / phase_elapsed, 3)
+                if phase_elapsed and phase_elapsed > 0 else None),
+            "currentPhaseAchievedOfferedTurnsPerSecond": (
+                round(len(turn_start_offer_ns[phase]) / phase_elapsed, 3)
                 if phase_elapsed and phase_elapsed > 0 else None),
             "offeredByCategory": offered, "completedCallbackSamples": callbacks["samples"],
             "callbackInvocations": callbacks["invocations"],
@@ -840,8 +915,6 @@ def main():
                 identities.append((agent, leads[team]))
             emitted_keys = set()
             expected_runtime_event_ids = []
-            turn_lateness_ms = {name: [] for name in ("warmup", "steady", "burst", "drain")}
-            turn_offered_ns = {name: [] for name in ("warmup", "steady", "burst", "drain")}
             turn_counts = phase_turn_counts(len(workers), rounds, offered_rate, steady_seconds)
             witness_markers = defaultdict(list)
             steady_witness_markers = defaultdict(list)
@@ -849,13 +922,14 @@ def main():
             current_phase = [None]
             burst_last_offer_ns = [None]
 
-            def offer(kind, key, process, payload):
-                if key in emitted_keys:
-                    raise RuntimeError(f"duplicate offered identity: {key}")
-                emitted_keys.add(key)
+            def offer(kind, key, process, payload, turn_start_due_ns=None):
+                with producer_offer_lock:
+                    if key in emitted_keys:
+                        raise RuntimeError(f"duplicate offered identity: {key}")
+                    emitted_keys.add(key)
+                    payload_bytes_by_category[kind] = payload_bytes_by_category.get(kind, 0) + len(json.dumps(payload).encode("utf-8"))
                 with progress_lock:
                     category_offered[kind] = category_offered.get(kind, 0) + 1
-                payload_bytes_by_category[kind] = payload_bytes_by_category.get(kind, 0) + len(json.dumps(payload).encode("utf-8"))
                 if kind == "assistantDelta":
                     register_delta_identity(delta_identities, payload["params"], (key, kind))
                 else:
@@ -864,14 +938,95 @@ def main():
                 if kind != "assistantDelta" and isinstance(payload.get("params"), dict):
                     payload["params"]["_benchEventId"] = key
                     payload["params"]["_benchCategory"] = kind
+                if turn_start_due_ns is not None:
+                    offered_at_ns = time.monotonic_ns()
+                    turn_start_offer_ns[current_phase[0]].append(offered_at_ns)
+                    turn_offer_lateness_ms[current_phase[0]].append(
+                        (offered_at_ns - turn_start_due_ns) / 1_000_000)
                 process.emit(payload)
                 if current_phase[0] == "burst":
                     burst_last_offer_ns[0] = time.monotonic_ns()
                 for appserver in appservers:
                     callback_queue_peak[0] = max(callback_queue_peak[0], appserver.callbacks.qsize())
 
+            producer_pool = (ThreadPoolExecutor(max_workers=producer_pool_size,
+                                                thread_name_prefix="bench-producer")
+                             if producer_pool_size > 1 else None)
+            producer_slots = threading.BoundedSemaphore(producer_max_inflight)
+            active_producer_futures = []
+            def accept_completed_turn(phase, due_ns):
+                accepted_ns = time.monotonic_ns()
+                turn_completed_ns[phase].append(accepted_ns)
+                turn_completion_lateness_ms[phase].append((accepted_ns - due_ns) / 1_000_000)
+                with progress_lock:
+                    progress_phase_turns[phase] += 1
+                with producer_metrics_lock:
+                    producer_metrics["acceptedTurns"] += 1
+
+            def write_turn_messages(phase, local_round, agent, lead, worker_index, team_start):
+                completion_events = []
+                team_index = worker_index % workers_per_team
+                peer = workers[team_start + (team_index + 1) % workers_per_team]
+                process = fake_processes[(team_start // workers_per_team) % len(fake_processes)]
+                for recipient, label in ((peer, "peer"), (lead, "lead")):
+                    msg_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                            f"{phase}:{local_round}:{agent['id']}:{label}"))
+                    runtime.chat_message(agent["id"], recipient["id"],
+                                         f"{phase} coordination {label} {msg_id}", msg_id)
+                    with producer_metrics_lock:
+                        producer_metrics["completedChatWrites"] += 1
+                    event_id = "chat:" + msg_id + ":" + recipient["id"]
+                    expected_runtime_event_ids.append(event_id)
+                    receipt = acknowledge_chat_event(event_id, recipient)
+                    receipt_key = "msg:" + msg_id
+                    receipt_event = threading.Event()
+                    with producer_receipt_lock:
+                        producer_receipt_events[receipt_key] = receipt_event
+                    offer("durableMessage", receipt_key, process, receipt)
+                    completion_events.append((receipt_key, receipt_event))
+                for receipt_key, receipt_event in completion_events:
+                    receipt_deadline = time.monotonic() + 45
+                    while not receipt_event.wait(.1):
+                        if errors:
+                            raise RuntimeError(f"receipt callback failed: {errors[0]}")
+                        if time.monotonic() >= receipt_deadline:
+                            raise TimeoutError(f"production receipt callback did not complete: {receipt_key}")
+                    with producer_receipt_lock:
+                        producer_receipt_events.pop(receipt_key, None)
+
+            def complete_turn_work(phase, local_round, agent, lead, worker_index, team_start, due_ns,
+                                   queued_at_ns=None):
+                with producer_metrics_lock:
+                    producer_metrics["active"] += 1
+                    if queued_at_ns is not None:
+                        queue_age = (time.monotonic_ns() - queued_at_ns) / 1_000_000
+                        producer_queue_age_ms.append(queue_age)
+                        producer_metrics["maxQueueAgeMs"] = max(
+                            producer_metrics["maxQueueAgeMs"], queue_age)
+                try:
+                    write_turn_messages(phase, local_round, agent, lead, worker_index, team_start)
+                    accept_completed_turn(phase, due_ns)
+                except BaseException as exc:
+                    with producer_metrics_lock:
+                        producer_errors.append(f"{phase}/{agent['id']}: {type(exc).__name__}: {exc}")
+                    raise
+                finally:
+                    with producer_metrics_lock:
+                        producer_metrics["active"] -= 1
+                        producer_metrics["inflight"] -= 1
+                    producer_slots.release()
+
+            def drain_producer_futures():
+                for future in active_producer_futures:
+                    future.result()
+                active_producer_futures.clear()
+                if producer_errors:
+                    raise RuntimeError(producer_errors[0])
+
             phase_elapsed = {}
             phase_effective_rate = {}
+            phase_completed_rate = {}
+            phase_offer_elapsed_seconds = {}
             for phase, scale in (("warmup", 2), ("steady", 1), ("burst", 4), ("drain", 1)):
                 current_phase[0] = phase
                 with progress_lock:
@@ -884,14 +1039,31 @@ def main():
                     agent, lead = identities[i % len(identities)]
                     local_round = i // len(workers)
                     due = phase_due_ns(phase_started, i, offered_rate * scale)
+                    intent_schedule_ns = time.monotonic_ns()
+                    intent_schedule_skew_ms[phase].append(
+                        (intent_schedule_ns - due) / 1_000_000)
+                    with producer_metrics_lock:
+                        producer_metrics["scheduledIntents"] += 1
+                        scheduled_by_phase[phase] += 1
+                    previous_future = producer_previous_turn.get(agent["id"])
+                    if previous_future is not None:
+                        previous_future.result()
+                    if producer_errors:
+                        raise RuntimeError(producer_errors[0])
                     left = (due - time.monotonic_ns()) / 1e9
                     if left > 0:
                         time.sleep(left)
-                    actual_offer_ns = time.monotonic_ns()
-                    turn_offered_ns[phase].append(actual_offer_ns)
-                    turn_lateness_ms[phase].append((actual_offer_ns - due) / 1_000_000)
-                    with progress_lock:
-                        progress_phase_turns[phase] += 1
+                    queue_wait_started = time.perf_counter_ns()
+                    producer_slots.acquire()
+                    queue_wait = (time.perf_counter_ns() - queue_wait_started) / 1_000_000
+                    producer_queue_wait_ms.append(queue_wait)
+                    with producer_metrics_lock:
+                        producer_metrics["inflight"] += 1
+                        producer_metrics["peakInflight"] = max(
+                            producer_metrics["peakInflight"], producer_metrics["inflight"])
+                        queued_depth = max(0, producer_metrics["inflight"] - producer_metrics["active"])
+                        producer_metrics["peakQueueDepth"] = max(
+                            producer_metrics["peakQueueDepth"], queued_depth)
                     turn_id = f"bench-turn-{phase}-{local_round}-{agent['id']}"
                     item_id = f"bench-item-{phase}-{local_round}-{agent['id']}"
                     marker = witness_marker(agent["id"], phase, local_round)
@@ -920,26 +1092,36 @@ def main():
                                 offer("assistantDelta", delta_key, process, {"method": "item/agentMessage/delta", "params": {"threadId": agent["threadId"], "turnId": turn_id, "itemId": item_id, "delta": fragment_text}})
                             final_witness_offered_at[marker] = time.time() * 1000
                         key = f"evt:{phase}:{local_round}:{agent['id']}:{method}:{params.get('itemId') or params.get('item', {}).get('id') or (params.get('run') or {}).get('id', '')}"
-                        offer(kind, key, process, {"method": method, "params": {"threadId": agent["threadId"], **params}})
-                    # Durable event APIs write worker→worker and worker→lead messages.
+                        offer(kind, key, process,
+                              {"method": method, "params": {"threadId": agent["threadId"], **params}},
+                              due if method == "turn/started" else None)
                     team_start = (i % len(workers) // workers_per_team) * workers_per_team
-                    team_index = i % workers_per_team
-                    peer = workers[team_start + (team_index + 1) % workers_per_team]
-                    for recipient, label in ((peer, "peer"), (lead, "lead")):
-                        msg_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{phase}:{local_round}:{agent['id']}:{label}"))
-                        chat = runtime.chat_message(agent["id"], recipient["id"],
-                            f"{phase} coordination {label} {msg_id}", msg_id)
-                        event_id = "chat:" + msg_id + ":" + recipient["id"]
-                        expected_runtime_event_ids.append(event_id)
-                        account_process = fake_processes[(team_start // workers_per_team) % len(fake_processes)]
-                        receipt = acknowledge_chat_event(event_id, recipient)
-                        offer("durableMessage", f"msg:{msg_id}", account_process, receipt)
+                    producer_queued_at_ns = time.monotonic_ns()
+                    if producer_pool is None:
+                        complete_turn_work(phase, local_round, agent, lead, i % len(workers), team_start,
+                                           due, producer_queued_at_ns)
+                    else:
+                        future = producer_pool.submit(
+                            complete_turn_work, phase, local_round, agent, lead, i % len(workers),
+                            team_start, due, producer_queued_at_ns)
+                        producer_previous_turn[agent["id"]] = future
+                        active_producer_futures = [f for f in active_producer_futures if not f.done()]
+                        active_producer_futures.append(future)
+                        if len(active_producer_futures) > producer_max_inflight:
+                            raise RuntimeError("bounded producer in-flight limit was exceeded")
+                drain_producer_futures()
                 phase_elapsed[phase] = (time.monotonic_ns() - phase_started) / 1e9
-                offered_times = turn_offered_ns[phase]
-                phase_effective_rate[phase] = (
-                    len(offered_times) / (phase_elapsed[phase])
-                    if offered_times and phase_elapsed[phase] > 0
-                    else None)
+                if turn_start_offer_ns[phase]:
+                    phase_offer_elapsed_seconds[phase] = max(
+                        0.001, (turn_start_offer_ns[phase][-1] - phase_started) / 1e9)
+                    phase_effective_rate[phase] = (
+                        len(turn_start_offer_ns[phase]) / phase_offer_elapsed_seconds[phase])
+                else:
+                    phase_offer_elapsed_seconds[phase] = None
+                    phase_effective_rate[phase] = None
+                phase_completed_rate[phase] = (
+                    len(turn_completed_ns[phase]) / phase_elapsed[phase]
+                    if turn_completed_ns[phase] and phase_elapsed[phase] > 0 else None)
                 emit_progress("phase-complete")
                 if phase == "burst":
                     wait_callbacks(sum(category_offered.values()), 30)
@@ -948,6 +1130,8 @@ def main():
                     burst_drain_ms = (
                         time.monotonic_ns() - burst_last_offer_ns[0]
                     ) / 1_000_000
+            if producer_pool is not None:
+                producer_pool.shutdown(wait=True)
 
             # Wait until all turn-complete callbacks have persisted child_result
             # events; only then enumerate their exact original IDs for receipts.
@@ -1032,6 +1216,25 @@ def main():
                       "syntheticAccounts": {"keys": account_keys,
                                             "teamAccountKeys": [account_keys[index % len(account_keys)] for index in range(team_count)]},
                       "phases": ["warmup", "steady", "burst", "drain"],
+                      "producerWork": {
+                          "poolSize": producer_pool_size,
+                          "maxInflight": producer_max_inflight,
+                          "queueCapacity": producer_max_inflight,
+                          "scheduledIntentsByPhase": scheduled_by_phase,
+                          "acceptedTurnsByPhase": progress_phase_turns,
+                          "scheduledIntents": producer_metrics["scheduledIntents"],
+                          "acceptedTurns": producer_metrics["acceptedTurns"],
+                          "completedChatWrites": producer_metrics["completedChatWrites"],
+                          "completedReceiptCallbacks": producer_metrics["completedReceiptCallbacks"],
+                          "unacceptedIntentBacklog": (producer_metrics["scheduledIntents"]
+                                                       - producer_metrics["acceptedTurns"]),
+                          "peakInflight": producer_metrics["peakInflight"],
+                          "peakQueueDepth": producer_metrics["peakQueueDepth"],
+                          "maxQueueAgeMs": producer_metrics["maxQueueAgeMs"],
+                          "queueWaitMs": stats(producer_queue_wait_ms),
+                          "queueAgeMs": stats(producer_queue_age_ms),
+                          "errors": producer_errors,
+                      },
                       "offered": category_offered, "dispatched": category_dispatched,
                       "payloadBytesByCategory": payload_bytes_by_category,
                       "exactlyOnce": {"offeredEvents": sum(category_offered.values()),
@@ -1063,8 +1266,13 @@ def main():
                       "startLock": start_lock.progress_snapshot(),
                       "offeredRateTurnsPerSecond": offered_rate,
                       "phaseElapsedSeconds": phase_elapsed,
-                      "phaseOfferedTurnLatenessMs": {phase: stats(values) for phase, values in turn_lateness_ms.items()},
+                      "phaseActualNotificationOfferElapsedSeconds": phase_offer_elapsed_seconds,
+                      "phaseActualNotificationOfferCounts": {phase: len(values) for phase, values in turn_start_offer_ns.items()},
+                      "phaseScheduledIntentSkewMs": {phase: stats(values) for phase, values in intent_schedule_skew_ms.items()},
+                      "phaseActualNotificationOfferLatenessMs": {phase: stats(values) for phase, values in turn_offer_lateness_ms.items()},
+                      "phaseCompletedTurnLatenessMs": {phase: stats(values) for phase, values in turn_completion_lateness_ms.items()},
                       "phaseAchievedOfferedTurnsPerSecond": phase_effective_rate,
+                      "phaseAchievedCompletedTurnsPerSecond": phase_completed_rate,
                       "witnessMarkersByAgent": dict(witness_markers),
                       "steadyWitnessMarkersByAgent": dict(steady_witness_markers),
                       "finalWitnessOfferedAtEpochMs": final_witness_offered_at,
@@ -1073,6 +1281,7 @@ def main():
                       "callbackInvocationCount": callback_count,
                       "callbackEventSampleCount": callback_samples,
                       "notificationCoverage": notification_coverage,
+                      "callbackTimingByMethodMs": callback_timing_by_method,
                       "streamCoalescing": {
                           "offeredAssistantFragments": category_offered.get("assistantDelta", 0),
                           "productionCallbackInvocations": callback_invocations_by_method.get("item/agentMessage/delta", 0),

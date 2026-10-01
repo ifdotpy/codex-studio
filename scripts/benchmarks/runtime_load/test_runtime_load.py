@@ -22,6 +22,17 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         self.assertEqual(module.stats([]),
                          {"samples": 0, "p50": None, "p95": None, "p99": None, "max": None})
 
+    def test_callback_duration_is_recorded_when_production_callback_raises(self):
+        durations = []
+
+        def fail():
+            raise ValueError("synthetic callback failure")
+
+        with self.assertRaisesRegex(ValueError, "synthetic callback failure"):
+            module.invoke_with_duration(fail, durations.append)
+        self.assertEqual(len(durations), 1)
+        self.assertGreaterEqual(durations[0], 0)
+
     def test_phase_schedule_restarts_for_each_rate(self):
         start = 10_000_000_000
         self.assertEqual(module.phase_due_ns(start, 3, 2), start + 1_500_000_000)
@@ -235,6 +246,17 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         self.assertEqual(snapshot["failedNonblockingAcquires"], 1)
         self.assertEqual(snapshot["acquires"], 1)
         lock.release()
+
+    def test_producer_pool_threads_keep_producer_lock_attribution(self):
+        result = []
+
+        def classify():
+            result.append(module.MeasuredRLock._context())
+
+        thread = threading.Thread(target=classify, name="bench-producer_0")
+        thread.start()
+        thread.join(timeout=1)
+        self.assertEqual(result, ["producer"])
 
 
 if __name__ == "__main__":
