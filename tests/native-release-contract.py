@@ -160,15 +160,26 @@ class NativeReleaseContract(unittest.TestCase):
         self.assertEqual(release_agent(self.rt, lead["id"])["reason"], "native background command is active")
         self.assertFalse(any(method == "thread/unsubscribe" for method, _ in self.rt.server.calls))
 
-    def test_studio_task_monitor_request_and_native_queue_exclude_release(self):
+    def test_studio_work_and_monitors_release_then_resume(self):
+        lead = self.lead()
+        self.age(lead, IDLE_SECONDS + 60)
+        cases = (("runtime_monitors", {"id": "monitor", "agent": lead["id"], "status": "running"}),
+                 ("runtime_work", {"id": "work", "owner": lead["id"], "status": "ready"}))
+        for table, row in cases:
+            with self.rt.db() as db:
+                db.execute(f"INSERT INTO {table} VALUES (?,?)", (row["id"], json.dumps(row)))
+        self.assertEqual(release_agent(self.rt, lead["id"])["status"], "released")
+        self.assertNotIn(lead["id"], self.rt.loaded)
+        self.rt.send(lead["id"], "Continue", "work-resume")
+        fixture.eventually(lambda: any(method == "thread/resume" for method, _ in self.rt.server.calls))
+
+    def test_pending_request_and_unknown_tool_exclude_release(self):
         lead = self.lead()
         self.age(lead, IDLE_SECONDS + 60)
         cases = (("runtime_tasks", {"id": "task", "agent": lead["id"], "status": "running"}),
-                 ("runtime_monitors", {"id": "monitor", "agent": lead["id"], "status": "running"}),
                  ("runtime_requests", {"id": "request", "agent": lead["id"], "status": "pending"}),
                  ("runtime_tool_requests", {"id": "tool", "agent": lead["id"],
-                                            "stage": "interrupted", "outcome": "unknown"}),
-                 ("runtime_work", {"id": "work", "owner": lead["id"], "status": "ready"}))
+                                            "stage": "running", "outcome": "unknown"}))
         for table, row in cases:
             with self.rt.db() as db:
                 db.execute(f"INSERT INTO {table} VALUES (?,?)", (row["id"], json.dumps(row)))
@@ -178,6 +189,15 @@ class NativeReleaseContract(unittest.TestCase):
         self.rt.server.queue = [{"id": "queued-native"}]
         self.assertEqual(release_agent(self.rt, lead["id"])["reason"], "native input is pending")
         self.assertFalse(any(method == "thread/unsubscribe" for method, _ in self.rt.server.calls))
+
+    def test_failed_unknown_tool_history_does_not_keep_thread_loaded(self):
+        lead = self.lead()
+        self.age(lead, IDLE_SECONDS + 60)
+        with self.rt.db() as db:
+            db.execute("INSERT INTO runtime_tool_requests VALUES (?,?)",
+                       ("old-tool", json.dumps({"id": "old-tool", "agent": lead["id"],
+                                                "stage": "failed", "outcome": "unknown"})))
+        self.assertEqual(release_agent(self.rt, lead["id"])["status"], "released")
 
     def test_lost_unsubscribe_response_retries_only_unsubscribe_before_resume(self):
         lead = self.lead()

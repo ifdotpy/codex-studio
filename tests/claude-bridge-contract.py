@@ -32,6 +32,7 @@ export const getSessionMessages=async()=>[];
 export function query({prompt,options}){
  if(options.systemPrompt&&!(options.disallowedTools||[]).includes('Agent'))throw new Error('Native subagents must stay disabled');
  let abort=new AbortController();
+ if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null})+'\n');
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'initial',model:options.model,settings:options.settings})+'\n');
  return {
   supportedModels:async()=>[
@@ -43,7 +44,7 @@ export function query({prompt,options}){
   initializationResult:async()=>({commands:[{name:'compact',description:'Compact history'}]}),
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>({rate_limits_available:true,subscription_type:'max',rate_limits:{five_hour:{utilization:11,resets_at:'2026-09-22T08:00:00Z'},seven_day:{utilization:4},model_scoped:[{display_name:'Fable',utilization:7}]}}),
   setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');if(fs.existsSync(options.cwd+'/.dead-query'))throw new Error('Claude Code process aborted by user');},setPermissionMode:async()=>{},setMcpServers:async servers=>{fs.appendFileSync(options.cwd+'/.mcp-sets',JSON.stringify(Object.keys(servers).map(name=>[name,servers[name].tools.map(t=>t.name)]))+'\n');return {added:[],removed:[],errors:{}};},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
-  close(){abort.abort();},interrupt:async()=>abort.abort(),
+  close(){if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.query-closes','closed\n');abort.abort();},interrupt:async()=>abort.abort(),
   async *[Symbol.asyncIterator](){
    while(!abort.signal.aborted){
    const input=await prompt.next();
@@ -87,7 +88,7 @@ export function query({prompt,options}){
    if(text==='wait')await new Promise(resolve=>abort.signal.aborted?resolve():abort.signal.addEventListener('abort',resolve,{once:true}));
    if(text==='fail')throw new Error('Native failure');
    if(text==='/compact')yield {type:'system',subtype:'local_command_output',uuid:'compact-result',content:'Native compact received'};
-   if(text==='background')yield {type:'system',subtype:'task_started',task_id:'worker-1',description:'Worker',task_type:'agent'};
+   if(text==='background'||text==='background-hold')yield {type:'system',subtype:'task_started',task_id:'worker-1',description:'Worker',task_type:'agent'};
    if(text==='claude-limit'){
     const resetsAt=Math.floor(Date.now()/1000)+3600;
     yield {type:'rate_limit_event',rate_limit_info:{status:'rejected',rateLimitType:'five_hour',resetsAt,utilization:1}};
@@ -135,6 +136,10 @@ export function query({prompt,options}){
     yield {type:'assistant',parent_tool_use_id:'agent-tool',uuid:'late-worker',message:{id:'late-answer',content:[{type:'text',text:'Late worker text'}]}};
     yield {type:'system',subtype:'task_notification',task_id:'worker-1',status:'completed',summary:'Worker finished'};
    }
+   if(text==='background-hold'){
+    while(!fs.existsSync(options.cwd+'/.release-background')&&!abort.signal.aborted)await new Promise(r=>setTimeout(r,5));
+    if(!abort.signal.aborted)yield {type:'system',subtype:'task_notification',task_id:'worker-1',status:'completed'};
+   }
    }
   }
  };
@@ -155,7 +160,8 @@ class Bridge(unittest.TestCase):
         (root / 'node_modules').symlink_to(ROOT / 'scripts/claude_bridge/node_modules', target_is_directory=True)
         self.proc = subprocess.Popen([shutil.which('node'), str(root / 'bridge.mjs'), str(root / 'state')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT':'test@example.test'})
+            env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT':'test@example.test',
+                 'STUDIO_CLAUDE_IDLE_SECONDS':'1'})
         self.addCleanup(self.close)
         self.rows = queue.Queue()
         threading.Thread(target=lambda: [self.rows.put(json.loads(line)) for line in self.proc.stdout], daemon=True).start()
@@ -221,6 +227,34 @@ class Bridge(unittest.TestCase):
         self.assertEqual(final[-1]['text'],'Visible answer')
         self.assertNotIn('PRIVATE_SIGNATURE',json.dumps(history))
         self.assertTrue(any(x.get('method')=='item/agentMessage/delta' for x in self.notifications))
+
+    def test_idle_query_closes_and_next_turn_resumes_native_history(self):
+        self.turn('hello', 'first')
+        self.assertEqual(self.completed()['status'], 'completed')
+        self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 1)
+        deadline = time.monotonic() + 4
+        while self.call('claude/diagnostics', {})['liveQueries'] and time.monotonic() < deadline:
+            time.sleep(.1)
+        self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 0)
+        self.turn('hello', 'second')
+        self.assertEqual(self.completed()['status'], 'completed')
+        starts = [json.loads(line) for line in (self.root / '.queries').read_text().splitlines()]
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(starts[1]['resume'], starts[0]['sessionId'])
+        self.assertEqual(len(self.call('thread/read', {'threadId': self.thread,
+                                                     'includeTurns': True})['thread']['turns']), 2)
+
+    def test_background_task_keeps_query_until_task_finishes(self):
+        self.turn('background-hold', 'background-hold')
+        self.assertEqual(self.completed()['status'], 'completed')
+        time.sleep(1.5)
+        state = self.call('claude/diagnostics', {})
+        self.assertEqual((state['liveQueries'], state['backgroundQueries']), (1, 1))
+        (self.root / '.release-background').write_text('done')
+        deadline = time.monotonic() + 4
+        while self.call('claude/diagnostics', {})['liveQueries'] and time.monotonic() < deadline:
+            time.sleep(.1)
+        self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 0)
 
     def test_rejected_claude_rate_limit_has_verified_error_kind_and_reset(self):
         self.turn('claude-limit', 'limit')
