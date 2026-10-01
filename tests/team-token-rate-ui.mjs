@@ -33,11 +33,12 @@ try {
       },
     );
     let log = "",
-      timer;
+      timer, follower;
     proc.stderr.on("data", (data) => (log += data));
-    const page = await browser.newPage({
+    const context = await browser.newContext({
       viewport: { width: 1200, height: 900 },
     });
+    const page = await context.newPage();
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -67,12 +68,14 @@ try {
       const idle = workers[running.length];
       await page.addInitScript(() => {
         const Native = window.EventSource;
+        window.__allSources = [];
         window.__teamRateSources = [];
         window.__teamRateBatches = [];
         window.EventSource = class extends Native {
           constructor(...args) {
             super(...args);
-            if (this.url.includes("/api/token-rates/stream")) {
+            window.__allSources.push(this);
+            if (this.url.includes("/api/sync/stream?protocol=2")) {
               window.__teamRateSources.push(this);
               this.addEventListener("token-rates", (event) => {
                 const batch = JSON.parse(event.data);
@@ -80,16 +83,21 @@ try {
                   window.__teamRateBatches.push({
                     at: performance.now(),
                     ...batch,
+                    rates: batch.teams[window.__rateTeamId] || {},
                   });
               });
             }
           }
         };
       });
+      await page.addInitScript(id => { window.__rateTeamId = id; }, lead.id);
       await page.goto(origin);
       await page.locator(`[data-chat="${lead.id}"]`).click();
       await page.setViewportSize({ width, height: 900 });
-      await page.locator("#team-toggle").click();
+      if (width <= 760) {
+        await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+        await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+      } else await page.locator("#team-toggle").click();
       const team = page.locator("#team");
       await team.waitFor();
       // Let the mobile drawer finish its entrance before geometry checks.
@@ -227,7 +235,7 @@ try {
       assert.equal(
         await page.evaluate(() => window.__teamRateSources.length),
         1,
-        "one team connection for all cards",
+        "one shared workspace connection for all cards",
       );
       assert.ok(
         await meter(running[0].id).evaluate(
@@ -238,6 +246,26 @@ try {
       assert.ok(
         await team.evaluate((node) => node.scrollWidth <= node.clientWidth),
       );
+      follower = await page.context().newPage();
+      await follower.addInitScript(() => {
+        const Native = window.EventSource;
+        window.__allSources = [];
+        window.EventSource = class extends Native {
+          constructor(...args) { super(...args); window.__allSources.push(this); }
+        };
+      });
+      await follower.goto(origin);
+      await follower.locator(`[data-chat="${lead.id}"]`).click();
+      if (await follower.locator("#team-toggle").getAttribute("aria-expanded") !== "true")
+        await follower.locator("#team-toggle").click();
+      for (const agent of running)
+        await follower.waitForFunction(id => document.querySelector(`#team .token-rate[data-agent="${id}"]`)?.textContent.includes("tok/s"), agent.id);
+      const connections = async view => view.evaluate(() => window.__allSources.filter(source => source.readyState !== 2).length);
+      assert.equal(await connections(page) + await connections(follower), 1, "two tabs share one workspace stream, including rate updates");
+      assert.equal(await follower.locator(`#team .token-rate[data-agent="${idle.id}"]`).innerText(), "");
+      await follower.close();
+      follower = undefined;
+      await page.waitForFunction(() => window.__teamRateSources.some(source => source.readyState === 1));
       const injectOnBatch = async (rate) =>
         page.evaluate(
           async ({ teamId, ids, rate }) => {
@@ -245,24 +273,16 @@ try {
             await new Promise((resolve) =>
               source.addEventListener(
                 "token-rates",
-                () => {
+                (event) => {
+                  const batch = JSON.parse(event.data);
+                  const rates = Object.fromEntries(ids.map((id, index) => [id, { turnId: "fixture-turn", active: true, estimated: false, rate: rate * (index + 1), outputTokens: 1000 }]));
                   source.dispatchEvent(
                     new MessageEvent("token-rates", {
                       data: JSON.stringify({
-                        teamId,
+                        ...batch,
                         test: true,
-                        rates: Object.fromEntries(
-                          ids.map((id, index) => [
-                            id,
-                            {
-                              turnId: "fixture-turn",
-                              active: true,
-                              estimated: false,
-                              rate: rate * (index + 1),
-                              outputTokens: 1000,
-                            },
-                          ]),
-                        ),
+                        rates: { ...batch.rates, ...rates },
+                        teams: { ...batch.teams, [teamId]: rates },
                       }),
                     }),
                   );
@@ -332,12 +352,10 @@ try {
         running[0].id,
       );
       await page.locator("#team-close").click();
-      await page.waitForFunction(() =>
-        window.__teamRateSources.every((source) => source.readyState === 2),
-      );
+      assert.equal(await page.evaluate(() => window.__teamRateSources.filter(source => source.readyState === 1).length), 1, "closing Team retains the existing shared sync stream");
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${size === 3 ? "compact" : "grouped"} Team cards, ${running.length} active workers, idle hidden, 1 batch/s, 1 connection, tween, reduced motion, stable ${width}px`,
+        `PASS ${size === 3 ? "compact" : "grouped"} Team cards, ${running.length} active workers, idle hidden, 1 batch/s, 1 shared connection across 2 tabs, tween, reduced motion, stable ${width}px`,
       );
     } catch (error) {
       console.error(
@@ -355,7 +373,8 @@ try {
       throw error;
     } finally {
       clearInterval(timer);
-      await page.close();
+      await follower?.close();
+      await context.close();
       proc.kill("SIGTERM");
       if (proc.exitCode === null)
         await new Promise((resolve) => proc.once("exit", resolve));

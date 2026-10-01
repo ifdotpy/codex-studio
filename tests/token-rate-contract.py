@@ -117,6 +117,9 @@ class RateContract(unittest.TestCase):
         self.assertEqual(set(batch), {'one', 'two'})
         self.assertEqual(batch['one']['outputTokens'], 20)
         self.assertEqual(batch['two']['outputTokens'], 30)
+        shared = rates.workspace_snapshot()
+        self.assertEqual(set(shared['rates']), {'lead', 'one', 'two', 'other'})
+        self.assertEqual(shared['teams']['lead'], batch)
         rates.observe(agents[1], 'turn/completed', {'turn': {'id': 'turn'}}, 'a', 'c')
         self.assertEqual(set(rates.team_snapshot('lead')), {'two'})
         rates.observe(agents[2], 'turn/started', {'turn': {'id': 'new-turn'}}, 'a', 'new-connection')
@@ -189,6 +192,7 @@ class WriteContract(unittest.TestCase):
                         for _ in range(2000):
                             rates.snapshot(agent['id'])
                             rates.team_snapshot(agent['rootId'])
+                            rates.workspace_snapshot()
                         self.assertEqual(len(writes), before, 'Meter reads write nothing')
                         if enabled:
                             self.assertEqual(rates.snapshot(agent['id'])['outputTokens'], 10000)

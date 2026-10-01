@@ -58,6 +58,7 @@ try {
       constructor(...args) {
         super(...args);
         window.__rateSources.push(this);
+        this.addEventListener("token-rates", event => { window.__lastRateBatch = JSON.parse(event.data); });
       }
     };
   });
@@ -112,25 +113,23 @@ try {
   await page.waitForFunction(
     () => document.querySelector(".token-rate")?.dataset.active === "false",
   );
-  await page.waitForTimeout(1200); // Let the final SSE snapshot arrive before controlled animation events.
+  await page.waitForFunction(id => window.__lastRateBatch?.rates[id]?.active === false, other.id);
   const inject = async (rate) =>
     page.evaluate(
       ({ id, turnId, rate }) => {
         const source = window.__rateSources.findLast(
           (source) =>
             source.readyState === 1 &&
-            (source.url.includes(encodeURIComponent(`transcript:${id}`)) ||
-              source.url.includes(`id=${id}`)),
+            source.url.includes("/api/sync/stream?protocol=2"),
         );
-        if (!source) throw Error("No existing transcript stream");
+        if (!source) throw Error("No existing shared workspace stream");
         source.dispatchEvent(
-          new MessageEvent("token-rate", {
+          new MessageEvent("token-rates", {
             data: JSON.stringify({
-              turnId,
-              active: false,
-              estimated: false,
-              rate,
-              outputTokens: 100,
+              ...window.__lastRateBatch,
+              rates: { ...window.__lastRateBatch.rates, [id]: {
+                turnId, active: false, estimated: false, rate, outputTokens: 100,
+              } },
             }),
           }),
         );
@@ -147,15 +146,15 @@ try {
     () =>
       document.querySelector(".token-rate")?.dataset.reducedMotion === "false",
   );
+  await meter.evaluate(node => {
+    window.__footerTweenValues = [];
+    window.__footerTweenObserver = new MutationObserver(() => window.__footerTweenValues.push(Number(node.textContent.split(" ")[0])));
+    window.__footerTweenObserver.observe(node, { childList: true, subtree: true, characterData: true });
+  });
   await inject(80);
-  await page.waitForTimeout(100);
-  const intermediate = Number((await meter.innerText()).split(" ")[0]);
-  assert.ok(
-    intermediate > 20 && intermediate < 80,
-    `animated intermediate ${intermediate}`,
-  );
-  await page.waitForTimeout(450);
-  assert.equal(await meter.innerText(), "80 tok/s");
+  await page.waitForFunction(() => document.querySelector("#conversation .token-rate")?.textContent === "80 tok/s");
+  assert.ok(await page.evaluate(() => window.__footerTweenValues.some(value => value > 20 && value < 80)), "the footer renders intermediate tween values");
+  await page.evaluate(() => window.__footerTweenObserver.disconnect());
   await page.emulateMedia({ reducedMotion: "reduce" });
   await inject(140);
   await page.waitForFunction(
@@ -254,6 +253,7 @@ try {
     "",
     "the worker rate stays outside the lead chat",
   );
+  assert.equal(await page.evaluate(() => window.__rateSources.filter(source => source.readyState !== 2).length), 1, "footer and Team use only the shared workspace stream");
   assert.deepEqual(errors, []);
   console.log(
     "PASS lead and open worker footer, Team card, estimate correction, reset, tween, reduced motion, 390px stable width",

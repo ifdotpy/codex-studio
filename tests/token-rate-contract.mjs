@@ -8,6 +8,9 @@ import {
   workerRateKey,
   receiveTeamTokenRates,
   clearTeamTokenRates,
+  watchTeamTokenRates,
+  receiveWorkspaceTokenRates,
+  clearWorkspaceTokenRates,
 } from "../web/src/tokenRate.ts";
 
 test("rate tween has a bounded duration and no overshoot", () => {
@@ -82,4 +85,27 @@ test("team batches isolate teams and footers and clear absent workers", () => {
   stop();
   stopOther();
   stopFooter();
+});
+
+test("shared workspace batches reach open teams and footers without sync writes", () => {
+  const worker = [], footer = [];
+  const stopWorker = subscribeTokenRate(workerRateKey("shared-team", "shared-worker"), rate => worker.push(rate));
+  const stopFooter = subscribeTokenRate("shared-worker", rate => footer.push(rate));
+  const value = { turnId: "one", active: true, estimated: true, rate: 42, outputTokens: 84 };
+  const batch = { rates: { "shared-worker": value }, teams: { "shared-team": { "shared-worker": value } } };
+  assert.equal(receiveWorkspaceTokenRates(batch), true);
+  assert.deepEqual(worker, [null], "a closed Team receives no card updates");
+  assert.deepEqual(footer, [null, value]);
+  const closeTeam = watchTeamTokenRates("shared-team");
+  assert.deepEqual(worker, [null, value], "opening Team reads the latest shared batch");
+  const before = footer.length;
+  assert.equal(receiveWorkspaceTokenRates({ ...batch, rates: { "shared-worker": { ...value, rate: -1 } } }), false);
+  assert.equal(footer.length, before);
+  closeTeam();
+  assert.equal(worker.at(-1), null);
+  receiveWorkspaceTokenRates(batch);
+  assert.equal(worker.at(-1), null, "closing Team stops card updates");
+  clearWorkspaceTokenRates();
+  assert.equal(footer.at(-1), null);
+  stopWorker(); stopFooter();
 });

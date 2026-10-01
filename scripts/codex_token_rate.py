@@ -164,6 +164,20 @@ class TokenRates:
                     and self.agents.get(entry['agent']) == key
                     and entry['rate'] is not None and entry['rate'].active}
 
+    def workspace_snapshot(self):
+        with self.lock:
+            now = self.clock()
+            rates, teams = {}, {}
+            for key, entry in self.entries.items():
+                if self.agents.get(entry['agent']) != key or entry['rate'] is None:
+                    continue
+                value = entry['rate'].snapshot(now)
+                rates[entry['agent']] = value
+                root = entry.get('root')
+                if root and root != entry['agent'] and value['active']:
+                    teams.setdefault(root, {})[entry['agent']] = value
+            return {'rates': rates, 'teams': teams}
+
     def snapshot(self, agent_id):
         with self.lock:
             entry = self.entries.get(self.agents.get(agent_id))

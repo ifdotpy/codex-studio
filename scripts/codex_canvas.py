@@ -854,17 +854,11 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             revision, previous, version, previous_order = -1, {}, 0, None
-            rate_previous = object()
-            agent_key = key
-            rate_at = 0
             try:
                 while not runtime.closed:
                     if not self.trusted():
                         break
-                    from codex_token_rate import token_rates
-                    rate = token_rates(runtime).snapshot(agent_key)
-                    rate_pending = rate != rate_previous or bool(rate and rate['active'])
-                    current, data = runtime.wait_transcript(agent_key, revision, timeout=.5 if rate_pending else 15)
+                    current, data = runtime.wait_transcript(key, revision)
                     if not self.trusted():
                         break
                     if current is None:
@@ -894,11 +888,6 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                             payload["order"] = order
                         self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
                         revision, previous, previous_order = current, records, order
-                    rate = token_rates(runtime).snapshot(agent_key)
-                    if rate != rate_previous and time.monotonic() - rate_at >= .5:
-                        self.wfile.write(("event: token-rate\ndata: " + json.dumps(rate) + "\n\n").encode())
-                        rate_previous = rate
-                        rate_at = time.monotonic()
                     self.wfile.flush()
                     time.sleep(.08)  # Coalesce fast deltas without polling an idle model.
             except OSError:
@@ -909,34 +898,6 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                     self.wfile.flush()
                 except OSError:
                     pass
-            self.close_connection = True
-
-        def stream_token_rates(self, root_id):
-            runtime = canvas.runtime
-            root = runtime.agent(root_id)
-            if root.get('rootId') != root_id or not root.get('isLead'):
-                raise ValueError("Select a lead chat")
-            self.connection.settimeout(20)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache, no-transform")
-            self.send_header("X-Accel-Buffering", "no")
-            self.end_headers()
-            from codex_token_rate import token_rates
-            previous = None
-            try:
-                while not runtime.closed and self.trusted():
-                    rates = token_rates(runtime).team_snapshot(root_id)
-                    if rates != previous:
-                        payload = {'teamId': root_id, 'rates': rates}
-                        self.wfile.write(("event: token-rates\ndata: " + json.dumps(payload) + "\n\n").encode())
-                        previous = rates
-                    else:
-                        self.wfile.write(b": heartbeat\n\n")
-                    self.wfile.flush()
-                    time.sleep(1)  # One batch per second, independent of worker count.
-            except OSError:
-                pass
             self.close_connection = True
 
         def stream_sync(self):
@@ -1050,12 +1011,13 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                         self.wfile.write(("data: " + data + "\n\n").encode())
                     else:
                         self.wfile.write(b": heartbeat\n\n")
-                    if transcript_id is not None and canvas.runtime:
+                    if shared_stream and canvas.runtime:
                         from codex_token_rate import token_rates
-                        rate = token_rates(canvas.runtime).snapshot(transcript_id)
-                        if rate != rate_previous:
-                            self.wfile.write(("event: token-rate\ndata: " + json.dumps(rate) + "\n\n").encode())
-                            rate_previous = rate
+                        rates = token_rates(canvas.runtime).workspace_snapshot()
+                        if rates != rate_previous:
+                            payload = {**rates, 'protocol': 2, 'workspaceId': current['workspaceId']}
+                            self.wfile.write(("event: token-rates\ndata: " + json.dumps(payload) + "\n\n").encode())
+                            rate_previous = rates
                     self.wfile.flush()
                     previous = current
                     time.sleep(1)
@@ -1097,11 +1059,6 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                         return self.send({"error": "Unsupported sync protocol version",
                                           "supportedVersions": [1, 2]}, 426)
                     return self.stream_sync()
-                if path.path == "/api/token-rates/stream" and canvas.runtime:
-                    root_id = parse_qs(path.query).get('team', [''])[0]
-                    if not AGENT_ID.fullmatch(root_id):
-                        raise ValueError("Select a lead chat")
-                    return self.stream_token_rates(root_id)
                 if path.path == "/api/state":
                     return self.send({**snapshot(include_work=parse_qs(path.query).get("view") != ["chat"]),
                                       "token": token})

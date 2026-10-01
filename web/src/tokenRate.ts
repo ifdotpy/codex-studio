@@ -72,6 +72,63 @@ export function receiveTokenRate(id: string, event: MessageEvent) {
     /* A malformed telemetry event does not affect the transcript. */
   }
 }
+type WorkspaceRates = {
+  rates: Record<string, TokenRate | null>;
+  teams: Record<string, Record<string, TokenRate | null>>;
+};
+let workspaceRates: WorkspaceRates = { rates: {}, teams: {} };
+const openTeams = new Map<string, number>();
+function validRates(value: unknown): value is Record<string, TokenRate | null> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.keys(value).length <= 1024 &&
+      Object.entries(value).every(
+        ([id, rate]) => id.length <= 200 && validRate(rate as TokenRate | null),
+      ),
+  );
+}
+function publishTeam(teamId: string) {
+  receiveTeamTokenRates(teamId, {
+    data: JSON.stringify({ teamId, rates: workspaceRates.teams[teamId] || {} }),
+  } as MessageEvent);
+}
+// Uses the shared workspace stream. No transport or database belongs to a card.
+export function watchTeamTokenRates(teamId: string) {
+  openTeams.set(teamId, (openTeams.get(teamId) || 0) + 1);
+  publishTeam(teamId);
+  return () => {
+    const count = (openTeams.get(teamId) || 1) - 1;
+    if (count) openTeams.set(teamId, count);
+    else {
+      openTeams.delete(teamId);
+      clearTeamTokenRates(teamId);
+    }
+  };
+}
+export function receiveWorkspaceTokenRates(value: WorkspaceRates) {
+  if (
+    !validRates(value?.rates) ||
+    !value?.teams ||
+    typeof value.teams !== "object" ||
+    Array.isArray(value.teams) ||
+    Object.keys(value.teams).length > 1024 ||
+    Object.entries(value.teams).some(
+      ([id, rates]) => id.length > 200 || !validRates(rates),
+    )
+  )
+    return false;
+  for (const id of Object.keys(workspaceRates.rates))
+    if (!(id in value.rates)) publishRate(id, null);
+  workspaceRates = value;
+  for (const [id, rate] of Object.entries(value.rates)) publishRate(id, rate);
+  for (const teamId of openTeams.keys()) publishTeam(teamId);
+  return true;
+}
+export function clearWorkspaceTokenRates() {
+  receiveWorkspaceTokenRates({ rates: {}, teams: {} });
+}
 export function subscribeTokenRate(
   id: string,
   listener: (value: TokenRate | null) => void,
