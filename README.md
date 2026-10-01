@@ -163,6 +163,18 @@ For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.
 Run `npm --prefix desktop run package` to build the desktop application.
 
+For a shareable process snapshot, run `python3 scripts/codex-diagnostics` while
+Studio runs. The command calls the read-only `/api/diagnostics` endpoint. It
+reports the Studio process tree, resident memory and CPU by process kind,
+loaded Codex threads per connected account, live Claude queries, queue sizes,
+short runtime lock samples, and host memory. Account names and process command
+lines stay out of the output. The snapshot reads process and native state only
+when requested. Resident memory totals can count shared pages more than once.
+Idle Codex subscriptions release after 15 minutes and native threads can take
+about one more minute to unload. Idle Claude queries close after 15 minutes.
+Native background tasks and unresolved input keep their sessions open. New work
+resumes the saved thread.
+
 Closing the window preserves the server and its active work. Backend source
 identity remains available to diagnostics without a persistent notice in chats.
 Reviewed live patches apply in the background without a backend restart.

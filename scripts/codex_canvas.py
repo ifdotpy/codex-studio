@@ -872,6 +872,9 @@ def make_server(canvas, port=0, public_origin=None):
                             "stateDir": str(Path(canvas.root).resolve()),
                         }
                     )
+                if path.path == "/api/diagnostics" and canvas.runtime:
+                    from codex_diagnostics import snapshot as diagnostics_snapshot
+                    return self.send(diagnostics_snapshot(canvas.runtime))
                 if path.path == "/api/terminals":
                     return self.send(terminals().listing())
                 if path.path == "/api/terminals/output":
