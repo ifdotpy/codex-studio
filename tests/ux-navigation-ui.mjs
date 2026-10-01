@@ -113,6 +113,14 @@ try {
     isMobile: true,
     hasTouch: true,
   });
+  const openMobileChatSettings = async () => {
+    await mobile
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await mobile
+      .getByRole("menuitem", { name: "Chat settings", exact: true })
+      .click();
+  };
   mobile.on("pageerror", (error) => errors.push(error.message));
   await mobile.addInitScript(() => {
     if (window.top !== window) return;
@@ -163,9 +171,7 @@ try {
     await fits(".mantine-Drawer-content", 390, 54);
     await fits("#sidebar", 390, 54);
     await mobile.getByLabel("Close conversations", { exact: true }).click();
-    await mobile
-      .getByRole("button", { name: "Chat settings", exact: true })
-      .click();
+    await openMobileChatSettings();
     await fits(".mantine-Modal-content", 390, 54);
     const dialog = mobile.getByRole("dialog", {
       name: "Chat settings",
@@ -183,9 +189,7 @@ try {
     );
   }
   await mobile.setViewportSize({ width: 390, height: 844 });
-  await mobile
-    .getByRole("button", { name: "Chat settings", exact: true })
-    .click();
+  await openMobileChatSettings();
   await mobile.evaluate(() =>
     window.setTestViewport({ height: 390, offsetTop: 54 }),
   );
