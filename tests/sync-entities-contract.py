@@ -205,6 +205,7 @@ with tempfile.TemporaryDirectory() as directory:
     with connect() as db:
         db.execute("DELETE FROM sync_entities")
         db.execute("DELETE FROM sync_entity_meta")
+        ensure_tables(db)
 
     snapshot = {"stateDir": directory, "threads": [], "chats": [], "nodes": [], "edges": [],
                 "runtime": {"agents": [{"id": "a", "name": "A", "status": "running", "source": "managed"}],
@@ -340,8 +341,14 @@ with tempfile.TemporaryDirectory() as directory:
             "SELECT count(*) FROM sync_entities WHERE deleted=1 AND collection NOT LIKE 'transcript:%'"
         ).fetchone()[0]
         assert tombstones_before == 70
-        pruned = prune_entity_tombstones(db, limit=10, batch_size=3, max_batches=1)
+        statements = []
+        db.set_trace_callback(statements.append)
+        ensure_tables(db)
+        db.set_trace_callback(None)
+        assert not any("COUNT(*) FROM SYNC_ENTITIES" in sql.upper() for sql in statements)
+        pruned = prune_entity_tombstones(db, limit=10, batch_size=3)
         assert pruned == 3
+        assert db.execute("SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'").fetchone() == ("67",)
         assert db.execute("SELECT count(*) FROM sync_entities WHERE deleted=1").fetchone()[0] == 67
         while db.execute("SELECT count(*) FROM sync_entities WHERE deleted=1").fetchone()[0] > 10:
             pruned += prune_entity_tombstones(db, limit=10, batch_size=3)
@@ -354,9 +361,17 @@ with tempfile.TemporaryDirectory() as directory:
         assert floor > 0
         assert db.execute("SELECT count(*) FROM sync_entities WHERE collection='agent' AND deleted=0").fetchone()[0] == 45
 
+    # Force the count over the default retention threshold and disable the
+    # background scheduler: a pull itself must leave even an oversized set
+    # untouched instead of doing a synchronous pruning batch.
+    store._schedule_entity_pruning = lambda: None
+    with connect() as db:
+        db.execute("UPDATE sync_entity_meta SET value='10001' WHERE key='entity_tombstone_count'")
     legacy = store.pull("state:entities:v1", after=floor - 1, limit=7)
     assert "reset" not in legacy, legacy
     assert {"workspaceId", "documents", "checkpoint", "maxSeq", "initialHigh"} <= legacy.keys()
+    with connect() as db:
+        assert db.execute("SELECT count(*) FROM sync_entities WHERE deleted=1 AND collection NOT LIKE 'transcript:%'").fetchone()[0] == 10
     opted_in = store.pull("state:entities:v1", after=floor - 1, limit=7,
                           reset_support=True)
     assert opted_in == {"workspaceId": "a" * 32, "reset": True,

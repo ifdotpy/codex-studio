@@ -3,10 +3,11 @@
 Entity sync uses the `state:entities:v1` scope and one sequence space. The
 server retains the newest 10,000 non-transcript tombstones. At the observed
 35,000 task tombstones per day, this is about 6.9 hours of replay. An entity
-pull prunes at most five committed batches of up to 5,000 rows before it
-responds. A background worker continues remaining cleanup in the same bounded
-batch size. Fresh baseline pages skip synchronous pruning. Entity writes do not
-run the pruning work. Live entities are never pruned. The greatest
+pull never waits for pruning. A background worker deletes at most 500 rows in
+each committed transaction, then pauses for 150 ms before the next batch. A
+transactionally maintained tombstone count and tombstone-only sequence index
+keep each batch selection bounded. Entity writes do not run pruning work. Live
+entities are never pruned. The greatest
 pruned sequence is stored as `sync_entity_meta.entity_tombstone_floor` and is
 included in `maxSeq` even when no retained entity has a sequence that high.
 

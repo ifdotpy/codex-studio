@@ -4,8 +4,8 @@ import json
 import sqlite3
 
 ENTITY_TOMBSTONE_LIMIT = 10_000
-ENTITY_TOMBSTONE_PRUNE_BATCH = 5_000
-ENTITY_TOMBSTONE_PRUNE_MAX_BATCHES_PER_PULL = 5
+ENTITY_TOMBSTONE_PRUNE_BATCH = 500
+ENTITY_TOMBSTONE_COUNT_KEY = "entity_tombstone_count"
 ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
 
 
@@ -111,6 +111,9 @@ def ensure_tables(db):
       CREATE INDEX IF NOT EXISTS sync_entities_collection_seq ON sync_entities(collection,seq);
       CREATE INDEX IF NOT EXISTS sync_entities_collection_deleted
         ON sync_entities(collection,deleted);
+      CREATE INDEX IF NOT EXISTS sync_entities_tombstone_order
+        ON sync_entities(seq,collection,id)
+        WHERE deleted=1 AND collection NOT LIKE 'transcript:%';
       CREATE TABLE IF NOT EXISTS sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sync_documents (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL,
@@ -121,6 +124,34 @@ def ensure_tables(db):
         seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
         hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
     """)
+    db.executescript("""
+      CREATE TRIGGER IF NOT EXISTS sync_entity_tombstone_count_insert
+      AFTER INSERT ON sync_entities
+      WHEN NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%' BEGIN
+        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)+1
+        WHERE key='entity_tombstone_count';
+      END;
+      CREATE TRIGGER IF NOT EXISTS sync_entity_tombstone_count_update
+      AFTER UPDATE OF deleted,collection ON sync_entities
+      WHEN (OLD.deleted=1 AND OLD.collection NOT LIKE 'transcript:%') !=
+           (NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%') BEGIN
+        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)+
+          CASE WHEN NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%' THEN 1 ELSE -1 END
+        WHERE key='entity_tombstone_count';
+      END;
+      CREATE TRIGGER IF NOT EXISTS sync_entity_tombstone_count_delete
+      AFTER DELETE ON sync_entities
+      WHEN OLD.deleted=1 AND OLD.collection NOT LIKE 'transcript:%' BEGIN
+        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)-1
+        WHERE key='entity_tombstone_count';
+      END;
+    """)
+    if not db.execute("SELECT 1 FROM sync_entity_meta WHERE key=?",
+                      (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone():
+        db.execute("""INSERT INTO sync_entity_meta(key,value)
+            SELECT ?,CAST(COUNT(*) AS TEXT) FROM sync_entities
+            WHERE deleted=1 AND collection NOT LIKE 'transcript:%'""",
+            (ENTITY_TOMBSTONE_COUNT_KEY,))
     # This index is built once by SQLite at startup and supports the bounded
     # newest-event pull. IF NOT EXISTS avoids rebuilding it on every start.
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
@@ -474,38 +505,37 @@ def entity_tombstone_floor(db):
 
 
 def prune_entity_tombstones(db, limit=ENTITY_TOMBSTONE_LIMIT,
-                            batch_size=ENTITY_TOMBSTONE_PRUNE_BATCH,
-                            max_batches=ENTITY_TOMBSTONE_PRUNE_MAX_BATCHES_PER_PULL):
-    """Prune old entity tombstones in committed bounded batches.
+                            batch_size=ENTITY_TOMBSTONE_PRUNE_BATCH):
+    """Prune one small, committed batch of old entity tombstones.
 
-    Entity pulls run this maintenance; entity writes never pay its cost.
+    The caller runs this in a background worker with a pause between batches.
     Live rows and transcript history are outside this retention policy.
     """
-    total_deleted = 0
-    batches = 0
-    while True:
-        if max_batches is not None and batches >= max_batches:
-            break
-        db.execute("BEGIN IMMEDIATE")
-        excess = db.execute("""SELECT COUNT(*) FROM sync_entities
-            WHERE collection NOT LIKE 'transcript:%' AND deleted=1""").fetchone()[0] - limit
-        if excess <= 0:
-            db.commit()
-            break
-        rows = db.execute("""SELECT collection,id,seq FROM sync_entities
-            WHERE collection NOT LIKE 'transcript:%' AND deleted=1
-            ORDER BY seq,collection,id LIMIT ?""",
-                          (min(batch_size, excess),)).fetchall()
-        if not rows:
-            db.commit()
-            break
-        floor = max(entity_tombstone_floor(db), max(row[2] for row in rows))
-        db.executemany("DELETE FROM sync_entities WHERE collection=? AND id=? AND deleted=1",
-                       [(row[0], row[1]) for row in rows])
-        db.execute("""INSERT INTO sync_entity_meta(key,value) VALUES(?,?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
-                   (ENTITY_TOMBSTONE_FLOOR_KEY, str(floor)))
+    db.execute("BEGIN IMMEDIATE")
+    if not db.execute("SELECT 1 FROM sync_entity_meta WHERE key=?",
+                      (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone():
+        db.execute("""INSERT INTO sync_entity_meta(key,value)
+            SELECT ?,CAST(COUNT(*) AS TEXT) FROM sync_entities
+            WHERE deleted=1 AND collection NOT LIKE 'transcript:%'""",
+            (ENTITY_TOMBSTONE_COUNT_KEY,))
+    count = int(db.execute("SELECT value FROM sync_entity_meta WHERE key=?",
+                           (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone()[0])
+    excess = count - limit
+    if excess <= 0:
         db.commit()
-        total_deleted += len(rows)
-        batches += 1
-    return total_deleted
+        return 0
+    rows = db.execute("""SELECT collection,id,seq FROM sync_entities
+        WHERE deleted=1 AND collection NOT LIKE 'transcript:%'
+        ORDER BY seq,collection,id LIMIT ?""",
+                      (min(max(1, int(batch_size)), excess),)).fetchall()
+    if not rows:
+        db.commit()
+        return 0
+    floor = max(entity_tombstone_floor(db), max(row[2] for row in rows))
+    db.executemany("DELETE FROM sync_entities WHERE collection=? AND id=? AND deleted=1",
+                   [(row[0], row[1]) for row in rows])
+    db.execute("""INSERT INTO sync_entity_meta(key,value) VALUES(?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+               (ENTITY_TOMBSTONE_FLOOR_KEY, str(floor)))
+    db.commit()
+    return len(rows)

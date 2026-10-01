@@ -76,13 +76,20 @@ class SyncStore:
                 from codex_sync_entities import (ENTITY_TOMBSTONE_LIMIT,
                                                  prune_entity_tombstones)
                 while True:
-                    with self.connect() as db:
-                        deleted = prune_entity_tombstones(db)
-                        remaining = db.execute("""SELECT COUNT(*) FROM sync_entities
-                            WHERE collection NOT LIKE 'transcript:%' AND deleted=1""").fetchone()[0]
+                    try:
+                        with self.connect() as db:
+                            deleted = prune_entity_tombstones(db)
+                            remaining = int(db.execute(
+                                "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'"
+                            ).fetchone()[0])
+                    except sqlite3.OperationalError as error:
+                        if 'locked' not in str(error).lower() and 'busy' not in str(error).lower():
+                            raise
+                        time.sleep(0.15)
+                        continue
                     if deleted == 0 or remaining <= ENTITY_TOMBSTONE_LIMIT:
                         break
-                    time.sleep(0.05)
+                    time.sleep(0.15)
             except (sqlite3.Error, OSError):
                 # A later entity pull can safely resume this idempotent cleanup.
                 pass
@@ -262,7 +269,7 @@ class SyncStore:
             self._ensure_versions()
             if scope == 'state:entities:v1':
                 from codex_sync_entities import (entity_tombstone_floor, max_seq,
-                                                 prune_entity_tombstones, seed, sync_task_window,
+                                                 seed, sync_task_window,
                                                  sync_event_window, sync_monitor_window)
                 with self.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
@@ -275,10 +282,8 @@ class SyncStore:
                     sync_event_window(db)
                     sync_monitor_window(db)
                     db.commit()
-                    # A bounded synchronous slice advances the floor promptly;
-                    # remaining batches continue on a background connection.
-                    if not fresh:
-                        prune_entity_tombstones(db)
+                    # Pruning always runs on its own connection after this pull
+                    # releases its read transaction. One pull never waits for it.
                     self._schedule_entity_pruning()
                     db.execute('BEGIN')
                     high = max_seq(db)
