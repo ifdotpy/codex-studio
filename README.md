@@ -187,6 +187,13 @@ identity remains available to diagnostics without a persistent notice in chats.
 Reviewed live patches apply in the background without a backend restart.
 See [live updates](docs/live-updates.md) for publication and verification.
 
+The team view measures worker worktree disk use in the background. It shows each
+worker and the team total. The default warning limit is 100 GiB across all
+worker worktrees. Set `CODEX_WORKTREE_DISK_LIMIT_BYTES` before Studio starts to
+change the limit. Set it to `0` to disable the warning. The size counts allocated
+blocks. Apple File System (APFS) clones can share blocks. The sum can exceed
+physical disk use.
+
 The packaged macOS application restores its backend after login or a process
 failure. Saved input and verified interrupted work recover automatically.
 See [restart recovery](docs/restart-recovery.md) for the exact behavior and limits.

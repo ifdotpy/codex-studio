@@ -820,6 +820,9 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/state":
                     return self.send({**snapshot(include_work=parse_qs(path.query).get("view") != ["chat"]),
                                       "token": token})
+                if path.path == "/api/worktree-disk" and canvas.runtime:
+                    from codex_worktree_disk import scanner
+                    return self.send(scanner(canvas.root).snapshot())
                 if path.path == "/api/costs":
                     with terminal_lock:
                         if cost_reader[0] is None:

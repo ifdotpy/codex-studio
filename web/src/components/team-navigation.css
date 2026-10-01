@@ -145,6 +145,24 @@
   line-height: 1.4;
 }
 
+.team-disk-total {
+  display: grid;
+  gap: 2px;
+  margin: 7px 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.team-disk-total strong {
+  color: var(--mantine-color-yellow-4);
+  font-weight: 600;
+}
+
+.worker-disk {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 #team .worker-entry {
   gap: 7px;
   margin-bottom: 5px;

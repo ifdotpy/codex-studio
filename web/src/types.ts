@@ -24,6 +24,7 @@ export interface Agent extends Json {
   tail?: string;
   created: number;
   inFlight?: boolean;
+  worktreeDisk?: { state: string; bytes?: number; scannedAt?: number };
   compactions?: number;
   panelVersion?: number;
   panelDataVersion?: number;

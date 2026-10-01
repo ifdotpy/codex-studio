@@ -117,6 +117,20 @@ class Contract(unittest.TestCase):
     def test_only_active_lead_can_manage_its_own_workers(self):
         for actor,target,epoch in [('worker','worker',1),('lead','foreign',1),('lead','lead',1),('lead','worker',0)]:
             with self.assertRaises(ValueError):manage_agent(self.rt,actor,{'action':'archive','agent_id':target,'reason':'x'},epoch)
+    def test_list_and_inspect_include_cached_worktree_disk_use(self):
+        disk = {'totalBytes': 4096, 'allWorkersBytes': 8192, 'limitBytes': 8192,
+                'warning': True, 'unmeasured': 0}
+        def view(_runtime, agents):
+            return ({a['id']: {'state': 'ready', 'bytes': 4096} for a in agents}, disk)
+        with patch('codex_worktree_disk.management_view', side_effect=view):
+            listed = self.call('list')
+            inspected = self.call('inspect')
+        self.assertEqual(listed['items'][0]['worktreeDisk']['bytes'], 4096)
+        self.assertEqual(listed['disk'], disk)
+        self.assertEqual(inspected['agent']['worktreeDisk']['bytes'], 4096)
+        self.assertEqual(inspected['disk'], disk)
+        with self.assertRaisesRegex(ValueError, 'Only the active orchestrator'):
+            manage_agent(self.rt, 'worker', {'action': 'list'}, 1)
     def test_each_unfinished_operation_blocks_archive(self):
         for table,row in [('monitors',{'id':'m','agent':'worker','status':'running'}),
                           ('tasks',{'id':'t','agent':'worker','status':'running'}),
