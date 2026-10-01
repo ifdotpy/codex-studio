@@ -157,3 +157,9 @@ tests/message-retry-http-browser.mjs` passed. These are isolated browser
   responsiveness run passed.
   Candidate production UI responsiveness remains unresolved; the paired result
   is not a pass. No live runtime or server state was used.
+
+## Final integration verification
+
+The reviewed migration was integrated at `49b6faa`, with the deterministic repeated-storage-failure fixture at `6014b0a`, and merged with concurrent application changes at `4aa4604`. The final TypeScript/Vite build passed. Storage contracts, the migration browser fixture (at least two held journal failures followed by exact checkpoint and one RxDB row), draft recovery, and production message delivery checks passed in the isolated integration worktree. Native integration review found no concrete merge regressions.
+
+The earlier checkpoint assertion used an async browser polling predicate and could finish before durable convergence; the final test uses awaited snapshots with a bounded deadline. Production draft code did not change for this fixture correction. This does not establish a full production responsiveness pass; that previously documented limitation remains. No live backend or user state was changed.
