@@ -900,16 +900,12 @@ export default function Conversation(p: {
           Sending…
         </span>
       )}
-      <span className="chat-message-author">
-        <AgentAvatar
-          id={
-            m.role === "user" && !p.room
-              ? "studio-user"
-              : m.sender || p.agent?.id || p.id || "agent"
-          }
-          size={24}
-        />
-      </span>
+      {/* The main chat has two speakers; only team rooms name each sender. */}
+      {p.room && (
+        <span className="chat-message-author">
+          <AgentAvatar id={m.sender || p.agent?.id || p.id || "agent"} size={24} />
+        </span>
+      )}
       {deliveryLabel(m) &&
         !["sending", "reserved", "dispatching", "accepted"].includes(
           m.deliveryStatus || "",
