@@ -1,6 +1,8 @@
 """Small deterministic checks for the runtime load report helpers."""
 import importlib.util
+from contextlib import contextmanager
 from pathlib import Path
+import sqlite3
 import threading
 import time
 import unittest
@@ -77,6 +79,127 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         self.assertEqual(receipt["params"]["item"]["clientId"], "event-17")
         self.assertEqual(receipt["params"]["threadId"], "thread-3")
         self.assertEqual(receipt["params"]["turnId"], "turn-9")
+
+    def test_schema_accounting_retries_only_exact_sqlite_schema_code(self):
+        schema = sqlite3.OperationalError("synthetic schema race")
+        schema.sqlite_errorcode = sqlite3.SQLITE_SCHEMA
+        busy = sqlite3.OperationalError("database is locked")
+        busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        self.assertTrue(module.is_sqlite_schema_error(schema))
+        self.assertFalse(module.is_sqlite_schema_error(busy))
+        self.assertFalse(module.is_sqlite_schema_error(RuntimeError("schema changed")))
+
+    def test_read_only_accounting_uses_fresh_connection_and_records_recovery(self):
+        opened = []
+
+        class Connection:
+            def __init__(self, number):
+                self.number = number
+
+            def execute(self, sql):
+                if sql == "PRAGMA schema_version":
+                    return type("Row", (), {"fetchone": lambda _self: (self.number,)})()
+                if self.number == 1:
+                    error = sqlite3.OperationalError("database schema has changed")
+                    error.sqlite_errorcode = sqlite3.SQLITE_SCHEMA
+                    raise error
+                return type("Row", (), {"fetchone": lambda _self: ("ok",)})()
+
+        @contextmanager
+        def db_factory():
+            connection = Connection(len(opened) + 1)
+            opened.append(connection)
+            yield connection
+
+        records = []
+        value = module.read_accounting_snapshot(
+            db_factory, "fixture.count", lambda db: db.execute("SELECT count").fetchone()[0], records)
+        self.assertEqual(value, "ok")
+        self.assertGreaterEqual(len(opened), 3)  # failed query, fresh schema read, fresh retry
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["sqlIdentity"], "fixture.count")
+        self.assertEqual(records[0]["errorName"], "OperationalError")
+        self.assertEqual(records[0]["sqliteErrorCode"], sqlite3.SQLITE_SCHEMA)
+        self.assertEqual(records[0]["schemaVersionBefore"], 1)
+        self.assertEqual(records[0]["schemaVersionAfterError"], 2)
+        self.assertEqual(records[0]["schemaVersionAfter"], 3)
+        self.assertTrue(records[0]["recovered"])
+        self.assertGreaterEqual(records[0]["durationMs"], 0)
+
+    def test_read_only_accounting_does_not_retry_other_sqlite_errors(self):
+        opened = []
+
+        class Connection:
+            def execute(self, sql):
+                if sql == "PRAGMA schema_version":
+                    return type("Row", (), {"fetchone": lambda _self: (1,)})()
+                error = sqlite3.OperationalError("database is locked")
+                error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                raise error
+
+        @contextmanager
+        def db_factory():
+            opened.append(object())
+            yield Connection()
+
+        with self.assertRaises(sqlite3.OperationalError):
+            module.read_accounting_snapshot(
+                db_factory, "fixture.locked", lambda db: db.execute("SELECT count"), [])
+        self.assertEqual(len(opened), 1)
+
+    def test_read_only_accounting_fails_after_three_schema_errors(self):
+        opened = []
+
+        class Connection:
+            def execute(self, sql):
+                if sql == "PRAGMA schema_version":
+                    return type("Row", (), {"fetchone": lambda _self: (1,)})()
+                error = sqlite3.OperationalError("database schema has changed")
+                error.sqlite_errorcode = sqlite3.SQLITE_SCHEMA
+                raise error
+
+        @contextmanager
+        def db_factory():
+            opened.append(object())
+            yield Connection()
+
+        records = []
+        with self.assertRaises(sqlite3.OperationalError):
+            module.read_accounting_snapshot(
+                db_factory, "fixture.schema-race", lambda db: db.execute("SELECT count"), records)
+        self.assertEqual(len(records), 3)
+        self.assertEqual(sum(1 for _ in opened), 6)  # query and fresh schema read per attempt
+        self.assertTrue(all(record["errorName"] == "OperationalError" for record in records))
+        self.assertTrue(all(record["sqlIdentity"] == "fixture.schema-race" for record in records))
+
+    def test_read_only_accounting_fails_if_retry_exceeds_total_time_bound(self):
+        calls = [0]
+
+        class Connection:
+            def execute(self, sql):
+                if sql == "PRAGMA schema_version":
+                    return type("Row", (), {"fetchone": lambda _self: (1,)})()
+                calls[0] += 1
+                if calls[0] == 1:
+                    error = sqlite3.OperationalError("database schema has changed")
+                    error.sqlite_errorcode = sqlite3.SQLITE_SCHEMA
+                    raise error
+                time.sleep(0.02)
+                return type("Row", (), {"fetchone": lambda _self: ("late",)})()
+
+        @contextmanager
+        def db_factory():
+            yield Connection()
+
+        records = []
+        with self.assertRaisesRegex(RuntimeError, "exceeded its total time bound"):
+            module.read_accounting_snapshot(
+                db_factory, "fixture.slow-retry",
+                lambda db: db.execute("SELECT count").fetchone()[0], records,
+                max_elapsed_seconds=0.005)
+        self.assertEqual(records[0]["recovered"], False)
+        self.assertTrue(records[0]["retryBoundExceeded"])
+        self.assertGreater(records[0]["totalDurationMs"], 5)
 
     def test_measured_rlock_preserves_reentrancy_and_condition_wait(self):
         lock = module.MeasuredRLock()

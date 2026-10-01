@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { availableParallelism, homedir } from "node:os";
+import { availableParallelism, homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -184,6 +184,7 @@ let childOut = "",
   previousTmpdir,
   browser,
   browserServer,
+  browserTempDir,
   browserResourceTimer,
   browserResourcePeak = { processCount: 0, rssKiB: 0, cpuPercent: 0 },
   contexts = [],
@@ -199,6 +200,8 @@ const httpOutcomes = new HttpOutcomeTracker();
 let responseHandling = Promise.resolve();
 let tabInitializationMs = [];
 const tabInitializationDeadlineMs = 15_000;
+const snapshotRecoveryDrainDeadlineMs = 15_000;
+let snapshotRecoveryDrainMs = 0;
 let steadyWitnessLatencyByTab = [];
 let steadyFinalOfferToDOM = null;
 let ready;
@@ -299,15 +302,14 @@ try {
     ],
   };
   phase = "browser-startup";
-  const browserTemp = join(state, "browser-tmp");
-  await mkdir(browserTemp, { recursive: true });
-  // Playwright's user-data directory follows os.tmpdir(). Keep the isolated
-  // browser profile inside this unique state, not under shared /tmp quota.
+  browserTempDir = await mkdtemp(join(tmpdir(), "cdxrl-"));
+  // Chromium's Unix socket path has a short limit; use a unique profile below
+  // the configured temp root instead of nesting it under the evidence path.
   previousTmpdir = process.env.TMPDIR;
-  process.env.TMPDIR = browserTemp;
+  process.env.TMPDIR = browserTempDir;
   browserServer = await chromium.launchServer({
     ...browserOptions,
-    env: { ...process.env, TMPDIR: browserTemp },
+    env: { ...process.env, TMPDIR: browserTempDir },
   });
   browser = await chromium.connect(browserServer.wsEndpoint());
   const browserProcess = browserServer.process();
@@ -1032,6 +1034,25 @@ try {
     steadyFinalOfferToDOM.p95 <= 3000 && steadyFinalOfferToDOM.p99 <= 5000,
     "steady final offer-to-DOM p95/p99 must meet 3s/5s targets",
   );
+  const snapshotRecoveryDrainStarted = Date.now();
+  while (
+    Date.now() - snapshotRecoveryDrainStarted <
+    snapshotRecoveryDrainDeadlineMs
+  ) {
+    // Let the latest response classify its status/body before consulting the
+    // pending set; otherwise a just-arrived SnapshotDeferred 503 can be missed.
+    await responseHandling;
+    if (httpOutcomes.unrecoveredSnapshotReads().length === 0) break;
+    const remainingMs =
+      snapshotRecoveryDrainDeadlineMs -
+      (Date.now() - snapshotRecoveryDrainStarted);
+    if (remainingMs <= 0) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(100, remainingMs)),
+    );
+  }
+  await responseHandling;
+  snapshotRecoveryDrainMs = Date.now() - snapshotRecoveryDrainStarted;
   // Let open UI requests finish or abort their own way before stopping HTTP.
   // In particular, App session refreshes can remain active after the last pull.
   await Promise.all(pages.map((page) => page.close()));
@@ -1045,6 +1066,9 @@ try {
   browserReport.unrecoveredSnapshotReads =
     httpOutcomes.unrecoveredSnapshotReads();
   browserReport.unexpectedHttpFailures = httpOutcomes.failures;
+  browserReport.snapshotRecoveryDrainMs = snapshotRecoveryDrainMs;
+  browserReport.snapshotRecoveryDrainDeadlineMs =
+    snapshotRecoveryDrainDeadlineMs;
   for (const attempt of httpOutcomes.unrecoveredSnapshotReads())
     pageErrors.push(
       `unrecovered retryable snapshot HTTP 503 in tab ${attempt.tab} scope=${attempt.scope} after=${new URL(attempt.url).searchParams.get("after")}`,
@@ -1116,6 +1140,8 @@ try {
           .filter((attempt) => attempt.recoveryLatencyMs !== null)
           .map((attempt) => attempt.recoveryLatencyMs),
       ),
+      snapshotRecoveryDrainMs,
+      snapshotRecoveryDrainDeadlineMs,
       unexpectedHttpFailures: httpOutcomes.failures.length,
     },
     resourceLimits: {
@@ -1196,6 +1222,8 @@ try {
             tabInitializationMs,
             steadyWitnessLatencyByTab,
             steadyFinalOfferToDOM,
+            snapshotRecoveryDrainMs,
+            snapshotRecoveryDrainDeadlineMs,
             pageErrors,
             requestFailures,
             consoleErrors,
@@ -1272,6 +1300,10 @@ try {
   // The temporary Runtime/SQLite/profile is removed only after all child and browser work ends.
   const { rm } = await import("node:fs/promises");
   await rm(state, { recursive: true, force: true });
+  if (browserTempDir) {
+    await rm(browserTempDir, { recursive: true, force: true });
+    browserTempDir = undefined;
+  }
   if (previousTmpdir === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = previousTmpdir;
   if (process.exitCode || diagnosticOnlyResult) {
@@ -1283,6 +1315,7 @@ try {
         fixtureSignalCode: fixture.signalCode,
         browserClosed: !browser || browser._isClosed?.() !== false,
         uniqueTemporaryStateRemoved: true,
+        uniqueBrowserProfileRemoved: !browserTempDir,
       };
       failed.browserLogPath = outputPath + ".browser.log";
       await writeFile(outputPath + ".browser.log", browserLog);

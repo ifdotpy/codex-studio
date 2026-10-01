@@ -11,6 +11,7 @@ import copy
 import atexit
 import hashlib
 import math
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -150,6 +151,71 @@ def assistant_witness_text(phase, marker, agent_name, round_index):
     return stream_text, f"{stream_text} {marker}"
 
 
+def is_sqlite_schema_error(error):
+    """Only recognize SQLite's exact SQLITE_SCHEMA result code."""
+    return (isinstance(error, sqlite3.Error)
+            and getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_SCHEMA)
+
+
+def read_accounting_snapshot(db_factory, sql_identity, reader, retry_records,
+                             max_attempts=3, max_elapsed_seconds=1.0):
+    """Run read-only benchmark accounting with a narrowly bounded schema retry.
+
+    Each attempt gets a fresh connection and schema snapshot. This helper must
+    never wrap Runtime writes or AppServer callbacks.
+    """
+    started = time.monotonic()
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        attempt_started = time.monotonic()
+        schema_before = None
+        try:
+            with db_factory() as db:
+                schema_before = db.execute("PRAGMA schema_version").fetchone()[0]
+                value = reader(db)
+            if attempt > 1:
+                record = retry_records[-1]
+                total_ms = (time.monotonic() - started) * 1000
+                record.update({"schemaVersionAfter": schema_before,
+                               "recovered": total_ms <= max_elapsed_seconds * 1000,
+                               "recoveryAttempt": attempt,
+                               "recoveryDurationMs": (time.monotonic() - attempt_started) * 1000,
+                               "totalDurationMs": total_ms,
+                               "retryBoundExceeded": total_ms > max_elapsed_seconds * 1000})
+                if total_ms > max_elapsed_seconds * 1000:
+                    raise RuntimeError("SQLITE_SCHEMA accounting retry exceeded its total time bound") from last_error
+            return value
+        except sqlite3.Error as error:
+            if not is_sqlite_schema_error(error):
+                raise
+            last_error = error
+            try:
+                with db_factory() as db:
+                    schema_after = db.execute("PRAGMA schema_version").fetchone()[0]
+            except sqlite3.Error:
+                schema_after = None
+            duration_ms = (time.monotonic() - attempt_started) * 1000
+            total_ms = (time.monotonic() - started) * 1000
+            record = {"attempt": attempt, "sqlIdentity": sql_identity,
+                      "errorName": type(error).__name__,
+                      "sqliteErrorCode": error.sqlite_errorcode,
+                      "schemaVersionBefore": schema_before,
+                      "schemaVersionAfterError": schema_after,
+                      "schemaVersionAfter": schema_after,
+                      "recovered": False, "durationMs": duration_ms,
+                      "totalDurationMs": total_ms}
+            retry_records.append(record)
+            print("SQLITE_SCHEMA_ACCOUNTING_RETRY " + json.dumps(record),
+                  file=sys.stderr, flush=True)
+            if attempt >= max_attempts or total_ms >= max_elapsed_seconds * 1000:
+                raise
+            remaining = max_elapsed_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                raise
+            time.sleep(min(0.01 * attempt, remaining))
+    raise last_error
+
+
 _lock_context = threading.local()
 
 
@@ -272,6 +338,7 @@ def main():
     server = make_server(canvas)
     http_latencies = {}
     http_errors = []
+    accounting_schema_retries = []
     http_diag_lock = threading.Lock()
     http_active_routes = {}
     http_request_counts = {}
@@ -542,9 +609,11 @@ def main():
             rounds = int(command.get("rounds", 1))
             if not 1 <= rounds <= 8:
                 raise ValueError("rounds must be in 1..8")
-            with runtime.db() as db:
-                event_rows_before = db.execute("SELECT COUNT(*) FROM runtime_events").fetchone()[0]
             total_started = time.monotonic_ns()
+            event_rows_before = read_accounting_snapshot(
+                runtime.db, "runtime_events.count.before",
+                lambda db: db.execute("SELECT COUNT(*) FROM runtime_events").fetchone()[0],
+                accounting_schema_retries)
             identities = []
             for agent in workers:
                 team = workers.index(agent) // workers_per_team
@@ -662,9 +731,11 @@ def main():
 
             # Consume child-result inbox events on their original lead IDs using
             # the production userMessage receipt callback after worker finishes.
-            with runtime.db() as db:
-                child_events = [dict(row) for row in db.execute(
-                    "SELECT id,agent FROM runtime_events WHERE kind='child_result' AND status='pending' ORDER BY created,id")]
+            child_events = read_accounting_snapshot(
+                runtime.db, "runtime_events.child_result.pending",
+                lambda db: [dict(row) for row in db.execute(
+                    "SELECT id,agent FROM runtime_events WHERE kind='child_result' AND status='pending' ORDER BY created,id")],
+                accounting_schema_retries)
             for event in child_events:
                 expected_runtime_event_ids.append(event["id"])
                 recipient = runtime.agent(event["agent"])
@@ -681,18 +752,25 @@ def main():
             analytics_rows = 0
             analytics_payload_bytes = 0
             transcript_counts = {k: 0 for k in ("assistant", "tool", "output")}
-            with runtime.db() as db:
+            def collect_accounting(db):
                 chat_rows = db.execute("SELECT COUNT(*) FROM runtime_chat_messages").fetchone()[0]
                 event_rows = db.execute("SELECT COUNT(*) FROM runtime_events").fetchone()[0]
                 event_kinds = dict(db.execute(
                     "SELECT kind,COUNT(*) FROM runtime_events GROUP BY kind"
                 ).fetchall())
                 analytics = db.execute("SELECT COUNT(*),COALESCE(SUM(bytes),0) FROM analytics_notifications").fetchone()
-                analytics_rows, analytics_payload_bytes = analytics[0], analytics[1]
                 consumed_runtime_events = db.execute("SELECT COUNT(*) FROM runtime_events WHERE status='delivered'").fetchone()[0]
                 pending_runtime_events = db.execute("SELECT COUNT(*) FROM runtime_events WHERE status IN ('pending','dispatching','reserved')").fetchone()[0]
                 delivered_ids = {row[0] for row in db.execute(
                     "SELECT id FROM runtime_events WHERE status='delivered'")}
+                return (chat_rows, event_rows, event_kinds, analytics,
+                        consumed_runtime_events, pending_runtime_events, delivered_ids)
+
+            (chat_rows, event_rows, event_kinds, analytics,
+             consumed_runtime_events, pending_runtime_events, delivered_ids) = read_accounting_snapshot(
+                runtime.db, "runtime_load.final.read_only_accounting_snapshot",
+                collect_accounting, accounting_schema_retries)
+            analytics_rows, analytics_payload_bytes = analytics[0], analytics[1]
             expected_delivered_ids = set(expected_runtime_event_ids)
             if len(expected_delivered_ids) != len(expected_runtime_event_ids):
                 raise RuntimeError("a Runtime inbox event ID was acknowledged more than once")
@@ -710,6 +788,14 @@ def main():
                       "steadySeconds": steady_seconds,
                       "phaseTurnCounts": turn_counts,
                       "burstDrainMs": burst_drain_ms,
+                      "readOnlyAccountingSchemaRetries": {
+                          "count": len(accounting_schema_retries),
+                          "totalDurationMs": sum(max(
+                              record.get("totalDurationMs", record["durationMs"])
+                              for record in accounting_schema_retries
+                              if record["sqlIdentity"] == sql_identity)
+                              for sql_identity in {record["sqlIdentity"] for record in accounting_schema_retries}),
+                          "attempts": accounting_schema_retries},
                       "syntheticAccounts": {"keys": account_keys,
                                             "teamAccountKeys": [account_keys[index % len(account_keys)] for index in range(team_count)]},
                       "phases": ["warmup", "steady", "burst", "drain"],

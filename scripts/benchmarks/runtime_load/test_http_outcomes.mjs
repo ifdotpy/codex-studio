@@ -122,10 +122,22 @@ test("expected synthetic account failure is only exact 400 and known reason", ()
     }),
     true,
   );
+  assert.equal(
+    isExpectedSyntheticUnavailable(400, `${url}&workers=1`, {
+      error: "No worker model catalog is available",
+    }),
+    true,
+  );
   for (const sample of [
     [503, url, { error: "Unknown Codex account" }],
     [500, url, { error: "internal error" }],
     [400, url, { error: "invalid input" }],
+    [400, url, { error: "No worker model catalog is available" }],
+    [
+      400,
+      `${url}&workers=0`,
+      { error: "No worker model catalog is available" },
+    ],
     [
       400,
       "http://127.0.0.1/api/models?account_key=default",

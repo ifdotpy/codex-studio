@@ -38,11 +38,11 @@ export function isExpectedSyntheticUnavailable(status, url, detail) {
   } catch {
     return false;
   }
+  if (body?.error === "Unknown Codex account") return true;
   return (
-    typeof body?.error === "string" &&
-    /unknown codex account|account unavailable|account not found/i.test(
-      body.error,
-    )
+    parsed.pathname === "/api/models" &&
+    parsed.searchParams.get("workers") === "1" &&
+    body?.error === "No worker model catalog is available"
   );
 }
 
